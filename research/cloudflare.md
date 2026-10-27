@@ -1,0 +1,154 @@
+| Product | Status | What a git host would use it for | Limits that matter | Price | Source |
+| --- | --- | --- | --- | --- | --- |
+| Workers | GA | HTTP front door, smart-HTTP git, API, auth | Paid 30 s CPU default, 5 min max; 128 MB per isolate; 10,000 subrequests default; no inbound public TCP | $5/mo plan; $0.30/M requests; $0.02/M CPU-ms | https://developers.cloudflare.com/workers/platform/limits/ |
+| Durable Objects (SQLite-backed) | GA | One object per repo: ref chain, locks, commit log | 10 GB per object; ~1,000 req/s soft per object; 2 MB row; location fixed at creation | $0.15/M req; $12.50/M GB-s; $1.00/M rows written; $0.20/GB-mo | https://developers.cloudflare.com/durable-objects/platform/limits/ |
+| D1 | GA (read replication beta) | Account, org, permission metadata; FTS5 search over small corpora | 10 GB per database; 1 TB per account; 30 s per query | $0.001/M rows read; $1.00/M rows written; $0.75/GB-mo | https://developers.cloudflare.com/d1/platform/limits/ |
+| R2 | GA | Packfiles, LFS objects, archives, release assets | 5 TiB object; 1 write/s to the same key; one region per bucket | $0.015/GB-mo; $4.50/M Class A; $0.36/M Class B; egress free | https://developers.cloudflare.com/r2/pricing/ |
+| Workers KV | GA | Cached read-mostly config, session tokens | Eventually consistent, up to 60 s; 1 write/s per key; 25 MiB value | $0.50/M reads; $5.00/M writes | https://developers.cloudflare.com/kv/platform/limits/ |
+| Queues | GA | Webhook fan-out, indexing, R2 event intake | 5,000 msg/s per queue; 128 KB message; 14-day retention; at-least-once | $0.40/M operations (per 64 KB) | https://developers.cloudflare.com/queues/platform/limits/ |
+| Workflows | GA | Long multi-step jobs: imports, repo transfers, GC | 10,000 steps default (25,000 max); 1 MiB step result; 1 GB state per instance | Workers rates + $0.80/100k steps + $0.20/GB-mo | https://developers.cloudflare.com/workflows/reference/limits/ |
+| Containers | GA | Run upstream git (pack-objects, index-pack, gc), CI runners | Max 4 vCPU, 12 GiB, 20 GB disk per instance; disk ephemeral; account 1,500 vCPU | $0.000020/vCPU-s; $0.0000025/GiB-s; $0.00000007/GB-s | https://developers.cloudflare.com/containers/platform/limits/ |
+| Sandbox SDK (Sandboxes) | GA | Isolated runners for untrusted user code (Actions-like) | Inherits Containers limits | Containers pricing | https://developers.cloudflare.com/changelog/post/2026-04-13-containers-sandbox-ga/ |
+| Spectrum | GA | Public SSH (port 22) termination for git over SSH | SSH on Pro/Business: one app; custom TCP needs Enterprise; 10 IPv4 hostnames per account | SSH: 5 GB (Pro) or 10 GB (Business) per month, then $1/GB | https://developers.cloudflare.com/spectrum/protocols-per-plan/ |
+| Load Balancing | GA | Health-checked failover between origins, Spectrum TCP pools | Self-serve add-on; private-network monitoring Enterprise | Starting at $5/mo | https://www.cloudflare.com/pricing/ |
+| DNS | GA | Authoritative DNS for the host and custom domains | Available on all plans | Included in plans | https://developers.cloudflare.com/dns/ |
+| Cloudflare Tunnel | GA | Reach private origins (an SSH backend) with no public IP; Spectrum virtual-network origin | 4 connections to 2 data centers per connector; replicas for HA | Available on all plans | https://developers.cloudflare.com/tunnel/ |
+| Email Routing | GA | Inbound reply-by-email for issues and PRs | Free and Paid plans | Inbound unlimited, no charge | https://developers.cloudflare.com/email-service/platform/pricing/ |
+| Email Sending (Email Service) | beta | Notifications, password reset, digests | Workers Paid; daily quota grows with reputation | 3,000/mo included, then $0.35 per 1,000 | https://developers.cloudflare.com/email-service/ |
+| Pipelines (now Basin Pipelines) | GA | Audit log and event ingestion into Iceberg on R2 | 20 streams per account; 5 MB request; 1 GB/s per stream | $0.04/GB transform; $0.03 to $0.06/GB sink | https://developers.cloudflare.com/basin-pipelines/platform/limits/ |
+| R2 Data Catalog (now Basin Catalog) | GA | Iceberg tables for audit and analytics | Iceberg REST catalog on an R2 bucket | $9.00/M catalog ops; compaction $0.005/GB | https://developers.cloudflare.com/basin-catalog/platform/pricing/ |
+| R2 SQL (now Basin SQL) | GA | Ad hoc SQL over audit and traffic tables | Queries Basin Catalog tables only | $0.0025/GB scanned | https://developers.cloudflare.com/basin-sql/platform/pricing/ |
+| Cloudflare Basin | GA | Umbrella for the three rows above | GA since 2026-10-01; formerly Cloudflare Data Platform | Sum of its parts | https://developers.cloudflare.com/changelog/post/2026-10-01-basin-ga/ |
+| Workers Analytics Engine | GA | Per-repo traffic counters, clone stats | 250 data points per invocation; 3-month retention | $0.25/M points written; $1.00/M queries | https://developers.cloudflare.com/analytics/analytics-engine/pricing/ |
+| Workers Logs | GA | Request and error logs | 7-day retention; 5 billion logs per account per day | $0.60/M events now; from 2026-12-01 $0.25/GB ingest | https://developers.cloudflare.com/workers/observability/logs/workers-logs/ |
+| Logpush | GA | Ship logs to R2 or Basin for audit retention | No R2 jurisdiction support (use S3 endpoint) | Workers Trace Events need Workers Paid | https://developers.cloudflare.com/logs/logpush/ |
+| Secrets Store | beta | Account-level signing keys, webhook secrets | Works with Workers and AI Gateway only | Not found on page | https://developers.cloudflare.com/secrets-store/ |
+| Access | GA | Staff and admin console SSO | Free under 50 users | $7/user/month above that | https://www.cloudflare.com/pricing/ |
+| WAF and rate limiting rules | GA | Abuse limits on clone, API, login | Rules: 1 Free, 2 Pro, 5 Business, 100 Enterprise; Free counts by IP over 10 s | Included per plan | https://developers.cloudflare.com/waf/rate-limiting-rules/ |
+| Workers for Platforms | GA | Per-tenant user Workers (hooks, apps) | Unlimited scripts | $25/mo; $0.02 per script over 1,000 | https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/ |
+| Vectorize | GA [inference] | Semantic code search | 1536 dims max; 50,000 indexes | $0.01/M queried dims; $0.05/100M stored dims | https://developers.cloudflare.com/vectorize/platform/pricing/ |
+| AI Search | GA | Managed RAG over docs and code | 1M files per instance (500K hybrid); 10 MiB per code file | Billing from 2026-11-01; $0.75/1,000 semantic queries | https://developers.cloudflare.com/ai-search/platform/limits-pricing/ |
+| Cron Triggers | GA | Periodic GC, mirror sync, stale-lock sweeps | 250 per account (Paid); 15 min wall time; UTC | Workers rates | https://developers.cloudflare.com/workers/platform/limits/ |
+| Hyperdrive | GA [inference] | Only if a Postgres or MySQL database exists outside Cloudflare | Postgres and MySQL only | Included in Workers plans | https://developers.cloudflare.com/hyperdrive/platform/pricing/ |
+| Data Localization Suite | GA | EU or US residency for repos and logs | Enterprise-only paid add-on | Contract | https://developers.cloudflare.com/data-localization/ |
+| workerd | GA [inference] | Self-host the Workers runtime for local dev and tests | "not a hardened sandbox" | Open source | https://github.com/cloudflare/workerd |
+| Artifacts (new 2026) | beta | Git-compatible repos as a managed service | 1 GB per repo (new repos); 2,000 git req per 10 s per repo; push protocol v1 only | $0.15/1,000 ops; $0.50/GB-mo | https://developers.cloudflare.com/artifacts/platform/limits/ |
+| K2 (new 2026) | beta | Durable ordered log for ref-update events and webhooks | 30 MB/s per stream; 1 MB record; 30-day retention; 20 streams; 10 GB beta cap | $0.04/GB produced and consumed; not billed in beta | https://developers.cloudflare.com/k2/platform/limits/ |
+| Dynamic Workers (new) | GA [inference] | Run per-repo user code without containers | Workers Paid only | $0.002 per Dynamic Worker per day over 1,000/mo | https://developers.cloudflare.com/dynamic-workers/pricing/ |
+| Workers VPC (new) | beta | Reach private networks from Workers | Free during beta | Free in beta | https://developers.cloudflare.com/workers-vpc/ |
+
+Retrieved 2026-10-26. Labels: [doc] quoted from the cited page, [secondary] non-Cloudflare page, [inference] my reading, [measured] I ran it. Every row cell above is [doc] unless marked.
+
+## Cloudflare Basin
+
+Basin exists and is GA. "Basin was formerly known as Cloudflare Data Platform. Cloudflare Pipelines, R2 Data Catalog, and R2 SQL are now named Basin Pipelines, Basin Catalog, and Basin SQL." https://developers.cloudflare.com/basin/ [doc]. "Basin, formerly the Cloudflare Data Platform, is now generally available." https://developers.cloudflare.com/changelog/post/2026-10-01-basin-ga/ [doc]. The old doc paths `/pipelines/`, `/r2/data-catalog/`, and `/r2-sql/` now redirect to `/basin-pipelines/`, `/basin-catalog/`, and `/basin-sql/` [measured: curl canonical links]. Basin is an analytics platform on Iceberg and R2. It is not a transactional store and not a git store [inference from "end-to-end analytics data platform"].
+
+## Workers
+
+- CPU. "CPU time per HTTP request | 10 ms | 5 min (default: 30 seconds)". "Waiting on network requests ... does **not** count toward CPU time." https://developers.cloudflare.com/workers/platform/limits/ [doc]
+- Memory. "Each isolate can consume up to 128 MB of memory ... This limit is per-isolate, not per-invocation." Same URL [doc].
+- Request body by Cloudflare plan, not Workers plan: "Free | 100 MB", "Pro | 100 MB", "Business | 200 MB", "Enterprise | Up to 5 GB (self-serve)". A large `git push` over HTTPS is bounded by this. Same URL [doc].
+- Response. "Response body size | No enforced limit". "As long as the client remains connected, the Worker can continue processing, making subrequests, and streaming a response body." Same URL [doc].
+- Duration. "HTTP request | No limit"; Cron, DO alarm, and Queue consumer get "15 min". "`waitUntil()` can extend execution for up to 30 seconds after the response is sent." Same URL [doc].
+- Deploys and runtime updates cut long streams. "processes running the previous version ... give existing Workers requests and connections up to 20 minutes to finish. This includes streaming HTTP responses and WebSocket connections." A clone stream longer than that can be terminated [inference]. Same URL [doc].
+- Subrequests. "Subrequests per invocation | 50 | 10,000 (up to 10M)". "Each Worker invocation can have up to six connections simultaneously waiting for response headers." Same URL [doc].
+- Inbound TCP. "Direct inbound TCP connections from the public Internet ... are not supported at present. A `connect()` handler only receives connections forwarded from another Worker over a service binding." https://developers.cloudflare.com/workers/runtime-apis/handlers/connect/ [doc]. So git over SSH cannot terminate on a Worker without Spectrum and an origin [inference].
+- Price. "10 million included per month +$0.30 per additional million", "30 million CPU milliseconds included per month +$0.02 per additional million CPU milliseconds". https://developers.cloudflare.com/workers/platform/pricing/ [doc]
+
+## Durable Objects (SQLite-backed)
+
+- Storage. "Storage per Durable Object | 10 GB"; "Storage per account | Unlimited (Workers Paid) / 5GB (Free)"; "Maximum string, `BLOB` or table row size | 2 MB". https://developers.cloudflare.com/durable-objects/platform/limits/ [doc]
+- Throughput. "An individual Object has a soft limit of 1,000 requests per second." Overload is returned, not queued forever: "A Durable Object that receives too many requests will, after attempting to queue them, return an overloaded error to the caller." Same URL [doc]. Errors with `.overloaded` "should not be retried". https://developers.cloudflare.com/durable-objects/best-practices/error-handling/ [doc]
+- Write acknowledgement. "Every time SQLite commits a transaction, SRS will immediately forward the change log to five "follower" machines across our network. Once at least three of these followers respond that they have received the change, SRS informs the application that the write is confirmed." "Each of a database's five followers is located in a different physical data center." https://blog.cloudflare.com/sqlite-in-durable-objects/ [doc, 2024-09; blog.cloudflare.com returned HTTP 429 to me, so the first sentence is confirmed from the official search snippet and the rest from the mirror at noise.getoto.net, which is secondary]. Changes go to object storage in batches "over a period of up to 10 seconds, or up to 16 MB worth" (same post, same caveat).
+- Output gate. "By default, the system will pause outgoing network messages from the Durable Object until all previous writes have been confirmed flushed to disk. If the write fails, the system will reset the Object." https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/ [doc]
+- Location. "Durable Objects do not currently change locations after they are created." Footnote: "Dynamic relocation of existing Durable Objects is planned for the future." Hints: "Only the first call to `get()` for a particular Object will respect the hint." "Hints are a best effort and not a guarantee." Hint values: wnam, enam, sam, weur, eeur, apac, apac-ne, apac-se, oc, afr, me; sam, afr, me do not spawn locally. https://developers.cloudflare.com/durable-objects/reference/data-location/ [doc]
+- Jurisdictions. `eu`, `us`, `fedramp`. "The jurisdiction constraint only controls where the Durable Object itself runs and persists data." Same URL [doc].
+- PITR. "restore a Durable Object's embedded SQLite database to any point in time in the past 30 days." Bookmarks via `getBookmarkForTime` and `onNextSessionRestoreBookmark`, then `ctx.abort()`. https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/ [doc]
+- Alarms. "Alarms have guaranteed at-least-once execution", retried "starting at a 2 second delay from the first failure with up to 6 retries". "each Durable Object can only have one alarm set at a time". https://developers.cloudflare.com/durable-objects/api/alarms/ [doc]. Alarms "can be delayed by up to a minute due to maintenance or failures while failover takes place." sqlite-storage-api URL [doc].
+- Hibernation. "WebSocket clients remain connected to the Cloudflare network" while the object is evicted. https://developers.cloudflare.com/durable-objects/best-practices/websockets/ [doc]. Hibernation happens "After 10 seconds of no incoming request or event". https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/ [doc]. Idle hibernatable objects "are not billed for duration". https://developers.cloudflare.com/durable-objects/platform/pricing/ [doc]
+- Failure. Machine failure: "In case of a machine failure, either all of the writes will have been stored to disk or none of the writes will have been stored to disk." sqlite-storage-api URL [doc]. Blog: "if the machine running the database suddenly fails, as long as at least one follower is still running, it will ensure that all confirmed writes are safely persisted." [doc via mirror, see caveat]. Whole data center or region failure: no Cloudflare doc I found states where the object restarts or how long it is unavailable. The followers sit in "four other data centers nearby", so a regional event can take the object down with its followers [inference].
+- Price. Requests "$0.15/million"; duration "$12.50/million GB-s"; SQLite "Rows reads ... $0.001 / million rows", "Rows written ... $1.00 / million rows", "SQL Stored data ... $0.20/ GB-month"; storage billing began "January 7, 2026 (no earlier)". "Each `setAlarm()` is billed as a single row written." https://developers.cloudflare.com/durable-objects/platform/pricing/ [doc]
+
+## D1
+
+- Size. "Maximum database size | 10 GB (Workers Paid) / 500 MB (Free)"; "Maximum storage per account | 1 TB (Workers Paid)"; "Databases per account | 50,000 (Workers Paid)"; "Maximum SQL query duration | 30 seconds". https://developers.cloudflare.com/d1/platform/limits/ [doc]
+- Read replication. "D1 Read Replication Public Beta" dated Apr 10, 2025; I found no GA entry in the D1 changelog. https://developers.cloudflare.com/changelog/product/d1/ [doc]. "you must use the D1 Sessions API ... otherwise all queries will continue to be executed only by the primary database." "Sessions API ensures sequential consistency for all queries in a session." "D1 automatically creates a read replica in every supported region". https://developers.cloudflare.com/d1/best-practices/read-replication/ [doc]
+- Time Travel. "restore a database to any minute within the last 30 days"; "It is always on." Limit "10 restores per 10 minutes (per database)". https://developers.cloudflare.com/d1/reference/time-travel/ [doc]
+- FTS5. "FTS5 module for full-text search (including `fts5vocab`)." https://developers.cloudflare.com/d1/sql-api/sql-statements/ [doc]
+- Price. "$0.001 / million rows" read, "$1.00 / million rows" written, "$0.75 / GB-mo" storage over 5 GB. https://developers.cloudflare.com/d1/platform/pricing/ [doc]
+
+## R2
+
+- Consistency. "Read-after-write ... Strongly consistent: readers will immediately see the latest object globally"; "Object listing ... Strongly consistent". Caching through a custom domain relaxes it: "the consistency model is necessarily relaxed when accessing content via a domain with caching enabled." https://developers.cloudflare.com/r2/reference/consistency/ [doc]
+- Conditional writes. "R2 evaluates conditional write headers (for example `If-Match` and `If-None-Match` on `PutObject`) atomically". "at most one request succeeds and every other request fails with a `412 PreconditionFailed`". Same URL [doc]. CopyObject has R2-specific destination conditions such as `cf-copy-destination-if-match`. https://developers.cloudflare.com/r2/api/s3/extensions/ [doc]
+- Per-key and per-bucket rates. "Maximum concurrent writes to the same object name (key) | 1 per second"; higher rates "return HTTP 429". "Maximum rate of bucket management operations per bucket | 50 per second". No per-bucket read or write request-rate limit is published on that page. https://developers.cloudflare.com/r2/platform/limits/ [doc]
+- Sizes. "Object size | 5 TiB per object"; "5 GiB (single-part) / 4.995 TiB (multi-part)"; "Maximum upload parts | 10,000". Same URL [doc].
+- Location. Hints wnam, enam, weur, eeur, apac, oc; "Location Hints are a best effort and not a guarantee". Jurisdictions `eu`, `fedramp`, `us`; FedRAMP is for Enterprise on request. Logpush does not write to jurisdictional buckets directly. https://developers.cloudflare.com/r2/reference/data-location/ [doc]
+- Durability. "R2 is designed to provide 99.999999999% (eleven 9s) of annual durability." "Storage clusters are comprised of hardware distributed across several data centers within a geographic region." "R2 returns an `HTTP 200 (OK)` ... only when data has been persisted to disk." https://developers.cloudflare.com/r2/reference/durability/ [doc]. A bucket lives in one region, so a regional outage makes it unavailable [inference].
+- Local Uploads. Writes land near the client and are copied asynchronously; "Data is available immediately and remains strongly consistent." https://developers.cloudflare.com/r2/buckets/local-uploads/ [doc]
+- Event notifications. Delivered to a Queue; "up to 100 event notification rules per R2 bucket"; bounded by "5,000 messages per second" per queue. https://developers.cloudflare.com/r2/buckets/event-notifications/ [doc]
+- Presigned URLs. "Timeout from 1 second to 7 days (604,800 seconds)". Examples use the `r2.cloudflarestorage.com` S3 endpoint. https://developers.cloudflare.com/r2/api/s3/presigned-urls/ [doc]
+- Price and egress. Standard "$0.015 / GB-month", Class A "$4.50 / million requests", Class B "$0.36 / million requests"; Infrequent Access $0.01, $9.00, $0.90, plus "$0.01 / GB" retrieval. "There are no charges for egress bandwidth for any storage class." https://developers.cloudflare.com/r2/pricing/ [doc]
+
+## Queues
+
+- "Per-queue message throughput | 5,000 messages per second"; "Message size | 128 KB"; "Message retention period | Configurable up to 14 days"; "Per-queue backlog size | 25GB"; "Concurrent consumer invocations | 250"; "Message retries | 100". https://developers.cloudflare.com/queues/platform/limits/ [doc]
+- "Queues provides *at least once* delivery by default". https://developers.cloudflare.com/queues/reference/delivery-guarantees/ [doc]
+- "An operation is counted for each 64 KB of data that is written, read, or deleted"; "$0.40/million operations"; usually 3 operations per message. https://developers.cloudflare.com/queues/platform/pricing/ [doc]
+
+## Containers
+
+- Status. "Cloudflare Containers and Sandboxes are now generally available." (2026-04-13). https://developers.cloudflare.com/changelog/post/2026-04-13-containers-sandbox-ga/ [doc]. The `durable_object` scheduling policy and snapshot APIs are still "in public beta". https://developers.cloudflare.com/changelog/product/containers/ [doc]
+- Instance types. lite 1/16 vCPU, 256 MiB, 2 GB; basic 1/4, 1 GiB, 4 GB; standard-1 1/2, 4 GiB, 8 GB; standard-2 1, 6 GiB, 12 GB; standard-3 2, 8 GiB, 16 GB; standard-4 4, 12 GiB, 20 GB. Custom: "Maximum vCPU | 4", "Maximum Memory | 12 GiB", "Maximum Disk | 20 GB", "Minimum 3 GiB memory per vCPU". Account: "Concurrent vCPU | 1,500", "Concurrent memory | 6 TiB", "Concurrent disk | 30 TB", "Total image storage per account | 50 GB". "All instance size maximums and account limits on this page are defaults and can be increased." https://developers.cloudflare.com/containers/platform/limits/ [doc]
+- Persistence. "All disk is ephemeral by default. When a Container instance goes to sleep, the next time it starts, it uses a fresh disk from the container image." Snapshots: "Maximum snapshot size | 20 GB", retention "30 days". FUSE to R2 is possible, but "you should not expect native SSD-like performance". https://developers.cloudflare.com/containers/concepts/architecture/ [doc]
+- Cold start. "Container cold starts can often be in the 1-3 second range, but this is dependent on image size and code execution time". Same URL [doc].
+- Placement. "Durable Objects and their associated Container instances are not guaranteed to run in the same location." "once that container instance stops and restarts, future requests could be routed to a *different* location." Same URL [doc].
+- Maximum instances. `max_instances`: "The maximum number of concurrent container instances ... If a request to start a container will exceed this limit, that request will error. Defaults to 20." https://developers.cloudflare.com/workers/wrangler/configuration/ [doc]
+- Inbound. Requests reach a container only through its Worker and Durable Object, over HTTP, WebSocket, or TCP from the DO via `getTcpPort()`: "Use it to communicate with the container over TCP or HTTP." https://developers.cloudflare.com/containers/api/durable-object-container/ [doc]. Container SSH is for operators only: "SSH does not expose a publicly accessible port on the Container." https://developers.cloudflare.com/containers/guides/ssh/ [doc]
+- Shutdown. On stop it "Sends `SIGTERM`" and "Waits up to 15 minutes". https://developers.cloudflare.com/containers/concepts/architecture/ [doc]
+- Price. "billed for every 10ms that they are actively running": "+$0.0000025 per additional GiB-second" (25 GiB-hours included), "+$0.000020 per additional vCPU-second" (375 vCPU-minutes included), "+$0.00000007 per additional GB-second" (200 GB-hours included). "Memory and disk usage are based on the *provisioned resources* ... CPU usage is based on *active usage* only." Egress "$0.025" per GB in North America and Europe (1 TB included), "$0.05" Oceania, Korea, Taiwan, "$0.04" elsewhere (500 GB included). https://developers.cloudflare.com/containers/platform/pricing/ [doc]
+
+## Spectrum and SSH
+
+- Plans. "SSH (one app allowed)": Free "No", Pro "Yes", Business "Yes", Enterprise "Yes". "TCP" on Pro and Business: "No"; Enterprise: "Paid add-on". https://developers.cloudflare.com/spectrum/protocols-per-plan/ [doc]. "Custom TCP/UDP applications require an Enterprise plan with Spectrum as a paid add-on." https://developers.cloudflare.com/spectrum/ [doc]
+- SSH price. Pro "5GB monthly data allowance $1/GB overage fees"; Business "10GB monthly data allowance $1/GB overage fees". https://www.cloudflare.com/application-services/products/cloudflare-spectrum/ssh/ [doc]. Pro is "$20 /mo billed annually, or $25/mo billed monthly"; Business "$200 /mo billed annually, or $250/mo billed monthly". https://www.cloudflare.com/pricing/ [doc]
+- Origin. Spectrum proxies at layer 4 to an IP or DNS origin. It can reach "a private origin through a Cloudflare Tunnel virtual network", with "exactly one address" and a single port. https://developers.cloudflare.com/spectrum/reference/configuration-options/ [doc]. "an account is limited to **10 unique Spectrum hostnames** using Cloudflare-managed IPv4 addresses". https://developers.cloudflare.com/spectrum/reference/limitations/ [doc]. I found no doc that lets Spectrum target a Worker or a Container directly. A Cloudflare-only SSH path would be Spectrum to a Tunnel connector running somewhere [inference]; whether `cloudflared` inside a Container can serve that role is unverified.
+
+## Artifacts (new, 2026)
+
+- "Versioned storage that speaks Git." Requires Workers Paid. https://developers.cloudflare.com/artifacts/ [doc]. Private beta 2026-04-16, "now in open beta" 2026-10-01. https://developers.cloudflare.com/artifacts/platform/changelog/ [doc]
+- Durability. "Cloudflare replicates repo data synchronously across multiple data centers and copies it asynchronously to object storage and snapshots." "Like Durable Objects, a repo is a single logical instance". https://developers.cloudflare.com/artifacts/concepts/how-artifacts-works/ [doc]
+- Limits. "Maximum storage per repository | 1 GB for repos created on or after 2026-09-29"; "Git request rate, per artifact | 2,000 requests per 10 seconds"; "Maximum storage per account | 1 TB (can be raised on request)". https://developers.cloudflare.com/artifacts/platform/limits/ [doc]
+- Protocol. Smart HTTP only. Upload-pack v1 and v2; "Artifacts does not support v2 receive-pack"; "Some optional v1 capabilities, such as `filter` and `include-tag`, are not supported." https://developers.cloudflare.com/artifacts/api/git-protocol/ [doc]. Jurisdictions `eu` and `us`. https://developers.cloudflare.com/artifacts/guides/data-localization/ [doc]
+- Price. "$0.15 per additional 1,000 operations" over 10,000; "$0.50 per additional GB-mo" over 1 GB; billing began "October 14, 2026". https://developers.cloudflare.com/artifacts/platform/pricing/ [doc]
+
+## K2 (new, 2026)
+
+- "K2 is in **public beta** ... During the beta, each account can store up to 10 GB." https://developers.cloudflare.com/k2/ [doc]
+- "Maximum produce throughput per stream | 30 MB/s"; "Maximum record size | ~1 MB"; retention 1 hour to "30 days"; "Maximum streams per account | 20". https://developers.cloudflare.com/k2/platform/limits/ [doc]
+- "K2 delivers every record to every subscription on a stream at least once." "K2 does not guarantee the order in which records are processed across workers that share a subscription." https://developers.cloudflare.com/k2/reference/delivery-guarantees/ [doc]
+- "billing is not enabled at this time"; planned "$0.04 / GB" produced, "$0.04 / GB" consumed, "$0.02 / GB / month" retained. https://developers.cloudflare.com/k2/platform/pricing/ [doc]
+
+## Workers KV and Workflows
+
+- KV. "Changes may take up to 60 seconds or more to be visible in other global network locations". https://developers.cloudflare.com/kv/concepts/how-kv-works/ [doc]. "Writes to same key | 1 per second"; "Value size | 25 MiB". Price "$0.50/million" reads, "$5.00/million" writes, "$0.50/ GB-month". https://developers.cloudflare.com/kv/platform/limits/ and https://developers.cloudflare.com/kv/platform/pricing/ [doc]
+- Workflows. "Maximum steps per Workflow | ... 10,000 (default) / configurable up to 25,000"; "Concurrent Workflow instances ... 50,000"; "Maximum Workflow instance creation rate | ... 300 per second per account"; "Maximum `step.sleep` duration | 365 days". Steps "$0.80/ additional 100,000". https://developers.cloudflare.com/workflows/reference/limits/ and https://developers.cloudflare.com/workflows/reference/pricing/ [doc]
+
+## Email, observability, edge controls, residency
+
+- Email. "**Email Sending** Beta sends outbound transactional emails. Available on Workers Paid plan." https://developers.cloudflare.com/email-service/ [doc]. "3,000 included per month, then $0.35 per 1,000 emails". https://developers.cloudflare.com/email-service/platform/pricing/ [doc]
+- Logs. Workers Logs "Maximum log retention period | 7 Days"; "$0.60 per additional million" until "December 1, 2026", then Observability pricing: Paid "50 GB per billing cycle" included, "$0.25 per GB" ingest, "$0.10 per GB-month" storage. https://developers.cloudflare.com/workers/observability/logs/workers-logs/ and https://developers.cloudflare.com/observability/pricing/ [doc]
+- Analytics Engine. "Data written to Workers Analytics Engine is stored for three months." https://developers.cloudflare.com/analytics/analytics-engine/limits/ [doc]
+- Rate limiting. Counting characteristics on Free and Pro: "IP" only; rules "1 | 2 | 5 | 100". https://developers.cloudflare.com/waf/rate-limiting-rules/ [doc]
+- Data Localization Suite. "Enterprise-only paid add-on". https://developers.cloudflare.com/data-localization/ [doc]
+- Secrets Store. "Available in open beta"; "compatible with Cloudflare Workers ... and AI Gateway". https://developers.cloudflare.com/secrets-store/ [doc]
+- workerd. "a JavaScript / Wasm server runtime based on the same code that powers Cloudflare Workers"; "`workerd` is not a hardened sandbox". https://github.com/cloudflare/workerd [doc]
+
+## Could not verify
+
+- The text of blog.cloudflare.com itself. Every fetch returned HTTP 429. DO replication quotes rest on the official search snippet plus a mirror [secondary].
+- What a SQLite-backed Durable Object does during a full data center or regional outage: restart location, recovery time, or whether it waits for its original region. Not documented on any page I read.
+- Any published per-bucket request-rate ceiling for R2 reads or writes.
+- Status of Dynamic Workers, Vectorize, Hyperdrive, Analytics Engine, and workerd. No "beta" label appears on their overview pages, so GA is [inference].
+- A Secrets Store price, and the per-GB price of Load Balancing usage beyond "Starting at $5/mo".
+- Whether Spectrum can use a Container as an origin, through `cloudflared` in the container or otherwise.

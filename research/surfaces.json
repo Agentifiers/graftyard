@@ -1,0 +1,946 @@
+[
+  {
+    "id": "git-http",
+    "kind": "git",
+    "count": 3,
+    "source": "https://git-scm.com/docs/gitprotocol-http",
+    "count_basis": "smart HTTP endpoints: GET info/refs?service=, POST git-upload-pack, POST git-receive-pack"
+  },
+  {
+    "id": "git-ssh",
+    "kind": "git",
+    "count": 3,
+    "source": "https://git-scm.com/docs/gitprotocol-pack",
+    "count_basis": "remote commands run as user git: git-upload-pack, git-receive-pack, git-upload-archive"
+  },
+  {
+    "id": "git-protocol-v2",
+    "kind": "git",
+    "count": 2,
+    "source": "GIT_TRACE_PACKET=1 git ls-remote https://github.com/git/git; https://git-scm.com/docs/gitprotocol-v2",
+    "count_basis": "commands advertised by github.com (captured)",
+    "advertisement": [
+      "version 2",
+      "agent=git/github-f6e509caf74d-Linux",
+      "ls-refs=unborn",
+      "fetch=shallow wait-for-done filter",
+      "server-option",
+      "object-format=sha1"
+    ]
+  },
+  {
+    "id": "lfs",
+    "kind": "git",
+    "count": 5,
+    "source": "https://github.com/git-lfs/git-lfs/tree/main/docs/api",
+    "count_basis": "Batch API (POST objects/batch) plus locking API (POST locks, GET locks, POST locks/verify, POST locks/:id/unlock)"
+  },
+  {
+    "id": "rest:actions",
+    "kind": "rest",
+    "count": 202,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 208,
+    "subcategories": {
+      "artifacts": 5,
+      "cache": 11,
+      "oidc": 4,
+      "permissions": 54,
+      "secrets": 20,
+      "self-hosted-runner-groups": 26,
+      "self-hosted-runners": 36,
+      "variables": 20,
+      "workflow-jobs": 4,
+      "workflow-runs": 17,
+      "workflows": 5
+    }
+  },
+  {
+    "id": "rest:activity",
+    "kind": "rest",
+    "count": 32,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 34,
+    "subcategories": {
+      "events": 9,
+      "feeds": 1,
+      "notifications": 10,
+      "starring": 6,
+      "watching": 6
+    }
+  },
+  {
+    "id": "rest:agent-automations",
+    "kind": "rest",
+    "count": 10,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 10,
+    "subcategories": {
+      "agent-automations": 10
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:agent-tasks",
+    "kind": "rest",
+    "count": 5,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 5,
+    "subcategories": {
+      "agent-tasks": 5
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:agents",
+    "kind": "rest",
+    "count": 30,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 30,
+    "subcategories": {
+      "secrets": 15,
+      "variables": 15
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:announcement-banners",
+    "kind": "rest",
+    "count": 3,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 0,
+    "subcategories": {
+      "organizations": 3
+    },
+    "ghes_only": true
+  },
+  {
+    "id": "rest:apps",
+    "kind": "rest",
+    "count": 30,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 37,
+    "subcategories": {
+      "apps": 15,
+      "installations": 6,
+      "oauth-applications": 4,
+      "webhooks": 5
+    }
+  },
+  {
+    "id": "rest:billing",
+    "kind": "rest",
+    "count": 1,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 13,
+    "subcategories": {
+      "billing": 1
+    }
+  },
+  {
+    "id": "rest:branches",
+    "kind": "rest",
+    "count": 38,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 38,
+    "subcategories": {
+      "branch-protection": 33,
+      "branches": 5
+    }
+  },
+  {
+    "id": "rest:campaigns",
+    "kind": "rest",
+    "count": 5,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 5,
+    "subcategories": {
+      "campaigns": 5
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:checks",
+    "kind": "rest",
+    "count": 12,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 12,
+    "subcategories": {
+      "runs": 7,
+      "suites": 5
+    }
+  },
+  {
+    "id": "rest:classroom",
+    "kind": "rest",
+    "count": 6,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 6,
+    "subcategories": {
+      "classroom": 6
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:code-quality",
+    "kind": "rest",
+    "count": 4,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 4,
+    "subcategories": {
+      "code-quality": 4
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:code-scanning",
+    "kind": "rest",
+    "count": 17,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 25,
+    "subcategories": {
+      "alert-dismissal-requests": 4,
+      "code-scanning": 13
+    }
+  },
+  {
+    "id": "rest:code-security",
+    "kind": "rest",
+    "count": 20,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 20,
+    "subcategories": {
+      "configurations": 20
+    }
+  },
+  {
+    "id": "rest:codes-of-conduct",
+    "kind": "rest",
+    "count": 2,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 2,
+    "subcategories": {
+      "codes-of-conduct": 2
+    }
+  },
+  {
+    "id": "rest:codespaces",
+    "kind": "rest",
+    "count": 48,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 48,
+    "subcategories": {
+      "codespaces": 16,
+      "machines": 2,
+      "organization-secrets": 9,
+      "organizations": 7,
+      "repository-secrets": 5,
+      "secrets": 9
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:collaborators",
+    "kind": "rest",
+    "count": 11,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 11,
+    "subcategories": {
+      "collaborators": 5,
+      "invitations": 6
+    }
+  },
+  {
+    "id": "rest:commits",
+    "kind": "rest",
+    "count": 14,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 14,
+    "subcategories": {
+      "comments": 6,
+      "commits": 5,
+      "statuses": 3
+    }
+  },
+  {
+    "id": "rest:copilot",
+    "kind": "rest",
+    "count": 31,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 31,
+    "subcategories": {
+      "copilot-cloud-agent-management": 1,
+      "copilot-coding-agent-management": 9,
+      "copilot-content-exclusion-management": 2,
+      "copilot-usage-metrics": 12,
+      "copilot-user-management": 7
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:copilot-spaces",
+    "kind": "rest",
+    "count": 28,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 28,
+    "subcategories": {
+      "collaborators": 8,
+      "copilot-spaces": 10,
+      "resources": 10
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:credentials",
+    "kind": "rest",
+    "count": 1,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 1,
+    "subcategories": {
+      "revoke": 1
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:dependabot",
+    "kind": "rest",
+    "count": 28,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 25,
+    "subcategories": {
+      "alert-dismissal-requests": 6,
+      "alerts": 5,
+      "repository-access": 3,
+      "secrets": 14
+    }
+  },
+  {
+    "id": "rest:dependency-graph",
+    "kind": "rest",
+    "count": 3,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 5,
+    "subcategories": {
+      "dependency-review": 1,
+      "dependency-submission": 1,
+      "sboms": 1
+    }
+  },
+  {
+    "id": "rest:deploy-keys",
+    "kind": "rest",
+    "count": 4,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 4,
+    "subcategories": {
+      "deploy-keys": 4
+    }
+  },
+  {
+    "id": "rest:deployments",
+    "kind": "rest",
+    "count": 21,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 21,
+    "subcategories": {
+      "branch-policies": 5,
+      "deployments": 4,
+      "environments": 4,
+      "protection-rules": 5,
+      "statuses": 3
+    }
+  },
+  {
+    "id": "rest:emojis",
+    "kind": "rest",
+    "count": 1,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 1,
+    "subcategories": {
+      "emojis": 1
+    }
+  },
+  {
+    "id": "rest:enterprise-admin",
+    "kind": "rest",
+    "count": 141,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 0,
+    "subcategories": {
+      "admin-stats": 12,
+      "announcement": 3,
+      "audit-log": 7,
+      "bypass-requests": 1,
+      "code-security-and-analysis": 3,
+      "custom-properties": 6,
+      "custom-properties-for-orgs": 7,
+      "global-webhooks": 6,
+      "ldap": 4,
+      "licensing": 2,
+      "live-migrations": 9,
+      "manage-ghes": 23,
+      "org-pre-receive-hooks": 4,
+      "organization-installations": 9,
+      "orgs": 2,
+      "pre-receive-environments": 7,
+      "pre-receive-hooks": 5,
+      "repo-pre-receive-hooks": 4,
+      "rules": 2,
+      "scim": 12,
+      "users": 13
+    },
+    "ghes_only": true
+  },
+  {
+    "id": "rest:enterprise-teams",
+    "kind": "rest",
+    "count": 16,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 0,
+    "subcategories": {
+      "enterprise-team-members": 5,
+      "enterprise-team-organizations": 6,
+      "enterprise-teams": 5
+    },
+    "ghes_only": true
+  },
+  {
+    "id": "rest:gists",
+    "kind": "rest",
+    "count": 20,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 20,
+    "subcategories": {
+      "comments": 5,
+      "gists": 15
+    }
+  },
+  {
+    "id": "rest:git",
+    "kind": "rest",
+    "count": 13,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 13,
+    "subcategories": {
+      "blobs": 2,
+      "commits": 2,
+      "refs": 5,
+      "tags": 2,
+      "trees": 2
+    }
+  },
+  {
+    "id": "rest:gitignore",
+    "kind": "rest",
+    "count": 2,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 2,
+    "subcategories": {
+      "gitignore": 2
+    }
+  },
+  {
+    "id": "rest:interactions",
+    "kind": "rest",
+    "count": 16,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/api.github.com/api.github.com.json",
+    "count_dotcom": 16,
+    "subcategories": {
+      "orgs": 5,
+      "repos": 8,
+      "user": 3
+    },
+    "dotcom_only": true
+  },
+  {
+    "id": "rest:issues",
+    "kind": "rest",
+    "count": 47,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 61,
+    "subcategories": {
+      "assignees": 5,
+      "comments": 8,
+      "events": 3,
+      "issue-dependencies": 4,
+      "issue-field-values": 1,
+      "issues": 9,
+      "labels": 11,
+      "milestones": 5,
+      "timeline": 1
+    }
+  },
+  {
+    "id": "rest:licenses",
+    "kind": "rest",
+    "count": 3,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 3,
+    "subcategories": {
+      "licenses": 3
+    }
+  },
+  {
+    "id": "rest:markdown",
+    "kind": "rest",
+    "count": 2,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 2,
+    "subcategories": {
+      "markdown": 2
+    }
+  },
+  {
+    "id": "rest:meta",
+    "kind": "rest",
+    "count": 4,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 5,
+    "subcategories": {
+      "meta": 4
+    }
+  },
+  {
+    "id": "rest:metrics",
+    "kind": "rest",
+    "count": 5,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 10,
+    "subcategories": {
+      "statistics": 5
+    }
+  },
+  {
+    "id": "rest:migrations",
+    "kind": "rest",
+    "count": 11,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 22,
+    "subcategories": {
+      "orgs": 7,
+      "users": 4
+    }
+  },
+  {
+    "id": "rest:oauth-authorizations",
+    "kind": "rest",
+    "count": 10,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 0,
+    "subcategories": {
+      "oauth-authorizations": 10
+    },
+    "ghes_only": true
+  },
+  {
+    "id": "rest:orgs",
+    "kind": "rest",
+    "count": 93,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 129,
+    "subcategories": {
+      "bypass-requests": 1,
+      "custom-properties": 7,
+      "custom-properties-for-orgs": 2,
+      "custom-roles": 7,
+      "members": 13,
+      "organization-roles": 14,
+      "orgs": 15,
+      "outside-collaborators": 3,
+      "personal-access-tokens": 8,
+      "rule-suites": 2,
+      "rules": 7,
+      "security-managers": 3,
+      "webhooks": 11
+    }
+  },
+  {
+    "id": "rest:packages",
+    "kind": "rest",
+    "count": 27,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 27,
+    "subcategories": {
+      "packages": 27
+    }
+  },
+  {
+    "id": "rest:pages",
+    "kind": "rest",
+    "count": 11,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 12,
+    "subcategories": {
+      "pages": 11
+    }
+  },
+  {
+    "id": "rest:private-registries",
+    "kind": "rest",
+    "count": 6,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 6,
+    "subcategories": {
+      "organization-configurations": 6
+    }
+  },
+  {
+    "id": "rest:projects",
+    "kind": "rest",
+    "count": 26,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 26,
+    "subcategories": {
+      "drafts": 2,
+      "fields": 6,
+      "items": 12,
+      "projects": 4,
+      "views": 2
+    }
+  },
+  {
+    "id": "rest:pulls",
+    "kind": "rest",
+    "count": 27,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 35,
+    "subcategories": {
+      "comments": 7,
+      "pulls": 9,
+      "review-requests": 3,
+      "reviews": 8
+    }
+  },
+  {
+    "id": "rest:rate-limit",
+    "kind": "rest",
+    "count": 1,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 1,
+    "subcategories": {
+      "rate-limit": 1
+    }
+  },
+  {
+    "id": "rest:reactions",
+    "kind": "rest",
+    "count": 15,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 15,
+    "subcategories": {
+      "reactions": 15
+    }
+  },
+  {
+    "id": "rest:releases",
+    "kind": "rest",
+    "count": 13,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 13,
+    "subcategories": {
+      "assets": 5,
+      "releases": 8
+    }
+  },
+  {
+    "id": "rest:repos",
+    "kind": "rest",
+    "count": 69,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 73,
+    "subcategories": {
+      "autolinks": 4,
+      "bypass-requests": 2,
+      "contents": 7,
+      "custom-properties": 2,
+      "forks": 2,
+      "lfs": 2,
+      "repos": 28,
+      "rule-suites": 2,
+      "rules": 8,
+      "webhooks": 12
+    }
+  },
+  {
+    "id": "rest:search",
+    "kind": "rest",
+    "count": 7,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 7,
+    "subcategories": {
+      "search": 7
+    }
+  },
+  {
+    "id": "rest:secret-scanning",
+    "kind": "rest",
+    "count": 23,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 17,
+    "subcategories": {
+      "alert-dismissal-requests": 5,
+      "delegated-bypass": 6,
+      "push-protection": 4,
+      "secret-scanning": 8
+    }
+  },
+  {
+    "id": "rest:security-advisories",
+    "kind": "rest",
+    "count": 2,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 10,
+    "subcategories": {
+      "global-advisories": 2
+    }
+  },
+  {
+    "id": "rest:teams",
+    "kind": "rest",
+    "count": 35,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 32,
+    "subcategories": {
+      "external-groups": 5,
+      "members": 11,
+      "teams": 19
+    }
+  },
+  {
+    "id": "rest:users",
+    "kind": "rest",
+    "count": 37,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json",
+    "count_dotcom": 47,
+    "subcategories": {
+      "emails": 4,
+      "followers": 8,
+      "gpg-keys": 5,
+      "keys": 5,
+      "social-accounts": 4,
+      "ssh-signing-keys": 5,
+      "users": 6
+    }
+  },
+  {
+    "id": "graphql",
+    "kind": "graphql",
+    "count": 264,
+    "source": "https://docs.github.com/public/ghes-3.22/schema.docs-enterprise.graphql",
+    "count_basis": "Query + Mutation root fields in newest GHES schema",
+    "detail": {
+      "dotcom": {
+        "object_types": 1032,
+        "interfaces": 50,
+        "unions": 48,
+        "enums": 257,
+        "input_types": 424,
+        "scalars": 13,
+        "directives": 3,
+        "query_fields": 31,
+        "mutation_fields": 278
+      },
+      "ghes-3.22": {
+        "object_types": 937,
+        "interfaces": 49,
+        "unions": 44,
+        "enums": 222,
+        "input_types": 361,
+        "scalars": 13,
+        "directives": 3,
+        "query_fields": 24,
+        "mutation_fields": 240
+      }
+    }
+  },
+  {
+    "id": "webhooks",
+    "kind": "webhooks",
+    "count": 272,
+    "source": "https://github.com/github/rest-api-description/tree/755ee33b4a81d51f6f07a902cce26cbec3b822f2/descriptions/ghes-3.22/ghes-3.22.json#x-webhooks",
+    "count_basis": "event-action pairs in newest GHES description",
+    "detail": {
+      "dotcom": {
+        "events": 76,
+        "event_action_pairs": 275
+      },
+      "ghes-3.22": {
+        "events": 78,
+        "event_action_pairs": 272
+      },
+      "dotcom_only_events": [
+        "issue_relates_to",
+        "marketplace_purchase",
+        "merge_group",
+        "org_block",
+        "projects_v2_status_update",
+        "repository_advisory",
+        "repository_import",
+        "sub_issues"
+      ],
+      "ghes_only_events": [
+        "cache_sync",
+        "dismissal_request_code_scanning",
+        "dismissal_request_dependabot",
+        "dismissal_request_secret_scanning",
+        "enterprise",
+        "exemption_request_push_ruleset",
+        "exemption_request_secret_scanning",
+        "organization_custom_property",
+        "organization_custom_property_values",
+        "user"
+      ],
+      "delivery_headers": [
+        "User-Agent",
+        "X-GitHub-Delivery",
+        "X-GitHub-Enterprise-Host",
+        "X-GitHub-Enterprise-Version",
+        "X-Github-Event",
+        "X-Github-Hook-Id",
+        "X-Github-Hook-Installation-Target-Id",
+        "X-Github-Hook-Installation-Target-Type",
+        "X-Hub-Signature-256"
+      ]
+    }
+  },
+  {
+    "id": "oauth-web-flow",
+    "kind": "auth",
+    "count": 3,
+    "source": "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps",
+    "count_basis": "GET /login/oauth/authorize, POST /login/oauth/access_token, GET user API with token"
+  },
+  {
+    "id": "oauth-device-flow",
+    "kind": "auth",
+    "count": 2,
+    "source": "https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps#device-flow",
+    "count_basis": "POST /login/device/code, POST /login/oauth/access_token (device_code grant); user visits /login/device"
+  },
+  {
+    "id": "github-apps",
+    "kind": "auth",
+    "count": null,
+    "source": "https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app",
+    "count_basis": "JWT (RS256, iss=client or app id) -> POST /app/installations/{id}/access_tokens; REST ops counted under rest:apps"
+  },
+  {
+    "id": "tokens",
+    "kind": "auth",
+    "count": 6,
+    "source": "https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/",
+    "count_basis": "token prefixes: ghp_, github_pat_, gho_, ghu_, ghs_, ghr_"
+  },
+  {
+    "id": "actions-runner-protocol",
+    "kind": "actions",
+    "count": null,
+    "source": "https://github.com/actions/runner",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "actions-workflow-syntax",
+    "kind": "actions",
+    "count": null,
+    "source": "https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "actions-cache",
+    "kind": "actions",
+    "count": null,
+    "source": "https://github.com/actions/toolkit/tree/main/packages/cache",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "actions-artifacts",
+    "kind": "actions",
+    "count": null,
+    "source": "https://github.com/actions/toolkit/tree/main/packages/artifact",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "actions-oidc",
+    "kind": "actions",
+    "count": null,
+    "source": "https://docs.github.com/en/actions/concepts/security/openid-connect",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "actions-logs-results",
+    "kind": "actions",
+    "count": null,
+    "source": "https://github.com/actions/runner",
+    "count_basis": "see research/actions-protocol.md"
+  },
+  {
+    "id": "packages-container",
+    "kind": "packages",
+    "count": null,
+    "source": "https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry",
+    "count_basis": "OCI Distribution Spec endpoints on ghcr.io / containers.HOSTNAME"
+  },
+  {
+    "id": "packages-npm",
+    "kind": "packages",
+    "count": null,
+    "source": "https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry",
+    "count_basis": "npm registry protocol on npm.pkg.github.com / npm.HOSTNAME"
+  },
+  {
+    "id": "packages-maven",
+    "kind": "packages",
+    "count": null,
+    "source": "https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-apache-maven-registry",
+    "count_basis": "Maven repository layout on maven.pkg.github.com / maven.HOSTNAME"
+  },
+  {
+    "id": "packages-nuget",
+    "kind": "packages",
+    "count": null,
+    "source": "https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-nuget-registry",
+    "count_basis": "NuGet v3 service index on nuget.pkg.github.com / nuget.HOSTNAME"
+  },
+  {
+    "id": "packages-rubygems",
+    "kind": "packages",
+    "count": null,
+    "source": "https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-rubygems-registry",
+    "count_basis": "RubyGems protocol on rubygems.pkg.github.com / rubygems.HOSTNAME"
+  },
+  {
+    "id": "pages",
+    "kind": "content",
+    "count": null,
+    "source": "https://docs.github.com/en/pages/getting-started-with-github-pages/about-github-pages",
+    "count_basis": "static site serving at OWNER.github.io / pages.HOSTNAME; REST ops counted under rest:pages"
+  },
+  {
+    "id": "codeload-archives",
+    "kind": "content",
+    "count": 2,
+    "source": "https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar",
+    "count_basis": "tarball and zipball archives (codeload.github.com / HOSTNAME/_codeload or codeload.HOSTNAME); REST redirects from /repos/{o}/{r}/tarball|zipball/{ref}"
+  },
+  {
+    "id": "raw-content",
+    "kind": "content",
+    "count": 1,
+    "source": "https://docs.github.com/en/enterprise-server@latest/admin/configuring-settings/hardening-security-for-your-enterprise/enabling-subdomain-isolation",
+    "count_basis": "raw file bytes (raw.githubusercontent.com / HOSTNAME/raw or raw.HOSTNAME)"
+  },
+  {
+    "id": "uploads-release-assets",
+    "kind": "content",
+    "count": 1,
+    "source": "https://docs.github.com/en/rest/releases/assets#upload-a-release-asset",
+    "count_basis": "POST upload_url (uploads.github.com / HOSTNAME/api/uploads)"
+  },
+  {
+    "id": "meta-endpoint",
+    "kind": "meta",
+    "count": null,
+    "source": "https://docs.github.com/en/rest/meta/meta#get-github-meta-information",
+    "count_basis": "GET /meta fields; REST op counted under rest:meta"
+  }
+]

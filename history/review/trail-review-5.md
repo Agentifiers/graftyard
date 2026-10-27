@@ -1,0 +1,26 @@
+I reviewed rows 95–96 (01:09:51Z and 01:25:27Z). I also checked the correction rows 91–94 (00:57:43Z) to see which `trail-review-4.md` flags got action.
+
+1. **Row 96 says "I … read" text that the lead only saw as grep output (measured).** Between R4Resolve2's return at 01:24:56Z and the row, the lead made no `read` call. It ran one grep at 01:25:03Z, and the tool showed only 299 of its 555 result lines, each cut at 512 bytes. The ranges the row cites (`139-200, 433, 457-466, 485-520, 869-875, 927-929`) are where that grep matched. Line 433, the heartbeat text, was cut at column 388, and lines 927 and 929 were cut too. Row 92 had just corrected this same pattern for row 87, about 30 minutes earlier.
+2. **Row 96 says "verified", but the lead never looked at the install fixes (measured).** The grep output it saw stopped at `DESIGN.md:934`. The fixes for the four blockers (IW-ACT-1 to 4) are later in the file: the fence at 1082, Failback at 1084, Re-protection at 1086, `RetireTables` at 975, and the stage table at 1068. The row cites none of them. So the blocker fixes rest on the writer's summary and `--final`, which goes against the row's own why ("check the artifact, not the writer's summary"). R4Resolve2 also edited the Milestone 0 harness and Milestones 2, 5 and 6 (history lines 179, 188). Build order was last read at 00:57:50Z, before those edits, so the plan behind row 88 changed again without a re-read.
+3. **R4Resolve2 made decisions that no row records (measured: its report, `DESIGN.md:433, 975, 1068, 1084`).** Row 96 logs only the lag in a replicated control bucket. Missing:
+   - a new `trib-retire` role that can turn off deletion protection on, and delete, tables carrying a tag that only it may set. Its safety rests on an [inference] check by the operator, and in a BYOC install that is vendor-run code;
+   - revocations sent directly to hosting cells, outside the event path;
+   - guessed values: a 1 s heartbeat, a 15-minute read limit and a 1 s clock bound;
+   - amendments to earlier resolutions FD-ACT-6, FD-ACT-9, OP-ACT-7/8/9, NS-ACT-2, GT-ACT-2, ACT-14 and IN-ACT-3.
+4. **Risky choice with no row: IW-ACT-1 makes the `dr` Region part of every write (measured text; risk inferred).** Every home put in a Single install with `dr` now needs a read of the `dr` control bucket from the last 10 s (`DESIGN.md:1038, 1082`). An S3 fault in the `dr` Region therefore stops home writes, and open question 1408 admits this. In this downtime-first design, that turns the recovery Region into a dependency of the write path. The lead's thinking at 01:08:49Z weighed only the read's cost.
+5. **The foundation attack ran on the seat that wrote the foundation it attacked (measured).** FoundationAttack ran on `pstack-panel-c`. So did R4FirstPrinciples, which wrote candidate 3 (transcript index 1053). `interrogate.md:234` calls the three "fresh seats". The tie-break that keeps the base, and finding 7 ("the baseline still loses", which bears on old flag 3), both come from that seat. Row 91 logged the similar overlap between the judge and candidate 2; no row logs this one.
+6. **Shell-rule breaches after row 94 are not recorded (measured).**
+   - The lead used `cp agent://… review/…` at 01:03:15Z and 01:08:10Z, `awk` and `cut` at 01:03:15Z and 01:08:15Z, shell `grep` with `cut` at 01:08:10Z, `wc` and `tail` at 01:25:03Z, and `grep -c` at 01:25:27Z.
+   - R4Resolve2 used `wc` and `grep … | head -80` (history lines 12, 65, 180).
+7. **Cost is still unreconciled, and a figure exists only in the lead's thinking (measured).** At 01:10:04Z the lead's thinking worked out "about 0.5% of total cost" by mental arithmetic. `cost.py` was not re-run. The new costs are not counted: heartbeats every second per cell pair, six multi-Region keys, Batch Replication and fence reads. No row records the estimate, so if the final reply quotes it, nothing in the trail backs it.
+8. **Row 95 is mostly sound, with one ordering slip (measured).** "4 blockers" matches 1 self-host plus 3 BYOC blockers, and 14 items matches FA 5 plus IW 9. But the row was written in the same batch as the `interrogate.md` edit that creates the Seventh pass, before that edit returned (transcript index 1287). Row 96's checks are visible in the transcript: `--final` printed `OK`, `exit=0` at 1,420 lines, and the audit reported 7 missing (01:25:03Z and 01:25:27Z).
+9. **`trail-review-4.md` flags that got action (measured).**
+   - Flags 1, 2 and 5: the foundation attack and both install walks ran (rows 93, 95, 96). See lines 2 and 5 above for the remaining caveats.
+   - Flags 4, 8 and 9: corrected in rows 91 and 92. The waved-off Deployment-modes failures in flag 9 got no comment.
+   - Flag 12: logged in row 94, but new breaches have happened since (line 6 above).
+10. **Flags with partial or no action (measured).**
+    - Flag 3: no row acknowledges it, and only the candidate-3 author's seat answered it.
+    - Flag 7: `check_design.py` has not changed since 00:01:31Z, so P7 still passes the 14 new one-line resolution entries.
+    - Flag 10: acknowledged in row 96 but not fixed; 7 rows are still missing.
+    - Flag 11: cost was recorded (row 93) but never re-run, and Build order changed again after the re-read.
+    - Flags 6 and 13 needed no action.

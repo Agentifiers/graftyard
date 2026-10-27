@@ -1,0 +1,31 @@
+Segment reviewed: rows 76–90. These are the run's own rows from 2026-10-24T23:13Z to 2026-10-25T00:52Z. Each claim is labeled measured (I saw it in a file or the transcript), inferred, or guess. The sharpest flags are 1 to 3.
+
+1. **The adversarial review was told not to attack the new foundation (row 84, measured).** The round-4 reviewer brief, written at 00:21:04Z, says "Do NOT question the intent or re-run the store competition. Assume the foundation choice is correct". The Sixth pass in `review/interrogate.md` ends with "No seat challenged the foundation itself, which matches the brief". Its quoted Intent leaves that sentence out. Rows 28 and 45 called this exact brief a flaw, but no row in this segment records that it happened again. The only check on the DynamoDB-chains foundation itself is one judge seat.
+2. **The reason candidate 3 won has weakened, and nobody re-scored it (rows 81 and 86, inferred).** The judge gave candidate 3 downtime 5 against candidate 1's 4 because candidate 3 "has no freshness timer" and identity failure stays inside the owner's cell (`review/round4-judge.md` Downtime scores, around lines 20-34).
+   - Reviewers A (finding 4) and C (finding 3) showed that a home-cell outage stops git on that owner's forks across the whole service.
+   - The fix, FD-ACT-6, adds a 30 s mirror lease that fails that owner's writes closed in every cell hosting their repositories (`DESIGN.md:1307`).
+   - Graft 3 had already brought back candidate 1's cross-continent coupling (row 85).
+   - The lead's own thinking at 00:51:43Z reached the same conclusion and accepted it. No row records that. Row 86 says only "fails closed per owner per cell".
+3. **Candidate 3 picking DynamoDB is not independent evidence (rows 78 and 79, measured).** Its "unconstrained" brief allowed landing on DSQL "only if you … rebut the DynamoDB case point by point". `arena/round4/TASK.md:34` requires a self-host in a Region "where Aurora DSQL is not offered". `TASK.md:14` lists only earlier DynamoDB designs as reading. The other two directions banned DSQL outright. The lead had also told the operator at 22:59Z that it was "no longer confident DSQL is the right foundation".
+4. **Row 81's "read all three candidates end to end" overstates it (measured).** Reads between 23:40Z and 23:48Z left lines cut at 768 characters and never re-read:
+   - candidate 2: 14 lines inside its Commit and read paths section (204-282), plus 56, 391 and 410;
+   - candidate 1: lines 265, 280, 307, 448 and 461;
+   - candidate 3: lines 46, 50-52, 419 and 420. Only candidate 3's lines 173, 187, 197, 199 and 347 were re-read in full.
+
+   After seeing the judge, the lead moved candidate 3 from 39 to 41, exactly the judge's number (`arena/round4/SYNTHESIS.md:12-14`). The judge ran on `pstack-panel-b`, the same seat that wrote candidate 2. Row 80 calls it "a fresh panel-b seat".
+5. **BYOC and self-hosted installs were never re-checked on the new foundation (rows 76 and 83, measured).** Install fit got weight 0.5, although the operator's standing requirement is "ensure byoc self installs would work" (`FRAME.md:29`). The install walkthroughs in rows 64-70 checked the DSQL design. The integration writer relabeled about 25 install findings (IN-, OP- and GT-ACT) as "Kept" or "Kept, with this foundation's mechanism" (`DESIGN.md:1245-1283`). No row, reviewer or lead read covers that; row 83's reads skip Install operations.
+6. **The Shape-section change in `check_design.py` (row 82) did not weaken the gate (measured).**
+   - Required sections went from 6 to 8: two kept, two renamed, two added, and two existing names kept.
+   - The edit at 00:01:31Z replaced only lines 20-27, and the file has not changed since. Predicates P1-P3 and P5-P8 are untouched.
+   - The baseline failing exactly 4 checks was seen before the row was written. `--final` still exits 0 when I ran it.
+   - Caveats: the names were set after the pick, in the winner's vocabulary. P4 only checks that a `rust` block exists under each heading.
+7. **The real gate weakness is P7, which is unchanged (measured).** At `check_design.py:131-142` it only checks that each finding id appears somewhere. About 50 findings written against the DSQL design now pass on one-line "Superseded" or "Kept" entries (`DESIGN.md:1236-1298`). So `--final OK` says little about whether the old findings still hold.
+8. **Row 84 overstates agreement (measured).** It says "six problems were found by every seat". `interrogate.md` marks FD-ACT-6 as "Raised by A and C", so only five came from all three seats.
+9. **Row 77 miscounts and skips a check (measured).** It says "9 named failures", but the 23:12:59Z output lists 8. The lead's thinking waved off the three Deployment-modes failures as "likely just a header formatting quirk" without looking.
+10. **Row 89's evidence fix is incomplete (measured).** Rows 83 and 87 were written after the 00:20:36Z audit showed the shorthand problem and reuse the bare `check_design.py`. I ran `audit_evidence.py` now: 7 missing. That covers rows 83 and 87, row 79's two pointers, row 82, and the already-known rows 3 and 52. Nobody re-ran the audit after row 89.
+11. **Rows 87 and 88 cite lines the lead did not read (measured).**
+    - Row 87's ranges `DESIGN.md:131-220, 255-299, 379-431, 558-632, 862-868` are only where the 00:51:24Z grep matched. The only text actually read after the fixes was lines 1139-1223.
+    - Row 88 cites 1126-1215, but Starting fresh (1130-1141) was never read in the final text.
+    - The writer said `cost.py` leaves out mirror, marker and retention costs, and `cost.py` was last run at 00:35:58Z, before the fixes. No row says the cost table is now understated.
+12. **Row 90 lists only some of the shell-rule breaches (measured).** It omits `ls`, `column`, `tail`, `wc` and `tr` (23:11:29Z, 23:47:37Z, 00:20:31Z, 00:32:16Z). The lead's thinking at 23:11:59Z planned to log the `ls` use.
+13. **No row was written before the output of the check it reports (measured).** Rows 77, 79, 82, 83 and 87 each come after their check's output. Rows 76, 78 and 84 share a batch with the action they describe, but say so or report what was already decided.

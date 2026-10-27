@@ -1,0 +1,2675 @@
+[
+ {
+  "id": "ec2.i8g.xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.3432,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 32 GiB, storage: 1 x 937GB."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.6864,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 8 vCPU, 64 GiB, storage: 1 x 1875GB."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 1.3728,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 16 vCPU, 128 GiB, storage: 1 x 3750GB."
+ },
+ {
+  "id": "ec2.m8g.xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.17952,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 16 GiB, storage: EBS only."
+ },
+ {
+  "id": "ec2.c8g.large.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.07948,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 4 GiB, storage: EBS only."
+ },
+ {
+  "id": "ebs.gp3.storage",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.08,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.08 per GB-month of General Purpose (gp3) provisioned storage - US East (Ohio)"
+ },
+ {
+  "id": "ebs.gp3.iops",
+  "region": "us-east-2",
+  "unit": "provisioned IOPS-month above 3,000",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.005 per provisioned IOPS-month of gp3 - US East (Ohio)"
+ },
+ {
+  "id": "ebs.gp3.throughput",
+  "region": "us-east-2",
+  "unit": "provisioned MiBps-month above 125",
+  "usd": 0.04,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.04 per provisioned MiBps-month of gp3 - US East (Ohio)"
+ },
+ {
+  "id": "vpc.natgw.hour",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Zonal NAT gateway, per gateway-hour."
+ },
+ {
+  "id": "vpc.natgw.processed",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per GB processed by a NAT gateway, on top of any data transfer charge."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 1.068,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.534,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.267,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "dsql.dpu",
+  "region": "us-east-2",
+  "unit": "1M DPUs",
+  "usd": 8.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-2/index.json",
+  "label": "doc",
+  "note": "Bulk lists $0.000008 per DPU in US East (Ohio)."
+ },
+ {
+  "id": "dsql.storage",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.33,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-2/index.json",
+  "label": "doc",
+  "note": "Billed per Region for each peered cluster; witness Region not charged."
+ },
+ {
+  "id": "dsql.freetier.dpu",
+  "region": "global",
+  "unit": "DPU",
+  "usd": 0.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-2/index.json",
+  "label": "doc",
+  "note": "First 100000 DPUs per month free."
+ },
+ {
+  "id": "dsql.freetier.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-2/index.json",
+  "label": "doc",
+  "note": "First 1 GB-month of storage free."
+ },
+ {
+  "id": "backup.dsql.warm",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.10 per GB-month for Warm backup storage for Aurora DSQL in US East (Ohio)"
+ },
+ {
+  "id": "backup.dsql.cold",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-month for Cold backup storage for Aurora DSQL in US East (Ohio)"
+ },
+ {
+  "id": "backup.dsql.restore_warm",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for restore from Warm backup storage for Aurora DSQL in US East (Ohio)"
+ },
+ {
+  "id": "backup.dsql.copy_to_usw2",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US West (Oregon)"
+ },
+ {
+  "id": "backup.dsql.copy_to_use1",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US East (N. Virginia)"
+ },
+ {
+  "id": "s3.standard.storage",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.023,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.023 per GB - first 50 TB / month of storage used."
+ },
+ {
+  "id": "s3.standard.put_copy_post_list",
+  "region": "us-east-2",
+  "unit": "1,000 requests",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-2/index.json",
+  "label": "doc",
+  "note": "PUT, COPY, POST, LIST requests."
+ },
+ {
+  "id": "s3.standard.get",
+  "region": "us-east-2",
+  "unit": "1,000 requests",
+  "usd": 0.0004,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-2/index.json",
+  "label": "doc",
+  "note": "GET and all other requests."
+ },
+ {
+  "id": "s3.replication.rtc",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.015,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-2/index.json",
+  "label": "doc",
+  "note": "S3 Replication Time Control data transfer, on top of inter-Region transfer, destination storage, and replication PUTs."
+ },
+ {
+  "id": "dt.internet_out.first10tb",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.09,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.090 per GB - first 10 TB / month data transfer out beyond the global free tier"
+ },
+ {
+  "id": "dt.internet_out.next40tb",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.085,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.085 per GB - next 40 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.next100tb",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.07,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.070 per GB - next 100 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.over150tb",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.05,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.050 per GB - greater than 150 TB / month data transfer out"
+ },
+ {
+  "id": "dt.inter_az",
+  "region": "us-east-2",
+  "unit": "GB each direction",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "EC2 page: across AZs in the same Region charged $0.01/GB in each direction."
+ },
+ {
+  "id": "dt.inter_region_to_usw2",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB - US East (Ohio) data transfer to US West (Oregon)"
+ },
+ {
+  "id": "dt.inter_region_to_use1",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.01 per GB - US East (Ohio) data transfer to US East (Northern Virginia)"
+ },
+ {
+  "id": "dt.internet_out.freetier",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-2/index.json",
+  "label": "doc",
+  "note": "First 100 GB/month to the internet free, aggregated across Regions and services."
+ },
+ {
+  "id": "nlb.hour",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0225,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per NLB-hour or partial hour."
+ },
+ {
+  "id": "nlb.nlcu",
+  "region": "us-east-2",
+  "unit": "NLCU-hour",
+  "usd": 0.006,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-east-2/index.json",
+  "label": "doc",
+  "note": "TCP NLCU = 800 new conn/s, 100,000 active conn, or 1 GB/h processed; TLS NLCU = 50 new conn/s, 3,000 active, or 1 GB/h. Billed on the highest dimension."
+ },
+ {
+  "id": "vpc.interface_endpoint.az_hour",
+  "region": "us-east-2",
+  "unit": "endpoint-AZ-hour",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-2/index.json",
+  "label": "doc",
+  "note": "Billed per endpoint per AZ it is provisioned in."
+ },
+ {
+  "id": "vpc.interface_endpoint.processed",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-2/index.json",
+  "label": "doc",
+  "note": "First 1 PB/month; $0.006 next 4 PB, $0.004 above 5 PB."
+ },
+ {
+  "id": "vpc.public_ipv4.hour",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per in-use public IPv4 address, including those on NAT gateways and internet-facing NLBs."
+ },
+ {
+  "id": "kms.key.month",
+  "region": "us-east-2",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per customer managed key. Pricing page: each primary and each replica multi-Region key is $1/month; first and second rotations add $1/month each."
+ },
+ {
+  "id": "kms.mrk_replica.month",
+  "region": "us-east-2",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://aws.amazon.com/kms/pricing/",
+  "label": "doc",
+  "note": "Pricing page: the $1/month charge applies to each primary and each replica multi-Region key."
+ },
+ {
+  "id": "kms.requests.symmetric",
+  "region": "us-east-2",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS requests in US East (Ohio)"
+ },
+ {
+  "id": "kms.requests.asymmetric",
+  "region": "us-east-2",
+  "unit": "10,000 requests",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-2/index.json",
+  "label": "doc",
+  "note": "Asymmetric requests (Sign, Verify, etc.) for key specs other than RSA 2048, e.g. ECC."
+ },
+ {
+  "id": "kms.requests.asymmetric_rsa2048",
+  "region": "us-east-2",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS RSA 2048 requests in US East (Ohio)"
+ },
+ {
+  "id": "kms.freetier.requests",
+  "region": "global",
+  "unit": "request",
+  "usd": 0.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-2/index.json",
+  "label": "doc",
+  "note": "First 20000 requests/month free across Regions."
+ },
+ {
+  "id": "cloudwatch.custom_metric.first10k",
+  "region": "us-east-2",
+  "unit": "metric-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.30 per metric-month for the first 10,000 metrics - US East (Ohio)"
+ },
+ {
+  "id": "cloudwatch.alarm.standard",
+  "region": "us-east-2",
+  "unit": "alarm-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.10 per alarm metric month (standard resolution) - US East (Ohio)"
+ },
+ {
+  "id": "cloudwatch.alarm.highres",
+  "region": "us-east-2",
+  "unit": "alarm-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.30 per alarm metric month (high resolution) - US East (Ohio)"
+ },
+ {
+  "id": "cloudwatch.logs.ingest_standard",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.50 per GB custom log data ingested in Standard log class - US East (Ohio)"
+ },
+ {
+  "id": "cloudwatch.logs.storage",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-mo of log storage - US East (Ohio)"
+ },
+ {
+  "id": "opensearch.r6g.large.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.167,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "Docs name r6g.large as an option for small production workloads and recommend latest generation."
+ },
+ {
+  "id": "opensearch.r7g.large.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.178,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "USD $0.178/Hr r7g.large.search - US East (Ohio)"
+ },
+ {
+  "id": "opensearch.r8g.large.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.196,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.196 per Hr for r8g.large.search instance in US East (Ohio)"
+ },
+ {
+  "id": "opensearch.m7g.large.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.135,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "USD $0.135/Hr m7g.large.search - US East (Ohio)"
+ },
+ {
+  "id": "opensearch.m8g.large.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "$0.15 per Hr for m8g.large.search instance in US East (Ohio)"
+ },
+ {
+  "id": "opensearch.gp3.storage",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.122,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "USD 0.122/GB-month provisioned gp3 storage - USE2"
+ },
+ {
+  "id": "ses.outbound",
+  "region": "us-east-2",
+  "unit": "1,000 emails",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonSES/20260911124507/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per recipient; attachments add $0.12/GB per SES pricing page."
+ },
+ {
+  "id": "ec2.i8g.xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.3432,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 32 GiB, storage: 1 x 937GB."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.6864,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 8 vCPU, 64 GiB, storage: 1 x 1875GB."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 1.3728,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 16 vCPU, 128 GiB, storage: 1 x 3750GB."
+ },
+ {
+  "id": "ec2.m8g.xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.17952,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 16 GiB, storage: EBS only."
+ },
+ {
+  "id": "ec2.c8g.large.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.07976,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 4 GiB, storage: EBS only."
+ },
+ {
+  "id": "ebs.gp3.storage",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.08,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.08 per GB-month of General Purpose (gp3) provisioned storage - US West (Oregon)"
+ },
+ {
+  "id": "ebs.gp3.iops",
+  "region": "us-west-2",
+  "unit": "provisioned IOPS-month above 3,000",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.005 per provisioned IOPS-month of gp3 - US West (Oregon)"
+ },
+ {
+  "id": "ebs.gp3.throughput",
+  "region": "us-west-2",
+  "unit": "provisioned MiBps-month above 125",
+  "usd": 0.04,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.04 per provisioned MiBps-month of gp3 - US West (Oregon)"
+ },
+ {
+  "id": "vpc.natgw.hour",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Zonal NAT gateway, per gateway-hour."
+ },
+ {
+  "id": "vpc.natgw.processed",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per GB processed by a NAT gateway, on top of any data transfer charge."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.csp_1yr_noupfront",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.534,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-west-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.csp_1yr_noupfront",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 1.068,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-west-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_1yr_noupfront",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.267,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-west-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "dsql.dpu",
+  "region": "us-west-2",
+  "unit": "1M DPUs",
+  "usd": 8.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-west-2/index.json",
+  "label": "doc",
+  "note": "Bulk lists $0.000008 per DPU in US West (Oregon)."
+ },
+ {
+  "id": "dsql.storage",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.33,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-west-2/index.json",
+  "label": "doc",
+  "note": "Billed per Region for each peered cluster; witness Region not charged."
+ },
+ {
+  "id": "backup.dsql.warm",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.10 per GB-month for Warm backup storage for Aurora DSQL in US West (Oregon)"
+ },
+ {
+  "id": "backup.dsql.cold",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-month for Cold backup storage for Aurora DSQL in US West (Oregon)"
+ },
+ {
+  "id": "backup.dsql.restore_warm",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for restore from Warm backup storage for Aurora DSQL in US West (Oregon)"
+ },
+ {
+  "id": "backup.dsql.copy_to_use2",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US East (Ohio)"
+ },
+ {
+  "id": "backup.dsql.copy_to_use1",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US East (N. Virginia)"
+ },
+ {
+  "id": "s3.standard.storage",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.023,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.023 per GB - first 50 TB / month of storage used."
+ },
+ {
+  "id": "s3.standard.put_copy_post_list",
+  "region": "us-west-2",
+  "unit": "1,000 requests",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-west-2/index.json",
+  "label": "doc",
+  "note": "PUT, COPY, POST, LIST requests."
+ },
+ {
+  "id": "s3.standard.get",
+  "region": "us-west-2",
+  "unit": "1,000 requests",
+  "usd": 0.0004,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-west-2/index.json",
+  "label": "doc",
+  "note": "GET and all other requests."
+ },
+ {
+  "id": "s3.replication.rtc",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.015,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-west-2/index.json",
+  "label": "doc",
+  "note": "S3 Replication Time Control data transfer, on top of inter-Region transfer, destination storage, and replication PUTs."
+ },
+ {
+  "id": "dt.internet_out.first10tb",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.09,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.090 per GB - first 10 TB / month data transfer out beyond the global free tier"
+ },
+ {
+  "id": "dt.internet_out.next40tb",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.085,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.085 per GB - next 40 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.next100tb",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.07,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.070 per GB - next 100 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.over150tb",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.05,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.050 per GB - greater than 150 TB / month data transfer out"
+ },
+ {
+  "id": "dt.inter_az",
+  "region": "us-west-2",
+  "unit": "GB each direction",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "EC2 page: across AZs in the same Region charged $0.01/GB in each direction."
+ },
+ {
+  "id": "dt.inter_region_to_use2",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB - US West (Oregon) data transfer to US East (Ohio)"
+ },
+ {
+  "id": "dt.inter_region_to_use1",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB - US West (Oregon) data transfer to US East (Northern Virginia)"
+ },
+ {
+  "id": "nlb.hour",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.0225,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per NLB-hour or partial hour."
+ },
+ {
+  "id": "nlb.nlcu",
+  "region": "us-west-2",
+  "unit": "NLCU-hour",
+  "usd": 0.006,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-west-2/index.json",
+  "label": "doc",
+  "note": "TCP NLCU = 800 new conn/s, 100,000 active conn, or 1 GB/h processed; TLS NLCU = 50 new conn/s, 3,000 active, or 1 GB/h. Billed on the highest dimension."
+ },
+ {
+  "id": "vpc.interface_endpoint.az_hour",
+  "region": "us-west-2",
+  "unit": "endpoint-AZ-hour",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-west-2/index.json",
+  "label": "doc",
+  "note": "Billed per endpoint per AZ it is provisioned in."
+ },
+ {
+  "id": "vpc.interface_endpoint.processed",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-west-2/index.json",
+  "label": "doc",
+  "note": "First 1 PB/month; $0.006 next 4 PB, $0.004 above 5 PB."
+ },
+ {
+  "id": "vpc.public_ipv4.hour",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per in-use public IPv4 address, including those on NAT gateways and internet-facing NLBs."
+ },
+ {
+  "id": "kms.key.month",
+  "region": "us-west-2",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per customer managed key. Pricing page: each primary and each replica multi-Region key is $1/month; first and second rotations add $1/month each."
+ },
+ {
+  "id": "kms.mrk_replica.month",
+  "region": "us-west-2",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://aws.amazon.com/kms/pricing/",
+  "label": "doc",
+  "note": "Pricing page: the $1/month charge applies to each primary and each replica multi-Region key."
+ },
+ {
+  "id": "kms.requests.symmetric",
+  "region": "us-west-2",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS requests in US West (Oregon)"
+ },
+ {
+  "id": "kms.requests.asymmetric",
+  "region": "us-west-2",
+  "unit": "10,000 requests",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-west-2/index.json",
+  "label": "doc",
+  "note": "Asymmetric requests (Sign, Verify, etc.) for key specs other than RSA 2048, e.g. ECC."
+ },
+ {
+  "id": "kms.requests.asymmetric_rsa2048",
+  "region": "us-west-2",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS RSA 2048 requests in US West (Oregon)"
+ },
+ {
+  "id": "cloudwatch.custom_metric.first10k",
+  "region": "us-west-2",
+  "unit": "metric-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.30 per metric-month for the first 10,000 metrics - US West (Oregon)"
+ },
+ {
+  "id": "cloudwatch.alarm.standard",
+  "region": "us-west-2",
+  "unit": "alarm-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.10 per alarm metric month (standard resolution) - US West (Oregon)"
+ },
+ {
+  "id": "cloudwatch.alarm.highres",
+  "region": "us-west-2",
+  "unit": "alarm-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.30 per alarm metric month (high resolution) - US West (Oregon)"
+ },
+ {
+  "id": "cloudwatch.logs.ingest_standard",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.50 per GB custom log data ingested in Standard log class - US West (Oregon)"
+ },
+ {
+  "id": "cloudwatch.logs.storage",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-mo of log storage - US West (Oregon)"
+ },
+ {
+  "id": "opensearch.r6g.large.search",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.167,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "Docs name r6g.large as an option for small production workloads and recommend latest generation."
+ },
+ {
+  "id": "opensearch.r7g.large.search",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.178,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "USD $0.178/Hr r7g.large.search - US West (Oregon)"
+ },
+ {
+  "id": "opensearch.r8g.large.search",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.196,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.196 per Hr for r8g.large.search instance in US West (Oregon)"
+ },
+ {
+  "id": "opensearch.m7g.large.search",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.135,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "USD $0.135/Hr m7g.large.search - US West (Oregon)"
+ },
+ {
+  "id": "opensearch.m8g.large.search",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "$0.15 per Hr for m8g.large.search instance in US West (Oregon)"
+ },
+ {
+  "id": "opensearch.gp3.storage",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.122,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-west-2/index.json",
+  "label": "doc",
+  "note": "USD 0.122/GB-month provisioned gp3 storage - USW2"
+ },
+ {
+  "id": "ses.outbound",
+  "region": "us-west-2",
+  "unit": "1,000 emails",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonSES/20260911124507/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per recipient; attachments add $0.12/GB per SES pricing page."
+ },
+ {
+  "id": "ec2.i8g.xlarge.ondemand",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.3432,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 32 GiB, storage: 1 x 937GB."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.ondemand",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.6864,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 8 vCPU, 64 GiB, storage: 1 x 1875GB."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.ondemand",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 1.3728,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 16 vCPU, 128 GiB, storage: 1 x 3750GB."
+ },
+ {
+  "id": "ec2.m8g.xlarge.ondemand",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.17952,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 16 GiB, storage: EBS only."
+ },
+ {
+  "id": "ec2.c8g.large.ondemand",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.07976,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 4 GiB, storage: EBS only."
+ },
+ {
+  "id": "ebs.gp3.storage",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.08,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.08 per GB-month of General Purpose (gp3) provisioned storage - US East (N. Virginia)"
+ },
+ {
+  "id": "ebs.gp3.iops",
+  "region": "us-east-1",
+  "unit": "provisioned IOPS-month above 3,000",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.005 per provisioned IOPS-month of gp3 - US East (N. Virginia)"
+ },
+ {
+  "id": "ebs.gp3.throughput",
+  "region": "us-east-1",
+  "unit": "provisioned MiBps-month above 125",
+  "usd": 0.04,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.04 per provisioned MiBps-month of gp3 - US East (N. Virginia)"
+ },
+ {
+  "id": "vpc.natgw.hour",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Zonal NAT gateway, per gateway-hour."
+ },
+ {
+  "id": "vpc.natgw.processed",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.045,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-1/index.json",
+  "label": "doc",
+  "note": "Per GB processed by a NAT gateway, on top of any data transfer charge."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_1yr_noupfront",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.267,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-1/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.2xlarge.csp_1yr_noupfront",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.534,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-1/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "ec2.i8g.4xlarge.csp_1yr_noupfront",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 1.068,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-1/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1-year, No Upfront, Linux shared tenancy effective hourly rate."
+ },
+ {
+  "id": "dsql.dpu",
+  "region": "us-east-1",
+  "unit": "1M DPUs",
+  "usd": 8.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-1/index.json",
+  "label": "doc",
+  "note": "Bulk lists $0.000008 per DPU in US East (N. Virginia)."
+ },
+ {
+  "id": "dsql.storage",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.33,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AuroraDSQL/20260911124522/us-east-1/index.json",
+  "label": "doc",
+  "note": "Billed per Region for each peered cluster; witness Region not charged."
+ },
+ {
+  "id": "backup.dsql.warm",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.10 per GB-month for Warm backup storage for Aurora DSQL in US East (N. Virginia)"
+ },
+ {
+  "id": "backup.dsql.cold",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-month for Cold backup storage for Aurora DSQL in US East (N. Virginia)"
+ },
+ {
+  "id": "backup.dsql.restore_warm",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for restore from Warm backup storage for Aurora DSQL in US East (N. Virginia)"
+ },
+ {
+  "id": "backup.dsql.copy_to_use2",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US East (Ohio)"
+ },
+ {
+  "id": "backup.dsql.copy_to_usw2",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSBackup/20261014001856/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB for cross-Region backup data transfer for Aurora DSQL to US West (Oregon)"
+ },
+ {
+  "id": "s3.standard.storage",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.023,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.023 per GB - first 50 TB / month of storage used."
+ },
+ {
+  "id": "s3.standard.put_copy_post_list",
+  "region": "us-east-1",
+  "unit": "1,000 requests",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-1/index.json",
+  "label": "doc",
+  "note": "PUT, COPY, POST, LIST requests."
+ },
+ {
+  "id": "s3.standard.get",
+  "region": "us-east-1",
+  "unit": "1,000 requests",
+  "usd": 0.0004,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-1/index.json",
+  "label": "doc",
+  "note": "GET and all other requests."
+ },
+ {
+  "id": "s3.replication.rtc",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.015,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/20261015173540/us-east-1/index.json",
+  "label": "doc",
+  "note": "S3 Replication Time Control data transfer, on top of inter-Region transfer, destination storage, and replication PUTs."
+ },
+ {
+  "id": "dt.internet_out.first10tb",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.09,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.090 per GB - first 10 TB / month data transfer out beyond the global free tier"
+ },
+ {
+  "id": "dt.internet_out.next40tb",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.085,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.085 per GB - next 40 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.next100tb",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.07,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.070 per GB - next 100 TB / month data transfer out"
+ },
+ {
+  "id": "dt.internet_out.over150tb",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.05,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.050 per GB - greater than 150 TB / month data transfer out"
+ },
+ {
+  "id": "dt.inter_az",
+  "region": "us-east-1",
+  "unit": "GB each direction",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "EC2 page: across AZs in the same Region charged $0.01/GB in each direction."
+ },
+ {
+  "id": "dt.inter_region_to_use2",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.01 per GB - US East (Northern Virginia) data transfer to US East (Ohio)"
+ },
+ {
+  "id": "dt.inter_region_to_usw2",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.02,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/20260916132208/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.02 per GB - US East (Northern Virginia) data transfer to US West (Oregon)"
+ },
+ {
+  "id": "nlb.hour",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.0225,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-east-1/index.json",
+  "label": "doc",
+  "note": "Per NLB-hour or partial hour."
+ },
+ {
+  "id": "nlb.nlcu",
+  "region": "us-east-1",
+  "unit": "NLCU-hour",
+  "usd": 0.006,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSELB/20260911124544/us-east-1/index.json",
+  "label": "doc",
+  "note": "TCP NLCU = 800 new conn/s, 100,000 active conn, or 1 GB/h processed; TLS NLCU = 50 new conn/s, 3,000 active, or 1 GB/h. Billed on the highest dimension."
+ },
+ {
+  "id": "vpc.interface_endpoint.az_hour",
+  "region": "us-east-1",
+  "unit": "endpoint-AZ-hour",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-1/index.json",
+  "label": "doc",
+  "note": "Billed per endpoint per AZ it is provisioned in."
+ },
+ {
+  "id": "vpc.interface_endpoint.processed",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-1/index.json",
+  "label": "doc",
+  "note": "First 1 PB/month; $0.006 next 4 PB, $0.004 above 5 PB."
+ },
+ {
+  "id": "vpc.public_ipv4.hour",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.005,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/20261016224321/us-east-1/index.json",
+  "label": "doc",
+  "note": "Per in-use public IPv4 address, including those on NAT gateways and internet-facing NLBs."
+ },
+ {
+  "id": "kms.key.month",
+  "region": "us-east-1",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-1/index.json",
+  "label": "doc",
+  "note": "Per customer managed key. Pricing page: each primary and each replica multi-Region key is $1/month; first and second rotations add $1/month each."
+ },
+ {
+  "id": "kms.mrk_replica.month",
+  "region": "us-east-1",
+  "unit": "key-month",
+  "usd": 1.0,
+  "source": "https://aws.amazon.com/kms/pricing/",
+  "label": "doc",
+  "note": "Pricing page: the $1/month charge applies to each primary and each replica multi-Region key."
+ },
+ {
+  "id": "kms.requests.symmetric",
+  "region": "us-east-1",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS requests in US East (N. Virginia)"
+ },
+ {
+  "id": "kms.requests.asymmetric",
+  "region": "us-east-1",
+  "unit": "10,000 requests",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-1/index.json",
+  "label": "doc",
+  "note": "Asymmetric requests (Sign, Verify, etc.) for key specs other than RSA 2048, e.g. ECC."
+ },
+ {
+  "id": "kms.requests.asymmetric_rsa2048",
+  "region": "us-east-1",
+  "unit": "10,000 requests",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/20260911124601/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.03 per 10000 KMS RSA 2048 requests in US East (N. Virgina)"
+ },
+ {
+  "id": "cloudwatch.custom_metric.first10k",
+  "region": "us-east-1",
+  "unit": "metric-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.30 per metric-month for the first 10,000 metrics - US East (Northern Virginia)"
+ },
+ {
+  "id": "cloudwatch.alarm.standard",
+  "region": "us-east-1",
+  "unit": "alarm-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.10 per alarm metric month (standard resolution) - US East (Northern Virginia)"
+ },
+ {
+  "id": "cloudwatch.alarm.highres",
+  "region": "us-east-1",
+  "unit": "alarm-month",
+  "usd": 0.3,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.30 per alarm metric month (high resolution) - US East (Northern Virginia)"
+ },
+ {
+  "id": "cloudwatch.logs.ingest_standard",
+  "region": "us-east-1",
+  "unit": "GB",
+  "usd": 0.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.50 per GB custom log data ingested in Standard log class - US East (Northern Virginia)"
+ },
+ {
+  "id": "cloudwatch.logs.storage",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.03,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/20261007115540/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.03 per GB-mo of log storage - US East (Northern Virginia)"
+ },
+ {
+  "id": "opensearch.r6g.large.search",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.167,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "Docs name r6g.large as an option for small production workloads and recommend latest generation."
+ },
+ {
+  "id": "opensearch.r7g.large.search",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.178,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "USD $0.178/Hr r7g.large.search - US East (N. Virginia)"
+ },
+ {
+  "id": "opensearch.r8g.large.search",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.196,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.196 per Hr for r8g.large.search instance in US East (N. Virginia)"
+ },
+ {
+  "id": "opensearch.m7g.large.search",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.135,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "USD $0.135/Hr m7g.large.search - US East (N. Virginia)"
+ },
+ {
+  "id": "opensearch.m8g.large.search",
+  "region": "us-east-1",
+  "unit": "hour",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "$0.15 per Hr for m8g.large.search instance in US East (N. Virginia)"
+ },
+ {
+  "id": "opensearch.gp3.storage",
+  "region": "us-east-1",
+  "unit": "GB-month",
+  "usd": 0.122,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-1/index.json",
+  "label": "doc",
+  "note": "USD 0.122/GB-month provisioned gp3 storage"
+ },
+ {
+  "id": "ses.outbound",
+  "region": "us-east-1",
+  "unit": "1,000 emails",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonSES/20260911124507/us-east-1/index.json",
+  "label": "doc",
+  "note": "Per recipient; attachments add $0.12/GB per SES pricing page."
+ },
+ {
+  "id": "route53.hosted_zone",
+  "region": "global",
+  "unit": "zone-month",
+  "usd": 0.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRoute53/20260911124504/aws-other/index.json",
+  "label": "doc",
+  "note": "First 25 hosted zones; $0.10 each after."
+ },
+ {
+  "id": "route53.health_check.aws_basic",
+  "region": "global",
+  "unit": "check-month",
+  "usd": 0.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRoute53/20260911124504/aws-other/index.json",
+  "label": "doc",
+  "note": "AWS endpoint basic check; first 50 AWS-endpoint checks in the account are free."
+ },
+ {
+  "id": "route53.health_check.aws_option",
+  "region": "global",
+  "unit": "option-month",
+  "usd": 1.0,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRoute53/20260911124504/aws-other/index.json",
+  "label": "doc",
+  "note": "Per optional feature (HTTPS, string matching, fast interval, latency) on an AWS-endpoint check."
+ },
+ {
+  "id": "route53.queries.standard",
+  "region": "global",
+  "unit": "1M queries",
+  "usd": 0.4,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRoute53/20260911124504/aws-other/index.json",
+  "label": "doc",
+  "note": "First 1B queries/month; alias queries to AWS resources are free."
+ },
+ {
+  "id": "arc.routing_control_cluster.hour",
+  "region": "global",
+  "unit": "cluster-hour",
+  "usd": 2.5,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSR53AppRecoveryController/20260911124607/aws-other/index.json",
+  "label": "doc",
+  "note": "Each cluster can host multiple routing controls; max 2 per account."
+ },
+ {
+  "id": "dt.s3_to_ec2.same_region",
+  "region": "any",
+  "unit": "GB",
+  "usd": 0.0,
+  "source": "https://aws.amazon.com/s3/pricing/",
+  "label": "doc",
+  "note": "Free: data transferred from an S3 bucket to any AWS service in the same Region. Interface endpoint or NAT processing still applies if in path."
+ },
+ {
+  "id": "github.enterprise_cloud.user_month",
+  "region": "global",
+  "unit": "user-month",
+  "usd": 21.0,
+  "source": "https://github.com/pricing",
+  "label": "doc",
+  "note": "Enterprise plan 'Starting at $21 USD per user/month'. Includes 50,000 Actions minutes/month."
+ },
+ {
+  "id": "github.enterprise_server.user_month",
+  "region": "global",
+  "unit": "user-month",
+  "usd": 21.0,
+  "source": "https://docs.github.com/en/billing/concepts/enterprise-billing/combined-enterprise-use",
+  "label": "doc",
+  "note": "No separate GHES price: the GitHub Enterprise plan entitles each licensed user to both Cloud and Server."
+ },
+ {
+  "id": "github.actions.linux_2core_x64",
+  "region": "global",
+  "unit": "minute",
+  "usd": 0.006,
+  "source": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+  "label": "doc",
+  "note": "actions_linux SKU, rounded up to whole minutes."
+ },
+ {
+  "id": "github.actions.linux_2core_arm64",
+  "region": "global",
+  "unit": "minute",
+  "usd": 0.005,
+  "source": "https://docs.github.com/en/billing/reference/actions-runner-pricing",
+  "label": "doc",
+  "note": "actions_linux_arm SKU."
+ },
+ {
+  "id": "ddb.ondemand.wru",
+  "region": "us-east-2",
+  "unit": "1M WRUs",
+  "usd": 0.625,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Standard table class. 1 WRU per write up to 1 KB; transactional writes cost 2 WRUs per KB."
+ },
+ {
+  "id": "ddb.ondemand.rru",
+  "region": "us-east-2",
+  "unit": "1M RRUs",
+  "usd": 0.125,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Standard table class. 1 RRU per strongly consistent read up to 4 KB; eventually consistent 0.5, transactional 2."
+ },
+ {
+  "id": "ddb.ondemand.rwru",
+  "region": "us-east-2",
+  "unit": "1M rWRUs",
+  "usd": 0.625,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Global table replicated writes, charged in every replica Region. Same units for MREC and MRSC; a MRSC witness incurs none."
+ },
+ {
+  "id": "ddb.provisioned.wcu",
+  "region": "us-east-2",
+  "unit": "WCU-hour",
+  "usd": 0.00065,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Beyond free tier of 25 WCUs per month."
+ },
+ {
+  "id": "ddb.provisioned.rcu",
+  "region": "us-east-2",
+  "unit": "RCU-hour",
+  "usd": 0.00013,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Beyond free tier of 25 RCUs per month."
+ },
+ {
+  "id": "ddb.provisioned.rwcu",
+  "region": "us-east-2",
+  "unit": "rWCU-hour",
+  "usd": 0.00065,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Global table replicated write capacity. Same units for MREC and MRSC."
+ },
+ {
+  "id": "ddb.storage.standard",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.25,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Standard table class, beyond first 25 free GB-months per Region."
+ },
+ {
+  "id": "ddb.pitr",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.2,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Billed on table size including LSIs; price does not vary with the 1-35 day recovery period."
+ },
+ {
+  "id": "ddb.backup.ondemand",
+  "region": "us-east-2",
+  "unit": "GB-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "DynamoDB native on-demand backup storage."
+ },
+ {
+  "id": "ddb.restore",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "Per GB restored. Also charged per GB when adding a global table replica Region."
+ },
+ {
+  "id": "ddb.streams.read",
+  "region": "us-east-2",
+  "unit": "1M streams RRUs",
+  "usd": 0.2,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-east-2/index.json",
+  "label": "doc",
+  "note": "GetRecords calls beyond 2.5M free per month. Free when invoked by Lambda triggers or global table replication."
+ },
+ {
+  "id": "ddb.global.replication_transfer",
+  "region": "us-east-2",
+  "unit": "GB",
+  "usd": 0.0,
+  "source": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/global-tables-billing.html",
+  "label": "doc",
+  "note": "DynamoDB does not charge cross-Region data transfer fees for replicating data between the Regions of a global table."
+ },
+ {
+  "id": "ddb.ondemand.wru",
+  "region": "us-west-2",
+  "unit": "1M WRUs",
+  "usd": 0.625,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Standard table class. 1 WRU per write up to 1 KB; transactional writes cost 2 WRUs per KB."
+ },
+ {
+  "id": "ddb.ondemand.rru",
+  "region": "us-west-2",
+  "unit": "1M RRUs",
+  "usd": 0.125,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Standard table class. 1 RRU per strongly consistent read up to 4 KB; eventually consistent 0.5, transactional 2."
+ },
+ {
+  "id": "ddb.ondemand.rwru",
+  "region": "us-west-2",
+  "unit": "1M rWRUs",
+  "usd": 0.625,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Global table replicated writes, charged in every replica Region. Same units for MREC and MRSC; a MRSC witness incurs none."
+ },
+ {
+  "id": "ddb.provisioned.wcu",
+  "region": "us-west-2",
+  "unit": "WCU-hour",
+  "usd": 0.00065,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Beyond free tier of 25 WCUs per month."
+ },
+ {
+  "id": "ddb.provisioned.rcu",
+  "region": "us-west-2",
+  "unit": "RCU-hour",
+  "usd": 0.00013,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Beyond free tier of 25 RCUs per month."
+ },
+ {
+  "id": "ddb.provisioned.rwcu",
+  "region": "us-west-2",
+  "unit": "rWCU-hour",
+  "usd": 0.00065,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Global table replicated write capacity. Same units for MREC and MRSC."
+ },
+ {
+  "id": "ddb.storage.standard",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.25,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Standard table class, beyond first 25 free GB-months per Region."
+ },
+ {
+  "id": "ddb.pitr",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.2,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Billed on table size including LSIs; price does not vary with the 1-35 day recovery period."
+ },
+ {
+  "id": "ddb.backup.ondemand",
+  "region": "us-west-2",
+  "unit": "GB-month",
+  "usd": 0.1,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "DynamoDB native on-demand backup storage."
+ },
+ {
+  "id": "ddb.restore",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.15,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "Per GB restored. Also charged per GB when adding a global table replica Region."
+ },
+ {
+  "id": "ddb.streams.read",
+  "region": "us-west-2",
+  "unit": "1M streams RRUs",
+  "usd": 0.2,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonDynamoDB/20260911124422/us-west-2/index.json",
+  "label": "doc",
+  "note": "GetRecords calls beyond 2.5M free per month. Free when invoked by Lambda triggers or global table replication."
+ },
+ {
+  "id": "ddb.global.replication_transfer",
+  "region": "us-west-2",
+  "unit": "GB",
+  "usd": 0.0,
+  "source": "https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/global-tables-billing.html",
+  "label": "doc",
+  "note": "DynamoDB does not charge cross-Region data transfer fees for replicating data between the Regions of a global table."
+ },
+ {
+  "id": "ec2.m8g.medium.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.04488,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 1 vCPU, 4 GiB."
+ },
+ {
+  "id": "ec2.m8g.large.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.08976,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 8 GiB."
+ },
+ {
+  "id": "ec2.c8g.medium.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.03974,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 1 vCPU, 2 GiB."
+ },
+ {
+  "id": "ec2.c8g.xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.15896,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 8 GiB."
+ },
+ {
+  "id": "ec2.r8g.large.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.11782,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 16 GiB."
+ },
+ {
+  "id": "ec2.t4g.medium.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0336,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 4 GiB. Baseline 20% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.large.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0672,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 8 GiB. Baseline 30% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.xlarge.ondemand",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.1344,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 16 GiB. Baseline 40% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.unlimited_surplus_credit",
+  "region": "us-east-2",
+  "unit": "vCPU-hour",
+  "usd": 0.04,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-east-2/index.json",
+  "label": "doc",
+  "note": "T4g Unlimited surplus CPU credits, Linux. Bulk: $0.04 per vCPU-Hour of T4G CPU Credits Charged only when 24-hour average CPU exceeds baseline (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.m8g.medium.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.04488,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 1 vCPU, 4 GiB."
+ },
+ {
+  "id": "ec2.m8g.large.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.08976,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 8 GiB."
+ },
+ {
+  "id": "ec2.c8g.medium.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.03988,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 1 vCPU, 2 GiB."
+ },
+ {
+  "id": "ec2.c8g.xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.15952,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 8 GiB."
+ },
+ {
+  "id": "ec2.r8g.large.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.11782,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 16 GiB."
+ },
+ {
+  "id": "ec2.t4g.medium.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.0336,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 4 GiB. Baseline 20% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.large.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.0672,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 2 vCPU, 8 GiB. Baseline 30% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.xlarge.ondemand",
+  "region": "us-west-2",
+  "unit": "hour",
+  "usd": 0.1344,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "Linux on-demand. 4 vCPU, 16 GiB. Baseline 40% per vCPU, Unlimited mode by default (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.t4g.unlimited_surplus_credit",
+  "region": "us-west-2",
+  "unit": "vCPU-hour",
+  "usd": 0.04,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/20261023221355/us-west-2/index.json",
+  "label": "doc",
+  "note": "T4g Unlimited surplus CPU credits, Linux. Bulk: $0.04 per vCPU-Hour of T4G CPU Credits Charged only when 24-hour average CPU exceeds baseline (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-credits-baseline-concepts.html)."
+ },
+ {
+  "id": "ec2.m8g.large.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.06594,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, No Upfront, Linux shared tenancy effective hourly rate. 26.5% below on-demand $0.08976."
+ },
+ {
+  "id": "ec2.m8g.large.csp_1yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.06155,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, All Upfront, Linux shared tenancy effective hourly rate. 31.4% below on-demand $0.08976."
+ },
+ {
+  "id": "ec2.m8g.large.csp_3yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.04552,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, No Upfront, Linux shared tenancy effective hourly rate. 49.3% below on-demand $0.08976."
+ },
+ {
+  "id": "ec2.m8g.large.csp_3yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.04131,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, All Upfront, Linux shared tenancy effective hourly rate. 54.0% below on-demand $0.08976."
+ },
+ {
+  "id": "ec2.m8g.xlarge.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.13189,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, No Upfront, Linux shared tenancy effective hourly rate. 26.5% below on-demand $0.17952."
+ },
+ {
+  "id": "ec2.m8g.xlarge.csp_1yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.1231,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, All Upfront, Linux shared tenancy effective hourly rate. 31.4% below on-demand $0.17952."
+ },
+ {
+  "id": "ec2.m8g.xlarge.csp_3yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.09104,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, No Upfront, Linux shared tenancy effective hourly rate. 49.3% below on-demand $0.17952."
+ },
+ {
+  "id": "ec2.m8g.xlarge.csp_3yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.08261,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, All Upfront, Linux shared tenancy effective hourly rate. 54.0% below on-demand $0.17952."
+ },
+ {
+  "id": "ec2.t4g.large.csp_1yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0485,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, No Upfront, Linux shared tenancy effective hourly rate. 27.8% below on-demand $0.0672."
+ },
+ {
+  "id": "ec2.t4g.large.csp_1yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0452,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, All Upfront, Linux shared tenancy effective hourly rate. 32.7% below on-demand $0.0672."
+ },
+ {
+  "id": "ec2.t4g.large.csp_3yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0334,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, No Upfront, Linux shared tenancy effective hourly rate. 50.3% below on-demand $0.0672."
+ },
+ {
+  "id": "ec2.t4g.large.csp_3yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.0303,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, All Upfront, Linux shared tenancy effective hourly rate. 54.9% below on-demand $0.0672."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_1yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.2492,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 1yr, All Upfront, Linux shared tenancy effective hourly rate. 27.4% below on-demand $0.3432."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_3yr_noupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.1904,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, No Upfront, Linux shared tenancy effective hourly rate. 44.5% below on-demand $0.3432."
+ },
+ {
+  "id": "ec2.i8g.xlarge.csp_3yr_allupfront",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.1727,
+  "source": "https://pricing.us-east-1.amazonaws.com/savingsPlan/v1.0/aws/AWSComputeSavingsPlan/20261023221239/us-east-2/index.json",
+  "label": "doc",
+  "note": "Compute Savings Plan, 3yr, All Upfront, Linux shared tenancy effective hourly rate. 49.7% below on-demand $0.3432."
+ },
+ {
+  "id": "opensearch.t3.small.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.036,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "On-demand. 2 vCPU, 2 GiB. Bulk: $ 0.036 per t3.small.search instance hour (or partial hour) - USE2 Best-practices doc: avoid T2 or t3.small for production domains. T3 types lack UltraWarm, cold storage, Auto-Tune, and Multi-AZ with Standby; max 10 instances."
+ },
+ {
+  "id": "opensearch.t3.medium.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.073,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "On-demand. 2 vCPU, 4 GiB. Bulk: $ 0.073 per t3.medium.search instance hour (or partial hour) - USE2 T3 types lack UltraWarm, cold storage, Auto-Tune, and Multi-AZ with Standby; max 10 instances."
+ },
+ {
+  "id": "opensearch.m7g.medium.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.068,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "On-demand. 1 vCPU, 4 GiB. Bulk: USD $0.068/Hr m7g.medium.search - US East (Ohio)"
+ },
+ {
+  "id": "opensearch.r7g.medium.search",
+  "region": "us-east-2",
+  "unit": "hour",
+  "usd": 0.089,
+  "source": "https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonES/20261020160512/us-east-2/index.json",
+  "label": "doc",
+  "note": "On-demand. 1 vCPU, 8 GiB. Bulk: USD $0.089/Hr r7g.medium.search - US East (Ohio)"
+ },
+ {
+  "id": "cf.workers.paid.subscription",
+  "region": "global",
+  "unit": "month",
+  "usd": 5,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Workers Paid plan base fee; the page says \"$5 USD per month Workers Paid plan\". Includes 10M requests and 30M CPU-ms."
+ },
+ {
+  "id": "cf.workers.requests",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 0.30,
+  "source": "https://developers.cloudflare.com/workers/platform/pricing/",
+  "label": "doc",
+  "note": "Standard usage model, beyond 10M included per month. Subrequests not billed."
+ },
+ {
+  "id": "cf.workers.cpu",
+  "region": "global",
+  "unit": "1M CPU-ms",
+  "usd": 0.02,
+  "source": "https://developers.cloudflare.com/workers/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond 30M CPU-ms included per month."
+ },
+ {
+  "id": "cf.do.requests",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 0.15,
+  "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond 1M included per month. HTTP requests, RPC sessions, WebSocket messages, alarm invocations."
+ },
+ {
+  "id": "cf.do.duration",
+  "region": "global",
+  "unit": "1M GB-s",
+  "usd": 12.50,
+  "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "label": "doc",
+  "note": "Wall-clock while active or idle but not hibernatable; 400,000 GB-s included per month."
+ },
+ {
+  "id": "cf.do.sqlite.rows_read",
+  "region": "global",
+  "unit": "1M rows",
+  "usd": 0.001,
+  "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "label": "doc",
+  "note": "SQLite-backed DO; first 25 billion per month included."
+ },
+ {
+  "id": "cf.do.sqlite.rows_written",
+  "region": "global",
+  "unit": "1M rows",
+  "usd": 1.00,
+  "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "label": "doc",
+  "note": "SQLite-backed DO; first 50M per month included. Each setAlarm() is one row written; deletes count as writes."
+ },
+ {
+  "id": "cf.do.sqlite.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.20,
+  "source": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+  "label": "doc",
+  "note": "SQLite-backed DO stored data beyond 5 GB-month; billing enabled from 2026-01-07."
+ },
+ {
+  "id": "cf.d1.rows_read",
+  "region": "global",
+  "unit": "1M rows",
+  "usd": 0.001,
+  "source": "https://developers.cloudflare.com/d1/platform/pricing/",
+  "label": "doc",
+  "note": "First 25 billion per month included."
+ },
+ {
+  "id": "cf.d1.rows_written",
+  "region": "global",
+  "unit": "1M rows",
+  "usd": 1.00,
+  "source": "https://developers.cloudflare.com/d1/platform/pricing/",
+  "label": "doc",
+  "note": "First 50M per month included."
+ },
+ {
+  "id": "cf.d1.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.75,
+  "source": "https://developers.cloudflare.com/d1/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond first 5 GB included."
+ },
+ {
+  "id": "cf.r2.standard.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.015,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Standard storage. 10 GB-month free tier."
+ },
+ {
+  "id": "cf.r2.standard.class_a",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 4.50,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Class A (PutObject, CopyObject, ListObjects, multipart). 1M per month free."
+ },
+ {
+  "id": "cf.r2.standard.class_b",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 0.36,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Class B (GetObject, HeadObject). 10M per month free."
+ },
+ {
+  "id": "cf.r2.ia.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.01,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Infrequent Access storage; no free tier."
+ },
+ {
+  "id": "cf.r2.ia.class_a",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 9.00,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Infrequent Access Class A."
+ },
+ {
+  "id": "cf.r2.ia.class_b",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 0.90,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Infrequent Access Class B."
+ },
+ {
+  "id": "cf.r2.ia.retrieval",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.01,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "Infrequent Access data retrieval."
+ },
+ {
+  "id": "cf.r2.egress",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0,
+  "source": "https://developers.cloudflare.com/r2/pricing/",
+  "label": "doc",
+  "note": "No egress charge for any storage class via Workers API, S3 API, or r2.dev."
+ },
+ {
+  "id": "cf.kv.reads",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 0.50,
+  "source": "https://developers.cloudflare.com/kv/platform/pricing/",
+  "label": "doc",
+  "note": "Keys read beyond 10M per month."
+ },
+ {
+  "id": "cf.kv.writes",
+  "region": "global",
+  "unit": "1M requests",
+  "usd": 5.00,
+  "source": "https://developers.cloudflare.com/kv/platform/pricing/",
+  "label": "doc",
+  "note": "Keys written beyond 1M per month; deletes and lists same rate."
+ },
+ {
+  "id": "cf.kv.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.50,
+  "source": "https://developers.cloudflare.com/kv/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond 1 GB included."
+ },
+ {
+  "id": "cf.queues.operations",
+  "region": "global",
+  "unit": "1M operations",
+  "usd": 0.40,
+  "source": "https://developers.cloudflare.com/queues/platform/pricing/",
+  "label": "doc",
+  "note": "One operation per 64 KB written, read, or deleted; about 3 per message. 1M per month included."
+ },
+ {
+  "id": "cf.workflows.steps",
+  "region": "global",
+  "unit": "100,000 steps",
+  "usd": 0.80,
+  "source": "https://developers.cloudflare.com/workflows/reference/pricing/",
+  "label": "doc",
+  "note": "Beyond 500,000 per month. Requests and CPU billed at Workers rates."
+ },
+ {
+  "id": "cf.workflows.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.20,
+  "source": "https://developers.cloudflare.com/workflows/reference/pricing/",
+  "label": "doc",
+  "note": "Persisted Workflow state beyond 1 GB-month."
+ },
+ {
+  "id": "cf.containers.memory",
+  "region": "global",
+  "unit": "GiB-second",
+  "usd": 0.0000025,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Provisioned memory while running; 25 GiB-hours per month included."
+ },
+ {
+  "id": "cf.containers.vcpu",
+  "region": "global",
+  "unit": "vCPU-second",
+  "usd": 0.000020,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Active CPU usage only; 375 vCPU-minutes per month included."
+ },
+ {
+  "id": "cf.containers.disk",
+  "region": "global",
+  "unit": "GB-second",
+  "usd": 0.00000007,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Provisioned disk while running; 200 GB-hours per month included."
+ },
+ {
+  "id": "cf.containers.egress.na_eu",
+  "region": "north-america-europe",
+  "unit": "GB",
+  "usd": 0.025,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Container egress; 1 TB per month included."
+ },
+ {
+  "id": "cf.containers.egress.oceania_korea_taiwan",
+  "region": "oceania-korea-taiwan",
+  "unit": "GB",
+  "usd": 0.05,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Container egress; 500 GB per month included."
+ },
+ {
+  "id": "cf.containers.egress.other",
+  "region": "rest-of-world",
+  "unit": "GB",
+  "usd": 0.04,
+  "source": "https://developers.cloudflare.com/containers/platform/pricing/",
+  "label": "doc",
+  "note": "Container egress everywhere else; 500 GB per month included."
+ },
+ {
+  "id": "cf.spectrum.ssh.overage",
+  "region": "global",
+  "unit": "GB",
+  "usd": 1.00,
+  "source": "https://www.cloudflare.com/application-services/products/cloudflare-spectrum/ssh/",
+  "label": "doc",
+  "note": "SSH app on Pro (5 GB/month included) or Business (10 GB/month included). Custom TCP needs Enterprise contract."
+ },
+ {
+  "id": "cf.plan.pro.monthly",
+  "region": "global",
+  "unit": "zone-month",
+  "usd": 25,
+  "source": "https://www.cloudflare.com/pricing/",
+  "label": "doc",
+  "note": "Pro plan billed monthly; $20/mo billed annually. Needed for Spectrum SSH."
+ },
+ {
+  "id": "cf.plan.business.monthly",
+  "region": "global",
+  "unit": "zone-month",
+  "usd": 250,
+  "source": "https://www.cloudflare.com/pricing/",
+  "label": "doc",
+  "note": "Business plan billed monthly; $200/mo billed annually. 200 MB request body limit."
+ },
+ {
+  "id": "cf.load_balancing.base",
+  "region": "global",
+  "unit": "month",
+  "usd": 5,
+  "source": "https://www.cloudflare.com/pricing/",
+  "label": "doc",
+  "note": "Starting at $5/mo; usage-based extras not verified."
+ },
+ {
+  "id": "cf.access.seat",
+  "region": "global",
+  "unit": "user-month",
+  "usd": 7,
+  "source": "https://www.cloudflare.com/pricing/",
+  "label": "doc",
+  "note": "Zero Trust pay-as-you-go; free plan covers teams under 50 users."
+ },
+ {
+  "id": "cf.email.sending",
+  "region": "global",
+  "unit": "1,000 emails",
+  "usd": 0.35,
+  "source": "https://developers.cloudflare.com/email-service/platform/pricing/",
+  "label": "doc",
+  "note": "Email Sending (beta), Workers Paid; 3,000 per month included. Inbound routing free."
+ },
+ {
+  "id": "cf.analytics_engine.writes",
+  "region": "global",
+  "unit": "1M data points",
+  "usd": 0.25,
+  "source": "https://developers.cloudflare.com/analytics/analytics-engine/pricing/",
+  "label": "doc",
+  "note": "Beyond 10M per month."
+ },
+ {
+  "id": "cf.analytics_engine.queries",
+  "region": "global",
+  "unit": "1M queries",
+  "usd": 1.00,
+  "source": "https://developers.cloudflare.com/analytics/analytics-engine/pricing/",
+  "label": "doc",
+  "note": "Read queries beyond 1M per month."
+ },
+ {
+  "id": "cf.workers_logs.events",
+  "region": "global",
+  "unit": "1M events",
+  "usd": 0.60,
+  "source": "https://developers.cloudflare.com/workers/observability/logs/workers-logs/",
+  "label": "doc",
+  "note": "Beyond 20M per month; applies until 2026-12-01, then Observability pricing."
+ },
+ {
+  "id": "cf.observability.ingest",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.25,
+  "source": "https://developers.cloudflare.com/observability/pricing/",
+  "label": "doc",
+  "note": "From 2026-12-01; Paid includes 50 GB per billing cycle."
+ },
+ {
+  "id": "cf.observability.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.10,
+  "source": "https://developers.cloudflare.com/observability/pricing/",
+  "label": "doc",
+  "note": "From 2026-12-01; Paid includes 10 GB-month."
+ },
+ {
+  "id": "cf.wfp.subscription",
+  "region": "global",
+  "unit": "month",
+  "usd": 25,
+  "source": "https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/",
+  "label": "doc",
+  "note": "Workers for Platforms; includes 20M requests, 60M CPU-ms, 1,000 scripts."
+ },
+ {
+  "id": "cf.wfp.scripts",
+  "region": "global",
+  "unit": "script-month",
+  "usd": 0.02,
+  "source": "https://developers.cloudflare.com/cloudflare-for-platforms/workers-for-platforms/reference/pricing/",
+  "label": "doc",
+  "note": "Per script beyond 1,000."
+ },
+ {
+  "id": "cf.dynamic_workers.instance",
+  "region": "global",
+  "unit": "Dynamic Worker-day",
+  "usd": 0.002,
+  "source": "https://developers.cloudflare.com/dynamic-workers/pricing/",
+  "label": "doc",
+  "note": "Beyond 1,000 unique Dynamic Workers per month; Workers Paid only."
+ },
+ {
+  "id": "cf.artifacts.operations",
+  "region": "global",
+  "unit": "1,000 operations",
+  "usd": 0.15,
+  "source": "https://developers.cloudflare.com/artifacts/platform/pricing/",
+  "label": "doc",
+  "note": "Open beta; billing began 2026-10-14. Beyond 10,000 per month. Operations include create, push, pull, clone."
+ },
+ {
+  "id": "cf.artifacts.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.50,
+  "source": "https://developers.cloudflare.com/artifacts/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond 1 GB; replicas not billed."
+ },
+ {
+  "id": "cf.k2.produced",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.04,
+  "source": "https://developers.cloudflare.com/k2/platform/pricing/",
+  "label": "doc",
+  "note": "Public beta, not billed yet; announced rate."
+ },
+ {
+  "id": "cf.k2.consumed",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.04,
+  "source": "https://developers.cloudflare.com/k2/platform/pricing/",
+  "label": "doc",
+  "note": "Public beta, not billed yet; per subscription read."
+ },
+ {
+  "id": "cf.k2.retained",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 0.02,
+  "source": "https://developers.cloudflare.com/k2/platform/pricing/",
+  "label": "doc",
+  "note": "Public beta, not billed yet."
+ },
+ {
+  "id": "cf.basin.pipelines.transform",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.04,
+  "source": "https://developers.cloudflare.com/basin-pipelines/platform/pricing/",
+  "label": "doc",
+  "note": "SQL transforms beyond 50 GB per month."
+ },
+ {
+  "id": "cf.basin.pipelines.sink_json",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.03,
+  "source": "https://developers.cloudflare.com/basin-pipelines/platform/pricing/",
+  "label": "doc",
+  "note": "Sink to R2 as JSON beyond 50 GB per month."
+ },
+ {
+  "id": "cf.basin.pipelines.sink_parquet",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.06,
+  "source": "https://developers.cloudflare.com/basin-pipelines/platform/pricing/",
+  "label": "doc",
+  "note": "Sink to R2 as Parquet or Iceberg."
+ },
+ {
+  "id": "cf.basin.catalog.operations",
+  "region": "global",
+  "unit": "1M operations",
+  "usd": 9.00,
+  "source": "https://developers.cloudflare.com/basin-catalog/platform/pricing/",
+  "label": "doc",
+  "note": "Beyond 1M per month."
+ },
+ {
+  "id": "cf.basin.catalog.compaction_data",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.005,
+  "source": "https://developers.cloudflare.com/basin-catalog/platform/pricing/",
+  "label": "doc",
+  "note": "Data processed by compaction beyond 10 GB per month."
+ },
+ {
+  "id": "cf.basin.catalog.compaction_objects",
+  "region": "global",
+  "unit": "1M objects",
+  "usd": 2.00,
+  "source": "https://developers.cloudflare.com/basin-catalog/platform/pricing/",
+  "label": "doc",
+  "note": "Objects processed by compaction beyond 1M per month."
+ },
+ {
+  "id": "cf.basin.sql.scanned",
+  "region": "global",
+  "unit": "GB",
+  "usd": 0.0025,
+  "source": "https://developers.cloudflare.com/basin-sql/platform/pricing/",
+  "label": "doc",
+  "note": "Data scanned beyond 10 GB per month ($2.50/TB)."
+ },
+ {
+  "id": "cf.vectorize.queried",
+  "region": "global",
+  "unit": "1M vector dimensions",
+  "usd": 0.01,
+  "source": "https://developers.cloudflare.com/vectorize/platform/pricing/",
+  "label": "doc",
+  "note": "Queried dimensions beyond 50M per month."
+ },
+ {
+  "id": "cf.vectorize.stored",
+  "region": "global",
+  "unit": "100M vector dimensions",
+  "usd": 0.05,
+  "source": "https://developers.cloudflare.com/vectorize/platform/pricing/",
+  "label": "doc",
+  "note": "Stored dimensions beyond 10M."
+ },
+ {
+  "id": "cf.ai_search.ingestion",
+  "region": "global",
+  "unit": "1M tokens",
+  "usd": 0.75,
+  "source": "https://developers.cloudflare.com/ai-search/platform/limits-pricing/",
+  "label": "doc",
+  "note": "Billing begins 2026-11-01; 5M tokens per month included."
+ },
+ {
+  "id": "cf.ai_search.storage",
+  "region": "global",
+  "unit": "GB-month",
+  "usd": 2.00,
+  "source": "https://developers.cloudflare.com/ai-search/platform/limits-pricing/",
+  "label": "doc",
+  "note": "Beyond 10 GB-month."
+ },
+ {
+  "id": "cf.ai_search.semantic_queries",
+  "region": "global",
+  "unit": "1,000 queries",
+  "usd": 0.75,
+  "source": "https://developers.cloudflare.com/ai-search/platform/limits-pricing/",
+  "label": "doc",
+  "note": "Semantic, vector, hybrid queries beyond 1,000 per month."
+ },
+ {
+  "id": "cf.ai_search.fulltext_queries",
+  "region": "global",
+  "unit": "1,000 queries",
+  "usd": 0.10,
+  "source": "https://developers.cloudflare.com/ai-search/platform/limits-pricing/",
+  "label": "doc",
+  "note": "Full-text queries beyond 1,000 per month."
+ }
+]

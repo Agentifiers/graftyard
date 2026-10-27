@@ -1,0 +1,1933 @@
+# Graftyard on Cloudflare, three-site quorum chains in one account that survive a region, a continent, and a bad deploy
+
+## Summary
+
+No Cloudflare storage product promises a cross-region RPO of zero (`research/cloudflare-uptime.md` finding 40), so Graftyard builds one itself. Every chain (a repository, a fork network, an owner's `Authz` and `Identity`, a token shard, an org's Actions state) is a Raft group of three SQLite-backed Durable Objects on three **sites**. A site is one Worker script whose Durable Objects, containers, and pack bucket are pinned to one region. The default install or managed cell is one Cloudflare account with three site scripts on three continents (enam, weur, apac), and members reach each other through Durable Object bindings, not public HTTPS. A push is acknowledged only after its entry is on two sites in two regions and its pack bytes are in R2 buckets on two of those sites. Leadership leaves a site by Raft leadership transfer before a deploy touches it, and when the site turns sick.
+
+Products are Workers (a stable `graft-front`, the edge, three site scripts, and a stateless `graft-ops`), Durable Objects, R2, Containers (upstream git), Spectrum and Cloudflare Tunnel (SSH), Queues, Workflows, Cron Triggers, Secrets Store, DNS, WAF, Sandbox SDK, Email, Analytics Engine, Workers Logs, and Basin for analytics only. workerd runs only the off-Cloudflare **lifeboat**, the one component outside Cloudflare in production, and evaluation installs. KV, D1, Artifacts, and K2 are not used.
+
+A GitHub user notices nothing in normal operation, apart from push latency of about one intercontinental round trip. If a site is lost outright, groups led there stop reads and writes for at most about 11.5 s [inference: promise remaining, a 1 s call deadline, and two rounds]. A gray regional incident like the 6-hour WEUR one on 2026-10-22, with elevated errors and no clean loss, moves leaders off the sick site within about 20 s through self step-down and `suspect` reports. That case stays `mitigated` until its Milestone 0 rows pass. A site deploy drains the site first, so it targets zero failed writes. An R2-wide outage still accepts pushes under 1 MiB. During a Cloudflare-wide outage, an install with a lifeboat still serves clones and reads to developers who enrolled.
+
+A Graftyard maintainer notices that the folds and the two-release format rule of `design/SHARED.md` survive from the earlier design in `history/DESIGN.md`, whose cells do not. Its database and failover machinery is replaced by one consensus module they must own and test hard. A group has one entry in flight, and group commit packs every command of a round into it. Releases roll one site script per day through `graft-ops`, an in-account executor of signed intents. Followers on the previous release refuse entries they cannot decode, and a refusal from a follower on an older release deposes the leader that wrote it. Self-hosted means the customer runs the same artifact in its own Cloudflare account with no vendor token.
+
+AI coding agents use this design as GHES clients, through GitHub Apps, REST, webhooks, and checks, so the base adds no GHES path for agents. A 500-agent fleet on one monorepo forced base changes. They are hot-network git cache fan-out from a per-site hot pool, lazy test merges under a budget, admission classes by origin and behavior, a smaller inline cap on hot groups that yields during R2 outages, a log byte cap per member, and hot clone-cache entries in both warm buckets. With them come agent refusals and a head-bound agent gate in `decide`, provenance and protected-path checks in `validate`, host-owned session refs, and revocation of stateless installation tokens (journeys 4 and 9). Leases on paths and refs are chain state on the repository's group, checked against the leader's entry time and extended only by a recorded stall (`ExtendLeases`), and the layer serves them with an activity feed and a task API under `/api/graftyard/v1`. The agent layer itself, its remote MCP server, controller, and cost, is in `design/AGENT-LAYER.md`.
+
+## Usage (caller's view)
+
+**Developer, managed.** Nothing changes from GHES targeting (`design/SHARED.md`, "Wire compatibility", reused whole).
+
+```
+gh auth login --hostname graftyard.dev
+git clone https://graftyard.dev/acme/monorepo.git            # HTTPS, protocol v2, partial clone allowed
+git clone git@graftyard.dev:acme/monorepo.git                 # SSH through Spectrum, if Milestone 0 passes on the plan
+git push --atomic origin main release hotfix                  # one entry, two sites, then "ok"
+gh pr merge 42 --squash && gh pr view 42 && gh pr list        # all three read the base chain's leader
+```
+
+**Developer, during a Cloudflare-wide outage, at a BYOC or self-hosted install that runs a lifeboat.** The lifeboat is a DNS-only hostname that the install publishes in advance. Lifeboat reads are opt-in per client. Each developer enrolls once while Cloudflare is up, and `actions/runner` and apps do not follow the lifeboat.
+
+```
+graftyard lifeboat enroll --host lifeboat.acme.example     # once: mints a lifeboat:read token that the main host refuses,
+                                                           # stored in gh's hosts file and a git credential helper
+git -c url."https://lifeboat.acme.example/".insteadOf="https://git.acme.example/" fetch   # read-only, typically ~30 s behind
+GH_HOST=lifeboat.acme.example gh pr list                                                   # reads work, writes get 503
+curl -sI https://lifeboat.acme.example/api/v3/meta | grep -i x-graftyard-lifeboat-lag     # the published lag
+```
+
+**Operator, BYOC or self-hosted (both in a Cloudflare account the customer owns).**
+
+```
+graftyard init --account $A --zone git.acme.example --customer-key customer.pub  # mints the install id; writes install.toml, creates nothing
+graftyard sites add --script graft-site-a --region enam --jurisdiction us   # DO classes, container class, bucket, trust anchor; latency-checked
+graftyard sites add --script graft-site-b --region weur
+graftyard sites add --script graft-site-c --region apac
+graftyard sites add-spare --regions eeur,wnam,oc                     # one spare per continent: no members, no warm containers
+graftyard genesis --out genesis.unsigned                             # creates graft-front, the edge, graft-ops, Workflows; drain and executor keys
+graftyard sign genesis.unsigned --out genesis.signed                 # offline, on the machine that holds the customer key
+graftyard install --genesis genesis.signed                           # the empty Release group accepts only a genesis that matches the anchor
+graftyard placement set default tri --sites A,B,C                    # refuses two sites in one region
+graftyard placement set eval-org solo --site A                       # Solo: evaluation only, no region-loss guarantee, no SLO
+graftyard vault init --account $V                                    # required in every mode; $A's tokens cannot reach $V
+graftyard runners init --account $R                                  # hosted Actions runners in their own account
+graftyard admin bootstrap                                            # one-time sign-in link minted by graft-ops
+graftyard release roll 2026.44                                       # signs and submits the release's next intent; rerun until done
+graftyard lifeboat init --host lifeboat.acme.example                 # registers the host's own key in a customer-signed entry
+# Account-separated option: each site in its own account, members over signed HTTPS through site Workers.
+graftyard sites add --account $B --script graft-site-b --region weur --link https
+```
+
+**Call sites inside the code (Rust compiled to WebAssembly through workers-rs [inference]).**
+
+```rust
+// edge Worker, receive-pack: stage, validate, place, commit, report.
+let pack = pack_store.place(net, body.capped(plan_cap).tee_to(site_pair)).await?;  // two buckets, If-None-Match: *
+let push = Push { updates, atomicity, pack, actor, options, request, provenance, protected, changed };
+let ticket = group(ChainId::Repo(repo)).commit(push).await?.ticket;      // Admitted within CALL_DEADLINE, or a CallError
+let acked = group(ChainId::Repo(repo)).outcome(ticket).await?;           // waits up to AGENT_WAIT plus one round
+report_status(&acked)                                                    // takes &Acked, so "ok" cannot precede the quorum
+
+// edge Worker, `gh issue list --label bug`: read on the leader, after the lease is proven.
+let view = group(ChainId::Repo(repo)).fresh(arrived).await?;            // Fresh only while the leader holds its lease
+view.query(IssueFilter { labels: vec!["bug".into()], sort: Sort::Updated, ..Default::default() })
+
+// any receipt or member call that misses CALL_DEADLINE: report the leader to a follower on another site. The hedge is
+// only this report, and the command is never forwarded to a second member.
+suspect(&follower_on_other_site, colo, term).await;
+
+// SSH front container outbound handler: the same calls, through bindings, never through the public zone.
+let ticket = group(ChainId::Repo(repo)).commit(push).await?.ticket;
+let acked = group(ChainId::Repo(repo)).outcome(ticket).await?;
+```
+
+## Stack
+
+| Product | Status | Used for |
+| --- | --- | --- |
+| Workers | GA | `graft-front` (forwards to the edge over a `fetch()`-based service binding with a version override from the signed `EdgePointer`); the edge (HTTPS git, REST, GraphQL, web assets; calls `graft-ops` the same way with the signed `OpsPointer`); three site scripts that define each site's Durable Object and container classes; `graft-ops` (signed intents, API-calling crons, installation-token minting); container outbound handlers; `graft-runners` in the runner account (hosted-runner demand, JIT configs, Sandbox start and destroy) |
+| Durable Objects (SQLite-backed) | GA | Group members and learners: Raft log, lease, folds (SQLite and FTS5), consumer cursors; git cache shards that own containers; derived objects with no quorum (Shape, Identity): one `Inbox` per account, `SearchShard` FTS5 shards per residency domain, one `RateCounter` per rate-limit key; per-site derived `RunnerBroker`, `LogRelay`, and `HookSequencer` objects (Shape, Identity) |
+| R2 | GA | Pack and index copies (one bucket per site), clone cache, snapshots and archives, Actions blobs, lifeboat change feed, the release bucket the vendor writes signed bundles into; the vault account's locked copy |
+| Containers | GA | Upstream git in git cache shards (index-pack, upload-pack, merge-tree, repack) under the `default` scheduling policy; SSH front running sshd and cloudflared |
+| Sandbox SDK (Sandboxes) | GA | Hosted Actions runners, one Sandbox per job, started and destroyed by `graft-runners` in a separate runner account |
+| Spectrum | GA | Public port 22 for git over SSH, a paid add-on on Pro and Business |
+| Cloudflare Tunnel | GA | Spectrum origin: cloudflared replicas inside the SSH front containers |
+| DNS | GA | Authoritative DNS, including the DNS-only lifeboat hostname and the CNAME that delegates its `_acme-challenge` name to a validation zone in a separate account |
+| WAF and rate limiting rules | GA | Abuse limits on clone, API, and login at the edge |
+| Queues | GA | Webhook, notification, search-index, and lifeboat-feed fan-out from chain cursors |
+| Workflows | GA | `ReplaceMember` and `RestorePlacement`, imports, repository transfers, network compaction, `MetaSplitter` for child groups, and the `LeaveEvaluation` group moves |
+| Cron Triggers | GA | In `graft-ops`, every job that calls the Cloudflare API (bucket location, Analytics Engine reads for learners); in site scripts, pack sweeper (including orphan multipart aborts), GC, fold audit; in `graft-runners`, the 5-minute hosted-runner sweep |
+| Secrets Store | beta | `graft-ops` API tokens, the Tunnel token, and the key that wraps the installation-token signing key, which puts it on the minting path; `SecretsWrapKey` for Actions secrets and hook secrets; `HostedRunnersAppKey` in the runner account; rotation without a new script version |
+| Email Routing | GA | Reply-by-email for issues and pull requests |
+| Email Sending (Email Service) | beta | Notification and password email, off every core path |
+| Workers Analytics Engine | GA | Per-repository and per-group traffic counters, learner placement input, SLO data points |
+| Workers Logs | GA | Request and error logs |
+| Basin Pipelines | GA | Stream audit entries and SLO events into Iceberg tables |
+| Basin Catalog | GA | Iceberg tables for audit retention and SLO history |
+| Basin SQL | GA | Operator queries over audit and SLO tables; never serves a user request |
+| Access | GA | Staff and admin console sign-in only |
+| Data Localization Suite | GA | Managed EU placements: Regional Services so EU traffic is decrypted in the EU |
+| workerd | GA [inference; runtime GA; `localDisk` experimental; `localDocker` development only] | The lifeboat, and evaluation installs on customer hardware |
+
+Status cells copy `research/cloudflare.md`, first table. The workerd qualifiers come from `workerd.capnp` lines 807 to 808 and 836 to 838 at commit `ec3982b2` (`history/review/cloudflare-selfhost-walk.md` F1).
+
+## Shape
+
+**Sites, not services, are the failure unit.** A site is one Worker script in the install's account (`graft-site-a`, `graft-site-b`, `graft-site-c`). The script defines the site's member and git cache Durable Object classes. It defines the site's container classes, constrained to the site's region with the `regions` placement option (https://developers.cloudflare.com/containers/concepts/placement/). It owns one pack bucket. A site script has no public route. The default cell is A = enam, B = weur, C = apac. Residency cells add D = wnam, E = eeur, F = oc. Each install also pre-creates one spare site per continent (for example eeur, wnam, oc) with no warm containers and no members except one canary group, which replays a corpus of current formats on the spare's own site day of every release. Every script binds the spares from install (below), so a replacement needs no control-plane call and stays on the lost site's continent. In BYOC and self-hosted, `graft-front`, the edge, `graft-ops`, the zone, and Spectrum sit in the same account, and none holds chain state.
+
+**Managed cells.** Bindings cannot cross accounts, so one edge on `graftyard.dev` cannot bind members in many cell accounts [inference from service bindings, whose target "must be on your Cloudflare account", https://developers.cloudflare.com/workers/runtime-apis/bindings/service-bindings/]. A front account holds the zone, `graft-front`, the edge, and the global `Names` and `Tokens` groups on its own three sites. The front edge resolves the owner's cell from `Names`, or from the cell bits of a `DbId` for `/repositories/{id}`, `/user/{id}`, node ids, and installation ids, and calls that cell's edge Worker over Ed25519-signed HTTPS. It reads each cell's `Release` pointers the same way. Inside a cell, members replicate over bindings. A partial proxy failure on a cell hostname cuts that cell's client traffic, and replication inside the cell continues [inference].
+
+Each of these faults maps to one site:
+
+- A region loss, or a gray regional incident once drain or step-down has moved leadership away.
+- A bad Graftyard deploy, because each site script rolls on its own day ("Install operations"). A Durable Object runs the version of the script that defines its class, and "will only be reset when it is assigned a different version" (https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/). Any new version of a site script resets its members the same way, including a secret, variable, binding, or container config change (https://developers.cloudflare.com/workers/configuration/secrets/), so every such change is a site-day operation.
+- A bad site setting, such as a wrong jurisdiction or region constraint in one script's config.
+
+Every group has one voting member per site, so each of these faults removes at most one voter of every group. That keeps a majority [inference]. A location hint is a `get()` parameter that only the first call respects (https://developers.cloudflare.com/durable-objects/reference/data-location/), so the hint table is compiled into callers (the edge, `graft-front`, and site scripts). A wrong hint is an edge failure that can misplace new members of every site, and the latency check below refuses them.
+
+Account-scoped faults reach all three sites in the default. These are a bad account setting, a revoked or leaked account token, an operator or abuse action on the account, a Workers runtime release to the account's cohort, and the account's shared Container quota. The 2025-02-06 abuse action was aimed at one bucket and disabled all of R2 by mistake (`research/cloudflare-uptime.md` finding 7). The vault account holds a copy that none of the install's tokens can reach. The account-separated option contains the intended scope of such an action, and no split contains the mistaken one.
+
+**Members reach each other through Durable Object bindings.** At install, each site script binds the member classes and buckets of every other active, spare, and residency site with `script_name`, which names "the Worker where the Durable Object is defined, if it is external to this Worker" (https://developers.cloudflare.com/workers/wrangler/configuration/). The edge Worker and the script that runs the Workflows bind all of them the same way, and the compiled hint table covers the spares, so `ReplaceMember` onto a spare creates no script version. A binding call runs inside Cloudflare's runtime and never uses the zone's public hostnames, so a proxy failure that breaks HTTP for some zones, like December 5, 2025, should not cut replication [inference: no page states the internal route of a Durable Object call; a written answer from Cloudflare is requested before Milestone 1]. Object routing is still shared by all three sites.
+
+**Account-separated sites (option).** A customer who wants account isolation puts each site script in its own account and the zone, `graft-front`, and the edge in a fourth. Members then reach each other over HTTPS through each site's Worker, with Ed25519-signed requests. That contains account faults to one voter, except in the fourth account, which holds the zone and edge and carries all client traffic. It costs replication over the public proxy. A December 2025 class failure on the ring hostnames stalls commits for its duration, and each member call adds a site Worker request and its latency (Milestone 0).
+
+Location comes from documented controls plus direct measurement. DO jurisdictions pin `eu` and `us` (https://developers.cloudflare.com/durable-objects/reference/data-location/), and they stay wherever residency allows. Hints are "best effort" (same page). So when a member joins, it takes the median of 20 binding round trips to each other voter, and `Placement::new` refuses a pair under 30 ms [guess threshold: intra-region round trips are a few ms, enam to weur about 80 ms]. A member repeats the check at most once a day, and only on a day its group served a request, so the check never wakes an idle group. Each member keeps its own measurements (`Rtt`), outside `GroupConfig`, so a check commits no entry. R2's get-bucket API returns the bucket's `location` (https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/), so `graft-ops` refuses a misplaced bucket at install. A check that fails or errors is a no-op plus an alarm. Only a positive mismatch read twice 24 h apart starts a repair.
+
+```rust
+// ---- Sites and placement ----
+pub enum Region { Enam, Wnam, Weur, Eeur, Apac, Oc }              // DO and R2 hint names that spawn locally
+pub enum Jurisdiction { Eu, Us }
+pub struct SiteId(u8);
+/// One Worker script pinned to one region. Its DO classes, container classes, bucket, and release are its own.
+/// An `Oc` site lists ["OC", "APAC"] as its container regions, and for container placement it is not a separate region.
+pub struct Site { pub id: SiteId, pub script: ScriptName, pub account: AccountTag, pub region: Region,
+                  pub jurisdiction: Option<Jurisdiction>, pub bucket: BucketName, pub release: Release, pub link: SiteLink,
+                  pub spare: bool /* pre-created per continent: only a canary group, no warm containers; rolls on
+                                     its own site day, and keeps its images until that day */ }
+pub enum SiteLink {
+    Binding { member_class: ClassName },                          // default: same account, DO binding with script_name
+    Https { ring_host: Hostname, key: Ed25519Public },            // account-separated option and managed front-to-cell
+}
+pub enum MemberKind {
+    Full,
+    Witness,   // stores (term, index, digest), never content: used for residency
+    Learner,   // stores content, never votes, serves read-index reads: hot groups only
+}
+/// `do_name` is "{chain}#{generation}#{kind}{slot}": `kind` is `f`, `w`, or `l`, and `slot` is the member's voter or
+/// learner position, so a learner beside its group's voter on one site, or two learners on one site, never share an
+/// object. Bootstrap members take the record's generation. A member added later, by a retry, a replacement, or a move,
+/// takes one above `Placement.generation`, so it never wakes a removed member's object. Round trips are in `Rtt`.
+pub struct Member { pub site: SiteId, pub kind: MemberKind, pub slot: u8, pub generation: u32, pub do_name: Box<str> }
+/// One row per other voter in each member's own SQLite, outside `GroupConfig` and the log, so a check writes no entry.
+/// A member measures when it joins. After that it measures again only after it serves a request on a day it has not
+/// measured yet, inside that request's work, so the check never wakes an idle group. `Placement::new` reads the joining
+/// members' rows.
+pub struct Rtt { pub peer: SiteId, pub median_ms: u16 /* of 20 binding round trips */, pub at: Timestamp }
+/// Built only by `Placement::new`, which refuses two voters in one region or one site, a voter pair under MIN_PAIR_RTT,
+/// fewer than two Full voters, and, when the install separates accounts, two voters in one account. `Placement::solo`
+/// builds the one-voter `Solo` placement and needs the install's signed `evaluation` flag. `Placement::from_record`
+/// builds a group's first placement from its `PlacementRecord` and nothing else.
+pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 16>,
+                       home: SiteId /* preferred leader site, the owner's home; transfer restores it */,
+                       generation: u32 /* highest member generation this group has named */, _private: () }
+/// Where one owner's chains, or one system chain, live. An owner's record is the `NamesEvent::Placement` row on
+/// `account_shard(owner)`. It covers the owner's `Authz`, `Identity`, `Actions`, and repository chains, and the network
+/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it, and a new
+/// owner copies the install account's record, which `graftyard placement set default` writes. A system chain's record
+/// is in the signed genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites`
+/// are logical: `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember` named.
+/// Changing an owner's record bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves each
+/// of the owner's groups, child groups included, through `Joint`, enumerated from the old sites' `MemberRegistry` rows
+/// after the new record commits, and clears `moving_from` last.
+pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
+                             pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
+pub enum SystemChain { Release, Names, Tokens, Ids }
+/// How a caller finds a group. It uses the `GroupConfig` it cached from the group's last `NotLeader` or `ReplyMeta`.
+/// Without one, it builds the bootstrap voter names from the chain's record and calls them in record order. If none
+/// answers with a config, it reads the chain's row in the `MemberRegistry` of each record site, then repeats both steps
+/// for `moving_from`. Any member that holds a config, a removed one included, answers with its latest committed one.
+/// The edge finds the record from the route: the owner's `Names` rows for `o/r` and owner routes,
+/// `NamesEvent::RepoOwner` for `/repositories/{id}` and for a network's root repository, and the cached `Release` view
+/// (genesis, or a later `LeaveEvaluation`) for system chains.
+/// Carried by every member reply. A caller whose cached config is older than `config_index` takes the config from the
+/// next `NotLeader`, or asks that member for it.
+pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_index: Index }
+/// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`,
+/// no requests, and `at` taken from the record, so every voter builds the same bytes and any voter may propose it.
+/// Term 1 holds only that entry. A member with no committed config serves no read, grants no vote, and stores only
+/// that entry, after it reads the same record generation from the record's source itself (the `Names` leader, or
+/// genesis). Two edges that create a group at once propose identical entries. The member that took the creating call
+/// campaigns for term 2 once a quorum stores the entry, commits its `Noop`, then decides the call's command, and
+/// leadership moves to `home` by transfer. The `Release` group's record comes from the genesis it accepts.
+pub fn bootstrap(chain: ChainId, record: &PlacementRecord) -> LogEntry;
+pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);    // [guess]
+pub enum PlacementName {
+    Tri,     // A enam, B weur, C apac, all Full: survives a region, a continent, a site deploy
+    Na3,     // enam, wnam, weur, all Full: lower latency for North America, does not survive an NA-wide event
+    Us2w,    // enam (us), wnam (us) Full, weur Witness: content stays in the US
+    Eu2w,    // weur (eu), eeur (eu) Full, enam Witness: content stays in the EU
+    Apac2w,  // apac, oc Full, wnam Witness; their containers may share APAC capacity
+    Solo,    // one Full member on one site. Relies on the platform's 3-of-5 follower confirmation. RPO 0 for a machine
+             // or data center, unknown for a region; RTO is Cloudflare's restart; no availability SLO. Evaluation only.
+}
+pub const LEARNER_AT: u32 = 500;                                  // group read rate (req/s) that adds learners
+pub const MAX_LEARNERS: usize = 16;
+/// Daily `graft-ops` Cron Trigger plus Analytics Engine counters: regions to add learners in, for one group.
+pub fn place_learners(load: &GroupLoad) -> ArrayVec<Region, 16>;
+
+// ---- Chains: the reference design's chain model, with groups in place of a table ----
+pub enum ChainId { Repo(RepoId), Network(NetworkId), Authz(AccountId), Identity(AccountId),
+                   Tokens(TokenShard), Names(NameShard), Actions(AccountId, u8), Ids, Release,
+                   RepoMeta(RepoId) /* a repository's metadata child group; CHILD_GROUP_AT */ }
+/// `cell` (8 bits) | `block` (29) | `offset` (16), so every id stays below 2^53. The cell's `Ids` group (on `Tri`) leases
+/// blocks to group leaders, and a group commits `EntryBody::IdBlock` before it assigns from one, so a new leader resumes
+/// at the next free id. Gaps happen, reuse never. Issue numbers stay per-repository fold counters. The managed front
+/// routes `/repositories/{id}`, `/user/{id}`, node ids, and installation ids to a cell by the cell bits.
+pub struct DbId(i64);
+pub struct Term(u64);
+pub struct Index(u64);
+pub struct Digest([u8; 32]);
+/// Row in each member's `log` table, keyed by index. `prev` chains digests, so a gap or a changed entry is refused.
+/// `requests` maps each request id to the range of its events in `body`, so a duplicate is answered from them.
+pub struct LogEntry { pub term: Term, pub index: Index, pub prev: Digest, pub format: Format, pub tiers: TierSet,
+                      pub at: Timestamp, pub requests: SmallVec<[(RequestId, Range<u32>); 4]>,
+                      pub extend: Option<ExtendLeases>, pub body: EntryBody }
+/// SHARED's `Event` gains `Names(NamesEvent)`, `Tokens(TokensEvent)`, and `Actions(ActionsEvent)` (Identity, below).
+pub enum EntryBody { Events(Vec<Event>) /* <= 1.5 MB including inline packs; DO rows cap at 2 MB */,
+                     Config(GroupConfig), Release(ReleaseEntry), Noop /* first entry of every term */,
+                     IdBlock { base: DbId, len: u32 } /* <= 2^16 */, Archived(Archived), Promoted(Promoted) /* Packs */,
+                     Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
+/// The recorded stall. A member persists `stalled_since` at the earliest durable marker: a follower's first `suspect`
+/// report, a candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE.
+/// Time a command spends queued in admission is not a stall. The next entry the group commits carries
+/// `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`) and Actions job lease
+/// with `expires > since` moves `expires` by `by`. Idle time never counts, because an idle group sets no marker.
+/// `decide` compares `expires` with the entry's `at`, reads compare it with the leader's leased clock, and expiry needs
+/// no command. Clients time expiry themselves from `expires`.
+pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
+/// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
+/// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
+pub enum GroupConfig { Normal(Placement), Degraded { placement: Placement, lost: SiteId },
+                       Joint { old: Placement, new: Placement } }
+/// One row per member, written before any reply leaves (DO output gate), so a restart never forgets a vote or a promise.
+pub struct MemberState { pub term: Term, pub voted_for: Option<SiteId>, pub commit: Index, pub applied: Index,
+                         pub promise_until: Timestamp,           // no vote for a rival until then
+                         pub led_term: Option<Term>,             // a restarted leader resumes this term after one round
+                         pub no_lead_until: Option<ReleaseId>,   // an older follower refused our uncommitted entry; clears
+                                                                 // when our release changes or `Release` records a
+                                                                 // rollback of the refuser's site
+                         pub cannot_follow: SmallVec<[SiteId; 2]>, // same-or-newer refusers, until their release changes
+                         pub transfer: Option<TransferId>,       // the leader's transfer in progress, or the voter's last
+                                                                 // accepted one
+                         pub stalled_since: Option<Timestamp>,   // cleared when an entry carrying `extend` commits
+                         pub boots: [Timestamp; 2],              // the last two boot times
+                         pub stepped_down_at: Option<Timestamp> } // our last leadership ended by STEP_DOWN then
+pub const LEASE: Duration = Duration::from_secs(9);              // leader serves reads alone while it holds this
+pub const ELECTION_AFTER: Duration = Duration::from_secs(10);    // follower may campaign only after its promise lapses
+pub const DRIFT: Duration = Duration::from_millis(500);          // subtracted from the leader's own lease end [guess]
+pub const CALL_DEADLINE: Duration = Duration::from_secs(1);      // receipt and member-to-member calls, hedged
+pub const COMMIT_RETRIES: u8 = 2;                                // per commit-path member call, outside the 10% budget
+/// A leader steps down when, over `window_s`, its commit-path error rate passes `commit_errors` or its storage
+/// confirm p99 passes `confirm_p99_ms`.
+pub struct Health { pub window_s: u16, pub commit_errors: f32, pub confirm_p99_ms: u32 }
+pub const STEP_DOWN: Health = Health { window_s: 10, commit_errors: 0.05, confirm_p99_ms: 500 };  // compiled [guess]
+pub const SUSPECT: (usize, Duration) = (2, Duration::from_secs(10));  // distinct colos reporting, and the window
+/// Pre-vote and transfers refuse a candidate whose two `boots`, or whose `stepped_down_at`, fall inside it. A voter that
+/// has seen no leader for 2 x ELECTION_AFTER waives it.
+pub const RESET_QUARANTINE: Duration = Duration::from_secs(300);
+/// Member SQLite bytes at which a repository's metadata tier moves to a child group (Milestone 7). It caps the tier at
+/// 10 GB minus LOG_MAX_BYTES, the core tier, and a margin [guess margin].
+/// Split. The leader reads `ctx.storage.sql.databaseSize` (https://developers.cloudflare.com/durable-objects/api/storage-api/)
+/// after each snapshot. At CHILD_GROUP_AT it commits
+/// `MetaSplit { child: RepoMeta(repo), at }` on `Repo(repo)`, a core entry and the commit point, with `at` its own index.
+/// From `at` the parent refuses a metadata-only command or read with `Moved { child }`, and the edge caches that and
+/// routes metadata work to the child, found through the owner's record like `Repo(repo)`. A transfer moves both groups.
+/// Seed. The follower that writes snapshots takes a metadata snapshot at `at`. The `Audit` consumer starts one
+/// `MetaSplitter` Workflow per split, with the repository id as instance id. Once that snapshot is in two buckets, it
+/// has the child commit `MetaSeed { at, snapshot }` after its bootstrap `Config` and `Noop`. Child members install the
+/// snapshot as their fold, and the child decides nothing before `MetaSeed`. Then it commits `MetaDropped` on the
+/// parent, whose `apply` drops its metadata tables. Metadata writes get 503 with `Retry-After` from `at` to `MetaSeed`.
+/// Tiers. The parent keeps only the core tier and the child only the metadata tier. A child command lists `Repo(repo)`
+/// in `deps` for collaborators, rules, and settings. `tier_of` tags `IssueOpened` Core plus Metadata after a split, so
+/// the parent keeps the issue-number counter.
+/// Both tiers. A command that touches both tiers commits its whole entry on the parent first, and the parent applies
+/// only the core rows. The finisher `meta_finish` appends the entry's metadata events to the child as `MetaHalf`. `prev`
+/// is the parent's previous both-tier index (`at` for the first), so the child refuses a half out of parent order and a
+/// duplicate changes nothing. The edge runs `meta_finish` before it answers. An edge whose child command names an issue
+/// number the child lacks runs it and retries, and `Audit` runs it for any half missing after a minute.
+/// Consumers. An event is delivered from the parent entry that carries it, so consumers skip `MetaHalf`. A consumer's
+/// child cursor passes `MetaHalf { parent: k }` only after its parent cursor passes k, so a comment on #n is never
+/// delivered before #n was opened.
+/// Repair. `RestoredTo` touches only refs and runs on the parent. `RepoReset` to time t runs `ResetTo` on each chain at
+/// its own last index with `at <= t`. For t before the split, the child loads the parent's newest metadata snapshot at
+/// or below the parent's index for t and replays the parent's archived entries to it, inside the 35-day window.
+/// Feed. The parent keeps its log, indexes, and feed ring, and every `ActivityEvent` comes from a parent entry, so a
+/// split changes no feed cursor and causes no 410.
+pub const CHILD_GROUP_AT: u64 = 8 << 30;
+pub enum SplitEntry { MetaSplit { child: ChainId, at: Index }, MetaSeed { at: Index, snapshot: Digest },
+                      MetaHalf { parent: Index, prev: Index, events: Vec<Event> }, MetaDropped }
+/// One import entry (SHARED, `rest:migrations`). `apply` applies each `event` with `created` and `author` in place of the
+/// entry's `at` and actor, and `merged` records a merged pull request with no tree-diff check.
+pub struct ImportBatch { pub import: Ulid, pub items: Vec<ImportItem> }
+pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestamp, pub author: AccountId,
+                        pub merged: Option<(ObjectId, Timestamp, AccountId)> }
+
+// ---- Leadership ----
+/// Raft leadership transfer. The leader stops appending and serving `fresh`, brings `to` to its last index, and sends
+/// `TimeoutNow`. `to` must be undrained and hold the leader's last index. While it runs, every AppendEntries carries
+/// `transfer: Some((to, transfer_id))`, acks to those rounds extend no lease, and a voter disregards its promise to the
+/// old leader only for a transfer vote that names the `transfer_id` of the last AppendEntries it accepted [inference
+/// from Raft section 3.10]. A transfer that has not completed within one LEASE is abandoned: the leader sends
+/// `transfer: None` and serves `fresh` again only after one full round. A leader transfers when its site is drained,
+/// when STEP_DOWN trips, when a follower on an older release refuses its uncommitted entry, and when its group's `home`
+/// has recovered and caught up.
+pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
+/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A follower that gets
+/// reports from two colos within 10 s stops granting promises to a leader that is still renewing, and restores them
+/// after 2 x the SUSPECT window or on a higher term. A follower whose promise has lapsed campaigns on one report, or when
+/// its own read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven.
+pub async fn suspect(follower: &Stub, from: Colo, term: Term) -> Result<Verdict, SuspectError>;
+/// One per (observer site, target site), living on the observer's site. Edges and members there count calls to the
+/// target site that miss CALL_DEADLINE. `graft-ops` drains a target only when both other sites' objects report its burn.
+pub struct SiteHealth { pub observer: SiteId, pub target: SiteId, pub calls: u64, pub missed: u64 }
+
+// ---- The write path ----
+/// The only write path for chained state. It runs in the leader member, with one entry in flight per group. Every
+/// command that arrives during a round goes into the next entry, up to 1.5 MB. Once the entry's command set is frozen,
+/// the leader reads each distinct dependency and each distinct `CredentialShard` once through `fresh`, in parallel, so
+/// a revocation or suspension binds every command decided after it, however long the command queued. Each command's
+/// `decide` sees the fold at `applied` plus the earlier commands of the same entry. The leader
+/// proves its lease, appends at last + 1, sends to both followers at once (and to learners, which never count), and
+/// resolves the command's ticket when the quorum rule holds:
+///   Normal, all Full:     leader + 1 follower       (2 regions, 2 site scripts)
+///   Normal, 2 Full + W:   both Full members         (2 regions; the witness only votes)
+///   Degraded:             surviving Full + Witness  (1 content copy; stated in "Downtime")
+///   Solo:                 the member alone          (the platform's 3-of-5 followers; stated in "Downtime")
+/// Every ticket in an entry, a refusal included, resolves only when that entry commits, because a refusal may rest on an
+/// earlier command of the same entry. An entry whose commands were all refused is still appended, with no events.
+/// `commit` answers within CALL_DEADLINE with `Admitted { ticket }` or a `CallError`. `outcome` waits for the result
+/// with a deadline of AGENT_WAIT plus one round. Deadlines, hedges, retries, `SiteHealth`, and `suspect` apply only to
+/// receipts and member-to-member calls, never to time a command spends queued. A hedge is only a `suspect` report to a
+/// follower on another site. It never forwards the command, so a command is in flight at one leader at a time. A ticket
+/// from a deposed term returns `NotLeader`, and the caller re-sends with the same request id (`RequestId`).
+pub async fn commit<C: Command>(g: &Leader, cmd: C) -> Result<Admitted, CallError>;
+pub async fn outcome<C: Command>(g: &Leader, ticket: Ticket) -> Result<Acked<C::Out>, CommitError<C::Err>>;
+pub struct Admitted { pub ticket: Ticket }
+pub struct Ticket { pub term: Term, pub seq: u64 }
+/// Any reply a member gives when it cannot lead the call. `config` is its latest committed config with full member
+/// names, or `None` when it has none, so callers follow moves, regenerations, and learners without a lookup.
+pub struct NotLeader { pub term: Term, pub leader: Option<SiteId>, pub config: Option<(Index, GroupConfig)> }
+/// Every edge-to-member and member-to-member message is a stored-format record under SHARED's two-release rule. A
+/// caller sends a new command, message kind, or field only after `FormatsEnable` has enabled its format, so an edge on
+/// N+1 talks format k to leaders on N. A member that cannot decode a message answers `Unsupported` and changes nothing.
+/// The edge renders it as 503 with `Retry-After: 5` [guess] and counts it as a retryable error, never as a refusal.
+pub struct Unsupported { pub release: ReleaseId, pub format: Format }
+pub enum CallError { NotLeader(NotLeader), Unsupported(Unsupported) }
+/// Minted by the edge, one per client request, and reused for every re-send of that request's command.
+pub struct RequestId(Ulid);
+/// Per-group core-tier fold table `request(id, index, events)`, filled by `apply` from each entry's `requests` and
+/// kept REQUEST_RETENTION after the entry's `at`. A command whose id has a row is not decided again: `outcome` returns
+/// `replay` of the stored events with the stored index. A command whose id matches one already queued or in flight
+/// joins that ticket. A refused command leaves no row, so its re-send is decided again.
+pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);   // [guess]; above the 24 h orphan sweep
+/// The largest encoded command. It sits below the 1.5 MB entry, so one command always fits an empty entry. The edge
+/// encodes each command before `commit` and refuses one over the cap: REST and GraphQL with 422 [guess], git as in
+/// SHARED, "Refs and pushes".
+pub const COMMAND_MAX: usize = 1_200_000;                        // bytes [guess]
+/// What the leader re-reads for one command once per entry: the actor's `Account` row, and the `Tokens` shard row of
+/// SHARED's `Credential` (a stored token's shard, `jti_shard` of a stateless token, `fingerprint_shard` of an SSH key).
+/// Web sessions, runner JWTs, and job runtime tokens name only the `Account` row. Commands that `graft-ops` or a
+/// consumer submits name neither. A missing, revoked, or suspended row refuses the command with 401.
+pub struct CredentialShard { pub account: Option<AccountId>, pub key: Option<CredentialKey> }
+pub enum CredentialKey { Token { shard: TokenShard, hash: [u8; 32] }, Jti { shard: TokenShard, jti: Ulid },
+                         SshKey { shard: TokenShard, fingerprint: Fingerprint } }
+pub trait Command { type Out; type Err;
+    fn tiers(&self) -> TierSet;
+    /// Built from the command's `Principal` (`actor.credential`).
+    fn credential(&self) -> CredentialShard;
+    /// Read from the fold at `applied`, never from the command. For a repository command, the owner's `Authz` and the
+    /// enterprise's come from the core tier's `RepoSettings { owner, enterprise }`, so a transfer changes them by entry.
+    fn deps(&self, fold: &Fresh) -> SmallVec<[ChainId; 3]>;    // read once per entry through `fresh`
+    fn decide(&self, fold: &Fresh, deps: &[Fresh]) -> Result<(SmallVec<[Event; 4]>, Self::Out), Self::Err>;  // pure
+    /// The output for a duplicate request, rebuilt from the events its first commit stored. `Push` reports a ref that
+    /// is absent from them as `Stale`.
+    fn replay(&self, events: &[Event]) -> Self::Out; }
+/// Built only inside `outcome`, from the acks the leader counted. `report_status` and every 2xx renderer take `&Acked`.
+pub struct Acked<T> { pub index: Index, pub out: T, quorum: QuorumProof }
+struct QuorumProof { sites: SmallVec<[SiteId; 3]>, regions: u8 /* >= 2 unless Degraded or Solo */ }
+/// Followers run this before they store entry k+1, using the release they run. They have applied k first, which the
+/// append for k+1 makes possible because it carries commit index k. The entry must decode, chain to `prev`, and use an
+/// enabled format. For `Refs` and `Merged`, the follower replays the entry's events in order on a scratch transaction
+/// over its fold at k and checks each `expect` against that running state, then rolls the transaction back. Each
+/// refusal carries the refuser's release. Only when the refuser runs an older release than the leader and the entry is
+/// uncommitted does the leader truncate its uncommitted tail, transfer (to the refuser when it qualifies), and persist
+/// `no_lead_until`. If both followers on the leader's own release refuse one uncommitted entry, the leader treats it as
+/// its own defect, truncates the uncommitted tail, and alarms. On any other refusal (same or newer release, or a
+/// committed entry) the leader keeps leading, adds the refuser to `cannot_follow` for that group, alarms, and
+/// `graft-ops` halts the site day. A member truncates an undecodable uncommitted tail at boot.
+pub fn verify(e: &LogEntry, fold: &FoldView) -> Result<(), Refusal>;
+
+// ---- Merge queue ----
+/// One pull request's place in a base branch's queue. `group_tip` is the base plus the changes of this entry and every
+/// earlier one, built by `GitCacheShard::merge` with the tree-diff check. `parent_tip` is the previous entry's
+/// `group_tip`, or the base tip for the first entry. A built entry has the queue ref
+/// `refs/heads/gh-readonly-queue/{base}/pr-{n}-{parent_tip}` at `group_tip` [unverified which SHA GitHub names].
+pub struct MergeQueueEntry { pub pr: PrNumber, pub group_tip: Oid, pub parent_tip: Oid }
+/// SHARED's `RepoEvent::Queue`, core tier, on the base repository's chain. `Enqueued` pins the pull request's head.
+/// `GroupBuilt` appends entries after the last built one, or replaces every built entry when its first `parent_tip` is
+/// the base tip, and `refs` creates and deletes the queue refs in the same entry. `Ejected` removes one pull request and
+/// deletes the queue refs of it and of every later entry, which wait to be built again. `Landed` rides in the
+/// `QueueMerge` entry and deletes the landed entries' refs. The `Webhooks` consumer renders
+/// `merge_group.checks_requested` from `GroupBuilt`, `merge_group.destroyed` from `Ejected` and `Landed`, and
+/// `pull_request.enqueued` and `pull_request.dequeued` from `Enqueued` and `Ejected`.
+pub enum QueueEvent {
+    Enqueued { n: IssueNumber, base: RefName, head: Oid, actor: Actor },
+    GroupBuilt { base: RefName, entries: SmallVec<[MergeQueueEntry; 8]>, refs: Vec<RefUpdate>, pack: Option<PackRef> },
+    Ejected { n: IssueNumber, reason: EjectReason, refs: Vec<RefUpdate> },
+    Landed { base: RefName, through: IssueNumber, refs: Vec<RefUpdate> } }
+pub enum EjectReason { CheckFailed { name: Box<str> }, CheckTimeout { name: Box<str> }, HeadMoved, Conflict,
+                       Protection(RuleViolation), Closed, Dequeued }
+/// impl Command for the first three `QueueEvent`s, `tiers() = Core`, admitted in the MergeQueue lane. `credential()`
+/// comes from `actor.credential`. The edge submits `Enqueue` and `Dequeue` for REST and GraphQL callers, and the
+/// `MergeQueue` consumer submits `Build` and `Eject`. `decide` refuses `Enqueue` unless the pull request is open, not
+/// queued, and passes `check_protection` with its required checks left out. It refuses `Build` unless every entry's
+/// pull request is still queued at its pinned head and the `parent_tip` chain holds from the base tip or from the last
+/// built entry. It refuses `Eject` of a pull request that is not queued.
+pub struct QueueOp { pub op: QueueAction, pub actor: Principal }
+pub enum QueueAction { Enqueue { n: IssueNumber, head: Oid }, Dequeue { n: IssueNumber },
+                       Build { base: RefName, entries: SmallVec<[MergeQueueEntry; 8]>, pack: DurablePack },
+                       Eject { n: IssueNumber, reason: EjectReason } }
+/// impl Command, `tiers() = Core`, MergeQueue lane: one group's landing, all or nothing. `plans` are built entries in
+/// queue order from the queue's head, and `entry` is the last of them. On a running state, `decide` checks that the
+/// base tip equals the first `parent_tip`, and for each plan that `base_old` is its entry's `parent_tip`, `commit` is its
+/// `group_tip`, `head` is the pinned head of an open pull request, and `check_protection` passes with required checks
+/// read on the queue refs: every entry's under `Grouping::AllGreen`, the last entry's under `HeadGreen`. Any failure
+/// refuses the whole command with the failing pull request's number. Otherwise one entry carries a `Merged` per pull
+/// request, each with its own base `RefUpdate` from `parent_tip` to `group_tip` and `by` set to the enqueuing user,
+/// then `Landed`. So the base moves only to a `group_tip` that descends from its current value, and queue tips only
+/// fast-forward. Out: each pull request's merge commit. Err: `(IssueNumber, MergeError)`.
+pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: MergeQueueEntry, pub actor: Principal }
+/// The `MergeQueue` consumer (SHARED, "Event fan-out") reads the base chain's `Queue`, `Refs`, `RequiredCheck`,
+/// `PrClosed`, and `Rule` events. Per base branch, under the rule's `MergeQueueSettings`, it does four things.
+/// It builds: once `min_merge` pull requests wait or `min_wait_minutes` passes, and fewer than `max_build` entries are
+/// built, it asks `GitCacheShard::merge` for each next entry on the previous `group_tip`, places the pack, and submits
+/// `Build`, or `Eject { Conflict }` on a conflict. It ejects: a failed required conclusion on a queue ref, no conclusion
+/// within `check_timeout_minutes`, a head push, or a close submits `Eject`. It lands: when the oldest built entries, at
+/// most `max_merge`, pass their checks, it submits `QueueMerge`, and a refusal ejects the named pull request. It rebuilds:
+/// a base move that no `QueueMerge` made submits a `Build` from the new base tip. A redelivered event costs at most a
+/// refusal, because `decide` refuses a stale chain.
+
+// ---- Agent load and agent safety (journey 9; the layer is design/AGENT-LAYER.md) ----
+/// Leader admission inside group commit. Lanes in every entry are Human and MergeQueue, then Agent up to AGENT_FLOOR of
+/// capacity, then Bot, then Agent up to AGENT_SHARE. Capacity is the group's measured entries/s times commands per entry
+/// at the current byte mix, and the Agent cap is a token bucket of AGENT_SHARE x capacity. A command is Agent when its
+/// actor is an `AgentApp` (`Graftyard MCP` included), when a ref under an agent prefix or a PR with `AgentMeta` caused it
+/// (PrSync, test-merge records, check runs, statuses), when an App token's push carries a trailer that classes it
+/// (`TrailerKey`), when a user token sends `X-Graftyard-Agent-Session` (which grants nothing), or when its actor, user
+/// tokens included, passes DEMOTE_PER_MIN write commands on this group. A trailer never classes a user-token push on its
+/// own. Fair queuing by App or user runs inside each class. Overflow waits up to AGENT_WAIT. Git then gets HTTP 200 with
+/// report-status `ng <ref> agent admission full, retry after <n>s` and a `remote:` line, and REST gets 429 with
+/// `retry-after` and a "secondary rate limit" message. Under pressure only `PackRef::Stored` pushes queue,
+/// AGENT_QUEUE_MAX caps queued agent commands, and the edge refuses before staging.
+pub enum AdmitClass { Human, MergeQueue, Bot, Agent }
+pub const AGENT_SHARE: f32 = 0.5;                                // [guess]
+pub const AGENT_FLOOR: f32 = 0.2;                                // of capacity, which Bot cannot take [guess]
+pub const DEMOTE_PER_MIN: u32 = 60;                              // GitHub's content limit is 80 a minute
+pub const AGENT_WAIT: Duration = Duration::from_secs(30);
+pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent commands and bytes per group [guess]
+/// A group above HOT_PUSHES pushes/s inlines only up to INLINE_MAX_HOT while `PackStore::place` succeeds. When placement
+/// fails or a bucket's readiness probe is red, it inlines up to INLINE_MAX, and LOG_MAX_BYTES archives the extra later.
+pub const INLINE_MAX_HOT: usize = 256 << 10;                     // [guess]; INLINE_MAX stays 1 MiB
+pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
+/// Per member, beside the 30-day rule. Above it the leader archives the oldest entries to `R2Key::Archive` in two
+/// buckets before followers truncate them, so RPO stays zero. Check runs and statuses are kept 90 days (settable from 1
+/// to 400) as GHES 3.22 does, and `PathSet` rows are deleted when their PR closes.
+pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
+/// Hot networks spread over k shards per warm site (`shards_for`). The network's first shard reports `NetworkLoad`
+/// each minute, and the network group's leader commits k with hysteresis, with no API call or cron.
+pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the k */, pub queue_depth: u32 }
+pub fn fanout(load: &NetworkLoad, k: u8) -> u8;  // up above 0.75 for 3 min, down below 0.4 for 1 h [guess], at most 8
+pub const FANOUT_MAX: u8 = 8;
+/// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
+/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute. A
+/// compiled TEST_MERGE_BUDGET of the k shards' vCPU serves pushes and dispatch first, then GETs. Over it `mergeable` is
+/// null, or GraphQL `UNKNOWN`, as GHES 3.22 documents.
+pub enum TestMerge { Current { merge: Oid, base: Oid }, Stale { since: Oid } }
+pub const TEST_MERGE_BUDGET: f32 = 0.25;
+/// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
+/// or when an admin flagged it as an `AgentApp` and set `confine`. A flagged App without `confine` is `Bot`, though its
+/// commands take the Agent admission class and its PRs carry `AgentMeta`. `Graftyard MCP` and user tokens are never
+/// `ActorKind::Agent`, so neither these refusals nor `AgentsExclusive` bind them. For an `Agent`, `decide` refuses an
+/// APPROVE review, `Merge`, ready-for-review, ruleset and bypass edits or use, repository dispatch, workflow dispatch and
+/// re-run, label writes outside the repository's allowlist, branch rename, release and tag creation, webhook and
+/// deploy-key edits, statuses and check runs whose context starts with `graftyard/`, a ref update outside its task's
+/// prefix (a third-party App's `confine` prefix), a Graftyard-run push with no live `AgentTask`, and a push with any
+/// `protected` hit. Refusal texts name the allowed prefix or the protected path. Actions runs for its pushes follow the
+/// repository's agent policy and use fork-PR semantics (read-only token, no secrets) even after approval, until
+/// `AgentGate` holds for that exact head. A push whose token carries a `task` claim lists the base repository's chain in
+/// `Push::deps()`, read `fresh`, so in fork mode the fork group's `decide` checks the task's liveness, the base's
+/// `AgentPolicy`, and the base's leases there. `protected` and `changed` then take their merge base against the base's
+/// default-branch tip.
+pub enum ActorKind { User, Bot, Agent(AgentActor) }
+/// `task` is the installation token's `task` claim. `requester` is the task's `requester`, never a value the controller
+/// supplies. A third-party App's comes from the `External` task its session names.
+pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub requester: Option<UserId> }
+/// The task API's row (`/api/graftyard/v1/repos/{owner}/{repo}/tasks`). `app` is the controller's App for a
+/// `GraftyardRun` task and the creating App for an `External` one, and `creator` is whoever sent `POST`. The host derives
+/// `prefix` from `session` (`refs/heads/graftyard/<session>/`) and never reads it from the body. `snapshot` is the create
+/// index. A token request's additive `graftyard_task` field must name a live `GraftyardRun` task. The requesting App must
+/// be the task's App or the install's `graftyard-workspace`, and every repository the token covers must be the task's
+/// repository or its workspace fork. The minted token carries the task as its `task` claim.
+/// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
+/// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
+/// Only `POST .../cancel` sets Cancelled, and a task whose `installation` the owner `Authz` read no longer finds active
+/// reads as Cancelled, the same check that releases its leases. Only the host sets TimedOut: `decide` and reads treat a
+/// task with no update for TASK_IDLE as timed out. In both derived cases the task's next command records the state.
+/// The task's App sets the other states with `PATCH`.
+/// Cancelling or finishing a task releases its leases in the same command. `state` uses GitHub's agent task states.
+/// Core tier: `session`, `kind`, `state`, `prefix`, `requester`, and `app`, about 100 bytes. Metadata tier: the rest.
+pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: TaskApiState, pub prefix: Option<RefPattern>,
+                       pub requester: Option<UserId>, pub app: AppId, pub installation: InstallationId, pub creator: Actor,
+                       pub issue: Option<IssueRef>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
+                       pub pr: Option<PrNumber>, pub summary: Box<str> }
+pub enum TaskKind { GraftyardRun, External }
+pub enum TaskApiState { Queued, InProgress, Completed, Failed, Idle, WaitingForUser, TimedOut, Cancelled }
+/// A task's id. For a `GraftyardRun` task the host mints a lowercase hyphenated UUID at create, and `prefix` is
+/// `refs/heads/graftyard/<uuid>/`. For an `External` task the creating App names it: 1 to 64 bytes of `[a-z0-9._-]`,
+/// starting with a letter or digit, with no `..` and no `.lock` suffix, unique among that App's tasks on the repository.
+/// Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is the UUID, or `<app_id>.<name>`. An App may send
+/// its own bare `name`, which the host scopes to the calling App.
+pub enum SessionId { Run(Uuid), External { app: AppId, name: Box<str> } }
+/// `POST .../tasks` for a `GraftyardRun` task returns 422 while the org's `OrgPolicy.agents_enabled` is off, its default.
+/// It needs a human user credential with `contents: write`, never an installation token, an `AgentApp`'s user token, or
+/// a demoted or agent-session actor. The one exception is `graftyard-agent`, the controller's App, from an issue whose latest `Assigned`
+/// entry names its bot, with that entry's actor as `requester`. Every other App creates `External` tasks only. Creating
+/// or cancelling a `GraftyardRun` task sends the controller a first-party-only delivery on the event pipeline to its
+/// webhook hostname, which no other App can subscribe to, so GHES clients never see it. It is the `graftyard_task`
+/// event, signed with the `graftyard-agent` App's webhook secret (`design/AGENT-LAYER.md`, "API reference").
+pub const TASKS_OPEN_PER_REQUESTER: u16 = 100;                  // open tasks per requester, or per App without one [guess]
+pub const TASKS_OPEN_PER_REPO: u16 = 2_000;                     // [guess]
+pub const TASK_IDLE: Duration = Duration::from_secs(86_400);    // [guess]
+/// `Merge` of a PR with `AgentMeta` is refused unless `head` is the current head and `satisfied_by` is a writer who is
+/// not the agent App, not the requester, and did not push to that head. Only an APPROVE review sent with a credential
+/// that is neither an `AgentApp`'s nor MCP-issued writes it. `token/scoped` for `Graftyard MCP` takes the additive
+/// `graftyard_grant` and `graftyard_write` fields and stores the grant id and its `WriteScope` on the token's `Tokens`
+/// row, and the host refuses approve and merge to a token whose scope lacks them. The commit status renders from the
+/// row for display.
+pub struct AgentGate { pub pr: PrNumber, pub head: Oid, pub satisfied_by: UserId }
+/// Plus the install's harness template paths and the paths a repository's agent policy adds.
+pub const PROTECTED_PATHS: &[&str] = &[".github/workflows/**", ".github/actions/**", ".gitmodules", "CODEOWNERS",
+    ".github/CODEOWNERS", "docs/CODEOWNERS", "**/AGENTS.md", "**/CLAUDE.md", "**/GEMINI.md", ".github/agents/**",
+    ".github/copilot-instructions.md", ".github/instructions/**", ".claude/**", ".cursor/**", ".cursorrules",
+    ".codex/**", ".mcp.json", ".vscode/**"];
+/// From `validate`, for each ref update by an `Agent` or under an agent prefix, the paths that the new tip's tree changes
+/// against its merge base with the default branch and against the old tip, where they match the protected list. This
+/// catches an existing outsider commit pushed under an agent ref.
+pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 4]> }
+/// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push` carries
+/// `changed` beside `protected` and `provenance`, `decide` matches it against live Exclusive leases, and `PathSet.paths`
+/// is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by an `Agent` or under an agent
+/// prefix run `validate` on an empty staged pack, so they get all three outputs.
+pub struct ChangedPaths { pub refname: RefName, pub paths: Vec<Box<str>> /* <= PATHS_MAX */, pub truncated: bool }
+pub const PATHS_MAX: usize = 1_000;
+/// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves it
+/// empty and never fails the push. `decide` records `Session` only when the commit's pusher has a matching `AgentTask`
+/// or `AgentMeta`. Every other trailer stays `Claimed`, shown unlinked after https scheme and host checks.
+pub struct Provenance { pub commit: Oid, pub sources: SmallVec<[Source; 2]> }
+pub enum Source { Claimed { key: TrailerKey, value: Box<str> }, AiNote { note: Oid }, Session(SessionId) }
+/// Only GraftyardSession, ClaudeSession, AmpThreadId, and AssistedBy class a push. CoAuthoredBy is recorded, never classes.
+pub enum TrailerKey { GraftyardSession, ClaudeSession, AmpThreadId, CoAuthoredBy, AssistedBy }
+/// Host-owned. `decide` refuses every update under `refs/graftyard/` except appends by the install's
+/// `graftyard-workspace`, and deletion runs only through a retention command. Session logs are always `PackRef::Stored`.
+/// Never in v0 or v1 advertisement, and listed by v2 `ls-refs` only to a `ref-prefix` that starts with it. The vault,
+/// lifeboat, and `RestoredTo` carry it.
+pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
+/// A claim by one holder on paths or refs of one repository: core-tier rows on its group, written by `LeaseAcquire`,
+/// `LeaseRenew`, and `LeaseRelease`. Live while an entry's `at` is before `expires`, checked on read and in `decide`, so
+/// expiry needs no command and compaction drops expired rows. `at` is the leader's clock and never decreases, so after a
+/// leader change a lease can look live up to DRIFT longer, or lapse up to DRIFT sooner, which is advisory slack. A stall
+/// extends leases only through the base's `LogEntry.extend` (`ExtendLeases`, Chains), never by idle time. A lease whose
+/// holder fails the owner `Authz` read that `decide` already does counts as released. Uninstalling or suspending an App
+/// fails that read for its leases and its tasks alike, so they read as released and cancelled with no sweep.
+pub struct Lease { pub id: LeaseId /* ULID */, pub holder: LeaseHolder, pub scope: LeaseScope, pub mode: LeaseMode,
+                   pub intent: Box<str> /* <= 280 bytes, untrusted, shown through the trust view */,
+                   pub granted: Timestamp, pub expires: Timestamp }
+/// `actor` keys SHARED's `Actor`: a user (a site admin as its user) or an App installation (a job's token as the Actions
+/// App's). Other actors hold no lease. `app` is the App behind a user-to-server token. `session` is the task the holder
+/// works for. An App token must name one on acquire: its `task` claim, or for a third-party App an `External` task the
+/// same App created.
+pub enum ActorId { User(UserId), App { app: AppId, installation: InstallationId } }
+pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session: Option<SessionId> }
+/// Gitignore-style: `*` matches within one path segment and `**` across segments. Unlike gitignore, every glob is
+/// anchored at the root unless it starts with `**/`, and there is no negation. Two globs overlap when some path matches
+/// both, found by walking both segment lists. A `RefPattern` uses the same syntax over full ref names.
+pub struct PathGlob(Box<str>);
+pub struct RefPattern(Box<str>);
+pub struct LeaseScope { pub paths: SmallVec<[PathGlob; 8]> /* <= 32 globs */, pub refs: SmallVec<[RefPattern; 2]> }
+/// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block and are
+/// returned as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
+/// task, and a literal first segment in every path glob, so `**`, `*`, and `*/...` are refused. Past EXCLUSIVE_MAX after
+/// `granted` it reads as Shared until it expires. Plan-block leases are Shared, held by the editor, who needs push
+/// access, and count toward LEASES_PER_HOLDER and PLAN_LEASES_PER_REPO.
+pub enum LeaseMode { Shared, Exclusive }
+pub const LEASE_TTL: Duration = Duration::from_secs(600);        // default; a holder may ask for 60 s to 3,600 s
+pub const EXCLUSIVE_MAX: Duration = Duration::from_secs(4 * 3_600);
+pub const LEASES_PER_HOLDER: u16 = 8;                           // live leases per holder per repository
+pub const LEASES_PER_APP: u16 = 1_000;                          // live leases per App per repository [guess]
+pub const PLAN_LEASES_PER_REPO: u16 = 500;                      // live plan-block leases per repository [guess]
+pub const LEASES_PER_REPO: u16 = 4_000;                         // live leases per repository
+/// `AgentPolicy.leases`. Advisory never refuses a push. AgentsExclusive refuses an `ActorKind::Agent` push whose `changed`
+/// paths overlap another holder's live Exclusive lease, and names the lease and its holder. With `truncated` set, a
+/// changed directory overlaps any glob under it. Exclusive globs are indexed by literal prefix, so the check fits in
+/// group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
+pub enum LeaseEnforce { Advisory, AgentsExclusive }
+// Agent-layer entries: variants added to SHARED's event enums, each with its `tier_of`. Core rows are what pushes,
+// merges, and minting read. `LeaseAcquire` sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
+pub enum AgentRepoEvent {   // flattened into `RepoEvent`
+    Assigned { n: IssueNumber, assignees: SmallVec<[AccountId; 2]>, actor: Actor },          // Metadata
+    IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
+    TaskCreated(AgentTask),                                       // Core and Metadata, as PrOpened
+    TaskUpdated { session: SessionId, state: Option<TaskApiState>, pr: Option<PrNumber>, summary: Option<Box<str>>,
+                  actor: Actor },                                 // Core for state, Metadata for pr and summary
+    AgentGate(AgentGate),                                         // Core, in the APPROVE review's entry
+    AgentPolicy(AgentPolicy),                                     // Core
+    PathSet(PathSet),                                             // Metadata, in the push's entry
+    InsightVerdict(InsightVerdict),                               // Core; its check runs and labels are Metadata
+    LeaseAcquire { lease: Lease, plan_block: bool },              // Core
+    LeaseRenew { id: LeaseId, expires: Timestamp },               // Core
+    LeaseRelease { ids: SmallVec<[LeaseId; 4]>, by: Actor },      // Core
+}
+// `ExtendLeases` rides on the base's `LogEntry.extend`, not as an event, and moves Core lease rows. A `Refs` entry whose
+// push carries `provenance` is Core and Metadata. `PrOpened` with `AgentMeta` keeps `AgentMeta.app` in the core
+// `pull_head` row for `Merge`. `AuthzEvent` gains `AgentApp(AgentApp)`, written only on the install's own
+// `Authz(Genesis.account)` chain. Every command whose actor is an App lists that chain in `deps()`, so `decide` reads
+// the rows `fresh`, and admission uses the leader's cached copy. `OrgPolicy` gains `agents_enabled: bool` (default
+// false), `agents_workspace: WorkspaceMode` (default `Fork`, into `<org>-agents`), and `code_mode: bool` (default
+// false). `IdentityEvent` gains `McpGrant { grant: McpGrant, revoked: bool }`. Both chains are core only.
+pub enum WorkspaceMode { Fork, InRepo }
+
+// ---- The read path ----
+/// A fold that includes every entry acknowledged before `arrived`. Only the leader builds one, and only after its term's
+/// `Noop` is committed and applied: from its fold while `now < lease_end - DRIFT`, else after one read-index round to
+/// one follower, which also renews the lease. Read-index answers wait for the same `Noop`. Every `Fresh` read touches
+/// SQLite after its lease check, with no in-isolate fold cache, so a replaced instance cannot answer.
+/// A follower answers reads by batching read-index requests to the leader every 10 ms and waiting until applied.
+/// A learner does the same with one request in flight and at most one every 50 ms.
+pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
+/// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when that group
+/// cannot commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and
+/// fetches at `applied` for the flag's limit (default 4 hours); every write returns 503. Stale reads break
+/// read-your-writes across clients.
+pub fn stale(&self) -> Result<Stale<'_>, StaleError>;
+pub enum ReadView<'a> { Fresh(Fresh<'a>), Stale(Stale<'a>) }
+
+// ---- Release group (one per install, cell, and front account; placed on `Tri`) ----
+/// Every entry is signed over `Bound` plus its body, so it verifies once, on one install, at one position. `prev` is the
+/// digest of the last committed signed `ReleaseEntry`, and `Noop` and `Config` do not count. A pre-signed undo binds
+/// `parent` instead of `prev`. The group accepts an undo only while its parent is the current intent, and only when its
+/// bytes equal an entry of the parent's `undo` list, or of the `Resume` that replaced that list. Undo signatures are
+/// checked against the `Keys` that were current at the parent intent's index. The release-signing half of
+/// `FormatsEnable` ships in the release record and signs only the format. The group and `graft-ops` refuse any other
+/// signature by a key absent from the latest committed `Keys` (genesis carries the first), a `Keys` whose `generation` is
+/// not the latest plus one, and an intent past `not_after`.
+/// Signers. `Keys` takes the current customer key, and also the new one when it changes. Intents take the vendor or
+/// customer intent key, except `ReplaceMember`, which only the executor key signs, and `LeaveEvaluation`, which only the
+/// customer key signs. `Halt`, `Resume`, `Abort`,
+/// `SiteLost`, `StaleMode`, `LifeboatAdd`, `LifeboatRemove`, `RepoRestore`, and `RepoReset` take the customer key, so
+/// the vendor can sign no restore. `FormatsEnable` takes the release-signing key, which every mode registers, plus the
+/// customer key. `SiteMode` takes an intent key or `graft-ops`'s drain key, which signs nothing else. The executor key,
+/// also held by `graft-ops`, signs only `ReleaseUploaded`, `IntentStep`, `IntentDone`, `SiteRelease`, and
+/// `ReplaceMember`. The agents executor key signs only a `ReleaseUploaded` that names `AgentsFront` and `Controller`
+/// alone, and the `IntentStep` and `IntentDone` of a `ControllerRoll` or of a `Rotate` of an agents-account secret
+/// (`design/AGENT-LAYER.md`). `LifeboatDecoder` is accepted only under the key its `LifeboatAdd` registered.
+/// Self-hosted sets `vendor: None`.
+/// `decide` also refuses, and pages on: a `SiteDay`, a pointer, a `Rollback`, or an `Abort` whose release's
+/// `ReleaseUploaded.reads` lacks an enabled format (SHARED rule 4 and the registry's `rollbackBarrier`); an intent or
+/// undo naming a release with no `ReleaseUploaded`; a new intent while another is current, except `ReplaceMember`,
+/// which halts the current one; a drain-key `SiteMode { Drain }` while another site is drained; and an `EdgeRoll` that
+/// would drop a version that an undo of the current intent still names.
+pub struct Bound { pub install: InstallId /* from genesis */, pub group: ChainId, pub prev: Option<Digest>,
+                   pub parent: Option<IntentId> }
+pub enum ReleaseEntry { Genesis(Genesis), Keys(Keys), Intent(SignedIntent), SiteMode(SiteMode),
+                        ReleaseUploaded(ReleaseUploaded), IntentStep { intent: IntentId, step: u8 },
+                        IntentDone { intent: IntentId }, SiteRelease { site: SiteId, release: ReleaseId },
+                        Rollback { target: DayTarget, release: ReleaseId },           // undo only
+                        EdgePointer { pin: ReleaseId }, OpsPointer { pin: ReleaseId },   // undo only
+                        McpPointer { pin: ReleaseId }, ControllerPointer { pin: ReleaseId },   // undo only
+                        SiteLost { site: SiteId }, StaleMode { scope: Scope, until: Timestamp },
+                        LifeboatAdd { host: Hostname, key: Ed25519Public }, LifeboatRemove { host: Hostname },
+                        LifeboatDecoder { host: Hostname, release: ReleaseId }, FormatsEnable { format: Format },
+                        RepoRestore { repos: Vec<RepoId>, refs: Vec<RefName>, at: Timestamp, reason: Box<str> },
+                        RepoReset { repo: RepoId, at: Timestamp, reason: Box<str> },
+                        Halt { intent: IntentId },
+                        Resume { intent: IntentId, undo: SmallVec<[(ReleaseEntry, Signature); 8]> },
+                        Abort { intent: IntentId, target: ReleaseId } }
+/// `graft-ops` turns a committed `RepoRestore` or `RepoReset` into a `RestoredTo` or `ResetTo` command on each named
+/// repository, with `ChainId::Release` among its `deps`. Its `decide` checks that the `Release` entry names the
+/// repository, and its request id is that entry's index, so a retry changes nothing. `to` is the last index with
+/// `at <= t`. In managed, the cell's customer key is the operator's, so a restore is a support action.
+/// `Halt` stops the current intent at its next step and keeps it current, so its undos stay valid. `Resume` restarts it
+/// at its next step. A `Resume` of a vendor-signed intent after a `Keys { vendor: None }` must carry a non-empty `undo`
+/// re-signed by the customer key, which replaces the parent's list. `Abort` ends the intent's forward steps and refuses
+/// its undos. `graft-ops` then moves every site the intent touched, each on its own site day, and every script it
+/// pinned or rolled, to `target`, recording `IntentStep`s under the aborted intent until `IntentDone`.
+pub enum IntentState { Running { step: u8 }, Halted { step: u8 }, Undoing, Aborting { target: ReleaseId } }
+/// The first entry an empty `Release` group accepts, and only when `install` and the customer signature match the trust
+/// anchor: the `GRAFTYARD_INSTALL` and `GRAFTYARD_CUSTOMER_KEY` variables that Wrangler set on every script it created.
+/// `graftyard genesis` builds it unsigned after the sites exist, and the customer signs it offline. `account` is the
+/// install's own account, and genesis creates its `Authz(account)` chain for install-scope rows. A restore genesis names
+/// its source and cutoff ("Install operations", Whole-install restore).
+pub struct Genesis { pub install: InstallId, pub account: AccountId, pub keys: Keys, pub sites: SmallVec<[Site; 9]>,
+                     pub placements: SmallVec<[(SystemChain, PlacementRecord); 4]> /* Release, Names, Tokens, Ids;
+                                                                                     changed only by LeaveEvaluation */,
+                     pub evaluation: bool /* the signed `evaluation` flag; only LeaveEvaluation clears it */,
+                     pub restore: Option<RestoreFrom> }
+pub struct RestoreFrom { pub source: RestoreSource, pub cutoff: Timestamp }
+pub enum RestoreSource { Vault { account: AccountTag }, Lifeboat { host: Hostname } }
+pub struct InstallId(Ulid);                                       // minted by `graftyard init`
+pub struct ReleaseId([u8; 32]);                                   // SHA-256 of `release.json` (SHARED, registry)
+pub struct VersionId(Uuid);                                       // the Workers version id an upload returns
+/// One stored record format, as `LogEntry.format` names it: a record family and its version.
+pub struct Format { pub family: u16, pub version: u16 }
+pub struct FormatSet(SmallVec<[Format; 32]>);                     // sorted, no duplicates
+pub struct ImageRef { pub name: Box<str>, pub digest: Digest }    // digest-pinned, in the account's registry
+/// The chains a `StaleMode` flag covers.
+pub enum Scope { Install, Owner(AccountId), Repo(RepoId) }
+/// Committed by `graft-ops` under the executor key after it verified the release signature over `record` and uploaded
+/// every script as a version without deploying it. The group checks the same signature under `Keys.release`.
+/// Human-signed intents and undos name a `ReleaseId`, and `graft-ops` and `apply` resolve it to `VersionId`s from this
+/// entry. `reads` comes from the bundle's formats file, whose SHA-256 the signed record lists. The agents account's
+/// `graft-ops` commits its own `ReleaseUploaded` for `AgentsFront` and `Controller`.
+pub struct ReleaseUploaded { pub release: ReleaseId, pub record: Bytes, pub record_sig: Signature,
+                             pub versions: SmallVec<[(Script, VersionId); 16]>, pub images: SmallVec<[ImageRef; 4]>,
+                             pub reads: FormatSet }
+pub enum Script { Site(SiteId), Workflows, Front, Edge, Ops, Mcp, AgentsFront, Controller }
+/// The whole key set. `ring` holds the account-separated sites' Ed25519 keys, so every key rotates through `Keys`.
+/// `graftyard genesis` creates `drain` and `executor` in `graft-ops`'s Secrets Store, and `graftyard agents init`
+/// creates `agents_executor` in the agents account's, which a customer-signed `Keys` then adds.
+pub struct Keys { pub generation: u64, pub customer: KeyId, pub vendor: Option<KeyId>, pub release: KeyId,
+                  pub drain: KeyId, pub executor: KeyId, pub agents_executor: Option<KeyId>,
+                  pub ring: SmallVec<[(SiteId, Ed25519Public); 6]> }
+/// Members on a drained site hand off leadership within one lease and keep voting and storing. They campaign only when
+/// pre-vote finds no undrained voter that can lead. A drain-key `Drain` is ended only by a drain-key `Normal`, which
+/// `graft-ops` appends at its site day's undrain step, or, for an automatic drain, when both other sites' `SiteHealth`
+/// show the site under UNDRAIN_BURN for UNDRAIN_AFTER ("Install operations", Site day). An intent-key `Drain` is ended
+/// only by an intent-key `Normal`.
+pub struct SiteMode { pub site: SiteId, pub mode: Mode }
+pub enum Mode { Drain, Normal }
+pub struct IntentId(Ulid);
+/// Executed by `graft-ops` only for a release with a `ReleaseUploaded`, and only before `not_after`. Each kind runs the
+/// steps that ROLL_STEPS gives it ("Install operations", Site day). `graft-ops` commits `IntentStep` after each step
+/// passes its gate, so a restarted `graft-ops` reruns only the first unrecorded step, and every step is idempotent. It
+/// commits `SiteRelease` when a site serves one release at 100%, and `IntentDone` at the end. A release adds one
+/// `SiteDay` per spare and residency site, gated by a canary group on that site that replays a corpus of current
+/// formats. `ReplaceMember` and `RestorePlacement` run as Workflows ("Install operations", Site loss).
+pub enum Intent { SiteDay { target: DayTarget, release: ReleaseId }, ContainerDay { site: SiteId, release: ReleaseId },
+                  EdgeRoll { release: ReleaseId }, FrontRoll { release: ReleaseId }, OpsRoll { release: ReleaseId },
+                  McpRoll { release: ReleaseId }, ControllerRoll { release: ReleaseId },
+                  ReplaceMember { lost: SiteId, spare: SiteId /* on lost's continent */ },
+                  RestorePlacement { site: SiteId }, Rotate { secret: SecretName, slot: u8 /* 0 or 1 */ },
+                  LeaveEvaluation { sites: SmallVec<[Site; 6]>, placements: SmallVec<[(SystemChain, PlacementRecord); 4]>,
+                                    default: PlacementRecord /* the `Tri` records */ } }
+/// `Solo` to `Tri` on Cloudflare. Only the customer key signs it, and `decide` refuses it unless the flag is set. First
+/// `graftyard sites add` creates the new sites on the current release, and a site day for the existing site and an
+/// `EdgeRoll` bind them. `graft-ops`'s first step runs the latency check to each new site. The commit adds `sites` to
+/// the `Release` view, swaps each system chain's record (old one in `moving_from`), and clears `evaluation`, so
+/// `Placement::solo` refuses from then. `graft-ops` moves, one `IntentStep` each, through `Joint`: `Release`, then
+/// `Ids`, `Names`, and `Tokens`. It then writes `default` as the install's default record and over each owner record
+/// named `Solo`, one owner at a time [guess], which starts that owner's move Workflow ("Sites and placement"). It
+/// commits `IntentDone` when every owner's `moving_from` is clear.
+/// The Workflows script defines no member class, so its day skips drain and undrain.
+pub enum DayTarget { Site(SiteId), Workflows }
+/// Each rotatable secret has two Secrets Store slots, both bound at install, so `Rotate` switches slots with no new
+/// script version ("Install operations", Rotation runbook). The agents account's `graft-ops` holds `AgentsAppKey`,
+/// `WorkspaceAppKey`, and its own `DeployToken`, and `graft-runners` holds `HostedRunnersAppKey`. Only `graft-ops`
+/// reads `SecretsWrapKey`: it opens a job's secrets at `acquirejob` and unwraps hook secrets for `HookSequencer`.
+pub enum SecretName { DeployToken, ReadToken, TunnelToken, MintWrapKey, SshHostKeys, McpAppKey, McpClientSecret,
+                      InsightsAppKey, AgentsAppKey, WorkspaceAppKey, SecretsWrapKey, HostedRunnersAppKey }
+/// `undo` is pre-signed with the intent: a `Rollback` per day target, and a pointer pin per pinned script it rolls.
+/// `graft-ops` or an edge isolate submits one on a gate breach with no human signature. A committed undo ends the
+/// forward steps. `graft-ops` runs a `Rollback` as drain, N at 100%, then undrain, deploys N at 100% for a pinned
+/// script once the API answers, and commits `IntentDone`.
+pub struct SignedIntent { pub id: IntentId, pub issued_at: Timestamp, pub not_after: Timestamp, pub intent: Intent,
+                          pub release_sig: Signature, pub key: KeyId, pub sig: Signature,
+                          pub undo: SmallVec<[(ReleaseEntry, Signature); 8]> }
+/// Each pin as the fold holds it. `None` follows the script's deployment split, so a call carries no version
+/// override. `Some(v)` pins every pinned call to `v`, which is the swap-back. Only a pre-signed undo sets `Some`, and
+/// `apply` resolves its `ReleaseId` to the script's `VersionId` from that release's `ReleaseUploaded`. The next
+/// committed intent that rolls the same script sets `None`. No forward pointer move exists, so no key signs one.
+pub struct Pointers { pub edge: Option<VersionId>, pub ops: Option<VersionId>, pub mcp: Option<VersionId>,
+                      pub controller: Option<VersionId> }
+/// Each `graft-front`, edge, and site isolate, members included, caches the whole `Release` view (`Keys`, `Pointers`,
+/// site modes, `IntentState`, `SiteRelease`s, enabled formats, and flags) for POINTER_TTL. It refreshes from any
+/// `Release` member's applied state, never to a lower index. A failed refresh keeps the last value, and no request waits
+/// on the group. Every pinned call is a `fetch()`-based service binding, never RPC, because "Version overrides only apply
+/// to `fetch()`-based service binding calls" and "A version override will only be applied if the specified version is
+/// in the current deployment" (https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/).
+/// The edge returns the version it ran from its version metadata binding, and `graft-front` alarms on a mismatch. The
+/// managed front reads each cell's view over signed HTTPS.
+pub const POINTER_TTL: Duration = Duration::from_secs(5);         // compiled [guess]
+/// Stale reads matter when groups cannot commit, and the `Release` group may be one of them, so members and isolates
+/// also accept a `StaleMode` that has not committed. The edge verifies it against its cached `Keys`, and when `commit`
+/// fails it writes the flag to every reachable `Release` member's `pending` row, outside the log, and answers 202.
+/// Isolates read `pending` with the view and verify it again against their cached `Keys`. An uncommitted flag is honored
+/// only while `until` is in the future and at most STALE_MAX after the flag's arrival.
+pub const STALE_MAX: Duration = Duration::from_secs(24 * 3_600);  // compiled [guess]
+/// `POST /api/graftyard/v1/release/entries` takes one signed entry, encoded as stored (`Bound`, body, signatures), with
+/// no token, because the signatures are the credential. The edge checks them against its cached `Keys` before `commit`,
+/// under a WAF rate rule. 201 returns `{"index": n, "digest": "<hex>"}` after `Acked`. 409 returns
+/// `{"message": "stale prev", "prev": "<hex>", "index": n}` when `prev` is not the current digest, and the signer
+/// re-signs. 422 returns `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours
+/// apart, so an offline signature rarely meets a 409 [inference]. Reads are `GET /api/graftyard/v1/release/entries`
+/// (`design/AGENT-LAYER.md`, "API reference").
+/// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A member writes its row before it stores
+/// its first entry, and rewrites it on each config change. `ReplaceMember { lost }` and the owner-placement move find
+/// their groups by reading the surviving or old sites' registries and keeping rows whose `sites` include the site. Every
+/// group except `Solo` has a voter off a lost site, so the survivors' union is complete. The edge may look up a
+/// member's `do_name` here when the names it computes do not answer (Shape, "Sites and placement").
+pub struct MemberRegistry { pub site: SiteId, pub shard: u8 }
+pub struct RegistryRow { pub chain: ChainId, pub do_name: Box<str>, pub generation: u32,
+                         pub sites: SmallVec<[SiteId; 3]> }
+
+// ---- Packs ----
+pub struct PackId(Ulid);                                          // fresh for every placement
+pub enum PackRef { Inline(Bytes) /* <= 1 MiB, or INLINE_MAX_HOT on a hot group; lives in the entry */,
+                   Stored { id: PackId, checksum: [u8; 32], bytes: u64, sites: SiteSet } }
+/// Built only by `PackStore::place`: the bytes are in the buckets of two sites in two regions, each put with
+/// If-None-Match: *, and a container's `index-pack --strict` passed on the same bytes. `Solo` places one bucket. Each
+/// object's R2 custom metadata names its chain and `RequestId`. `decide` refuses a stored pack whose `PackId` time is
+/// older than PACK_COMMIT_WINDOW, so a pack that has not committed by then never will.
+pub struct DurablePack { pack: PackRef, _sealed: () }
+pub const PACK_COMMIT_WINDOW: Duration = Duration::from_secs(3600);   // [guess]
+/// Archives and snapshots are keyed by range and content digest, and each is put in two buckets. The leader commits
+/// `Archived` after both puts, and followers truncate only through a committed range whose key they can HEAD in two
+/// buckets, so a deposed leader's put never stands in for a range nobody holds. A snapshot's `from` is 0. A `Blob` is
+/// placed like a stored pack: create-only puts in two sites' buckets in two regions before its entry commits
+/// (`DurableBlob`, SHARED "Issues and pull requests"). An `ArchiveCache` object is derived, lives only in the warm
+/// site's bucket beside `CloneCache` entries, is named by no entry, and is rebuilt by `git archive` on a miss.
+pub enum R2Key { Pack { network: NetworkId, id: PackId }, Idx { network: NetworkId, id: PackId },
+                 InlineIdx { chain: ChainId, index: Index } /* `.idx` of an inline pack on a hot network */,
+                 Snapshot { chain: ChainId, tier: Tier, from: Index, to: Index, digest: Digest },
+                 Archive { chain: ChainId, from: Index, to: Index, digest: Digest },
+                 CloneCache { key: CloneKey, replica: u8 }, Export { minute: u64, seq: u32 },
+                 Blob { repo: RepoId, oid: Digest } /* SHA-256 of the bytes: LFS objects and release assets */,
+                 ArchiveCache { network: NetworkId, tree: Oid, format: ArchiveFormat } /* derived codeload archive */,
+                 Committed { of: Box<R2Key> } /* marker for a committed `Pack` or `Blob`, holding (chain, index) */ }
+pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub digest: Digest }
+/// After `Acked`, the leader puts one create-only `Committed` marker per stored pack and `Blob` its entry names, in
+/// the same two buckets. `Promoted` re-puts the markers of its range first, so markers are complete below each chain's
+/// last promotion. The orphan sweeper and the third-bucket filler list markers by network or repository, never chains.
+/// The sweeper deletes a pack or blob older than 24 h only when it has no marker and the chain named in its custom
+/// metadata has no `request` row for its `RequestId`. When the row exists, it writes the missing marker. An object
+/// older than REQUEST_RETENTION with neither is kept and alarmed.
+pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
+/// Before the leader archives a range, the network's home shard packs the objects of every inline pack the range names
+/// into one `DurablePack`, and the leader commits `Promoted`. It commits `Archived` for a range only after `Promoted`
+/// covers it. `Compacted.consumed` names promoted packs like any stored pack, never an inline one. Its `produced` may
+/// repeat objects of later inline packs, which GC drops [inference]. An inline pack has no `checksum`, so restore
+/// verifies it through its entry's digest chain.
+pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
+/// A shard rehydrates a network from every stored pack with a marker, minus the packs a `Compacted` consumed, plus the
+/// packs, inline or stored, named in each member chain's entries after its last `Promoted`, read from its leader.
+pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
+/// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
+/// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
+/// SNAPSHOT_BYTES of log have passed since the tier's last snapshot, and at least once on each day the group commits.
+/// It snapshots at one index, `to`, without pausing `apply`. Every fold row carries the index that last wrote it. While
+/// a snapshot runs, `apply` copies a row's prior value into `snap_undo` the first time it changes or deletes a row last
+/// written at or below `to`. The writer reads rows in primary-key order, in alarm-driven batches that each fit one
+/// request's limits, emits the `snap_undo` copy where one exists, and skips rows written after `to`. It uploads the
+/// frames as multipart parts to its own site's bucket and one other and sends the key to the leader. The leader HEADs
+/// both and commits `Archived` with `R2Key::Snapshot { from: 0, to }`, and the writer then drops `snap_undo`.
+pub enum SnapshotFrame { Rows { table: Box<str>, rows: Vec<Row> }, End(SnapshotTrailer) }
+pub struct SnapshotTrailer { pub chain: ChainId, pub tier: Tier, pub to: Index, pub term: Term, pub fold_digest: Digest,
+                             pub release: ReleaseId, pub format: Format, pub rows: u64 }
+pub const SNAPSHOT_EVERY: u64 = 100_000;                         // entries [guess]
+pub const SNAPSHOT_BYTES: u64 = 256 << 20;                       // [guess]
+/// Leader to a member whose next entry the leader has already archived. It names the newest committed snapshot of each
+/// tier and the archive objects from there to the leader's first log entry. The member loads the core snapshot,
+/// applies the archives, acks no AppendEntries until it has applied `through`, and then follows as usual. Its metadata
+/// tier loads lazily, as on any member. A `ReplaceMember` member and a new learner join the same way.
+pub struct InstallSnapshot { pub term: Term, pub core: R2Key, pub metadata: Option<R2Key>,
+                             pub archives: SmallVec<[R2Key; 8]>, pub through: Index }
+/// GC roots are each member chain's fold refs plus its `ref_log` fold table, which keeps every ref value of the last
+/// RESTORE_WINDOW. Cruft expires 14 days after an object leaves that set, and `RestoredTo` reads `ref_log`. Each tier
+/// keeps at least one snapshot at or below every index inside the window. The vault deletes a pack no sooner than
+/// RESTORE_WINDOW after the install's GC deletes it.
+pub const RESTORE_WINDOW: Duration = Duration::from_secs(35 * 86_400);
+/// Same response bytes for the same key: protocol v2 fetch with no haves is deterministic for a fixed ref state.
+pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Option<u32>, pub filter: Option<FilterSpec>,
+                      pub caps: CapSet }
+
+// ---- Git cache shards (derived) ----
+/// One container-backed Durable Object per (site, shard), under the `default` scheduling policy, because the
+/// `durable_object` policy is beta and "does not support `max_instances`"
+/// (https://developers.cloudflare.com/containers/configuration/scheduling-policy/). Networks map to shards by
+/// rendezvous hashing of (network, shard) within a site. Each shard keeps an LRU of bare repositories with reftable on
+/// its ephemeral disk, rebuilt by `rehydrate` (Packs), and holds nothing canonical. Each network is warm on
+/// its group's home site and the next site by rendezvous, on one shard per warm site, or on k shards when its git CPU
+/// passes one. The first of the k is its rendezvous shard among `count`, and the others come from the site's hot pool by
+/// rendezvous, so `count` never changes and no other network moves. Pushes validate on any caught-up shard of the k,
+/// chosen by rendezvous on the push id, and that shard stores an inline pack's `.idx` under `R2Key::InlineIdx`, so the
+/// others ingest it without indexing. Upload-pack, test merges, and predictions spread over all k. `AdmitClass` rides
+/// into each shard's work queue, so Human and MergeQueue validates and merges run first, and agent test merges,
+/// predictions, and clone misses are shed first. A hot network's clone-cache entries are written to both warm sites'
+/// buckets. Warm shards keep `sleepAfter` at 24 h. Per site, `max_instances` is the shard count plus the hot pool, so any
+/// two sites carry every network with both copies warm.
+pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
+pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
+pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
+/// Reserved per site at install as the expected hot networks [guess 1] times FANOUT_MAX - 1, in the shard class's
+/// `max_instances`, so it uses the tier's instance size: `standard-2` at 50 developers, `standard-3` at 300, and
+/// `standard-4` at 2,000. Each owner may hold at most its plan's share, so one owner's hot networks cannot take another's.
+pub const HOT_POOL: u16 = 7;
+/// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard has read each member
+/// chain's `Refs`, `Merged`, and `Promoted` entries and the network chain's `Compacted` entries. Every `CoreRefs` a
+/// leader hands a shard carries the chain's applied index. A shard behind it first reads the missing entries from that
+/// leader and fetches their packs, inline from the entry and stored from its own site's bucket or the other copy, so a
+/// second warm shard, or another of the k, learns every committed pack before it serves the network.
+pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
+impl GitCacheShard {
+    pub async fn validate(&self, staged: StagedPack, refs: &CoreRefs)
+        -> Result<(PackIndex, Provenance, SmallVec<[ProtectedHits; 1]>), PackError>;
+    pub async fn upload_pack(&self, req: FetchRequest, refs: &CoreRefs) -> Result<PackStream, GitError>;
+    pub async fn merge(&self, req: MergeRequest) -> Result<MergePlan, MergeError>;   // includes the tree-diff check
+}
+
+// ---- SSH front ----
+/// Outbound handler of the SSH front container class. `graft-sshd` calls virtual hosts (`tokens.graft`, `group.graft`,
+/// `pack.graft`, `git.graft`, `keys.graft`); the handler runs in the Workers runtime with the script's DO and R2 bindings.
+pub async fn ssh_outbound(req: Request, env: &Env, ctx: &OutboundCtx) -> Result<Response, SshError>;
+/// The service host key set: one Ed25519, one ECDSA P-256, and one RSA 3072 key, as github.com serves. The private keys
+/// live only in Secrets Store (`SecretName::SshHostKeys`, two slots). `graft-sshd` fetches them from `keys.graft` at
+/// start, which reads the active slot with `get()`, and holds them in memory only, so every replica on every site
+/// serves the same fingerprints. During a rotation sshd offers both slots' keys and announces them with OpenSSH's
+/// `hostkeys-00@openssh.com`, so clients with `UpdateHostKeys` learn the new set [inference]. `/api/v3/meta` keeps
+/// GHES 3.22's four properties unchanged (`research/wire-census.md` finding 34). The public keys of both slots and their
+/// fingerprints are served at `/api/graftyard/v1/meta/ssh`, an additive path, and in the install's admin docs.
+pub struct SshHostKeys { pub ed25519: Ed25519Public, pub ecdsa: EcdsaP256Public, pub rsa: RsaPublic, pub slot: u8 }
+
+// ---- Identity ----
+/// 1,024 shards per home family (na, eu, apac). A new token's secret is redrawn until its hash lands in the owner's
+/// family, about 3 draws on average, so its group's leader sits near the owner.
+pub struct TokenShard(u16);
+pub fn token_shard(secret: &[u8; 30]) -> TokenShard;
+pub fn fingerprint_shard(key: &Fingerprint) -> TokenShard;   // the uniqueness point for SSH fingerprints
+/// `DELETE /installation/token` commits the stateless token's `jti` and `exp` to the shard of a hash of the `jti`.
+/// Write-class requests check that shard on its leader, reads honor it within READ_CACHE, and the row expires at `exp`.
+pub fn jti_shard(jti: &Jti) -> TokenShard;
+/// Token hashes, SSH keys, `jti` rows, OAuth and sign-in codes, lifeboat token hashes, and installation-token verifying
+/// keys (on `TokenShard(0)`). `Names`, `Tokens`, and `Actions` chains have only a core tier.
+/// In `Stored`, `app` is the App behind a `ghu_` or `ghr_`, and `client` the OAuth client behind a `gho_`, `ghu_`, or
+/// `ghr_`. `resource_owner`, `repos`, and `permissions` belong to a `github_pat_`, and `permissions` also caps a `ghu_`.
+/// `paired` is the other token's hash on a `ghu_` and its `ghr_`: the `ghr_` secret is redrawn until its hash lands on
+/// the `ghu_`'s shard, so both rows commit in one entry and revoking either revokes both.
+/// `grant` and `write` are set only on a `ghu_` from `token/scoped` called by the install's `Graftyard MCP` App with the
+/// additive `graftyard_grant` and `graftyard_write` fields (`design/AGENT-LAYER.md`, "API reference"). The host refuses
+/// approve and merge to a row whose `write` is not `WriteApproveMerge`.
+/// `Code` rows are keyed by the hash of a device code, user code, authorization code, or `graftyard admin bootstrap`
+/// sign-in link, on the `token_shard` of that hash. A device code is redrawn until its hash lands on its user code's
+/// shard, so both rows commit in one entry. A row lapses at `expires` with no command, as a lease does: 900 s for a
+/// device code, 10 minutes for an authorization code [unverified for GHES 3.22], 15 minutes for a sign-in link [guess]. Approving a
+/// user code commits `CodeApproved`. An exchange commits `CodeUsed` first, then the new token's `Stored`, so a code
+/// never yields two tokens, and a failed second commit sends the client back to the start. The leader enforces a
+/// device code's polling interval from memory, so a leader change can skip one `slow_down`.
+pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: AccountId, scopes: ScopeSet,
+                                expires: Option<Timestamp>, sso_orgs: SmallVec<[OrgId; 2]>, app: Option<AppId>,
+                                client: Option<ClientId>, permissions: Option<PermissionSet>,
+                                resource_owner: Option<AccountId>, repos: Option<RepoScope>, paired: Option<[u8; 32]>,
+                                grant: Option<GrantId>, write: Option<WriteScope> },
+                       Revoked { hash: [u8; 32] }, SshKeyRemoved { fingerprint: Fingerprint },
+                       SshKey { fingerprint: Fingerprint, account: AccountId, repo: Option<RepoId> /* deploy key */ },
+                       JtiRevoked { jti: Jti, exp: Timestamp }, LifeboatRead { hash: [u8; 32], account: AccountId },
+                       VerifyingKey { kid: Kid, key: Ed25519Public, retired: Option<Timestamp> },
+                       Code { hash: [u8; 32], kind: CodeKind, client: Option<ClientId>, scopes: ScopeSet,
+                              account: Option<AccountId>, expires: Timestamp },
+                       CodeApproved { hash: [u8; 32], account: AccountId }, CodeUsed { hash: [u8; 32] } }
+pub enum CodeKind { Device { user_code: [u8; 32], interval: u8 }, User { device_code: [u8; 32] },
+                    Authorization { redirect: Url, pkce: Option<Digest> }, SignInLink }
+/// 1,024 shards per install or front account, on `Tri`. `account_shard` holds the account's `Account` row.
+pub struct NameShard(u16);
+pub fn name_shard(key: &NameKey) -> NameShard;
+pub fn account_shard(id: AccountId) -> NameShard;
+pub enum NameKey { Login(LoginKey), Email(Digest), Shortcode(Shortcode), App(AppId), AppSlug(Box<str>),
+                   Client(ClientId), Installation(InstallationId), Repo(RepoId) }
+/// Names hold only routes to an owner. The App's or OAuth app's record (keys, permissions, events, webhook, callbacks,
+/// and secret hashes) is SHARED's `AppRecord` or `OAuthAppRecord` on the owner's `Authz` chain. Registering an App
+/// claims `AppSlug` first, the commit point, then writes `AppRecord`, `AppRegistered`, and `ClientRegistered`, and
+/// `Audit` finishes a registration nobody finished. `Placement` and `RepoOwner` are "Sites and placement"'s.
+pub enum NamesEvent { LoginClaimed { key: LoginKey, account: AccountId, kind: AccountKind },
+                      Account { id: AccountId, suspended: bool, sessions_not_before: Timestamp },
+                      FormerName { key: LoginKey, account: AccountId }, Retired { owner: LoginKey, repo: RepoNameKey },
+                      Shortcode { code: Shortcode, enterprise: AccountId },
+                      EmailClaimed { email: Digest, account: Option<AccountId> }, AppRegistered { app: AppId, owner: AccountId },
+                      AppSlug { slug: Box<str>, app: Option<AppId> },
+                      ClientRegistered { client: ClientId, owner: AccountId, app: Option<AppId> },
+                      InstallationRegistered { id: InstallationId, app: AppId, owner: AccountId },
+                      Placement { owner: AccountId, record: PlacementRecord } /* on account_shard(owner) */,
+                      RepoOwner { repo: RepoId, owner: AccountId } /* on name_shard(NameKey::Repo(repo)) */ }
+/// SHARED's run, job, runner, and session events on an owner's `Actions` shards. `Job` applies `transition` against the
+/// job's version, and job leases extend only by `ExtendLeases`. The leader sets a DO alarm at the earliest `lease_until`
+/// or queue deadline and commits `LeaseExpired` or `QueueExpired` then. Only `RunOwner` writes `RunStatus`.
+pub enum ActionsEvent { RunCreated { run: WorkflowRun, jobs: Vec<JobSpec> }, RunStatus { run: RunId, status: RunStatus },
+    Job { job: JobId, version: u64, event: JobEvent }, Runner { id: RunnerId, record: Option<RunnerRecord> },
+    Session { runner: RunnerId, session: Option<RunnerSessionId> } }
+/// `hash(run.repo) % 16`: `/actions/runs` is one query. `Repo`-scope runners register there, `Owner`-scope on shard 0.
+pub fn actions_shard(run: &WorkflowRun) -> u8;
+/// Site-script classes, derived only, on their shard's leader site per cached `ReplyMeta`: the registration shard for a
+/// broker, the job's shard at `acquirejob` for a relay, which `FeedStreamUrl` names. A leader move starts a fresh object.
+/// Past BROKER_HELD_MAX a broker answers 503 with `Retry-After: 15`, and the runner polls again in a random 15 to 30 s,
+/// session intact [unverified: `BrokerMessageListener` backoff]. A relay hibernates its sockets and keeps 1,000 lines [guess].
+pub struct RunnerBroker { pub owner: AccountId, pub scope: RunnerScope }   pub struct LogRelay { pub job: JobId }
+pub const BROKER_HELD_MAX: u32 = 2_000;   // held long polls per broker object [guess]
+/// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer.
+/// Delivery Workers take attempts from the site's queue. One unreported for 30 s is re-sent under its GUID.
+pub struct HookSequencer { pub owner: AccountId }
+/// `graft-runners`, a Worker in the runner account, is SHARED's hosted-runner service. It holds `HostedRunnersAppKey`,
+/// reaches the install only through the front, sweeps on a Cron Trigger, and runs each runner in one Sandbox named by
+/// the runner id, `standard-3` or, for a 4-core label, `standard-4`. It starts none past this share of account vCPU.
+pub const RUNNER_VCPU_STOP_PCT: u8 = 70;   // [guess]
+/// SHARED's `IdentityEvent` gains `Record(UserRecord)` on the actor's group. These gate nothing. The `Counts` consumer
+/// reads every `Record` and writes the derived watcher index, in the Bot class and at most one entry a second, to each
+/// repository's metadata tier: `watcher(account, starred_at, watching, ignored, src)`, `thread_sub(thread, account,
+/// subscribed, src)`, and the counts. `src` is the record's `Identity` index, and a row never takes an older one, so a
+/// redelivery changes nothing. `/stargazers` and `/subscribers` page it. `Notify` reads it on a follower, with the
+/// thread's author, assignees, commenters, and mentions from the same fold. A refold of the repository rebuilds it.
+pub enum UserRecord { Star { repo: RepoId, on: bool }, Watch { repo: RepoId, subscribed: bool, ignored: bool },
+                      Follow { user: AccountId, on: bool }, Subscription { thread: ThreadId, subscribed: bool },
+                      Thread { thread: ThreadId, read: bool, done: bool } }
+/// Derived, one object per account on its home site. The `Notify` consumer fills it from chain cursors. Notifications,
+/// feeds, `/issues`, and `/user/repos` read it, merged with `Identity` thread state, and lag commits by seconds (SHARED,
+/// "Known deviations from GitHub"). On each day it changes, it writes a snapshot with a `sources` table of (chain, last
+/// index applied) to its site's bucket and one other site's. Rebuild loads the newest snapshot, takes read and done from
+/// the account's `Thread` records, and replays from followers and archives each chain in `sources` from its index, and
+/// each repository in the account's `Watch` and `Subscription` records from INBOX_WINDOW before the snapshot. An event
+/// from any other chain in the snapshot's last day is missing until that chain's next event.
+pub struct Inbox { pub account: AccountId, pub site: SiteId /* the home site, or the next record site after a loss */ }
+pub const INBOX_WINDOW: Duration = Duration::from_secs(2 * 86_400);   // [guess]
+/// Cross-repository search (SHARED, `rest:search`): FTS5 tables in one object per (residency domain, shard), defined
+/// by every site script and placed on the domain's first Full site with the domain's DO jurisdiction. `Search` writes
+/// each document to the shard of its repository's hash, 16 shards per domain [guess]. A lost shard is rebuilt under the
+/// next `generation` on the domain's next site, from the metadata tiers that `MemberRegistry` lists.
+pub struct SearchShard { pub domain: Domain, pub shard: u8, pub generation: u32 }
+pub enum Domain { Default, Us, Eu, Apac }      // the owner's residency, from its `PlacementRecord` name
+/// The counters behind `x-ratelimit-*`, only where GHES rate limits are on (SHARED, "Public service concerns"). One
+/// object per `RateKey`, defined by `graft-site-a` and created with no hint, so it sits near its first caller. An isolate
+/// awaits it on its first request for a key, then adds its local count every RATE_FLUSH requests or 1 s, and each
+/// reply returns the window total.
+pub struct RateCounter { pub key: RateKey }
+pub enum RateKey { User(AccountId), Installation(InstallationId), JobToken(RepoId), Token([u8; 32]), Ip(IpPrefix) }
+pub const RATE_FLUSH: u32 = 20;                 // requests per isolate and key between flushes [guess]
+/// Per-isolate cache. A read-class request may use an entry up to 10 s old. A write-class request always reads the
+/// token, the actor's `Account` row, and the owner's Authz on their leaders (`fresh`), and the leader reads each distinct
+/// credential shard again once per entry, so a revocation or suspension binds every command decided after it. A new
+/// PAT, OAuth token, or SSH key commits first on its `Tokens` shard. The edge then appends the `Identity` side itself,
+/// before it answers, and the `Audit` finisher appends it only when nobody did within a minute.
+/// Installation tokens are signed in `graft-ops` with a key wrapped by a Secrets Store key. The edge mints through a
+/// `fetch()`-based binding to `graft-ops` with a version override from `OpsPointer`, and each `graft-ops` isolate caches
+/// the unwrapped key.
+/// A `lifeboat:read` token, minted per developer by `graftyard lifeboat enroll`, is refused by the main edge.
+pub const SIGNING_KEY_CACHE: Duration = Duration::from_secs(3600);   // at most, per `graft-ops` isolate
+pub const READ_CACHE: Duration = Duration::from_secs(10);
+pub const IDENTITY_BUDGET_PER_ISOLATE: u32 = 50;   // group reads per second; compiled, never config
+
+// ---- Lifeboat feed ----
+/// Written every 10 s by a Queue consumer from leader cursors: which chains moved and to what index. Each batch is one
+/// `R2Key::Export` object in the install's export bucket, a single bucket in site A's region with a 7-day lifecycle rule
+/// [guess], created by Terraform. The object holds the batch plus, per chain, the stored bytes of every entry after the
+/// previous batch's index, read from a follower. Packs stay in the site buckets and are fetched through the edge.
+pub struct ChangeBatch { pub minute: u64, pub seq: u32, pub chains: Vec<(ChainId, Index)> }
+pub struct ExportObject { pub batch: ChangeBatch, pub entries: Vec<(ChainId, Index /* first */, Vec<Bytes>)> }
+pub struct ExportCursor { pub chain: ChainId, pub index: Index }
+/// Export endpoints. The edge serves them under an `ExportClaims` token, or for a lifeboat's tail pulls a request signed
+/// by the host's `LifeboatAdd` key. Entries and snapshots come from a follower or learner, or from archive objects for
+/// archived indexes, never from the leader. Bodies are `application/octet-stream` frames, each a length prefix, the
+/// stored bytes, and their digest. Pages follow GitHub's `Link` header with `rel="next"`. A bad cursor is 422, a range
+/// past retention 410, and a chain outside the token's scope 404.
+/// - `GET /api/graftyard/v1/export/batches?after=<minute>.<seq>`: up to 100 `ExportObject`s in order.
+/// - `GET /api/graftyard/v1/export/chains/{chain}/entries?from=<index>&limit=<n>`: stored `LogEntry` bytes from `from`,
+///   at most 1,000 entries or 8 MiB a page [guess].
+/// - `GET /api/graftyard/v1/export/chains/{chain}/snapshots?at=<index>`: the newest snapshot at or below `at`, in the
+///   format a member installs.
+/// - `GET /api/graftyard/v1/export/packs/{pack_id}`: the pack bytes, with its checksum in `X-Graftyard-Checksum`.
+/// `{chain}` is `repo:<id>`, `network:<id>`, `authz:<id>`, `identity:<id>`, `tokens:<shard>`, `names:<shard>`,
+/// `actions:<id>.<shard>`, `repo-meta:<id>`, `ids`, or `release`.
+/// An export token is these claims, base64url-encoded, a `.`, and the customer key's signature, sent as a bearer token.
+/// The edge verifies it against its cached `Keys` and refuses any chain outside `scope`. It is revoked like an
+/// installation token, by `JtiRevoked` on `jti_shard(jti)` through `DELETE /api/graftyard/v1/export/token`, and export
+/// reads honor that row within READ_CACHE. `graftyard vault init` mints the install-scoped one. A managed tenant's
+/// per-org token has `scope: Owner(org)` and is signed by the cell's customer key.
+pub struct ExportClaims { pub install: InstallId, pub scope: Scope, pub holder: Box<str> /* "vault", or the org */,
+                          pub jti: Ulid, pub iat: Timestamp, pub exp: Timestamp /* <= 400 days [guess] */ }
+/// A `lifeboat:read` token is an `OpaqueToken` of kind `Pat` (`ghp_`), so gh and git accept it. Its only claim is the
+/// account in its `TokensEvent::LifeboatRead` row, and it has no expiry. The main edge refuses it, because no `Stored`
+/// row holds its hash. `POST /api/graftyard/v1/lifeboat/tokens` with `{"host": "<lifeboat host>"}`, authenticated by
+/// the developer's own token, commits the row, revokes that developer's previous one for the host, and returns
+/// `{"token": "..."}` once. `graftyard lifeboat enroll` calls it.
+/// Served in `/api/v3/meta` and the `X-Graftyard-Lifeboat-Lag` header. The host reports `decoder` to the `Release`
+/// group by signing `LifeboatDecoder` with its key and sending it to `POST /api/graftyard/v1/release/entries`, when
+/// its decoder changes and at least daily, and that daily entry is what the 7-day silence alarm watches.
+pub struct LifeboatStatus { pub decoder: ReleaseId, pub cursor_age: Duration }
+```
+
+**Reused with the additions below.** The shared specification, `design/SHARED.md` ("SHARED" in the Shape comments), holds each of these, and the Shape blocks above define each addition.
+
+- `RepoEvent`, `AuthzEvent`, `IdentityEvent`, `NetworkEvent`, `RefUpdate`, `Push`, and `Atomicity` ("Chain events and commands": "Event types" and "Refs and pushes"), with the stored formats of their payloads in "Issues and pull requests" and "Identity and tokens". `Event` gains `Names`, `Tokens`, and `Actions`, `IdentityEvent` gains `Record(UserRecord)`, the agent block adds its variants, and `Push` gains `provenance`, `protected`, and `changed`.
+- The issue and pull request model, merge semantics, required checks as chain entries, check runs and statuses as metadata-tier entries, `TestMerged`, and the merge queue ("Issues and pull requests"), with `QueueEvent`, `QueueOp`, `QueueMerge`, and the `parent_tip` rule above added.
+- The core and metadata fold tiers ("Folds"). They now live in each member's SQLite instead of node files, and `tier_of` gives the base's new chains the core tier only.
+- Token formats, stateless installation tokens, first-party client ids, `AppRecord`, `OAuthAppRecord`, and invitations ("Identity and tokens"), with `Tokens` and `Names` entries, code rows, and the `Account` row read on every write.
+- The Actions state machine ("Actions runs and jobs"), with job leases extended only by `ExtendLeases`.
+- The two-release format rule ("Record formats and the two-release rule"), with the `Release` group's rollback barrier.
+- `RestoredTo`, `ResetTo`, tombstones, and retention ("Repository repair, tombstones, and retention"), with `ref_log` GC roots and customer-signed `RepoRestore` and `RepoReset`.
+- Event consumers ("Event fan-out"), with `Consumer` gaining `MergeQueue`, `Counts` (star and watcher counts), and the agent layer's `Insights`.
+
+**Not needed here.** `Mirror` chains and cross-cell heartbeats are gone. Every group in an install or cell is reachable from that install's or cell's edge, so authorization reads the owner's `Authz` group directly, and a huge org's `Authz` group adds learners instead of mirrors. Managed logins are claimed on the front account's `Names` groups, placed on `Tri`, so a continent loss never stalls a claim or loses a name.
+
+**Invariants:**
+
+- **Acknowledgment point.** A 2xx follows a quorum, and `Acked` exists only after one. At that moment the entry is in the SQLite of two members on two site scripts in two regions (one member for `Solo`). Each member's copy was confirmed by its own storage before its reply left. A Durable Object write is confirmed "once at least three of these followers respond" across five data centers (`research/cloudflare-uptime.md` finding 32), and the output gate holds replies until writes are durable (https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/). Pack bytes are in two buckets in two regions, each persisted before its 200 (https://developers.cloudflare.com/r2/reference/durability/).
+- **One value per index.** This is Raft's log matching. A member stores at most one entry per (term, index), and a leader exists only after a majority of voters voted for it in that term. A minority side can neither commit nor, after its lease, serve a `Fresh` read [inference from the protocol]. Learners never vote, so adding 16 of them changes no majority. A restarted member that resumes `led_term` is the term's one leader, and a replaced instance cannot append, because requests that touch storage on it "will be stopped immediately" (https://developers.cloudflare.com/durable-objects/concepts/durable-object-lifecycle/).
+- **One entry in flight per group.** `decide` runs on the fold plus the earlier commands of the same entry, and a follower verifies k+1 only after applying k, by replaying k+1's events in order on a scratch transaction.
+- **An event exists if and only if its change committed.** Consumers read the log through cursors, never a separate outbox.
+- **One writer per fold** (`apply` on each member), **one owner per fact.**
+- **Merge-queue tips only fast-forward.** Each queue entry's `parent_tip` equals the previous entry's `group_tip`, checked in `decide`, so a group merge cannot drop an earlier group's changes (`research/uptime.md` finding 49).
+- **Placement is checked by latency.** At join, and at most once a day on a day its group served a request, each member measures round trips to each other voter and keeps them in `Rtt`, outside `GroupConfig`. `graft-ops` checks bucket `location`. A member confirmed misplaced twice 24 h apart is replaced with a new generation.
+
+**Dominant access patterns:**
+
+- *Fetch or clone.* `graft-front`, edge, token cache, then the repository leader's `fresh` core tier (one DO binding call; refs from SQLite). On a clone-cache hit, R2 serves the bytes through the edge with free egress (https://developers.cloudflare.com/r2/pricing/). On a miss, the network's `GitCacheShard` on its home site runs `upload-pack`, and the edge tees its output to the client and to R2.
+- *Push.* Edge, then token and owner `Authz` read on their leaders. The pack is teed to two buckets and into the shard for `index-pack --strict`, then `commit`.
+- *Issue or pull request list.* `fresh` metadata tier, then one indexed SQLite query on the leader.
+- *Hot group read.* Above 500 reads a second, the edge sends reads to the nearest learner or follower, which runs read-index against the leader.
+- *Webhook.* Leader alarm, cursor, Queue message, consumer Worker, POST.
+
+## Commit and read paths
+
+Every request enters at the Cloudflare data center nearest the client and runs `graft-front`, which forwards it to the edge through a `fetch()`-based binding. The deployment's percentage split picks the edge version, unless an undo has pinned one in the `Release` group's `Pointers`, which `graft-front` caches. The edge mints one `RequestId` per client request. It calls a group member through the binding for that member's site class, by name, with that site's hint and jurisdiction, and finds the members from its cached `GroupConfig` or the chain's `PlacementRecord` (Shape, "Sites and placement"). Members call each other the same way. Every receipt and member-to-member call has a 1 s deadline and retries at most twice, outside the 10% retry budget. Its only hedge is a `suspect` report to a follower on another site, and a command is never forwarded to a second member. Time a command spends queued in admission counts against none of these. In the account-separated option each call goes over signed HTTPS to the site Worker of the member's site instead. "Leader site" below means the site of the current leader of the named group.
+
+**Journey 1. Atomic push of three branches to a busy monorepo.** The monorepo's group runs on `Tri`, with its home and leader on A (enam).
+
+1. The edge authenticates the token on its `Tokens` group leader and reads the actor's `Account` row on its `Names` shard leader. This is a write-class request, so neither is served from cache. The edge then reads the org's `Authz` group through `fresh`.
+2. The edge streams the request body to the network's `GitCacheShard` on site A. It counts streamed bytes and refuses at its own cap, below the plan limit, with a receive-pack `report-status` message that names SSH. In parallel it tees the same bytes to the three site buckets with multipart parts of 16 MiB [guess]. The first two buckets to finish make the pack durable. The third-bucket filler, which lists `Committed` markers, fills the third if it lags, and the sweeper aborts orphan multipart uploads. The container runs `index-pack --strict` and checks connectivity against refs the leader just gave it. A pack of 1 MiB or less skips the buckets and is stored inline in the entry, but only when the encoded push with it stays under `COMMAND_MAX`.
+3. `commit(Push { updates: [main, release, hotfix], atomicity: AllOrNothing })` returns `Admitted` within 1 s, and the edge waits on `outcome`. The push joins the group's next entry. When the entry in flight commits, the leader freezes the next entry's commands. It reads the org's `Authz`, named by the repository's `RepoSettings`, and each distinct `CredentialShard` once for all of them. It runs `decide` for each in order, checking each `expect` against the fold plus earlier commands of the same entry, and checks rules from the fold and the org's rulesets. It sends the entry to B and C at once. B or C applies the previous entry, replays this one in `verify`, and stores it. The first ack makes the quorum, and every ticket in the entry resolves then. After `Acked` the leader puts the `Committed` marker of each stored pack the entry names.
+4. At "ok", the entry is on A and B (or A and C), two continents and two site scripts. The pack is in at least two of the three buckets, or inside the entry.
+5. Merge-queue merges (10 a minute) and bot ref moves (50 a minute) are commands on the same group. They serialize with the push, and group commit packs them into shared entries. Each queue entry's `parent_tip` must equal the previous entry's `group_tip`, or `decide` refuses it.
+6. CI's 2,000 clones a minute (33 a second) each read refs from the leader. Each is then served from the R2 clone cache, keyed by the requested tips and depth. Each new tip misses once, and the edge tees that miss into the cache. If the group's reads pass 500 a second, learners in the busiest regions take them.
+7. The next read from any client sees the push, because only a leader holding its lease answers `fresh`, and followers and learners answer only after read-index.
+8. A 5 GB clone streams from the shard with bitmaps and pack reuse. It finishes well inside the 20 minutes a runtime update allows a running stream (`research/cloudflare.md`, Workers).
+9. A 2 GB push needs the Enterprise request body limit of up to 5 GB (`research/cloudflare.md`, Workers). On Pro and Business the edge refuses it at its own cap and names SSH. Otherwise the path is the same, with the shard on a `standard-4` (12 GiB, 20 GB disk).
+
+**Journey 2. Fork pull request merged while a review and a required check land.** The fork lives in the same network, so its packs share the network's prefix. Its refs are on the fork's own group.
+
+1. The merge plan reads the fork head through the fork group's `fresh`, and the base fold through the base group's `fresh`.
+2. The base site's shard runs `merge-tree`, `commit-tree`, and the tree-diff check (`design/SHARED.md`, "Issues and pull requests"). The result pack is placed in two buckets.
+3. `Merge::decide` runs on the base leader. The review, the `RequiredCheck` from `record_check`, and the merge are all commands on the base group, so they serialize, including within one entry. A review or check committed before the merge's command is in the fold `decide` sees. One committed after it belongs to a merged pull request.
+4. At the 200, the `Merged` entry is on two sites, and the merge pack is in two buckets.
+5. `gh pr view` and `gh pr list` run at once. Both go to the base leader, and both read its fold at or after the merge, so both show it merged.
+
+**Journey 3. Issue labeled `bug`, then two lists.**
+
+1. `IssueOpened` plus `Labels` is one command on the repository group. It is applied to the metadata tier in the same SQLite transaction that records the commit on the leader.
+2. `gh issue list --label bug` and `gh api repos/o/r/issues?sort=updated` both run `fresh` on the leader. Each is one indexed query, and both include the issue.
+3. Nothing is eventually consistent on this path, and no search index is involved.
+
+**Journey 4. Member removed and token revoked, then a push over HTTPS and SSH.**
+
+1. Removal is an `Authz` entry on the org's group. Revocation is an entry on the token's shard group. A stateless installation token has no stored row, so `DELETE /installation/token` commits its `jti` and `exp` to the shard of a hash of the `jti` (`jti_shard`), and that row expires at `exp`. Each 204 follows its quorum.
+2. The next HTTPS push is write-class, so the edge reads the token on its shard leader, or an installation token's `jti` shard leader, and gets 401. A suspended account fails the same way on its `Account` row. If the member used another token, the leader reads the org's `Authz` through `fresh` as a `dep` once the entry's commands are frozen, so `decide` refuses with 403 (404 for a private repository). A push already queued in admission is refused too, because the leader reads each command's credential shard once per entry before `decide`, however long the command waited.
+3. Over SSH, Spectrum (port 22) forwards TCP through Cloudflare Tunnel to a cloudflared replica inside an SSH front container. `graft-sshd` calls the container's outbound handler, which runs in the Workers runtime with the script's bindings (https://developers.cloudflare.com/containers/configuration/workers-connections/). The handler resolves the key fingerprint on its `Tokens` group leader and runs the same `commit` through the same bindings, so SSH never loops back through the public zone. The same checks refuse the push.
+4. Reads with a cached token may succeed for up to 10 s after the revocation (`READ_CACHE`).
+
+**Journey 5. The data center, then the region, holding the newest writes is lost mid-push.** The leader is on A (enam). The entry was appended on A and sent to B and C.
+
+- **Data center.** The Durable Object platform fences the failed host and restarts the object. "As long as at least one follower is still running, it will ensure that all confirmed writes are safely persisted" (`research/cloudflare.md`, Durable Objects, failure). A restarted A that led the current term resumes it after one AppendEntries round that re-establishes its lease. If A does not return, the edge's 1 s receipt deadline misses and it reports `suspect` to B or C, without forwarding the push. The follower campaigns on that one report once its promise lapses, wins with the other's vote, and commits a `Noop` before it serves `fresh`.
+  - An entry that reached B or C survives, and the push is applied even though the client saw an error. Git's retry sees its refs already moved. If the edge re-sends the push with its `RequestId` to the new leader, the leader answers from the `request` row and does not decide it again.
+  - An entry that reached only A was never acknowledged, and the client retries.
+- **Region.** The same as above, but A's bucket and A's containers are gone too.
+  - Every acknowledged entry is on B or C. Every acknowledged stored pack is in two of the three buckets, so at least one of B's and C's buckets holds it.
+  - B becomes leader within about 11.5 s [inference: at most 10 s of promise, the 1 s deadline, two rounds of about 200 ms]. The shard on B, or a new one, rebuilds from the surviving buckets.
+  - Until a replacement exists, every new entry needs both survivors (2 of 2), and packs placed in {A, B} or {A, C} and not yet swept have one copy. Sweeper lag is an alarmed metric.
+  - `ReplaceMember { lost: A, spare }` (a Workflow, signed only by the executor key, "Install operations") runs only after a customer-signed `SiteLost` or once A has been drained for 24 h with zero acks in both other sites' `SiteHealth`, never on elevated errors, which drain covers. It enumerates A's groups from the `MemberRegistry` rows on B and C that name A, and adds a member on the pre-created spare site on A's continent (wnam) through a `Joint` config, under a new member generation. It copies single-copy packs first, then copies packs once per network, not per group. The new member joins by `InstallSnapshot`: the latest snapshot from R2, the archives after it, then the log tail. B, C, the edge, and the Workflows script bound wnam's member class and bucket at install, so no script version is created. It refuses a spare whose canary group has not shown that its release reads every enabled format. The group then holds 2-of-3 durability again.
+  - After A recovers, `RestorePlacement` moves groups back to their home sites, and transfer restores their leaders. Removed members run `deleteAll()` after 35 days.
+- **Gray region (elevated errors, no clean loss).** A leader on the sick site steps down by transfer when its commit error rate or storage confirm latency over 10 s passes `STEP_DOWN`. Edges whose receipts miss their deadline report `suspect` to a follower on another site. A follower that gets reports from two colos within 10 s stops granting promises to a leader that is still renewing, so a leader that cannot measure its own sickness still loses its lease, and it restores them after 20 s or on a higher term. Pre-vote refuses a candidate on a drained site, one with two boots in the last 5 minutes, or one that stepped down in them, so a flapping member cannot win back. A voter that has seen no leader for 20 s waives the reset rule, so a reset of all three sites still elects. The target is every group moved within 20 s and at most two leader changes an hour, `mitigated` until Milestone 0 measures it.
+- **Automatic drain.** Edges and members on the other two sites count missed receipt and member-call deadlines per target site into a `SiteHealth` object on their own site. `graft-ops` drains a site on its own when the objects on both other sites report it burning the SLO budget at 10 times its allowed rate for 5 minutes [guess thresholds]. It reads them over bindings, so the sick site never judges itself and no Cloudflare API is needed, and it signs `SiteMode` with its drain-only key. The `Release` group refuses a drain-key `SiteMode { Drain }` while another site is drained, because a drain moves leadership and removes no vote, and two drains would leave one site leading every group. A leaked drain key or a bad `graft-ops` therefore cannot drain a second site, and if every voter ends up drained anyway, pre-vote lets a drained member campaign when no undrained voter can lead. An automatic drain of a sick site preempts a site day. `graft-ops` stops the deploy steps, appends `Normal` for the rolling site with its N+1 members held to the 1% lead limit, then drains the sick site. An operator may drain a site the same way.
+- **Residency placement (`Eu2w`).** Losing weur leaves eeur (Full) and enam (Witness). They commit `Degraded { lost: weur }` and keep writing with one content copy until `ReplaceMember` restores two. "Downtime" states that RPO.
+- **`Solo` placement.** The one member restarts wherever Cloudflare restarts it. A data center loss loses no acknowledged write (finding 32). A region loss stops the group until the region returns, and whether its acknowledged writes survive is unknown.
+
+**Journey 6. Cloudflare-wide outages.** See "Downtime" for the full statement. In short:
+
+- **November 18, 2025 class (core proxy failing everywhere).** Every Cloudflare-hosted surface fails, including HTTPS, SSH, API, and web.
+  - Developers keep local git.
+  - At a BYOC or self-hosted install with a lifeboat, developers who enrolled also clone, fetch, read pull requests and issues, and use `gh api` GETs against the lifeboat. Its lag is typically about 30 s and is published in every response.
+  - No write is accepted anywhere until Cloudflare recovers, and no acknowledged write is lost.
+- **November 2, 2023 class (control plane and API).** Request paths make no Cloudflare API call, and creating a repository only names new Durable Objects and keys in existing buckets. `graft-ops` deploys and its API-reading crons wait, and a failed check is a no-op plus an alarm. A site day that cannot advance for an hour undrains its site under the 1% lead limit and drains it again when the API returns. Edge and `graft-ops` swap-backs still work, because they are signed `EdgePointer` and `OpsPointer` entries read by `graft-front` and the edge. A bad `graft-front` percentage stays frozen until the API returns, because `graft-front` is the swap mechanism and has none of its own. Whether a new container instance starts during a control-plane outage is unknown. Warm shards are sized to carry a day of load, so developers see nothing for a day, after which cold networks may fail to fetch [inference, Milestone 0].
+
+**Journey 7. Releases and bad releases.**
+
+- **A site day.** `graft-ops` appends `SiteMode { site: B, Drain }`. Within one lease, every leader on B transfers to a caught-up follower, and B's members refuse to campaign while they keep voting and storing. `graft-ops` deploys the uploaded version of `graft-site-b` at 1%, 10%, 50%, then 100%, then appends `Normal`. For its first day after undrain, B leads only 1% of its home groups, so a record shape that only a rare command writes has a day to meet a follower on N. Each deploy step and the 1% day gate on B's N+1 members against its N members (apply lag, apply and verify exceptions, ack rate) and on zero `STEP_DOWN` trips on N+1 leaders. A breach makes `graft-ops` submit the release intent's pre-signed `Rollback { target: Site(B), release: N }` with no human signature, so a release whose followers throw on one event kind stops before the next site rolls. Only a passed day lets the next site roll, and B then takes back the rest of its home groups by preferred-site transfer. After the member sites, each spare and residency site gets its own site day, gated by its canary group replaying a corpus of current formats, and keeps its old images until then. A Workers runtime update also resets members, and `led_term` lets a reset leader resume its term after one round.
+- **Tenfold identity reads.** The edge ships by gradual deployment, by percentage (https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/), and each edge deployment keeps N and N+1. Workers serve at most two versions in one deployment, and an override reaches a version "even those set to serve 0% of traffic" (https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/).
+  - `IDENTITY_BUDGET_PER_ISOLATE` is compiled. Beyond it, read-class requests use cached entries and write-class requests get 503, so identity group load cannot grow tenfold.
+  - A shard that still overloads returns Durable Object `overloaded`, which is not retried (`research/cloudflare.md`, Durable Objects). The damage is limited to the tokens in that shard.
+  - The release intent for N+1 carries a pre-signed `EdgePointer` back to N. An edge isolate whose identity requests per edge request pass the compiled ratio submits it, and so does `graft-ops` from Analytics Engine. Each `graft-front` isolate picks it up within `POINTER_TTL` from any `Release` member and then pins every request to N. No Cloudflare API call is involved, and an `EdgeRoll` that would drop N from the deployment is refused while that undo is live.
+- **`graft-front` and `graft-ops`.** `FrontRoll` and `OpsRoll` run each at 1% for a day, then 100%, with N kept in the deployment. The edge calls `graft-ops`, which mints every installation token, over a `fetch()`-based binding with a version override from the signed `OpsPointer`, so a pre-signed `OpsPointer` back to N swaps a bad `graft-ops` with no API call. A bad `graft-front` is rolled back through the deployments API, so a control-plane outage freezes its percentage.
+- **Record shape the previous release cannot read.** While `graft-site-a` runs N+1, B and C run N, and their `verify` refuses any entry that N cannot decode. The refuser is older than the leader and the entry is uncommitted, so A's leader truncates its uncommitted tail, transfers to an undrained follower that holds its last index, and persists `no_lead_until`, which clears when A's release changes or the `Release` group records a rollback of the refusing site. Later writes to that group succeed on the next leader, and nothing unreadable commits. Formats are enabled only through the `Release` group after every site, spares and residency sites included through their canary groups, and every registered lifeboat runs N+1 (`design/SHARED.md` two-release rule). After that, the group refuses and pages on a `Rollback`, a pointer pin, or an `Abort { intent, target }` to a release that cannot read an enabled format, so no pre-signed undo or `Abort` lands a site below the release that reads its own log.
+- **A rolling site that refuses valid entries.** If B's N+1 members refuse valid N entries at 10%, the refuser is not older than the leader, so no leader steps down. Each leader keeps leading, adds B to `cannot_follow`, and commits with the other follower. The refusal alarms and breaches the gate, so `graft-ops` halts the site day and rolls B back.
+- **The two-site residual.** Once A and B run N+1, they can commit what C on N cannot read. C refuses a committed entry, so the leader keeps leading, adds C to `cannot_follow`, alarms, and `graft-ops` halts the site day. The group runs on two members with no spare voter until C rolls forward, and losing A or B in that window stops its writes [inference]. A `Solo` group has no second voter, so it relies on the format gate alone.
+
+**Journey 8. BYOC and self-hosted.** See "Deployment modes".
+
+- A BYOC company runs the same artifact in one account of its own with three site scripts, or in four accounts with account-separated sites, plus a vault account and a runner account.
+- A self-hosted company does the same with no vendor token, and its `Keys` entry names no vendor key.
+
+**Journey 9. A 500-agent fleet on the monorepo.** 500 cloud agents each push their own branch every 2 minutes and open draft PRs while journey 1's humans, merges, and CI continue. The full trace is journey A1 in `design/AGENT-LAYER.md`, with rates from `python3 scripts/cost_agents.py --a1` [guess constants].
+
+1. The group carries 27.6 commands/s against the 300 commands/s Milestone 0 gate, 25.2/s of them agent class with task updates and lease renewals, and its leader about 305 req/s. Activity feed polls, 45/s, go only to followers and learners, which answer from their applied log with no read-index call. Writes to different refs never conflict in `decide`. Admission takes Human and MergeQueue commands first in every entry and counts caused commands against the agent share, so a burst of 500 agent pushes in 1 s acknowledges within about 3.3 s while merges keep their place [inference].
+2. The network's git cache needs 10.2 vCPU at a push every 2 minutes. `TEST_MERGE_BUDGET` must cover 6.25 vCPU of head-push test merges, so `fanout` takes k = 7 `standard-4` shards per warm site from the hot pool, and clone-cache entries go to both warm buckets. Recomputing all 500 open test merges on each of 10 base moves a minute would need 125 vCPU, so test merges are lazy and budgeted, and `mergeable` is null past the budget.
+3. Agent commits' trailers and `refs/notes/ai` become `Provenance` during `validate`, session logs land under host-owned `SESSION_REFS`, and agent Apps cannot approve, merge, mark ready, push outside their task's prefix, or change protected paths (`ActorKind::Agent`). Only a human writer, or the controller from an issue a human assigned, creates a Graftyard-run task, and only while the org's `agents_enabled` is on. `LOG_MAX_BYTES` holds each member's log at 2 GB, so 30 days leave about 7.2 GB on a member seeded with the 4 GB metadata tier, and the member reaches `CHILD_GROUP_AT` in about 1.7 months (Scale).
+
+## Scale
+
+Numbers are [guess] unless they cite a limit.
+
+| Quantity | Value | Limit it meets | Headroom |
+| --- | --- | --- | --- |
+| Monorepo leader requests (journey 1) | 33 ref reads/s for CI, about 2 entries/s, about 200 API reads/s [guess] | 1,000 req/s soft per DO (`research/cloudflare.md`) | 4x on the leader. Each follower adds at most 100 read-index calls/s while serving up to 1,000/s itself |
+| Hot group reads, learners | Above 500 reads/s; up to 16 learners | 1,000 req/s per learner and per leader | Each learner adds at most 20 read-index calls/s (one in flight, 50 ms floor), so 16 add 320/s and serve about 16,000 reads/s [inference] |
+| Largest owner's `Authz` | About 5,000 authorizations/s at peak for 20,000 developers plus CI [guess] | 1,000 req/s per DO | Learners placed by traffic carry it; the leader sees writes, appends, and read-index calls |
+| Entries per group | About 10 entries/s per group, one in flight: 1 / (5 + 80 + 5 + 10 ms) for an enam leader, the last term being one read of the entry's `Authz` dependency on a leader in the owner's home region [guess], and about 6/s for apac [inference], each holding many commands | Entry under 1.5 MB against the 2 MB row limit | The monorepo needs about 2 entries/s; the merge queue 0.2/s and bots 0.8/s; the 50 comments/s cap batches into entries |
+| Member storage | Folds plus 30 days of log, capped at `LOG_MAX_BYTES` (2 GB) per member; the largest repository's metadata tier (200,000 issues, 2 million comments) about 4 GB [guess] | 10 GB per DO, after which writes fail with `SQLITE_FULL` (https://developers.cloudflare.com/durable-objects/platform/limits/) | Older entries archive to R2 snapshots, and above the cap to `R2Key::Archive` in two buckets; at `CHILD_GROUP_AT` (8 GiB of member SQLite) the metadata tier moves to a child group (Milestone 7) |
+| Clone cache reads | 33 GETs/s on one key at a moving tip | No published per-key read rate (`research/cloudflare.md`, R2) | Hot keys are written as 8 replicas (`CloneCache.replica`), read at random |
+| Pack writes | One write-once key per pack per bucket | 1 write/s to the same key | Keys are ULIDs, so never contended |
+| Push size | 2 GB | Request body: 100 MB Free and Pro, 200 MB Business, up to 5 GB Enterprise | The edge refuses at its own cap below the plan limit and names SSH; install preflight refuses a plan below the largest imported pack |
+| Clone duration | 5 GB at 50 MB/s is about 100 s [guess] | 20-minute drain on runtime updates | 12x |
+| Git cache shards | Daily working set 400 GB at 2,000 developers [guess], 25 `standard-4` shards per site, 50 warm (200 vCPU) plus 3 SSH fronts; `max_instances` of 32 per site (25 shards and the hot pool of 7) reserves 384.8 vCPU (`cost.py`) | 1,500 vCPU per account default | 3.9x. An alarm fires at 70% (1,050 vCPU). Hosted runners run in a separate runner account. The quota request is on the day-0 list |
+| Agent fleet, group commands (journey 9) | 27.6 commands/s for 500 agents, 25.2/s agent class with caused commands, task updates, and lease renewals; 252 agent-class commands/s offered at 5,000 (`scripts/cost_agents.py --a1`) | 300 commands/s Milestone 0 gate | 11x at 500. At 5,000 the token bucket admits 150/s, about 3,000 agents per group, and the rest get the git `ng` or REST 429 shape after 30 s |
+| Agent fleet, leader requests | About 305 req/s, none of them activity feed polls; 45 feed polls/s on followers and learners, about 22/s each | 1,000 req/s soft per DO | 3.3x; group reads 322/s, learners above 500 reads/s |
+| Agent fleet, git cache CPU for one network | 10.2 vCPU from index-pack 2.19, per-push test merges 6.25, agent CI clone-cache misses 1.25 (each agent CI job checks out a fresh tip), agent clone misses 0.25, and queue merges 0.25 [guess constants] | 4 vCPU per `standard-4`; `TEST_MERGE_BUDGET` 25% | k = 7 per warm site, set by the 6.25 vCPU of head-push test merges, 36% of 28 vCPU. At 5 pushes a task k = 4. The hot pool adds 7 per site, so reserved vCPU at 2,000 developers is 384.8 of 1,500 |
+| Agent fleet, test merges | 125 vCPU if every open PR's merge were recomputed on each of 10 base moves a minute; 25 vCPU asked by 500 clients polling every 5 s | 7 vCPU of budget at k = 7 | Coalesced per (PR, base tip). Head pushes use 6.25, GETs share the other 0.75, and the rest see `mergeable: null` |
+| Agent fleet, member bytes on the monorepo group | About 7.2 GB after 30 days of journey 9: the 4 GB metadata tier, 2.0 GB of log at `LOG_MAX_BYTES` (71 GB uncapped), and 1.18 GB of agent rows (`scripts/cost_agents.py --a1`) | 10 GB per DO; `CHILD_GROUP_AT` of 8 GiB member bytes | 1.4x. The member reaches `CHILD_GROUP_AT` in about 1.7 months: 6.0 GB fixed, plus 0.40 GB a month of check rows for 90 days and 0.77 GB a month of PRs, provenance, and tasks. An A1-class fleet runs only once metadata child groups (Milestone 7) exist [inference] |
+| Container instances per class | 2, 5, and 25 shards per site at 50, 300, and 2,000 developers, plus a hot pool of 7 per site at every tier in the shard class's instance size, so `max_instances` is 9, 12, and 32 | `max_instances` defaults to 20 | Raised at install; a change is a site-day operation, and fan-out draws on the pool without one |
+| Container image storage | N and N-1 images per container class (git, SSH front) [guess: a few hundred MB each] | 50 GB per account, including rollback images (https://developers.cloudflare.com/containers/platform/limits/) | Older images are deleted after each site day, except that a spare or residency site keeps its images until its own site day; runner images live in the runner account |
+| Fan-out | (8 pushes + 30 jobs) x 3 events per developer per day is 2,700 messages/s per 100,000 developers at 10x peak | 5,000 msg/s per queue | One queue per site; more by hash |
+| Workflow starts | Member replacement for every group with a member on a lost site, only on `SiteLost` or 24 h of zero acks | 300 instance creations/s per account, shared by the three sites | 1 million groups re-protect in about an hour. Meanwhile new entries are on 2 of 2 survivors, and unswept packs have one copy until `ReplaceMember` copies them first |
+| Managed at GitHub scale | 3.35 billion pushes a month is about 1,300/s (`research/git-storage.md` finding 5) | Unlimited DO storage per account on Paid | Spread over millions of groups, so no group is near its limit; cells add accounts behind the front account |
+
+Latency [guess, Milestone 0]:
+
+- Commit on `Tri` is one enam to weur binding call, about 80 ms, plus two local SQLite commits, plus up to one round of waiting for the entry in flight.
+- Push p50 is about 300 ms beyond pack transfer: token, `Authz`, commit, and report.
+- Fresh reads on a held lease cost one DO call in the leader's region, plus the client's distance to it. Learner reads add up to 50 ms of read-index wait. Preferred-site transfer keeps leaders near owners.
+- The account-separated option adds one site Worker hop to every member call (Milestone 0 bounds it at 20 ms p50).
+
+## Downtime
+
+| Incident | Evidence | This design | Effect |
+| --- | --- | --- | --- |
+| Partition and cross-country primary promotion, 24 h | `research/uptime.md` finding 40 | No primary per database. Each chain is a three-site quorum, a minority side cannot commit, and a deposed leader stops answering `fresh` when its 9 s lease ends. Stale reads need a signed flag. There are no divergent writes to reconcile | removed |
+| Hardware and power, 4 core incidents | `research/uptime.md` finding 43 | A data center loss inside a site is absorbed by Durable Object storage (3 of 5 followers) and R2's in-region replication. A whole-site loss costs one member per group | removed |
+| Database version bug and major-version upgrade | `research/uptime.md` finding 44 | No database engine to choose or upgrade. Durable Object runtime updates are Cloudflare's and roll by cohort, free customers first (`research/cloudflare-uptime.md` finding 25). Cohorts are by customer and the three sites share one account, so a bad runtime release reaches all three at once. Late cohorts see fewer bad changes, and `led_term` makes a runtime reset cheap | mitigated |
+| Shared permissions cluster overloaded, App tokens down 12 h | `research/uptime.md` finding 44 | No shared cluster. Permissions are on each owner's `Authz` group, with learners for huge orgs, and tokens on 1,024 shards per family. Overload of one shard returns `overloaded` for that shard only | contained |
+| Partial disk failure that failover could not detect | `research/uptime.md` finding 44 | Failure detection is by the protocol and by measured health, not health checks. A member whose storage stalls stops acking, and the leader commits with the other follower. A stalled leader loses its lease. A gray leader that still acks some calls steps down on `STEP_DOWN` or loses its promises through `suspect` reports from two colos. Until Milestone 0's error-injection rows pass, the gray case is unmeasured | mitigated |
+| Misconfigured index and online migration overloading a table | `research/uptime.md` finding 44 | No DDL anywhere. Fold schemas change by lazy refold per group, one site at a time (`design/SHARED.md`, "Folds") | removed |
+| Dropped column still referenced (record shape) | `research/uptime.md` finding 44 | Followers on release N `verify` every entry. A refusal from a follower older than the leader, of an uncommitted entry, deposes the leader that wrote it, so other writes continue on the next leader. Any other refusal keeps the leader, marks the refuser unable to follow, and halts the site day. Formats are enabled only after every site, every spare's canary group, and every registered lifeboat runs N+1, and no rollback or `Abort` may then land below a release that reads them. The residual is that once two sites run N+1 they can commit what N cannot read, and the group runs on those two members with no spare voter until the third rolls forward | contained |
+| 32-bit key overflow | `research/uptime.md` finding 44 | Indexes are 64-bit. Ids are 53-bit `DbId`s that the cell's `Ids` group leases in blocks, with an alarm when a cell has leased 50% of its blocks | removed |
+| Middleware redeploy, LB change, expired certificate, proxy rollout | `research/uptime.md` finding 45 | Site scripts roll one per day after a drain, gated on follower health, with a pre-signed rollback. The edge and `graft-ops` roll by percentage, and swap-back is a pre-signed `EdgePointer` or `OpsPointer` applied with no API call. `graft-front` rolls at 1% for a day. Certificates are Cloudflare-managed at the edge. No database proxy or sharding tier exists | contained |
+| Internal DNS failure cascading | `research/uptime.md` finding 46 | No internal DNS. Members are reached by Durable Object binding and name, and only the account-separated option uses fixed site hostnames. Object routing behind bindings is shared by all three sites | mitigated |
+| Cache TTL cut plus tenfold client reads overloaded auth | `research/uptime.md` finding 47 | Identity load is bounded by a compiled per-isolate budget, not by request rate or a TTL. The read-class cache bound is compiled | contained |
+| Redis failover left no writable primary | `research/uptime.md` finding 47 | Leadership moves by transfer and election, the steady-state protocol. A site deploy drains first, so leaders move by transfer before the reset (https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/with-durable-objects/). An unplanned leader reset costs its group one AppendEntries round when it resumes `led_term`, or up to about 11.5 s when it cannot | removed |
+| LB tier failed to scale; a client retry loop slowed recovery | `research/uptime.md` finding 48 | There is no LB tier to scale, because the anycast front runs Workers. Retries carry budgets of 10% per isolate, commit-path member calls retry at most twice each outside it, and a DO `overloaded` is never retried | mitigated |
+| Merge queue reverted 2,092 pull requests | `research/uptime.md` finding 49 | `parent_tip` chaining checked in `decide`, so queue tips only fast-forward. Tree-diff check before every `Merged`, and `RestoredTo` per repository (`design/SHARED.md`) | contained |
+| Search overload emptied PR and issue lists | `research/uptime.md` finding 49 | Lists come from folds on the leader. Cross-repository search is a derived index fed by Queues, and a timeout returns `incomplete_results` | removed |
+| 2023-10-04 1.1.1.1 SERVFAIL | `research/cloudflare-uptime.md` finding 1 | Not a Graftyard dependency. Clients that use 1.1.1.1 may fail to resolve the host | contained |
+| 2023-11-02 control plane and API, about 41 h | finding 2 | No request path calls the Cloudflare API, and repository creation needs none. Edge and `graft-ops` swap-backs are signed entries, not API calls. `graft-ops` deploys and API-reading crons wait, and their failures are no-ops plus alarms. A site day stuck for an hour undrains its site under the 1% lead limit. A bad `graft-front` percentage stays frozen until the API returns. Whether new container instances start without the control plane is unknown, so warm shards carry a day and Milestone 0 tests it | contained |
+| 2024-03-26 PDX01 power | finding 3 | As 2023-11-02 | contained |
+| 2024-06-20 CDN errors on 1.4 to 2.1% of requests, 114 min | finding 4 | Front door errors reach clients for the event's duration. Replication uses bindings, not the CDN path [inference], and no data is affected | exposed |
+| 2024-06-27 1.1.1.1 BGP hijack | finding 5 | Not a dependency | contained |
+| 2024-11-14 Logs lost 55% | finding 6 | Audit lives in `Identity` and `Authz` entries and is copied to Basin from cursors, so log loss is an observability gap only | contained |
+| 2025-02-06 R2 disabled globally, 59 min | finding 7 | Packs up to 1 MiB are inline in entries, so pushes of that size still commit [guess: most developer pushes], on hot groups too, because `INLINE_MAX_HOT` yields while placement fails. Warm shards serve fetches. Large pushes, cold clones, and clone-cache hits fail with 503. An abuse action on the install's account would reach all three sites in the default; account separation limits it to one, and the vault account keeps a copy outside it | mitigated |
+| 2025-03-21 R2 writes 100% failed, 67 min | finding 8 | As 2025-02-06 for writes. Reads mostly served | mitigated |
+| 2025-06-12 storage dependency under KV: DO and D1 22% errors, Queues down, Access down, 2 h 28 min | finding 9 | No KV, D1, or Access on any user path. A push makes three member calls (token, `Authz`, commit), so at 22% errors one attempt succeeds 45% of the time and three attempts 84%. Commit-path member calls are exempt from the 10% retry budget and retry at most twice each, which gives 96% [inference, arithmetic in `history/review/cloudflare-foundation-attack.md` F5]. Reads on a leader alone succeed 78%. This class breaks both monthly SLOs. `Solo` groups fail 22% of attempts. Queues down only delays webhooks, because cursors hold position | mitigated |
+| 2025-07-14 1.1.1.1 withdrawal | finding 10 | Not a dependency | contained |
+| 2025-08-21 AWS us-east-1 interconnect congestion | finding 11 | No origin outside Cloudflare. Durable Object storage still has a third-party storage dependency (finding 23), shared by all three sites | mitigated |
+| 2025-09-12 dashboard and API, 75 min | finding 12 | As 2023-11-02 | contained |
+| 2025-11-18 global core proxy failure, about 3 h | finding 13 | Every Cloudflare-hosted surface fails. Data is unaffected. Installs with a lifeboat serve enrolled developers' clones, fetches, and reads from it, typically about 30 s behind with the lag published. Writes wait | exposed |
+| 2025-12-05 FL1 killswitch, 28% of HTTP, 25 min | finding 14 | Client HTTP fails for affected zones, as 2025-11-18. Replication uses Durable Object bindings, not the zone's proxy, so a commit that reaches the leader should still get its quorum [inference; written answer requested before Milestone 1]. In the account-separated option and on managed front-to-cell hops, calls cross the proxy, so affected hostnames also stall commits or cut that cell's traffic. The zone enables only the features it uses [guess that this narrows exposure] | exposed |
+| 2026-01-08 1.1.1.1 CNAME ordering | finding 15 | Not a dependency | contained |
+| 2026-01-22 Miami route leak, 25 min | finding 16 | Reachability for some networks. Anycast moves traffic to other locations | contained |
+| 2026-02-20 BYOIP withdrawal, 6 h | finding 17 | Graftyard uses Cloudflare-managed addresses, including Spectrum's | removed |
+| 2026-10 regional DO and R2 incidents: ENAM, WEUR 6 h 18 min, Denver | finding 20 | One member per group sits in the impaired region. A clean loss costs groups led there at most about 11.5 s. The WEUR event was elevated errors, the gray case, where step-down and `suspect` target every group moved within 20 s; until Milestone 0 measures that, groups led there may see errors for longer. `Solo` groups there wait for the region | mitigated |
+| 2026-10-23 North America connectivity, about 3 h | `research/cloudflare-uptime.md` open question 6 | `Tri` has one site in North America, so its groups keep a quorum. `Na3` and `Us2w` groups lose writes, and serve stale reads only if an operator signs the stale flag | mitigated |
+
+**SLOs** (month of 43,200 minutes; a minute is bad when over 5% of a journey's requests fail, GitHub's definition, `research/uptime.md` finding 51). They apply to every placement except `Solo`, which has no availability SLO.
+
+| Journey | Target | Budget (min/month) |
+| --- | --- | --- |
+| Git fetch, REST, GraphQL reads | 99.99% | 4.3 |
+| Push, merge, writes | 99.95% | 21.6 |
+| Web pages, Actions job start, webhook first attempt | 99.9% | 43.2 |
+
+A provider-wide event like November 18, 2025 (core traffic failing from 11:20 to 14:30, about 190 minutes) breaks every target in its month, and Graftyard cannot prevent that inside Cloudflare. So does a June 2025 class partial storage failure. The annual targets are 99.95% for reads and 99.9% for writes, about 263 and 526 minutes. Both absorb one such event a year. The two front-door events of 2025 (`research/cloudflare-uptime.md` findings 13 and 14), about 215 minutes together, would have used 82% of the annual read budget [inference]. Without drain, each site deploy would cost about one bad minute, about 13 a month against the 4.3-minute read budget (`history/review/cloudflare-foundation-attack.md` F2), which is why every site-script version is a drained site day.
+
+**RPO and RTO per durability class.**
+
+| Durability class | Data | RPO | RTO | Mechanism |
+| --- | --- | --- | --- | --- |
+| Chains on `Tri` or `Na3` | Refs, pull requests, issues, reviews, checks, `Authz`, identity, Actions job state | 0 for loss of any one site: a data center, a region, or a site script's release. In the account-separated option also an account | Writes and reads alike at most about 11.5 s (promise remaining, the 1 s deadline, and two rounds) [inference]. Gray failure about 20 s once Milestone 0 passes | Raft over three sites; `Acked` requires two regions |
+| Chains on `Tri`, continent loss | Same | 0 | Same | One site per continent; the spare is on another continent's site |
+| Chains on `*2w` residency placements | Same | 0 for one Full site, then a single copy until `ReplaceMember` finishes | About 11.5 s into `Degraded` | Two Full sites plus a digest witness |
+| Chains on `Solo` | Same | 0 for a machine or data center (3 of 5 followers, finding 32). Unknown for a region, because no page says whether the followers span regions | Cloudflare's restart for an instance or data center, unpublished. Until the region returns for a region loss, 6 h 18 min in the WEUR sample (finding 20) | One member; DO PITR of 30 days |
+| Stored packs | Pack and index files | 0 for one site (two buckets before the ack), with the third copy minutes later and sweeper lag alarmed. `Solo` has one bucket, with R2's in-region durability only | As the chain, because any bucket in the set serves | `DurablePack` |
+| Inline packs | Packs up to 1 MiB | As the chain | As the chain | Bytes inside the entry |
+| Account compromise or destructive deploy | Everything in the install account | Vault lag, typically about 30 s [guess], or the time from the chosen cutoff to the loss after a compromise that wrote through the protocol. Managed, BYOC, and self-hosted must run a vault, and an install without one loses everything | Rebuild a new install account from the vault's install-scoped snapshots, log tails, and packs, up to an operator-chosen cutoff | Vault account the install's tokens cannot reach, R2 bucket locks (https://developers.cloudflare.com/r2/buckets/bucket-locks/) |
+| Repository, operator error | Its named refs | Any index in 35 days | Minutes | `RestoredTo` from the log, archives, and `ref_log`, whose 35 days of ref values are GC roots, plus one snapshot per tier at or below every index in the window |
+| Member corruption or bad release data | One member's SQLite | 0 (two others hold it) | Minutes | Drop the member and `ReplaceMember`; DO PITR of 30 days per member as a last resort (`research/cloudflare.md`) |
+| Derived state | Folds on a new member or learner, git cache shards, clone cache, `SearchShard`s, `Inbox` objects | Rebuilt. A rebuilt `Inbox` lacks a first event from a new source chain in its snapshot's last day | 2 s core tier, minutes for caches [guess] | Snapshots in R2 plus the log |
+| Actions blobs | Logs, artifacts, caches | Lost with their site's region | Rerun | One bucket on the job's leader site |
+| Delivery history | Webhook attempt records | Lost with their site; deliveries resume from cursors (at-least-once) | Seconds | Cursor in the chain's group |
+| Cloudflare-wide data loss (no precedent found) | Everything | Lifeboat lag, typically about 30 s and published, for installs that run one | Whole-install restore from the lifeboat export ("Install operations") | Lifeboat holds the log and packs off Cloudflare |
+
+## Failure modes
+
+Components are `chain groups` (voters and learners of every group), `pack buckets`, `git caches` (git cache shards and clone cache, derived), `front door` (`graft-front`, the edge, site scripts, installation-token minting, Spectrum, SSH front and its outbound handler), `event pipeline` (cursors, Queues, consumers, and the `HookSequencer` delivery stores), `actions state` (Actions groups, `RunnerBroker` and `LogRelay` objects, blobs, and `graft-runners` and runners in the runner account), `release control` (the `Release` group, `graft-ops`, site days, keys), `vault` (the vault account), `lifeboat`, and `derived stores` (`Inbox`, `SearchShard`, and `RateCounter` objects, and the watcher index that `Counts` writes, all in Shape, Identity).
+
+| Component | Failure | Blast radius | Containment |
+| --- | --- | --- | --- |
+| chain groups | instance | One member's object resets; in-flight requests on it fail | The DO restarts and replays its SQLite. The leader commits with the other follower. A reset leader resumes `led_term` after one AppendEntries round; otherwise `suspect` and the 1 s deadline give a new leader within about 11.5 s. A `Solo` group waits for the restart |
+| chain groups | data-center | Members whose host DC failed | DO storage follower fencing (`research/cloudflare-uptime.md` finding 32). The quorum continues on the other two sites |
+| chain groups | region | One member of every group with a member there | Two other sites keep a quorum and elect within about 11.5 s. A gray region is left by step-down, `suspect`, or a signed drain. `ReplaceMember` runs only on `SiteLost` or 24 h of zero acks, onto the same continent's spare, and `RestorePlacement` moves groups home after recovery. `*2w` groups go `Degraded`. `Solo` groups there wait. Learners there drop out |
+| chain groups | provider-wide | Every member: DO errors (June 2025) or no reachability (November 2025) | 1 s deadlines, a `suspect` report to a follower on another site as the only hedge, and two retries per commit-path call outside the 10% budget. Writes return 503 and nothing acknowledged is lost. Stale reads only under a signed flag. A partial proxy failure (December 2025) leaves binding replication up [inference] |
+| chain groups | control-plane | None at runtime | Members and learners are created by name on first use. Classes, site scripts, and spare sites exist from install, and every script binds the spares' member classes and buckets, so `ReplaceMember` creates no script version |
+| chain groups | bad-deploy | One site script's members, because each script rolls on its own day after a drain | Followers `verify` with the old release. A refusal by an older follower of an uncommitted entry makes the leader truncate, transfer to an undrained follower holding its last index, and stop leading until its release changes or the refusing site rolls back. Any other refusal keeps the leader, marks the refuser unable to follow, and halts the site day. Each step and the new site's 1% day gate on N+1 apply lag, apply and verify exceptions, ack rate, and `STEP_DOWN` trips, and a breach runs the pre-signed `Rollback` with no human signature |
+| chain groups | bad-config | One site script's config, such as a wrong jurisdiction or region. An account-level setting reaches all three sites in the default | The latency check refuses misplaced members, and a failed check is retried with a new member generation. Site config rolls per script as a site day. Account settings are code, reviewed by two people, applied off-peak. Account-separated sites contain account settings to one voter |
+| chain groups | noisy-tenant | One group, for example a viral repository | 1,000 req/s per object bounds it to itself. Per-repository admission, follower and learner reads, and a cap of 50 comment commands/s |
+| chain groups | noisy-tenant | An agent fleet bursting on one group (journey 9), or agents on user tokens | Admission by origin and behavior takes Human and MergeQueue first, gives Agent a floor Bot cannot take, and caps it with a token bucket of `AGENT_SHARE`, with caused commands and fast user tokens counted as Agent. Overflow waits up to 30 s, then gets the git `ng` or REST 429 shape. `ActorKind::Agent` refusals keep a Graftyard-run or confined App inside its prefix, and lease and open-task caps bound what one holder, App, or requester can write |
+| pack buckets | instance | Single requests 5xx | Retries; ULID keys never contend |
+| pack buckets | data-center | None | R2 replicates "across several data centers within a geographic region" (`research/cloudflare.md`, R2) |
+| pack buckets | region | One bucket of three | Two-of-three placement means every acknowledged pack has a copy elsewhere. Pushes place into the two live buckets. `ReplaceMember` copies single-copy packs first, then each network once into the spare's bucket |
+| pack buckets | provider-wide | All buckets (February and March 2025) | Inline packs up to 1 MiB keep most pushes committing. Warm shards serve fetches. Large pushes and cold clones return 503 |
+| pack buckets | provider-wide | Hot groups during an R2-wide outage | `INLINE_MAX_HOT` yields while placement fails, so a hot group inlines up to 1 MiB like any group. Its entries hold fewer pushes, admission paces agents, and `LOG_MAX_BYTES` archives the extra after recovery [inference] |
+| pack buckets | control-plane | None at runtime | Buckets, including spare buckets, are pre-created per site and their location checked at install |
+| pack buckets | bad-deploy | Bad packs from one site's release | `index-pack --strict` before placement; GC deletes only objects outside the fold refs and `ref_log` for 14 days, at a fixed rate |
+| pack buckets | bad-config | Writes to one site's bucket fail | A readiness probe writes and reads a canary object per bucket. Placement fails over to the other two. A misplaced bucket is recreated under a new name as a site day |
+| pack buckets | noisy-tenant | One network's prefix | Push bytes and concurrency caps per account and network |
+| git caches | instance | One shard's networks and in-flight streams | Clients retry. A new instance rehydrates from R2. Clone-cache hits never touch a container |
+| git caches | data-center | Shards on that host set | As instance. Each network is warm on two sites |
+| git caches | region | That site's shards | The other warm site serves. Per-site `max_instances` lets any two sites carry every network |
+| git caches | region | A hot network's k shards and clone-cache entries on one warm site | The other warm site holds its own k shards and a copy of every hot-network clone-cache entry, so it carries the network alone, 36% of 28 vCPU in journey 9 |
+| git caches | provider-wide | All containers | Clone-cache hits keep serving if R2 serves. Otherwise git is down with everything else |
+| git caches | control-plane | New container instances may not start [unknown]; new images cannot roll out | Warm shards carry a day of load with `sleepAfter` at 24 h, so no start is needed for a day [inference]. `fanout` runs in band from `NetworkLoad` and draws on the hot pool, so a network that turns hot needs no API call. Running images keep serving. Milestone 0 tests starts and a newly hot network with the API unreachable |
+| git caches | bad-deploy | One site's git image | Image changes ship on their own site day, never with member code (`--containers-rollout=none` on code deploys, https://developers.cloudflare.com/containers/configuration/rollouts/); a conformance clone, fetch, and push per site gate |
+| git caches | bad-config | Shard count or `max_instances` too low on one site | The other warm site absorbs. Working set and shard count are measured; a change is a site day; alarm at 70% of account vCPU |
+| git caches | noisy-tenant | One giant network's repack or clone storm | Per-network CPU caps, the clone cache, one repack per shard at a time. Git cache vCPU is reserved per site through `max_instances`, and hosted runners run in a separate account, so Actions cannot take it |
+| git caches | noisy-tenant | An agent fleet's git CPU on one network (journey 9), or one owner's several hot networks | `fanout` up to 8 shards per warm site from a hot pool budgeted per owner, `AdmitClass` in each shard's queue so agent work sheds first, `TEST_MERGE_BUDGET`, and the agent layer's conflict predictor capped at 50% of the second site's shard vCPU and paused while that site leads |
+| front door | instance | Requests on one isolate | Anycast and clients retry |
+| front door | data-center | That colo's traffic | Cloudflare routes to the next colo |
+| front door | region | Members and SSH fronts of one site | The edge calls the other members through their bindings, and `suspect` moves leaders. Leader hints in isolate memory update on `NotLeader` |
+| front door | provider-wide | Everything (November 18, 2025), or client HTTP for some zones (December 5, 2025) | Lifeboat for BYOC and self-hosted installs. Otherwise stated as exposed |
+| front door | control-plane | No deploys or WAF changes | Runtime needs none. Edge and `graft-ops` swap-backs are signed `EdgePointer` and `OpsPointer` entries. A bad `graft-front` percentage stays frozen until the API returns. Rules are frozen in signed zone config |
+| front door | bad-deploy | Edge, `graft-front`, or `graft-ops` version at its rollout percentage | `graft-ops` rolls the edge at 1%, 10%, 50%, then 100% with N and N+1 both in the deployment. An isolate or `graft-ops` submits the pre-signed swap-back and `graft-front` pins N with no API call. `FrontRoll` and `OpsRoll` run at 1% for a day, then 100%, with N kept. The edge defines no member class, so its deploy resets no member |
+| front door | bad-deploy | Installation-token minting. A bad `graft-ops` or a Secrets Store (beta) failure stops every Actions `GITHUB_TOKEN` and GitHub App token install-wide (`design/SHARED.md`, "Identity and tokens"), against the 99.9% job-start target | `OpsRoll` exposes 1% of mints for a day. Edge isolates whose mint errors pass a compiled ratio submit the pre-signed `OpsPointer` back to N, which the edge applies with no API call. Each `graft-ops` isolate caches the unwrapped key for at most an hour, so isolates that hold it ride out a shorter Secrets Store failure [inference]. Mint errors alarm |
+| front door | bad-config | A WAF or rate rule that blocks git, or a wrong location hint compiled into the edge, which misplaces new members of every site | Zone config is code in Terraform, reviewed by two people, applied off-peak with a synthetic clone before and after. Misplaced members fail the latency check and rejoin with a new generation |
+| front door | noisy-tenant | One IP, token, or repository flooding | WAF rate rules, per-token buckets in the identity group, per-repository admission at the leader |
+| event pipeline | instance | One consumer invocation, or one `HookSequencer` object | At-least-once redelivery. A cursor advances only after its work is recorded, for webhooks the `HookDelivery` rows. A reset sequencer resumes its queues from its SQLite, and an attempt left unreported for 30 s is re-sent under its GUID |
+| event pipeline | data-center | Sequencers on that host set | As instance. Queues and cursors are elsewhere |
+| event pipeline | region | One site's queue and consumers, and the delivery stores of owners homed there | Leaders on other sites keep pushing, and cursors on the lost site resume on the new leader. A lost store is rebuilt on the owner's new home site by replaying each `Webhooks` cursor from `replay_from`, which redelivers finished deliveries under their GUIDs. Delivery history and manual redelivery for that range are lost, as the RPO table states |
+| event pipeline | provider-wide | Queues or Durable Objects down (June 2025) | Cursors hold position. Webhooks, notifications, and the lifeboat feed deliver late and none are lost |
+| event pipeline | control-plane | None | Queues pre-created per site. Sequencers are created by name on first use |
+| event pipeline | bad-deploy | Wrong or stopped deliveries from one site | Payloads render from captured entry fields. A stopped consumer or sequencer only delays, and replay is by cursor rewind to `replay_from` |
+| event pipeline | bad-config | A hook owner's concurrency set too high | `HOOK_OWNER_CONCURRENCY` (50 [guess]) is compiled, never config |
+| event pipeline | noisy-tenant | One hook owner with a slow endpoint, or one owner's delivery volume | One attempt in flight per (chain, hook), a 10 s deadline, and failing hooks held to half of the owner's slots, so a slow hook delays only its own queues. Each owner has its own sequencer, so one owner's backlog never delays another's. One owner's sequencer is bounded by the 1,000 req/s soft limit per object (open question) |
+| actions state | instance | One `RunnerBroker` or `LogRelay` object, or one `graft-runners` invocation | Brokers and relays hold derived state. A broker reloads from the shards, and runners re-poll under their sessions, which are entries in the group. A relay's viewers fall back to step log blobs, and the runner's uploads lose nothing. `graft-runners` is stateless, and the next webhook or sweep repeats the demand read. Leases live in the Actions group |
+| actions state | data-center | As chain groups, plus brokers and relays on that host set | As chain groups. Brokers and relays restart as for instance |
+| actions state | region | Job state survives (group). Logs and artifacts in that site's bucket are lost, and so are that site's brokers and relays | Jobs re-queue on lease expiry, and users rerun jobs whose logs were lost. The shards elect leaders elsewhere, and the edge sends polls to fresh brokers on the new leader site. Live views of running jobs fall back to blobs |
+| actions state | provider-wide | Hosted runners, `graft-runners`, brokers, and relays | Self-hosted runners wait. Job leases extend only by the recorded stall (`ExtendLeases`), so idle time never keeps a dead runner's job alive |
+| actions state | control-plane | Sandbox images cannot update, and new sandboxes may not start [unknown] | Running sandboxes serve. Queued hosted jobs wait, up to the 24-hour queue limit. Self-hosted runners are unaffected. Brokers and relays are created by name and need no API call |
+| actions state | bad-deploy | Job dispatch, brokers, or relays on one site, or a bad `graft-runners` | Pinned-runner conformance gate per site. `graft-runners` deploys by `graftyard runners upgrade` only from a signed release, at 10% for a day, then 100% [guess], and a demand read that fails starts nothing |
+| actions state | bad-config | Runner capacity per owner, or a wrong hosted label table | `decide` refuses a hosted registration past the owner's cap, 20 [guess] unless its `OrgPolicy` says otherwise. `graft-runners` starts no sandbox past `RUNNER_VCPU_STOP_PCT` of the runner account's vCPU and alarms. A job with no matching hosted label waits like a job with no runner |
+| actions state | noisy-tenant | One org's 256-job matrix, or more runners in one scope than BROKER_HELD_MAX | Per-owner Actions groups (16 shards, each repository's runs on one shard) and fair queuing by runner scope. Polls past the cap get 503 and back off 15 to 30 s. Sandboxes count against the runner account's vCPU, not the install's |
+| release control | instance | One member of the `Release` group, or one `graft-ops` invocation | Quorum, as chain groups. `graft-ops` is stateless and resumes each intent after its last committed `IntentStep`, and every step is idempotent |
+| release control | data-center | As chain groups | As chain groups |
+| release control | region | One member, and that site's `MemberRegistry` | Quorum. Site days pause and resume from the group. `ReplaceMember` enumerates groups from the surviving sites' registries |
+| release control | provider-wide | No rollouts | Every site keeps its running release. Isolates keep their last `Release` view and members keep site modes. A customer-signed `StaleMode` that cannot commit is honored from any reachable `Release` member's `pending` row |
+| release control | control-plane | `graft-ops` cannot deploy or read bucket location and Analytics | Rollouts wait, and a site day stuck for an hour undrains its site under the 1% lead limit. Failed checks are no-ops plus alarms, never repairs. Edge and `graft-ops` swap-back, rollback pointers, and site drain are signed entries that need no API |
+| release control | bad-deploy | A bad rollout tool, a bad `graft-ops`, a leaked drain or executor key, or a vendor key the customer no longer trusts | The vendor holds no Workers permission. `graft-ops` uploads only bundles from the release bucket whose release signature verifies, and deploys only on intents signed by a key in the latest `Keys`, bound to this install and position, before `not_after`. The group refuses a second drain while one site is drained. A leaked executor key can record progress and replace only a site drained for `ZERO_ACKS`, and it cannot pin, deploy, or restore. A customer revokes the vendor token, signs `Halt`, signs `Keys` with `vendor: None` and the next `generation`, then `Resume` with re-signed undos or `Abort { intent, target }` ("Install operations") |
+| release control | bad-config | A wrong pointer, for example enabling a format early, or a rollback below an enabled format | `formats:enable` requires every site's, every spare's and residency site's canary, and every registered lifeboat's reported release, and the release-signing key and the customer key sign it. `Abort` names its target, and the group refuses and pages on any rollback, pin, or `Abort` to a release whose `ReleaseUploaded.reads` lacks an enabled format |
+| release control | noisy-tenant | None | Not tenant-facing |
+| vault | instance | One vault Worker invocation | It resumes from its cursor; the lag is published and alarmed |
+| vault | data-center | None | R2's in-region replication |
+| vault | region | The vault bucket's region | The install keeps serving; the vault resumes when the region returns. A customer may run a second vault in another region |
+| vault | provider-wide | The vault and the install together | The vault is Cloudflare-only by design; the lifeboat is the copy outside Cloudflare |
+| vault | control-plane | None | It needs only HTTPS to the install's edge and its own R2 |
+| vault | bad-deploy | A bad vault release | `graftyard vault upgrade` deploys only a release whose signature verifies, under the vault account's own token. Bucket lock rules stop deletes and overwrites for 35 days, so a bad release cannot destroy the copy |
+| vault | bad-config | Wrong scope exported | The export is install-scoped, signed by the customer key, and covers every `ChainId`. The install alarms when any chain has no vault cursor. Managed tenants' own exports use per-org tokens |
+| vault | noisy-tenant | One huge org saturating the pull | Pull bandwidth caps per org |
+| lifeboat | instance | The lifeboat host | Two lifeboat hosts per install recommended, each with its own copy and key. A dead or retired host is removed by `LifeboatRemove`, and one silent for 7 days alarms |
+| lifeboat | data-center | The customer's site | As instance |
+| lifeboat | region | The customer's region | As instance |
+| lifeboat | provider-wide | The feed stops | It serves its last state with its lag published, and resumes from its cursor on recovery |
+| lifeboat | control-plane | None | It needs only outbound HTTPS to R2 and the edge. When the R2 feed is stale it pulls log tails and packs from followers through the edge's export endpoints, signed with its registered key |
+| lifeboat | bad-deploy | A bad lifeboat release, or a workerd version change | Lifeboat releases trail site releases by up to a week and keep the previous binary. The decoder must read every enabled format, because `formats:enable` waits for every registered lifeboat. A workerd version change rebuilds the lifeboat on a fresh directory. An undecodable entry halts it with an alarm, never a skip |
+| lifeboat | bad-config | Wrong scope mirrored | It reads only the install's export bucket, with an R2 read-only token scoped to that bucket, and from `Tokens` keeps only `lifeboat:read` hashes |
+| lifeboat | noisy-tenant | One huge org saturating the feed | Feed bandwidth caps per org |
+| derived stores | instance | One `Inbox`, `SearchShard`, or `RateCounter` object resets, and its in-flight requests fail | The object restarts on its SQLite. `Notify` and `Search` redeliver from their cursors, and an isolate re-reads a rate total on its next request |
+| derived stores | data-center | Objects whose host data center failed | DO storage follower fencing keeps their SQLite (`research/cloudflare-uptime.md` finding 32), and they restart in the region |
+| derived stores | region | `Inbox` objects and `SearchShard`s on that site, and rate counters created there | After `SiteLost` the edge uses the `Inbox` on the account's next record site, rebuilt from the newest snapshot (Shape, `Inbox`). Search leaves the lost shards out with `incomplete_results` until `Search` rebuilds them on the domain's next site. Isolates count a lost key locally against the full limit. Watcher rows are chain state and keep a quorum |
+| derived stores | provider-wide | Every object, with DO errors | Notifications and cross-repository lists return 503, search returns `incomplete_results`, and rate limits fail open per isolate. Nothing canonical is lost, and consumer cursors hold position |
+| derived stores | control-plane | None at runtime | Objects are created by name on first use, and their classes ship in the site scripts from install |
+| derived stores | bad-deploy | Wrong rows written by one release of `Notify`, `Search`, `Counts`, or a class | Every store is derived. A cursor rewind replays `Notify` and `Search`, and a refold rebuilds watcher rows. Classes roll on their site script's site day, and counters reset with the hourly window |
+| derived stores | bad-config | An owner's search domain or rate limits set wrong | `Domain` comes from the owner's `PlacementRecord`, and the shard's DO jurisdiction keeps resident documents inside it. Rate numbers are compiled from GitHub's documented values, on only where GHES limits are on |
+| derived stores | noisy-tenant | A viral repository's stars, one huge org's search writes, or one key's request flood | `Counts` coalesces watcher rows to one Bot entry a second per repository. `Search` writes through per-owner queue shards, and a slow shard is left out with `incomplete_results`. A flooding key costs its counter at most one call per isolate a second |
+
+## Deployment modes
+
+One signed artifact is used in all three modes. It holds `graft-front`, the edge, the three site script bundles, `graft-ops`, the Workflows script, and the vault Worker (Rust to WebAssembly), the git, SSH, and runner container images, web assets, the record formats and fold schemas, the operator CLI, and the lifeboat bundle (a workerd config, a pinned workerd version, and the same images). The Workflows script rolls on its own `SiteDay { Workflows }`, and the vault Worker by `graftyard vault upgrade` ("Install operations"). The vendor's existing release registry and signing transfer unchanged (`design/SHARED.md`, "Release registry and signing"), and `graft-ops` is the in-account executor that applies them.
+
+| Component | Managed | BYOC | Self-hosted |
+| --- | --- | --- | --- |
+| chain groups | A front account holds the zone, `graft-front`, the edge, and the global `Names` and `Tokens` groups on three sites. Each cell is its own account with three site scripts (enam, weur, apac) plus residency cells, reached from the front edge over signed HTTPS | One account in the customer's org with three site scripts and three spares (default), or three site accounts plus an edge account, with member calls over signed HTTPS | Same as BYOC, in the customer's own account, with no vendor token |
+| pack buckets | One R2 bucket per site in the cell's account, location checked at install | Same, in the customer's account or accounts | Same as BYOC |
+| git caches | Git cache shards per site script, `standard-4`, counted from the measured working set, plus a hot pool for hot networks (journey 9) | Shards per site script, sized by tier from `cost.py`, plus a hot pool | Same as BYOC |
+| front door | The front account's zone (Enterprise for 5 GB pushes), Spectrum SSH, and the Data Localization Suite for EU cells. A proxy failure on a cell hostname cuts that cell's traffic | The customer's zone. Spectrum SSH is a paid add-on on Pro and Business; if Milestone 0 finds Spectrum cannot reach a Tunnel origin there, SSH needs Enterprise. Business allows 200 MB pushes, Enterprise 5 GB | Same as BYOC |
+| event pipeline | Queues per site | Same | Same as BYOC |
+| actions state | Actions groups; hosted runners on Sandboxes in a separate runner account | Actions groups; Sandboxes in a separate runner account, or customer runners | Same as BYOC |
+| release control | Vendor signs intents; `graft-ops` executes one site per day | Vendor and customer both sign intents. The vendor holds no Workers permission and writes signed bundles into one install bucket, and `graft-ops` uploads and deploys them with a customer-created deploy token. The runtime never calls the vendor | Customer alone signs intents, which is BYOC with `Keys { vendor: None }` |
+| vault | Required: a vault account per cell that the cell's tokens cannot reach, with per-org exports for tenants that want their own | Required: a vault account the customer owns, separate from the install's tokens, holding an install-scoped export signed by the customer key | Required, as BYOC |
+| lifeboat | None, unless the operator decides otherwise | Recommended: two workerd hosts on the customer's network | Recommended, as BYOC |
+| derived stores | `Inbox` and `SearchShard` objects in each cell; `RateCounter` objects in the front account, with GitHub's limits on | The same classes; `RateCounter` only when the install turns GHES rate limits on | Same as BYOC |
+
+Self-hosted here means the customer operating the same artifact in its own Cloudflare account, which is how `FRAME.md` defines self-hosted. workerd on customer hardware is supported only for evaluation, under the `evaluation` flag like `Solo`, and for the lifeboat. The reasons, as read at workerd commit `ec3982b2` (`history/review/cloudflare-selfhost-walk.md` F1, F3, F5):
+
+- `localDisk` Durable Object storage is marked "EXPERIMENTAL; SUBJECT TO BACKWARDS-INCOMPATIBLE CHANGE" (`workerd.capnp` lines 807 to 808).
+- The `localDocker` container engine is "Only used for local development and testing purposes" (`workerd.capnp` lines 836 to 838).
+- A workerd server runs "One thread, one loop" (`src/workerd/server/AGENTS.md` line 106), so one host's members, edge, and streams share a thread.
+- workerd has no Cron Triggers, its Workflows engine is "externally-supplied", a queue binding is "implemented by the named service", and Analytics Engine needs `--experimental` (`workerd.capnp` lines 274 to 305, 476 to 479, 490).
+
+The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and a BYOC lifeboat keeps every `Identity` shard and the `lifeboat:read` token hashes on a runtime whose README says it "is not a hardened sandbox" (`history/review/cloudflare-selfhost-walk.md` F1). It is accepted there and not for production because it is read-only, holds a copy rather than canonical state, and is rebuilt on a fresh directory at every workerd version change. Token hashes are of 30-byte random secrets, so a stolen copy cannot be reversed offline [inference]. The host never receives a main-host token, because developers present `lifeboat:read` tokens that the main edge refuses. Its other credentials are a DNS token for a validation zone in a separate account and an R2 read-only token for the export bucket, so a compromised host can read the copy it already holds and issue certificates for the lifeboat name, and cannot write to the install or repoint the production zone [inference].
+
+**What each mode requires of the customer.**
+
+- **Managed.** Nothing.
+- **BYOC and self-hosted.**
+  - one install account with Workers Paid ($5), or four for account-separated sites ($20), plus a vault account and a runner account ($5 each), and for a lifeboat a validation-zone account on the Free plan ($0, https://www.cloudflare.com/plans/);
+  - a zone on Pro or higher with the Spectrum add-on for SSH, and Enterprise for pushes over 200 MB;
+  - Containers and R2 enabled, and the container vCPU quota request filed on day 0;
+  - a customer-created account-owned deploy token with exactly Workers Scripts Edit and Containers Edit on the install account (https://developers.cloudflare.com/fundamentals/api/reference/permissions/), and a separate read token with Workers R2 Storage Read and Account Analytics Read. Both live in Secrets Store and only `graft-ops` reads them. Workers Scripts Edit "Grants write access to Cloudflare Workers scripts" with nothing narrower listed (same page), so the vendor gets no Workers permission. For BYOC it gets only an R2 Object Read & Write token scoped to the install's release bucket (https://developers.cloudflare.com/r2/api/tokens/). Account-owned tokens list Workers but not Containers as compatible (https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/), so Milestone 0 checks container deploys with one;
+  - for account separation, the acceptance that a proxy failure on the ring hostnames stalls commits.
+
+  The install keeps serving indefinitely with the vendor unreachable, because no runtime path calls the vendor. `graft-ops` crons call the Cloudflare API with the customer's read token, and a failed call is a no-op plus an alarm.
+- **Evaluation (`Solo`), any mode, or workerd on customer hardware.** One site and the signed `evaluation` flag (`Genesis.evaluation`). It gets no region-loss guarantee and no availability SLO. A Cloudflare-hosted `Solo` install moves to `Tri` by a customer-signed `LeaveEvaluation` intent, which adds the new sites, swaps the system-chain records, clears the flag, and moves `Release`, `Ids`, `Names`, `Tokens`, and then each owner through `Joint` configs without downtime [inference from joint consensus] (Shape, "Release group").
+
+### Install operations
+
+- **Genesis.** The install comes up in this order, and sites exist before genesis.
+  1. `graftyard init` mints the install id into `install.toml` and creates nothing.
+  2. `graftyard sites add` and `sites add-spare` create each site script with Wrangler and the customer's deploy token, and set the trust anchor on it: the `GRAFTYARD_INSTALL` and `GRAFTYARD_CUSTOMER_KEY` variables, which hold the install id and the customer public key.
+  3. `graftyard genesis` creates `graft-front`, the edge, `graft-ops`, and the Workflows script the same way, so each binds every site. It generates the drain and executor key pairs on the operator's machine, writes each private key into `graft-ops`'s Secrets Store with the operator's Wrangler login, keeps no copy, and emits an unsigned `Genesis`. The genesis carries the install id, the install's own account, the sites and spares, the system-chain placements, and the first `Keys` at generation 0 (customer, vendor or `None` for self-hosted, release-signing, drain, executor, and ring keys).
+  4. The customer signs it offline with `graftyard sign`.
+  5. `graftyard install --genesis` sends it to the edge, which writes it to the empty `Release` group. The group accepts only a genesis whose install id and signature match the anchor, so whoever reaches the edge first cannot plant another. Install then creates the `Names`, `Tokens`, and `Ids` groups and the `Authz(Genesis.account)` chain.
+
+  The anchor never changes after install. A later customer key reaches isolates through `Keys`.
+- **First admin.** `graftyard admin bootstrap` asks `graft-ops` to mint a one-time sign-in link for the first site admin, who then configures SAML or OIDC.
+- **Keys.** The release-signing key stays with the vendor's release service, is registered in every mode, and signs releases and the pre-signed half of each `FormatsEnable`. The vendor intent key signs only vendor intents. The customer intent key stays with the customer offline and signs `Keys`, genesis, `Halt`, `Resume`, `Abort`, `SiteLost`, `StaleMode`, `LifeboatAdd`, `LifeboatRemove`, `RepoRestore`, `RepoReset`, `LeaveEvaluation`, and the customer half of `FormatsEnable`. `graft-ops` holds three keys. The installation-token signing key is wrapped by a Secrets Store key and cached unwrapped per isolate for at most an hour. The drain key signs only `SiteMode`. The executor key signs only `ReleaseUploaded`, `IntentStep`, `IntentDone`, `SiteRelease`, and `ReplaceMember`. The agents account's `graft-ops` holds the agents executor key (Shape, "Release group"). A leaked executor key can record false progress, or replace a site that has been drained for a day, and cannot deploy code, pin a pointer, or restore, because those need the deploy token or a human-signed intent or undo [inference]. The group and `graft-ops` refuse any entry signed by a key absent from the latest `Keys`, any entry not bound to this install and the group's last signed digest (or, for a pre-signed undo, to the current intent), and any `Keys` that skips a generation.
+- **Tools.** Terraform owns zone, DNS, buckets, queues, Spectrum, Tunnel, and WAF. At install, Wrangler creates the site scripts, `graft-front`, the edge, `graft-ops`, and the Workflows script with the customer's deploy token. After that only `graft-ops` creates versions, because any new site-script version resets members and must run as a site day. The vendor's release service writes signed bundles into the install's release bucket. `graft-ops` uploads every script of a bundle as a version with the customer's deploy token once its release signature verifies, commits `ReleaseUploaded`, then deploys each version through the versions and deployments API on a signed intent.
+- **Release roll.** `graftyard release roll R` waits for R's `ReleaseUploaded`, then signs and submits the first intent below that has not finished. It submits one at a time, because the group refuses a new intent while one is current and each signature binds the latest digest. The operator reruns it, or the vendor's release service runs it, after each `IntentDone`. It skips an intent whose script or images R leaves unchanged.
+  1. `SiteDay { Site(s), R }` for each member site, one a day. Only a passed day lets the next start.
+  2. `SiteDay` for each spare and residency site, behind its canary group.
+  3. `SiteDay { Workflows, R }`, which skips drain and undrain and starts only while no `ReplaceMember` or `RestorePlacement` instance runs.
+  4. `EdgeRoll`, then `OpsRoll`, then `FrontRoll`, then `McpRoll`. The agents account runs `ControllerRoll` (`design/AGENT-LAYER.md`).
+  5. `ContainerDay { s, R }` for each site whose images changed, one a day and never on a code day.
+
+  Each intent carries its undos: a `Rollback` to N for a day target, and `EdgePointer`, `OpsPointer`, or `McpPointer` to N for a pinned script. `FrontRoll` and `ContainerDay` carry none. On their breach `graft-ops` returns the script or image to N through the API under the same intent, so a control-plane outage freezes them. `graftyard formats enable` comes after the roll, once every site, canary, and lifeboat reports R.
+- **Site day.** Every operation that creates a new site-script version (code, secret, variable, binding, container config) runs as drain, deploy at 1%, 10%, 50%, then 100%, then undrain. Each step and the 1% day gate on the N+1 members' apply lag, apply and verify exceptions, and ack rate against the same site's N members, plus zero `STEP_DOWN` trips on N+1 leaders. A breach runs the release intent's pre-signed `Rollback { target, release: N }` with no human signature, unless N cannot read an enabled format, in which case the group refuses it and pages. Every release adds one site day per spare and residency site after the member sites, gated by that site's canary group replaying a corpus of current formats, and a spare keeps its images until that day. A container image change ships on a different day from member code, and a code deploy runs with `--containers-rollout=none`. Rotatable secrets live in Secrets Store, read at runtime with `get()` (https://developers.cloudflare.com/secrets-store/integrations/workers/), so rotating one creates no script version. The steps and gates use these compiled constants, all [guess] until Milestone 0 and the first site days measure them.
+
+  | Constant | Value | Use |
+  | --- | --- | --- |
+  | `ROLL_STEPS`, `SiteDay` | drain, 1%, 10%, 50%, 100%, undrain, first day (steps 0 to 6) | `IntentStep.step` for a site; a `Workflows` day runs steps 1 to 4 |
+  | `ROLL_STEPS`, `EdgeRoll` | 1%, 10%, 50%, 100% (steps 0 to 3) | Edge deployment percentages, N and N+1 both kept |
+  | `ROLL_STEPS`, `FrontRoll`, `OpsRoll`, `McpRoll`, `ControllerRoll` | 1% for `FIRST_DAY`, then 100% (steps 0 and 1) | N kept in the deployment |
+  | `ROLL_STEPS`, `ContainerDay` | 10%, 50%, 100% of the site's instances (steps 0 to 2) | Image rollout on its own day |
+  | `STEP_DWELL` | 2 h at each of 1%, 10%, and 50% | Least time before a step's gate is judged |
+  | `STEP_MIN_ENTRIES` | 1,000 entries applied by N+1 members in the step | Below it the step dwells up to 2 x `STEP_DWELL`, then halts and pages |
+  | `FIRST_DAY` | 24 h, with the site leading 1% of its home groups | The day gate |
+  | `GATE_APPLY_LAG` | N+1 p99 apply lag at most 2 x N's and at most 500 ms | Breach |
+  | `GATE_EXCEPTIONS` | 0 apply or verify exceptions on N+1 | Breach |
+  | `GATE_ACK_RATE` | N+1 ack rate at most 0.1 points below N's | Breach |
+  | `GATE_STEP_DOWN` | 0 `STEP_DOWN` trips on N+1 leaders | Breach |
+  | `GATE_ERRORS` | N+1 5xx rate at most N's plus 0.1 points | Breach for edge, front, ops, MCP, and controller rolls |
+  | `IDENTITY_RATIO` | 3 identity reads per edge request | An edge isolate above it submits the `EdgePointer` undo |
+  | `MINT_ERROR_RATIO` | 1% of installation-token mints | An edge isolate above it submits the `OpsPointer` undo |
+  | `STUCK_DAY` | 1 h | A site day that cannot advance undrains under the 1% lead limit |
+  | `DRAIN_BURN` | SLO burn at 10 x the allowed rate for 5 min, from both other sites | Automatic drain by the drain key (journey 5) |
+  | `UNDRAIN_BURN`, `UNDRAIN_AFTER` | Burn under 1 x for 30 min, from both other sites | Automatic undrain by the drain key |
+  | `ZERO_ACKS` | 24 h drained with zero acks in both other sites' `SiteHealth` | An executor-signed `ReplaceMember` |
+- **Site loss.** `ReplaceMember { lost, spare }` is signed only by the executor key. `decide` accepts it in two cases. Either a customer-signed `SiteLost { site: lost }` has committed, or `lost` has been drained for `ZERO_ACKS` by an entry at least that old, and `graft-ops` read zero acks from it in both other sites' `SiteHealth` over bindings before it signed. `graft-ops` then starts one Workflow instance per group, enumerated from the surviving sites' `MemberRegistry` rows that name `lost` (Shape, "Release group"). Each instance moves its group onto `spare` through a `Joint` config (journey 5). A site has recovered when both other sites' `SiteHealth` show it under `UNDRAIN_BURN` for 24 h and its canary group reports a release that reads every enabled format. The drain key then undrains it. `RestorePlacement { site }`, signed by the vendor or customer intent key and refused while `site` is drained, starts the instances that move groups whose `home` is `site` back.
+- **Placement failures.** A failed latency check is retried with a new member generation (`{chain}#{generation+1}#{kind}{slot}`, where `generation` is the highest its group has named), because only the first `get()` respects a hint. A misplaced bucket is deleted while still empty and recreated under a new name, and the site config change runs as a site day.
+- **Oceania.** An `oc` site lists `["OC", "APAC"]` for containers, because OC containers have limited capacity and "cannot be used exclusively" (https://developers.cloudflare.com/containers/concepts/placement/). It does not count as a separate region from apac for container placement.
+- **Revocation runbook.** The customer revokes the vendor's release-bucket token, submits `Halt { intent }` signed by the customer key through `POST /api/graftyard/v1/release/entries`, then signs `Keys` with `vendor: None` at the next generation. `graft-ops` stops at the current step, and from then the group and `graft-ops` refuse every vendor-signed entry, including a replay of any earlier entry, because each binds an older digest or generation. The halted intent's pre-signed undos still verify against the `Keys` of the intent's index, so a gate breach while halted still rolls back with no human signature. The customer then signs `Resume { intent, undo }`, with every undo re-signed by the customer key, or `Abort { intent, target }`, and `graft-ops` executes either with the customer's deploy token. `Abort` moves each site the intent touched, on its own site day, and each script it rolled to `target`. The group refuses and pages an `Abort` whose `target` cannot read an enabled format, so the customer names a newer one.
+- **Rotation runbook.** Each Secrets Store secret has two slots, both bound at install. The customer, or a site admin for App credentials, writes the new value into the inactive slot with their own Wrangler login, because no token `graft-ops` holds can write Secrets Store. The vendor or customer intent key then signs `Rotate { secret, slot }`, and the customer alone in self-hosted. `graft-ops` confirms one call with the new value, switches to it, and commits `IntentDone`. The old value is revoked at its issuer after 24 h.
+
+  | Secret | Who acts | New value from | Reaches Secrets Store by | `Rotate` makes `graft-ops` |
+  | --- | --- | --- | --- | --- |
+  | `DeployToken` | Customer | A new account-owned token in the dashboard | The customer's Wrangler login | List the install's scripts with it, then switch |
+  | `ReadToken` | Customer | As `DeployToken` | As `DeployToken` | Read one bucket's `location` with it, then switch |
+  | `TunnelToken` | Customer | Terraform's new tunnel token [unverified: rotation keeps running connectors] | Terraform | Switch, then ask each site's SSH front objects over bindings to restart their containers, one site at a time |
+  | `MintWrapKey` (holds the wrap key and the wrapped installation-token signing key) | Customer | `graftyard mint-key rotate` on the operator's machine | The customer's Wrangler login | Commit `TokensEvent::VerifyingKey` for the new key, mint with it, and retire the old `kid` after the longest token lifetime |
+  | `SshHostKeys` | Customer | `graftyard ssh-keys rotate` on the operator's machine | The customer's Wrangler login | Publish both slots at `/api/graftyard/v1/meta/ssh` and have sshd offer both for 30 days [guess], then serve only the new slot |
+  | `McpAppKey`, `McpClientSecret`, `InsightsAppKey` | Site admin | `graftyard apps rotate`, which adds a new key or secret to the App | The admin's Wrangler login, install account | Switch, then remove the old key or secret from the App after 24 h |
+  | `AgentsAppKey`, `WorkspaceAppKey` | Site admin | `graftyard agents rotate` | The admin's Wrangler login, agents account | The agents account's `graft-ops` switches and removes the old key after 24 h |
+  | Agents account `DeployToken` | Customer | As `DeployToken`, in the agents account | As `DeployToken` | The agents account's `graft-ops` switches |
+  | Vendor release-bucket tokens (install and agents accounts) | Customer | A new R2 token scoped to the bucket | Never. The customer hands it to the vendor | No `Rotate`. The old one is revoked after the vendor confirms a write |
+  | Export token | Customer | `graftyard vault token` signs new `ExportClaims` offline | Never. It goes to the vault Worker's secret under the vault-account token | No `Rotate`. The old `jti` is revoked after the vault's next pull succeeds |
+  | Lifeboat validation-zone DNS token and R2 read token | Customer | New tokens in those accounts | Never. They go to the lifeboat host | No `Rotate` |
+
+  The customer, vendor, release-signing, drain, executor, agents executor, and ring keys rotate by a new `Keys` entry. A new drain or executor private key goes into the inactive slot first, and `graft-ops` switches when the `Keys` that names it commits. A ring key's new public key enters `Keys` before its site switches to it. A lifeboat key rotates by `LifeboatRemove` and `graftyard lifeboat init`, and a developer's `lifeboat:read` token by re-running `enroll`, which revokes the old one.
+- **Vault.** `graftyard vault init` creates the vault Worker in the vault account from the signed artifact, under a vault-account token that the customer holds, and gives it an install-scoped export token (Shape, "Lifeboat feed", `ExportClaims`). The Worker pulls `export/batches`, then each moved chain's entries and the packs and snapshots they name, from the install's edge over HTTPS, and writes them to R2 under bucket lock rules of 35 days. It deletes a pack no sooner than `RESTORE_WINDOW` after the install's GC deletes it. The export covers every `ChainId`, including `Release`, `Names`, `Tokens`, `Identity`, and user-owned repositories. Managed tenants keep per-org tokens for their own exports. A vault is required for managed, BYOC, and self-hosted. `graftyard vault upgrade --release R` verifies R's release signature on the operator's machine and deploys R's vault Worker under the same vault-account token, because no install token reaches the vault account.
+- **Whole-install restore.** From the vault after an account compromise or destructive deploy, or from a lifeboat export after a Cloudflare-wide data loss:
+  1. Name a cutoff minute, chosen by the operator before the compromise, or the source cursor after a Cloudflare-wide loss. Create a new install account and sites from the signed artifact, with a customer-signed genesis that names the restore source and the cutoff.
+  2. For each chain, create members from the source's newest snapshot at or before the cutoff plus its log tail up to the cutoff, and check the `prev` digest chain end to end.
+  3. Copy every referenced pack to two site buckets and verify each `PackRef.checksum`. A chain with a missing pack stays read-only and is listed for the operator.
+  4. Re-apply, from the vault log, every revocation-class entry newer than the cutoff: token, `jti`, and SSH key revocations, uninstalls, member removals, `Keys`, and `LifeboatRemove`. The new genesis `Keys` replaces the restored `Release` group's keys, and the installation-token signing key is rotated with every old `kid` dropped, so no credential revoked or stolen after the cutoff comes back.
+  5. Open writes only when every chain's index equals its index at the cutoff plus the re-applied entries. The RPO is the time from the cutoff to the loss, which the restore report states. Because `Names`, `Tokens`, `Identity`, and user chains are in the export, names resolve and PATs, SSH keys, and user-owned repositories work after the restore.
+- **Lifeboat.**
+  - `graft-blob` writes a temp file, fsyncs it, links it to the final key (failing if the key exists), and fsyncs the directory before any 200. Reads verify `PackRef.checksum`, and a weekly scrub repairs from a sibling copy. Lifeboat hosts must use disks that honor cache flushes, which the install guide states as a host requirement.
+  - The workerd version is pinned in the signed artifact. A workerd version change rebuilds the lifeboat on a fresh directory. `uniqueKey` and the key modifier are backed-up state, because losing them may make stored data "difficult or impossible to recover" (`workerd.capnp` lines 783 to 788).
+  - `graftyard lifeboat init` generates the host's own key and registers it with `LifeboatAdd`, signed by the customer key. `LifeboatDecoder`, which the host sends to `POST /api/graftyard/v1/release/entries` when its decoder changes and at least daily, and the host's tail and pack pulls through the export endpoints are accepted only under that key, which signs nothing else. `formats:enable` waits for every registered lifeboat. `LifeboatRemove { host }`, signed by the customer key, drops a dead or retired one, and an alarm fires when a registered lifeboat has sent no `LifeboatDecoder` for 7 days. A lifeboat that meets an undecodable entry halts and alarms, and never skips.
+  - `graftyard lifeboat enroll` calls `POST /api/graftyard/v1/lifeboat/tokens` with the developer's own token, which mints a per-developer `lifeboat:read` token that the main edge refuses (Shape, "Lifeboat feed"), and writes it into gh's hosts file and a git credential helper for the lifeboat host. Lifeboat reads are opt-in per client.
+  - A BYOC lifeboat holds every `Identity` shard and, from `Tokens`, only the hashes of `lifeboat:read` tokens, so it never receives or stores a main-host token. A managed lifeboat, if the operator ever approves one, would accept only tokens minted for it, by org.
+  - `_acme-challenge.lifeboat.acme.example` is a CNAME to a validation zone in a separate account, which ACME DNS-01 allows (https://letsencrypt.org/docs/challenge-types/). The host holds a DNS Write token for that zone only, because DNS permissions are zone-wide with nothing narrower (https://developers.cloudflare.com/fundamentals/api/reference/permissions/), and renews 30 days before expiry. It reads the export bucket with an R2 Object Read only token scoped to that bucket (https://developers.cloudflare.com/r2/api/tokens/).
+  - Lag is typically about 30 s and is published. The lifeboat serves its cursor age in `/api/v3/meta` and an `X-Graftyard-Lifeboat-Lag` header, alarms past 5 minutes, and pulls log tails from followers through the edge's export endpoints when the R2 feed is stale.
+
+## Cost
+
+Run `python3 scripts/cost.py` from the repository root. It uses `TIERS` and `ACTIVITY` from `scripts/cost_model.py` and the `cf.*` prices in `research/prices.json`.
+
+Every per-operation constant is a [guess] until Milestone 0. The constants are requests per git operation, CPU per request, rows per entry, container sizes, a clone-cache hit rate of 70%, the daily working set, the leader split, one site loss a year, and the `Inbox` fan-out, read share, and size. Free allowances are applied per account. Learners cost nothing at these tiers, because no group reaches 500 reads a second [guess].
+
+The plan line uses list prices, Pro at 50 developers and Business above. Managed and pushes over 200 MB need an Enterprise contract on top of the table, which has no list price. Actions runner compute is not included either, the same as in `scripts/cost_model.py`. The tables include the vault and runner accounts, three spare sites, `ReplaceMember`, user records (stars, watches, follows, and notification state) as `Identity` entries, and one `Inbox` per account.
+
+| Developers | Default, one account (`Tri`) | Account-separated sites (`Tri`, four accounts) | `Solo` (evaluation) | Git in Artifacts, one DO per repository |
+| --- | --- | --- | --- | --- |
+| 50 | $264 | $276 | $165 | $91 |
+| 300 | $1,299 | $1,235 | $932 | $825 |
+| 2,000 | $9,417 | $9,314 | $5,995 | $5,376 |
+
+Git cache shards come from a guessed daily working set, the bytes of networks fetched at least once a day, which Milestone 0 measures. Each shard keeps 4 GB of its disk for scratch, and each network is warm on two sites.
+
+| Developers | Working set | Instance | Shards per site | Warm instances | Hot pool per site | Reserved vCPU (`max_instances` x 3 sites, plus SSH) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 50 | 9 GB (30% of git) | `standard-2` | 2 | 4 | 7 `standard-2` | 27.8 |
+| 300 | 60 GB (20%) | `standard-3` | 5 | 10 | 7 `standard-3` | 72.8 |
+| 2,000 | 400 GB (10%) | `standard-4` | 25 | 50 | 7 `standard-4` | 384.8 of 1,500 (3.9x), alarm at 1,050 |
+
+The hot pool is reserved in each site's `max_instances` and bills nothing until `fanout` starts an instance, so it changes no total above. The agent layer prices the instances it starts.
+
+Container egress is priced by each site's region, at $0.025 per GB in North America and Europe with 1 TB included and $0.04 elsewhere with 500 GB included (https://developers.cloudflare.com/containers/platform/pricing/), and split by where leaders sit. Leaders sit on each group's home site, so the default assumes an NA-heavy split of 50% enam, 30% weur, and 20% apac [guess; apac priced at the "elsewhere" rate, inference]. An APAC-led install (15%, 5%, 80%) pays $140 instead of $94 at 300 developers, and $2,295 instead of $1,725 at 2,000, for a total of $9,986.
+
+Account separation costs $12 more at 50 developers. At 300 it costs $64 less and at 2,000 $103 less, because three site accounts each get their own free Durable Object, R2, and Containers allowances, which outweigh three more subscriptions and the site Worker requests ($134 a month against the default's $48 at 2,000, `--detail large separate`).
+
+At 2,000 developers the largest lines of the default are:
+
+| Line | Per month |
+| --- | --- |
+| Container memory for 50 warm `standard-4` shards | $3,961 |
+| Container egress by site region and leader split | $1,725 |
+| R2 storage (three pack copies, clone cache, Actions blobs) | $816 |
+| Spectrum SSH data at $1 per GB | $619 |
+| DO SQLite storage (three member copies of 700 GB) | $422 |
+| Vault account (plan, a locked copy of packs, snapshots, and feed) | $157 |
+| `ReplaceMember` and `RestorePlacement`, one site loss a year amortized | $63 |
+| `Inbox` Durable Objects (notifications, feeds, cross-repository lists) | $32 |
+| Runner account (Workers Paid only) | $5 |
+| Agent layer on top of the default, from `scripts/cost_agents.py` (not in the totals above) | $3,270 |
+| Spare sites (canary operations on three empty buckets) | under $1 |
+| Spectrum add-on fee on Pro or Business [unverified: "Paid add-on" in https://developers.cloudflare.com/spectrum/protocols-per-plan/, no list price found] | $0 in the table |
+
+Agents add $26, $303, and $3,270 a month at 50, 300, and 2,000 developers on top of the default, 10%, 23%, and 35% (`python3 scripts/cost_agents.py`). Monthly lines use 5 pushes a task. They include the 6 extra warm `standard-4` shards, $495, that `fanout` gives the largest network at 2,000 developers, agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is 7, $990 a month if held. Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
+
+The quorum costs $3,422 a month over `Solo` at 2,000 developers, 57% more, most of it the second warm copy of every shard. At 50 developers it costs $99 more. That buys RPO zero and an RTO of about 11.5 s for the loss of any one region, continent, or site release, and a vault copy outside the install account.
+
+`Solo` costs $165, $932, and $5,995 a month at the three tiers. It has one member per chain, one pack bucket, one warm copy of each shard on one site, and a runner account, and it carries no vault. Its RPO is zero for a machine or data center and unknown for a region. Its RTO is Cloudflare's restart, or the region's return. It carries no availability SLO, so it is not a reliable setup.
+
+**Cheapest reliable setup for 50 developers: $264 a month** (`--detail small design`). It is the default itself. It runs one install account with three site scripts in three hinted regions, which keeps the quorum across regions and release days, plus the vault and runner accounts. It uses the Pro plan, with 100 MB pushes and one Spectrum SSH app, and four `standard-2` shards, two on each of two sites.
+
+67% of that bill is container memory. A shard slept overnight would halve that line, but it would add 1 to 3 s cold starts plus rehydration to the first morning fetch (`research/cloudflare.md`, Containers), and it would need new instance starts, which a control-plane outage may block. I keep them warm.
+
+## Build order from zero
+
+Durations are [guess]es for a team of six.
+
+### Milestone 0
+
+About six weeks on one throwaway account with three site scripts, three more accounts for the account-separated option, and Pro, Business, and Enterprise trial zones, before any git code. Any fail value sends the design back.
+
+| Measurement | Pass | Fail |
+| --- | --- | --- |
+| Commit p99 on `Tri`, leader enam, 1 KB commands, 100 commands/s, member calls through cross-script DO bindings | At most 150 ms | Over 400 ms |
+| Group commit on one group, one entry in flight | At least 300 commands/s at commit p99 at most 150 ms | Under 100 commands/s |
+| Write and read RTO, with one site script's member class failing every call (simulated region loss) under 100 writes/s, run once with every client in one colo and once with calls to that class blackholed (hung, not failing) | New leader committing and serving `fresh` within 12 s at p99 in both runs | Over 60 s in either run |
+| Site deploy under 100 writes/s: drain, deploy at 1%, 10%, 50%, 100%, undrain | Zero failed writes, commit p99 at most 1 s | Any failed write |
+| Follower regression: a release whose N+1 followers throw while applying one event kind | The apply gate stops it at 1% and `graft-ops` runs the pre-signed rollback, with no failed write and no human signature | It reaches 10%, or any write fails |
+| Gray site, with 30% errors injected on one site's member calls, then separately on its storage writes | Every group led there moves within 20 s and changes leader at most twice in an hour | Any group slower, or more than two changes |
+| Gray site C during B's site day at 10%, with automatic drain on | Callers on A and B report C, `graft-ops` undrains B under the 1% lead limit and drains C, and every group led on C moves within 20 s | Two sites drained at once, or any group on C slower |
+| `verify` refusal by an older follower: release N+1 on site A writes a shape N cannot read | Every group A led moves to an undrained follower holding its last index; other writes keep committing; A stays non-leader | Any group without a leader for more than one lease |
+| Rolling site refuses: N+1 followers on B refuse valid N entries at 10% of a site day | No leader steps down, B is marked unable to follow, an alarm fires, and the site day halts and rolls back | Any group without a leader for more than one lease |
+| Two-site residual: A and B on N+1 commit a shape C on N cannot read | Each group keeps its leader and commits on A and B, C is marked unable to follow, and the site day halts | Any group without a leader for more than one lease |
+| Linearizability: 48 hours of Porcupine-checked histories while member calls to one site are dropped at random, members are reset, and leadership transfers, some abandoned mid-way | Zero violations, zero lost acknowledged entries | Any one |
+| Member placement: 1,000 members created with each site class's hint, median of 20 binding round trips to each other voter | At least 95% of voter pairs at 30 ms or more and consistent with the hinted regions | Under 80% |
+| Bucket placement: 20 buckets per hint, `location` from the get-bucket API against a latency probe | 100% agree | The API reports the hint, not the placement |
+| Daily working set of git cache shards per tier, in bytes, on a synthetic replay | Recorded; `cost.py` shard counts updated | None. The result sets the shard count |
+| Idle cost: 100,000 idle groups for one week | Zero duration billed and zero `Rtt` checks | Any duration billed, or any `Rtt` check, for idle groups |
+| Account-owned deploy token with Workers Scripts Edit and Containers Edit runs a deploy with a container image | Deploys | Fails, which moves the deploy token to a user token held by the customer |
+| Account-separated option: member RPC over signed HTTPS through the site Worker, against a cross-script binding | p50 overhead at most 20 ms | Over 60 ms, which withdraws the option |
+| Learners: 16 learners serving 16,000 reads/s on one group | Leader under 700 req/s, learner read p99 at most 150 ms | Leader returns `overloaded` |
+| Container starts with the control plane out of reach: 100 new instances started with every account API token revoked, plus Cloudflare's written answer on scheduling | 100 of 100 start | Any fails; the control-plane row stays `contained` either way and warm shards stay sized for a day |
+| Push size: 2 GB push through the edge on Enterprise, teed to two buckets and a container; on Pro and Business, a push over the edge cap | Enterprise completes with Worker memory under 100 MB; Pro and Business print the edge's `report-status` naming SSH | Fails, needs buffering, or shows a bare 413 |
+| Chunked push on Pro, Business, and Enterprise | Recorded either way | None. The result sets each plan's stated cap |
+| Container rehydration of a 5 GB network from R2 | At most 120 s | Over 600 s |
+| Clone cache: 33 CI clones/s of a monorepo whose tip moves 10 times a minute | Hit rate at least 95%, time to first byte p99 at most 500 ms | Under 80% |
+| SSH on Pro, Business, and Enterprise: Spectrum, then Tunnel, then cloudflared in three containers, with writes through the outbound handler and one container killed every 10 minutes for a day | At least 99.9% of sessions succeed | Under 99%. If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH needs Enterprise for BYOC |
+| Partial DO failure: inject 22% errors into member calls and into storage writes, which reset objects, and count whole pushes | At least 96% of pushes succeed within three attempts | Under 84% |
+| Reset storm: every member on all three sites reset within 60 s under 100 writes/s, with `suspect` reports from two colos | Every group commits within 12 s of the last reset | Any group over 12 s |
+| Drain guard: two drain-key `SiteMode { Drain }` entries for different sites submitted straight to the `Release` group, then a test group whose voters are all drained by customer-key entries | The second drain-key entry is refused and pages, and the all-drained group elects a leader within 12 s | Two sites drained by the drain key, or the all-drained group leaderless over 60 s |
+| Restore window: delete a branch and force-push another on day 1 with GC and archiving running, then restore both to day 0 on day 30 (clock-skewed replay) | Both refs return to their day-0 targets, every object they reach is readable, and archives are named by committed `Archived` records in two buckets | The restore is refused, any object is missing, or a follower truncates past a range with no committed `Archived` |
+| Agent fleet replay (journey 9) on one `Tri` group, leader enam. 500 agents push distinct refs every 2 min (40 KB mean, 5% at 1 MiB), 27.6 commands/s with PrSync, test-merge records, check runs, task updates, and lease renewals, 45 feed polls/s on followers and learners, 10 merges/min, 33 ref reads/s, 200 API reads/s | Commit p99 at most 300 ms, merge p99 at most 2 s, zero `Stale` on distinct refs, leader under 600 req/s with zero feed polls | Commit p99 over 1 s, any queue merge waiting over 10 s, or any feed poll on the leader |
+| Hot-group storage. 30 days of the journey 9 replay on a group seeded with a 4 GB metadata tier | Member SQLite under `CHILD_GROUP_AT` with zero `SQLITE_FULL`, and archived entries readable for `RestoredTo` | Any `SQLITE_FULL`, or member SQLite over `CHILD_GROUP_AT` without a child group taking the tier |
+| Same replay with the leader on apac and every agent push at 1 MiB, `INLINE_MAX_HOT` on, then with every bucket's placement failing | Commit p99 at most 1 s, and pushes up to 1 MiB still commit while placement fails | Over 3 s, or any push up to 1 MiB refused while placement fails |
+| Burst of 500 agent pushes of 256 KiB each in 1 s with merges queued, admission on | Every push acknowledged within 5 s or answered in an HTTP 200 with `ng <ref> agent admission full, retry after <n>s`, queued agent bytes under `AGENT_QUEUE_MAX`, every merge in one of the next 2 entries, zero leader changes, and zero `suspect` reports | Any lost acknowledgment, any other refusal shape, an object reset from memory, a merge delayed over 2 s, any leader change, or any `suspect` report |
+| 5,000 agents on one group, 252 agent-class commands/s offered with caused commands classed, plus one user token writing 100 commands a minute, admission on | Human and merge-queue commit p99 at most 150 ms, at least 140 agent commands/s admitted, the user token admitted as `Agent`, every refusal in the git `ng` or REST 429 `retry-after` shape, zero leader changes, and zero `suspect` reports | Any leader change or `suspect` report, any merge-queue command waiting over 2 s, or under 100 agent commands/s admitted, which reopens ref lanes with a parent `Abort { txn }` record (`design/AGENT-LAYER.md`) |
+| Git CPU for one 5 GB network under the journey 9 replay, then one warm site killed, then a second network that turns hot with the API unreachable, then a hostile owner making three of its own networks hot beside it | k set in band from `NetworkLoad` and the hot pool, at most 8 per site, the hostile owner held to its per-owner pool budget, human push p99 at most 3 s beyond transfer, and clone time to first byte p99 at most 1 s throughout | k over 8, any Cloudflare API call, the monorepo's k reduced by another owner, or time to first byte p99 over 5 s |
+| Lazy test merges, with the base moving 10 times a minute under 500 open PRs and 500 clients polling their PR every 5 s | Test-merge vCPU within `TEST_MERGE_BUDGET`, Actions dispatch p99 at most 10 s, and zero computes from list fields | Over budget, or dispatch p99 over 30 s |
+| Agent refusals, run once with a Graftyard-run token and once with a confined vendor App's token, used without the controller. Each tries approve, merge, ready-for-review, a bypass, dispatch, workflow re-run, a release, a label outside the allowlist, a `graftyard/` status, a push outside its prefix, a push with no live task, a fork push after its task is cancelled, a REST ref write into another task's Exclusive scope under `AgentsExclusive`, and a change under the protected list, over git, REST, and GraphQL. It also pushes an outsider commit that changes a workflow under its ref, pushes after an approval and then merges, and posts `graftyard/agent-gate`. Then a flagged App without `confine`, `Graftyard MCP`, and a user token with `X-Graftyard-Agent-Session` push into the same Exclusive scope, and a user token pushes a commit whose only trailer is `Co-authored-by` | 100 of 100 refused for each, for both agent kinds. The other three are never refused by the lease, and the `Co-authored-by` push stays Human | Any accepted, any of the other three refused by a lease, or the `Co-authored-by` push classed Agent |
+| Provenance and hidden refs. 10,000 pushes with malformed trailers and notes, forged `Graftyard-Session` trailers, and writer pushes to `refs/graftyard/`, then v0, v1, v2, and `--mirror` fetches | Zero pushes fail on parsing, every forged trailer stays `Claimed`, every `refs/graftyard/` update not by `graftyard-workspace` is refused, and session refs appear only to a v2 `ref-prefix` that starts with it | Any push fails on parsing, a forged trailer links, or a session ref is advertised otherwise |
+
+Before Milestone 1, the team asks Cloudflare in writing for the internal route of a Durable Object call through a binding, and whether a Durable Object's storage followers span regions ("Synthesis decision").
+
+### Milestones 1 to 7
+
+| Milestone | Built | Gate |
+| --- | --- | --- |
+| 1, groups and git | Raft groups with `verify`, transfer, `suspect`, pre-vote, and `led_term` over cross-script bindings, placement records with `bootstrap()` and `MemberRegistry` rows, request ids, `PackStore` with `Promoted` and `Committed` markers, git cache shards, receive-pack and upload-pack, the clone cache, and minimal identity: the `Ids` group, `Names` login and repository-name claims, an owner's `Authz` record with admin grants and `RepoName`, and stored-token authentication. T0 surfaces `git-http` and `git-protocol-v2` [inference]. No REST | The `git` conformance suite and `git clone` / `fetch` / `push --atomic` from unmodified git 2.4x pass with one site's member class failing mid-run. Linearizability rerun at 24 hours |
+| 2, folds, issues, pull requests, merge | Both fold tiers in member SQLite with follower snapshots, the issue, pull request, review, check-run, and merge-queue model reused from `design/SHARED.md`, "Issues and pull requests", with `parent_tip` and `QueueMerge` checked in `decide`, leader cursors and Queues with the `PrSync` and `MergeQueue` consumers, `TestMerged`, and the blob store for LFS objects and release assets. T0 surfaces `meta-endpoint`, `rest:meta`, `rest:rate-limit`, `rest:repos`, `rest:branches`, `rest:git`, `rest:issues`, `rest:pulls`, `rest:checks`, `rest:commits`, `graphql`, `lfs` over HTTPS, `rest:releases`, `uploads-release-assets`, `codeload-archives`, and `raw-content` [inference] | `gh pr` and `gh issue` journeys 2 and 3 pass, the merge p99 on a freshly elected leader is at most 2 s, and a queue entry with a stale `parent_tip` is refused 100 times out of 100 |
+| 3, identity and authorization | The rest of `Tokens`, `Names`, `Authz`, and `Identity`: fine-grained and paired tokens, OAuth web and device flows with short-lived codes, Apps and OAuth apps, stateless installation tokens signed in `graft-ops` with `jti` revocation, SSO through `InstanceAuth`, collaborators and invitations, transfers, `InstallSnapshot`, and learners for hot groups. T0 surfaces `tokens`, `rest:apps`, `github-apps`, `oauth-web-flow`, `oauth-device-flow`, `rest:orgs`, `rest:teams`, `rest:users`, `rest:collaborators`, and `rest:deploy-keys` over HTTPS [inference] | Journey 4 passes over HTTPS, with revoked tokens, a revoked stateless installation token included, refused on the next write 100 times out of 100. Learners rerun the Milestone 0 learner gate |
+| 4, events, webhooks, Actions | Webhooks and the other Queues consumers with per-owner `HookSequencer` delivery stores and hook records, user records, the watcher index, the `Inbox`, and `SearchShard` search, the Actions engine with run, job, runner, and session events, `RunnerBroker`, `LogRelay`, and sealed secrets and variables, Sandboxes runners in the runner account started by `graft-runners`, and the web app [inference]. T0 surfaces `webhooks`, `rest:actions`, `actions-runner-protocol`, `actions-workflow-syntax`, `actions-cache`, `actions-artifacts`, `actions-oidc`, and `actions-logs-results` [inference] | An unmodified `actions/runner` runs a matrix, and a site is failed mid-run with no lost job state |
+| 5, release control and site days | `Release` group with genesis against the trust anchor, `Keys` with the executor key, `ReleaseUploaded`, `IntentStep`, `IntentDone`, `SiteRelease`, `SiteMode`, pin-only `Pointers` set by undos, `graft-front`, `graft-ops` with the release bucket, `POST /api/graftyard/v1/release/entries`, `FrontRoll` and `OpsRoll`, `verify`-gated formats, gradual edge deploys, gated site days with pre-signed `Rollback`s, the Workflows script's day included, `SiteHealth` drain and undrain, `StaleMode`, the revocation and rotation runbooks, the change feed and export endpoints, and the vault with `graftyard vault upgrade` | A deliberately unreadable format released to `graft-site-a` commits nothing and moves A's groups. With the vendor token revoked mid-roll, `Halt`, `Keys { vendor: None }`, then `Abort { intent, target: N }` returns every site and pinned script to N, and a vendor-signed intent submitted after `Keys { vendor: None }` is refused. A bad `graft-ops` at 1% swaps back by `OpsPointer` with the API blocked |
+| 6, region loss, SSH, and lifeboat | `ReplaceMember` signed by the executor key and `RestorePlacement`, both finding groups through `MemberRegistry`, `Degraded`, lifeboat tail and pack pulls over the Milestone 5 export endpoints, `graft-blob`, lifeboat registration, `lifeboat:read` enroll, and workerd bundle, SSH through the outbound handler with host keys from Secrets Store if Milestone 0 passed. T0 surface `git-ssh`, and the SSH parts of `lfs` and `rest:deploy-keys` [inference] | After two release rolls and one `FormatsEnable`, in a journey 5 drill, one site's member and container classes fail for a day, and `ReplaceMember` runs with every account API token revoked. It passes only if no script version is created, the spare reads every enabled format, every acknowledged write is present, groups return home, and enrolled `gh pr list` works against the lifeboat with the edge blocked |
+| 7, breadth and modes | BYOC and self-hosted through Terraform and Wrangler, account-separated sites, managed front and cell accounts, `RateCounter` rate limits, `Solo` and workerd for evaluation with the `LeaveEvaluation` move to `Tri`, child groups for oversized metadata (`RepoMeta` chains seeded by the `MetaSplitter` Workflow), import from GHES as `Imported` entries with the plan preflight | A self-hosted install with no vendor key passes milestones 1 to 6 gates and enables a new format. A vault restore to a chosen cutoff and a lifeboat-export restore into new accounts each lose no entry up to their cutoff, and afterward a developer's PAT and SSH key, a user-owned repository, and an org name all work, while a PAT revoked after the cutoff fails. A `Solo` group moves to `Tri` under load with no failed write |
+
+Rows added after the final pass gate the milestone named in the first column. The first nine come from the final pass (`history/review/final-interrogate.md`). The next 44 come from the implementability walk (`history/review/walk-interrogate.md`), whose writers reported them. The last 15 come from the third walk (`history/review/walk-rest-interrogate.md`), as writers X1 and X2 reported them in `history/review/walk-rest-reports.md`. Where a reported Fail value left out a Pass clause, the integrator added that clause to the Fail value [inference]. Where this document moved a reported row to a later milestone, or split one, the placement is [inference].
+
+| Milestone | Measurement | Pass | Fail |
+| --- | --- | --- | --- |
+| 2 | One entry holding a 5-PR merge-queue group plus a `PrSync` batch | It commits on all three sites | Any follower refuses it |
+| 3 | Revoke a token while 100 of its pushes wait in admission | None is acknowledged at an index after the revocation's | Any one is |
+| 3 | Suspend a user, then push with their PAT; separately, add one SSH key from two edges at once | Every push refused; the key gets one owner | Any push accepted, or two owners |
+| 4 | Kill a runner mid-job, then leave its Actions group idle | The job fails within 10 minutes of its last `renewjob` | It is still running at 11 minutes |
+| 4 | Star a repository and comment on a watched issue, then delete and rebuild the watcher's `Inbox` | `stargazers_count` and `/notifications` show both within 10 s, and the rebuilt `Inbox` keeps read state | Lag over 60 s, or read state lost |
+| 5 | Replay every historical `Release` entry, pre-signed undos and `McpPointer` and `ControllerPointer` entries included, after `Keys { vendor: None }` | 100 of 100 refused | Any accepted |
+| 5 | After `FormatsEnable`, submit the pre-signed `Rollback` to N and `Abort { intent, target: N }` | Both refused, and both page | Either applied |
+| 5 | Blackhole every `Release` member for 10 minutes, then set `EdgePointer` to a version outside the deployment | Requests keep the last pointers; the mismatch alarms within `POINTER_TTL` and the `EdgeRoll` that dropped it was refused | Any request blocked on the group, or a silent mismatch |
+| 7 | A monorepo member reaching `CHILD_GROUP_AT`, and `octokit.paginate` over `/repositories/{id}` links on a managed cell | The metadata tier moves to a child group with zero `SQLITE_FULL`; page 2 is served by the right cell | Any `SQLITE_FULL`, or a page routed to the wrong cell |
+| 1 | 1,000 chain creations with two edges at once, plus 100 during an owner record change | One group per chain. Members without a committed config serve no read and grant no vote | Any chain with two groups, or any read or vote served without a config |
+| 1 | Edges with cold caches after a member retry, `ReplaceMember`, and an owner move | 100% of requests find the group | Any request that finds no group |
+| 1 | Leader killed after quorum and before the reply, 10,000 times. The edge re-sends with the same `RequestId` | Original outcomes returned, zero double applies | Any double apply or changed outcome |
+| 1 | Leader lost before commit, on entries with a `Stale` refusal caused by an earlier command in the same entry | Zero refusals returned from uncommitted entries (Porcupine) | Any refusal returned from an uncommitted entry |
+| 1 | Receipts that miss `CALL_DEADLINE` | Zero commands forwarded to a second member | Any command forwarded |
+| 1 | Revoke a stored token, and separately suspend an account, each with 1,000 of its commands queued | 100% of commands decided afterwards get 401 | Any accepted |
+| 1 | Edge on N+1 with a new message format that is not enabled, plus one forced unknown variant | Nothing sent early. Unknown variant gives 503 with `Retry-After` and no state change | Any other rendering or any state change |
+| 1 | Atomic push of 10,000 refs with a 1 MiB pack. A push whose updates exceed `COMMAND_MAX` | First: pack stored and push commits. Second: refused whole, no entry | Partial push, or an entry over 1.5 MB |
+| 1 | Archive a range of inline packs, kill all shards, rehydrate. A second shard behind its `IngestCursor` | `git fsck` clean, every ref clones, second shard serves the newer pushes | Any missing object |
+| 1 | 1,000 failed placements, plus 1,000 commits whose marker write is killed | Failed ones deleted after 24 h, zero committed ones deleted, missing markers repaired | Any committed pack deleted |
+| 2 | Snapshot of a 4 GB [guess] metadata tier under 300 commands/s | Apply p99 within 10% [guess]. Snapshot digest equals a refold at `to`. No request-limit errors | Apply p99 more than 10% slower, a digest mismatch, or any request-limit error |
+| 2 | A group of 5 PRs under `HeadGreen`, the 3rd failing its required check on its queue ref, 100 runs, with the base leader killed mid-landing in 10 | The base moves only by `QueueMerge` entries that land a whole group; the failing PR is ejected and the other 4 land after a rebuild; every base move is a fast-forward | Any partial group, any non-fast-forward base move, or a queued PR lost |
+| 2 | 10,000 non-required check runs and statuses on one repository, then entry time advanced past `check_retention_days` | `gh pr checks` and `GET /commits/{sha}/statuses` read them; core tier bytes unchanged; rows pruned on every member with equal `fold_digest` | A non-required row in the core tier, or members disagreeing |
+| 2 | A required check passes, then is re-requested before the merge | The merge is refused until the new run concludes, 100 of 100 | A merge on the stale success |
+| 2 | A head push, then `git ls-remote origin refs/pull/N/merge`; a conflicting push | The `TestMerged` commit within 10 s with a matching `mergeable`; on a conflict the ref is deleted and `mergeable: false` | A stale ref |
+| 2 | `git lfs push` and `gh release upload`, then one site bucket made unreadable | `verify` and the 201 come only after two buckets hold the blob; fetch and download succeed 100 of 100 | Any acknowledged blob unreadable |
+| 2 | All `ArchiveCache` objects deleted, then `gh release download --archive=tar.gz` | The bytes match the earlier download | Any difference or error |
+| 3 | Revoke a `jti` with 1,000 commands under its installation token queued | 100% of commands decided afterwards get 401 | Any accepted |
+| 3 | A learner on its voter's site, and two learners on one site | Distinct objects | A name collision |
+| 3 | Follower offline past the archive boundary, then rejoins | Catches up by `InstallSnapshot` with matching fold digests | Stuck or divergent |
+| 3 | Transfer across enterprises and placements, plus an org changing enterprise | Both routes reach the group throughout. `deps` names the new owner after `Settings` | Any lost route, or a stale owner after `Settings` |
+| 3 | A `github_pat_` scoped to one repository with `contents: read`; a `ghu_` and `ghr_` refresh; `DELETE /applications/{client_id}/token` | The PAT is refused outside its scope; revoking either paired token refuses the other; the DELETE revokes | Any use after revocation |
+| 3 | `@octokit/app` installation-token flow with a newly registered App; OAuth web flow with a registered OAuth app and a wrong secret | The JWT verifies against `AppRecord.keys`; the wrong secret gets 401; a dump of every `Identity` chain shows no client secret | Any other result |
+| 3 | `gh auth login` device flow with the code shard's leader killed mid-flow, 100 runs; replay of a used code; a code older than 900 s | Each login completes or restarts cleanly; replay and the expired code fail 100 of 100 | A token from a reused or expired code |
+| 3 | `TestAccGithubRepositoryCollaborator`; an org invitation accepted and one declined; a `Collaborator` write for an org member | Accepting grants in the same entry; declining grants nothing; the member write is refused | Any overlap or lost grant |
+| 3 | A new SSH key and PAT, listed at once with no `Audit` consumer deployed | `gh ssh-key list` and `GET /user/keys` show them 100 of 100 | Any listing that misses them |
+| 3 | A site admin switches `InstanceAuth` from Builtin to OIDC | The next sign-in uses OIDC; a non-admin write of it is refused | Any other result |
+| 4 | `on: merge_group` workflow, and go-playground/webhooks parsing `merge_group`, `pull_request.enqueued`, and `pull_request.dequeued` | A run on each built queue ref; every queue ref deleted within 5 min of landing or ejection [guess bound] | A missing delivery, or a queue ref left over |
+| 4 | Web app ("Frontend and native app" in `design/SHARED.md`) under Playwright [inference]: sign in, open a repository, a pull request's diff, checks, and timeline, and a running job's live log (the `actions-logs-results` oracle), then force the checks region's query to fail | Every page renders, the first route's data is inlined in the HTML shell with zero API requests before first paint, the log streams live, and with the checks query failing only the checks region shows an error | Any page fails, the first route waits on a second round trip, or the checks failure breaks another region |
+| 5 | Kill `graft-ops` at each step of a `SiteDay` and an `EdgeRoll`, 100 times | It resumes after the last `IntentStep`; no step skipped; one `IntentDone` | A skipped or doubled step |
+| 5 | Submit a second intent while one is current, and an intent naming a release with no `ReleaseUploaded` | Both refused | Either committed |
+| 5 | Two genesis entries sent to an empty `Release` group: one matching the anchor, one signed by another key | Only the matching one commits | The other commits |
+| 5 | Sign an entry offline while `graft-ops` commits an `IntentStep` | 409 with the current digest; the re-signed entry commits | A stale `prev` commits |
+| 5 | `EdgePointer` undo under 1% `EdgeRoll` with the API blocked, then the next `EdgeRoll` | Every request pins to N within `POINTER_TTL`; the next `EdgeRoll` sets `None` | Any request off N while pinned, or the pin survives |
+| 5 | A vendor-signed undo not in the parent's `undo` list, and a `Resume` after `Keys { vendor: None }` without customer re-signed undos | Both refused | Either accepted |
+| 5 | A forged `ReleaseUploaded`, `ReplaceMember`, or pointer signed by the executor key, for a site not drained 24 h | Only a correctly signed `ReleaseUploaded` commits | A pin, or a `ReplaceMember` of an undrained site |
+| 5 | `Rotate` of each `SecretName` with live traffic | No new script version; zero failed calls; old value unused after the switch | A new version, or failures |
+| 5 | `release roll` end to end, including `SiteDay { Workflows }` and `graftyard vault upgrade` | Order as in Release roll; vault upgraded with no install token | Any other order, or an install token used |
+| 5 | Blackhole the `Release` group, then send a customer-signed `StaleMode` | Scoped groups serve `stale()` within `POINTER_TTL`; the flag expires at `until` | No stale reads, or a flag past `STALE_MAX` honored |
+| 5 | Vault pulls every export endpoint; then the export `jti` is revoked | All four endpoints served; refused within `READ_CACHE` after revocation | Any served after `READ_CACHE` |
+| 6 | Lose site A with every API token revoked; drain it 24 h; then recover it | Executor-signed `ReplaceMember` moves every group with a voter on A, using B's and C's registries; `RestorePlacement` refused until undrained | A group left out, or a restore while drained |
+| 6 | Rotate SSH host keys | `UpdateHostKeys` clients learn the new set; `/api/graftyard/v1/meta/ssh` lists both slots for the overlap; same fingerprints on every replica | A mismatch, or a host-key error for an updated client |
+| 6 | Suspend a user, then push over SSH with their key; separately, revoke an SSH key with 1,000 of its commands queued | Every push from the suspended user refused; 100% of commands decided after the revocation get 401 | Any accepted |
+| 6 | Lifeboat enroll, a daily `LifeboatDecoder`, and tail and pack pulls with the R2 feed stopped | Token refused by the main edge; no 7-day alarm; tail and packs fetched from followers | Any leader read, or a main-edge accept |
+| 4 | Hold 2,500 runner polls on one broker scope (`BROKER_HELD_MAX` plus 500) with jobs queued | Polls past the cap get 503; those runners re-poll within 30 s with their sessions valid; job start p99 at most 35 s for them | Any `RunnerSessionInvalid`, a runner that exits, or a job unstarted after 60 s |
+| 4 | Kill the leader site of an `Owner` scope's registration shard during a 256-job matrix | Polls reach a broker on the new leader site within 15 s; every job runs once; zero jobs assigned twice | A job assigned twice, or dispatch stalled over 60 s |
+| 4 | Kill the repository's commit path (and, separately, `RunOwner`) between `RunCreated` and the `RequiredCheck` writes, then finish or cancel every job | Every `RequiredCheck` on an open PR head has a conclusion within 60 s of its job's `Completed` | Any `RequiredCheck` with `conclusion: None` after its job completed |
+| 4 | One hook timing out at 10 s beside 49 healthy hooks of the same owner, 10 events/s | Healthy hooks' first-attempt p99 at most 2 s; the slow hook gets its events in chain order; Webhooks cursor lag at most 5 s | Healthy p99 over 10 s, an out-of-order delivery to one hook, or cursor lag that grows with the slow hook |
+| 4 | Kill the site holding a hook owner's `HookSequencer` with deliveries pending | Every event in the range reaches every hook at least once, with unchanged GUIDs | Any event never delivered, or a redelivery under a new GUID |
+| 4 | `gh secret set` for a repository, an environment, and an org, then a job reading all three; then rotate the `SealKey` and the wrapping key | The job sees all three values before and after both rotations, and a fork-PR job sees none | A wrong value, a value shown to a fork PR, or a plaintext secret found in any entry or log |
+| 4 | 50 `ubuntu-latest` jobs queued for one owner with the cap at 20, while two `graft-runners` sweeps overlap | At most 20 hosted runners at once; every job finishes; no Sandbox is left 10 minutes after the last job | More than 20 at once, a job that never finishes, or a leaked Sandbox |
+| 4 | View a running job's live log in the web app, then kill its `LogRelay` | Lines appear within 2 s; after the kill, the viewer falls back to step log blobs and the final log is complete | A line later than 2 s, no fallback after the kill, or missing lines in the final log |
+| 7 | Monorepo member reaches `CHILD_GROUP_AT` under 300 commands/s with comments, PR opens, merges and releases with tags | Zero `SQLITE_FULL`. Metadata 503 window at most 10 min [guess]. Every both-tier entry has its `MetaHalf` within 60 s, with zero lost or doubled. A comment on #n is never delivered before #n opened, 100 of 100. Pre-split feed cursors continue with no 410 | Any `SQLITE_FULL`, a 503 window over 10 min, a lost or doubled half, an out-of-order delivery, or a 410 |
+| 7 | `RepoReset` to a t before the split and to a t after it, on a split repository | Both tiers equal a refold at t | Any tier differs |
+| 7 | `LeaveEvaluation` on a Cloudflare `Solo` install under write load. Separately, a vendor-signed `LeaveEvaluation` | System groups and owners end on `Tri` with `moving_from` cleared, zero lost acknowledged writes, `Placement::solo` refused afterwards. The vendor-signed one is refused | Any lost write, a group left on `Solo`, or the vendor-signed one accepted |
+| 7 | GHES archive import with hooks, a workflow, watchers, merged PRs and `#N` links | Zero webhook deliveries, runs or notifications. Numbers, `created_at` and authors match. Merged PRs show merged. `legacy_id` resolves every id | Any delivery, run or notification, or any mismatch |
+| 7 | 20 isolates hit one key at the limit, then the counter object is killed | `x-ratelimit-remaining` and enforcement overshoot by at most 20 requests times the number of isolates. The kill refunds at most one window | An overshoot above that bound, or more than one window refunded |
+| 4 | Delete an `Inbox` and rebuild it. Also 10,000 stars, then a refold | Read and done state kept, nothing from `sources` lost. `/stargazers` lists all 10,000 | Any lost read or done state, a lost event from a `sources` chain, or a missing star |
+| 4 | EU-resident org's search documents. Kill one `SearchShard` | Documents only in the `eu`-jurisdiction shards. `incomplete_results` until the rebuild, then full results | A document outside EU, a partial result without `incomplete_results`, or results wrong after the rebuild |
+
+## Compared with the AWS design
+
+| Difference | AWS design (`history/DESIGN.md`) | This design | Who notices | Evidence |
+| --- | --- | --- | --- | --- |
+| Commit point | One conditional put on an MRSC DynamoDB chain item | A Raft quorum of three Durable Objects on three site scripts | Maintainers, who now own a consensus protocol with transfer and `suspect` | `research/uptime.md` finding 29; `research/cloudflare-uptime.md` finding 40 |
+| RPO zero across regions | From the store's SLA (99.999%) | From Graftyard's protocol; no Cloudflare SLA covers DO | Operator | `research/cloudflare-uptime.md` finding 29 |
+| Survives a continent | Managed `global` only; Paired cells stay in one continent | Every `Tri` chain | Users during an NA-wide event | finding 20 and open question 6 |
+| Bad release containment | Cell then AZ waves | Drained site script per day, gated on follower health with a pre-signed rollback; followers on the old release refuse what they cannot read, and a refusal by an older follower deposes the leader | Users | `research/cloudflare-uptime.md` finding 33 |
+| Release executor | In-account operator role | `graft-ops` in the account, with no vendor Workers permission; edge and `graft-ops` swap-back by signed pointers with no API call | Operator | "Install operations" |
+| Provider-wide outage | AWS regions fail separately | Cloudflare fails globally; lifeboat only. Replication over bindings should survive a partial proxy failure [inference] | Users | `research/cloudflare-uptime.md` Answer, findings 13 and 14 |
+| Account blast radius | Managed uses one vendor account per cell per Region; BYOC and self-hosted use one dedicated customer account (`history/DESIGN.md`, "Deployment modes") | One account per install or managed cell holding all three sites, a vault account outside its tokens, a runner account; managed adds a front account | Operator | "Shape" |
+| Push latency | One intra-continent MRSC put [guess 60 ms] | One intercontinental binding call on `Tri` [guess 80 ms], intra-continent on `Na3` | Users, barely | Milestone 0 |
+| Folds | SQLite on NVMe nodes, preferred tail reader per AZ | SQLite inside each member; leader lease replaces the tail probe; learners for hot groups | Maintainers: no fold cache or tail probe | `history/DESIGN.md`, "Folds" |
+| Read-your-writes | Strong tail read per request | Leader lease, with a read-index round when it lapses; stale mode only by signed flag | Nobody | |
+| Token revocation | 5 s for writes, 60 s for reads | Immediate for writes, 10 s for reads | Security teams | `history/DESIGN.md`, "Identity and tokens" |
+| Push size | Unbounded by the front | 100 MB, 200 MB, or 5 GB by Cloudflare plan, refused at the edge with a message naming SSH | Users with large pushes on lower plans | `research/cloudflare.md`, Workers |
+| SSH | NLB to nodes | Spectrum to Tunnel to containers, writes through the outbound handler, unverified on Pro and Business | Users if Milestone 0 fails | `research/cloudflare-git.md` finding 26 |
+| Largest repository | Node NVMe | 20 GB shard disk, about 15 GB of packs | Monorepo owners | `research/cloudflare-git.md` finding 16 |
+| Self-hosted | Same binary in the customer's account | Same artifact in the customer's own Cloudflare account, no vendor token; workerd on customer hardware for evaluation and the lifeboat only | Self-hosters who wanted their own hardware | `history/review/cloudflare-selfhost-walk.md` F1 |
+| Monthly cost, 2,000 developers | $12,432 one Region, $20,636 Paired | $9,417 on three continents in one account, with vault and runner accounts (Enterprise excluded) | Operator | `research/costs.md`; `cost.py` |
+| Monthly cost, 50 developers, cheapest reliable | $226 for `scrappy` (one Region with a cold recovery Region, so a Region loss is not RPO zero); $388 for `scrappy-paired` (RPO zero) | $264 for the default (RPO zero across three continents), on Pro with a 100 MB HTTPS push cap and an [unverified] $0 Spectrum add-on fee | Operator | Same |
+
+## Tradeoffs accepted
+
+- We accept owning a Raft implementation on Durable Objects, with leases, leadership transfer, `suspect`, pre-vote, joint consensus, learners, and `verify`. In exchange we get RPO zero across regions and continents on a platform that sells none. Milestone 0's linearizability run and Milestone 1's rerun are its gates.
+- We accept one entry in flight per group, about 10 entries a second, in exchange for `decide` and `verify` that always see the fold they check. Group commit puts many commands in each entry.
+- We accept one intercontinental round trip on every write in `Tri`, about 80 ms [guess], in exchange for surviving a continent-wide event. `Na3` trades that back for customers who prefer it.
+- We accept leader leases that rest on bounded clock drift (500 ms subtracted from a 9 s lease). If drift exceeded that, a deposed leader could serve a stale read for the excess. It could never commit.
+- We accept slow releases. A new site leads only 1% of its groups for its first day, every step gates on follower health, and the next site waits for that day to pass. In exchange a bad record shape costs one leader move, and a follower regression costs an automatic rollback. Once two sites run N+1, a shape N cannot read leaves each affected group on those two members with no spare voter until the third site rolls forward.
+- We accept that stale reads need a signed flag, so a partitioned minority serves nothing until an operator decides, in exchange for never serving reads that miss acknowledged merges by default.
+- We accept three copies of every fold and of 30 days of log, about $422 a month at 2,000 developers, so that a new leader is warm.
+- We accept two warm copies of every git cache shard, $3,961 of container memory a month at 2,000 developers [guess working set], so a site loss or a control-plane outage needs no new container start.
+- We accept that pushes over 1 MiB fail during an R2-wide outage, in exchange for keeping inline packs small enough that entries stay under the 2 MB row limit. Hot groups inline up to 1 MiB too while placement fails, so their entries hold fewer pushes until R2 returns.
+- We accept no service during a Cloudflare-wide outage for managed users, because no Cloudflare product runs outside Cloudflare's network and no managed lifeboat runs unless the operator decides otherwise.
+- We accept a lifeboat that is read-only and opt-in per client. Accepting writes outside the quorum would fork chains, and that is the 2018 class of failure. We also accept that it runs on workerd's experimental `localDisk` storage and development-only `localDocker` engine, on a runtime that is not a hardened sandbox, because it holds a rebuildable copy and never canonical state, never sees a main-host token, and holds only a validation-zone DNS token and a read-only R2 token.
+- We accept that `*2w` residency placements run on one content copy after losing a site, until `ReplaceMember` finishes.
+- We accept losing Actions logs and artifacts in a region loss, in exchange for not tripling their storage.
+- We accept that SSH depends on an unverified Spectrum, Tunnel, and Container chain, and that it is dropped, or needs Enterprise, if Milestone 0 fails it on a plan.
+- We accept Spectrum SSH data at $1 per GB above the plan allowance, $619 a month at 2,000 developers with 20% of git bytes on SSH [guess], plus an add-on fee we could not find.
+- We accept one install account per install or cell, in exchange for replication over Durable Object bindings that a partial proxy failure should not cut [inference]. An account-scoped fault (a bad setting, a leaked token, an abuse action, a runtime cohort, the shared Container quota) reaches all three sites. The vault account bounds the data loss to the vault lag, or to the chosen cutoff after a compromise that wrote through the protocol. Customers who want availability contained run account-separated sites and accept replication over HTTPS.
+- We accept three accounts per BYOC install (install, vault, runner), plus a Free-plan account for a lifeboat's validation zone, which the customer must create and keep separate.
+- We accept that a control-plane outage freezes a bad `graft-front` at its rollout percentage, because `graft-front` is the swap mechanism for everything else. `FrontRoll` holds it at 1% for a day to keep that share small.
+- We accept no production install on customer hardware, because workerd's storage and container engine are not offered for it.
+- We accept a `Solo` placement with no region-loss guarantee and no availability SLO, in exchange for a $165 evaluation install at 50 developers. It needs a signed flag, so no production org lands on it by default.
+- We accept warm shards sized for a day, which keeps container memory the largest line at every tier, because new container starts during a control-plane outage are unknown.
+
+## Alternatives considered
+
+- **One Durable Object per repository (Artifacts', dgit's, and git-on-cloudflare's shape).** It is $3,422 a month cheaper at 2,000 developers, as `Solo`. It loses on every regional event. The object "does not currently change locations after they are created" (`research/cloudflare-uptime.md` finding 31), and no document states where it restarts after a regional loss (`research/cloudflare.md`, "Could not verify"). The 13-day status sample shows 7 DO incidents, including WEUR from 17:51 to 00:09, about 6 h 18 min (finding 20). A repository homed there would lose writes, and probably reads, for that long. Under the quorum it loses at most about 11.5 s once if its leader was there, or a transfer in the gray case. Its cross-region RPO is unstated, because the five followers are in "different physical data center[s]", not regions (finding 32). It survives only as `Solo`, for evaluation.
+- **Account-separated sites as the default (this design's first draft).** It contains account-scoped faults, including an operator or abuse action on one account, which Cloudflare does take (finding 7), except in the fourth account. It lost the default because its members replicate over public HTTPS through site Workers, so a partial proxy failure like December 5, 2025 (finding 14) would stall commits as well as client traffic. It costs $12 more at 50 developers and $103 less at 2,000. It is offered as an option.
+- **One account for every managed user.** It would let one edge bind every member. It lost because it puts every managed user inside one account-scoped fault, and it meets account limits (500 Workers, 1,500 vCPU, 300 Workflow creations a second, `history/review/cloudflare-byoc-walk.md` finding 8).
+- **A git cache per (network, site).** Each container has its own Durable Object, so this meant one container per active network per site. It lost because `max_instances` defaults to 20, and a warm instance per network costs about $42 to $83 a month (`history/review/cloudflare-byoc-walk.md` finding 4).
+- **Cloudflare Artifacts as the git store.**
+  - New repositories cap at 1 GB, against the 5 GB monorepo in journey 1. The cap was unchanged on 2026-10-26 (`research/artifacts-recheck.md`, section 1).
+  - Push is protocol v1 only, but git has no v2 push command, so unmodified clients never see it. `filter` is documented as unsupported only among v1 capabilities, and whether v2 fetch advertises it is a Milestone 0 question (`research/artifacts-recheck.md`, implication 3 and question 1). Neither is a reason to reject Artifacts.
+  - Durability is "synchronously across multiple data centers" with asynchronous copies to object storage, and "a repo is a single logical instance" (finding 7). That is the single-DO failure domain again, and the Artifacts status component has since degraded with Durable Objects twice (`research/artifacts-recheck.md`, section 1).
+  - It is in open beta, which Cloudflare's SLA excludes, with no stated RPO or RTO and no runtime found off Cloudflare, which a store the lifeboat must serve would need (`research/artifacts-recheck.md`, section 1 and question 12).
+  - At 2,000 developers its storage is $2,000 a month at $0.50 per GB, against $180 for three R2 copies of the same 4 TB at $0.015. Its operations add $965. The cost table's "Git in Artifacts" column prices no merge or compute containers (`scripts/cost.py` skips every container line for the `artifacts` variant), so it understates this option.
+  - As an agent workspace tier it is rejected too (`design/AGENT-LAYER.md`, "Artifacts' role"). The 5 GB monorepo cannot be created or forked under the 1 GB cap, a repository is one logical instance in a beta with no SLA, the conflict predictor needs branches inside the network's shard, and a Graftyard fork already shares packs and gets its own group. Its whole-repository tokens would matter only for PR heads, which no flip puts there. Best-of-N attempts fit in a workspace fork today. It flips to a scratch tier for attempts that never become pull requests only when Milestone 0 shows forks share objects and Cloudflare raises the per-repository cap above the install's largest network in writing. That tier falls back to a workspace fork on any Artifacts error, and GA under an SLA is an agent-reliability preference, not an uptime condition.
+- **A write-once quorum on three R2 buckets (Disk Paxos over conditional puts, no Durable Objects on the commit path).** It is attractive because R2's `If-None-Match` is atomic (`research/cloudflare.md`, R2), and buckets in two jurisdictions are guaranteed apart. It lost on three counts:
+  - Both 2025 R2 incidents failed 100% of writes globally, for 59 and 67 minutes (findings 7 and 8), and this alternative would have stopped every write.
+  - With no leases, every fresh read costs two cross-region GETs. At 33 clones/s that adds about 150 ms to every CI clone [guess].
+  - Three-way split votes need a round protocol on objects that cannot refuse a stale round.
+- **A heterogeneous five-member quorum (three DOs and two R2 objects).** It would survive an R2-wide and a partial DO outage at once. It lost because R2 objects cannot act as Paxos acceptors without CAS on a separate promise object, and inline packs already keep most pushes alive during R2 outages.
+- **A primary and standby pair per object with an R2 placement register (candidate 1's pairing).** It is a smaller protocol than Raft. It lost because losing the standby's region leaves the primary unable to renew its lease or go `Alone` (`history/review/cloudflare-judge.md`), and even fixed it acknowledges on one region's copy after any failover. Its `suspect` path is grafted here. It is the fallback under both flip conditions ("Synthesis decision").
+- **On-premises production on workerd.** It would serve self-hosters without a Cloudflare account. It lost for now because of the workerd evidence in "Deployment modes". If the operator answers "production" to the open question below, `history/review/cloudflare-selfhost-walk.md` F2, F3, and F5 list the work (declared failure domains, an install text, per-host sizing of about 15 TB at 2,000 developers).
+- **D1 for metadata and identity.** There is one primary in "one location in the world", replicas "may be arbitrarily out of date", and the 10 GB cap cannot be raised (`research/cloudflare-uptime.md` finding 37; `research/cloudflare-git.md` finding 31). D1 also failed at 22% in June 2025 (finding 9).
+- **Workers KV for tokens and routing.** It is eventually consistent for up to 60 s, so revocation would be 60 s for writes (finding 38). It failed about 90% of requests on 2025-06-12 and failed again on 2025-11-18 (findings 9 and 13).
+- **K2 as the event log.** It is in beta with a 10 GB account cap (`research/cloudflare.md`), and the chain is already the durable log.
+- **A writable lifeboat that promotes during a Cloudflare-wide outage.** Writes made there could not merge back without a stated loss when Cloudflare returns, and a 3-hour outage does not justify that. This is `history/DESIGN.md`'s Single `dr` promotion problem.
+
+## Open questions and risks
+
+- The full list of open questions, including those found by the final pass and the implementability walks, is `decisions/OPEN-QUESTIONS.md`, with the work package that settles each. The bullets below are the ones this document states in its own text.
+- **For the operator.** May Graftyard run workerd plus Docker on non-Cloudflare hardware for (a) a read-only lifeboat, (b) evaluation, (c) production? This covers every off-Cloudflare part, including a managed lifeboat. The design's default answer is yes, yes, no, and the lifeboat is then the only off-Cloudflare component in production.
+- Spectrum's `ip_firewall`, `proxy_protocol`, `tls`, `origin_dns`, and `origin_port` need Enterprise (https://developers.cloudflare.com/spectrum/reference/settings-by-plan/), and a Tunnel origin forbids Proxy Protocol. Below Enterprise, sshd never sees the client's IP and SSH cannot be filtered by IP, so SSH abuse limits count by key and token in the identity groups. Whether an SSH-type app may use a Tunnel virtual-network origin on Pro or Business is unstated, and Milestone 0's SSH row decides it [unverified].
+- The region-loss and continent-loss guarantees rest on a Raft, lease, transfer, joint-consensus, and learner implementation the team must write (`history/review/cloudflare-judge.md`, most serious flaw). Milestone 0's 48-hour linearizability run is the gate, and "Synthesis decision" names the fallback.
+- Do a Durable Object's storage followers span regions? The second flip condition rests on Cloudflare's written answer, requested before Milestone 1 (`research/cloudflare-uptime.md` open question 1).
+- Does a Durable Object call through a binding avoid the proxy path that failed on December 5, 2025? The default's partial-proxy claim rests on it [inference]. A written answer from Cloudflare on the internal route is requested before Milestone 1, because no test can reproduce a fault inside Cloudflare's proxy.
+- Can every site script, the edge, and the Workflows script bind the member classes of all active, spare, and residency sites in cycles with `script_name`, and does a deploy of one script leave the other scripts' bindings working during its rollout? No page read states either [unverified].
+- Is 30 ms the right floor for a voter pair's round trip? It separates regions only if intra-region round trips stay under it [guess]. Milestone 0 measures both.
+- Does the R2 get-bucket `location` field report actual placement or only the hint? Milestone 0 compares it with latency.
+- Where does a Durable Object restart after a whole-region failure, and does a recovering old leader ever run beside a new instance of itself? The protocol tolerates both, but Milestone 0's fault injection cannot reproduce Cloudflare's real behavior (`research/cloudflare-uptime.md` open questions 1 and 2). `Solo`'s region RTO and RPO depend on the same answers.
+- Does DO storage still depend on a third-party provider (finding 23)? All three sites share Cloudflare's DO storage layer, so a correlated failure under all of them remains possible. That is June 2025's class, which this design mitigates but does not remove (`history/review/cloudflare-judge.md`).
+- How far can clocks drift inside Workers and Durable Objects? Lease safety assumes under 500 ms [guess].
+- What is the daily working set of git cache shards? `cost.py` guesses 30%, 20%, and 10% of git bytes, and container memory moves with it.
+- Do new container instances start during a control-plane outage? Warm shards carry a day, and past that cold networks may not fetch [unknown].
+- Can cloudflared run reliably inside Containers that "Cloudflare does not guarantee" to keep running (`research/cloudflare-git.md` finding 17), with Spectrum reaching it through a Tunnel virtual network, on Pro and Business as well as Enterprise? A Tunnel origin requires an application type of TCP or UDP (https://developers.cloudflare.com/spectrum/reference/configuration-options/), which Pro and Business lack.
+- What does the Spectrum add-on cost on Pro and Business? No list price was found [unverified].
+- Do the 100 MB, 200 MB, and 5 GB request body limits apply to chunked `git push` bodies (`research/cloudflare-git.md`, "Could not verify")? Milestone 0 runs it on all three plans.
+- The lifeboat's DNS-only hostname assumes Cloudflare DNS keeps answering during a proxy-wide outage (`history/review/cloudflare-judge.md`, journey 6) [inference].
+- Is container traffic back to its own Durable Object billed as egress? `cost.py` assumes yes. If not, the egress line ($1,725 at 2,000 developers) falls by about half.
+- Will Cloudflare raise Container, Workflow, and vCPU limits per account for a managed cell? For the account-separated option and managed cells, do Cloudflare's terms allow one service to span several accounts?
+- Secrets Store is in beta (`research/cloudflare.md`). It is on the installation-token path, because `graft-ops` unwraps the signing key from it. A failure longer than an isolate's one-hour key cache stops Actions job starts and App tokens install-wide [inference].
+- Code Orange's progressive config and cohort rollouts (finding 25) are five months old and untested in public. If they hold, the provider-wide rows marked exposed happen less often. Nothing in this design depends on it.
+
+## Synthesis decision
+
+The arena (`history/arena/cloudflare/SYNTHESIS.md`) ran three directions. Candidate 1 put one Durable Object per aggregate with a Paired standby and an R2 placement register. Candidate 2 put git in Artifacts with a confined container git engine. Candidate 3 ran three-site Raft groups.
+
+| Design | Lead | Cross-judge |
+| --- | --- | --- |
+| Candidate 1, one Durable Object per aggregate with a Paired standby | 38 | 35.5 |
+| Candidate 2, Artifacts plus a confined container git engine | 24 | 22.5 |
+| Candidate 3, three-site Raft groups | 37.5 | 41.5 |
+| Reference design (`history/DESIGN.md`), not eligible | not scored | 42.5 |
+
+Candidate 3 is the base. The judge found that candidate 1 stalls every Paired object when its standby's region is lost, and with that candidate 3 wins on downtime, which carries weight 3 (`history/review/cloudflare-judge.md`). The review panel tried to change the base and could not, because candidate 1 with its standby fix still acknowledges on one region's copy after any failover (`history/review/cloudflare-interrogate.md`).
+
+Grafts applied:
+
+1. Sites as scripts in one account by default, members reached by Durable Object bindings, account-separated sites as an option (from candidate 1). This resolves the judge's cross-account HTTPS flaw.
+2. SSH writes through the container outbound handler (from candidate 1).
+3. Non-voting learners for groups above 500 reads a second, up to 16, placed by traffic (from candidate 1's `AuthzReplica` and `RepoReader`).
+4. A `Solo` placement for evaluation installs, with no region-loss guarantee and no availability SLO (from candidate 1's Regional class).
+5. Merge-queue tips only fast-forward, with `parent_tip` checked in `decide` (from candidate 2).
+6. An honest control-plane row, `contained`, with warm git cache shards sized to carry a day and a Milestone 0 test (from candidate 1 and the judge).
+7. Request-driven `suspect` reports from two colos (from candidate 1, `history/arena/cloudflare/candidate-1/DESIGN.md` lines 171 to 173), which here withdraw promises from a gray leader instead of flipping a register.
+
+Flip condition 1. If Milestone 0's consensus gate fails (any linearizability violation in the 48-hour run, or `Tri` commit p99 above 400 ms), candidate 1 becomes the base, after its standby-loss stall is fixed by letting the primary compare-and-swap itself to `Alone` through the register.
+
+Flip condition 2. Before Milestone 1, the team asks Cloudflare in writing whether a Durable Object's storage followers span regions. If they span at least two, `Alone` and the Regional class are already region-durable, so candidate 1 with its `Alone` fix and `suspect` becomes the base for single-continent (`Na3`-class) and cost-sensitive installs. `Tri` stays the base for installs that must survive a continent [inference from `history/review/cloudflare-foundation-attack.md` F11].
+
+The agent arena (`history/arena/cloudflare-agents/SYNTHESIS.md`) compared a GHES-native layer (A), an Artifacts workspace tier (B), and an agent-native coordination host (C), and picked A at 50.5 lead and 47.0 cross-judge, because only A counted the per-push test merge in journey 9's git CPU (`history/review/cloudflare-agents-judge.md`). Its five base changes and the agent refusals, provenance parsing, and hidden session refs grafted from C are in Shape and journey 9. The operator's answer of 2026-10-26 made leases and tasks part of the first release, and the lead grafted C's leases onto the repository group instead of C's coordination Durable Object (`history/review/cloudflare-leases-tasks.md`). The layer, its scores, grafts, rejections, and flip conditions are in `design/AGENT-LAYER.md`.
+
+## Review resolutions
+
+Each entry applies the act-on item of the same id in `history/review/cloudflare-interrogate.md`.
+
+- **CF-ACT-1.** Added Raft leadership transfer, the signed `SiteMode { site, Drain | Normal }` entry, drained site days (1%, 10%, 50%, 100%) for every new site-script version, `STEP_DOWN`, `suspect` from two colos, pre-vote refusals for drained or recently reset candidates, `MemberState.led_term`, and a per-group `home` restored by transfer. Milestone 0 gained the site-deploy and gray-site rows, and the gray case is `mitigated` until they pass. Sections: Summary, Usage, Shape, Commit and read paths (journeys 5 and 7), Downtime (partial-disk, Redis, regional rows, SLO note), Failure modes, Install operations, Build order.
+- **CF-ACT-2.** Added `graft-front` with version overrides from a signed `EdgePointer`, N and N+1 in each edge deployment, and `graft-ops` executing signed intents with a customer deploy token and a separate read token from Secrets Store. Image changes ship on their own day with `--containers-rollout=none` on code deploys. Failed verification is a no-op plus an alarm, and only a mismatch read twice 24 h apart repairs. Revocation and rotation runbooks and signing-key custody are written. Sections: Summary, Stack, Shape, Commit and read paths, Downtime, Failure modes, Deployment modes, Install operations, Build order.
+- **CF-ACT-3.** A refusal makes the leader truncate, transfer, and persist `no_lead_until`, now only when the refuser is older (CR-ACT-1). Members truncate an undecodable uncommitted tail at boot. A new site leads 1% of its groups for its first day (an hour in the first revision, lengthened after trail review 6), and the next site waits for that day to pass its gates (CR-ACT-6). The record-shape row is `contained` with the two-site residual. Sections: Shape (`verify`, `MemberState`), Commit and read paths (journey 7), Downtime, Failure modes, Build order, Tradeoffs.
+- **CF-ACT-4.** One entry in flight per group with group commit up to 1.5 MB, `decide` over the fold plus earlier commands, and followers applying k before verifying k+1. The Scale row is about 10 entries/s per group, and the Milestone 0 gate is 300 commands/s at commit p99 at most 150 ms. Sections: Summary, Shape, Commit and read paths, Scale, Build order, Tradeoffs.
+- **CF-ACT-5.** The June 2025 row states 45%, 84%, and 96% and that the class breaks both monthly SLOs. Commit-path calls have a 1 s hedged deadline and two retries outside the budget, and campaigns are request-driven. Milestone 0 injects storage-write failures and counts whole pushes. Write and read RTO are both about 11.5 s. Sections: Summary, Shape, Commit and read paths, Downtime (row and RPO and RTO table), Failure modes, Build order.
+- **CF-ACT-6.** The runtime-cohort, binding-path (internal DNS), and third-party storage rows are `mitigated`. The account-separated text names the fourth-account exception. The WAF-block gate is replaced by a written answer requested before Milestone 1. Placement uses the 30 ms round-trip check, `/cdn-cgi/trace` is gone, and a wrong hint is an edge failure row. Sections: Shape, Downtime, Failure modes, Build order, Open questions.
+- **CF-ACT-7.** `Joint` leases and read-index need both majorities, pre-vote and non-member vote refusal are in, the "2-of-3 meanwhile" line is corrected with alarmed sweeper lag and single-copy packs copied first, and `Fresh` reads touch SQLite. `ReplaceMember` runs only on `SiteLost` or 24 h of zero acks onto pre-created per-continent spares, copies packs once per network, and `RestorePlacement` and 35-day `deleteAll()` follow. Sections: Shape, Commit and read paths (journey 5), Scale, Failure modes, Install operations, Cost.
+- **CF-ACT-8.** Stale mode starts only by the signed `StaleMode` flag, and the text states that stale reads break read-your-writes across clients. Sections: Shape, Downtime, Failure modes, Tradeoffs.
+- **CF-ACT-9.** `GitCache` is now `GitCacheShard { site, shard }` with rendezvous hashing, an LRU, a count per tier, and the `default` scheduling policy. "Per (network, site)" is gone. Milestone 0 measures the working set, `cost.py` derives shards from it, runners sit in a runner account, and `max_instances` reserves vCPU per site with a 70% alarm and a day-0 quota request. Sections: Stack, Shape, Scale, Failure modes, Deployment modes, Cost, Build order, Alternatives.
+- **CF-ACT-10.** A vault account outside the install's tokens pulls the feed and packs into bucket-locked R2, now with an install-scoped export signed by the customer key (CR-ACT-5). It is required in every mode, the RPO table has an account-compromise row, the deploy token's permissions are listed, and Milestone 0 checks container deploys with an account-owned token. Sections: Usage, Shape, Downtime, Failure modes (new `vault` component), Deployment modes, Install operations, Cost, Build order.
+- **CF-ACT-11.** Managed has a front account with the zone, `graft-front`, the edge, and global `Names` and `Tokens` on three sites, calling cell edges over signed HTTPS. The partial-proxy consequence is stated, and one account for everyone is rejected. Sections: Shape, Downtime, Deployment modes, the comparison table, Alternatives.
+- **CF-ACT-12.** Milestone 0 push, chunked-push, and SSH rows run on Pro, Business, and Enterprise. The edge refuses at its own cap with a `report-status` naming SSH, the sweeper aborts orphan multipart uploads, install preflight checks the plan against the largest imported pack, and SSH needs Enterprise for BYOC if Spectrum cannot reach a Tunnel on lower plans. Sections: Usage, Commit and read paths, Scale, Deployment modes, Build order, Open questions.
+- **CF-ACT-13.** `cost.py` prices egress by site region and leader split, carries the Spectrum add-on as an [unverified] $0 line, and prices spare sites, `ReplaceMember`, the vault, and the runner account. The Enterprise note for pushes over 200 MB is in the script and the section. Sections: Cost, the comparison table, Tradeoffs, Alternatives.
+- **CF-ACT-14.** "Install operations" covers genesis, `graftyard admin bootstrap`, key custody, Terraform and Wrangler ownership, placement-failure retries and bucket recreation, and the `oc` rule. Sections: Usage, Shape, Deployment modes.
+- **CF-ACT-15.** Self-hosted is the customer's own account with no vendor token. workerd on customer hardware is evaluation and lifeboat only, with cited reasons, and the Stack row carries the three qualifiers inside the status cell's brackets so it still matches `research/cloudflare.md`. The operator question is the first open question. Sections: Summary, Usage, Stack, Commit and read paths, Deployment modes, the comparison table, Tradeoffs, Alternatives, Open questions.
+- **CF-ACT-16.** The lifeboat has the `graft-blob` contract, a pinned workerd with fresh-directory rebuilds and backed-up keys, decoder gating of `formats:enable`, halt on undecodable entries, `graftyard lifeboat enroll`, BYOC identity shards, ACME DNS-01, published lag with fallback pulls, and is named the only off-Cloudflare production component. Enroll tokens, DNS-01 delegation, and registration changed under CR-ACT-8 and CR-ACT-10. The second DNS provider is dropped, and no managed lifeboat runs by default. Sections: Summary, Usage, Shape, Downtime, Failure modes, Deployment modes, Install operations, Open questions.
+- **CF-ACT-17.** The second flip condition is stated, with the written question asked before Milestone 1. Sections: Build order, Open questions, Synthesis decision.
+
+**After trail review 6** (`history/review/trail-review-6.md` flags 3, 5, and 7). Seven fixes the review files proposed were softened or missing from CF-ACT-1, 3, 9, and 16. Six are now applied: automatic drain by `graft-ops` on per-site SLO burn, one site at a time, with a drain-only key (journey 5, Shape, Install operations); a 1% sample for the new site's whole first day (journey 7, Failure modes, Tradeoffs); a whole-install restore procedure with a Milestone 7 gate (Install operations, RPO table, Build order); disks that honor cache flushes for lifeboat hosts; a 1% first step in every site day; and container image storage in Scale. The seventh, a semaphore Durable Object for `durable_object`-policy classes, is dismissed, because every container class here uses the `default` policy with `max_instances`. The workerd Stack status restores the research's [inference] label, and Deployment modes and Tradeoffs state the lifeboat's workerd exposure. The 50-developer comparison row adds the reference design's `scrappy` setup at $226.
+
+**After the re-walk** (`history/review/cloudflare-rewalk.md`, applied as CR-ACT-1 to 10 in `history/review/cloudflare-interrogate.md`).
+
+- **CR-ACT-1.** A refusal deposes the leader only when the refuser runs an older release and the entry is uncommitted. Any other refusal keeps the leader, adds the refuser to `MemberState.cannot_follow`, alarms, and halts the site day. A transfer target must be undrained and hold the leader's last index, and a transfer that has not completed within one `LEASE` is abandoned. `no_lead_until` also clears when `Release` records a rollback of the refusing site. Milestone 0 has rows for the older refuser, the rolling-site refuser at 10%, and the two-site residual, which is stated as two members with no spare voter. Sections: Summary, Shape (`MemberState`, `transfer`, `verify`), Commit and read paths (journey 7), Downtime (record-shape row), Failure modes, Build order, Tradeoffs, the comparison table.
+- **CR-ACT-2.** Added `ReleaseEntry::Keys { customer, vendor, release, drain, ring }`, and the group and `graft-ops` refuse keys absent from the latest `Keys`. The vendor holds only an R2 token for the install's release bucket, and `graft-ops` uploads bundles with the customer's deploy token. The revocation runbook signs `Keys { vendor: None }` between `Halt` and `Resume` or `Abort`, and the rotation runbook covers every key through `Keys`. Milestone 5 refuses a vendor-signed intent after it. The `ring` field is an addition, so the account-separated ring keys also rotate through `Keys`. Sections: Stack, Shape (`ReleaseEntry`, `Keys`, `Intent`), Commit and read paths (journey 8), Failure modes (`release control`), Deployment modes, Install operations, Build order, the comparison table.
+- **CR-ACT-3.** `FormatsEnable` takes the release-signing key plus the customer key, releases carry it pre-signed, and the release-signing key signs releases while the vendor intent key signs only vendor intents. Milestone 7 enables a format on a self-hosted install. Sections: Shape (`ReleaseEntry`), Failure modes (`release control`), Install operations (Keys), Build order.
+- **CR-ACT-4.** Every site script, the edge, and the Workflows script bind the member classes and buckets of all active, spare, and residency sites at install, and the hint table covers the spares. Milestone 6 runs `ReplaceMember` with every account API token revoked and passes only if no script version is created. Sections: Shape, Commit and read paths (journey 5), Failure modes (`chain groups` control-plane), Build order, Open questions.
+- **CR-ACT-5.** The vault export is install-scoped, signed by the customer key, and covers every `ChainId`, and managed tenants keep per-org tokens. Restore names an operator-chosen cutoff and uses the newest snapshot at or before it plus the tail up to it. The RPO row adds the compromise case and names self-hosted. Milestone 7 checks a PAT, an SSH key, a user-owned repository, and an org name. Sections: Usage, Downtime (RPO table), Failure modes (`vault`), Deployment modes, Install operations, Build order, Tradeoffs.
+- **CR-ACT-6.** Each deploy step and the 1% day gate on N+1 apply lag, apply and verify exceptions, ack rate, and `STEP_DOWN` trips, and a breach runs the pre-signed rollback `SiteDay` from `SignedIntent.undo` with no human signature. Milestone 0 adds the follower-regression row. Sections: Shape (`SignedIntent`), Commit and read paths (journey 7), Downtime, Failure modes, Install operations, Build order, Tradeoffs, the comparison table.
+- **CR-ACT-7.** Added `Intent::FrontRoll` and `Intent::OpsRoll` (1% for a day, then 100%, N kept), `OpsPointer` with an edge version override for `graft-ops`, a one-hour per-isolate key cache, a front-door row for token minting, and the frozen `graft-front` residual. The Secrets Store open question is corrected. Sections: Stack, Shape (`ReleaseEntry`, `Intent`, Identity), Commit and read paths (journeys 6 and 7), Downtime, Failure modes (`front door`), Install operations, Build order, Tradeoffs, Open questions.
+- **CR-ACT-8.** `enroll` mints `lifeboat:read` tokens that the main edge refuses, and the lifeboat stores only their hashes. `_acme-challenge` is delegated by CNAME to a validation zone in a separate Free-plan account whose DNS token is the host's only DNS credential, and an R2 read-only token reads the export bucket. All three are in the rotation runbook and the exposure text. The Free plan is $0, so `cost.py` is unchanged. Sections: Usage, Stack, Shape (Identity), Failure modes (`lifeboat`), Deployment modes, Install operations, Tradeoffs.
+- **CR-ACT-9.** `SiteHealth` objects on the other two sites count missed deadlines per target site, and `graft-ops` drains only when both report the burn. An automatic drain preempts a site day under the 1% lead limit, and a site day stuck an hour on the API undrains under the same limit. Milestone 0 adds a gray site during another site's day. Sections: Shape, Commit and read paths (journeys 5 and 6), Downtime, Failure modes (`release control`), Build order.
+- **CR-ACT-10.** `graftyard lifeboat init` registers each host's key with a customer-signed `LifeboatAdd`, `LifeboatDecoder` is accepted only under that key, `LifeboatRemove { host }` takes the customer key, and a lifeboat silent for 7 days alarms. Sections: Usage, Shape (`ReleaseEntry`), Failure modes (`lifeboat`), Install operations, Build order.
+
+**After the agent-layer review** (`history/review/cloudflare-agents-interrogate.md`, applied as AG-ACT-1 to 23). Each item's entry is in `design/AGENT-LAYER.md`, "Review resolutions". The base changes here are stateless token revocation (AG-ACT-9, in Shape, journey 4, and Build order), `LOG_MAX_BYTES` with archive and check-run retention (AG-ACT-10, in Shape, Scale, and Build order), admission by origin and behavior (AG-ACT-11), in-band fan-out from a hot pool (AG-ACT-12), the test-merge budget (AG-ACT-13), the hot inline cap that yields during R2 outages (AG-ACT-21, in Downtime, Failure modes, and Tradeoffs), the `decide` and `validate` changes of AG-ACT-2 to 5 (Shape and Build order), and the Artifacts agent-tier text (AG-ACT-23, in Alternatives). Summary, journey 9, Scale, and Cost carry the new figures from `scripts/cost_agents.py`. Leases and tasks (`history/review/cloudflare-leases-tasks.md`, LT-ACT-1 to 7, entry in the layer) add `Lease`, `LeaseEnforce`, and the public `AgentTask` row to Shape's agent block, with the `DRIFT` skew bound and the outage rule for leases, and new figures in Summary, journey 9, Scale, Cost, Build order, and Synthesis decision. The artifact list in Deployment modes became one paragraph to keep this file under its cap.
+
+**Final pass** (`history/review/final-interrogate.md`, slice B, applied as FX-1 to 12 from `history/review/final-security.md`, `history/review/final-correctness.md`, and `history/review/final-consistency.md`).
+
+- **FX-1.** `Release` entries sign over `Bound { install, group, prev }`, pre-signed undos bind their parent intent instead and die with it, `Keys` carries `generation`, intents carry `id`, `issued_at`, and `not_after`, and `Halt`, `Resume`, and `Abort` name their intent. `decide` refuses a rollback, pointer, or `Abort` below an enabled format and pages, and `Abort` targets the newest release that reads every enabled format. Customer-only `RepoRestore` and `RepoReset` become idempotent `RestoredTo` and `ResetTo` commands keyed by the `Release` index. Sections: Shape (Release group), Commit and read paths (journey 7), Downtime, Failure modes (`release control`), Install operations (Genesis, Keys, Site day, revocation runbook), Build order (Milestone 5 rows).
+- **FX-2.** `commit` answers `Admitted { ticket }` or `NotLeader` within `CALL_DEADLINE`, and `outcome` waits up to `AGENT_WAIT` plus a round, so deadlines, `suspect`, and `SiteHealth` see only receipts and member calls. The two-colo rule gates only promise withdrawal from a renewing leader. Dependencies and credential shards are read once per entry after the command set freezes, so a revocation binds every command decided after it however long the command queued (the lead tightened the resolver's `READ_CACHE` threshold to this). Sections: Usage, Shape (Leadership, write path, Identity), Commit and read paths (intro, journeys 1, 4, and 5), Scale (entries per group), Build order (RTO row, Milestone 3 row). The agent burst and 5,000-agent rows are slice A's.
+- **FX-3.** `verify` replays the entry's events on a scratch transaction over the fold at k, and a refusal by both same-release followers truncates and alarms. Sections: Shape (`verify`), Invariants, Commit and read paths (journey 1), Build order (Milestone 2 row).
+- **FX-4.** Transfers carry `transfer_id` in AppendEntries and `MemberState`, transfer-round acks extend no lease, abandonment needs a full round, `fresh` and read-index wait for the term's `Noop`, quarantine covers two boots or a `STEP_DOWN`, and voters waive it after 2 x `ELECTION_AFTER`. Sections: Shape (Chains, Leadership, read path), Commit and read paths (journey 5), Build order (linearizability and reset-storm rows).
+- **FX-5.** Spares and residency sites get a site day per release behind a canary group, keep images until then, count toward `FormatsEnable`, and `ReplaceMember` refuses a spare that cannot read every enabled format. Sections: Shape (Sites, `Site`, `Intent`), Commit and read paths (journeys 5 and 7), Scale (image storage), Downtime, Failure modes (`release control`), Install operations (Site day), Build order (Milestone 6).
+- **FX-6.** `ref_log` and `RESTORE_WINDOW` keep 35 days of ref values as GC roots with a snapshot per tier inside the window, the vault keeps packs 35 days past GC, archives and snapshots are keyed by range and digest in two buckets with a committed `Archived` before truncation, and a whole-install restore re-applies revocation-class entries and rotates the signing key. Sections: Shape (Chains, Packs), Downtime (RPO table), Failure modes (`pack buckets`), Install operations (Vault, Whole-install restore), Build order (restore-window row, Milestone 7).
+- **FX-7.** `DbId` packs a cell, a block, and an offset, with an `Ids` group and `IdBlock`, and the managed front routes ids by cell bits. `NamesEvent`, `TokensEvent`, `ActionsEvent`, `name_shard`, `account_shard`, and `fingerprint_shard` are defined, every write reads the `Account` row, credentials commit on `Tokens` first, user records are `IdentityEvent`s, and a derived `Inbox` serves notifications and cross-repository lists. `cost.py` prices user records and the `Inbox` ($32 at 2,000 developers), and the base totals are now $264, $1,299, and $9,417 (also in `FRAME.md`). Sections: Shape (Sites prose, Chains, Identity, reused list), Stack, Commit and read paths (journeys 1 and 4), Downtime (32-bit row), Install operations (Genesis, rotation runbook), Cost, the comparison table, Alternatives, Build order (Milestones 3, 4, and 7 rows).
+- **FX-8.** Isolates cache pointers for `POINTER_TTL`, refresh from any member's applied state, never move backward, and fail static. Pinned calls are `fetch()`-based bindings, quoting the version-overrides page, the edge reports its version, an `EdgeRoll` that drops an undo's version is refused, and the managed front reads cell pointers over signed HTTPS. Sections: Stack, Shape (Managed cells, Release group, Identity), Commit and read paths (intro, journey 7), Failure modes (`release control`), Build order (Milestone 5 row).
+- **FX-9.** `MemberState.stalled_since` and `LogEntry.extend: Option<ExtendLeases { since, by }>` extend leases and Actions job leases only by a recorded stall, expiry needs no command, and the Actions leader commits `LeaseExpired` at the lease end. Sections: Shape (Chains, Identity), Failure modes (`actions state`), Build order (Milestone 4 row). The agent block's lease text and the idle-lease row are slice A's.
+- **FX-10.** The group refuses a drain-key `SiteMode { Drain }` while another site is drained, and pre-vote lets a drained member campaign when no undrained voter can lead. Sections: Shape (`SiteMode`), Commit and read paths (journey 5), Failure modes (`release control`), Build order (drain-guard row).
+- **FX-11.** `cost.py` puts the hot pool of 7 per site in `shards()` and `max_instances` at the tier's instance size, so reserved vCPU is 27.8, 72.8, and 384.8 with 3.9x headroom at 2,000 developers. `CHILD_GROUP_AT` is 8 GiB of member SQLite. Sections: Shape (Chains, git cache shards), Scale (member storage, git cache shards, container instances), Cost, Build order (Milestone 7 row).
+- **FX-12.** `Health` is defined, "Reused from `history/DESIGN.md` without change" is now "Reused with the additions below", `Push` gains `provenance`, `protected`, and `changed` in SHARED and in Usage, `Consumer` gains `Counts` and `Insights`, and `ReleaseEntry` and `Intent` gain `McpPointer`, `ControllerPointer`, `McpRoll`, and `ControllerRoll` under FX-1's binding. Sections: Usage, Shape (Chains, Release group, reused list), Build order (Milestone 5 replay row).
+- **FX-20 to FX-26** (slice A; full entries in `design/AGENT-LAYER.md`, "Review resolutions", "Final pass"). All seven changed the agent block in Shape, kept identical in both documents.
+- **FX-20.** `AgentTask` gains `app`, `installation`, `creator`, and `snapshot`, derives `prefix`, keeps final states final, and splits into a core part and metadata. `InstallationClaims` gains `task`. Sections: Shape (agent block).
+- **FX-21.** `agents_enabled` gates Graftyard-run task creation, only human writers or the controller from an assigned issue create one, and creates and cancels reach the controller by a first-party delivery. Sections: Shape (agent block), journey 9.
+- **FX-22.** Lease holders are (actor, App, session), Exclusive leases need a live task and a literal first segment and drop to Shared after 4 h, only Exclusive conflicts with Exclusive, and revoked holders' leases count as released. Sections: Shape (agent block), Failure modes (agent `chain groups` row).
+- **FX-23.** `ChangedPaths` feeds `AgentsExclusive`, a `task` claim puts the base chain in `Push::deps()`, one rule defines `ActorKind::Agent`, and `Co-authored-by` never classes a push. Sections: Shape (agent block), Build order (agent refusals row).
+- **FX-24.** Only a credential that is neither an `AgentApp`'s nor MCP-issued writes `AgentGate`. Sections: Shape (agent block).
+- **FX-25.** Followers and learners serve feed polls, and journey 9 is 305 leader requests/s and 45 feed polls/s. Agents add $26, $303, and $3,269. Sections: journey 9, Scale (agent rows), Cost, Build order (agent fleet replay row).
+- **FX-26.** The agent block gains "Agent-layer entries" with `tier_of` and the glob dialect, and the member reaches `CHILD_GROUP_AT` in about 1.7 months of journey 9. Sections: Shape (agent block), journey 9, Scale (member bytes), Build order (hot-group storage row).
+
+**Implementability walk** (`history/review/walk-interrogate.md`, from `history/review/walk-base.md` and `history/review/walk-ops-agents.md`, applied as WK-P, WK-M, WK-R, WK-A, and WK-B items, with the writers' reports in `history/review/walk-fix-reports.md`). Slice P: WK-P1 placement records and bootstrap (Shape, "Sites and placement" and the write path), WK-P2 promoted inline packs and `IngestCursor` (Packs, git cache shards), WK-P3 request ids (Chains, the write path, Commit and read paths intro and journey 5), WK-P4 `credential()` and `deps` from `RepoSettings` (the write path, journey 1), WK-P5 the two-release rule for messages (the write path), WK-P6 snapshots and `InstallSnapshot` (Packs), WK-P7 `COMMAND_MAX` (the write path, journey 1), WK-P8 `Committed` markers (Packs, journey 1), WK-P9 the round-trip check (Sites and placement, Invariants), and WK-P10 member names (Sites and placement, Install operations), each with its `design/SHARED.md` part. Slice M: WK-M1 `QueueEvent`, `QueueOp`, `QueueMerge`, and the `MergeQueue` consumer (Shape, "Merge queue"), WK-M2 check runs as metadata entries and `TestMerged`, WK-M3 the blob store and `R2Key::Blob` (Packs), WK-M4 the `TokensEvent::Stored` fields and WK-M6 code rows (Identity), WK-M5 `AppRecord` and `OAuthAppRecord` routes (Identity), WK-M7 collaborators and invitations, WK-M8 the credential write order (Identity), and WK-M9 citations and stored formats (the reused list, Build order Milestone 2 row), mostly in `design/SHARED.md`. Slice R: WK-R1 progress entries and WK-R2 `ReleaseUploaded` and the release types (Shape, Release group; Install operations, Release roll), WK-R3 pin-only `Pointers` (Release group, journey 7), WK-R4 genesis and the trust anchor (Usage, Install operations, Genesis), WK-R5 `Bound.prev` and the entries endpoint, WK-R6 `Abort { intent, target }` (Release group, Revocation runbook, Failure modes `release control`, Build order Milestone 5 gate and `FormatsEnable` row), WK-R7 site loss and `MemberRegistry` (Release group, Install operations, Site loss), WK-R8 export and lifeboat endpoints (Lifeboat feed, Vault, Lifeboat), WK-R9 undo validity (Release group, Revocation runbook), WK-R10 the site-day constants, undrain, and the cached view (Release group, Site day), WK-R11 the rotation table, WK-R12 the Workflows day and the vault Worker (Deployment modes, Failure modes `vault`), WK-R13 `StaleMode` (the read path, Release group), and WK-R14 SSH host keys (SSH front, Rotation runbook), plus the Usage call sites, journey 7, and the `chain groups` rows. Slice A: WK-A1 to WK-A7, with entries in `design/AGENT-LAYER.md`, "Review resolutions", and WK-A2 and WK-A6 in the agent block here. Slice B: WK-B1 minimal identity in Milestone 1, WK-B2 the SSH part of the suspension row moved to Milestone 6, WK-B3 the change feed in Milestone 5, WK-B4 AM2 and AM3 after base 5 (`design/AGENT-LAYER.md`, "Build order"), WK-B5 cursors, Queues, and `PrSync` in Milestone 2, WK-B6 a milestone for every T0 surface and the web app, WK-B7 the reported gate rows, the `FormatsEnable` row, and the Milestone 5 gate, and WK-B8 `build/BUILD-PLAN.md` and `decisions/OPEN-QUESTIONS.md`. Sections: Build order (Milestone 0 idle-cost row, Milestones 1 to 7, rows added after the final pass).
+
+**Third walk** (`history/review/walk-rest-interrogate.md`, from `history/review/walk-rest.md`, applied as WK-X1 to WK-X13 and WK-Y1 to WK-Y3, with the writers' reports in `history/review/walk-rest-reports.md`).
+
+- **WK-X1.** `RunnerBroker` and `LogRelay` are site-script classes with derived state on their shard's leader site, and a broker past `BROKER_HELD_MAX` answers 503 with `Retry-After: 15`. Sections: Stack (Durable Objects), Shape (Identity), Failure modes (`actions state`); `design/SHARED.md` "Actions" (Logs).
+- **WK-X2.** `ActionsEvent` has `RunCreated`, `RunStatus`, `Job`, `Runner`, and `Session`, `actions_shard(run)` hashes the repository, and a broker reads all 16 shards by summary and counted hints. Sections: Shape (Identity); `design/SHARED.md` "Actions runs and jobs".
+- **WK-X3.** The "Workflow run" operation commits at `RunCreated`, finishes through `RunOwner` per (job, attempt), aborts by `Cancel`, and leaves no `RequiredCheck` without a conclusion. Sections: `design/SHARED.md` "Multi-chain operations" and "Actions runs and jobs".
+- **WK-X4.** `HookCursor.read` passes an entry once its `HookDelivery` rows are recorded, order holds per (chain, hook), and `HOOK_OWNER_CONCURRENCY` is 50 [guess]. Sections: Failure modes (`event pipeline`); `design/SHARED.md` "Event fan-out".
+- **WK-X5.** Sealed-box secrets and variables with `SealKey`, `Wrapped`, and a rotation rule, opened only by job-message assembly and webhook signing, and `SecretName` gains `SecretsWrapKey` and `HostedRunnersAppKey`. Sections: Stack (Secrets Store), Shape (Release group, `SecretName`); `design/SHARED.md` "Actions" (Secrets and variables).
+- **WK-X6.** `RepoEvent::Hook` carries a `HookRecord`, and one `HookSequencer` per hook owner on its home site is the delivery store. Sections: Stack (Durable Objects), Shape (Identity), Failure modes (`event pipeline`); `design/SHARED.md` "Event types" and "Event fan-out".
+- **WK-X7.** `graft-runners` in the runner account reads hosted demand from the broker, mints JIT configs as `graftyard-hosted-runners`, and stops at `RUNNER_VCPU_STOP_PCT`. Sections: Stack (Workers, Sandbox SDK, Cron Triggers), Shape (Identity), Failure modes (`actions state`); `design/SHARED.md` "Actions" (Hosted runners).
+- **WK-X8.** Child groups get `ChainId::RepoMeta`, `EntryBody::Split`, the `MetaSplitter` Workflow, `meta_finish`, consumer ordering across `MetaHalf`, repair scope, and the no-410 feed rule. Sections: Stack (Workflows), Shape (Chains, `CHILD_GROUP_AT`, "Sites and placement").
+- **WK-X9.** `Counts` writes a watcher index to each repository's metadata tier, and `Inbox` gains a daily snapshot and a rebuild rule with `INBOX_WINDOW`. Sections: Shape (Identity), Downtime (RPO table), Failure modes (`derived stores`); `design/SHARED.md` `rest:activity`.
+- **WK-X10.** `SearchShard` holds FTS5 tables in 16 shards per residency domain [guess], placed under the domain's DO jurisdiction. Sections: Stack (Durable Objects), Shape (Identity), Failure modes and Deployment modes (`derived stores`); `design/SHARED.md` `rest:search` and Residency.
+- **WK-X11.** `Genesis.evaluation` and the customer-signed `Intent::LeaveEvaluation` move a Cloudflare `Solo` install to `Tri`. Sections: Shape ("Sites and placement", Release group), Deployment modes (Evaluation), Install operations (Keys).
+- **WK-X12.** `EntryBody::Imported(ImportBatch)` marks import entries, which `Webhooks`, `ActionsTrigger`, and `Notify` skip. Sections: Shape (Chains); `design/SHARED.md` `rest:migrations`.
+- **WK-X13.** `RateCounter` holds one window total per `RateKey`, isolates flush every `RATE_FLUSH` requests or 1 s, and the error bound is stated. Sections: Stack (Durable Objects), Shape (Identity), Failure modes and Deployment modes (`derived stores`); `design/SHARED.md` "Public service concerns" and `rest:rate-limit`.
+- **WK-Y1 to WK-Y3.** Entries are in `design/AGENT-LAYER.md`, "Review resolutions", "Third walk". WK-Y2 and WK-Y3 changed the agent block in Shape, kept identical in both documents.
+- **Integration.** Build order gained the Milestone 4 and 7 "Built" text and 15 rows added after the final pass. `build/BUILD-PLAN.md` places every row in one work package, `decisions/OPEN-QUESTIONS.md` adds the writers' open questions, and `decisions/DECISIONS.md` records the choices an implementer might reverse. Sections: Build order.
