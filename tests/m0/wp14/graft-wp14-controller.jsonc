@@ -1,0 +1,21 @@
+{
+  // M0-WP14 (L0-02) controller prototype: a Worker with one `Sandbox` Durable Object that starts a Sandbox container and
+  // runs the containment harness in it behind the `OutboundRouter` entrypoint (src/wp14/controller.ts, router.ts).
+  // Secrets (set by run/wp14.ts deploy): M0_TOKEN, AGENT_TOKEN, WORKSPACE_TOKEN, MODEL_KEY.
+  "name": "graft-wp14-controller",
+  "main": "../src/wp14/controller.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "rules": [{ "type": "Text", "globs": ["**/*.py"], "fallthrough": true }],
+  "containers": [{ "class_name": "Sandbox", "scheduling_policy": "durable_object",
+                   "images": { "sandbox": { "dockerfile": "./Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "SANDBOX", "class_name": "Sandbox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Sandbox"] }],
+  "vars": {
+    "HOST_NAME": "graft-wp14-host.<workers-subdomain>.workers.dev",
+    "MODEL_HOST": "graft-wp14-model.<workers-subdomain>.workers.dev",
+    "REGISTRY_HOST": "graft-wp14-registry.<workers-subdomain>.workers.dev"
+  },
+  "observability": { "enabled": true }
+}

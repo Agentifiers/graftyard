@@ -1,0 +1,54 @@
+{
+  "name": "graft-wp9-load",
+  "main": "../src/wp9/load.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MEMBER_A",
+        "class_name": "RaftMember",
+        "script_name": "graft-wp9-a"
+      },
+      {
+        "name": "MEMBER_B",
+        "class_name": "RaftMember",
+        "script_name": "graft-wp9-b"
+      },
+      {
+        "name": "MEMBER_C",
+        "class_name": "RaftMember",
+        "script_name": "graft-wp9-c"
+      },
+      {
+        "name": "LOAD",
+        "class_name": "Load9"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "STAGE",
+      "bucket_name": "graft-wp9-stage"
+    },
+    {
+      "binding": "STAGE_C",
+      "bucket_name": "graft-wp9-stage-c"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Load9"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

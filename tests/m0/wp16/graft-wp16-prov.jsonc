@@ -1,0 +1,15 @@
+{
+  // M0-WP16 L0-10 install (src/wp16/prov.ts): group "mono" writes INST_A/B; the rebuilt install "mono-r" writes REST_A/B.
+  "name": "graft-wp16-prov",
+  "main": "../src/wp16/prov.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "REPO", "class_name": "ProvRepo" }] },
+  "r2_buckets": [
+    { "binding": "INST_A", "bucket_name": "graft-wp16-inst-a" }, { "binding": "INST_B", "bucket_name": "graft-wp16-inst-b" },
+    { "binding": "REST_A", "bucket_name": "graft-wp16-rest-a" }, { "binding": "REST_B", "bucket_name": "graft-wp16-rest-b" }
+  ],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ProvRepo"] }],
+  "observability": { "enabled": true }
+}

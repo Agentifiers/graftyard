@@ -1,0 +1,15 @@
+{
+  // M0-WP16 predictor shard (src/wp16/shard.ts). Its own script and bucket; copied from b0-22/wrangler.jsonc.
+  "name": "graft-wp16-shard",
+  "main": "../src/wp16/shard.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // Under `durable_object` the instance size is a start() option (src/wp16/shard.ts), not config.
+  "containers": [{ "class_name": "PredictShard", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "./Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "PredictShard" }] },
+  "r2_buckets": [{ "binding": "NET", "bucket_name": "graft-wp16-net" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PredictShard"] }],
+  "observability": { "enabled": true }
+}

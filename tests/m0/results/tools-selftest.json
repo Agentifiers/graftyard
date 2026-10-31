@@ -1,0 +1,92 @@
+{
+  "at": "2026-10-27T22:42:05.326Z",
+  "run": "20261027T2240",
+  "seconds": 30,
+  "pinned": {
+    "ATL": [
+      "client-ATL-mvr9giaj-1-8"
+    ],
+    "LHR": [
+      "client-LHR-mvr9giaj-0-0"
+    ],
+    "SIN": [
+      "client-SIN-mvr9giaj-0-8"
+    ]
+  },
+  "verdict": "Pass",
+  "results": [
+    {
+      "case": "clean",
+      "plan": {
+        "rules": []
+      },
+      "expect": "Ok",
+      "droppedFailedReads": 0,
+      "noReplyWrites": 0,
+      "operations": 1650,
+      "result": "Ok",
+      "clientColos": [
+        "ATL",
+        "LHR",
+        "SIN"
+      ],
+      "failed": 0,
+      "errors": {}
+    },
+    {
+      "case": "faults",
+      "plan": {
+        "rules": [
+          {
+            "target": "call",
+            "mode": "error",
+            "rate": 0.1
+          },
+          {
+            "target": "call",
+            "mode": "drop-reply",
+            "rate": 0.1
+          },
+          {
+            "target": "write",
+            "rate": 0.2
+          }
+        ]
+      },
+      "expect": "Ok",
+      "droppedFailedReads": 213,
+      "noReplyWrites": 310,
+      "operations": 596,
+      "result": "Ok",
+      "clientColos": [
+        "ATL",
+        "LHR",
+        "SIN"
+      ],
+      "failed": 523,
+      "errors": {
+        "InjectedFault: m0 injected fault: call * failed": 94,
+        "Error: m0 injected fault: write *": 403,
+        "InjectedFault: m0 injected fault: call * reply dropped": 26
+      }
+    },
+    {
+      "case": "stale",
+      "plan": {
+        "rules": []
+      },
+      "expect": "Illegal",
+      "droppedFailedReads": 0,
+      "noReplyWrites": 0,
+      "operations": 1575,
+      "result": "Illegal",
+      "clientColos": [
+        "ATL",
+        "LHR",
+        "SIN"
+      ],
+      "failed": 0,
+      "errors": {}
+    }
+  ]
+}

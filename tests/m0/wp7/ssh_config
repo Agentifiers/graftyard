@@ -1,0 +1,9 @@
+# The client stanza the install docs give for SSH on Pro and Business (B0-24a). Replace the host with the install's
+# SSH hostname. `cloudflared` must be on PATH. run/wp7.ts includes this file unchanged, after a block that only adds
+# the test key and known_hosts.
+Host ssh-m0.graftyard.dev
+  User git
+  ProxyCommand cloudflared access ssh --hostname %h
+  ServerAliveInterval 15
+  ServerAliveCountMax 4
+  ConnectTimeout 30

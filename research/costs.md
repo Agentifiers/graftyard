@@ -137,11 +137,11 @@ The first cost model found three costs that the DSQL design hid.
 
 | Developers | Cloudflare default (one account, three sites) | Cloudflare, account-separated sites | Cloudflare `Solo` (evaluation, no SLO) | AWS design, one Region | AWS design, Paired |
 | --- | --- | --- | --- | --- | --- |
-| 50 | $264 | $276 | $165 | $1,287 | $2,292 |
-| 300 | $1,299 | $1,235 | $932 | $2,573 | $4,466 |
-| 2,000 | $9,417 | $9,314 | $5,995 | $12,432 | $20,636 |
+| 50 | $231 | $243 | $132 | $1,287 | $2,292 |
+| 300 | $1,189 | $1,126 | $822 | $2,573 | $4,466 |
+| 2,000 | $9,187 | $9,084 | $5,550 | $12,432 | $20,636 |
 
-At 50 developers the cheapest reliable setups are the Cloudflare default at $264 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
+At 50 developers the cheapest reliable setups are the Cloudflare default at $231 (RPO zero across three continents, on the Pro plan with a 100 MB HTTPS push cap and an unpriced Spectrum add-on), AWS `scrappy` at $226 (one Region with a cold recovery Region, so a Region loss is not RPO zero), and AWS `scrappy-paired` at $388 (RPO zero across two Regions).
 
 ## Where a 50-developer Cloudflare bill goes
 
@@ -149,21 +149,20 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 
 | Line item | Per month | Share |
 | --- | --- | --- |
-| Containers memory (provisioned) | $177 | 67% |
-| Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced) | $25 | 9% |
-| Containers disk (provisioned) | $11 | 4% |
-| Spectrum SSH data | $11 | 4% |
-| R2 storage (pack copies, clone cache, Actions) | $9 | 3% |
+| Containers memory (provisioned) | $157 | 68% |
+| Zone plan (list; managed and pushes over 200 MB need Enterprise, not priced) | $25 | 11% |
+| Containers disk (provisioned) | $9 | 4% |
+| R2 storage (pack copies, clone cache, Actions) | $9 | 4% |
 | Durable Objects SQLite storage | $8 | 3% |
-| Vault account (plan, locked R2 copy, writes) | $6 | 2% |
+| Vault account (plan, locked R2 copy, writes) | $6 | 3% |
 | Workers Paid subscriptions (install) | $5 | 2% |
 | Runner account (Workers Paid; runner compute excluded) | $5 | 2% |
 | Email Sending | $4 | 2% |
-| ReplaceMember and RestorePlacement (one site loss a year, amortized) | $1 | 0% |
+| ReplaceMember and RestorePlacement (one site loss a year, amortized) | $1 | 1% |
 | Durable Objects requests | $1 | 0% |
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $1 | 0% |
-| Containers vCPU (active) | $0 | 0% |
 | Spare sites (eeur, wnam, oc; scripts and empty buckets) | $0 | 0% |
+| Containers vCPU (active) | $0 | 0% |
 | Basin Pipelines (audit and SLO history) | $0 | 0% |
 | Workers requests | $0 | 0% |
 | Workers CPU (graft-front, edge, sites) | $0 | 0% |
@@ -172,11 +171,13 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 | R2 Class A | $0 | 0% |
 | R2 Class B | $0 | 0% |
 | Containers egress by site region and leader split | $0 | 0% |
+| Containers: hot pool kept warm for hot networks, working hours | $0 | 0% |
+| Spectrum SSH data | $0 | 0% |
 | Spectrum SSH add-on fee [unverified, no list price found] | $0 | 0% |
 | Queues (webhooks, notifications, indexing) | $0 | 0% |
 | Analytics Engine (per-repo counters, SLO points) | $0 | 0% |
 | Workers Logs ingest and storage | $0 | 0% |
-| Total | $264 | 100% |
+| Total | $231 | 100% |
 
 ## The Cloudflare agent layer
 
@@ -184,6 +185,6 @@ This is the Cloudflare default, from `python3 scripts/cost.py --detail small des
 
 | Developers | Cloudflare default | Agent layer added | Default with agents | Added share |
 | --- | --- | --- | --- | --- |
-| 50 | $264 | $26 | $290 | 10% |
-| 300 | $1,299 | $303 | $1,602 | 23% |
-| 2,000 | $9,417 | $3,270 | $12,687 | 35% |
+| 50 | $231 | $21 | $252 | 9% |
+| 300 | $1,189 | $274 | $1,463 | 23% |
+| 2,000 | $9,187 | $2,572 | $11,758 | 28% |

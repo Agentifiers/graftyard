@@ -33,7 +33,7 @@ CITE = re.compile(r"(?<![\w./-])((?:" + "|".join(ROOTS) + r")/[^\s`'\"()\[\]|,;]
 	+ r")\.md(?![\w/-]))")
 PATTERN_CHARS = set("*<>{}$")
 FOREIGN_ROOT_FILES = {"README.md", "AGENTS.md"}
-SKIPPED = {"history", "__pycache__", ".git"}
+SKIPPED = {"history", "__pycache__", ".git", "node_modules", ".wrangler"}
 
 
 def predates_root_files(rel):

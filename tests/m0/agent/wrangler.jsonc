@@ -1,0 +1,17 @@
+{
+  "name": "graft-m0-agent",
+  "main": "../src/agent/worker.ts",
+  "compatibility_date": "2026-10-01",
+  // M0-WP13: webhook deliveries go to graft-wp13-hooks on the same workers.dev zone, which needs a public fetch.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "containers": [{ "class_name": "AgentRepo", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "./container/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "REPO", "class_name": "AgentRepo" }, { "name": "FEED", "class_name": "FeedMember" }] },
+  // M0-WP13: FeedMember stands in for the learner that holds feed polls (WP12 builds the real one).
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentRepo"] }, { "tag": "v2", "new_sqlite_classes": ["FeedMember"] }],
+  // M0-WP13: Code Mode's Dynamic Worker.
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,15 @@
+{
+  // M0-WP7 (B0-24) SSH front prototype (src/wp7/ssh.ts): three `SshFront` containers running OpenSSH and a cloudflared
+  // replica of the tunnel `graft-m0-ssh`, with `SshOutbound` as the containers' outbound handler.
+  // Secrets (set by run/wp7.ts deploy): M0_TOKEN, SSH_HOST_KEY, TUNNEL_TOKEN.
+  "name": "graft-m0-ssh",
+  "main": "../src/wp7/ssh.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "containers": [{ "class_name": "SshFront", "scheduling_policy": "durable_object",
+                   "images": { "front": { "dockerfile": "./front/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "FRONT", "class_name": "SshFront" }, { "name": "REGISTRY", "class_name": "Registry" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SshFront", "Registry"] }],
+  "observability": { "enabled": true }
+}

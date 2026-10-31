@@ -1,0 +1,14 @@
+{
+  // M0-WP16 L0-10 vault (src/wp16/vault.ts): its own bucket; reaches the install only over HTTPS.
+  "name": "graft-wp16-vault",
+  "main": "../src/wp16/vault.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // Same-account workers.dev fetches fail with error 1042 unless fetch goes out over the public internet, as a vault
+  // in another account would (b0-22/wrangler.jsonc uses the same flag).
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "vars": { "PROV_URL": "https://graft-wp16-prov.<workers-subdomain>.workers.dev" },
+  "r2_buckets": [{ "binding": "VAULT", "bucket_name": "graft-wp16-vault" }],
+  "observability": { "enabled": true }
+}

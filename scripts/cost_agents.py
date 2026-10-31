@@ -13,7 +13,8 @@ for path sets and provenance, the hot-group log archive and stored `.idx` files,
 activity feed's long-poll hold time, and the agents account. Lease commands, task rows, and feed requests grow the
 base's own lines. Sandbox compute and model tokens for Graftyard-run agents are priced in a separate table outside
 the comparison with the base, which excludes runner compute. Every per-operation constant here is a [guess] until
-Milestone 0 measures it.
+Milestone 0 measures it, except those tagged [measured]: PREDICT_VCPU_S, PART_VCPU_S, META_DISK, SMALL_ROW_DISK, and
+the git CPU constants taken from `scripts/cost.py`.
 
 Push rates (AG-ACT-22). Every monthly line, the fan-out sizing included, uses 5 pushes per task. Journey A1's push
 every 2 minutes (10 per task) is a separate peak case printed by `--a1`. One clone-cache miss model serves CPU, egress,
@@ -82,8 +83,14 @@ PACK_COPIES = 3 + 1        # three site buckets plus the vault's locked copy
 FOLD_ROWS_PER_PUSH = 2     # one PathSet row and one provenance row per agent push, per member [guess]
 MEMBERS = 3
 PUSH_GC_DAYS = 14          # agent branch bytes kept until GC drops them after merge or close
+PREDICT_MEAN_PAIRS = 1.80  # path-overlapping pairs per head push on a real fleet's pushes: 5,637 pairs for 3,134 pushes
+                           # [measured, tests/m0/results/m0-wp16.md, L0-05]; the second warm site is sized for these
+PREDICT_CPU = 0.5          # compiled share of the second warm site's shard vCPU the predictor may use
 PREDICT_PAIRS = 8          # the compiled budget of path-overlapping open PRs per head push, priced in full
-PREDICT_VCPU_S = cf.MERGE_VCPU_S   # one merge-tree priced at the base's merge constant, not candidate C's 0.2
+PREDICT_VCPU_S = 0.37      # one predicted pair: land the head on its base, then merge-tree against the other ref, more
+                           # than one test merge [measured, tests/m0/results/m0-wp16.md, L0-05: one predicted pair on
+                           # torvalds/linux costs 0.37 vCPU-s, 8,449 container CPU-s over 23,013 pairs in the padded
+                           # L0-06 run]
 CACHE_DAYS = 1             # an agent-tip clone-cache entry lives a day under an R2 lifecycle rule [guess]
 DYN_INCLUDED = 1000        # unique Dynamic Workers per month included
 CODEMODE_CALLS = MCP_CALLS  # opt-in Code Mode: every tool call is a search() or execute(), each a new Dynamic Worker
@@ -122,6 +129,9 @@ PEAK = 2                   # peak concurrency over the working-day average [gues
 HOT_SHARE = 1.0            # share of peak agents on the install's largest network; at 2,000 developers this is A1 [guess]
 A1_MERGES_PER_MIN = 10     # merge-queue merges on the A1 monorepo, scaled by developers at smaller tiers [guess]
 FANOUT_TARGET = 0.75       # share of the most loaded shard's vCPU that fan-out plans to use
+PART_VCPU_S = 0.5          # one composed-miss part per tip move, built once per network by the shard that took the merge:
+                           # 0.3 to 0.8 CPU-s a part, 2 to 2.3 for a 400 to 650 object move, about 0.5 at the mean
+                           # [measured, tests/m0/results/m0-wp9.md, B0-34, third pass]
 TEST_MERGE_BUDGET = 0.25   # compiled share of the k shards' vCPU that test merges may use (AG-ACT-13)
 FANOUT_MAX = 8
 WARM_SITES = 2
@@ -140,6 +150,10 @@ PATHSET_KB = 16            # live `PathSet` per open agent PR or ref; deleted wh
 BASE_META_GB = 4           # the base's largest-repository metadata tier (`design/DESIGN.md`, Scale) [guess]
 CHILD_GROUP_AT_GB = 8      # `CHILD_GROUP_AT`, 8 GiB of member SQLite bytes, at which the metadata tier moves to a child
                            # group (base Milestone 7, FX-11); every GB figure here is GiB
+META_DISK = 1.16           # SQLite bytes on disk per row byte of the metadata tier: 3.93 GB of rows took 4.57 GB
+                           # [measured, tests/m0/results/m0-wp9.md, B0-30]
+SMALL_ROW_DISK = 1.4       # the same for small agent rows (PR, check, provenance, task): 1.27 GB of rows took about
+                           # 1.8 GB [measured, tests/m0/results/m0-wp9.md, B0-30]
 
 # ---- admission and rate limits (AG-ACT-11, AG-ACT-16) ----
 GATE_CMDS = 300            # base Milestone 0 group-commit gate, commands/s
@@ -226,6 +240,8 @@ def shard_vcpu(agents, merges_per_min, pushes_per_task):
 		"agent CI clone-cache misses": turnover * CI_JOBS * (1 - AGENT_CI_HIT) * cf.CI_MISS_VCPU_S,
 		"agent clone misses": turnover * CLONES * (1 - CLONE_HIT) * cf.CI_MISS_VCPU_S,
 		"merge-queue merges": merges_per_min / 60 * cf.MERGE_VCPU_S,
+		"composed-miss base renewal": merges_per_min / 60 / cf.BASE_RENEW_EVERY * cf.BASE_RENEW_VCPU_S,
+		"composed-miss part builds": merges_per_min / 60 * PART_VCPU_S,
 	}
 
 
@@ -252,9 +268,19 @@ def hot_network(tier, pushes_per_task=PUSHES):
 	vl = shard_vcpu(agents, merges, pushes_per_task)
 	name, vcpu, per = instance_month(tier)
 	k = fanout(vl, vcpu)
-	extra = (k - 1) * WARM_SITES
-	return dict(agents=agents, load=sum(vl.values()), vl=vl, instance=name, vcpu=vcpu, k=k, extra=extra, per=per,
+	# The second warm site also runs the predictor, so it takes the larger of k and the shards the measured mean
+	# overlap needs under PREDICT_CPU. One shard saturated at A1's rate (p95 364 s against L0-05's 30 s).
+	k2 = max(k, predict_k(agents, vcpu, pushes_per_task))
+	extra = (k - 1) + (k2 - 1)
+	return dict(agents=agents, load=sum(vl.values()), vl=vl, instance=name, vcpu=vcpu, k=k, k2=k2, extra=extra, per=per,
 		cost=extra * per)
+
+
+def predict_k(agents, vcpu, pushes_per_task=PUSHES):
+	"""Shards on the second warm site that the predictor needs at the measured mean overlap, under PREDICT_CPU."""
+	pushes = agents / (TASK_MIN * 60) * pushes_per_task
+	demand = pushes * PREDICT_MEAN_PAIRS * PREDICT_VCPU_S
+	return min(FANOUT_MAX, max(1, math.ceil(demand / (PREDICT_CPU * vcpu))))
 
 
 def hot_storage(tier):
@@ -402,7 +428,9 @@ def a1_rates():
 	per = instance_month("large")[2]
 	budget = TEST_MERGE_BUDGET * k * 4
 	predict = pushes * PREDICT_PAIRS * PREDICT_VCPU_S
-	cap = 0.5 * k * 4
+	predict_mean = pushes * PREDICT_MEAN_PAIRS * PREDICT_VCPU_S
+	k2 = max(k, predict_k(agents, 4, per_task))
+	cap = PREDICT_CPU * k2 * 4
 	per_agent = agent / agents
 	admitted = AGENT_SHARE * GATE_CMDS
 	print("| A1 quantity | Value |")
@@ -425,16 +453,18 @@ def a1_rates():
 		f"{agents * LEASES_PER_TASK * LEASE_ROW_B / 2**20:.2f} MB per member; feed ring "
 		f"{FEED_RING * FEED_EVENT_B / 2**20:.1f} MB |")
 	print(f"| Inline bytes, 40 KB average | {pushes * 40 / 1024:.2f} MB/s against 15 MB/s at 10 entries/s |")
-	print(f"| Inline bytes, every push 1 MiB | {pushes:.2f} MB/s against 15 MB/s enam, 9 MB/s apac |")
+	print(f"| Inline bytes, every push 1 MiB | {pushes:.2f} MB/s against 2.0 MB/s measured from an apac leader (one 1 MiB "
+		f"pack per entry, round p50 0.55 s to enam) |")
 	print(f"| Git cache vCPU for the network | {load:.2f} ({', '.join(f'{n} {v:.2f}' for n, v in vl.items())}) |")
 	print(f"| fanout k per warm site (standard-4) | {k}, {k * 4} vCPU, {load / (k * 4):.0%} used; test-merge budget "
-		f"{budget:.0f} vCPU for {vl['test merge per head push']:.2f} of head-push merges; {(k - 1) * WARM_SITES} extra "
-		f"warm shards, ${(k - 1) * WARM_SITES * per:,.0f} a month if held; the monthly sizing at {PUSHES} pushes a task "
+		f"{budget:.0f} vCPU for {vl['test merge per head push']:.2f} of head-push merges; {(k - 1) + (k2 - 1)} extra "
+		f"warm shards with the predictor's k = {k2} on the second site, ${((k - 1) + (k2 - 1)) * per:,.0f} a month if held; the monthly sizing at {PUSHES} pushes a task "
 		f"gives k = {monthly_k} |")
 	print(f"| Hot pool per site | {cf.shards('large')['hot_pool']} instances; reserved vCPU at 2,000 developers "
 		f"{cf.shards('large')['reserved_vcpu']:,.1f} of 1,500 |")
-	print(f"| Conflict predictor demand on the second warm site | {predict:.1f} vCPU at {PREDICT_PAIRS} pairs against a "
-		f"cap of {cap:.0f} ({min(1, cap / predict):.0%} of pairs at peak) |")
+	print(f"| Conflict predictor demand on the second warm site | {predict_mean:.1f} vCPU at the measured "
+		f"{PREDICT_MEAN_PAIRS} pairs a push, so k = {k2} there, cap {cap:.0f} vCPU; {predict:.1f} vCPU if every push used all "
+		f"{PREDICT_PAIRS} pairs ({min(1, cap / predict):.0%} of pairs at peak) |")
 	print(f"| Eager test-merge recompute on every base move (500 PRs, 10 moves/min) | "
 		f"{agents * A1_MERGES_PER_MIN / 60 * cf.MERGE_VCPU_S:.0f} vCPU |")
 	gets = agents / 30 * cf.MERGE_VCPU_S
@@ -457,27 +487,29 @@ def a1_rates():
 	pushes30 = tasks30 * per_task
 	cmds_per_task = agent / turnover
 	log_gb = (pushes30 * cf.ACTIVITY["inline_push_kb"] * 1024 + tasks30 * (cmds_per_task - per_task) * CMD_BYTES) / 2**30
-	rows_gb = (tasks30 * PRS * PR_ROW_KB * 1024 + pushes30 * CHECK_WRITES_PER_PUSH * CHECK_ROW_B
-		+ tasks30 * CI_JOBS * CHECK_ROW_B + pushes30 * PROV_ROW_B + tasks30 * TASK_API_SHARE * TASK_ROW_B
-		+ agents * (PATHSET_KB * 1024 + LEASES_PER_TASK * LEASE_ROW_B) + FEED_RING * FEED_EVENT_B) / 2**30
+	# Row bytes on disk: SMALL_ROW_DISK for the small agent rows, META_DISK for the metadata tier (B0-30).
+	live_gb = (agents * (PATHSET_KB * 1024 + LEASES_PER_TASK * LEASE_ROW_B) + FEED_RING * FEED_EVENT_B) / 2**30
+	monthly_growth = SMALL_ROW_DISK * (tasks30 * PRS * PR_ROW_KB * 1024 + pushes30 * PROV_ROW_B
+		+ tasks30 * TASK_API_SHARE * TASK_ROW_B) / 2**30
+	checks_month = SMALL_ROW_DISK * (pushes30 * CHECK_WRITES_PER_PUSH + tasks30 * CI_JOBS) * CHECK_ROW_B / 2**30
+	rows_gb = monthly_growth + checks_month + live_gb
+	meta_gb = BASE_META_GB * META_DISK
 	kept = min(log_gb, LOG_MAX_GB)
-	monthly_growth = (tasks30 * PRS * PR_ROW_KB * 1024 + pushes30 * PROV_ROW_B + tasks30 * TASK_API_SHARE * TASK_ROW_B) / 2**30
-	checks_month = (pushes30 * CHECK_WRITES_PER_PUSH + tasks30 * CI_JOBS) * CHECK_ROW_B / 2**30
 	checks_steady = checks_month * 3
 	# FX-11 and FX-26: CHILD_GROUP_AT is member bytes, so the clock runs on the whole member: tier, full log, live rows,
 	# check rows that fill for 90 days, and growth.
-	fixed = BASE_META_GB + LOG_MAX_GB + (agents * (PATHSET_KB * 1024 + LEASES_PER_TASK * LEASE_ROW_B)
-		+ FEED_RING * FEED_EVENT_B) / 2**30
+	fixed = meta_gb + LOG_MAX_GB + live_gb
 	months = (CHILD_GROUP_AT_GB - fixed) / (checks_month + monthly_growth)
 	if months > 3:
 		months = (CHILD_GROUP_AT_GB - fixed - checks_steady) / monthly_growth
 	print(f"| Member bytes after 30 days of A1 on a group seeded with the base's {BASE_META_GB} GB metadata tier | "
-		f"{BASE_META_GB + kept + rows_gb:.1f} GB: the tier, log {kept:.1f} GB at LOG_MAX_BYTES ({log_gb:.0f} GB "
-		f"uncapped, the rest archived), agent rows {rows_gb:.2f} GB |")
+		f"{meta_gb + kept + rows_gb:.2f} GB on disk: the tier {meta_gb:.2f} GB, log {kept:.1f} GB at LOG_MAX_BYTES "
+		f"({log_gb:.0f} GB uncapped, the rest archived), agent rows {rows_gb:.2f} GB; growing "
+		f"{(checks_month + monthly_growth) / 30:.3f} GB a day |")
 	print(f"| Member bytes of the A1 monorepo against CHILD_GROUP_AT | {fixed:.1f} GB fixed (tier, full log, live rows), "
 		f"plus {checks_month:.2f} GB a month of check runs and statuses for 90 days (then steady at "
 		f"{checks_steady:.1f} GB) and {monthly_growth:.2f} GB a month of PRs, provenance, and tasks; "
-		f"{CHILD_GROUP_AT_GB} GiB of member bytes in about {months:.1f} months |")
+		f"{CHILD_GROUP_AT_GB} GiB of member bytes in about {months:.1f} months ({months * 30:.0f} days) |")
 
 
 def main():

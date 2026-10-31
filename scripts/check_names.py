@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PATTERNS = re.compile(r"t[r]ibutary|(?<![\w-])t[r]ib-|(?<=\w)\.t[r]ib\b|t[r]mcp_", re.I)
 ALLOWED = re.compile(r"formerly called [T]ributary")
 ALLOWED_FILES = {"README.md", "FRAME.md"}
-SKIPPED = {"history", "__pycache__", ".git"}
+SKIPPED = {"history", "__pycache__", ".git", "node_modules", ".wrangler"}
 
 
 def files():

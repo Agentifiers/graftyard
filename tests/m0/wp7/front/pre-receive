@@ -1,0 +1,13 @@
+#!/bin/sh
+# The write: every ref update goes to the group stand-in through the outbound handler (`group.graft`), and git accepts
+# the push only if the group answers 200 after it committed. Packs stay on this replica (modeled; see results/m0-wp7.md).
+updates=$(cat)
+resp=$(printf '%s' "$updates" | curl -sS --max-time 20 -w '\n%{http_code}' -X POST \
+  -H "x-graft-key: $GRAFT_KEY_FP" -H "x-graft-front: $(cat /etc/graft-front)" \
+  --data-binary @- http://group.graft/commit 2>&1)
+code=$(printf '%s' "$resp" | tail -1)
+if [ "$code" != 200 ]; then
+  echo "graft: group refused or unreachable ($code): $(printf '%s' "$resp" | head -1)" >&2
+  exit 1
+fi
+echo "graft: committed $(printf '%s' "$resp" | head -1)" >&2

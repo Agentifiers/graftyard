@@ -1,0 +1,15 @@
+{
+  // M0-WP14 (L0-02) stand-in Graftyard host (src/wp14/host.ts): git smart HTTP through a container (wp14/host), plus
+  // permissive REST, gist, GraphQL, and status surfaces. `Hits` counts every arrival.
+  // Secrets (set by run/wp14.ts deploy): M0_TOKEN, AGENT_TOKEN, WORKSPACE_TOKEN.
+  "name": "graft-wp14-host",
+  "main": "../src/wp14/host.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "containers": [{ "class_name": "HostRepo", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "./host/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "HOSTREPO", "class_name": "HostRepo" }, { "name": "HITS", "class_name": "Hits" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["HostRepo", "Hits"] }],
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,12 @@
+{
+  // B0-11's chaos loop as an alarm (src/chaos.ts), so resets and transfers continue while the orb sleeps.
+  // Its own script: it only calls graft-raft-edge's public routes and never deploys or binds graft-raft-*.
+  "name": "graft-m0-chaos",
+  "main": "../src/chaos.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "CHAOS", "class_name": "ChaosDriver" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ChaosDriver"] }],
+  "observability": { "enabled": true }
+}

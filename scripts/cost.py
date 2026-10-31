@@ -4,10 +4,12 @@
 Usage:
 	python3 scripts/cost.py                       # summary for every tier and variant, shard counts, egress split
 	python3 scripts/cost.py --detail large design
+	python3 scripts/cost.py --ssh-option            # what the opt-in cloudflared SSH option adds on Pro and Business
 
 Workload comes from scripts/cost_model.py (TIERS, ACTIVITY). Prices are the cf.* entries in research/prices.json.
 Every per-operation constant below (requests per git operation, CPU ms, rows per entry, container sizes, hit rates,
-working sets, leader split, site-loss rate) is a [guess] until Milestone 0 measures it. Excluded, as in
+working sets, leader split, site-loss rate) is a [guess] until Milestone 0 measures it, except the git CPU constants
+tagged [measured]. Excluded, as in
 scripts/cost_model.py: Actions runner compute, the vendor fee, and tax. Also excluded: any Enterprise contract, which
 has no list price. Managed cells and any install that accepts pushes over 200 MB need one on top of these figures.
 The plan line uses Pro or Business list.
@@ -47,9 +49,31 @@ FOLD_ROWS = 6                      # fold rows written per entry per member, plu
 LEASE_MISS = 0.25                  # share of reads that find the leader lease expired and pay one read-index RPC
 WALL_S = dict(read=0.005, commit=0.12, append=0.005, lease=0.07)
 CI_HIT = 0.7                       # clone-cache hit rate: about 3.75 CI checkouts per pushed SHA, the first one misses
-CI_MISS_VCPU_S, PUSH_VCPU_S, FETCH_VCPU_S, MERGE_VCPU_S = 1.0, 0.5, 0.3, 1.5
+# Git CPU per operation. Measured on torvalds/linux (6.4 GiB pack, 12.0 million objects) in M0-WP9, B0-34.
+MERGE_VCPU_S = 0.05                # merge-tree test or queue merge: p50 5 to 45 ms by base age, pulls 28 ms, p99 at
+                                   # most 338 ms [measured, tests/m0/results/m0-wp9.md, B0-34]
+PUSH_VCPU_S = 0.2                  # receive side of a one-commit push, index-pack plus connectivity: 0.14 s on 8 vCPU,
+                                   # 0.20 s in a standard-4 [measured, tests/m0/results/m0-wp9.md, B0-34]
+CI_MISS_VCPU_S = 0.75              # composed depth-1 clone-cache miss: the tip's cached depth-1 pack plus a pack of the
+                                   # wanted commit's missing objects, 0.72 to 0.74 s [measured, tests/m0/results/m0-wp9.md,
+                                   # B0-34]
+BASE_RENEW_EVERY = 20              # the composed base is rebuilt once per 20 moves of the network's default tip; a tip
+                                   # move is a pull request merge (w["merges"])
+BASE_RENEW_VCPU_S = 45             # one stock depth-1 build of a 6 GB network, 25 to 46 s [measured,
+                                   # tests/m0/results/m0-wp9.md, B0-34]. TIERS has no repository size per tier, so every
+                                   # network is priced as the 6 GB one, an upper bound
+FETCH_VCPU_S = 0.3
 REPACK_VCPU_S_PER_GB = 30
-SSH_SHARE = 0.2                    # share of developer git bytes over SSH (Spectrum)
+SSH_SHARE = 0.2                    # share of developer git bytes over SSH (Spectrum), on plans in SSH_PLANS
+SSH_PLANS = ()                     # SSH needs Enterprise for BYOC: Spectrum refuses a Tunnel origin on Pro [measured,
+                                   # tests/m0/results/m0-wp7.md, B0-24], Business until measured [unverified]. No
+                                   # tier here is on Enterprise, so the default tiers are HTTPS only: no SSH fronts, bytes or fee
+SSH_OPTION_PLANS = ("cf.plan.pro.monthly", "cf.plan.business.monthly")  # the opt-in SSH option: a Tunnel public
+                                   # hostname of type ssh, reached by `cloudflared access ssh` (FRAME.md, "Operator
+                                   # decision, 2026-10-31, SSH ingress"). Off by default, so the default totals exclude
+                                   # it; --ssh-option prices it. Tunnel bytes are not billed and Spectrum is not in the
+                                   # path, so it adds the SSH fronts and the SSH bytes crossing them (container egress)
+SSH_OPTION = False                 # set by --ssh-option only
 PLAN = {"small": "cf.plan.pro.monthly", "medium": "cf.plan.business.monthly", "large": "cf.plan.business.monthly"}
 VARIANTS = ("design", "separate", "solo", "artifacts")
 
@@ -63,9 +87,16 @@ SCRATCH_GB = 4                     # disk per shard kept free for index-pack, re
 WARM_COPIES = 2                    # each network is warm on its home site and one more
 SSH_CONTAINERS = (3, 0.25, 1, 4)   # basic instances running sshd and cloudflared replicas, one per site
 ACCOUNT_VCPU = 1500                # Containers default account limit
-# Hot pool (FX-11): reserved per site in the shard class's `max_instances` at every tier, so it uses the tier's
-# instance size. Expected hot networks [guess 1] times FANOUT_MAX - 1. Reserved, not warm, so it bills nothing idle.
+# Hot pool (FX-11): counted in each site's shard start cap at every tier, so it uses the tier's
+# instance size. Expected hot networks [guess 1] times FANOUT_MAX - 1.
 HOT_POOL_PER_SITE = 1 * (8 - 1)
+# Idle pool shards keep the site's hot networks warm, so a step up in k needs no rehydrate (B0-34, r8: about 290 s from
+# saturation to k = 2 serving when cold). The pool is warm only for networks hot in the last hour, so it runs the
+# working day plus that hour [guess], on the expected hot network's two warm sites (one for solo). Only the 2,000-developer
+# tier has a hot network: at 50 and 300 developers the largest network's git CPU, 0.05 and 0.32 vCPU in
+# `scripts/cost_agents.py`, never reaches `fanout`'s up line, so the pool there stays reserved and bills nothing.
+HOT_POOL_WARM_TIERS = ("large",)
+HOT_POOL_WARM_HOURS = 8 + 1
 
 # ---- container egress by site region and leader split (CF-ACT-13) ----
 # Fetch, clone-cache miss, repack upload, and SSH bytes leave the container on the network's leader site, which is
@@ -79,7 +110,7 @@ LEADER_SPLIT = {"A": 0.5, "B": 0.3, "C": 0.2}                   # an NA-heavy in
 APAC_LED = {"A": 0.15, "B": 0.05, "C": 0.8}                     # sensitivity: an install whose owners sit in APAC
 
 # ---- Spectrum, spare sites, ReplaceMember, vault, runner account (CF-ACT-7, 10, 12, 13) ----
-SPECTRUM_ADDON_USD = 0.0           # [unverified] the Pro and Business "Paid add-on" fee: no list price found
+SPECTRUM_ADDON_USD = 0.0           # [unverified] the Spectrum "Paid add-on" fee: no list price found; Enterprise only
 SPARE_SITES = 3                    # eeur, wnam, oc: script and empty bucket, no members and no containers
 CANARY_PER_HOUR = 6                # readiness canary put and get per spare bucket
 SITE_LOSS_PER_YEAR = 1             # `ReplaceMember` runs (signed SiteLost or 24 h of zero acks) [guess]
@@ -130,18 +161,33 @@ def workload(tier):
 	return t, w
 
 
+def ssh_share(tier):
+	"""Share of developer git bytes over SSH: zero on plans where SSH cannot run (SSH_PLANS)."""
+	return SSH_SHARE if PLAN[tier] in SSH_PLANS else 0
+
+
+def ssh_option(tier):
+	"""True when the opt-in cloudflared SSH option is priced for this tier's plan."""
+	return SSH_OPTION and PLAN[tier] in SSH_OPTION_PLANS
+
+
+def ssh_fronts(tier):
+	"""SSH front containers (sshd and cloudflared, one per site), on plans in SSH_PLANS or with the SSH option."""
+	return SSH_CONTAINERS[0] if PLAN[tier] in SSH_PLANS or ssh_option(tier) else 0
+
+
 def shards(tier):
 	"""Git cache shards: one warm copy of the daily working set, and what any two sites reserve."""
 	t = TIERS[tier]
 	name, vcpu, gib, disk = INSTANCE[tier]
 	working_set_gb = t["git_gb"] * WORKING_SET[tier]
 	n = max(1, math.ceil(working_set_gb / (disk - SCRATCH_GB)))
-	# max_instances per site is n plus the hot pool, so any two sites can hold both warm copies of every network after a
+	# The start cap per site is n plus the hot pool, so any two sites can hold both warm copies of every network after a
 	# site loss, and fan-out draws on the pool with no site day.
 	max_per_site = n + HOT_POOL_PER_SITE
-	reserved_vcpu = len(SITES) * max_per_site * vcpu + SSH_CONTAINERS[0] * SSH_CONTAINERS[1]
+	reserved_vcpu = len(SITES) * max_per_site * vcpu + ssh_fronts(tier) * SSH_CONTAINERS[1]
 	return dict(instance=name, vcpu=vcpu, gib=gib, disk=disk, working_set_gb=working_set_gb, shards=n,
-		warm=n * WARM_COPIES, hot_pool=HOT_POOL_PER_SITE, max_instances_per_site=max_per_site,
+		warm=n * WARM_COPIES, hot_pool=HOT_POOL_PER_SITE, start_cap_per_site=max_per_site,
 		reserved_vcpu=reserved_vcpu, alarm_vcpu=0.7 * ACCOUNT_VCPU)
 
 
@@ -230,26 +276,33 @@ def model(tier, variant="design", split=None):
 	if variant != "artifacts":
 		s = shards(tier)
 		n = s["shards"] if variant == "solo" else s["warm"]
-		mem_gibs = n * s["gib"] * SECONDS + SSH_CONTAINERS[0] * SSH_CONTAINERS[2] * SECONDS
-		disk_gbs = n * s["disk"] * SECONDS + SSH_CONTAINERS[0] * SSH_CONTAINERS[3] * SECONDS
+		mem_gibs = n * s["gib"] * SECONDS + ssh_fronts(tier) * SSH_CONTAINERS[2] * SECONDS
+		disk_gbs = n * s["disk"] * SECONDS + ssh_fronts(tier) * SSH_CONTAINERS[3] * SECONDS
 		repack_gb = t["git_gb"] * ACTIVITY["large_repo_share"] * 4.3
 		vcpu_s = (w["pushes"] * PUSH_VCPU_S + w["fetches"] * FETCH_VCPU_S + w["jobs"] * (1 - CI_HIT) * CI_MISS_VCPU_S
-			+ w["merges"] * MERGE_VCPU_S + repack_gb * REPACK_VCPU_S_PER_GB)
+			+ w["merges"] * (MERGE_VCPU_S + BASE_RENEW_VCPU_S / BASE_RENEW_EVERY) + repack_gb * REPACK_VCPU_S_PER_GB)
 		# Developer fetches and clone-cache misses leave a container once (the Worker tees a miss to R2 and the first
 		# client). Pushed packs never leave a container: the Worker tees the request body to two buckets while the
 		# container only reads it to validate. Repacks upload one copy per pack site. SSH bytes cross the SSH front.
 		egress_gb = (w["dev_gb"] + w["ci_gb"] * (1 - CI_HIT) + repack_gb * min(copies, 2)
-			+ (w["dev_gb"] + w["push_gb"]) * SSH_SHARE)
+			+ (w["dev_gb"] + w["push_gb"]) * (SSH_SHARE if ssh_option(tier) else ssh_share(tier)))
 		site_split = {"A": 1.0} if variant == "solo" else split
 		lines["Containers memory (provisioned)"] = over(mem_gibs, INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
 		lines["Containers vCPU (active)"] = over(vcpu_s, INCLUDED["c_vcpu_s"] * site_inc) * price("cf.containers.vcpu")
 		lines["Containers disk (provisioned)"] = over(disk_gbs, INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk")
 		lines["Containers egress by site region and leader split"] = egress_cost(egress_gb, site_split, site_inc)
+		# Hot pool kept warm in working hours, priced above the warm shards' memory and disk and their allowances.
+		pool = HOT_POOL_PER_SITE * (1 if variant == "solo" else WARM_COPIES) if tier in HOT_POOL_WARM_TIERS else 0
+		pool_s = pool * HOT_POOL_WARM_HOURS / 24 * SECONDS
+		added = lambda base, extra, inc: over(base + extra, inc) - over(base, inc)
+		lines["Containers: hot pool kept warm for hot networks, working hours"] = (
+			added(mem_gibs, pool_s * s["gib"], INCLUDED["c_mem_gibs"] * site_inc) * price("cf.containers.memory")
+			+ added(disk_gbs, pool_s * s["disk"], INCLUDED["c_disk_gbs"] * site_inc) * price("cf.containers.disk"))
 
-	ssh_gb = (w["dev_gb"] + w["push_gb"]) * SSH_SHARE
+	ssh_gb = (w["dev_gb"] + w["push_gb"]) * ssh_share(tier)
 	ssh_inc = 5 if PLAN[tier] == "cf.plan.pro.monthly" else 10
 	lines["Spectrum SSH data"] = over(ssh_gb, ssh_inc) * price("cf.spectrum.ssh.overage")
-	lines["Spectrum SSH add-on fee [unverified, no list price found]"] = SPECTRUM_ADDON_USD
+	lines["Spectrum SSH add-on fee [unverified, no list price found]"] = SPECTRUM_ADDON_USD if PLAN[tier] in SSH_PLANS else 0
 	lines["Queues (webhooks, notifications, indexing)"] = over(queue_msgs * 3, INCLUDED["queues"]) / 1e6 * price("cf.queues.operations")
 	lines["Email Sending"] = over(w["emails"], INCLUDED["email"]) / 1000 * price("cf.email.sending")
 	lines["Analytics Engine (per-repo counters, SLO points)"] = over(w["reads"] + w["entries"], INCLUDED["ae"]) / 1e6 * price(
@@ -303,13 +356,13 @@ def summary():
 			devs = TIERS[tier]["devs"]
 			print(f"| {devs:,} | {variant} | {money(total)} | {money(total / devs)} |")
 	print()
-	print("| Developers | Working set | Instance | Shards | Warm instances | Hot pool per site | max_instances per site "
+	print("| Developers | Working set | Instance | Shards | Warm instances | Hot pool per site | Start cap per site "
 		"| Reserved vCPU |")
 	print("| --- | --- | --- | --- | --- | --- | --- | --- |")
 	for tier in TIERS:
 		s = shards(tier)
 		print(f"| {TIERS[tier]['devs']:,} | {s['working_set_gb']:,.0f} GB | {s['instance']} | {s['shards']} | {s['warm']} "
-			f"| {s['hot_pool']} | {s['max_instances_per_site']} | {s['reserved_vcpu']:,.1f} of {ACCOUNT_VCPU:,}, "
+			f"| {s['hot_pool']} | {s['start_cap_per_site']} | {s['reserved_vcpu']:,.1f} of {ACCOUNT_VCPU:,}, "
 			f"{ACCOUNT_VCPU / s['reserved_vcpu']:.1f}x (alarm at {s['alarm_vcpu']:,.0f}) |")
 	print()
 	print("| Developers | Container egress, NA-heavy split | Container egress, APAC-led split | Default total, APAC-led |")
@@ -330,9 +383,32 @@ def detail(tier, variant):
 	print(f"| Total | {money(total)} | 100% |")
 
 
+def ssh_option_report():
+	"""What turning on the cloudflared SSH option adds to the default install, per tier, without changing the defaults."""
+	global SSH_OPTION
+	print("| Developers | Plan | Default | With the SSH option | Added | Of which SSH front containers | Of which egress |")
+	print("| --- | --- | --- | --- | --- | --- | --- |")
+	keys = ("Containers memory (provisioned)", "Containers disk (provisioned)", "Containers vCPU (active)")
+	egress = "Containers egress by site region and leader split"
+	for tier in TIERS:
+		base = model(tier)
+		SSH_OPTION = True
+		try:
+			with_opt = model(tier)
+		finally:
+			SSH_OPTION = False
+		fronts = sum(with_opt[k] - base[k] for k in keys)
+		added = sum(with_opt.values()) - sum(base.values())
+		plan = PLAN[tier].split(".")[2].capitalize()
+		print(f"| {TIERS[tier]['devs']:,} | {plan} | {money(sum(base.values()))} | {money(sum(with_opt.values()))} "
+			f"| {money(added)} | {money(fronts)} | {money(with_opt[egress] - base[egress])} |")
+
+
 if __name__ == "__main__":
 	args = sys.argv[1:]
 	if args[:1] == ["--detail"]:
 		detail(args[1], args[2])
+	elif args[:1] == ["--ssh-option"]:
+		ssh_option_report()
 	else:
 		summary()

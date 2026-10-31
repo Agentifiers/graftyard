@@ -1,0 +1,16 @@
+{
+  "name": "graft-m0-rehydrate",
+  "main": "../src/rehydrate.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // B0-23's load route fetches this script's own public hostname, as a CI runner would.
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  // Under `durable_object` the instance size is a start() option (src/rehydrate.ts), not config.
+  "containers": [{ "class_name": "Shard", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "./Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "Shard" }] },
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "graft-m0-rehydrate" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Shard"] }],
+  "observability": { "enabled": true }
+}

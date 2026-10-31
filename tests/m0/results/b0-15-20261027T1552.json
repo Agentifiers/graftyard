@@ -1,0 +1,51 @@
+{
+  "run": "20261027T1552",
+  "window": [
+    "2026-10-27T16:37:06.211Z",
+    "2026-10-28T16:37:06.211Z"
+  ],
+  "groups": 100000,
+  "controls": 1000,
+  "usage": {
+    "member": {
+      "requests": 0,
+      "activeTimeS": 0,
+      "durationGBs": 0,
+      "cpuMs": 0,
+      "rowsWritten": 0
+    },
+    "control": {
+      "requests": 2949576,
+      "activeTimeS": 694835.502788,
+      "durationGBs": 88938.94435686398,
+      "cpuMs": 1180534.296,
+      "rowsWritten": 718912
+    },
+    "idle": {
+      "requests": 0,
+      "activeTimeS": 0,
+      "durationGBs": 0,
+      "cpuMs": 0,
+      "rowsWritten": 0
+    }
+  },
+  "idle": {
+    "reported": 300000,
+    "of": 300000,
+    "reportFailures": 0,
+    "rechecked": 0,
+    "neverJoined": 0,
+    "sample": []
+  },
+  "control": {
+    "reported": 3000,
+    "of": 3000,
+    "rechecksPerMember": {
+      "min": 24,
+      "p50": 25,
+      "max": 25
+    },
+    "withoutRecheck": 0
+  },
+  "verdict": "Pass"
+}

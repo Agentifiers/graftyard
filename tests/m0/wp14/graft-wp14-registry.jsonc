@@ -1,0 +1,11 @@
+{
+  // M0-WP14 (L0-02) stand-in target `graft-wp14-registry` (src/wp14/registry.ts). Its own script; `Hits` counts every arrival.
+  "name": "graft-wp14-registry",
+  "main": "../src/wp14/registry.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "HITS", "class_name": "Hits" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hits"] }],
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,20 @@
+#!/bin/sh
+# AuthorizedKeysCommand: ask the Tokens stand-in, through the outbound handler, which key holds this fingerprint.
+# sshd does not retry this command, so it retries here: tries of at most 5 s, 1 s apart, for up to 25 s, inside
+# LoginGraceTime 30. B0-24a saw one outbound call fail alone ("internal error") and the `tokens` object unreachable
+# for about 23 s (results/m0-wp7.md). 404 (unknown key) is final.
+[ "$1" = git ] || exit 0
+fp=$(printf %s "$2" | sed 's/+/%2B/g; s/\//%2F/g')
+end=$(( $(date +%s) + 25 ))
+i=0
+while [ "$(date +%s)" -lt "$end" ]; do
+  i=$((i + 1))
+  out=$(curl -sS --max-time 5 -w '\n%{http_code}' "http://tokens.graft/authorized?fp=$fp") && code=$(printf '%s' "$out" | tail -1) || code=000
+  case "$code" in
+    200) printf '%s\n' "$out" | sed '$d'; exit 0 ;;
+    404) exit 1 ;;
+  esac
+  echo "akc: try $i got $code" >&2
+  sleep 1
+done
+exit 1

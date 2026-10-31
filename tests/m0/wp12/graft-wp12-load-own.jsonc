@@ -1,0 +1,44 @@
+{
+  "name": "graft-wp12-load",
+  "main": "../src/wp12/load.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LOAD",
+        "class_name": "Load9"
+      },
+      {
+        "name": "FAULTS",
+        "class_name": "FaultControl"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "STAGE",
+      "bucket_name": "graft-wp12-stage"
+    },
+    {
+      "binding": "STAGE_C",
+      "bucket_name": "graft-wp12-stage"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Load9",
+        "FaultControl"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

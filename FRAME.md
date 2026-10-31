@@ -36,7 +36,7 @@ The quality attributes, in priority order:
 4. Latency of git operations and page loads.
 5. Cost and operational burden in each deployment mode.
 
-When two attributes conflict, the higher one wins. For example, every `Tri` write pays one intercontinental round trip, about 80 ms [guess], to buy RPO zero across regions (`design/DESIGN.md`, "Tradeoffs accepted").
+When two attributes conflict, the higher one wins. For example, every `Tri` write pays one intercontinental round trip, which Milestone 0 measured at p50 107 to 189 ms under load and about 450 to 700 ms of commit p99 [measured], to buy RPO zero across regions (`design/DESIGN.md`, "Tradeoffs accepted").
 
 ## Constraints
 
@@ -120,13 +120,51 @@ Answers 1, 3, 4, 5, 6, and 7 keep the run's default. Answer 2 overrides it. Othe
 | 2 | Are leases, a live who-is-working-on-what feed, and a task API must-haves for the first release? | No | Overridden: yes | Leases, the activity feed, and the task API ship in the agent layer's first release. The run reads "leases" to include the read side, the feed [inference]. They are grafted onto agent candidate A as chain state on the repository's group, not a rebase on candidate C (`decisions/DECISIONS.md`, "Leases and the task API are grafted onto A, not a rebase on C") |
 | 3 | Should agent pushes get CI without a human click by default? | No: `ci: Approve`, as on GitHub, with `AutoReadOnly` opt-in per repository | Default kept | A 500-agent fleet needs about 75 approvals a minute under the default, so a Graftyard-run agent relies on the test command its controller runs in the Sandbox before each push (`design/AGENT-LAYER.md`, "Journeys", A1) |
 | 4 | Should metadata child groups (base Milestone 7) move earlier so a 500-agent fleet can run on one repository at agent-layer launch? | No | Default kept | Fleets of that size on one repository wait for child groups at Milestone 7 (`design/AGENT-LAYER.md`, "Open questions and risks") |
-| 5 | Is a 25% test-merge budget acceptable? | Yes | Default kept | `TEST_MERGE_BUDGET` is 0.25. It sets 7 shards per warm site at a 500-agent fleet's peak, about $990 a month if held, and most `mergeable` polls return null under load (`design/AGENT-LAYER.md`, "Tradeoffs accepted") |
+| 5 | Is a 25% test-merge budget acceptable? | Yes | Default kept | `TEST_MERGE_BUDGET` is 0.25. With the git CPU Milestone 0 measured, test merges cost 0.21 vCPU at a 500-agent fleet's peak and set no extra warm shards, so `mergeable` polls get answers within the budget (`tests/m0/results/m0-wp9.md`, B0-34) (`design/AGENT-LAYER.md`, "Tradeoffs accepted") |
 | 6 | In managed mode, per-tenant App keys or per-tenant agents accounts? | Per-tenant App keys | Default kept | Managed starts with per-tenant App keys in one agents account per cell. Per-tenant accounts stay the upgrade path (`design/AGENT-LAYER.md`, "Alternatives considered") |
 | 7 | Keep SSH through Spectrum, or serve HTTPS only? | Keep SSH, subject to Milestone 0's Spectrum-to-Tunnel row on each plan | Default kept | SSH goes through Spectrum, Cloudflare Tunnel, and the SSH front container's outbound handler. Milestone 0's SSH row runs on Pro, Business, and Enterprise (`decisions/DECISIONS.md`, "SSH goes through Spectrum, Tunnel, and the container outbound handler") |
 
 "read all fixes. do one final pass at everything" became the final adversarial pass: three fresh reviewers, 43 findings, and 19 act-on items (`decisions/DECISIONS.md`, "Final pass"). The run reads "use for this" as "use poteto mode for this". The project is renamed Graftyard and delivered as one folder that implementing agents can build from. The Cloudflare design is the design of record, because every answer above is about it [inference].
 
 During the run the operator added, verbatim, "rename [...] directory to simply 'graftyard'". The elided part names the old working folder, and `history/FRAME.md` has the full sentence. The workspace was renamed to `graftyard/` the same day and restructured in place. The record that implementers do not need moved into `history/`, and nothing was deleted (`history/README.md`).
+
+**Note, 2026-10-31: answer 7's condition fired on Pro.** Milestone 0's Spectrum-to-Tunnel row (B0-24) ran on a Pro zone and failed its documented flip, "If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH needs Enterprise for BYOC". The Spectrum API rejected `virtual_network_id` as "unknown field" (10012, pay-as-you-go accounts are limited to `protocol`, `dns`, and `origin_direct`), and refused even a plain SSH app on port 22 with "The requested protocol is not available" (13002) [measured, `tests/m0/results/m0-wp7.md`]. The Tunnel and container half, through `cloudflared access ssh`, served 99.886% of 2,637 sessions over 2.2 h with a container killed every 10 minutes. Applying the flip executes the operator's own condition and does not reverse answer 7, whose text above is unchanged: SSH stays, on Enterprise only for BYOC, and Pro installs serve git over HTTPS only. Business is not run and is treated like Pro until a Business zone runs the row [unverified] (`decisions/DECISIONS.md`, "SSH goes through Spectrum, Tunnel, and the container outbound handler"). The operator then refined the answer ("Operator decision, 2026-10-31, SSH ingress"): Pro installs may turn on SSH through `cloudflared access ssh`.
+
+### Operator decision, 2026-10-28, commit latency
+
+> "ok, i approve. continue on."
+
+The operator approved keeping the three-site Raft base after Milestone 0 measured `Tri` commit p99 at 399 to 690 ms, over flip condition 1's 400 ms line. B0-01 now passes at a commit p99 of at most 600 ms and fails over 1 s, and flip condition 1's latency clause is 1 s. Durability outranks latency in the list above, so the base keeps RPO zero across regions (`decisions/DECISIONS.md`, "Keep `Tri` and gate commit p99 at 600 ms").
+
+### Operator decision, 2026-10-28, latency accepted
+
+> "just continue, latency is fine. continue the full build of the platform"
+
+Every Milestone 0 latency gate that rests on the cross-region round now uses the measured network: 600 ms commit p99 and 1 s learner read p99 (`decisions/DECISIONS.md`, "Measured latency is accepted, and the build continues"). The build continues past Milestone 0 by `build/BUILD-PLAN.md`.
+
+### Operator decision, 2026-10-28, B0-03 and B0-25
+
+> "both is fine"
+
+B0-03 passes at write and read RTO within 13 s at p99 (was 12 s) and B0-25 at 92% of pushes within three attempts (was 96%), the values Milestone 0 measured. Both fail lines are unchanged (`decisions/DECISIONS.md`, "B0-03 and B0-25 are restated to their measured values").
+
+### Operator decision, 2026-10-29, B0-19 and pushes over the plan limit
+
+> "let's skip b0-19. moving on." and, on the bare 413 for pushes over the plan limit, "sure, whatever you think is best"
+
+B0-19, container starts with every account API token revoked, is skipped, so C8 stays [unknown] and warm shards stay sized to carry a day without a new start. An HTTPS push over the plan's body limit gets Cloudflare's bare `HTTP 413`, which Graftyard cannot replace, and the install docs and the 413 runbook name SSH for large pushes (`decisions/DECISIONS.md`, "Pushes over the plan's body limit get Cloudflare's 413"). Since 2026-10-31 they name SSH on Enterprise, or on Pro and Business when the install has the `cloudflared` SSH option on, and otherwise Enterprise or splitting the push ("Operator decision, 2026-10-31, SSH ingress").
+
+### Operator decision, 2026-10-30, delegation
+
+> "Stop waiting on me besides for the pro account. Do everything else and make the decisions. You are the pro."
+
+The run now makes every Milestone 0 decision that does not need the Pro zone, and records each in `decisions/DECISIONS.md` with its evidence and flip condition. The operator's first use of this delegation decided four open items: the B0-07 gate counts groups active in the 50 s before a drain from the drain and other groups from their next request; B0-33's Human and merge-queue line is 1 s, as B0-01's fail line is; a PR with no recorded requester needs one more human approval; and agents may not write `refs/notes/ai` (`decisions/DECISIONS.md`, "Decisions under the operator's delegation, 2026-10-30"). Buying the Pro zone, or any paid add-on, still waits for the operator [inference].
+
+### Operator decision, 2026-10-31, SSH ingress
+
+> "ok. https by default. cloudflared as an option on pro for those who want it. ssh on enterprise. build to that"
+
+This refines agent-layer answer 7 after its condition fired on Pro (the note under the answer table); answer 7's text is unchanged. HTTPS is the default git transport on every plan. On Pro, and on Business by the same plan table [unverified], an install may turn on an SSH option, off by default: a Tunnel public hostname of type `ssh` that clients reach with `cloudflared access ssh` as their SSH `ProxyCommand`. On Enterprise, SSH is native, through Spectrum on port 22 to the Tunnel's virtual network. Both ingresses end at the same SSH front containers, `graft-sshd`, and `ssh_outbound`. The run reads "on pro" to include Business, which has the same Spectrum plan entry and was not run [inference]. The option's path is the one Milestone 0 measured at 99.886% of 2,637 sessions over 2.2 h with kills [measured, `tests/m0/results/m0-wp7.md`], and its gate is B0-24a (`decisions/DECISIONS.md`, "SSH goes through Spectrum, Tunnel, and the container outbound handler").
 
 ## Four Cloudflare questions still carry the run's defaults
 

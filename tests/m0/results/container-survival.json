@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-27T17:35:49Z",
+  "what": "Three durable_object-policy containers (enam, weur, apac hints) started on Worker version cced64d6 with image ...e1291814efbf and a 15-minute inactivity timeout; then version 2597e3ff deployed with a changed image (...ef77ccd54cfa); peeked 20 s later.",
+  "result": {
+    "enam": { "sameBootId": true, "runningImage": "e1291814efbf", "configuredImage": "ef77ccd54cfa" },
+    "weur": { "sameBootId": true, "runningImage": "e1291814efbf", "configuredImage": "ef77ccd54cfa" },
+    "apac": { "sameBootId": true, "runningImage": "e1291814efbf", "configuredImage": "ef77ccd54cfa" }
+  },
+  "reading": "A new Worker version with a new image map did not restart running containers, and each kept its startup image, as the image-management page says. The Durable Object was reset by the new version (it re-read images) while its container kept running."
+}

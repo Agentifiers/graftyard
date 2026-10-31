@@ -8,7 +8,7 @@ If this file disagrees with `design/DESIGN.md` or `design/AGENT-LAYER.md`, the d
 
 ## Operator decisions
 
-The operator wrote eight things that bind the design. Each quote below is verbatim from `history/FRAME.md`. Everything after a quote is the run's reading, and the reading is marked where the operator did not say it.
+The operator wrote eight things that bind the design during the design run, and two more during Milestone 0. Each quote from the run is verbatim from `history/FRAME.md`; the Milestone 0 quote is from the build conversation. Everything after a quote is the run's reading, and the reading is marked where the operator did not say it.
 
 ### Managed mode has one global public namespace (2026-10-24)
 
@@ -104,6 +104,52 @@ The operator wrote eight things that bind the design. Each quote below is verbat
 
 **Evidence.** `history/FRAME.md`, "Operator decision, 2026-10-26, agents answered and graftyard". `history/decisions.tsv` row 148. `history/plans/graftyard-plan.md`.
 
+### Keep `Tri` and gate commit p99 at 600 ms (2026-10-28)
+
+> "ok, i approve. continue on."
+
+The operator approved this proposal, made in the same conversation after Milestone 0's B0-01 results: keep the three-site Raft base, restate B0-01 to pass at a commit p99 of at most 600 ms and fail over 1 s, move flip condition 1's latency clause to 1 s, keep its linearizability clause, and keep one entry in flight.
+
+**Decision.** `Tri` stays the base. B0-01 passes at commit p99 at most 600 ms and fails over 1 s, and B0-02's latency half uses 600 ms. Flip condition 1 fires on any linearizability violation in the 48-hour run or a `Tri` commit p99 above 1 s.
+
+**Why.** Milestone 0 measured commit p99 at 399 to 690 ms over 23 runs, median 491 ms, set by the enam to weur round under load, not by the code. Neither a WebSocket transport nor pipelined entries brought it under 400 ms. Flipping to candidate 1 would buy latency, the fourth quality attribute, with RPO zero across regions, part of the second, and `FRAME.md` says the higher attribute wins. A push already spends seconds in transfer and `index-pack`, so 0.5 s of commit is a small share of it [inference].
+
+**Beat.** Candidate 1, which acknowledges in one region and still needs its standby-loss stall fixed. Pipelined entries, which cut p99 by 70 to 100 ms at depth 4 and were worse deeper, and which break the fold that `decide` and `verify` see.
+
+**Evidence.** `tests/m0/results/m0-wp2.md`, B0-01 and "Two levers tried for B0-01". `decisions/OPEN-QUESTIONS.md`, F2.
+
+**Flip.** User reports that writes feel slow, or an API-heavy workload where 0.5 s on every write blocks adoption, reopen candidate 1 or a regional `Na3` default for single-continent installs.
+
+### Measured latency is accepted, and the build continues (2026-10-28)
+
+> "just continue, latency is fine. continue the full build of the platform"
+
+**Decision.** The measured network latency of Milestone 0 is accepted for every latency gate built on the same commit or read-index round: B0-18 passes at learner read p99 at most 1 s (was 150 ms), and B0-29, B0-33, and LF-12 use a commit p99 of at most 600 ms (were 300, 150, and 300 ms), matching B0-01. B0-31 keeps its 1 s. Learners keep read-index; no follower lease is added.
+
+**Why.** Each of these gates assumed an 80 ms round [guess]. Milestone 0 measured that round at p50 107 to 189 ms and p99 283 to 473 ms under load, and a learner read is one such round to the leader (`tests/m0/results/m0-wp2.md`, B0-01 and B0-18). The previous entry kept the base on the same evidence.
+
+**Beat.** A follower lease for learners, which would answer without a round trip but moves stale-read risk onto clock drift for every learner, and counting only learners in the leader's region.
+
+**Evidence.** `tests/m0/results/m0-wp2.md`, B0-01 and B0-18.
+
+**Flip.** As the previous entry: user reports of slow reads on hot groups reopen the follower lease.
+
+### B0-03 and B0-25 are restated to their measured values (2026-10-28)
+
+> "both is fine"
+
+The operator approved restating both gates that sat at their pass lines, rather than shortening `ELECTION_AFTER` and `LEASE` or adding a third `commit` retry.
+
+**Decision.** B0-03 passes when a new leader commits and serves `fresh` within 13 s at p99 in both runs (was 12 s); its fail line stays over 60 s. B0-25 passes when at least 92% of pushes succeed within three attempts at 22% errors (was 96%); its fail line stays under 84%.
+
+**Why.** B0-03 measured 11.0 to 12.9 s over 26 runs with 0 failed operations, and the terms are fixed by `ELECTION_AFTER` (10 s), the 1 s deadline, and two rounds of 110 to 190 ms. B0-25 measured 92.3% to 98.7%, median 95%, over nine runs; the 96% was arithmetic that assumed independent call failures, and an injected write failure resets the member and fails every call in flight on it. Both fail lines are far away.
+
+**Beat.** Shortening `ELECTION_AFTER` and `LEASE` by about 1 s, which narrows the clock-drift margin behind every lease (F3). A third retry for `commit` only, which adds load during the very incident class the row models.
+
+**Evidence.** `tests/m0/results/m0-wp2.md`, B0-03 and B0-25.
+
+**Flip.** A B0-03 rerun over 13 s at p99, or a B0-25 run under 92% on the release code, reopens the timer change or the third retry.
+
 ### Four Cloudflare-design questions still carry the run's defaults
 
 These are not operator decisions. The run asked them on 2026-10-26 and adopted a default for each. The operator's numbered answers match the agent-layer list in content, so these four stay unanswered [inference].
@@ -161,17 +207,17 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Beat.** Cloudflare arena candidate 1, one Durable Object per aggregate with a Paired standby and an R2 placement register. The judge found it stalls every Paired object when its standby's region is lost, and the review panel found that with the fix it still acknowledges on one region's copy after any failover. Scores were 38 lead and 35.5 judge for candidate 1, 24 and 22.5 for candidate 2 (Artifacts), and 37.5 and 41.5 for candidate 3, the pick. A write-once quorum on three R2 buckets also lost, because both 2025 R2 incidents failed 100% of writes globally.
 
-**Cost accepted.** The team owns a Raft implementation with leases, transfer, `suspect`, pre-vote, joint consensus, learners, and `verify`. Every `Tri` write pays one intercontinental round trip, about 80 ms [guess].
+**Cost accepted.** The team owns a Raft implementation with leases, transfer, `suspect`, pre-vote, joint consensus, learners, and `verify`. Every `Tri` write pays one intercontinental round trip, guessed at 80 ms and measured at p50 107 to 189 ms under load, so commit is about 200 ms at p50 and 450 to 700 ms at p99 (`tests/m0/results/m0-wp2.md`).
 
 **Evidence.** `design/DESIGN.md`, "Summary", "Shape", "Tradeoffs accepted", "Alternatives considered", and "Synthesis decision". `history/arena/cloudflare/SYNTHESIS.md`. `history/review/cloudflare-judge.md`. `history/review/cloudflare-foundation-attack.md`. `history/review/cloudflare-interrogate.md`. `research/cloudflare-uptime.md`. `history/decisions.tsv` rows 110 to 112 and 116.
 
-**Flip.** Flip condition 1: if Milestone 0's consensus gate fails, with any linearizability violation in the 48-hour Porcupine run or a `Tri` commit p99 above 400 ms, candidate 1 becomes the base after its standby-loss stall is fixed. Flip condition 2: if Cloudflare states in writing, before Milestone 1, that a Durable Object's storage followers span at least two regions, candidate 1 with its `Alone` fix and `suspect` becomes the base for single-continent (`Na3`-class) and cost-sensitive installs, and `Tri` stays the base for installs that must survive a continent [inference]. Pending question 3 above asks the operator to confirm the home-grown Raft.
+**Flip.** Flip condition 1: if Milestone 0's consensus gate fails, with any linearizability violation in the 48-hour Porcupine run or a `Tri` commit p99 above 1 s, candidate 1 becomes the base after its standby-loss stall is fixed. Flip condition 2: if a Durable Object's storage followers span at least two regions, candidate 1 with its `Alone` fix and `suspect` becomes the base for single-continent (`Na3`-class) and cost-sensitive installs, and `Tri` stays the base for installs that must survive a continent [inference]. M0-WP11 measured that the confirming quorum stays in the object's region, so it has not fired (`tests/m0/results/wp11.md`, (b)). M0-WP2 measured `Tri` commit p99 at 399 to 690 ms, over the clause's old 400 ms line, and the operator kept this base and moved the line to 1 s ("Keep `Tri` and gate commit p99 at 600 ms" above). Pending question 3 above asks the operator to confirm the home-grown Raft.
 
 ### One account holds three site scripts, and members talk over Durable Object bindings
 
 **Decision.** The default install or managed cell is one Cloudflare account with three site scripts (`graft-site-a`, `graft-site-b`, `graft-site-c`). Each site script defines its site's member, git cache, and container classes and owns one pack bucket. Members reach each other through Durable Object bindings with `script_name`. Each install pre-creates one spare site per continent, already bound, so `ReplaceMember` creates no script version. A vault account and a runner account sit beside the install account. Account-separated sites are an option.
 
-**Why.** A binding call runs inside Cloudflare's runtime and never uses the zone's public hostnames, so a partial proxy failure like December 5, 2025 should not cut replication [inference: a written answer from Cloudflare is requested before Milestone 1]. Each group has one voter per site, so a region loss, a bad deploy of one site script, or a bad site setting removes at most one voter.
+**Why.** A binding call runs inside Cloudflare's runtime and never uses the zone's public hostnames, so a partial proxy failure like December 5, 2025 should not cut replication. M0-WP11 saw a binding call arrive with none of the proxy's headers, and neither 2025 postmortem lists Durable Objects [measured, doc; the transport between colos stays undocumented]. Each group has one voter per site, so a region loss, a bad deploy of one site script, or a bad site setting removes at most one voter.
 
 **Beat.** Account-separated sites as the default, which was candidate 3's first draft. Its members replicate over public HTTPS through site Workers, so a partial proxy failure stalls commits as well as client traffic. One account for every managed user also lost, because it puts everyone inside one account-scoped fault and meets account limits.
 
@@ -179,7 +225,7 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Evidence.** `design/DESIGN.md`, "Shape", "Tradeoffs accepted", and "Alternatives considered". `history/arena/cloudflare/SYNTHESIS.md`, graft 1. `history/review/cloudflare-byoc-walk.md` finding 8. `research/cloudflare-uptime.md` findings 7 and 14.
 
-**Flip.** Milestone 0 withdraws the account-separated option if signed HTTPS through a site Worker adds more than 60 ms at p50 over a cross-script binding. The default's partial-proxy claim rests on Cloudflare's written answer about the internal route of a Durable Object call.
+**Flip.** Milestone 0 withdraws the account-separated option if signed HTTPS through a site Worker adds more than 60 ms at p50 over a cross-script binding. The default's partial-proxy claim rests on M0-WP11 (a) (`tests/m0/results/wp11.md`). A Cloudflare incident in which proxy faults break Durable Object binding calls reopens it.
 
 ### Managed cells sit behind a front account
 
@@ -265,7 +311,7 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Decision.** Upstream git (index-pack, upload-pack, merge-tree, repack) runs in containers owned by git cache shards, `GitCacheShard { site, shard }`, with a fixed count per site per tier. Networks map to shards by rendezvous hashing of (network, shard) within a site. Each network is warm on its group's home site and on the next site by rendezvous. A hot network fans out to k shards: its rendezvous shard plus shards from the site's hot pool, also by rendezvous, so the shard count never changes and no other network moves. Shards hold nothing canonical and rebuild from R2 packs and the leader's refs.
 
-**Why.** `max_instances` defaults to 20, and a warm instance per network costs about $42 to $83 a month. Two warm copies of every shard mean a site loss or a control-plane outage needs no new container start.
+**Why.** `max_instances` defaults to 20, and a warm instance per network costs about $42 to $83 a month. The shards later moved to the `durable_object` policy, which has no `max_instances`, and the per-network shape would still cost a warm instance per network. Two warm copies of every shard mean a site loss or a control-plane outage needs no new container start.
 
 **Beat.** A git cache per (network, site), which meant one container per active network per site.
 
@@ -299,7 +345,7 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Evidence.** `design/DESIGN.md`, "Alternatives considered". `design/AGENT-LAYER.md`, "Artifacts' role". `research/artifacts-recheck.md`. `history/review/cloudflare-agents-foundation.md` finding 10. `history/review/cloudflare-agents-judge.md`. `history/decisions.tsv` rows 133, 135, and 140.
 
-**Flip.** Artifacts earns one role, a scratch tier for best-of-N attempts that never become pull requests, only when Milestone 0 shows forks share objects with their source and Cloudflare raises the per-repository cap above the install's largest network in writing. The tier falls back to a workspace fork on any Artifacts error. GA under an SLA is then a preference, not a condition.
+**Flip.** Artifacts earns one role, a scratch tier for best-of-N attempts that never become pull requests, only when forks share objects with their source and Cloudflare raises the per-repository cap above the install's largest network in writing. M0-WP11 measured that forks copy the source's full size (`tests/m0/results/wp11.md`, (d)), so the condition fails today. The tier falls back to a workspace fork on any Artifacts error. GA under an SLA is then a preference, not a condition.
 
 ## Release and operations
 
@@ -371,21 +417,23 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 ### SSH goes through Spectrum, Tunnel, and the container outbound handler
 
-**Decision.** Spectrum on port 22 forwards TCP through Cloudflare Tunnel to a cloudflared replica inside an SSH front container. `graft-sshd` calls the container's outbound handler, which runs in the Workers runtime with the site script's bindings. The handler resolves the key fingerprint on its `Tokens` group leader and runs the same `commit` through the same bindings, so SSH never loops back through the public zone. The operator kept SSH (answer 7).
+**Decision.** HTTPS is the default git transport on every plan. On Pro, and on Business by the same plan table [unverified], an install may turn on SSH through a Tunnel public hostname of type `ssh` that clients reach with `cloudflared access ssh` as an SSH `ProxyCommand`; that option is off by default. On Enterprise, SSH is native: Spectrum on port 22 forwards TCP to the Tunnel's virtual network. Both ingresses end at a cloudflared replica inside an SSH front container, where `graft-sshd` calls the container's outbound handler, `ssh_outbound`, which runs in the Workers runtime with the site script's bindings. The handler resolves the key fingerprint on its `Tokens` group leader and runs the same `commit` through the same bindings, so SSH never loops back through the public zone. The operator kept SSH (answer 7) and set this split on 2026-10-31 (`FRAME.md`, "Operator decision, 2026-10-31, SSH ingress").
 
-**Why.** Workers accept no inbound TCP and containers expose no public port, so Spectrum is the only Cloudflare product that serves port 22. HTTPS pushes are capped at 100 MB on Pro and 200 MB on Business, and the edge's refusal message names SSH.
+**Why.** Workers accept no inbound TCP and containers expose no public port, so Spectrum is the only Cloudflare product that serves a public port 22, and on Pro it refuses a Tunnel origin: the API rejected `virtual_network_id` as an unknown field for a pay-as-you-go account (10012) and refused even a plain `tcp/22` app with "The requested protocol is not available" (13002) [measured, `tests/m0/results/m0-wp7.md`]; the operator's own attempt from the dashboard with a private-IP origin got 11002 (operator report, 2026-10-31, not in the results file). A virtual-network origin needs the TCP application type, which only Enterprise has [doc]. The Tunnel and SSH front half works without Spectrum: through `cloudflared access ssh`, three cloudflared replicas in `durable_object` containers served 2,634 of 2,637 sessions (99.886%) over 2.2 h with 13 container kills, one session lost to a kill, and the supervisor restarted each container in a median 0.72 s [measured, same]. That path needs cloudflared on every client, which a stock `git clone git@host:...` user lacks, so it is an option and HTTPS stays the default. HTTPS pushes are capped at 100 MB on Pro and 200 MB on Business, so the edge's refusal names the SSH option where the install has it on, SSH on Enterprise, and otherwise Enterprise or splitting the push.
 
-**Beat.** HTTPS only, which was the other option in pending decision 7. SSH writes that loop back through the public zone, which candidate 1's outbound-handler graft replaced.
+**Beat.** A relay VM outside Cloudflare that terminates port 22 and forwards into the Tunnel, which breaks the Cloudflare-only constraint and adds a failure domain. HTTPS only on Pro with no option, which leaves Pro installs that need SSH for large pushes no path below Enterprise. SSH writes that loop back through the public zone, which candidate 1's outbound-handler graft replaced.
 
-**Cost accepted.** The chain is unverified on Pro and Business. Spectrum's `ip_firewall`, `proxy_protocol`, `tls`, `origin_dns`, and `origin_port` need Enterprise, so below Enterprise sshd never sees the client's IP and SSH abuse limits count by key and token. SSH data costs $1 per GB above the plan allowance, plus an add-on fee no list price was found for [unverified].
+**Cost accepted.** The option needs cloudflared on each client and depends on Tunnel public-hostname routing; native SSH on Enterprise depends on Spectrum. Below Enterprise Spectrum is not in the path, and on Enterprise a Tunnel origin forbids Proxy Protocol, so sshd never sees the client's IP and SSH abuse limits count by key and token. The option runs 3 SSH front containers when on, and Tunnel bytes are not billed (`python3 scripts/cost.py --ssh-option`). Spectrum SSH data on Enterprise costs $1 per GB above the plan allowance, plus an add-on fee no list price was found for [unverified].
 
-**Evidence.** `design/DESIGN.md`, "Shape" (SSH front), "Commit and read paths" (journey 4), "Tradeoffs accepted", "Open questions and risks", and "Milestone 0". `history/FRAME.md`, answer 7. `history/review/cloudflare-interrogate.md` CF-ACT-12. `research/cloudflare-git.md` finding 26. `history/arena/cloudflare/SYNTHESIS.md`, graft 2. `history/decisions.tsv` rows 132 and 144.
+**Evidence.** `tests/m0/results/m0-wp7.md`. `design/DESIGN.md`, "Shape" (SSH front), "Commit and read paths" (journey 4), "Tradeoffs accepted", "Open questions and risks", and "Milestone 0". `FRAME.md`, answer 7, its 2026-10-31 note, and "Operator decision, 2026-10-31, SSH ingress". `history/FRAME.md`, answer 7. `history/review/cloudflare-interrogate.md` CF-ACT-12. `research/cloudflare-git.md` finding 26. `history/arena/cloudflare/SYNTHESIS.md`, graft 2. `history/decisions.tsv` rows 132 and 144.
 
-**Flip.** Milestone 0's SSH row runs on Pro, Business, and Enterprise. Under 99% successful sessions fails it. If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH needs Enterprise for BYOC on that plan, or is dropped there.
+**Flip.** Spectrum on Pro or Business accepting a virtual-network origin, which would make native SSH available there. Or the `cloudflared` option failing its Milestone 0 row, B0-24a (under 99% of sessions over a day with a container killed every 10 minutes), which would leave Pro and Business HTTPS only. B0-24b, Enterprise Spectrum, is not run.
+
+**Flip fired on Pro, 2026-10-31** (`tests/m0/results/m0-wp7.md`). The original decision put SSH through Spectrum on every plan, subject to Milestone 0's Spectrum-to-Tunnel row on each plan. The Spectrum API refused the design's app on the operator's Pro zone (10012, then 13002; the operator's dashboard attempt got 11002), which executed the operator's own condition in answer 7 ("Keep SSH, subject to Milestone 0's Spectrum-to-Tunnel row on each plan"). The operator then chose the split above: HTTPS by default, the `cloudflared` option on Pro, and SSH on Enterprise.
 
 ### Hosted runners live in a separate runner account
 
-**Decision.** Hosted Actions runners run as Sandboxes in a runner account, in managed and in BYOC. Runners reach the Actions broker over HTTPS and need no member binding. Git cache vCPU is reserved per site through `max_instances`.
+**Decision.** Hosted Actions runners run as Sandboxes in a runner account, in managed and in BYOC. Runners reach the Actions broker over HTTPS and need no member binding. Each site caps its git cache containers in the shard object ("Git cache shards run under the `durable_object` scheduling policy").
 
 **Why.** Actions load cannot take the git cache vCPU that must carry a site loss.
 
@@ -665,12 +713,296 @@ A fresh read-only agent, WalkRest, walked Milestone 4, Milestone 7, AM4, and the
 
 ### Feed polls run only on following members, learners first, under `FEED_HELD_MAX`
 
-**Decision.** Learners serve feed polls, and followers serve them only while no learner answers. A member holds polls only while it is following, which means its last AppendEntries left no gap and it is not catching up by `InstallSnapshot`. Each member holds at most `FEED_HELD_MAX`, 1,000 [guess], and the edge tries up to two other serving members before it answers 429. The peak held count feeds `place_learners`.
+**Decision.** Learners serve feed polls, and followers serve them only while no learner answers. A member holds polls only while it is following, which means its last AppendEntries left no gap, it is not catching up by `InstallSnapshot`, and it applied an entry within `FEED_BATCH` of the leader's `at` on it [guess]; a member that lags further answers its held polls and refuses new ones, as on a gap (2026-10-30). Each member holds at most `FEED_HELD_MAX`, 1,000 [guess]. At the first member that answers full, the edge answers 429 with `Retry-After` of `FEED_BATCH_ALL`, and a member that is not serving still sends the edge to up to two others (2026-10-30). If every member tried refused as lagging, the edge sends the poll to the least lagged of them only if that is a learner, which holds it under `FEED_HELD_MAX`, and otherwise answers 429 with `Retry-After` of `FEED_BATCH_ALL`, the value the full case uses (2026-10-31). The peak held count feeds `place_learners`.
 
-**Why.** A feed poll must never run on a member that is not answering replication. "Following" by ack age was tried first and dropped, because followers on an idle group whose leader lease lapsed would stop serving the feed.
+**Why.** A feed poll must never run on a member that is not answering replication. "Following" by ack age was tried first and dropped, because followers on an idle group whose leader lease lapsed would stop serving the feed. Trying two more members after a full reply only moved the load: in LF-12, stopping at the first full reply cut feed calls on full members by 45 to 55% (344/s to 190/s per follower, 117 to 154/s to 52 to 78/s per learner), with client 429s within 8% and commit p99 at most 633 ms.
 
-**Beat.** Defining "following" by ack age, and followers serving polls beside learners.
+**Beat.** Defining "following" by ack age, and followers serving polls beside learners. Trying up to two other members after a full reply.
 
-**Evidence.** `history/review/walk-rest-interrogate.md` WK-Y1. `history/review/walk-rest-reports.md`, WriterY. `design/AGENT-LAYER.md`, Shape (feed block).
+**Evidence.** `history/review/walk-rest-interrogate.md` WK-Y1. `history/review/walk-rest-reports.md`, WriterY. `design/AGENT-LAYER.md`, Shape (feed block). `tests/m0/results/m0-wp12.md`, LF-12 runs `r5` and `r6s`, and "Second-pass proposed design edits" 9. For the lag clause: L0-12 `t3` `human`, where a far follower fell 82 entries behind with no kill and feed p99 was 18.9 s, and `mcp`, a lagging follower for 60 s after a kill and p99 3.1 s ("Third-pass proposed design edits" 11); the threshold is unmeasured. For the last resort: L0-12 `t6`, all five kinds passed at feed p99 1,925 to 2,551 ms with 1,378 last-resort polls, every one on a learner and none on a voter, and LF-12 `r14` and `r15` held no poll on a leader ("Sixth-pass proposed design edits" 17). For the all-lagging `Retry-After`: in LF-12 `r27`, a client retrying 2 s after such a 429 turned an opening commit stall into 243,147 of them, 5,073 feed requests a second on one follower, 118 `overloaded` AppendEntries replies, and commit p99 7,699 ms (ninth pass). At 10 s, 5,000 pollers re-send at most 500 polls/s against 2,500/s at 2 s [inference: no tenth-pass run reproduced the stall], and 12 tenth-pass phases at 10 s showed no harm (`tests/m0/results/m0-wp12.md`, tenth pass, "Tenth-pass proposed design edits" 32).
 
-**Flip.** None stated. The Milestone 0 held-poll row tests `FEED_HELD_MAX` (`decisions/OPEN-QUESTIONS.md`, A19).
+**Flip.** None stated for the rule. The Milestone 0 held-poll row tests `FEED_HELD_MAX` (`decisions/OPEN-QUESTIONS.md`, A19). For the all-lagging `Retry-After`: an LF-12 run where a 10 s wait leaves pollers stale long enough to fail a feed line, or a storm at 10 s like `r27`'s.
+
+## Milestone 0
+
+Choices made while running Milestone 0 that change a gate or what a gate reads.
+
+### The idle-cost row runs for 24 hours against hourly controls (2026-10-27)
+
+**Decision.** The operator asked for a B0-15 cost estimate and said "I also don't want to wait a whole week", then approved the proposal with "get it done". The Milestone 0 idle-cost row now holds 100,000 idle groups for 24 hours across a UTC midnight instead of one week. For the run, the daily `Rtt` recheck is shortened to hourly, and 1,000 control groups that serve one request an hour run beside the idle ones.
+
+**Why.** The row asks whether an idle group bills duration or runs an `Rtt` check. Neither depends on the length of the run, and the hourly recheck gives the rule 24 chances to fire wrongly instead of seven. The control groups must show billed duration and `Rtt` checks, so a zero on the idle groups reflects the groups, not a meter that does not report.
+
+**Beat.** The one-week run. Its cost is about the same, since creating the groups is nearly all of it, but it takes seven days.
+
+**Evidence.** `tests/m0/results/b0-15-estimate.md`: about $1.80 of Durable Object requests over the Workers Paid allowance, from the account's own usage in the B0-12 sample.
+
+**Flip.** An idle cost that appears only after more than 24 hours, such as a weekly platform job that wakes objects, would be missed. Run the week if Cloudflare documents any process like that.
+
+### Git cache shards run under the `durable_object` scheduling policy (2026-10-27)
+
+**Decision.** Git cache shards and the SSH front start their containers from their own Durable Object with `ctx.container.start()`, under the `durable_object` scheduling policy. Each site caps its shard containers at `count + HOT_POOL` in the shard object, and each start checks the region the container reports and replaces one outside the site's container regions. A warm shard renews a 6 h inactivity timeout by alarm until 24 h after its last request. Each site-script version carries the git image as `git` and the previous release's as `git_prev`, and `ContainerDay` restarts shards onto the new image in steps, with a pre-signed `Rollback { target: Containers(site) }` that needs no API call.
+
+**Why.** Cloudflare refused the `default` policy on this account: "This account cannot create applications with the \"default\" scheduling policy. Use \"durable_object\" instead." The operator confirmed it will not be offered: "the answer is no, move to number 2." Under `durable_object`, 90 of 90 containers started from hinted objects ran in the hinted region, and a new Worker version with a new image map restarted none of three running containers, which kept their startup image.
+
+**Beat.** The `default` policy, which had a platform-enforced `max_instances`, a `regions` constraint, and application-wide rollouts.
+
+**Cost accepted.** The cap and the region check are Graftyard code, not platform limits, so a bug there could exceed the cap or misplace a container, with the account's 1,500 vCPU and the 70% alarm as the only backstop. The policy is in beta. Every container process has root's capabilities, so file permissions inside the git image protect nothing. The design never relied on them, and each container starts with `enableInternet: false`.
+
+**Evidence.** `tests/m0/results/b0-16.md`, `tests/m0/results/container-placement.json`, `tests/m0/results/container-survival.json`. https://developers.cloudflare.com/containers/configuration/scheduling-policy/ and https://developers.cloudflare.com/workers/wrangler/configuration/ ("Wrangler rejects every other Container application field for this policy, including `image`, `instance_type`, `max_instances`, rollout settings, and placement constraints"). `design/DESIGN.md`, Shape ("Git cache shards (derived)"), "Failure modes" (`git caches`), and Milestone 0 (the container placement row, B0-38 in `build/BUILD-PLAN.md`).
+
+**Flip.** Cloudflare offers `default` to the account again, or B0-38 fails, which means the start check cannot keep a site's containers in its regions.
+
+### Platform questions are answered by measurement (2026-10-27)
+
+**Decision.** The operator does not expect a written answer from Cloudflare: "assume i won't hear from cloudflare on number 2. investigate and try to find the answers yourself." M0-WP11 answers its four questions from Cloudflare's documents, its postmortems, and measurements in the Milestone 0 account, and it is done when each answer is recorded with its evidence tag. B0-19 no longer waits for a written answer on scheduling.
+
+**Why.** The questions decide a flip condition and two RTO and RPO figures, and an answer that never arrives would hold Milestone 1. Each one has a measurable form. Write confirmation time bounds how far the confirming followers sit, a binding call's headers show whether it crossed the front-line proxy, and per-repository storage shows whether forks share objects. Results (`tests/m0/results/wp11.md`): (a) a binding call carries no proxy headers; (b) followers stay in the object's region, because the slowest of 60 objects confirmed in 37 ms against 73 ms to the nearest other region; (c) a replacement starts only after 3 of 5 followers fence the old instance, so after a whole-region loss the object waits for its region; (d) Artifacts forks copy the source's full size.
+
+**Beat.** Waiting for Cloudflare's written answers before Milestone 1, which the plan required.
+
+**Cost accepted.** (a) stops at the request: the transport between colos is internal and undocumented, and no test can break Cloudflare's proxy. (b) rests on latency, so it shows where the three confirming followers are, not where the other two are. (c) rests on the documented fencing and on (b), not on an observed region loss.
+
+**Evidence.** `tests/m0/results/wp11.md`, `tests/m0/results/wp11-quorum.json`. https://blog.cloudflare.com/sqlite-in-durable-objects, https://developers.cloudflare.com/durable-objects/platform/known-issues/, https://blog.cloudflare.com/18-november-2025-outage, https://blog.cloudflare.com/5-december-2025-outage. `decisions/OPEN-QUESTIONS.md`, C1, C2, C6, and A12.
+
+**Flip.** A written answer from Cloudflare that contradicts a measurement replaces it. A later confirmation time above the nearest region pair reopens (b), and an incident where a proxy fault breaks binding calls reopens (a).
+
+### Milestone 0 runs in one account (2026-10-27)
+
+**Decision.** The operator said: "i'd also like to *not* create separate trial accounts and do it all in this one." Milestone 0 runs every row in the one throwaway account, with no second account and no trial account or zone. B0-17 measures the account-separated hop inside the account: a site Worker on a public hostname, called with `global_fetch_strictly_public` so the call enters through the front door like a call from another account, against a cross-script binding. B0-20, B0-21, and B0-24 run on zones added to the account, on the plans those zones carry, and a plan the account lacks is recorded as not run.
+
+**Why.** Every row except B0-17 and the plan-dependent rows needs only one account. A cross-account call through a site Worker is a public HTTPS request that crosses the front-line proxy, and a strictly public fetch inside one account takes the same front-door path [inference: no page says a cross-account hop is routed differently]. A warm hop inside one colo measured 7 to 10 ms on `graft-m0-tools` `/hop`.
+
+**Beat.** Three more accounts for the account-separated option and Pro, Business, and Enterprise trial zones, which the plan named.
+
+**Cost accepted.** B0-17 does not test a real account boundary: per-account rate limits, account-scoped faults, and separate API tokens stay unmeasured. A push or SSH row on a plan the account lacks leaves that plan's claim [unverified] until an install on that plan runs it.
+
+**Evidence.** `build/BUILD-PLAN.md`, M0-WP1, M0-WP5, M0-WP6, and M0-WP7. `design/DESIGN.md`, "Milestone 0".
+
+**Flip.** The operator adds an account or a trial zone, or B0-17 lands within 10 ms of its 60 ms fail line, where a real account boundary could change the verdict.
+
+### The edge fills a new tip's clone-cache entry when a push commits (2026-10-29)
+
+**Decision.** When a push to a network with CI traffic commits, the edge asks the network's shard to fill the clone-cache entry for the new tip at the depth its CI clones used last. The shard runs one `upload-pack` per key, however many requests arrive for it, and writes the result to the bucket. Clones that still miss stream from that one run.
+
+**Why.** B0-23 at 33 clones a second, with the tip moving 10 times a minute: every clone that misses goes through the network's shard object, which relays a 40 MB response, and a new tip takes 1.5 to 2.4 s to reach the bucket. With clones at the instant of the push, the object refused up to 44% as overloaded. With the fill on push and clones 4 to 8 s later, 100% were served from R2, at time-to-first-byte p99 406 ms.
+
+**Beat.** Relying on the first CI clone to miss and fill, which passed only when clones lagged the push by 5 s or more (97.5 to 97.8%). A create-only claim object per key, so only one edge calls the shard and the others poll the bucket: no failures, but p99 1.6 to 41.7 s for the waiting clones. Limiting streams per key inside the object: the refusal happens in its queue before its code runs.
+
+**Evidence.** `tests/m0/results/m0-wp6.md`, B0-23.
+
+**Flip.** A replay where CI clones arrive before the fill lands and the object refuses them, which would add the claim with a shorter poll. A network whose CI depth varies, which would fill more than one depth.
+
+### Pushes over the plan's body limit get Cloudflare's 413 (2026-10-29)
+
+> "sure, whatever you think is best"
+
+The operator left the question, raised from M0-WP6 as G5 and now closed, to the run.
+
+**Decision.** An HTTPS push over the zone plan's request body limit (100 MB on Pro, 200 MB on Business) ends in git's `error: RPC failed; HTTP 413`. The edge's own cap still refuses pushes between it and the plan limit with a `report-status` that names SSH on Enterprise, and on Pro and Business the `cloudflared` SSH option if the install has it on, else Enterprise or splitting the push into smaller pushes. The install docs, the push-size section of the admin guide, and the 413 runbook name the same paths for larger pushes, and install preflight still refuses a plan below the largest imported pack. They named SSH until B0-24 found native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`, 2026-10-31), and the operator then added the SSH option on Pro (`FRAME.md`, "Operator decision, 2026-10-31, SSH ingress").
+
+**Why.** Cloudflare answers 413 while git is still sending, before git reads any response, so no Worker response can reach the client. Chunked bodies are cut at the same limit (`tests/m0/results/m0-wp6.md`, B0-20 and B0-21).
+
+**Beat.** Requiring Enterprise for BYOC (G3), which would make the limit 5 GB at a cost most BYOC customers would not pay for this alone. Asking git users to lower `http.postBuffer`, which does not change when git reads the response.
+
+**Evidence.** `tests/m0/results/m0-wp6.md`, B0-20 and B0-21, measured on workers.dev at 100 MB, then on the Pro zone `graftyard.dev` with the same result: git saw the edge's message naming SSH for a 90 MB push against an 80 MB cap, and a bare 413 for a 120 MB push.
+
+**Flip.** A Pro or Business zone run where the edge's response reaches git above the plan limit, or a Cloudflare setting that lets a Worker answer before the body ends. For the message: a Business run where Spectrum reaches a Tunnel origin, which would let it name native SSH there, or B0-24a failing, which would drop the SSH option from it.
+
+### `STEP_DOWN`'s confirm rule needs six slow confirmations, and `INLINE_MAX_HOT` is 64 KiB (2026-10-30)
+
+**Decision.** A leader steps down on storage confirm latency only when at least 6 confirmations in the 10 s window pass `confirm_p99_ms`, and a `STEP_DOWN` transfer never targets a follower inside `RESET_QUARANTINE` of its own step-down. On a confirm trip a target qualifies on the leader's own calls to it under `commit_errors`, with no probe. On a commit-error trip, where the leader's calls fail over the line to every follower by definition, it qualifies on the other follower's `linkErrors` probe of it under `commit_errors`, and a probe that cannot run disqualifies it. Among those the fewest failed calls wins, then the most caught up, and if none qualifies the leader holds. The commit-error rule also needs at least `commit_fail_min`, 3, failed calls to every follower in the window (operator delegation, 2026-10-30 and 2026-10-31). A failed call whose deadline elapsed while the leader's own storage confirm was outstanding (begun before the call and unconfirmed at its deadline) counts toward neither `commit_errors` nor `commit_fail_min`, because the confirm rule owns the leader's storage stalls (operator delegation, 2026-10-31). A hot group inlines packs only up to 64 KiB while placement succeeds. The `DEMOTE_PER_MIN` count per actor lives in the group's fold.
+
+**Why.** M0-WP9 found every leader change in its kept runs, 7 in all, came from `STEP_DOWN` with no fault injected. 6 were on the confirm rule: a journey 9 group commits about 5 entries a second, so a 10 s window holds 40 to 80 confirmations and its p99 is its maximum, and one write of 535 to 1,550 ms moved the leader. Those changes fail B0-33. At 256 KiB, a burst's first entries held 1.3 MB of inline packs, and merges waited behind them up to 2.3 s, over B0-32's 2 s line. M0-WP4 then found that Durable Object storage stalls on its own: bare objects with no Raft code hit 3 or 4 stalls over 500 ms in one 10 s window, so a count of 3 tripped healthy leaders (F35), and with 6 B0-06 passed 9 of 9. Without the quarantine on the target, two healthy sites passed a group back and forth while a third was sick. A count in leader memory reset on a leader change and let a fast user token's writes go Human for a minute.
+
+**Beat.** A p99 over a longer window, which would also delay the step-down a gray site needs (B0-06). A minimum of 100 samples, which on a quiet group would never trip. Keeping 256 KiB and accepting merge delay during bursts.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, "STEP_DOWN under load", B0-32 (`-r1`, `-r2`, `-ih64r1`), and B0-33; `tests/m0/results/m0-wp4.md`, "F35". The 64 KiB cap passed in one burst run. In the fourth pass no leader stepped down on the confirm rule in ten runs, but in B0-33 `p4r4` the quarantine left SIN, whose calls had failed 60% of the time, as the only target, and SIN, overloaded as leader, lost every remaining commit; a bar on the target comes from that run (`tests/m0/results/m0-wp9.md`, fourth pass, "Proposed design edits (fourth pass)" 30). Judging targets on the leader's calls to them, as first written, could never transfer, because the commit-error trip needs both followers over `commit_errors`: in the fifth pass `p5r1` and `p5r2` logged 26 holds and 0 transfers, and the leaders were lost by election instead. The probe reading keeps a commit-error transfer and still refuses a target like `p4r4`'s SIN (fifth pass, "Proposed design edits (fifth pass)" 34). Commit errors that only log was the other choice, and lost because it leaves a sick leader in place until `suspect` reports remove it. The target's own probe of the other follower, adopted next, measures that follower too: after an election left a failing-write site as a follower, it qualified only the sick site, and a group moved onto it three times. The rule as landed in M0-WP4 (`src/raft/member.ts`) passed B0-06 12 of 12, 6 of them failing-write runs, with leaders off slow storage in 2.3 to 5.6 s, off failing calls in 2.4 to 5.2 s, and off failing writes by election in 4.9 to 13.3 s, and `dr-writes2` moved to C rather than to the sick site. Requiring both the leader's calls and the probe on every trip, as first described, leaves no target on a commit-error trip, so the leader's-calls bar applies to confirm trips only. A sick prober can refuse a healthy target, which makes the leader hold, never transfer onto the sick site. `commit_fail_min` 3: leader kills under load gave 0 follow-on changes in 90 groups against 2 in 90 without it, and leaders still left a site failing 30% of calls in 2.9 to 4.1 s and slow storage in 2.8 to 4.2 s (`tests/m0/results/m0-wp4.md`, "`STEP_DOWN` target on the leader's calls and the other follower's probe; F37 as `min3-`", proposed edits 1 to 4; `tests/m0/results/m0-wp12.md`, sixth pass, edit 19). Under M0-WP9's load the count neither decided nor blocked anything: in the eighth pass's B0-29 to B0-33 runs the one commit-error trip had 6 and 3 failed calls, so its evidence stays with M0-WP4 (`tests/m0/results/m0-wp9.md`, eighth pass, "Proposed design edits (eighth pass)" 47). For the own-stall exclusion: in LF-12 `r28` placed-written and `farhold-r30` placed, one leader confirm of 3,465 and 3,605 ms made every failed call to the near follower in the window, and the commit-error rule tripped on 3/3 failed calls and moved a healthy group, in `r30` onto the far member NRT [measured, `tests/m0/results/m0-wp12.md`, ninth pass]. Replayed offline on those records, the exclusion removed 3 of 3 and 4 of 4 failed calls to the near follower, so neither would have tripped [inference: the effect is not run]; in the tenth pass it was inert in 26 phase-members, because no confirm passed CALL_DEADLINE (`tests/m0/results/m0-wp12.md`, tenth pass, "Tenth-pass proposed design edits" 31).
+
+**Flip.** A B0-06 rerun where the 6-write rule leaves a gray-storage leader in place past 20 s. For `commit_fail_min`: a B0-06 or B0-31 run where a leader on a failing site collects under 3 failures per follower in a window and stays past 20 s; failing writes and quiet groups (under about 10 calls per follower a window) were not run with it. A B0-31 run at 64 KiB with commit p99 over 1 s from staging every push larger than 64 KiB, or R2 Class A writes that move `scripts/cost_agents.py`'s total. For the own-stall exclusion: a gray-leader case, B0-06 slow storage or failing calls, where the exclusion delays the move past 20 s.
+
+### GC and the writes it races each name the index they read (2026-10-30)
+
+**Decision.** GC's `Compacted` names the index its roots were read at, and `decide` refuses it if any ref changed after that index. A push that names objects it does not send, and `RestoredTo`, name the pack-set index their connectivity walk read, and `decide` refuses either if a `Compacted` committed after it. GC resubmits its packs when no object it would delete became reachable, and replans otherwise.
+
+**Why.** GC and these writes each read state and then commit, and `decide` cannot read R2 to recheck. M0-WP8 raced them with random timing: with every guard on, 0 objects were lost in 145 trials, 89 of which had a write commit inside GC's window. Without the `Compacted` guard, 48 of 80 trials lost 55 objects. Without the push guard, 13 of 80 lost one each. Without the `RestoredTo` guard, 3 of 40 lost one each.
+
+**Beat.** Leaving G6 open on the grounds that GC is rare. A lock between GC and writers, which would stall pushes for a whole GC.
+
+**Evidence.** `tests/m0/results/m0-wp8.md`, G6. Reruns: 61% of guarded GCs reran under the test's deliberately dense writes, at most 3 attempts.
+
+**Flip.** A busy repository where GC reruns so often that it does not finish within its day, which would add a short ref freeze for GC's commit.
+
+### Clone-cache misses are composed from the cached tip (2026-10-30)
+
+**Decision.** When a depth-1 fetch misses the clone cache for a commit whose tree is close to a cached tip's, the git cache shard composes the answer. It sends the tip's cached depth-1 pack plus a pack of the wanted commit's objects missing from it, under one pack header and trailer. For each tip move, the shard that took the merge builds one part, the new tip's objects the base and earlier parts lack, once per network, stored beside the clone cache's tip pack for other shards and the second warm site to fetch. Every 20 moves base and parts fold into a new base. A miss composes base, parts, and a pack of the wanted commit's own new objects, and builds `refs/pull/N/merge` on the last tip whose part exists, so it never packs a tip move. A shard serves a hot network only once it holds the parts up to the tip. `scripts/cost.py` prices a CI or agent clone miss at 0.75 vCPU-s, plus one stock depth-1 build per network every 20 tip moves at 45 vCPU-s, an upper bound on the measured 1.2 to 1.7 CPU-s fold, and `scripts/cost_agents.py` adds part builds at 0.5 CPU-s a move once per network.
+
+**Why.** B0-34 measured a stock depth-1 miss of torvalds/linux at 25 to 46 CPU-s, most of it delta search and compression over 103,000 tip objects. At journey 9's 1.5 misses a second that is 38 to 69 vCPU, which no k of at most 8 `standard-4` shards can carry, and run `b0-34-r1` saturated 7 shards with human push p99 40.5 s and 43% of agent pushes shed. A composed miss cost 0.72 to 0.74 s with time to first byte 0.35 s, and renewing a base 20 commits behind cost 2.7 s. With composed misses (`b0-34-r2`), human push p99 stayed at 0.68 to 1.56 s in every phase. The third pass showed that renewing every 20 moves leaves two gaps. A miss on the current tip packs a move whose part is not built yet: on Linux one merge added 2,300 objects, and each concurrent miss then cost 9 to 19 CPU-s and saturated the shard (`b0-34-r3`, `-r5`, `-r6`). A shard behind the tip serves from a stale base, at 17 to 75 CPU-s a miss (`b0-34-r4`). With per-move parts, catch-up before serving, and misses on the last built tip (`b0-34-r7`), a part cost 0.3 to 2 CPU-s (up to 10 for the 2,300-object merge), a fold 1.2 to 1.7 CPU-s, a miss 0.2 to 0.5 CPU-s, and clone time to first byte p99 was 0.70 to 1.03 s by phase.
+
+**Beat.** Stock `upload-pack` misses, at the measured cost above. `pack-objects --window=0`, which cut a miss to 9.1 s for a pack 0.5% larger and still costs 12 times a composed miss. Pricing misses at the old guessed 1.0 vCPU-s, which hid the problem. A per-miss diff against a base up to 20 moves old (`b0-34-r3`), and parts built by each shard for itself at low priority (`b0-34-r4`, `-r5`).
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-34: `results/raw/wp9-b0-34-gitcpu-r1.json`, `wp9-b0-34-r1.json`, `wp9-b0-34-r2.json`; third pass, runs `b0-34-r3` to `-r7`, and "Proposed design edits" 25. The composed pack, and base plus two parts plus a merge commit, passed `index-pack` and fsck locally, with a tree equal to the tip's.
+
+**Flip.** A client whose `index-pack` refuses the composed pack, or a network whose agent checkouts are far from any cached tip. For the per-move rules: part builds that fall behind the tip at a network's merge rate, so misses wait on stale tips, or a measured CI cost from merge refs built on the last built tip rather than the current one.
+
+### Agent pushes over `INLINE_MAX_HOT` are refused while placement fails (2026-10-30)
+
+**Decision.** While `PackStore::place` fails or a bucket's readiness probe is red, a hot group's agent pushes over `INLINE_MAX_HOT` get the agent refusal at once and are never queued. Human and MergeQueue pushes keep `INLINE_MAX` (1 MiB). B0-31's fail value becomes any Human or MergeQueue push up to 1 MiB refused while placement fails.
+
+**Why.** One 1 MiB pack fills an entry, because `EntryBody` holds at most 1.5 MB, so a group commits at most one such push per round. From an apac leader with one entry in flight, B0-31 committed only 1.3 to 2.0 MB/s of 1 MiB inline pushes against journey 9's 4.37 MB/s. The queue filled to `AGENT_QUEUE_MAX`'s 64 MiB, agent commits waited 21 to 30 s, and 1,348 to 1,753 of 2,500 pushes were refused anyway, while Human and merge entries rode behind 1 MiB rounds at p99 1.3 to 2.0 s and 1.3 to 3.3 s. Pinning admission capacity did not help (`holdnopcap`), because the entry round is the limit. Refusing agents at once keeps rounds small for the classes that must commit.
+
+**Beat.** Letting `INLINE_MAX_HOT` yield to `INLINE_MAX` for every push, as the design said, which fails B0-31 in all 4 placement-failing runs. Keeping the row's original fail value, which cannot pass at journey 9's rate on `Tri`.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-31, runs `b0-31-nop`, `-sd3nop`, `-holdnop`, and `-holdnopcap`, and "Proposed design edits" 10 and 11.
+
+**Flip.** A placement-failing run where the group carries journey 9's 1 MiB agent pushes inline with Human p99 under 1 s, for example with more than one entry in flight, or an outage long enough that refused agents cost more than the delay.
+
+### Both warm sites size a hot network's k from the larger load (2026-10-30)
+
+**Decision.** `fanout` sets k at each warm site from the larger of the two sites' `NetworkLoad`, so the second warm site already holds k shards when the first is lost.
+
+**Why.** In B0-34 `NetworkLoad` was per site, and only the home site was loaded, so the second warm site held k = 1. When the home site was killed, all load went to that one shard until `fanout` raised k, and each new shard first had to copy 8.76 GB: 166 to 207 s of rehydrate, with miss time to first byte at 19 to 20 s p99 for about 270 s. `scripts/cost_agents.py` already prices `(k - 1) * WARM_SITES` extra shards, so this rule makes the design match its price and adds no cost.
+
+**Beat.** Sizing each site from its own load, which is what failed B0-34's time-to-first-byte gate inside the kill window. Counting only cache hits in the gate, which passed in every phase but hides the miss latency an agent CI job sees.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-34, run `b0-34-r2`, and "Proposed design edits" 17.
+
+**Flip.** A network whose second warm site's extra shards cost more than the miss latency they prevent, or a rehydrate fast enough (under the time-to-first-byte gate) that raising k after a site loss is enough.
+
+### Task commands do not demote, and the prompt reads comments as of the snapshot (2026-10-30)
+
+**Decision.** Task API commands (create, cancel, and `PATCH` of an `AgentTask`) do not count toward `DEMOTE_PER_MIN`, so a demoted actor at task creation is one past `DEMOTE_PER_MIN` at the create's own entry without counting task commands. A Graftyard-run task's prompt reads writer comments as of the task's `snapshot`, not as they are when the Sandbox starts.
+
+**Why.** `DEMOTE_PER_MIN` exists to class a fast actor's writes as Agent. Task creates and cancels are writes, so a human writer who created more than 60 tasks a minute demoted themselves, and the 61st create was refused as demoted: a local L0-14 trial refused 39 of carol's 100 control creates. A human creating tasks quickly is still a human, and the task caps (`TASKS_OPEN_PER_REQUESTER`, `TASKS_OPEN_PER_REPO`) already bound how many they open. For the prompt, the prototype read the issue at `snapshot` but comments as they were later, so a writer's comment after assignment could change what the agent was told with no pause and no record of which version it saw. Reading both at `snapshot` makes the prompt one recorded state, and a writer who wants the agent to see a new comment reassigns, which moves `snapshot`.
+
+**Beat.** Counting task commands, with demotion measured at the create's own entry, which still refuses a fast human. Reading comments live, which lets the prompt change silently after assignment.
+
+**Evidence.** `tests/m0/results/m0-wp13.md`, "Proposed design edits" 5 and 12; the local L0-14 trial (not kept) and the driver pacing in `run/agent-lib13.ts` that kept writers under 55 writes a minute. Edit 12 is [inference].
+
+**Flip.** For task commands: an abuse case where a user token bulk-creates tasks to load a group. For the prompt: harness feedback showing that agents need to see writer comments made after assignment.
+
+### Decisions under the operator's delegation, 2026-10-30
+
+> "Stop waiting on me besides for the pro account. Do everything else and make the decisions. You are the pro."
+
+Each decision below was made by the run under that delegation (`FRAME.md`, "Operator decision, 2026-10-30, delegation").
+
+#### B0-07 counts idle groups from their next request
+
+**Decision.** B0-07 passes when every group led on C that served a request or committed an entry in the 50 s before the drain moves within 20 s of it, and every other group led on C moves within 20 s of its next request.
+
+**Why.** An idle leader has no request to learn of its drain on and no client to hurt, so the time that matters for it is from its next request. Its drain alarm runs for 60 s after the group's last activity, and a 50 s window keeps a group idle for 59 s from counting as active after its alarm stopped (group `-410`, 29.3 s). Over runs 11 to 14, 125 of 126 groups pass the 50 s form.
+
+**Beat.** The gate as written, which an idle group fails through no fault the drain can fix. An alarm on every idle group, which would bill duration on idle groups that B0-15 measured at zero.
+
+**Evidence.** `tests/m0/results/m0-wp4.md`, B0-07 runs 11 to 14.
+
+**Flip.** An idle group whose first request after a drain waits more than one lease, which would mean the on-request hand-off is too slow for the client it serves.
+
+#### B0-33's Human and merge-queue line is 1 s
+
+**Decision.** B0-33 passes with Human and merge-queue commit p99 at most 1 s.
+
+**Why.** B0-01 measured `Tri` commit p99 at 399 to 690 ms set by the round to a far follower, and the operator set its fail line at 1 s (`decisions/DECISIONS.md`, "Keep `Tri` and gate commit p99 at 600 ms"). B0-33 measured Human and merge-queue p99 of 0.85 to 1.1 s, also the round to a far follower carrying large entries, not queueing: those classes always went into the next entry. A 600 ms line would fail on network distance that admission cannot change. The other B0-33 conditions (no leader change, no `suspect`, at least 140 agent commands/s admitted) stay.
+
+**Beat.** Accepting the miss with the line at 600 ms, which leaves a gate that cannot pass on `Tri`.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-33; `tests/m0/results/m0-wp2.md`, B0-01. The fourth pass (`p4r1` to `p4r6`) showed Human and merge-queue p99 of 1.15 to 1.49 s even with 0 leader changes, from entries of 84 to 96 agent commands and 450 KB of inline packs; the line stays at 1 s and `AGENT_INLINE_ENTRY` is the answer ("Agent inline bytes per entry are capped"). The seventh pass, with the budget on every group, held 746 to 943 ms in 3 of 3 runs, 57 to 254 ms under the line and least in the first 30 s.
+
+**Flip.** A rerun with `INLINE_MAX_HOT` at 64 KiB where Human and merge-queue p99 comes in under 600 ms, which would restore the tighter line.
+
+#### A PR with no recorded requester needs one more human approval
+
+**Decision.** `AgentGate` on a PR whose `AgentMeta.requester` is empty needs one human approval more than `extra_human_approvals` asks.
+
+**Why.** A confined App may open a PR without `X-Graftyard-Agent-Session`, and then the gate cannot exclude the requester, who could approve their own agent's work. Requiring the header would break vendors that never create tasks, which journey A2 says need zero Graftyard-specific client code.
+
+**Beat.** Requiring the header for confined Apps. Leaving the gap.
+
+**Evidence.** `tests/m0/results/m0-wp10.md`, "Proposed design edits" 10.
+
+**Flip.** An L0-07 vendor oracle that cannot get a PR merged under the extra approval in normal use.
+
+#### Agents do not write `refs/notes/ai`
+
+**Decision.** An `ActorKind::Agent` update of `refs/notes/ai` is refused as outside its prefix. Agent commits get provenance from `Session` links and trailers.
+
+**Why.** `refs/notes/ai` is one ref per repository. A fleet of agents each updating it would conflict on every write and serialize through `expect`, the load journey 9 avoids by giving each agent its own refs. Graftyard-run agents already link their commits through `Graftyard-Session`, and vendors through their trailers. Humans and unconfined Apps can still write notes.
+
+**Beat.** Letting an agent write notes on commits under its prefix, which needs per-agent notes refs that git-ai readers do not look at.
+
+**Evidence.** `tests/m0/results/m0-wp10.md`, "Proposed design edits" 20; `research/agents.md` 5.8.
+
+**Flip.** A git-ai release that reads notes from more than one ref, or an agent harness whose only provenance is notes.
+
+#### B0-31's commit line splits on whether placement works
+
+**Decision.** B0-31 passes with commit p99 at most 1 s while buckets are up. While placement fails, it passes with Human and MergeQueue commit p99 at most 3 s, 0 of those pushes refused, and agent pushes over `INLINE_MAX_HOT` refused at once in the `ng` shape. It fails over 3 s, or on any Human or MergeQueue push up to 1 MiB refused while placement fails.
+
+**Why.** An R2-wide outage is an incident, and the row's job then is that humans and the merge queue still commit. Under the outage rule, the measured tail is the round of the 6% of entries that carry a 0.5 to 1 MiB Human or merge pack from apac to the far followers. That put Human and MergeQueue commit p99 at 1.83 and 1.97 s in the two placement-failing runs, and merges alone at up to 2.99 s, with 0 of 546 refused and 4,998 of 5,000 agent 1 MiB pushes refused at once. Admission cannot shorten that round with one entry in flight.
+
+**Beat.** Keeping 1 s throughout, which fails on network distance during an incident. Accepting a fail value at about 2 s, which hides the merge tail that reached 2.99 s.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-31 third pass, runs `b0-31o-nop4` and `b0-31o-holdnop4`, and "Proposed design edits" 23. In the fourth pass both halves passed the split gate: buckets up, commit p99 547 ms after the apac leader stepped down at 9.9 s (`b0-31-p4up2`); placement failing, Human and MergeQueue p99 1.25 s with 0 of 283 refused and the apac leader moved at 7.4 s (`b0-31o-p4nop2`). In the eighth pass, on the final code, the buckets-up half passed on an apac leader that held 600 s (commit p99 598 ms, `b0-31-p8up`), and the placement-failing half passed at Human and MergeQueue p99 1.11 s with 0 of 287 refused and one step-down from apac at 8.9 s (`b0-31o-p8nop`).
+
+**Flip.** A measured R2 outage longer than an hour, or a customer SLO on push latency during incidents.
+
+#### Idle hot-pool shards keep hot networks warm
+
+**Decision.** Idle hot-pool shards keep the site's hot networks warm, LRU by `NetworkLoad`, holding the parts up to the tip, so a step up in k needs no rehydrate and serves within `fanout`'s up window. `fanout`'s hysteresis stays at up above 0.75 for 3 min and down below 0.4 for 1 h. `scripts/cost.py` prices the pool as running: 7 shards per site on both warm sites, at the tier's instance size, for a 9-hour working day (warm only for networks hot in the last hour), at the 2,000-developer tier only, where the largest network can reach the up line. That is $433 a month on the default and $217 on `Solo`.
+
+**Why.** Cold, a step up waits for the up window and then a full rehydrate. In `b0-34-r8`, with the design's hysteresis and 3 times journey 9's Linux git rate, it took about 290 s from saturation to k = 2 serving, with clone time to first byte p99 5 to 10 s a minute meanwhile, and k = 3 took until near the end of the 20-minute run. A warm pool shard is an LRU hit, so the step costs only the window. At 50 and 300 developers the largest network's git CPU is 0.05 and 0.32 vCPU, so `fanout` never steps and the pool stays reserved.
+
+**Beat.** A cold pool, which bills nothing but gave 290 s at 5 to 10 s TTFB. Up above 0.6 for 1 min and down below 0.3 for 1 h, which B0-34 did not test (open question A22).
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, B0-34 third pass, runs `b0-34-r7` and `b0-34-r8`, and "Proposed design edits" 27. `scripts/cost.py`, `HOT_POOL_WARM_TIERS` and `HOT_POOL_WARM_HOURS`.
+
+**Flip.** A measured rehydrate fast enough that a step serves within 60 s, or a pool cost above the latency it saves.
+
+#### LF-12's commit line is 1 s before `place_learners` runs (2026-10-31)
+
+**Decision.** LF-12 passes at commit p99 at most 600 ms once `place_learners` has run and at most 1 s before it. It fails over 1 s in the placed phases, or over 2 s before placement. The other LF-12 lines are unchanged.
+
+**Why.** The no-learners phase is the state the row exists to move a group away from: 5,000 polls held on the two followers. In `r15` that phase failed at 1,040 ms with 0 step-downs, 0 `suspect` reports, and 0 redirects, because b and c each held 1,000 polls and their feed requests rose to 316 and 275 per s while the leader logged 20 AppendEntries deadlines. Across 8 runs on these rule sets the no-learners phase failed 4 times, 3 of them step-downs (`r8`, `r11`, `r13`) that `commit_fail_min` now addresses. The phases with learners passed or sat between the lines in 9 of 10 runs of the fifth and sixth passes. How long a group spends in the no-learners state is set by how often `place_learners` runs (`decisions/OPEN-QUESTIONS.md`, A20), which now matters more.
+
+**Beat.** Keeping 600 ms throughout, which fails the row on the state it is meant to leave. Dropping the no-learners line, which leaves no bound on a group before placement. Reading the commit line over the median of 3 runs (`tests/m0/results/m0-wp12.md`, "Seventh-pass proposed design edits" 20), under which the seventh pass would pass at phase medians 545, 470, and 696 ms: LF-12 stays a single-run gate, as B0-29 is, and `r18`'s unattributed 1,790 ms stall stays a failure to explain (`decisions/OPEN-QUESTIONS.md`, F40) (operator delegation, 2026-10-31).
+
+**Evidence.** `tests/m0/results/m0-wp12.md`, sixth pass, LF-12 `r14` and `r15`, and "Sixth-pass proposed design edits" 18; the fourth pass's `r7`, `r8`, `r10`, `r11`, and `r13`. On the final rules with `commit_fail_min`, the seventh pass's `r16` to `r18` passed no run in full: `r18`'s placed phase failed at 1,790 ms with the leader held through 23 trips the count blocked, and `r16` and `r17` each had a phase between the lines. With the own-stall exclusion and the all-lagging `Retry-After` of `FEED_BATCH_ALL`, the tenth pass's 4 runs gave 1 pass, 3 between, and 0 fail, every miss from storage confirm stalls and the far follower's round trip, as in B0-02 and B0-29; the gate is unchanged.
+
+**Flip.** An LF-12 placed phase over 600 ms on the final rules.
+
+#### Agent inline bytes per entry are capped
+
+**Decision.** B0-33's Human and merge-queue line stays at 1 s. On every group, hot or not, an entry carries at most `AGENT_INLINE_ENTRY`, 128 KiB [guess], of Agent-class inline pack bytes. An agent pack that would pass it is staged as `PackRef::Stored`, or, while placement fails, gets the agent refusal at once, as over `INLINE_MAX_HOT`. Human and MergeQueue packs do not count against it.
+
+**Why.** In B0-33's fourth pass, run `p4r1` had 0 leader changes and still held Human and merge-queue p99 at 1.15 to 1.49 s, because those commands rode entries of 84 to 96 agent commands and about 450 KB of inline packs. In `p4r4` and `p4r5`, appends of 0.4 to 1.5 MB entries to a far follower missed `CALL_DEADLINE` and tripped the commit-error rule, which moved the leader. B0-29's entries, p99 71 KB, committed at p99 about 500 ms. Bounding the agent bytes in each entry bounds the round every class in it waits for. Staging agent packs costs nothing new, because `scripts/cost.py` already prices a Class A write per push. The budget first applied only on hot groups, and the sixth pass showed the gap: a fresh group is not hot until it has had `HOT_PUSHES` for 5 s, and in `p6r1` and `p6r2` its first entries carried 1.05 to 1.33 MB of agent packs, which in `p6r2` caused the pass's only leader change and only Human and merge-queue p99 over 1 s. Human and MergeQueue packs do not count against the budget, so it needs no hot test, and a quiet group rarely has more than one agent pack an entry anyway (operator delegation, 2026-10-30).
+
+**Beat.** A Human and MergeQueue-only entry ahead of the agent batch, which doubles entries under the one-entry-in-flight invariant without shrinking the far-follower round. Lowering `INLINE_MAX_HOT` for agents only past `AGENT_SHARE`, which B0-33 never reaches at measured capacity. Moving the line to 1.5 s. Keeping the budget to hot groups, which leaves a fresh group's first seconds unbudgeted.
+
+**Evidence.** `tests/m0/results/m0-wp9.md`, "Fourth pass", B0-33 runs `p4r1` to `p4r6` and B0-29 runs `p4r1` and `p4r2`, and "Proposed design edits (fourth pass)" 32. Fifth pass, `p5r3` (Human and merge-queue p99 616 ms with the budget on a settled leader). Sixth pass, `p6r1` to `p6r3`, and "Proposed design edits (sixth pass)" 38. Seventh pass, `p7r1` to `p7r3`, with the budget on every group: no entry carried more than 131,072 bytes of Agent inline packs, first entries included, and all three far-flung runs passed every B0-33 line with 0 leader changes and Human and merge-queue p99 746 to 943 ms.
+
+**Flip.** A B0-33 rerun with the budget where Human and merge-queue p99 stays over 1 s with a stable leader, or staging p99 that pushes agent push p99 over B0-29's lines.
+
+### The second warm site sizes its shards for the conflict predictor (2026-10-30)
+
+**Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.
+
+**Why.** With git CPU measured, A1's network needs k = 1, which left the predictor 2 vCPU. M0-WP16 measured one shard saturating at A1's push rate, with push-to-verdict p95 364 s against L0-05's 30 s, while 7 shards passed at 6.8 s. A real fleet's pushes overlap 1.80 open refs on average, so the predictor needs 2.8 vCPU, and k = 2 on the second site holds it at about $83 a month.
+
+**Beat.** Leaving k = 1, which fails L0-05. Sizing for 8 pairs a push, which would hold 7 shards for a load the replay never produced.
+
+**Evidence.** `tests/m0/results/m0-wp16.md`, L0-05 and L0-06; `scripts/cost_agents.py --a1`.
+
+**Flip.** A real fleet whose mean overlap set is well above 1.80, or a predictor run at k = 2 whose L0-05 p95 passes 30 s.
+
+### L0-12's feed clause allows FEED_BATCH plus 2 s (2026-10-30)
+
+**Decision.** L0-12 passes when 500 long-pollers see each event within FEED_BATCH plus 2 s (3 s) at p99 outside leader kills. `FEED_BATCH` stays 1 s. Made under the operator's delegation of 2026-10-30 (`FRAME.md`).
+
+**Why.** A poll with `paths` returns FEED_BATCH after its first match, by design, so batching takes half of a 2 s budget before any delivery time. M0-WP12 measured p99 2.2 and 2.6 s for the two agent kinds outside kills, with clock offsets under 10 ms. Halving FEED_BATCH would double the poll rate on busy scopes, the load `FEED_HELD_MAX` and learners are sized against.
+
+**Beat.** Cutting FEED_BATCH to 500 ms. Keeping a 2 s line that fails by construction.
+
+**Evidence.** `tests/m0/results/m0-wp12.md`, L0-12 feed.
+
+**Flip.** Agents that act on an overlap within 3 s, where a 1 s batch costs them conflicts.

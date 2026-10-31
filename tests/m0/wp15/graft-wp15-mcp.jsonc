@@ -1,0 +1,14 @@
+// M0-WP15: graft-mcp (src/wp15/mcp.ts). Binds only the host, as design/AGENT-LAYER.md says graft-mcp binds only the edge.
+{
+  "name": "graft-wp15-mcp",
+  "main": "../src/wp15/mcp.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "HOST_ORIGIN": "https://graft-wp15-host.<workers-subdomain>.workers.dev",
+            "SELF_ORIGIN": "https://graft-wp15-mcp.<workers-subdomain>.workers.dev",
+            "DENY_HOSTS": "graft-wp15-host.<workers-subdomain>.workers.dev,graft-wp15-mcp.<workers-subdomain>.workers.dev" },
+  "services": [{ "binding": "EDGE", "service": "graft-wp15-host" }],
+  "observability": { "enabled": true }
+}

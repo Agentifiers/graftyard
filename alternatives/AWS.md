@@ -42,7 +42,7 @@ Single cells lower the 99.99% rows to 99.95%, because their tables carry the 99.
 
 The one failure no bulkhead covers is a simultaneous AWS-side DynamoDB regression in both Regions of every cell (`history/DESIGN.md`, "Open questions and risks").
 
-For comparison, the Cloudflare design claims RPO zero and an RTO of about 11.5 s for the loss of any one region, continent, or site release [inference] (`design/DESIGN.md`, Cost and Downtime). Its Milestone 0 passes that RTO only if a new leader commits and serves within 12 s at p99.
+For comparison, the Cloudflare design claims RPO zero and an RTO of about 11.5 s for the loss of any one region, continent, or site release [inference] (`design/DESIGN.md`, Cost and Downtime). Its Milestone 0 passes that RTO only if a new leader commits and serves within 13 s at p99, restated by the operator to the measured 11.0 to 12.9 s.
 
 ## Cost
 
@@ -50,8 +50,8 @@ Monthly list prices in US dollars for one install. Both designs are priced on th
 
 | Setup | 50 developers | 300 developers | 2,000 developers |
 | --- | --- | --- | --- |
-| Cloudflare default, one account and three sites (the base) | $264 | $1,299 | $9,417 |
-| Cloudflare default with the agent layer | $290 | $1,602 | $12,687 |
+| Cloudflare default, one account and three sites (the base) | $231 | $1,189 | $9,187 |
+| Cloudflare default with the agent layer | $252 | $1,463 | $11,759 |
 | AWS, one Region | $1,287 | $2,573 | $12,432 |
 | AWS, Paired (two Regions plus a witness) | $2,292 | $4,466 | $20,636 |
 | AWS `scrappy`: small-install profile, one Region with a cold recovery Region | $226 | not priced | not priced |
@@ -69,7 +69,7 @@ Read the table with these limits, all from `research/costs.md`:
 - The AWS figures include no agent layer. The AWS design was never priced with agents, so compare the AWS rows with the Cloudflare base row.
 - `scrappy` is not RPO zero for a Region loss, because its recovery Region is cold. `scrappy-paired` is RPO zero across two Regions. The Cloudflare base is RPO zero for the loss of any one of its three sites, which sit on three continents.
 
-At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. At 300 and 2,000 developers the Cloudflare base costs less than either AWS setup. With the agent layer added, the Cloudflare default at 2,000 developers ($12,687) costs more than AWS one Region without agents ($12,432), so the two are not priced on the same workload there.
+At 50 developers, AWS `scrappy` costs less than the Cloudflare base, but a Region loss is not RPO zero for it. At 300 and 2,000 developers the Cloudflare base costs less than either AWS setup. With the agent layer added, the Cloudflare default at 2,000 developers ($11,759) still costs less than AWS one Region without agents ($12,432), though the two are not priced on the same workload there.
 
 ## The differences that decide between them
 
@@ -81,8 +81,8 @@ These rows come from `design/DESIGN.md`, "Compared with the AWS design".
 | RPO zero across regions | From the store's 99.999% SLA | From Graftyard's own protocol. No Cloudflare SLA covers Durable Objects |
 | Surviving a continent | Managed `global` only. Paired cells stay in one continent | Every `Tri` chain |
 | Provider-wide outage | AWS Regions fail separately | Cloudflare fails globally. Only a read-only lifeboat serves |
-| Push size | Unbounded by the front | 100 MB on Pro, 200 MB on Business, 5 GB on Enterprise, refused at the edge with a message that names SSH |
-| SSH path | NLB to nodes | Spectrum to Tunnel to containers, unverified on Pro and Business |
+| Push size | Unbounded by the front | 100 MB on Pro, 200 MB on Business, 5 GB on Enterprise, refused at the edge with a message that names SSH where the install has it on, and otherwise Enterprise or splitting the push, since native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`) |
+| SSH path | NLB to nodes | HTTPS by default. Native SSH on Enterprise, Spectrum to Tunnel to containers; on Pro and Business an opt-in Tunnel public hostname that each client reaches with `cloudflared access ssh` (`FRAME.md`, "Operator decision, 2026-10-31, SSH ingress") |
 | Largest repository | Node NVMe | 20 GB shard disk, about 15 GB of packs |
 | Token revocation | 5 s for writes, 60 s for reads | Immediate for writes, 10 s for reads |
 
@@ -96,15 +96,15 @@ The operator never said to use Cloudflare instead of AWS. Choosing the Cloudflar
 
 ## When the AWS design would be the better choice
 
-Each condition below would favor the AWS design. None of them holds today.
+Each condition below would favor the AWS design. Only condition 5 holds today, for BYOC customers on Pro who need SSH from stock clients with no `cloudflared`.
 
-1. **The Cloudflare consensus gate fails and its fallback is not acceptable.** Cloudflare Milestone 0 runs 48 hours of Porcupine-checked histories under dropped calls, member resets, and leadership transfers. Any linearizability violation, or a `Tri` commit p99 above 400 ms, makes candidate 1 the Cloudflare base (`design/DESIGN.md`, "Synthesis decision", flip condition 1). Candidate 1 still acknowledges on one region's copy after any failover. An operator who needs RPO zero across regions after that flip has it in AWS Paired, where the store provides it [inference].
+1. **The Cloudflare consensus gate fails and its fallback is not acceptable.** Cloudflare Milestone 0 runs 48 hours of Porcupine-checked histories under dropped calls, member resets, and leadership transfers. Any linearizability violation, or a `Tri` commit p99 above 1 s, makes candidate 1 the Cloudflare base (`design/DESIGN.md`, "Synthesis decision", flip condition 1). Candidate 1 still acknowledges on one region's copy after any failover. An operator who needs RPO zero across regions after that flip has it in AWS Paired, where the store provides it [inference].
 2. **Writes must survive a provider-wide outage.** Cloudflare fails globally, the lifeboat is read-only, and managed users have no service during a Cloudflare-wide outage (`design/DESIGN.md`, "Tradeoffs accepted"). AWS Regions fail separately, so a Paired cell keeps writing through the loss of one Region.
 3. **The commit point must rest on a provider SLA.** AWS Paired gets RPO zero from the 99.999% Global Tables SLA. On Cloudflare no SLA covers Durable Objects, and Graftyard's own Raft carries that promise.
 4. **Pushes above 200 MB are needed without an Enterprise contract.** Pro caps HTTPS pushes at 100 MB and Business at 200 MB, and Enterprise raises the cap to 5 GB (`design/DESIGN.md`, "Compared with the AWS design"). Enterprise has no list price (`research/costs.md`). The AWS front does not bound push size.
-5. **SSH fails Cloudflare Milestone 0 on the customer's plan.** If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH is dropped or needs Enterprise there (`design/DESIGN.md`, "Tradeoffs accepted"). The AWS design serves SSH from an NLB to its nodes.
+5. **SSH fails Cloudflare Milestone 0 on the customer's plan.** If Spectrum cannot reach a Tunnel origin on Pro or Business, SSH is dropped or needs Enterprise there (`design/DESIGN.md`, "Tradeoffs accepted"). On Pro this has happened for native SSH: the Spectrum API refuses a Tunnel origin, so native SSH needs Enterprise (`tests/m0/results/m0-wp7.md`); Business is not run. Pro and Business installs may turn on SSH through `cloudflared access ssh`, which needs `cloudflared` on every client and its own Milestone 0 row (B0-24a). The AWS design serves SSH from an NLB to its nodes with no client helper.
 6. **A repository is larger than a Cloudflare shard can hold.** A git cache shard has a 20 GB disk, which holds about 15 GB of packs. The AWS design keeps packs in S3 and caches them on node NVMe.
-7. **A 50-developer install accepts that a Region loss is not RPO zero.** AWS `scrappy` costs $226 a month against the Cloudflare base's $264, with a cold recovery Region instead of RPO zero.
+7. **A 50-developer install accepts that a Region loss is not RPO zero.** AWS `scrappy` costs $226 a month against the Cloudflare base's $231, with a cold recovery Region instead of RPO zero.
 
 The AWS design has its own gate. If one chain on MRSC fails the append gate (p99 above 150 ms, or under 200 entries a second), the AWS base flips to the earlier Aurora DSQL design (`history/DESIGN.md`, Milestone 0 flip conditions). Anyone who revives the AWS design starts with that measurement.
 

@@ -1,0 +1,39 @@
+{
+  "name": "graft-wp9-store",
+  "main": "../src/wp9/store.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "STORE",
+        "class_name": "Store9"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "ARCH_A",
+      "bucket_name": "graft-wp9-arch-a"
+    },
+    {
+      "binding": "ARCH_B",
+      "bucket_name": "graft-wp9-arch-b"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Store9"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

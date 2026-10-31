@@ -1,0 +1,61 @@
+{
+  "name": "graft-wp9-git",
+  "main": "../src/wp9/git.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "containers": [
+    {
+      "class_name": "Shard9",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "git": {
+          "dockerfile": "./git/Dockerfile"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SHARD",
+        "class_name": "Shard9"
+      },
+      {
+        "name": "NET",
+        "class_name": "Net9"
+      },
+      {
+        "name": "POOL",
+        "class_name": "Pool9"
+      },
+      {
+        "name": "DRIVE",
+        "class_name": "Drive9"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "GIT",
+      "bucket_name": "graft-wp9-git"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "Shard9",
+        "Net9",
+        "Pool9",
+        "Drive9"
+      ]
+    }
+  ],
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "observability": {
+    "enabled": true
+  }
+}

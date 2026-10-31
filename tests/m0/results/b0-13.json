@@ -1,0 +1,394 @@
+{
+  "at": "2026-10-27T16:28:14.107Z",
+  "buckets": 120,
+  "probeColos": {
+    "enam": "ORD",
+    "wnam": "DFW",
+    "weur": "LHR",
+    "eeur": "FRA",
+    "apac": "KIX",
+    "oc": "MEL"
+  },
+  "apiAgreesWithProbe": 99,
+  "share": 0.825,
+  "apiReportsHintForEvery": true,
+  "apiAgreesWithProbeByContinent": 120,
+  "verdict": "Agrees by continent; neighbouring regions need run/b0-13-edges.ts",
+  "byHint": {
+    "enam": {
+      "api": {
+        "enam": 20
+      },
+      "measured": {
+        "wnam": 13,
+        "enam": 7
+      },
+      "minMarginMs": 0
+    },
+    "wnam": {
+      "api": {
+        "wnam": 20
+      },
+      "measured": {
+        "wnam": 18,
+        "enam": 2
+      },
+      "minMarginMs": 4
+    },
+    "weur": {
+      "api": {
+        "weur": 20
+      },
+      "measured": {
+        "weur": 17,
+        "eeur": 3
+      },
+      "minMarginMs": 0
+    },
+    "eeur": {
+      "api": {
+        "eeur": 20
+      },
+      "measured": {
+        "eeur": 17,
+        "weur": 3
+      },
+      "minMarginMs": 1
+    },
+    "apac": {
+      "api": {
+        "apac": 20
+      },
+      "measured": {
+        "apac": 20
+      },
+      "minMarginMs": 78
+    },
+    "oc": {
+      "api": {
+        "oc": 20
+      },
+      "measured": {
+        "oc": 20
+      },
+      "minMarginMs": 76
+    }
+  },
+  "disagreements": [
+    {
+      "bucket": "graft-m0-b013-enam-0",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 20,
+      "byProbe": {
+        "enam": 76,
+        "wnam": 56,
+        "weur": 125,
+        "eeur": 150,
+        "apac": 188,
+        "oc": 242
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-1",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 14,
+      "byProbe": {
+        "enam": 78,
+        "wnam": 64,
+        "weur": 130,
+        "eeur": 143,
+        "apac": 196,
+        "oc": 244
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-2",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 14,
+      "byProbe": {
+        "enam": 91,
+        "wnam": 77,
+        "weur": 165,
+        "eeur": 168,
+        "apac": 209,
+        "oc": 266
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-4",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 20,
+      "byProbe": {
+        "enam": 88,
+        "wnam": 68,
+        "weur": 146,
+        "eeur": 157,
+        "apac": 206,
+        "oc": 262
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-6",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 21,
+      "byProbe": {
+        "enam": 82,
+        "wnam": 61,
+        "weur": 134,
+        "eeur": 148,
+        "apac": 193,
+        "oc": 241
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-8",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 17,
+      "byProbe": {
+        "enam": 77,
+        "wnam": 60,
+        "weur": 124,
+        "eeur": 149,
+        "apac": 195,
+        "oc": 238
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-9",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 29,
+      "byProbe": {
+        "enam": 141,
+        "wnam": 112,
+        "weur": 184,
+        "eeur": 204,
+        "apac": 231,
+        "oc": 283
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-10",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 15,
+      "byProbe": {
+        "enam": 79,
+        "wnam": 64,
+        "weur": 125,
+        "eeur": 147,
+        "apac": 192,
+        "oc": 249
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-11",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 24,
+      "byProbe": {
+        "enam": 80,
+        "wnam": 56,
+        "weur": 132,
+        "eeur": 146,
+        "apac": 188,
+        "oc": 241
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-12",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 1,
+      "byProbe": {
+        "enam": 63,
+        "wnam": 62,
+        "weur": 130,
+        "eeur": 143,
+        "apac": 192,
+        "oc": 243
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-17",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 2,
+      "byProbe": {
+        "enam": 69,
+        "wnam": 67,
+        "weur": 135,
+        "eeur": 162,
+        "apac": 195,
+        "oc": 254
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-18",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 8,
+      "byProbe": {
+        "enam": 83,
+        "wnam": 75,
+        "weur": 149,
+        "eeur": 200,
+        "apac": 202,
+        "oc": 259
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-enam-19",
+      "hint": "enam",
+      "apiLocation": "enam",
+      "measured": "wnam",
+      "marginMs": 5,
+      "byProbe": {
+        "enam": 91,
+        "wnam": 86,
+        "weur": 109,
+        "eeur": 134,
+        "apac": 210,
+        "oc": 269
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-wnam-6",
+      "hint": "wnam",
+      "apiLocation": "wnam",
+      "measured": "enam",
+      "marginMs": 4,
+      "byProbe": {
+        "enam": 101,
+        "wnam": 105,
+        "weur": 190,
+        "eeur": 204,
+        "apac": 121,
+        "oc": 189
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-wnam-10",
+      "hint": "wnam",
+      "apiLocation": "wnam",
+      "measured": "enam",
+      "marginMs": 5,
+      "byProbe": {
+        "enam": 71,
+        "wnam": 76,
+        "weur": 151,
+        "eeur": 176,
+        "apac": 164,
+        "oc": 229
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-weur-7",
+      "hint": "weur",
+      "apiLocation": "weur",
+      "measured": "eeur",
+      "marginMs": 5,
+      "byProbe": {
+        "enam": 169,
+        "wnam": 161,
+        "weur": 50,
+        "eeur": 45,
+        "apac": 287,
+        "oc": 348
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-weur-10",
+      "hint": "weur",
+      "apiLocation": "weur",
+      "measured": "eeur",
+      "marginMs": 6,
+      "byProbe": {
+        "enam": 176,
+        "wnam": 199,
+        "weur": 60,
+        "eeur": 54,
+        "apac": 281,
+        "oc": 366
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-weur-18",
+      "hint": "weur",
+      "apiLocation": "weur",
+      "measured": "eeur",
+      "marginMs": 4,
+      "byProbe": {
+        "enam": 169,
+        "wnam": 186,
+        "weur": 68,
+        "eeur": 64,
+        "apac": 299,
+        "oc": 357
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-eeur-1",
+      "hint": "eeur",
+      "apiLocation": "eeur",
+      "measured": "weur",
+      "marginMs": 8,
+      "byProbe": {
+        "enam": 173,
+        "wnam": 173,
+        "weur": 65,
+        "eeur": 73,
+        "apac": 289,
+        "oc": 369
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-eeur-2",
+      "hint": "eeur",
+      "apiLocation": "eeur",
+      "measured": "weur",
+      "marginMs": 5,
+      "byProbe": {
+        "enam": 223,
+        "wnam": 186,
+        "weur": 64,
+        "eeur": 69,
+        "apac": 344,
+        "oc": 420
+      }
+    },
+    {
+      "bucket": "graft-m0-b013-eeur-4",
+      "hint": "eeur",
+      "apiLocation": "eeur",
+      "measured": "weur",
+      "marginMs": 2,
+      "byProbe": {
+        "enam": 179,
+        "wnam": 173,
+        "weur": 61,
+        "eeur": 63,
+        "apac": 296,
+        "oc": 366
+      }
+    }
+  ]
+}

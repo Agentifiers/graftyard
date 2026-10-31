@@ -1,0 +1,12 @@
+{
+  "name": "graft-m0-container",
+  "main": "../src/container.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // `default` is what the design names, and this account refuses it; see src/container.ts.
+  "containers": [{ "class_name": "GitBox", "scheduling_policy": "durable_object", "images": { "git": { "dockerfile": "./Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "GITBOX", "class_name": "GitBox" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GitBox"] }],
+  "observability": { "enabled": true }
+}

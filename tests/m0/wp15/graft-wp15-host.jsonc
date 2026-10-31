@@ -1,0 +1,17 @@
+// M0-WP15: the prototype host with the agent layer (copy of graft-m0-agent's source in src/wp15/host).
+{
+  "name": "graft-wp15-host",
+  "main": "../src/wp15/host/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "rules": [{ "type": "Text", "globs": ["**/*.graphql"], "fallthrough": true }],
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "LAYER": "on" },
+  "containers": [{ "class_name": "AgentRepo", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "./container/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "REPO", "class_name": "AgentRepo" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentRepo"] }],
+  "worker_loaders": [{ "binding": "LOADER" }],
+  "observability": { "enabled": true }
+}

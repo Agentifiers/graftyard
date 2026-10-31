@@ -1,0 +1,42 @@
+{
+  "name": "graft-wp9-c",
+  "main": "../src/wp9/member.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {
+    "SITE": "c"
+  },
+  "limits": {
+    "cpu_ms": 300000
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MEMBER_A",
+        "class_name": "RaftMember",
+        "script_name": "graft-wp9-a"
+      },
+      {
+        "name": "MEMBER_B",
+        "class_name": "RaftMember",
+        "script_name": "graft-wp9-b"
+      },
+      {
+        "name": "MEMBER_C",
+        "class_name": "RaftMember"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RaftMember"
+      ]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

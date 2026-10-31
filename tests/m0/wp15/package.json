@@ -1,0 +1,17 @@
+{
+  "name": "graftyard-m0-wp15",
+  "private": true,
+  "description": "M0-WP15 harness dependencies (build/BUILD-PLAN.md, M0-WP15). Never shipped.",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/server": "^2.4.0",
+    "@octokit/auth-app": "^8.3.1",
+    "@octokit/graphql": "^9.0.5",
+    "@octokit/rest": "^22.0.1",
+    "agents": "^0.32.0",
+    "graphql": "^16.14.2",
+    "sdkv1": "npm:@modelcontextprotocol/sdk@^1.32.2",
+    "zod": "^4.6.7"
+  }
+}

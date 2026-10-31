@@ -1,0 +1,116 @@
+{
+  "at": "2026-10-27T16:28:49Z",
+  "enam/wnam": {
+    "probeColos": {
+      "ORD": [
+        "enam"
+      ],
+      "EWR": [
+        "enam"
+      ],
+      "ATL": [
+        "enam"
+      ],
+      "MIA": [
+        "enam"
+      ],
+      "IAD": [
+        "enam"
+      ],
+      "DFW": [
+        "wnam"
+      ],
+      "LAX": [
+        "wnam"
+      ],
+      "SJC": [
+        "wnam"
+      ],
+      "SEA": [
+        "wnam"
+      ]
+    },
+    "consistent": 39,
+    "of": 40,
+    "nearestByHint": {
+      "enam": {
+        "ATL": 12,
+        "MIA": 2,
+        "EWR": 2,
+        "IAD": 2,
+        "ORD": 2
+      },
+      "wnam": {
+        "LAX": 9,
+        "SEA": 4,
+        "DFW": 5,
+        "ATL": 1,
+        "SJC": 1
+      }
+    }
+  },
+  "weur/eeur": {
+    "probeColos": {
+      "LIS": [
+        "weur"
+      ],
+      "LHR": [
+        "weur"
+      ],
+      "CDG": [
+        "weur"
+      ],
+      "AMS": [
+        "weur"
+      ],
+      "MRS": [
+        "weur"
+      ],
+      "MAD": [
+        "weur"
+      ],
+      "WAW": [
+        "eeur"
+      ],
+      "VIE": [
+        "eeur"
+      ],
+      "OTP": [
+        "eeur"
+      ],
+      "PRG": [
+        "eeur"
+      ],
+      "ARN": [
+        "eeur"
+      ],
+      "FRA": [
+        "eeur"
+      ],
+      "MXP": [
+        "eeur"
+      ]
+    },
+    "consistent": 37,
+    "of": 40,
+    "nearestByHint": {
+      "weur": {
+        "LHR": 7,
+        "PRG": 2,
+        "MAD": 3,
+        "CDG": 3,
+        "LIS": 2,
+        "MXP": 1,
+        "AMS": 2
+      },
+      "eeur": {
+        "MXP": 8,
+        "ARN": 3,
+        "VIE": 2,
+        "PRG": 4,
+        "OTP": 2,
+        "FRA": 1
+      }
+    }
+  }
+}

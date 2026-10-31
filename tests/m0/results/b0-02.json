@@ -1,0 +1,164 @@
+{
+  "row": "b0-02",
+  "run": "g600-3",
+  "placement": "tri",
+  "pipe": 1,
+  "maxInFlight": 1,
+  "group": "b0-02-g600-3",
+  "at": "2026-10-28T16:04:55.274Z",
+  "seconds": 33.814,
+  "edgeColo": "WAW",
+  "leader": "b",
+  "commands": 9000,
+  "failed": 0,
+  "throughputPerS": 266,
+  "entries": 66,
+  "commandsPerEntry": 78.3,
+  "commitMs": {
+    "p50": 514,
+    "p99": 1288,
+    "max": 1288,
+    "n": 5167
+  },
+  "roundMs": {
+    "p50": 236,
+    "p99": 757
+  },
+  "appendMs": {
+    "c": {
+      "p50": 448,
+      "p90": 870,
+      "p99": 870,
+      "n": 3
+    },
+    "a": {
+      "p50": 219,
+      "p90": 407,
+      "p99": 757,
+      "n": 68
+    }
+  },
+  "serveMs": {
+    "c": {
+      "p50": -1,
+      "p99": 51
+    },
+    "a": {
+      "p50": 28,
+      "p99": 79
+    }
+  },
+  "wireMs": {
+    "c": {
+      "p50": 449,
+      "p90": 819,
+      "p99": 819
+    },
+    "a": {
+      "p50": 192,
+      "p90": 378,
+      "p99": 727
+    }
+  },
+  "followerCpuConfirmMs": {
+    "a": {
+      "cpuP50": 0,
+      "confirmP50": 27,
+      "confirmP99": 79,
+      "n": 71
+    },
+    "c": {
+      "cpuP50": 0,
+      "confirmP50": 51,
+      "confirmP99": 382,
+      "n": 38
+    }
+  },
+  "timelineMs": {
+    "createdToSent": {
+      "p50": 0,
+      "p99": 0
+    },
+    "sentToAck": {
+      "p50": 236,
+      "p99": 757
+    },
+    "ackToCommit": {
+      "p50": 0,
+      "p99": 0
+    },
+    "n": 66
+  },
+  "bytesPerAppend": {
+    "p50": 59178,
+    "p99": 249329
+  },
+  "clientMs": {
+    "p50": 630,
+    "p99": 1484
+  },
+  "verdict": "Between pass and fail",
+  "offeredPerS": 300,
+  "status": [
+    {
+      "colo": "ATL",
+      "site": "a",
+      "role": "follower",
+      "term": 5,
+      "votedFor": "b",
+      "ledTerm": null,
+      "leader": "b",
+      "last": 130,
+      "commit": 129,
+      "applied": 129,
+      "promiseUntil": 1793203502802,
+      "leaseEnd": 1793203495985,
+      "boots": [
+        0,
+        1793203458020
+      ],
+      "refusals": 0,
+      "steppedDownAt": 1793203487421
+    },
+    {
+      "colo": "LHR",
+      "site": "b",
+      "role": "leader",
+      "term": 5,
+      "votedFor": "b",
+      "ledTerm": 5,
+      "leader": "b",
+      "last": 130,
+      "commit": 130,
+      "applied": 130,
+      "promiseUntil": 1793203497205,
+      "leaseEnd": 1793203501620,
+      "boots": [
+        0,
+        1793203458435
+      ],
+      "refusals": 0,
+      "steppedDownAt": 1793203479702
+    },
+    {
+      "colo": "ICN",
+      "site": "c",
+      "role": "follower",
+      "term": 5,
+      "votedFor": null,
+      "ledTerm": null,
+      "leader": "b",
+      "last": 129,
+      "commit": 128,
+      "applied": 128,
+      "promiseUntil": 1793203503082,
+      "leaseEnd": 0,
+      "boots": [
+        0,
+        1793203458596
+      ],
+      "refusals": 0,
+      "steppedDownAt": null
+    }
+  ]
+}

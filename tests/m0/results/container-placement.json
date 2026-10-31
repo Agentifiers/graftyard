@@ -1,0 +1,92 @@
+{
+  "run": "20261027T1714",
+  "at": "2026-10-27T17:14:48.143Z",
+  "per": 30,
+  "byHint": {
+    "enam": {
+      "started": 30,
+      "of": 30,
+      "inHintRegion": 30,
+      "containerRegions": {
+        "ENAM": 30
+      },
+      "containerLocations": {
+        "iad14": 4,
+        "ord06": 8,
+        "ewr15": 5,
+        "atl01": 11,
+        "mia05": 2
+      },
+      "doColos": {
+        "IAD": 4,
+        "ORD": 8,
+        "EWR": 5,
+        "ATL": 11,
+        "MIA": 2
+      },
+      "startMs": {
+        "p50": 328,
+        "p99": 2092
+      },
+      "errors": []
+    },
+    "weur": {
+      "started": 30,
+      "of": 30,
+      "inHintRegion": 30,
+      "containerRegions": {
+        "WEUR": 30
+      },
+      "containerLocations": {
+        "mad05": 5,
+        "lhr19": 10,
+        "ams01": 6,
+        "mrs01": 2,
+        "cdg15": 4,
+        "lis01": 3
+      },
+      "doColos": {
+        "MAD": 5,
+        "LHR": 10,
+        "AMS": 6,
+        "MRS": 2,
+        "CDG": 4,
+        "LIS": 3
+      },
+      "startMs": {
+        "p50": 326,
+        "p99": 1681
+      },
+      "errors": []
+    },
+    "apac": {
+      "started": 30,
+      "of": 30,
+      "inHintRegion": 30,
+      "containerRegions": {
+        "APAC": 30
+      },
+      "containerLocations": {
+        "kix03": 9,
+        "icn01": 2,
+        "nrt08": 2,
+        "nrt15": 3,
+        "sin22": 7,
+        "hkg12": 5,
+        "hkg01": 2
+      },
+      "doColos": {
+        "KIX": 9,
+        "ICN": 2,
+        "NRT": 5,
+        "SIN": 7,
+        "HKG": 7
+      },
+      "startMs": {
+        "p50": 185,
+        "p99": 5145
+      },
+      "errors": []
+    }
+  }
+}

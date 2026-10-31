@@ -1,0 +1,10 @@
+#!/bin/sh
+# ForceCommand: name the serving front on stderr (git passes it through as "remote: ..."), export the key's fingerprint
+# for the pre-receive hook, and hand only upload-pack and receive-pack to git-shell.
+echo "graft-front=$(cat /etc/graft-front)" >&2
+GRAFT_KEY_FP=$(awk '{print $2" "$3}' "$SSH_USER_AUTH" | head -1 | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
+export GRAFT_KEY_FP
+case "$SSH_ORIGINAL_COMMAND" in
+  git-upload-pack\ *|git-receive-pack\ *) cd /srv/git && exec git-shell -c "$SSH_ORIGINAL_COMMAND" ;;
+  *) echo "graft: only git-upload-pack and git-receive-pack" >&2; exit 1 ;;
+esac

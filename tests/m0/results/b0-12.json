@@ -1,0 +1,80 @@
+{
+  "run": "full1000",
+  "at": "2026-10-27T16:26:45.734Z",
+  "groups": 1000,
+  "members": 3300,
+  "voterPairs": {
+    "expected": 6000,
+    "measured": 6000,
+    "passing": 6000,
+    "share": 1
+  },
+  "verdict": "Pass",
+  "inconsistentMembers": [],
+  "pairMedianMs": {
+    "a-b": {
+      "p0": 73,
+      "p50": 100.5,
+      "p99": 135,
+      "n": 2000
+    },
+    "a-c": {
+      "p0": 133.5,
+      "p50": 198,
+      "p99": 262,
+      "n": 2000
+    },
+    "b-c": {
+      "p0": 141,
+      "p50": 240.5,
+      "p99": 733.5,
+      "n": 2000
+    }
+  },
+  "intraRegionMs": {
+    "enam": {
+      "p0": 3,
+      "p50": 19,
+      "p99": 40,
+      "max": 40,
+      "n": 50
+    },
+    "weur": {
+      "p0": 3,
+      "p50": 13,
+      "p99": 44,
+      "max": 44,
+      "n": 50
+    },
+    "apac": {
+      "p0": 2,
+      "p50": 53,
+      "p99": 93,
+      "max": 93,
+      "n": 50
+    }
+  },
+  "placementNewRefusedGroups": 0,
+  "memberColos": {
+    "c:SIN": 331,
+    "b:LHR": 282,
+    "b:AMS": 280,
+    "a:ATL": 268,
+    "c:NRT": 242,
+    "b:CDG": 233,
+    "a:EWR": 229,
+    "a:IAD": 226,
+    "c:KIX": 218,
+    "c:HKG": 208,
+    "a:ORD": 205,
+    "a:MIA": 172,
+    "b:MAD": 164,
+    "c:ICN": 101,
+    "b:LIS": 79,
+    "b:MRS": 62
+  },
+  "failures": {
+    "count": 0,
+    "sample": []
+  }
+}

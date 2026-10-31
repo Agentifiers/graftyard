@@ -1,0 +1,26 @@
+#!/bin/sh
+# Container entry: fetch the host key and the tunnel token from `keys.graft` (the outbound handler reads them from the
+# script's secrets; nothing is baked into the image), then run sshd on loopback and one cloudflared replica. If either
+# process exits, the container exits, and the front's Durable Object restarts it.
+set -u
+# In a Cloudflare container `/` is owned by an unmapped uid, and sshd refuses an AuthorizedKeysCommand under a
+# directory root does not own ("bad ownership or modes for directory /").
+chown root:root /
+echo "${GRAFT_FRONT:-unknown}" > /etc/graft-front
+for i in $(seq 1 60); do
+  curl -fsS --max-time 5 http://keys.graft/host-ed25519 -o /etc/ssh/ssh_host_ed25519_key && \
+  curl -fsS --max-time 5 http://keys.graft/tunnel-token -o /run/tunnel-token && break
+  sleep 1
+done
+chmod 600 /etc/ssh/ssh_host_ed25519_key /run/tunnel-token
+/usr/sbin/sshd -D -e &
+SSHD=$!
+# Two edge connections per replica, not the default four: with the default, connections 2 and 3 never stayed registered
+# and retried "already connected to this server" about every 40 s for the whole run (results/m0-wp7.md, B0-24a).
+cloudflared tunnel --no-autoupdate --protocol "${CF_PROTOCOL:-http2}" --ha-connections "${CF_HA:-2}" \
+  --metrics 127.0.0.1:2000 run --token "$(cat /run/tunnel-token)" &
+CFD=$!
+while kill -0 $SSHD 2>/dev/null && kill -0 $CFD 2>/dev/null; do sleep 2; done
+echo "entry: sshd or cloudflared exited" >&2
+kill $SSHD $CFD 2>/dev/null
+exit 1

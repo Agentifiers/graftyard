@@ -105,7 +105,7 @@ Each row names the section that defines the term. "Shape" means `design/DESIGN.m
 | `graft-ops` | The stateless in-account Worker that executes signed intents, owns the crons that call the Cloudflare API, and mints installation tokens. | `design/DESIGN.md`, "Install operations" |
 | git cache shard | `GitCacheShard { site, shard }`, a container-backed Durable Object that runs upstream git on bare repositories rebuilt from R2 and holds nothing canonical. | Shape (git cache shards) |
 | rendezvous | Rendezvous hashing of (network, shard) within a site, which maps networks to shards so the shard count never changes and no other network moves. | Shape (git cache shards) |
-| hot pool | `HOT_POOL`, 7 instances reserved per site in `max_instances`, from which `fanout` adds shards for a hot network. | Shape (git cache shards) |
+| hot pool | `HOT_POOL`, 7 instances per site counted in the site's shard start cap, from which `fanout` adds shards for a hot network. | Shape (git cache shards) |
 | clone cache | R2 objects keyed by `CloneKey` that hold protocol v2 fetch responses, which are the same bytes for a fixed ref state, served from R2 through the edge on a hit. | Shape (Packs, dominant access patterns) |
 | `DurablePack` | A pack that `PackStore::place` wrote to two sites' buckets in two regions after `index-pack --strict` passed, and the only pack an entry may name. | Shape (Packs) |
 | inline pack | `PackRef::Inline`, a pack of up to 1 MiB (256 KiB on a hot group while placement succeeds) carried inside the entry. | Shape (Packs) |
@@ -115,7 +115,7 @@ Each row names the section that defines the term. "Shape" means `design/DESIGN.m
 | `Solo` | A one-member placement for evaluation only, behind the signed `evaluation` flag, with no region-loss guarantee and no availability SLO. | Shape (`PlacementName`) |
 | cell | In managed mode, one Cloudflare account with three site scripts that holds the groups of the owners placed in it. | Shape (managed cells); `design/DESIGN.md`, "Deployment modes" |
 | front account | The managed account that holds the zone, `graft-front`, the edge, and the global `Names` and `Tokens` groups, and calls each owner's cell over signed HTTPS. | Shape (managed cells) |
-| Milestone 0 | About six weeks of measurements on throwaway accounts before any git code, where any fail value sends the design back. | `design/DESIGN.md`, "Build order from zero" |
+| Milestone 0 | About six weeks of measurements on one throwaway account before any git code, where any fail value sends the design back. | `design/DESIGN.md`, "Build order from zero" |
 | admission class | `AdmitClass` (Human, MergeQueue, Bot, Agent), which the leader assigns to each command in group commit, with Agent capped at `AGENT_SHARE`. | Shape (agent block) |
 | `ActorKind::Agent` | The actor kind of Graftyard's own agent Apps and of admin-flagged Apps with `confine` set, whose approvals, merges, and out-of-prefix pushes `decide` refuses. | Shape (agent block) |
 | `AgentTask` | The task row on a repository's group, public under `/api/graftyard/v1/repos/{owner}/{repo}/tasks` with GitHub's agent task states. | Shape (agent block); `design/AGENT-LAYER.md`, "Shape" |
@@ -146,9 +146,9 @@ Monthly Cloudflare list prices for one install of the default shape (one account
 
 | Developers | Base | Agent layer added | Base plus agents | Added share |
 | --- | --- | --- | --- | --- |
-| 50 | $264 | $26 | $290 | 10% |
-| 300 | $1,299 | $303 | $1,602 | 23% |
-| 2,000 | $9,417 | $3,270 | $12,687 | 35% |
+| 50 | $231 | $21 | $252 | 9% |
+| 300 | $1,189 | $274 | $1,463 | 23% |
+| 2,000 | $9,187 | $2,572 | $11,759 | 28% |
 
 The totals exclude an Enterprise contract, which managed cells and pushes over 200 MB need and which has no list price. They also exclude Actions runner compute. Sandbox compute and model tokens for Graftyard-run agents sit outside the agent column: $2,827 and $182,400 a month at 2,000 developers, at a guessed $2 of tokens a task (`design/DESIGN.md`, "Cost"). Container memory for warm git cache shards is the largest line at every size.
 

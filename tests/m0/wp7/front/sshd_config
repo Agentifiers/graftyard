@@ -1,0 +1,21 @@
+Port 22
+ListenAddress 127.0.0.1
+HostKey /etc/ssh/ssh_host_ed25519_key
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthorizedKeysFile none
+AuthorizedKeysCommand /usr/local/bin/akc %u %f
+AuthorizedKeysCommandUser nobody
+ExposeAuthInfo yes
+AllowUsers git
+PermitRootLogin no
+DisableForwarding yes
+PermitTTY no
+ForceCommand /usr/local/bin/gitwrap
+MaxStartups 100:30:200
+# Reap streams the edge opened but never used or closed (one seen in the 2.2-hour run, held 120 s).
+LoginGraceTime 30
+ClientAliveInterval 15
+ClientAliveCountMax 4
+LogLevel INFO

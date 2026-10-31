@@ -8,8 +8,8 @@ Agents are clients of the GHES 3.22 surface Graftyard must serve anyway (`resear
 - **Graftyard-run agents** are two first-party GitHub Apps driven by a controller in a separate `agents` account. They are offered and off until an org turns on `agents_enabled` (`FRAME.md`, agent-layer answer 1). They work in a workspace fork by default, or in-repo where an org forbids private forks. Either way each task is an `AgentTask` on the base group that only a human writer, or the controller from an issue a human assigned, can create. `decide` refuses their approve, merge, ready-for-review, bypass, dispatch and re-run, release, `graftyard/` status, out-of-task ref updates, and changes under protected paths, and refuses `Merge` until a head-bound `AgentGate` from a human credential holds (`design/DESIGN.md`, Shape). The Sandbox never holds a token. Its outbound handler is a default-deny router that allows only the task's repositories, the model's inference path, and registries that never fetch upstream on demand (`research/agents.md` 6.7; `history/review/cloudflare-agents-security.md` finding 1).
 - **New surfaces.** (1) A remote MCP server at `mcp.<host>` on spec 2026-07-28, with a consent page per client, per-client grants, narrowed refreshes, static toolsets by default, and Code Mode as a priced opt-in per org. (2) An opt-in media type that returns hidden-content-stripped text, author trust, overlaps, and provenance beside the untouched `body`. (3) Chain-resident provenance, with trailers and `refs/notes/ai` parsed during `validate`, sessions linked only when authenticated, and session logs as stored blobs under a host-owned ref, readable as JSON. (4) Neutral `graftyard/overlap` and `graftyard/provenance` check runs posted before a PR exists, ordinary `agent:` and `overlap:` labels, an agents page per repository, and an advisory conflict predictor. (5) Leases on paths and refs, kept as chain state on the repository's group, a long-polled activity feed, and a task API with GitHub's agent task states, all under `/api/graftyard/v1`, where leases are advisory unless a repository makes them refuse agent pushes.
 - **Artifacts plays no role.** The 1 GB cap rules out the A1 monorepo, a repository is one logical instance in a beta with no SLA, prediction needs branches in the network's shard, and same-network forks already share packs, so best-of-N attempts fit in a workspace fork (`research/artifacts-recheck.md` sections 1 and 3).
-- **A1 on the base.** 500 agents put 27.6 commands/s on the monorepo's group, 25.2/s of it agent class with lease renewals and task updates, 11 times under the base's 300 commands/s Milestone 0 gate, and about 305 req/s on its leader against 1,000. Feed polls, 45/s, go to learners, or to followers while a group has none, and never to the leader (`cost_agents.py --a1`) [inference]. The network's git cache needs 10.2 vCPU, and the 25% test-merge budget sets k = 7 shards per warm site. Recomputing every open PR's test merge on each base move would need 125 vCPU, so test merges are lazy, coalesced, and budgeted. `LOG_MAX_BYTES` caps each member's log at 2 GB, so after 30 days a member seeded with the base's 4 GB metadata tier holds about 7.2 GB, and it reaches `CHILD_GROUP_AT` (8 GiB) in about 1.7 months.
-- **Cost.** The layer adds $26, $303, and $3,270 a month at 50, 300, and 2,000 developers, 10% to 35% of the base, with the largest network's fan-out shards and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
+- **A1 on the base.** 500 agents put 27.6 commands/s on the monorepo's group, 25.2/s of it agent class with lease renewals and task updates, 11 times under the base's 300 commands/s Milestone 0 gate, and about 305 req/s on its leader against 1,000. Feed polls, 45/s, go to learners, or to followers while a group has none, and never to the leader (`cost_agents.py --a1`) [inference]. With git CPU measured on torvalds/linux and composed clone-cache misses, the network's git cache needs 2.68 vCPU and k = 1 shard per warm site (`cost_agents.py --a1`; `tests/m0/results/m0-wp9.md`, B0-34) [measured constants]. Recomputing every open PR's test merge on each base move would need 4 vCPU, and test merges stay lazy, coalesced, and budgeted. `LOG_MAX_BYTES` caps each member's log at 2 GB, and Milestone 0 measured a member seeded with a 3.93 GB metadata tier at 8.45 GB after 30 days, reaching `CHILD_GROUP_AT` (8 GiB) in about 32 days (B0-30) [measured].
+- **Cost.** The layer adds $21, $274, and $2,572 a month at 50, 300, and 2,000 developers, 9% to 28% of the base, with the largest network's fan-out shards (none, at measured git CPU) and an upper bound for held feed polls inside the totals (`scripts/cost_agents.py`). Sandbox compute ($2,827 at 2,000 developers) and model tokens ($182,400 at a guessed $2 a task) for Graftyard-run agents are shown outside that comparison. Opt-in Code Mode would add $5,470 at 2,000 developers.
 
 ## Artifacts' role
 
@@ -17,12 +17,12 @@ None. The evidence comes from `research/artifacts-recheck.md` and `history/revie
 
 - **Size and failure domain.** New repositories cap at 1 GB, so the 5 GB monorepo cannot be created or forked there. A repository is "a single logical instance" whose status degraded with Durable Objects twice, in an open beta with no SLA and no stated RPO or RTO (section 1, question 13).
 - **Prediction.** The predictor runs `merge-tree` inside the network's shard, which holds every branch of the network. Branches in Artifacts sit outside it, so every prediction would fetch first [inference, from candidate C].
-- **Same pattern without Artifacts.** Workspace forks in the same network share packs and keep their refs on their own group (`design/DESIGN.md`, journey 2; `research/agents.md` 8.4). Forks in Artifacts appear to copy objects [inference from the `objects` count, section 3]. Best-of-N attempts fit in a workspace fork today, as N branches under the task's prefix that share packs (`history/review/cloudflare-agents-userwalk.md`, verdict) [inference].
+- **Same pattern without Artifacts.** Workspace forks in the same network share packs and keep their refs on their own group (`design/DESIGN.md`, journey 2; `research/agents.md` 8.4). Forks in Artifacts copy objects: four forks of a 191 MiB repository each reported the source's full size (`tests/m0/results/wp11.md`, (d)) [measured]. Best-of-N attempts fit in a workspace fork today, as N branches under the task's prefix that share packs (`history/review/cloudflare-agents-userwalk.md`, verdict) [inference].
 - **Tokens, for PR heads only.** A write token covers the whole repository, with no branch scope, no protected refs, and no pre-receive veto (section 3). That would matter only if PR heads lived there, because a scratch attempt reaches Graftyard through its own receive path, where `decide` runs [inference].
 - **Measured benefit, attributed.** Candidate B's measured gain, 5 times fewer canonical pushes, comes from landing every 10 minutes, which needs no Artifacts, and its tier costs $811 a month at 2,000 developers (`history/review/cloudflare-agents-judge.md`, most serious flaw of B).
 - **Reasons that do not decide it.** v1-only push is invisible to unmodified clients, because git has no v2 push command, and `filter` is documented as unsupported only among v1 capabilities (implication 3). BYOC and self-hosted run in a Cloudflare account the customer owns, where Artifacts needs only Workers Paid (section 1), and a private repository can be seeded by push to the remote that `create()` returns (section 2), so neither parity nor import is a reason.
 
-**Flip condition.** Artifacts earns one role, a scratch tier for best-of-N attempts that never become pull requests (`research/agents.md` 3.5), only when Milestone 0 shows forks share objects with their source (recheck question 2) and Cloudflare raises the per-repository cap above the install's largest network in writing. The tier falls back to a workspace fork on any Artifacts error, so its failure delays agent attempts and touches no human path. GA under an SLA is then an agent-reliability preference, not an uptime condition (`history/review/cloudflare-agents-foundation.md` finding 10) [inference]. No branch a pull request points at would live there, and the chosen attempt would land through Graftyard's own receive path [inference].
+**Flip condition.** Artifacts earns one role, a scratch tier for best-of-N attempts that never become pull requests (`research/agents.md` 3.5), only when forks share objects with their source (recheck question 2) and Cloudflare raises the per-repository cap above the install's largest network in writing. Milestone 0 measured that forks do not share, so the condition fails today. The tier falls back to a workspace fork on any Artifacts error, so its failure delays agent attempts and touches no human path. GA under an SLA is then an agent-reliability preference, not an uptime condition (`history/review/cloudflare-agents-foundation.md` finding 10) [inference]. No branch a pull request points at would live there, and the chosen attempt would land through Graftyard's own receive path [inference].
 
 ## Shape
 
@@ -39,31 +39,55 @@ New pieces are one Worker script (`graft-mcp`) in the install account, an insigh
 /// tokens included, passes DEMOTE_PER_MIN write commands on this group. A trailer never classes a user-token push on its
 /// own. Fair queuing by App or user runs inside each class. Overflow waits up to AGENT_WAIT. Git then gets HTTP 200 with
 /// report-status `ng <ref> agent admission full, retry after <n>s` and a `remote:` line, and REST gets 429 with
-/// `retry-after` and a "secondary rate limit" message. Under pressure only `PackRef::Stored` pushes queue,
-/// AGENT_QUEUE_MAX caps queued agent commands, and the edge refuses before staging.
+/// `retry-after` and a "secondary rate limit" message. Under pressure, which is more agent bytes queued than one entry
+/// holds or more agent commands queued than the agent bucket admits in 1 s [inference, the M0-WP9 prototype's rule],
+/// only `PackRef::Stored` pushes queue. AGENT_QUEUE_MAX caps queued agent commands, and the edge refuses at the cap at
+/// once, before staging. At 150 admitted agent commands/s the 1,000-command cap is about 7 s of queue and binds long
+/// before the byte cap [measured, `tests/m0/results/m0-wp9.md`, B0-33]. Task API commands (create, cancel, and `PATCH`
+/// of an `AgentTask`) do not count toward DEMOTE_PER_MIN, because a human creating tasks quickly is still a human. The
+/// DEMOTE_PER_MIN count per actor lives in the group's fold, so a leader change does not reset it (in leader memory,
+/// M0-WP9 classed 108 of 399 writes of a fast user token Human for a minute after a leader change).
 pub enum AdmitClass { Human, MergeQueue, Bot, Agent }
 pub const AGENT_SHARE: f32 = 0.5;                                // [guess]
 pub const AGENT_FLOOR: f32 = 0.2;                                // of capacity, which Bot cannot take [guess]
 pub const DEMOTE_PER_MIN: u32 = 60;                              // GitHub's content limit is 80 a minute
 pub const AGENT_WAIT: Duration = Duration::from_secs(30);
 pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent commands and bytes per group [guess]
-/// A group above HOT_PUSHES pushes/s inlines only up to INLINE_MAX_HOT while `PackStore::place` succeeds. When placement
-/// fails or a bucket's readiness probe is red, it inlines up to INLINE_MAX, and LOG_MAX_BYTES archives the extra later.
-pub const INLINE_MAX_HOT: usize = 256 << 10;                     // [guess]; INLINE_MAX stays 1 MiB
+/// A group above HOT_PUSHES pushes/s inlines only up to INLINE_MAX_HOT while `PackStore::place` succeeds; a new leader
+/// takes `hot` from the push count of its last committed entries, not its own pushes since. Every group, hot or not,
+/// also caps each entry at AGENT_INLINE_ENTRY of Agent-class inline pack bytes, and an agent pack that would pass it is
+/// staged as `PackRef::Stored` (while placement fails, refused at once); Human and MergeQueue packs do not count, so it
+/// needs no hot test. It is the rule for a group not yet hot: without it, fresh groups and new leaders put 1.05 to 1.33
+/// MB of agent packs in their first entries, which caused B0-33's sixth-pass leader change [measured,
+/// `tests/m0/results/m0-wp9.md`, fifth to seventh passes], and entries of 84 to 96 agent commands and 450 KB inline kept
+/// Human and MergeQueue p99 at 1.15 to 1.49 s [measured, fourth pass]. While placement fails or a bucket's probe is red,
+/// Human and MergeQueue pushes keep INLINE_MAX (LOG_MAX_BYTES archives extra), and an agent push over INLINE_MAX_HOT is
+/// refused at once, never queued: from apac 1 MiB packs commit at 1.3 to 2.0 MB/s against journey 9's 4.37 MB/s, and
+/// this rule refused 2,500 of 2,500 at once and 0 of 287 Human and MergeQueue pushes [measured, B0-31, third, eighth
+/// passes]. On a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms,
+/// at 256 KiB up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
+pub const INLINE_MAX_HOT: usize = 64 << 10;                      // [measured, B0-32]; INLINE_MAX stays 1 MiB
+pub const AGENT_INLINE_ENTRY: usize = 128 << 10;                 // [guess]
 pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
 /// Per member, beside the 30-day rule. Above it the leader archives the oldest entries to `R2Key::Archive` in two
 /// buckets before followers truncate them, so RPO stays zero. Check runs and statuses are kept 90 days (settable from 1
 /// to 400) as GHES 3.22 does, and `PathSet` rows are deleted when their PR closes.
 pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
-/// Hot networks spread over k shards per warm site (`shards_for`). The network's first shard reports `NetworkLoad`
-/// each minute, and the network group's leader commits k with hysteresis, with no API call or cron.
-pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the k */, pub queue_depth: u32 }
-pub fn fanout(load: &NetworkLoad, k: u8) -> u8;  // up above 0.75 for 3 min, down below 0.4 for 1 h [guess], at most 8
+/// Hot networks spread over k shards per warm site (`shards_for`). Each warm site's first shard of the network reports
+/// `NetworkLoad` each minute, and the network group's leader commits one k for both warm sites from the larger load,
+/// with hysteresis and no API call or cron, so the second warm site holds k shards when the first is lost; it raises
+/// its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte
+/// p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third
+/// pass]. A step up in k takes an idle pool shard that keeps the network warm (`HOT_POOL`), with no rehydrate.
+pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
+pub fn fanout(loads: [&NetworkLoad; 2], k: u8) -> u8;  // up above 0.75 for 3 min, down below 0.4 for 1 h [guess], at most 8
 pub const FANOUT_MAX: u8 = 8;
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
 /// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute. A
 /// compiled TEST_MERGE_BUDGET of the k shards' vCPU serves pushes and dispatch first, then GETs. Over it `mergeable` is
-/// null, or GraphQL `UNKNOWN`, as GHES 3.22 documents.
+/// null, or GraphQL `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at
+/// most 338 ms at p99 [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU
+/// and the budget binds only on eager recompute.
 pub enum TestMerge { Current { merge: Oid, base: Oid }, Stale { since: Oid } }
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
@@ -71,15 +95,17 @@ pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// commands take the Agent admission class and its PRs carry `AgentMeta`. `Graftyard MCP` and user tokens are never
 /// `ActorKind::Agent`, so neither these refusals nor `AgentsExclusive` bind them. For an `Agent`, `decide` refuses an
 /// APPROVE review, `Merge`, ready-for-review, ruleset and bypass edits or use, repository dispatch, workflow dispatch and
-/// re-run, label writes outside the repository's allowlist, branch rename, release and tag creation, webhook and
-/// deploy-key edits, statuses and check runs whose context starts with `graftyard/`, a ref update outside its task's
-/// prefix (a third-party App's `confine` prefix), a Graftyard-run push with no live `AgentTask`, and a push with any
-/// `protected` hit. Refusal texts name the allowed prefix or the protected path. Actions runs for its pushes follow the
-/// repository's agent policy and use fork-PR semantics (read-only token, no secrets) even after approval, until
-/// `AgentGate` holds for that exact head. A push whose token carries a `task` claim lists the base repository's chain in
-/// `Push::deps()`, read `fresh`, so in fork mode the fork group's `decide` checks the task's liveness, the base's
-/// `AgentPolicy`, and the base's leases there. `protected` and `changed` then take their merge base against the base's
-/// default-branch tip.
+/// re-run, label writes outside the repository's allowlist, branch rename, release and tag creation, webhook and deploy-key
+/// edits, commit statuses whose `context` and check runs whose `name` start with `graftyard/`, a ref update outside its
+/// task's prefix (a third-party App's `confine` prefix), a push that would need a ruleset bypass even when the App is a
+/// listed bypass actor, a Graftyard-run push with no live `AgentTask`, and a push with any `protected` hit. Workflow re-run
+/// includes `rerequestCheckSuite`. When a push breaks more than one rule, the refusal names the first in this order:
+/// host-owned ref, stale or missing object, tag creation, live task, prefix, ruleset bypass, protected hit, lease. Refusal
+/// texts name the allowed prefix or the protected path. Actions runs for its pushes follow the repository's agent policy
+/// and use fork-PR semantics (read-only token, no secrets) even after approval, until `AgentGate` holds for that exact
+/// head. A push whose token carries a `task` claim lists the base repository's chain in `Push::deps()`, read `fresh`, so in
+/// fork mode the fork group's `decide` checks the task's liveness, the base's `AgentPolicy`, and the base's leases there.
+/// `protected` and `changed` then take their merge base against the base's default-branch tip.
 pub enum ActorKind { User, Bot, Agent(AgentActor) }
 /// `task` is the installation token's `task` claim. `requester` is the task's `requester`, never a value the controller
 /// supplies. A third-party App's comes from the `External` task its session names.
@@ -89,7 +115,12 @@ pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub request
 /// `prefix` from `session` (`refs/heads/graftyard/<session>/`) and never reads it from the body. `snapshot` is the create
 /// index. A token request's additive `graftyard_task` field must name a live `GraftyardRun` task. The requesting App must
 /// be the task's App or the install's `graftyard-workspace`, and every repository the token covers must be the task's
-/// repository or its workspace fork. The minted token carries the task as its `task` claim.
+/// repository or its workspace fork, so a token request with `graftyard_task` must name `repositories` [measured,
+/// `tests/m0/results/m0-wp13.md`, L0-14]. The minted token carries the task as its `task` claim. A title or body edit by a non-writer
+/// after the task's latest `Assigned` entry sets `waiting_for_user` and a host pause. While paused the task counts as
+/// not live for pushes and minting, and its App may set only `waiting_for_user` or a final state. A writer's
+/// reassignment to the controller's bot clears the pause, sets `queued`, and moves `snapshot` to that entry's index
+/// [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 /// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
 /// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
 /// Only `POST .../cancel` sets Cancelled, and a task whose `installation` the owner `Authz` read no longer finds active
@@ -105,24 +136,35 @@ pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: Ta
 pub enum TaskKind { GraftyardRun, External }
 pub enum TaskApiState { Queued, InProgress, Completed, Failed, Idle, WaitingForUser, TimedOut, Cancelled }
 /// A task's id. For a `GraftyardRun` task the host mints a lowercase hyphenated UUID at create, and `prefix` is
-/// `refs/heads/graftyard/<uuid>/`. For an `External` task the creating App names it: 1 to 64 bytes of `[a-z0-9._-]`,
+/// `refs/heads/graftyard/<uuid>/`, matched as the `RefPattern` `refs/heads/graftyard/<uuid>/**`, so a ref needs at least
+/// one segment after the id. For an `External` task the creating App names it: 1 to 64 bytes of `[a-z0-9._-]`,
 /// starting with a letter or digit, with no `..` and no `.lock` suffix, unique among that App's tasks on the repository.
 /// Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is the UUID, or `<app_id>.<name>`. An App may send
 /// its own bare `name`, which the host scopes to the calling App.
 pub enum SessionId { Run(Uuid), External { app: AppId, name: Box<str> } }
 /// `POST .../tasks` for a `GraftyardRun` task returns 422 while the org's `OrgPolicy.agents_enabled` is off, its default.
 /// It needs a human user credential with `contents: write`, never an installation token, an `AgentApp`'s user token, or
-/// a demoted or agent-session actor. The one exception is `graftyard-agent`, the controller's App, from an issue whose latest `Assigned`
-/// entry names its bot, with that entry's actor as `requester`. Every other App creates `External` tasks only. Creating
-/// or cancelling a `GraftyardRun` task sends the controller a first-party-only delivery on the event pipeline to its
-/// webhook hostname, which no other App can subscribe to, so GHES clients never see it. It is the `graftyard_task`
-/// event, signed with the `graftyard-agent` App's webhook secret (`design/AGENT-LAYER.md`, "API reference").
+/// a demoted or agent-session actor. A demoted actor is one past DEMOTE_PER_MIN at the create's own entry, and task
+/// commands are not counted. The one exception is `graftyard-agent`, the controller's App, from an issue whose latest
+/// `Assigned` entry names its bot, with that entry's actor as `requester`. Every other App creates `External` tasks
+/// only. Creating or cancelling a `GraftyardRun` task sends the controller a first-party-only delivery on the event
+/// pipeline to its webhook hostname, which no other App can subscribe to, so GHES clients never see it. It is the
+/// `graftyard_task` event, signed with the `graftyard-agent` App's webhook secret (`design/AGENT-LAYER.md`, "API
+/// reference"). Other Apps' subscriptions to `graftyard_task` are ignored [measured, `tests/m0/results/m0-wp13.md`, L0-14].
 pub const TASKS_OPEN_PER_REQUESTER: u16 = 100;                  // open tasks per requester, or per App without one [guess]
 pub const TASKS_OPEN_PER_REPO: u16 = 2_000;                     // [guess]
 pub const TASK_IDLE: Duration = Duration::from_secs(86_400);    // [guess]
 /// `Merge` of a PR with `AgentMeta` is refused unless `head` is the current head and `satisfied_by` is a writer who is
-/// not the agent App, not the requester, and did not push to that head. Only an APPROVE review sent with a credential
-/// that is neither an `AgentApp`'s nor MCP-issued writes it. `token/scoped` for `Graftyard MCP` takes the additive
+/// not the agent App, not the requester, and did not push to the PR's head ref while the PR was open. A PR whose
+/// `AgentMeta.requester` is empty, as when a confined App opens it without `X-Graftyard-Agent-Session`, needs one more
+/// such approval than `extra_human_approvals` asks, because the requester cannot be excluded. With `requester` empty,
+/// every writer's approval qualifies, the requester's included, which is why one more is needed. Each qualifying
+/// APPROVE writes a row; `Merge` counts distinct `satisfied_by` on the current head and needs
+/// `1 + extra_human_approvals`, plus one when `requester` is empty [measured, `tests/m0/results/m0-wp13.md`, L0-15]. A ref update of a PR's base
+/// whose new tip contains the PR's head is a `Merge` of that PR for these rules, from any surface; `validate` reports
+/// which open `AgentMeta` heads each new tip contains [measured, `tests/m0/results/m0-wp13.md`, L0-03, L0-15]. Only an APPROVE review
+/// sent with a credential that is neither an `AgentApp`'s nor MCP-issued writes it, and an `AgentApp`'s credential
+/// includes its user-to-server tokens [measured, `tests/m0/results/m0-wp13.md`, L0-14]. `token/scoped` for `Graftyard MCP` takes the additive
 /// `graftyard_grant` and `graftyard_write` fields and stores the grant id and its `WriteScope` on the token's `Tokens`
 /// row, and the host refuses approve and merge to a token whose scope lacks them. The commit status renders from the
 /// row for display.
@@ -132,9 +174,9 @@ pub const PROTECTED_PATHS: &[&str] = &[".github/workflows/**", ".github/actions/
     ".github/CODEOWNERS", "docs/CODEOWNERS", "**/AGENTS.md", "**/CLAUDE.md", "**/GEMINI.md", ".github/agents/**",
     ".github/copilot-instructions.md", ".github/instructions/**", ".claude/**", ".cursor/**", ".cursorrules",
     ".codex/**", ".mcp.json", ".vscode/**"];
-/// From `validate`, for each ref update by an `Agent` or under an agent prefix, the paths that the new tip's tree changes
-/// against its merge base with the default branch and against the old tip, where they match the protected list. This
-/// catches an existing outsider commit pushed under an agent ref.
+/// From `validate`, for each ref update by an `Agent` or under an agent prefix, the paths that the new tip's tree
+/// changes against its merge base with the default branch or against the old tip (the union of both diffs), where they
+/// match the protected list. This catches an existing outsider commit pushed under an agent ref.
 pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 4]> }
 /// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push` carries
 /// `changed` beside `protected` and `provenance`, `decide` matches it against live Exclusive leases, and `PathSet.paths`
@@ -142,16 +184,32 @@ pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 
 /// prefix run `validate` on an empty staged pack, so they get all three outputs.
 pub struct ChangedPaths { pub refname: RefName, pub paths: Vec<Box<str>> /* <= PATHS_MAX */, pub truncated: bool }
 pub const PATHS_MAX: usize = 1_000;
-/// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves it
-/// empty and never fails the push. `decide` records `Session` only when the commit's pusher has a matching `AgentTask`
-/// or `AgentMeta`. Every other trailer stays `Claimed`, shown unlinked after https scheme and host checks.
-pub struct Provenance { pub commit: Oid, pub sources: SmallVec<[Source; 2]> }
+/// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves
+/// it empty and never fails the push. Trailers come from the last paragraph of each new commit's message, as `git
+/// interpret-trailers --parse` reads them, with at most 32 per commit and 1,024 bytes per value, control and bidi
+/// characters stripped, past which the rest is dropped and the push proceeds [guess, the M0-WP10 prototype's caps]. A
+/// commit that fails `index-pack --strict` never reaches the parser. `AiNote` is recorded for each blob of the
+/// `refs/notes/ai` tree diff whose fan-out path names a commit object id, and other entries are ignored. An `Agent`
+/// update of `refs/notes/ai` is refused as outside its prefix, because one shared ref under a fleet's pushes would
+/// conflict on every write; an agent commit's provenance is its `Session` link and trailers. `decide` records `Session`
+/// only when the pusher is an App's installation token and the commit names, by `AgentMeta` or by a `Graftyard-Session`
+/// value of exactly `https://<host>/<base owner>/<base repo>/_graftyard/sessions/<id>`, an `AgentTask` of that App,
+/// live or final. Every other trailer stays `Claimed`, shown unlinked after https scheme and host checks [measured,
+/// `tests/m0/results/m0-wp10.md`, B0-37]. `refname` is the ref the push moved. An agent commit with no `Session` link
+/// still maps to its PR through that ref after the branch is deleted: in M0-WP16, 6,166 of 10,489 commits resolved only
+/// this way [measured, `tests/m0/results/m0-wp16.md`, L0-10].
+pub struct Provenance { pub commit: Oid, pub refname: RefName, pub sources: SmallVec<[Source; 2]> }
 pub enum Source { Claimed { key: TrailerKey, value: Box<str> }, AiNote { note: Oid }, Session(SessionId) }
 /// Only GraftyardSession, ClaudeSession, AmpThreadId, and AssistedBy class a push. CoAuthoredBy is recorded, never classes.
 pub enum TrailerKey { GraftyardSession, ClaudeSession, AmpThreadId, CoAuthoredBy, AssistedBy }
-/// Host-owned. `decide` refuses every update under `refs/graftyard/` except appends by the install's
-/// `graftyard-workspace`, and deletion runs only through a retention command. Session logs are always `PackRef::Stored`.
-/// Never in v0 or v1 advertisement, and listed by v2 `ls-refs` only to a `ref-prefix` that starts with it. The vault,
+/// Host-owned. `decide` refuses every update under `refs/graftyard/` except a create or fast-forward of its own task's
+/// session ref by `graftyard-workspace` with that task's `task` claim while the task is live, and deletion runs only
+/// through a retention command. Receive-pack never advertises the ref, so a later update must name the current tip,
+/// which `graftyard-workspace` reads by v2 `ls-refs`; plain `git push` can only create it [measured, M0-WP10]. Session
+/// logs are always `PackRef::Stored`. Never in v0 or v1 advertisement, and listed by v2 `ls-refs` only when one
+/// `ref-prefix` begins with `refs/graftyard/sessions/` and the ref begins with that `ref-prefix`. Refs under
+/// `refs/graftyard/` outside it are never advertised or listed. A v2 `fetch` of a session log's object id is served to
+/// any reader of the repository, as for any object; listing is the only gate [inference, as GitHub serves objects]. The vault,
 /// lifeboat, and `RestoredTo` carry it.
 pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
 /// A claim by one holder on paths or refs of one repository: core-tier rows on its group, written by `LeaseAcquire`,
@@ -189,7 +247,8 @@ pub const LEASES_PER_APP: u16 = 1_000;                          // live leases p
 pub const PLAN_LEASES_PER_REPO: u16 = 500;                      // live plan-block leases per repository [guess]
 pub const LEASES_PER_REPO: u16 = 4_000;                         // live leases per repository
 /// `AgentPolicy.leases`. Advisory never refuses a push. AgentsExclusive refuses an `ActorKind::Agent` push whose `changed`
-/// paths overlap another holder's live Exclusive lease, and names the lease and its holder. With `truncated` set, a
+/// paths overlap another holder's live Exclusive lease, and names the lease and its holder. Another holder's lease is one
+/// whose `session` differs from the pusher's task, or, for a pusher with no task, whose actor differs. With `truncated` set, a
 /// changed directory overlaps any glob under it. Exclusive globs are indexed by literal prefix, so the check fits in
 /// group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
 pub enum LeaseEnforce { Advisory, AgentsExclusive }
@@ -230,10 +289,11 @@ pub enum AgentKind { GraftyardRun, ThirdParty, Mcp }
 /// `X-Graftyard-Agent-Session` header, accepted only for a task whose `app` is the same App, and fills `agent_session_id`
 /// on `pull_request.create` (R6). `requester` is that task's. A PR with `AgentMeta` merges only through `AgentGate`.
 pub struct AgentMeta { pub app: AppId, pub session: Option<SessionId>, pub requester: Option<UserId>, pub repo: RepoId }
-/// Per repository. `ci` defaults to `Approve`, as on GitHub. `AutoReadOnly` runs agent-push workflows at once with
-/// fork-PR semantics, and only jobs that reference secrets wait. `labels` is the allowlist agents may write, and
-/// `extra_paths` adds build entry points to PROTECTED_PATHS. The agent ruleset template also turns on the 3.22 rule
-/// that requires an approval from someone other than the last pusher (`research/agents.md` 4.15).
+/// Per repository. `ci` defaults to `Approve`, as on GitHub. `AutoReadOnly` runs agent-push workflows at once with fork-PR semantics, and
+/// only jobs that reference secrets wait. A job's secrets are filled only when it is released, after `AgentGate` holds for that job's own
+/// head, so a reference the scan misses runs with none [measured, `tests/m0/results/m0-wp14.md`, L0-04 policy replay]. `labels` is the
+/// allowlist agents may write, and `extra_paths` adds build entry points to PROTECTED_PATHS. The agent ruleset template also turns on the
+/// 3.22 rule that requires an approval from someone other than the last pusher (`research/agents.md` 4.15).
 pub struct AgentPolicy { pub ci: CiMode, pub labels: SmallVec<[Box<str>; 8]>, pub extra_paths: Vec<Box<str>>,
                          pub extra_human_approvals: u8, pub leases: LeaseEnforce /* default Advisory */ }
 pub enum CiMode { Approve, AutoReadOnly }
@@ -246,9 +306,15 @@ pub struct PathSet { pub refname: RefName, pub pr: Option<PrNumber>, pub head: O
                      pub paths: Vec<Box<str>>, pub planned: Vec<Box<str>>, pub truncated: bool }
 pub enum Verdict { Clean, PathOverlap, Conflict { files: SmallVec<[Box<str>; 8]> }, Stale }
 impl GitCacheShard {
-    /// `git merge-tree --write-tree --name-only` of `head` against up to PREDICT_PAIRS refs whose PathSet rows overlap,
-    /// on the network's second warm site, under PREDICT_CPU of its shards' vCPU, paused while that site leads. PRs that
-    /// are approved, queued, or requested by a human run first.
+    /// `git merge-tree --write-tree --name-only` against up to PREDICT_PAIRS refs whose PathSet rows overlap, on the
+    /// network's second warm site, under PREDICT_CPU of its shards' vCPU, paused while that site leads. `head` is first
+    /// landed on `base` as a merge commit, and each other ref is merged into that commit with git's own merge base, as
+    /// the queue would merge them; a side that conflicts with `base` itself is `Stale`. Merging the two tips directly
+    /// called 32 of 33 sampled conflicts that the queue merges cleanly, and this method matched truth on every pair:
+    /// 77 of 77 conflicts and 0 false ones in 5,637 pairs on torvalds/linux [measured, `tests/m0/results/m0-wp16.md`,
+    /// L0-05]. PRs that are approved, queued, or requested by a human run first, and within a class the refs sharing
+    /// the most paths with `head` run first, which ranked every conflict in the top 5. A job still waiting on
+    /// PREDICT_CPU past the 30 s target reports `Stale` for its remaining pairs instead of queueing without limit.
     pub async fn predict(&self, head: Oid, base: Oid, against: &[(RefName, Oid)]) -> Result<Vec<Verdict>, GitError>;
 }
 pub const PREDICT_PAIRS: usize = 8;
@@ -275,18 +341,22 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// whose `cluster` changed, so a label goes when its cluster dissolves and stays on a closed PR.
 
 // ---- Activity feed (`GET /api/graftyard/v1/repos/{owner}/{repo}/activity?cursor=&wait=&paths=`; `contents: read`) ----
-/// A fold over the group's log. Learners serve it, and followers only while no learner answers, never the leader or a
-/// witness. A member holds polls only while following: its last AppendEntries left no gap, and it is not catching up by
-/// `InstallSnapshot`. A member that stops following answers its held polls at once with their cursor and no events, and
-/// refuses new ones. A member holding FEED_HELD_MAX refuses too, the edge tries up to two other serving members, and then
-/// the client gets 429 with `Retry-After` of FEED_BATCH_ALL. Each member reports its peak held count with its read rate,
-/// and `place_learners` adds learners until the peak fits in half of FEED_HELD_MAX each [guess], up to MAX_LEARNERS. A
-/// serving member answers from its applied log with no read-index call, because the cursor orders events, and holds the
-/// request until an event past `cursor` overlaps `paths` or `wait` ends, then waits FEED_BATCH for more. A poll without
-/// `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need an authenticated token with `contents: read`,
-/// take at most FEED_POLLS per token and per client IP at once, and count toward the group's read rate for LEARNER_AT.
-/// `Expired` is emitted at the first entry with `at >= expires`, so clients time expiry themselves from `expires`. A
-/// cursor older than the ring gets 410 with the oldest cursor, and the client reloads leases and tasks from their lists.
+/// A fold over the group's log. Learners serve it, followers only while no learner answers, never a leader or witness. A
+/// member holds polls only while following: its last AppendEntries left no gap, no `InstallSnapshot` catch-up, and it
+/// applied an entry within FEED_BATCH of the leader's `at` [measured: within 1 s in 98.3 to 99.4% of apply batches near
+/// the leader, 81% in SIN, `tests/m0/results/m0-wp12.md`]. One that stops following or lags further answers held polls at
+/// once with their cursor and no events, refusing new ones; the edge tries up to two others, then, if all refused as
+/// lagging and the least lagged is a learner, sends it there under FEED_HELD_MAX, else answers 429 with `Retry-After` of
+/// FEED_BATCH_ALL [measured, L0-12 `t6`: p99 1,925 to 2,551 ms; the value [inference]: 5,000 pollers re-send at most 500
+/// polls/s at 10 s, not 2,500/s at 2 s as in LF-12 `r27`'s 243,147 such 429s]. A full member gets the same 429 at once:
+/// its feed calls fell 45 to 55%. Members report peak held, refusals, and read rate; `place_learners` adds learners until
+/// held plus refused fit in half of FEED_HELD_MAX each, up to MAX_LEARNERS [measured, LF-12]. A serving member answers
+/// from its applied log with no read-index call and holds a poll until an event past `cursor` overlaps `paths` or `wait`
+/// ends, then waits FEED_BATCH for more; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls
+/// need a token with `contents: read`, take at most FEED_POLLS per token and client IP at once, and count toward
+/// LEARNER_AT's read rate; the serving member counts FEED_POLLS over its held polls, across isolates [measured,
+/// `tests/m0/results/m0-wp13.md`, L0-15]. `Expired` comes at the first entry with `at >= expires`; clients time it from
+/// `expires`. A cursor older than the ring gets 410 with the oldest; the client reloads leases and tasks.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },
@@ -316,6 +386,12 @@ pub const AGENT_MEDIA_TYPE: &str = "application/vnd.graftyard.agent+json";
 /// Added beside `body` and `body_html`, which stay byte-identical to GHES. MCP applies it to every text field it
 /// returns, comments, review comments, commit messages, diffs, file contents, and check-run text included.
 pub struct TrustView { pub visible: Box<str>, pub hidden: Hidden, pub author: AuthorTrust }
+/// `visible` drops at least what GitHub's gfm renderer hides: comments (HTML5 closers included), processing
+/// instructions and declarations, every attribute except `href` and `src` (counted with link titles), titles of links,
+/// images, and reference definitions, unreferenced reference and footnote definitions, everything in a `<details>`
+/// without `open` but its first `<summary>` (an opening tag in code still opens), and HIDDEN_CHARS raw or as references
+/// outside code. Where it cannot tell what a reader sees, it drops more. Against GitHub's renderer it hid 130 of 130
+/// constructs that GitHub hid 126 of [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 pub struct Hidden { pub html_comments: u32, pub invisible_chars: u32, pub link_title_text: u32, pub collapsed: u32 }
 /// What `visible` drops and `invisible_chars` counts: soft hyphen, format and bidirectional controls, Hangul and other
 /// fillers, interlinear annotation marks, the tag block, and the variation-selector supplement. Emoji variation
@@ -349,6 +425,9 @@ pub struct McpRefresh { pub sub: UserId, pub aud: Url, pub client: Url, pub gran
 /// a live `graftyard_grant` of that user and a `graftyard_write` within the grant gets 422.
 pub struct McpGrant { pub id: GrantId, pub client: Url, pub redirect_hosts: SmallVec<[Hostname; 2]>, pub generation: u32 }
 /// The host enforces it from the scoped token's `Tokens` row, and `graft-mcp` also hides approve and merge tools without it.
+/// Without `WriteApproveMerge` the deny-list refuses APPROVE reviews, PR merges, `POST /merges`, auto-merge, and ref
+/// updates that would merge an agent PR; `codemode.request()` takes repository REST paths only [measured, `tests/m0/results/m0-wp13.md`,
+/// L0-15].
 pub enum WriteScope { Read, Write, WriteApproveMerge }
 pub enum Toolset { Context, Repos, Issues, PullRequests, Checks, Coordination, Provenance }
 /// Every tool is one to three REST calls through the edge with `upstream`, so rulesets, `decide`, and Authz rule.
@@ -380,18 +459,17 @@ pub struct CodeMode { pub spec: &'static OpenApi /* ghes-3.22 */ }
 /// Script variables that `graftyard agents init` sets when Wrangler creates `graft-agents-front` and the agents
 /// `graft-ops`: the install's trust anchor, as the install's own scripts carry it. `host` is the install's hostname.
 pub struct AgentsAnchor { pub install: InstallId, pub customer: Ed25519Public, pub host: Hostname }
-/// The part of the install's `Release` fold the agents account acts on, built from
-/// `GET /api/graftyard/v1/release/entries?after=<index>` ("API reference"). An entry is accepted only in index order,
-/// only when its `Bound.install` is `AgentsAnchor.install`, and only under a key that the accepted `Keys` chain names,
+/// The part of the install's `Release` fold the agents account acts on, built from `GET
+/// /api/graftyard/v1/release/entries?after=<index>` ("API reference"). An entry is accepted only in index order, only
+/// when its `Bound.install` is `AgentsAnchor.install`, and only under a key that the accepted `Keys` chain names,
 /// starting from a genesis signed by `AgentsAnchor.customer`. A `graft-agents-front` isolate refreshes it on a request
 /// once it is older than POINTER_TTL, never to a lower index, and keeps the last value when a refresh fails, so no
 /// webhook waits on the install. The agents `graft-ops` reads the same view each minute and executes `ControllerRoll`,
 /// `Rotate` of an agents-account secret, `Halt`, `Resume`, and `Abort` for `Script::AgentsFront` and
 /// `Script::Controller` with the agents account's deploy token. It records its uploads and steps as `ReleaseUploaded`,
 /// `IntentStep`, and `IntentDone`, signed with `Keys.agents_executor`, and submits them, and the pre-signed
-/// `ControllerPointer` undo on a gate breach, through
-/// `POST /api/graftyard/v1/release/entries`. Both readers authenticate with an App JWT signed by the `graftyard-agent`
-/// key from the agents Secrets Store.
+/// `ControllerPointer` undo on a gate breach, through `POST /api/graftyard/v1/release/entries`. Both readers
+/// authenticate with an App JWT signed by the `graftyard-agent` key from the agents Secrets Store.
 pub struct AgentsReleaseView { pub index: Index, pub keys: Keys, pub controller: Option<VersionId>,
                                pub current: Option<IntentId> }
 /// `graft-agents-front`, on the controller's webhook hostname, forwards every request to `graft-controller` over a
@@ -410,19 +488,31 @@ pub enum TaskState { Queued, Running { sandbox: SandboxId, last_push: Option<Oid
                      Draft { pr: PrNumber }, Done, Failed { reason: Box<str> }, Cancelled }
 /// Counted from each model response's usage. Over any limit the task ends as `Failed { reason }` with an issue comment.
 pub struct TaskBudget { pub task_tokens: u64, pub org_month_tokens: u64, pub wall: Duration /* default 60 min */ }
-/// Runs in the Sandbox outbound handler, outside the sandbox, as a default-deny router. A request no `Allowed` arm
+/// Runs outside the sandbox as one `WorkerEntrypoint` that the controller's Durable Object registers with
+/// `interceptOutboundHttps("*")` and `interceptAllOutboundHttp()` on a container started with `enableInternet: false`.
+/// That flag is what makes it default-deny: every other port and protocol has no route out, and only ports 80 and 443
+/// reach the router. The router refuses plain HTTP, never follows a redirect, and holds the task in the entrypoint's
+/// props, because a container has 128 intercept entries and none can be removed while it runs [measured, `tests/m0/results/m0-wp14.md`, L0-02;
+/// doc, https://developers.cloudflare.com/containers/api/durable-object-container/]. A request no `Allowed` arm
 /// matches is refused. On the Graftyard host it always overwrites `Authorization`, `Cookie`, and URL userinfo with the
 /// task's token, and refuses receive-pack commands outside the task's prefix and every status or check-run write.
 pub fn outbound(req: Request, task: &Task, tokens: &TokenCache) -> Result<Request, Refused>;
 pub enum Allowed {
-    /// Smart HTTP on the base and fork repositories, and REST under `/api/v3/repos/{base or fork}/`. GraphQL, gists,
-    /// registries, uploads, and every other owner path are refused.
+    /// Smart HTTP on the base and fork repositories, and REST under `/api/v3/repos/{base or fork}/`, matched
+    /// case-insensitively, after refusing percent-encoded, dot-segment, and empty-segment paths and any
+    /// `X-HTTP-Method-Override`. Receive-pack is refused on the base, and on the fork the command list is parsed and a
+    /// ref outside the task's prefix is refused there. The `graftyard-agent` token is attached for the base and the
+    /// `graftyard-workspace` token for the fork. GraphQL, gists, registries, uploads, and every other owner path are
+    /// refused [measured, `tests/m0/results/m0-wp14.md`, L0-02].
     GraftyardHost { base: RepoRef, fork: Option<RepoRef> },
-    /// The inference path only, with the model key attached here. The JSON body is parsed, and `mcp_servers`,
-    /// server-side tool types (web fetch, web search, code execution), and file and batch endpoints are refused.
+    /// The inference path only, with the model key attached here. The JSON body is parsed, and `mcp_servers`, any
+    /// tool whose `type` is not a client tool (`function`, `custom`, or none), and file and batch endpoints are
+    /// refused. The router forwards the body it parsed, re-serialized, never the sandbox's bytes [measured, `tests/m0/results/m0-wp14.md`,
+    /// L0-02].
     ModelInference { host: Hostname, path: &'static str },
-    /// GET only, to a registry that never fetches upstream on demand, or a customer mirror with that disabled.
-    /// Unknown Go module paths are refused.
+    /// GET only, with no query string, to a registry that never fetches upstream on demand, or a customer mirror with
+    /// that disabled. Unknown Go module paths are refused: the path is decoded with the proxy protocol's `!x` case
+    /// escape and must equal a listed module, not merely start with one [measured, `tests/m0/results/m0-wp14.md`, L0-02].
     Registry { host: Hostname },
 }
 /// Pushed by `graftyard-workspace` for the controller, after secret scanning and redaction of large tool outputs, as a
@@ -452,7 +542,7 @@ The base's commit path, `verify`, the merge queue's `parent_tip` rule, stateless
 
 **Leases.** A lease lives on its repository's group, beside the refs it describes, so it gets the group's RPO zero, 11.5 s failover, vault, lifeboat, and `RestoredTo` with no new object class. The endpoints are `POST /api/graftyard/v1/repos/{owner}/{repo}/leases`, `POST .../leases/{id}/renew`, `DELETE .../leases/{id}`, and `GET .../leases?paths=`. Any token with push access may acquire a Shared lease. An App token must name its session, and an `ActorKind::Agent` token may name refs only inside its task's prefix or its App's `confine` prefix. Only a holder with a live task may take an Exclusive lease, one per task, with a literal first path segment in every glob, and after `EXCLUSIVE_MAX` (4 h) it reads as Shared. Acquire returns the lease and every other live lease that overlaps it. Only an Exclusive acquire that overlaps another holder's Exclusive lease conflicts, and it returns 409 with those leases and writes nothing. Renew moves `expires` and changes nothing else. Only the holder renews or releases, and a repository admin may release any lease. A lease whose holder no longer passes the owner `Authz` read counts as released. Uninstalling or suspending an App fails that same read for its tasks, which read as cancelled, so neither needs a sweep. Lease commands from agent tokens take `AdmitClass::Agent`. At task start the controller takes a Shared lease on its planned paths instead of writing a `graftyard-plan` block. The block parser stays as the GHES-compatible way to declare intent, with the grammar in "API reference". A block in a draft PR body becomes a Shared lease held by whoever wrote the block, only if that editor has push access, live while the draft is open and at most 24 h after its last push. Plan-block leases count toward the editor's `LEASES_PER_HOLDER` and toward `PLAN_LEASES_PER_REPO` (500), so outsiders cannot fill a public repository's cap. Expiry compares `expires` with the entry's `at`, which only the leader stamps. Entries of one term carry one leader's clock, terms never interleave, and `at` never decreases. The base keeps a leader's `LEASE` of 9 s, less `DRIFT` of 500 ms, inside a follower's `ELECTION_AFTER` of 10 s, and assumes member clocks drift by under 500 ms (`design/DESIGN.md`, Open questions). If that bound also holds between two members' clocks, a leader change makes a lease look live at most `DRIFT` (500 ms) longer, or lapse at most 500 ms sooner, than one clock would. Two holders can then share Exclusive scope for at most 500 ms, and only when the first holder has not renewed for a whole `LEASE_TTL`. Leases accept that as advisory slack [inference]. A stall extends leases only through the base's recorded stall window (`design/DESIGN.md`, Shape, `LogEntry.extend`). The first entry after a stall carries `ExtendLeases { since, by }`, and every lease with `expires` after `since` moves by `by`. Actions job leases use the same rule. Idle time never counts, so a lease on a quiet repository still lapses at `expires`.
 
-**Tasks and the activity feed.** The task API is the `AgentTask` row made public under `/api/graftyard/v1/repos/{owner}/{repo}/tasks`, never under `/api/v3/agents/*` (R24). `POST` creates a Graftyard-run task from `issue` or `prompt`. It returns 422 until an org admin turns on `agents_enabled`, which is off by default, so Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Only a human user credential with `contents: write` may create one, never an installation token, an `AgentApp`'s user token, or a demoted or agent-session actor. The controller App is the one exception, and only from an issue whose latest `Assigned` entry names its bot. The row records the creator and snapshots the issue at the create index, and `TASKS_OPEN_PER_REQUESTER` (100) and `TASKS_OPEN_PER_REPO` (2,000) cap open tasks [guess]. A prompt is at most 64 KiB, stored on the row, and trusted as the writer's text, since only a writer can send one. An `AgentApp` creates a `kind: external` task to report its own work and name the session its leases use. It names the human who prompted it as `requester`, gets no prefix tokens, and stays under its `confine`. `GET` lists tasks by `state`, `app`, `requester`, and `issue`, and `GET /{id}` returns one with its leases. `POST /{id}/cancel` is open to the requester, a repository admin, or the task's App. `PATCH /{id}` lets the task's App set `state`, `pr`, and `summary`, but never `cancelled` or `timed_out`, and never out of a final state. A task with no update for `TASK_IDLE` (24 h [guess]) reads as `timed_out`. `GET /{id}/log` returns the `SessionLog` JSON. Task commands from human tokens take `Human`, and from agent tokens `Agent`. For fine-grained tokens and Apps, external create and cancel need `issues: write` plus `contents: read`, as GHES 3.22 gates `POST /repos/{owner}/{repo}/issues` on `issues: write` (https://docs.github.com/en/enterprise-server@3.22/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens). Lists and states need `metadata: read`. Prompts, `/log`, session pages, and the feed's path fields need `contents: read`, because a session log holds diffs and test output. The feed (Shape, `ActivityEvent`) answers who is working on what. Every free-text value in it is a `TrustView`. Polling needs an authenticated token, at most 2 polls at once per token and 50 per client IP [guess]. Learners serve it, or followers while a group has none. A member holds at most `FEED_HELD_MAX` (1,000 [guess]) polls, and a poll that finds every tried member full gets 429 with `Retry-After`. Durable Object duration "is shared across all requests active on an Object at once" (https://developers.cloudflare.com/durable-objects/platform/pricing/), so held polls add no duration on a group that commits every 100 ms, as A1's does. On an otherwise idle group one held poll keeps one member active, and "Cost" prices that as an upper bound.
+**Tasks and the activity feed.** The task API is the `AgentTask` row made public under `/api/graftyard/v1/repos/{owner}/{repo}/tasks`, never under `/api/v3/agents/*` (R24). `POST` creates a Graftyard-run task from `issue` or `prompt`. It returns 422 until an org admin turns on `agents_enabled`, which is off by default, so Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Only a human user credential with `contents: write` may create one, never an installation token, an `AgentApp`'s user token, or a demoted or agent-session actor. The controller App is the one exception, and only from an issue whose latest `Assigned` entry names its bot. The row records the creator and snapshots the issue at the create index, and `TASKS_OPEN_PER_REQUESTER` (100) and `TASKS_OPEN_PER_REPO` (2,000) cap open tasks [guess]. Controller-created tasks count toward the assigning user's open-task cap [measured, `tests/m0/results/m0-wp13.md`, L0-14]. A prompt is at most 64 KiB, stored on the row, and trusted as the writer's text, since only a writer can send one. An `AgentApp` creates a `kind: external` task to report its own work and name the session its leases use. It names the human who prompted it as `requester`, gets no prefix tokens, and stays under its `confine`. `GET` lists tasks by `state`, `app`, `requester`, and `issue`, and `GET /{id}` returns one with its leases. `POST /{id}/cancel` is open to the requester, a repository admin, or the task's App. `PATCH /{id}` lets the task's App set `state`, `pr`, and `summary`, but never `cancelled` or `timed_out`, and never out of a final state. A task with no update for `TASK_IDLE` (24 h [guess]) reads as `timed_out`. `GET /{id}/log` returns the `SessionLog` JSON. Task commands from human tokens take `Human`, and from agent tokens `Agent`. For fine-grained tokens and Apps, external create and cancel need `issues: write` plus `contents: read`, as GHES 3.22 gates `POST /repos/{owner}/{repo}/issues` on `issues: write` (https://docs.github.com/en/enterprise-server@3.22/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens). Lists and states need `metadata: read`. Prompts, `/log`, session pages, and the feed's path fields need `contents: read`, because a session log holds diffs and test output. The feed (Shape, `ActivityEvent`) answers who is working on what. Every free-text value in it is a `TrustView`. Polling needs an authenticated token, at most 2 polls at once per token and 50 per client IP [guess]. Learners serve it, or followers while a group has none. A member holds at most `FEED_HELD_MAX` (1,000 [guess]) polls, and a poll that finds every tried member full gets 429 with `Retry-After`. Durable Object duration "is shared across all requests active on an Object at once" (https://developers.cloudflare.com/durable-objects/platform/pricing/), so held polls add no duration on a group that commits every 100 ms, as A1's does. On an otherwise idle group one held poll keeps one member active, and "Cost" prices that as an upper bound.
 
 | `AgentTask.state` | `queued` | `in_progress` | `waiting_for_user` | `completed` | `failed` | `timed_out` | `cancelled` | `idle` |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -466,14 +556,14 @@ A stronger form of the router runs the model loop in the controller, so the sand
 
 1. Writes with agents pushing in-repo, as third-party fleets do. Agent-class commands are pushes 4.17/s, PrSync for them 4.17/s, test-merge records 4.17/s, draft PR opens 0.42/s, REST writes 3.75/s [guess, 9 of 60 calls], `AgentTask` entries and task state changes 1.67/s [guess, a row and 3 state changes for every task], lease acquires and releases 0.83/s, lease renewals at `LEASE_TTL / 3` 2.50/s [guess, one lease per agent], `RequiredCheck` from agent CI 1.25/s, overlap and provenance check runs 2.08/s [guess, written on a changed verdict, about one push in four per check], and session-log pushes 0.21/s. That is 25.2/s, all counted against `AGENT_SHARE`, because agent tokens, agent refs, and agent PRs caused them. Human approvals that write `AgentGate` (0.42/s) and human, queue, and bot commands (2.0/s) bring the group to 27.6 commands/s against the 300 commands/s gate, 11 times headroom.
 2. With Graftyard-run agents on a workspace fork, 4.38 pushes/s land on the fork's own group. The base group keeps 23.3 commands/s (13 times), because PrSync, test-merge records, check runs, tasks, and leases stay on the base.
-3. Entry bytes. At about 10 entries/s on enam and 6/s on apac (`design/DESIGN.md`, Scale), entries hold 15 MB/s and 9 MB/s. Pushes at the base's 40 KB average inline size use 0.16 MB/s. If every push carried a 1 MiB pack, the group would need 4.17 MB/s with one big push per entry. `INLINE_MAX_HOT` stores larger packs in buckets on hot groups while placement succeeds [inference]. `LOG_MAX_BYTES` holds each member's log at 2 GB, so after 30 days a member seeded with the base's 4 GB metadata tier holds about 7.2 GB, the tier, 2.0 GB of log (71 GB uncapped, the rest archived to two buckets), and 1.18 GB of agent rows. 500 live leases take 0.29 MB and the feed's ring 2.9 MB.
+3. Entry bytes. Pushes at the base's 40 KB average inline size use 0.16 MB/s, against 15 MB/s at 10 entries/s. If every push carried a 1 MiB pack, the group would need 4.17 MB/s, against 2.0 MB/s measured from an apac leader (one 1 MiB pack per entry, round p50 0.55 s to enam) [measured, `tests/m0/results/m0-wp9.md`, B0-31]. `INLINE_MAX_HOT` stores larger packs in buckets on hot groups while placement succeeds, and while placement fails agent pushes over it get the agent refusal at once. `LOG_MAX_BYTES` holds each member's log at 2 GB, so after 30 days a member seeded with a 3.93 GB metadata tier (4.57 GB on disk) holds 8.45 GB, growing 0.055 GB a day [measured, `tests/m0/results/m0-wp9.md`, B0-30]. `cost_agents.py --a1`, with on-disk factors of 1.16 for the tier and 1.4 for small agent rows, prints 8.29 GiB: the 4 GiB tier at 4.64 GiB, 2.0 GiB of log (71 GB uncapped, the rest archived to two buckets), and 1.65 GiB of agent rows. 500 live leases take 0.29 MB and the feed's ring 2.9 MB.
 4. Leader requests. The base's 33 CI ref reads/s and 200 API reads/s, plus 21 agent REST reads, 9 MCP-backed reads, 8 push ref reads, 1 clone ref read, and 4 `PathSet` scans, make 277, plus 27.6 commands, about 305 req/s against 1,000 (3.3 times). Feed polls never reach the leader. Followers and learners answer them from their applied log past the cursor, with no read-index call. Of 500 pollers, the 250 that send `paths` make 20/s, half timing out at 25 s and half returning early on an overlapping event, and the 250 that send none make 25/s at one poll per `FEED_BATCH_ALL` of 10 s [guess split]. That is 45/s, about 22/s and 250 held polls on each follower, a quarter of `FEED_HELD_MAX`, and the group's reads come to 322/s, under the base's 500 reads/s `LEARNER_AT`, which feed polls count toward (`design/DESIGN.md`, Shape).
-5. Git CPU. With one clone-cache miss model, index-pack is 2.19 vCPU, test merges 6.25, agent CI clone-cache misses 1.25 (each of a task's 3 CI jobs checks out a fresh tip), agent clone misses 0.25, and queue merges 0.25, 10.2 vCPU in all [guess constants from `scripts/cost.py`]. Pushes validate on any caught-up shard of the k, so every term spreads by rendezvous, and the most loaded shard carries about the average [inference]. The binding limit is `TEST_MERGE_BUDGET`, 25% of the k shards, which must cover 6.25 vCPU of head-push merges, so `fanout` sets k = 7 per warm site, 28 vCPU at 36%. That is 12 extra warm `standard-4` instances from the hot pool, $990 a month if A1's rate held all month. At 5 pushes a task k = 4, the $495 inside the 2,000-developer total.
-6. Test merges. Recomputing all 500 open PRs' test merges on each of 10 base moves a minute would need 125 vCPU, so they are lazy and coalesced to one per (PR, base tip). 500 agents polling their PR every 5 s ask 25 vCPU even at one compute per PR per 30 s, and the budget has 0.75 vCPU left after head pushes. Most polls see `mergeable: null` and retry, as GHES 3.22 documents while "a background job" computes it (https://docs.github.com/en/enterprise-server@3.22/rest/pulls/pulls), and Actions dispatch for every `pull_request`-family event takes its merge ahead of them [inference].
+5. Git CPU. With one clone-cache miss model, index-pack is 0.88 vCPU, test merges 0.21, agent CI clone-cache misses 0.94 (each of a task's 3 CI jobs checks out a fresh tip, composed from the cached tip), agent clone misses 0.19, queue merges 0.01, composed-miss base renewal 0.38, and composed-miss part builds 0.08 (0.5 CPU-s a tip move, once per network), 2.68 vCPU in all [measured constants from `scripts/cost.py` and `scripts/cost_agents.py`, `tests/m0/results/m0-wp9.md`, B0-34]. Pushes validate on any caught-up shard of the k, so every term spreads by rendezvous, and the most loaded shard carries about the average [inference]. Neither `FANOUT_TARGET` nor `TEST_MERGE_BUDGET` binds: head-push merges use 0.21 vCPU of the budget's 1, so `fanout` keeps k = 1 per warm site, 4 vCPU at 67%. That is 0 extra warm `standard-4` instances, $0 a month, and k = 1 at 5 pushes a task too. Stock clone-cache misses at 25 to 46 CPU-s each would need 38 to 69 vCPU, past `FANOUT_MAX`, which is why misses are composed.
+6. Test merges. One test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99 [measured, `tests/m0/results/m0-wp9.md`, B0-34]. Recomputing all 500 open PRs' test merges on each of 10 base moves a minute would need 4 vCPU, so they stay lazy and coalesced to one per (PR, base tip). 500 agents polling their PR every 5 s ask 1 vCPU at one compute per PR per 30 s, and the budget has 0.79 vCPU left after head pushes. Polls past the budget see `mergeable: null` and retry, as GHES 3.22 documents while "a background job" computes it (https://docs.github.com/en/enterprise-server@3.22/rest/pulls/pulls), and Actions dispatch for every `pull_request`-family event takes its merge ahead of them [inference].
 7. CI. These CI terms assume `ci: AutoReadOnly`. Under the default `Approve`, agent workflow runs would need 75 approvals a minute from 50 humans (`cost_agents.py --a1`), so a Graftyard-run agent relies on the test command its controller runs in the Sandbox before each push [inference].
 8. Bursts. When main moves, many agents rebase and push at once. 500 pushes in 1 s against an agent bucket of 150 commands/s acknowledge within about 3.3 s, their PrSync and test-merge records trailing, while each entry still takes queued merge-queue and human commands first [inference]. A push still waiting after 30 s gets `ng <ref> agent admission full, retry after <n>s`.
 9. Reads. Agent clones (0.83/s, shallow or blobless) share the CI clone-cache keys at the moving tip, which the base writes as 8 replicas (`design/DESIGN.md`, Scale). Hot-network entries are also in the second warm site's bucket.
-10. Prediction. At 8 pairs a push and the base's 1.5 vCPU-s per merge, demand is 50 vCPU on the second warm site against a compiled cap of 14, so about 28% of pairs run at peak, approved, queued, and human-requested PRs first, and the rest report `Stale` until the next push [inference].
+10. Prediction. A real fleet's pushes overlap 1.80 open refs on average, at 0.37 vCPU-s per predicted pair [measured, `tests/m0/results/m0-wp16.md`, L0-05], so demand is 2.8 vCPU, and the second warm site takes k = 2 shards to hold it under `PREDICT_CPU`, with a 4 vCPU cap. If every push used all 8 pairs, demand would be 12.3 vCPU and 32% of pairs would run at peak, approved, queued, and human-requested PRs first, the rest reporting `Stale` until the next push [inference]. One shard saturated at A1's rate in Milestone 0 (p95 364 s), so k = 1 there would fail L0-05.
 11. At 5,000 agents the same mix offers 252 agent-class commands/s. The token bucket admits 150 a second, so one group carries about 3,000 agents at this mix, and the rest get the git `ng` or REST 429 shape after 30 s [inference]. Human and merge-queue commands keep their lane, and `AGENT_FLOOR` keeps 60 commands/s that Bot cannot take. The base Milestone 0 row decides whether that is acceptable, and lanes stay out (Synthesis decision). The 5,000 agents' held feed polls would put 2,500 on each follower, so polls past `FEED_HELD_MAX` get 429 until `place_learners` adds 10 learners, and the followers then hold none [inference].
 12. Rate limits. In managed, `x-ratelimit-*` for an `AgentApp` installation is keyed per minted token. A Graftyard-run task's token makes about 180 requests and 30 content writes an hour, against 5,000 and 500. Keyed per installation, the same fleet would make 45,000 an hour, 3 to 9 times over GitHub's 5,000 to 15,000 (https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api; `cost_agents.py --a1`). `graftyard-insights` and agent-gate writes are exempt from content limits.
 
@@ -482,7 +572,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 1. The vendor's setup page posts a manifest to `https://<host>/settings/apps/new`, the admin creates the App, and the vendor calls `POST /api/v3/app-manifests/{code}/conversions` for the id, key, and webhook secret (`research/agents.md` 2.1, R1).
 2. The admin installs it on selected repositories and, in site admin, marks it an `AgentApp`. That fills `actor_is_agent` and the admission class, so its pushes and the PrSync, check runs, and statuses they cause count against `AGENT_SHARE`. Its PRs carry `AgentMeta`, so `Merge` needs `AgentGate`. Setting `confine` to its prefix (for example `refs/heads/claude/**`) also makes it an `ActorKind::Agent`, so `decide` refuses its approvals, merges, dispatches, releases, and out-of-prefix pushes with GHES's 403 and push-rejection shapes. Texts name the rule, for example `refused: claude may push only refs/heads/claude/**`, because agents recover by reading the message (`research/agents.md` 5.6).
 3. Webhooks (`installation`, `issues`, `pull_request`, `check_run`, `status`, and the rest of R2) leave from Queue consumers, signed as GitHub does (`design/DESIGN.md`, Shape, webhook pattern).
-4. The vendor mints `POST /app/installations/{id}/access_tokens` with `repositories` and `permissions`, pushes over HTTPS, opens PRs (non-draft if it likes), writes and reads check runs (including `graftyard/overlap` where installed), and reads branch protection, all through REST, since Claude's proxy blocks GraphQL (`research/agents.md` 2.2, 8.2).
+4. The vendor mints `POST /app/installations/{id}/access_tokens` with `repositories` and `permissions`, pushes over HTTPS, opens PRs (non-draft if it likes), writes and reads check runs (including `graftyard/overlap` where installed), and reads branch protection, all through REST, since Claude's proxy blocks GraphQL (`research/agents.md` 2.2, 8.2). Codex's GitHub Enterprise app template documents no Checks permission, so its App gets 403 on the Checks API unless the admin adds `checks: read` [measured on the prototype, `tests/m0/results/m0-wp15.md`, L0-07].
 5. It ends with `DELETE /installation/token`. The token is stateless, so the host commits its `jti` and `exp` to the `Tokens` shard of a hash of the `jti`. Its next write-class use reads that shard's leader and fails, reads honor it within 10 s, and the row expires at `exp` (`design/DESIGN.md`, journey 4).
 6. Reachability. The host sits on Cloudflare's anycast edge, so vendor clouds reach it without a tunnel. A customer narrows access with WAF rules (R23) [inference].
 
@@ -491,7 +581,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 1. Alice lists `suggestedActors(capabilities: [CAN_BE_ASSIGNED])`, which includes `graftyard-agent` only where the App is installed. She assigns it through REST `POST /issues/42/assignees` or GraphQL `replaceActorsForAssignable` with `agentAssignment` (`research/agents.md` 1.3, 1.4, R5, R10).
 2. The `Assigned` entry commits on the base group, and `issues.assigned` is delivered to the webhook hostname the agents account owns, where `graft-agents-front` forwards it to `graft-controller`. The controller treats the payload as a trigger only. It re-reads the issue over REST as of the `Assigned` entry and drops a repeated delivery id.
 3. The controller sends `POST /api/graftyard/v1/repos/{owner}/{repo}/tasks` with its `graftyard-agent` token. That is allowed only because the issue's latest `Assigned` entry names its bot and the org has `agents_enabled` on. It commits `AgentTask { kind: GraftyardRun, state: queued, app: graftyard-agent, issue, snapshot }` to the base group, with a host-minted UUID as `session` and `prefix: refs/heads/graftyard/<uuid>/` derived by the host. `requester` is Alice, the actor of the `Assigned` entry. By default the org's `agents_workspace` is `Fork`, and the repository's workspace fork already exists in `<org>-agents`. The controller created it once with `POST .../workspace` as `graftyard-workspace`, and the host made it with `default_branch_only` and a ruleset that restricts every ref except `refs/heads/graftyard/**`. Push rulesets of the root also apply to the fork (https://docs.github.com/en/enterprise-server@3.22/pull-requests/reference/forks). The fork's frozen default branch never matters, because a token with a `task` claim makes the fork group read the base's chain, and merge bases use the base's default-branch tip. Where the org forbids private forks, `agents_workspace` is `InRepo`, `graftyard-workspace` is installed on the base, and the task pushes there under its prefix.
-4. A Sandbox (`standard-2`) starts with the harness the org picked (Claude Code, Codex, or OpenCode templates exist, `research/agents.md` 6.7). Its prompt is the trust view of the issue snapshot, comments only from human authors who can push, and `AGENTS.md` from the base's default branch, never from a PR head (R22). A title or body edit by a non-writer after assignment pauses the task until a writer reassigns it.
+4. A Sandbox (`standard-2`) starts with the harness the org picked (Claude Code, Codex, or OpenCode templates exist, `research/agents.md` 6.7). Its prompt is the trust view of the issue snapshot, comments from writers as of the task's `snapshot`, so a later comment cannot change the prompt silently, and `AGENTS.md` from the base's default branch, never from a PR head (R22). A title or body edit by a non-writer after assignment pauses the task until a writer reassigns it.
 5. The sandbox holds no git or model credential. Its outbound router mints and caches two installation tokens, both with `graftyard_task` naming the task: a `graftyard-agent` token for the base repository, and a `graftyard-workspace` token for the push target, which is the workspace fork in fork mode and the base in-repo. It allows smart HTTP and REST on those repositories only, overwriting any credential the sandbox supplied, the model's inference path with the body checked, and GETs to registries that never fetch upstream on demand. Everything else is refused (Shape, `Allowed`).
 6. The controller takes a Shared lease on the paths it plans to touch and opens a draft PR at once with an empty commit, so `PathSet.planned`, the feed, and the overlap check show the task before any work. It passes in `X-Graftyard-Agent-Session`, and `PrOpened` records `AgentMeta`. The audit event carries `actor_is_agent` and `agent_session_id` (R6).
 7. The agent pushes `graftyard/<uuid>/...` with the `graftyard-workspace` token. The controller runs the repository's test command inside the Sandbox before each push. `decide` refuses any ref outside the task's prefix and any push whose `protected` hits are not empty, in the fork and in-repo alike. Commits carry `Graftyard-Session: https://<host>/<owner>/<repo>/_graftyard/sessions/<uuid>`, which names the base repository in both modes, and `Co-authored-by: Alice`. `validate` parses them, and `decide` keeps `Source::Session` because the pusher holds the matching `AgentTask`.
@@ -515,7 +605,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 
 **A6. Why.** Six months later a reviewer blames a line in `session.go`.
 
-1. The commit carries `Graftyard-Session:`, or `Claude-Session`, `Amp-Thread-ID`, or `Co-Authored-By` for vendors (`research/agents.md` 5.5). `validate` parsed them into the fold when the commit was pushed. `decide` linked `Source::Session` only because the pusher held the matching `AgentTask`, and a forged trailer from anyone else stays `Claimed`, shown unlinked after https scheme and host checks. A squash commit maps to its PR through `Merged`, and the PR maps to its sessions through `AgentMeta`.
+1. The commit carries `Graftyard-Session:`, or `Claude-Session`, `Amp-Thread-ID`, or `Co-Authored-By` for vendors (`research/agents.md` 5.5). `validate` parsed them into the fold when the commit was pushed. `decide` linked `Source::Session` only because the pusher held the matching `AgentTask`, and a forged trailer from anyone else stays `Claimed`, shown unlinked after https scheme and host checks. A squash commit maps to its PR through `Merged`, an agent commit with no `Session` maps to the PR opened on the ref its `Provenance` row names, and the PR maps to its sessions through `AgentMeta`. In M0-WP16, 6,166 of 10,489 commits resolved only through that ref, after their branches were deleted [measured, `tests/m0/results/m0-wp16.md`, L0-10].
 2. Blame and the PR page link each source, the `graftyard/provenance` check run lists them, and `GET /repos/{o}/{r}/commits/{sha}` under `AGENT_MEDIA_TYPE` adds `graftyard_provenance`. An agent calls the MCP tool `provenance.why({path, line, ref})`, which runs blame on the shard and returns the commit, PR, sessions, and issue snapshot.
 3. `https://<host>/<owner>/<repo>/_graftyard/sessions/<uuid>` resolves through that repository's fold and renders the stored `SessionLog`, with the issue snapshot as the agent saw it, the plan, tool calls, pushes, test output, and the PR. Under `Accept: application/json` it returns `SessionLog` schema 1. The edge checks the viewer's read access on that repository.
 4. Sessions, provenance, and logs are chain entries and packs, so the vault, lifeboat, `RestoredTo`, and export carry them (`design/DESIGN.md`, RPO table). Retention defaults to the org's audit-log retention, priced at 12 months [guess]. Deleting a log is a retention command plus GC, and a purge completes only after the vault's 35-day bucket lock expires, and in lifeboats and exports when they next rebuild. Vendor session URLs resolve only while the vendor keeps them.
@@ -523,7 +613,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 **A7. Remote MCP client.**
 
 1. Spec 2026-07-28, stateless, through `createMcpHandler` on MCP SDK v2. A 2025-11-25 client gets the reduced legacy path (`research/agents.md` 6.2, 7.1).
-2. `mcp.<host>` routes through `graft-front`, which sends it to `graft-mcp` on the deployment's split, or to the version an undo pinned in `Pointers.mcp`. The first `POST https://mcp.<host>/` returns 401 with `WWW-Authenticate` naming the RFC 9728 metadata. That metadata names `mcp.<host>` as the authorization server, whose RFC 8414 metadata advertises PKCE S256 and Client ID Metadata Documents (7.1).
+2. `mcp.<host>` routes through `graft-front`, which sends it to `graft-mcp` on the deployment's split, or to the version an undo pinned in `Pointers.mcp`. The first `POST https://mcp.<host>/` returns 401 with `WWW-Authenticate` naming the RFC 9728 metadata. That metadata names `mcp.<host>` as the authorization server, whose RFC 8414 metadata advertises PKCE S256 and Client ID Metadata Documents (7.1). Its `scopes_supported` lists only the read scope, because SDK clients request every advertised scope, so `Write` and `WriteApproveMerge` are granted only when a client names them [measured, `tests/m0/results/m0-wp15.md`, L0-08].
 3. The client's `client_id` is its CIMD URL. `graft-mcp` fetches it with a 5 s timeout, a 5 KB cap, no redirects, and the install's own zones denied, caches it by its HTTP headers, and checks `redirect_uris`. `/authorize` is rate-limited per IP and takes `resource=https://mcp.<host>/` (RFC 8707).
 4. Before any redirect, the consent page shows the CIMD host, every redirect URI host, a warning if they are localhost only, and the repositories (one by default), toolsets, and write scope asked for, with `frame-ancestors 'none'`. Only after Alice consents does `graft-mcp` set a signed `__Host-` SameSite=Lax cookie bound to `state` and redirect to `https://<host>/login/oauth/authorize` for the first-party `Graftyard MCP` App. That meets the spec's consent rules for a proxy with a static upstream client id (`history/review/cloudflare-agents-security.md` finding 7).
 5. At the callback the cookie must match `state`, once. At `/token`, `graft-mcp` checks PKCE, redeems the GHES code, calls `POST /applications/{client_id}/token/scoped` to narrow the `ghu_` token (https://docs.github.com/en/enterprise-server@3.22/rest/apps/apps), and deletes the unscoped one with `DELETE /applications/{client_id}/token`. Whether the `ghr_` refresh token survives that delete is a Milestone 0 row [unverified]. The approved client becomes an `McpGrant` row in Alice's `Identity` group, listed and revocable at `https://mcp.<host>/settings`.
@@ -534,7 +624,7 @@ A stronger form of the router runs the model loop in the controller, so the sand
 **A8. Installs and incidents.**
 
 - **BYOC and self-hosted.** `graft-mcp` ships in the signed artifact as one more script in the install account, and the insights consumer ships in the site scripts. `graftyard apps init` registers `Graftyard MCP` and `graftyard-insights` in the install account and stores their keys and the MCP client secret in the install's Secrets Store (Shape, "First-party Apps"). The controller is an optional `agents` account the customer owns, with its own Workers Paid plan, Sandbox vCPU quota, Secrets Store, and release bucket. `graftyard agents init --account $G` runs the manifest flows for `graftyard-agent` and `graftyard-workspace` only, writes their keys and webhook secret into that Secrets Store, and registers the webhook hostname in a zone that account owns. It also creates `graft-agents-front`, `graft-controller`, and the agents `graft-ops` with Wrangler, with the install id and the customer public key as script variables (`AgentsAnchor`). It creates the agents executor key inside the agents Secrets Store and prints its public key, which the customer adds as `Keys.agents_executor` with a signed `Keys` entry. The vendor's release service writes the agents scripts' signed bundles into the agents release bucket. The agents `graft-ops` reads the install's `Release` entries over HTTPS (`AgentsReleaseView`), uploads and rolls the two agents scripts on `ControllerRoll`, and `Rotate` there covers the two App keys. The controller talks to the install only over HTTPS as a GitHub App, so it needs no binding. A self-hoster may skip it and still get MCP, trust views, provenance, check runs, and third-party agents.
-- **Gray regional incident during A1.** Take a WEUR-class event, 30% errors for hours (`research/cloudflare-uptime.md` finding 20), on enam, where the monorepo group, its workspace fork group, and the network's first k = 7 shards lead. Both groups move leaders by step-down and `suspect` within the base's 20 s target, `mitigated` until Milestone 0 (`design/DESIGN.md`, journey 5). In those 20 s about 83 agent pushes and 660 CI ref reads are exposed, and a member call retried twice succeeds 97% of the time at 30% errors [inference]. On weur, with enam's follower erratic, entries commit with apac at about 6 a second, about 5 commands an entry at 27.6 commands/s [inference]. Leases keep RPO zero. The `suspect` reports set `stalled_since`, and the new term's first entry carries `ExtendLeases`, which moves every live lease by the stall. The other warm site's 7 shards carry the 10.2 vCPU at 36%, and the predictor pauses there because that site now leads. Clone-cache hits serve from the second warm bucket. `graft-mcp` holds no state of its own, so MCP calls fail only while their group leader moves, and feed polls move to the surviving follower. Workflows instances whose engine sits in enam may stall, since the Denver DO incident listed Workflows (finding 20). Sandboxes there lose at most 2 minutes of unpushed work and restart from the branch.
+- **Gray regional incident during A1.** Take a WEUR-class event, 30% errors for hours (`research/cloudflare-uptime.md` finding 20), on enam, where the monorepo group, its workspace fork group, and the network's first k = 1 shard leads. Both groups move leaders by step-down and `suspect` within the base's 20 s target, `mitigated` until Milestone 0 (`design/DESIGN.md`, journey 5). In those 20 s about 83 agent pushes and 660 CI ref reads are exposed, and a member call retried twice succeeds 97% of the time at 30% errors [inference]. On weur, with enam's follower erratic, entries commit with apac at about 6 a second, about 5 commands an entry at 27.6 commands/s [inference]. Leases keep RPO zero. The `suspect` reports set `stalled_since`, and the new term's first entry carries `ExtendLeases`, which moves every live lease by the stall. The other warm site's shard, sized from the larger site's `NetworkLoad`, carries the 2.68 vCPU at 67%, and the predictor pauses there because that site now leads. Clone-cache hits serve from the second warm bucket. `graft-mcp` holds no state of its own, so MCP calls fail only while their group leader moves, and feed polls move to the surviving follower. Workflows instances whose engine sits in enam may stall, since the Denver DO incident listed Workflows (finding 20). Sandboxes there lose at most 2 minutes of unpushed work and restart from the branch.
 
 ## Scale
 
@@ -542,8 +632,8 @@ A stronger form of the router runs the model loop in the controller, so the sand
 | --- | --- | --- | --- |
 | Monorepo group, commands | 27.6/s in-repo (25.2/s agent class), 23.3/s with workspace forks | Milestone 0 gate of 300 commands/s (`design/DESIGN.md`, Build order) | 11x and 13x [inference] |
 | Monorepo group, 5,000 agents | 252 agent-class commands/s offered | Token bucket of `AGENT_SHARE` 0.5 of 300/s, `AGENT_FLOOR` 0.2 | 150/s admitted, about 3,000 agents per group; the rest get `ng` or 429 after 30 s |
-| Monorepo group, entry bytes | 0.16 MB/s typical, 4.17 MB/s if every push is 1 MiB | 15 MB/s enam, 9 MB/s apac | 90x typical; `INLINE_MAX_HOT` sends larger packs to buckets while placement succeeds |
-| Monorepo group, member bytes | About 7.2 GB after 30 days: the base's 4 GB metadata tier, 2.0 GB of log at `LOG_MAX_BYTES`, and 1.18 GB of agent rows | 10 GB per DO; `CHILD_GROUP_AT`, 8 GiB of member bytes | 1.4x. The member reaches `CHILD_GROUP_AT` in about 1.7 months: 6.0 GB fixed, plus 0.40 GB a month of check rows for 90 days and 0.77 GB a month of PRs, provenance, and tasks. A1-class fleets wait for metadata child groups (base Milestone 7) [inference] |
+| Monorepo group, entry bytes | 0.16 MB/s typical, 4.17 MB/s if every push is 1 MiB | 15 MB/s at 10 entries/s typical; 2.0 MB/s measured from an apac leader (one 1 MiB pack per entry, round p50 0.55 s to enam) [measured, `tests/m0/results/m0-wp9.md`, B0-31] | 90x typical, 0.5x at 1 MiB; `INLINE_MAX_HOT` sends larger packs to buckets while placement succeeds, and while placement fails agent pushes over it get the agent refusal and Human and MergeQueue pushes keep `INLINE_MAX` |
+| Monorepo group, member bytes | 8.45 GB after 30 days on a member seeded with a 3.93 GB metadata tier (4.57 GB on disk), growing 0.055 GB a day [measured, `tests/m0/results/m0-wp9.md`, B0-30]; `cost_agents.py --a1` prints 8.29 GiB with on-disk factors 1.16 and 1.4: a 4.64 GiB tier, 2.0 GiB of log at `LOG_MAX_BYTES`, and 1.65 GiB of agent rows | 10 GB per DO; `CHILD_GROUP_AT`, 8 GiB of member bytes | 1.2x. The member reaches `CHILD_GROUP_AT` in about 32 days [measured, B0-30]; the script gives 25 days (6.7 GiB fixed, plus 0.56 GiB a month of check rows for 90 days and 1.07 GiB a month of PRs, provenance, and tasks) from its larger 4 GiB tier. A1-class fleets wait for metadata child groups (base Milestone 7) [inference] |
 | Monorepo leader requests | About 305/s, none of them feed polls | 1,000 req/s soft (`research/cloudflare.md`) | 3.3x, learners above 500 reads/s |
 | Workspace fork group | 4.38 commands/s, 8 reads/s; each push reads the base `fresh` as a dependency | Same | 68x [inference] |
 | Org `Authz` leader | About 20 fresh write-class reads/s from A1 | 1,000 req/s, learners | 50x [inference] |
@@ -551,9 +641,9 @@ A stronger form of the router runs the model loop in the controller, so the sand
 | Live leases per repository | 500, one per agent, each with its own (actor, App, session) holder, 0.29 MB per member | `LEASES_PER_REPO` 4,000, `LEASES_PER_APP` 1,000, `LEASES_PER_HOLDER` 8, `PLAN_LEASES_PER_REPO` 500 | 8x, and 2x if one vendor App holds all 500. An acquire past any cap is refused and writes nothing |
 | Activity feed per group | 45 requests/s and 500 held polls, about 22/s and 250 held on each follower, none on the leader | 1,000 req/s soft per object; `FEED_HELD_MAX` 1,000 held per member [guess]; `FEED_POLLS` 2 per token and 50 per IP | 45x and 4x on one follower; group reads 322/s under `LEARNER_AT` 500. At 5,000 agents 10 learners hold the polls and the followers none [inference] |
 | Task rows | 0.42 tasks/s created and 1.25 state changes/s, 1 KiB rows [guess], 500 open | Core part, about 100 B, in the core tier, the rest in metadata; `TASKS_OPEN_PER_REPO` 2,000 | 4x on open tasks. Inside the member bytes row |
-| Git cache CPU for one network | 10.2 vCPU [guess constants] | 4 vCPU per `standard-4`; `TEST_MERGE_BUDGET` 25% of the k | k = 7 for 6.25 vCPU of head-push merges, 36% of 28 vCPU on either warm site; k = 4 at 5 pushes a task |
-| Test merges | 125 vCPU eager; 25 vCPU asked by 500 pollers | 7 vCPU of budget at k = 7 | Lazy and coalesced. Head pushes use 6.25, GETs share 0.75, the rest see `mergeable: null` |
-| Conflict predictor | 50 vCPU demand at 8 pairs | 50% of the second site's 28 vCPU | 28% of pairs at peak, priority to approved, queued, and human-requested PRs, the rest `Stale` |
+| Git cache CPU for one network | 2.68 vCPU with composed clone-cache misses [measured constants, `tests/m0/results/m0-wp9.md`, B0-34] | 4 vCPU per `standard-4`; `TEST_MERGE_BUDGET` 25% of the k | k = 1, 67% of 4 vCPU on either warm site, both sized from the larger site's `NetworkLoad`; k = 1 at 5 pushes a task |
+| Test merges | 4 vCPU eager; 1 vCPU asked by 500 pollers; 5 to 50 ms each at p50 on torvalds/linux [measured, B0-34] | 1 vCPU of budget at k = 1 | Lazy and coalesced. Head pushes use 0.21, GETs share 0.79, the rest see `mergeable: null` |
+| Conflict predictor | 2.8 vCPU at the measured 1.80 pairs a push, 12.3 vCPU if every push used 8, 0.37 vCPU-s a pair [measured, `tests/m0/results/m0-wp16.md`, L0-05] | 50% of the second site's 8 vCPU at k = 2 | Every measured pair at peak; 32% if every push used 8 pairs, priority to approved, queued, and human-requested PRs, the rest `Stale` |
 | Managed rate limits, per actor | 180 requests and 30 content writes an hour per minted token | 5,000 and 500 an hour, 80 content a minute | 28x and 17x. Keyed per installation it would be 45,000 an hour, 3x to 9x over |
 | Sandboxes | 500 x 1 vCPU | 1,500 vCPU per account (`research/cloudflare.md`) | 3x in the agents account, apart from runners and git caches |
 | Workflows | 0.42 task starts/s, 500 running | 100 creations/s per workflow, 10,000 or 50,000 running (`research/agents.md` 6.5) | 240x, 20x |
@@ -581,7 +671,7 @@ Costs grow linearly with tasks, at about $0.018 per task at 2,000 developers, an
 | Rate limits | `x-ratelimit-*`, `retry-after`, 403 or 429; content limits on in managed only, keyed per minted token for `AgentApp` installations | wire-compatible |
 | Lazy test merges | `mergeable: null`, or GraphQL `UNKNOWN`, until computed or while over budget | wire-compatible (documented 3.22 behavior) |
 | Agent admission | Queueing up to 30 s, then git report-status `ng <ref> agent admission full, retry after <n>s` with a `remote:` line in an HTTP 200, or REST 429 with `retry-after` and a "secondary rate limit" message | wire-compatible |
-| Agent refusals in `decide` | 403 on approve, merge, ready-for-review, bypass, dispatch, re-run, unlisted labels, rename, releases, hooks, deploy keys, and `graftyard/` statuses; push rejection outside the prefix or under protected paths, with texts that name the prefix or path | additive for Graftyard's Apps; opt-in per third-party App by an admin |
+| Agent refusals in `decide` | 403 on approve, merge, ready-for-review, bypass, dispatch, re-run, unlisted labels, rename, releases, hooks, deploy keys, and `graftyard/` statuses; push rejection outside the prefix, under protected paths, or needing a ruleset bypass even for a listed bypass actor, with texts that name the prefix or path. REST ref writes get 422 with the refusal as `message`, `Merge` without `AgentGate` gets 405, and GraphQL gets an `errors` entry of type `FORBIDDEN` for action refusals and `UNPROCESSABLE` for ref refusals [inference from GHES's documented codes; shapes in `tests/m0/results/m0-wp10.md`] | additive for Graftyard's Apps; opt-in per third-party App by an admin |
 | Workflow approval for agent pushes | `ci: Approve`, run status `action_required`; `ci: AutoReadOnly`, read-only token and no secrets | wire-compatible; `AutoReadOnly` is opt-in per repository |
 | Agent merge gate | `Merge` refused until a head-bound `AgentGate`; commit status `graftyard/agent-gate` rendered from the fold | opt-in by installing `graftyard-agent` or flagging an App, then on for its PRs only |
 | Overlap and provenance check runs | Check runs `graftyard/overlap`, `graftyard/provenance` on the head SHA, conclusion `neutral` | opt-in by installing `graftyard-insights` on a repository or on all |
@@ -609,7 +699,7 @@ Every path below sits under `https://<host>/api/graftyard/v1`. Bodies are JSON w
 # Objects
 task: {id: SessionId string form, kind: graftyard_run | external, state: queued | in_progress | waiting_for_user | completed
   | failed | timed_out | cancelled | idle, app_id, installation_id, requester: user | null, creator: user or app,
-  issue_number: int | null, prompt: string | null (contents read only), pr_number: int | null, summary, prefix: string | null,
+  issue_number: int | null, prompt: string | null (omitted without `contents: read`), pr_number: int | null, summary, prefix: string | null,
   leases: [lease] (single GET only), html_url, created_at, updated_at}
 lease: {id, holder: {actor: {type: User | App, id}, app_id: int | null, session: string | null}, paths: [glob], refs: [pattern],
   mode: shared | exclusive, plan_block: bool, intent: trust_view, granted_at, expires_at}
@@ -623,11 +713,12 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
 /repos/{owner}/{repo}/tasks:
   post: {body: {issue_number?, prompt? (<= 64 KiB), kind?: external, session?: name (external only, required there),
     requester?: login (external only), summary?}, 201: task, 422: [agents_enabled off, neither issue_number nor prompt,
-    bad session, session already_exists, open-task cap]}
+    bad session, session already_exists, open-task cap], 403: credential may not create a graftyard_run task}
   get: {query: [state, app_id, requester, issue_number, per_page, after], 200: [task]}
 /repos/{owner}/{repo}/tasks/{id}:
   get: {200: task}
-  patch: {body: {state?, pr_number?, summary?}, 200: task, 409: {message, state} for a final task, 422: cancelled or timed_out}
+  patch: {body: {state?, pr_number?, summary?}, 200: task, 403: not the task's App, 409: {message, state} for a final or
+    paused task, 422: cancelled or timed_out}
 /repos/{owner}/{repo}/tasks/{id}/cancel: {post: {200: task, 409: {message, state} for a final task}}
 /repos/{owner}/{repo}/tasks/{id}/log: {get: {200: SessionLog schema 1, 404: until the log is pushed}}
 /repos/{owner}/{repo}/leases:
@@ -653,7 +744,7 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
 /agents/apps: {get: {200: [{app_id, slug, kind: graftyard_run | third_party | mcp, confine: pattern | null}]}}   # site admin
 /agents/apps/{app_id}: {put: {body: {kind, confine?}, 200: row, 422: graftyard_run or mcp for an App the install does not
   own}, delete: {204: removed}}
-/mcp/grants:   # Basic client_id:client_secret of the install's Graftyard MCP, and X-Graftyard-User-Token: ghu_
+/mcp/grants:   # Basic client_id:client_secret of the install's Graftyard MCP, and X-Graftyard-User-Token: ghu_ (POST and GET only; /{id}/generation takes the client credentials alone, so the check runs before the upstream refresh rotates the ghr_)
   post: {body: {client, redirect_hosts}, 201: grant}
   get: {200: [grant]}
 /mcp/grants/{id}/generation: {post: {body: {generation}, 200: grant (generation + 1), 409: {message, revoked: true}}}
@@ -722,7 +813,7 @@ Components are `graft-mcp` (the script, its Secrets Store key, grant rows, the o
 | base agent changes | data-center | As base | As base |
 | base agent changes | region | One warm site's k shards and bucket | The other warm site holds k shards and a copy of every hot-network clone-cache entry |
 | base agent changes | provider-wide | As base | As base. During an R2-wide outage hot groups inline up to 1 MiB, and `LOG_MAX_BYTES` archives the extra afterward |
-| base agent changes | control-plane | A network that turns hot needs new shard instances [unknown whether starts work in a control-plane outage, as the base] | `fanout` runs in band from `NetworkLoad` and draws on the hot pool reserved at install, so no API call is needed. Networks already hot keep their warm k shards for a day, and the base's Milestone 0 row tests a newly hot network with the API unreachable |
+| base agent changes | control-plane | A network that turns hot needs new shard instances [unknown whether starts work in a control-plane outage, as the base] | `fanout` runs in band from `NetworkLoad` and draws on the hot pool counted in each site's start cap, so no API call is needed. Networks already hot keep their warm k shards for a day, and the base's Milestone 0 row tests a newly hot network with the API unreachable |
 | base agent changes | bad-deploy | A refusal or parser bug in one site's release | `verify` on followers, site days, pre-signed rollback. A provenance parse failure leaves the field empty and never fails a push |
 | base agent changes | bad-config | A low `AGENT_SHARE`, a wrong `confine` prefix, or a wrong protected list | Slows or refuses agents only, never merges or humans. Constants are compiled |
 | base agent changes | noisy-tenant | One fleet on one group or network, or one owner's hot networks | Token bucket of `AGENT_SHARE` with `AGENT_FLOOR`, demotion above 60 writes a minute, `AGENT_WAIT` 30 s, queued-command caps, fan-out k at most 8 from a per-owner pool, `TEST_MERGE_BUDGET` |
@@ -759,31 +850,31 @@ Behavior is the same in managed, BYOC, and self-hosted. Only rate-limit defaults
 
 ## Cost
 
-Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/cost.py`'s `design` variant with and without the agent workload, then prices the new pieces. Every monthly line uses 5 pushes a task, the fan-out sizing included, and A1's push every 2 minutes is the separate peak case of `--a1`. One clone-cache miss model serves CPU, egress, and storage. A tip misses on its first checkout, so each agent CI job, at 3 for 5 pushes, misses, and agent clones at the moving tip share CI's 70% hit rate. Every constant is a [guess] until Milestone 0. The tables below are its output.
+Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/cost.py`'s `design` variant with and without the agent workload, then prices the new pieces. Every monthly line uses 5 pushes a task, the fan-out sizing included, and A1's push every 2 minutes is the separate peak case of `--a1`. One clone-cache miss model serves CPU, egress, and storage. A tip misses on its first checkout, so each agent CI job, at 3 for 5 pushes, misses, and agent clones at the moving tip share CI's 70% hit rate. Every constant is a [guess] until Milestone 0, except git CPU, measured on torvalds/linux (`tests/m0/results/m0-wp9.md`, B0-34), the predictor's cost per pair (`tests/m0/results/m0-wp16.md`, L0-05), and the on-disk factors for member bytes (B0-30). The tables below are its output.
 
 | Added line item | 50 devs | 300 devs | 2,000 devs |
 | --- | --- | --- | --- |
-| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $195 | $2,039 |
-| Containers: test merges on agent head pushes (active vCPU) | $1 | $4 | $27 |
-| Hot-network fan-out: extra warm shards for the largest network | $0 | $0 | $495 |
+| Base lines grown by agent git, REST, CI, check runs, tasks, leases, and feed polls (breakdown below) | $5 | $195 | $2,036 |
+| Containers: test merges on agent head pushes (active vCPU) | $0 | $0 | $1 |
+| Hot-network fan-out: extra warm shards for the largest network | $0 | $0 | $0 |
 | Clone cache: agent-tip entries in the first warm bucket | $0 | $2 | $25 |
 | Clone cache: hot-network entries copied to the second warm bucket | $0 | $2 | $28 |
-| Conflict predictor on the second warm site, 8 pairs a push (active vCPU) | $5 | $33 | $219 |
+| Conflict predictor on the second warm site, 8 pairs a push (active vCPU) | $1 | $8 | $54 |
 | graft-mcp: tool calls and REST behind them (base lines) | $0 | $3 | $21 |
 | graft-mcp: CPU, consent and session auth, grant and scoped-token entries | $0 | $1 | $4 |
 | Folds: PathSet and provenance rows | $0 | $1 | $5 |
 | Activity feed: long-poll hold time on members (upper bound) | $9 | $51 | $342 |
-| R2: hot-group log archive and stored .idx of inline packs (two buckets) | $0 | $0 | $9 |
+| R2: hot-group log archive and stored .idx of inline packs (two buckets) | $0 | $0 | $1 |
 | R2: agent branch packs until GC (3 copies plus vault) | $1 | $4 | $25 |
 | Session logs in stored packs, 12 months (3 copies plus vault) | $0 | $2 | $13 |
 | Agents account: Workers Paid | $5 | $5 | $5 |
 | Agents account: front, outbound router, webhooks, Workflow requests and CPU | $0 | $0 | $4 |
 | Install: `Release` reads by the agents account (edge and member requests) | $0 | $0 | $1 |
 | Agents account: Workflow steps | $0 | $0 | $7 |
-| **Added total** | **$26** | **$303** | **$3,270** |
-| Base total (`scripts/cost.py`, design) | $264 | $1,299 | $9,417 |
-| Added share of base | 10% | 23% | 35% |
-| Added cost per agent task | $0.0057 | $0.0111 | $0.0179 |
+| **Added total** | **$21** | **$274** | **$2,572** |
+| Base total (`scripts/cost.py`, design) | $231 | $1,189 | $9,187 |
+| Added share of base | 9% | 23% | 28% |
+| Added cost per agent task | $0.0046 | $0.0100 | $0.0141 |
 | MCP cost per session (30 calls) | $0.00007 | $0.00027 | $0.00027 |
 
 | Base line grown by agents | 50 devs | 300 devs | 2,000 devs |
@@ -794,7 +885,7 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 | R2 Class A | $2 | $10 | $70 |
 | Email Sending | $2 | $10 | $64 |
 | Inbox Durable Objects (notifications, feeds, cross-repository lists) | $0 | $8 | $46 |
-| Containers vCPU (active) | $1 | $5 | $32 |
+| Containers vCPU (active) | $1 | $4 | $28 |
 | Durable Objects requests | $0 | $2 | $14 |
 | Workers requests | $0 | $2 | $13 |
 | Analytics Engine (per-repo counters, SLO points) | $0 | $2 | $12 |
@@ -805,9 +896,9 @@ Run `python3 scripts/cost_agents.py` from the repository root. It runs `scripts/
 
 | Largest network, 5 pushes a task | Peak agents on it | Shard vCPU | Instance | k per warm site | Extra warm shards | Per month |
 | --- | --- | --- | --- | --- | --- | --- |
-| 50 devs | 12.5 | 0.15 | standard-2 | 1 | 0 | $0 |
-| 300 devs | 75.0 | 0.90 | standard-3 | 1 | 0 | $0 |
-| 2,000 devs | 500.0 | 6.02 | standard-4 | 4 | 6 | $495 |
+| 50 devs | 12.5 | 0.05 | standard-2 | 1 | 0 | $0 |
+| 300 devs | 75.0 | 0.32 | standard-3 | 1 | 0 | $0 |
+| 2,000 devs | 500.0 | 2.15 | standard-4 | 1 | 0 | $0 |
 
 Sandbox compute and model tokens for Graftyard-run agents are what a platform engineer pays on top. They are outside the comparison with the base, which excludes runner compute the same way, and the per-task assumption is stated in the row. The controller caps both through per-task and per-org token budgets and a 60-minute task cap.
 
@@ -823,7 +914,7 @@ Sandbox compute and model tokens for Graftyard-run agents are what a platform en
 | Every MCP call as a new Dynamic Worker | $135 | $819 | $5,470 |
 | Per MCP session | $0.059 | $0.060 | $0.060 |
 
-The script assumes every peak agent of an install works on its largest network, so at 2,000 developers that network is A1's 500-agent monorepo [guess]. The predictor line prices every head push at the full 8-pair budget, at the base's 1.5 vCPU-s, with no CPU cap. The feed line prices each working agent's held poll as one member's 128 MB for its whole 20-minute task, the way the base prices Durable Object wall time per request with no sharing. It is an upper bound, because concurrent polls on one member share its duration, and a group as busy as A1's is active anyway. Lease commands, task rows, and feed requests sit in the base lines, $2,039 at 2,000 developers, with half the pollers sending no `paths` and polling once per `FEED_BATCH_ALL` [guess]. Those lines include the base's Inbox line, which grows with agent activity. The largest base line is container egress, now with every agent CI checkout a clone-cache miss, so Graftyard-run agents clone shallow at the tip, which the cache keys by depth (`design/DESIGN.md`, Shape, `CloneKey`). The hot-group archive and stored `.idx` line prices `LOG_MAX_BYTES` overflow in two buckets for 35 days and one `.idx` per inline pack on a fanned-out network. At 50 developers the base's free allowances absorb most agent traffic. Code Mode's Dynamic Workers are in the first table of `research/cloudflare.md` as "GA [inference]", so Code Mode needs no product outside the catalog. It stays out of the default build for its cost and its SDK v1 handler (Tradeoffs).
+The script assumes every peak agent of an install works on its largest network, so at 2,000 developers that network is A1's 500-agent monorepo [guess]. The predictor line prices every head push at the full 8-pair budget, at the measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), with no CPU cap. The feed line prices each working agent's held poll as one member's 128 MB for its whole 20-minute task, the way the base prices Durable Object wall time per request with no sharing. It is an upper bound, because concurrent polls on one member share its duration, and a group as busy as A1's is active anyway. Lease commands, task rows, and feed requests sit in the base lines, $2,036 at 2,000 developers, with half the pollers sending no `paths` and polling once per `FEED_BATCH_ALL` [guess]. Those lines include the base's Inbox line, which grows with agent activity. The largest base line is container egress, now with every agent CI checkout a clone-cache miss, so Graftyard-run agents clone shallow at the tip, which the cache keys by depth (`design/DESIGN.md`, Shape, `CloneKey`). The hot-group archive and stored `.idx` line prices `LOG_MAX_BYTES` overflow in two buckets for 35 days and one `.idx` per inline pack on a fanned-out network. At 50 developers the base's free allowances absorb most agent traffic. Code Mode's Dynamic Workers are in the first table of `research/cloudflare.md` as "GA [inference]", so Code Mode needs no product outside the catalog. It stays out of the default build for its cost and its SDK v1 handler (Tradeoffs).
 
 Every controller webhook runs `graft-agents-front` before `graft-controller`, so the agents account counts it twice. The `Release` read line prices one `GET /api/graftyard/v1/release/entries` per webhook, an edge request plus a member request with no allowance. That is an upper bound, because a front isolate refreshes at most once per `POINTER_TTL` and only on a request (`RELEASE_READS_PER_WEBHOOK` [guess]).
 
@@ -845,8 +936,8 @@ The base's Milestone 0 carries the rows that test base changes (A1 replay, 30-da
 | MCP. Three 2026-07-28 clients and one 2025-11-25 client, CIMD, PKCE, consent, 30 calls each | 100% succeed, tool overhead p50 at most 50 ms, 100 of 100 wrong-audience tokens refused, a refreshed token keeps its scope 100 of 100, a replayed refresh revokes the grant, a framed or skipped consent issues no code, and the `ghr_` survives deleting the unscoped `ghu_` | Any wrong-audience token accepted, any refresh wider than its grant, or any code without consent |
 | Trust view. 200 injection payloads (HTML comments, zero-width, bidi, link titles, collapsed blocks) in bodies, comments, commit messages, and check-run text, plus a non-writer edit after assignment | 100% absent from `visible` and counted, `body` byte-identical, and the edited task paused | Any payload in `visible`, or the task runs on the edit |
 | Provenance. 10,000 replayed agent commits, then a vault restore | 100% resolve to a session or PR before and after | Any lost |
-| Byte diff. 1,000 REST and GraphQL requests from unmodified clients, with and without the agent layer deployed | Identical except request ids and times | Any other difference |
-| Leases and the feed. The A1 replay with a lease per agent and leader kills, then a 30-minute stall with every member running and member calls blackholed, then an idle 60 s lease followed 10 minutes later by an overlapping Exclusive acquire, then 100 conflicting pushes and 100 conflicting REST ref writes into another task's Exclusive scope under `AgentsExclusive`, run once per actor kind: Graftyard-run App, confined vendor App, flagged App without `confine`, `Graftyard MCP`, and a human user token | No two holders hold overlapping Exclusive leases for longer than `DRIFT` (500 ms), and measured member clock offsets stay under 500 ms. Every lease live before the stall is live after it, with `expires` moved by the recorded stall. The late Exclusive acquire succeeds. 500 long-pollers see each event within 2 s at p99. 100 of 100 refused for each of the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Any overlap over 500 ms, any lease expired by the stall, the late acquire refused, feed p99 over 2 s, or a refusal count off for any kind |
+| Byte diff. 1,000 REST and GraphQL requests from unmodified clients, with and without the agent layer deployed, and the same requests against a GHES 3.22 oracle | With and without the layer: identical except request ids and times. Against the oracle: every difference listed, and none in a field a client reads | Any other difference with and without the layer, or an unlisted oracle difference |
+| Leases and the feed. The A1 replay with a lease per agent and leader kills, then a 30-minute stall with every member running and member calls blackholed, then an idle 60 s lease followed 10 minutes later by an overlapping Exclusive acquire, then 100 conflicting pushes and 100 conflicting REST ref writes into another task's Exclusive scope under `AgentsExclusive`, run once per actor kind: Graftyard-run App, confined vendor App, flagged App without `confine`, `Graftyard MCP`, and a human user token | No two holders hold overlapping Exclusive leases for longer than `DRIFT` (500 ms), and measured member clock offsets stay under 500 ms. Every lease live before the stall is live after it, with `expires` moved by the recorded stall. The late Exclusive acquire succeeds. 500 long-pollers see each event within FEED_BATCH plus 2 s (3 s) at p99 outside leader kills. 100 of 100 refused for each of the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Any overlap over 500 ms, any lease expired by the stall, the late acquire refused, feed p99 over 2 s, or a refusal count off for any kind |
 | Lease limits. Exclusive acquires of `**`, `*`, and `*/x`, one with no live task, and a second for one task; an App-token acquire with no session; 600 plan blocks from accounts without push access, then 600 from writers; a holder whose push access is removed; an App uninstalled while it holds leases and tasks; an Exclusive lease renewed for 5 h | 100 of 100 refused for each bad acquire. Zero plan leases from non-writers and at most 500 from writers. The removed holder's lease refuses nothing at the next `decide`. Uninstall releases every lease and cancels every task. The lease reads as Shared after 4 h | Any accepted, any plan lease from a non-writer, or an Exclusive lease past 4 h |
 | Task rules. With `agents_enabled` off, then on: Graftyard-run creates from an installation token, an `AgentApp`'s user token, an MCP token, a demoted user, and a read-only user; a controller create from an issue assigned to another bot; 101 open tasks for one requester; `PATCH` of a cancelled task to `in_progress`; a token request naming another App's task or a repository outside the token's list; a body that sets `prefix` | 422 for every create while off. When on, 100 of 100 refused for each bad case, the prefix always derived from `session`, and every create and cancel at the controller within 5 s, at no other App's webhook | Any accepted, or the delivery reaches any other App |
 | Gate and read permissions. An MCP client with `WriteApproveMerge` approves an agent PR. Code Mode calls approve and merge through `codemode.request()` without that scope. A vendor's named requester approves its PR. Anonymous, `metadata: read`-only, and over-limit feed polls, and `/log` and prompt reads with `metadata: read` only | `AgentGate` stays unsatisfied in all three cases, and Code Mode is refused 100 of 100. Feed polls get 401, 403, or 429, the leader sees zero feed requests, and `/log` and prompts return 403 | Any gate satisfied, any Code Mode approve or merge, or any read served |
@@ -878,7 +969,7 @@ Rows added after the final pass, by the implementability walk (`history/review/w
 | AM3 | Token ceilings by kind: a `graftyard-agent` token pushes to the base and the fork. A `graftyard-workspace` token pushes to the base in fork mode. A `graftyard_task` request from a third App, or for a repository that is neither the base nor its fork | 100 of 100 refused for each | Any accepted |
 | AM3 | Fork-mode session URL in a trailer, read by a base reader with no access to the fork | The page and JSON serve the log from the fork | 404, or the URL names the fork |
 | AM4 | `graftyard apps init` on an install with no agents account, then the MCP and A5 insights flows | MCP and overlap check runs work. No `Graftyard MCP` or `graftyard-insights` secret exists in any agents account | Either flow needs the agents account |
-| 0 | A1 replay on one `Tri` group with no learners, plus 5,000 held feed polls with `paths`, then again after `place_learners` runs | Commit p99 at most 300 ms throughout, zero `overloaded` replies to AppendEntries, at most 1,000 polls held per member with the rest answered 429 with `Retry-After`, zero polls on the leader, and zero on followers after placement | Commit p99 over 1 s, any `overloaded` replication reply, any member above 1,000 held, a refused poll without 429 and `Retry-After`, any poll on the leader, or any poll on a follower after placement |
+| 0 | A1 replay on one `Tri` group with no learners, plus 5,000 held feed polls with `paths`, then again after `place_learners` runs. On the final rules, with the own-stall exclusion and the all-lagging `Retry-After` of `FEED_BATCH_ALL`, 4 runs gave 1 pass and 3 between the lines, with no fail, no step-down, and every other line passing in every phase. The misses trace to Durable Object storage confirm stalls on the leader or the near follower and to the far follower's round trip, as for B0-02 and B0-29 [measured, `tests/m0/results/m0-wp12.md`, LF-12, tenth pass]. The gate is one run, as B0-29's is | Commit p99 at most 600 ms once `place_learners` has run and at most 1 s before it, zero `overloaded` replies to AppendEntries, at most 1,000 polls held per member with the rest answered 429 with `Retry-After`, zero polls on the leader, and zero on followers after placement | Commit p99 over 1 s once `place_learners` has run or over 2 s before it, any `overloaded` replication reply, any member above 1,000 held, a refused poll without 429 and `Retry-After`, any poll on the leader, or any poll on a follower after placement |
 | 0 | 1,000 polls held on a follower, then its AppendEntries dropped for 5 s so the next one leaves a gap, then an `InstallSnapshot` catch-up | Every held poll returns within 1 s with its cursor and no events, new polls are refused until it catches up, and no event is lost | Any poll held or accepted while it is behind, or any event skipped |
 | AM4 | A5 replay with every `InsightJob` delivered twice, plus a stale job after a newer push | One `InsightVerdict` entry per changed result, none for a repeat, 409 for the stale head, one check run per changed check, and every feed `verdict` event at an `InsightVerdict` index | Any duplicate entry or check run, a verdict for a moved head, or a feed `verdict` event at another index |
 | AM4 | 1,000 agent pushes across a leader change | Exactly one `InsightJob` per `PathSet` entry, all from the `Insights` cursor, none from `apply` | Any second job for one entry, an entry with no job, or a job from `apply` |
@@ -891,14 +982,14 @@ Rows added after the final pass, by the implementability walk (`history/review/w
 - We accept that fork mode needs private forks into a workspace org. Orgs that forbid them run Graftyard-run agents in-repo, confined by `decide` instead of the App permission ceiling [inference].
 - We accept two groups per repository for agent writes in fork mode (base and workspace fork), not one per agent, because GHES gives one fork per owner [unverified].
 - We accept advisory leases by default. `AgentsExclusive` refuses only `ActorKind::Agent` pushes into another task's Exclusive scope, so a human, an MCP client, and an App flagged without `confine` can always push, and two agents without leases can still duplicate work.
-- We accept that prediction is exact only for textual conflicts on current tips, and that 72% of pairs report `Stale` at A1's peak, on PRs nobody is about to merge first.
+- We accept that prediction is exact only for textual conflicts on current tips, and that if every push used all 8 pairs, 68% of pairs would report `Stale` at A1's peak, on PRs nobody is about to merge first. At the measured 1.80 pairs a push, the second warm site's k = 2 runs them all (one extra warm shard, about $83 a month if held).
 - We accept that `decide` refuses ready-for-review for agents, so a human marks every Graftyard-run agent PR ready. Confined third-party Apps may still create non-draft PRs.
 - We accept `ci: Approve` as the default, as GitHub does, so agents see CI without a click only where a repository opts into `AutoReadOnly`. The controller's in-Sandbox test run covers Graftyard-run agents.
 - We accept that third-party agents reading plain REST get raw `body` text, because changing it would break GHES.
 - We accept Code Mode off by default, because it costs $0.06 a session and `openApiMcpServer()` still returns an SDK v1 server on the legacy handler (https://developers.cloudflare.com/agents/model-context-protocol/guides/build-codemode-openapi-mcp-server/).
 - We accept a small authorization server in `graft-mcp` with one grant row per client in the user's `Identity` group, instead of `workers-oauth-provider`, whose grants live in KV and whose scopes are advertised but not enforced (`research/agents.md` 6.3).
 - We accept session logs in packs, so a purge is a retention command plus GC and completes only after the vault's 35-day lock.
-- We accept 6 extra warm shards ($495 a month) for an A1-class network at 5 pushes a task, k = 7 ($990 if held) at A1's rate because the test-merge budget, not CPU, binds, and `mergeable: null` for most polls during base churn.
+- We accept composed clone-cache misses, which keep an A1-class network at k = 1 per warm site with 0 extra warm shards ($0 a month) at both 5 pushes a task and A1's rate [measured constants, `tests/m0/results/m0-wp9.md`, B0-34], and `mergeable: null` for polls past the test-merge budget during base churn.
 - We accept that agents install dependencies only from registries that never fetch upstream on demand, or a customer mirror, so a new public package may need a mirror entry first.
 - We accept a separate agents account with its own plan, so agent fleets cannot take runner or git cache vCPU.
 
@@ -919,20 +1010,20 @@ Rows added after the final pass, by the implementability walk (`history/review/w
 ## Open questions and risks
 
 - The full list of open questions, including those found by the final pass and the implementability walks, is `decisions/OPEN-QUESTIONS.md`, with the work package that settles each. The bullets below are the ones this document states in its own text.
-- The A1 verdict rests on the base's 300 commands/s gate and on guessed git CPU constants. The base's A1 replay and fan-out rows decide both.
-- At A1's rate the monorepo's member reaches the base's `CHILD_GROUP_AT`, 8 GiB of member SQLite bytes, in about 1.7 months, which leaves the 10 GB `SQLITE_FULL` limit about 1.4 GB of margin. Child groups are base Milestone 7, so A1-class fleets on one repository wait for them. The operator kept the default (`FRAME.md`, answer 4). Child groups stay at Milestone 7 [inference from `cost_agents.py --a1`].
+- The A1 verdict rests on the base's 300 commands/s gate and on git CPU constants measured on torvalds/linux (`tests/m0/results/m0-wp9.md`, B0-34). B0-34 failed with stock clone-cache misses and passed every human-push phase with composed misses, except clone time to first byte while the killed site's shards rehydrated.
+- At A1's rate the monorepo's member reaches the base's `CHILD_GROUP_AT`, 8 GiB of member SQLite bytes, in about 32 days [measured, `tests/m0/results/m0-wp9.md`, B0-30], which leaves the 10 GB `SQLITE_FULL` limit about 1.4 GB of margin. Child groups are base Milestone 7, so A1-class fleets on one repository wait for them. The operator kept the default (`FRAME.md`, answer 4). Child groups stay at Milestone 7 [inference].
 - Does GHES 3.22 enforce the App `workflows` permission on git push as github.com documents? The protected list in `decide` covers Graftyard's Apps either way [unverified].
 - Does the `ghr_` refresh token survive `DELETE /applications/{client_id}/token` on the unscoped `ghu_`? If it does not, `graft-mcp` keeps the unscoped token sealed until the next refresh [unverified].
 - Does git surface the `ng` reason and wait before retrying? git prints `remote:` lines and the rejected ref, but no client reads `retry after <n>s`, so harnesses retry on their own schedule [inference].
 - Does GHES allow a second fork of a repository in the same org, and do customers allow private forks into a workspace org [unverified]?
 - When will `openApiMcpServer()` serve SDK v2 on 2026-07-28 [unverified]?
 - Do `gh`, VS Code, and JetBrains render a Bot in `suggestedActors` on an enterprise host? `gh` already refuses `@copilot` there (`research/agents.md` 1.2) [unverified for other bots].
-- The Sandbox credential pattern and the Artifacts example disagree about where tokens live (`research/agents.md` 6.7). This design follows the outbound-intercept page, and the containment row tests it.
+- The Sandbox credential pattern and the Artifacts example disagree about where tokens live (`research/agents.md` 6.7). This design follows the outbound-intercept page. Milestone 0 measured it: 0 of 800 containment attempts succeeded, and none of the three secret values appeared in 1,787 files and 52 MB of the sandbox's environment and `/proc` [measured, `tests/m0/results/m0-wp14.md`, L0-02]. The harness CA must be trusted in the template, because the intercept terminates TLS with a per-container CA.
 - Sandboxes stop after 6 hours without activity, and code inside does not count (`research/agents.md` 6.6). The controller must heartbeat each Sandbox.
 - Which Workflows concurrency figure binds, 10,000 or 50,000 (`research/agents.md` 6.5)? A1 needs 500.
 - Secrets Store is beta and also holds `graft-mcp`'s sealing key, so a long Secrets Store failure stops new MCP sessions as well as token minting (`design/DESIGN.md`, Stack).
 - Is an org's audit-log retention right for session logs, which are scanned and redacted but may still hold secrets? The 12 months priced is a [guess].
-- Model tokens at $2 a Graftyard-run task are a [guess] that dominates a platform engineer's bill. The controller's budgets bound it, and Milestone 0 should measure it per harness.
+- Model tokens at $2 a Graftyard-run task are a [guess] that dominates a platform engineer's bill. The controller's budgets bound it. M0-WP14 did not measure it, because it made no model calls. It needs each harness run on a fixed task through `ModelInference`, which already sees every response's usage.
 - Does a `graft-controller` version pinned by a `fetch()` override also pin the Workflow instances it creates, or do their steps run on the deployment's current version? If they do not, `ControllerPointer` swap-back covers only new webhook handling, and running tasks keep the bad version's step code until `ControllerRoll` or `Abort` redeploys [unverified].
 - Does a changed Secrets Store value reach a bound script with no new script version? `graftyard apps init` and App-key rotation in the site scripts assume it does [inference from the binding's async `get()`].
 - Does GHES let `graftyard-agent`, installed on the base, open a PR whose head is in the `<org>-agents` fork when the same App is installed on the fork with `contents: read`? Shape, "First-party Apps", installs it on both for that reason [unverified].

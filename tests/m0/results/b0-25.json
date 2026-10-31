@@ -1,0 +1,499 @@
+{
+  "row": "B0-25",
+  "run": "probe3",
+  "at": "2026-10-28T12:57:46.303Z",
+  "rate": 0.22,
+  "pushes": 300,
+  "succeededWithin": {
+    "1": 0.7066666666666667,
+    "2": 0.9166666666666666,
+    "3": 0.9766666666666667
+  },
+  "firstAttemptMs": {
+    "p50": 1407,
+    "p99": 3992
+  },
+  "errors": [
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"94072 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"94497 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"94497 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"9",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"93988 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"94402 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"94402 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"946",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"94520 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"94804 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"95163 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"9",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"94877 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"95149 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"95518 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"9",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref14: commit failed 3 times\",\"notes\":[\"95419 outcome to a threw: Error: m0 injected fault: write a:entry\",\"96068 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"96286 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"96386 commit to a threw: InjectedFa",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref13: commit failed 3 times\",\"notes\":[\"95372 outcome to a threw: Error: m0 injected fault: write a:entry\",\"96063 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"96848 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\",\"97010 commit to a threw: InjectedFau",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref13: commit failed 3 times\",\"notes\":[\"98127 outcome to a threw: Error: m0 injected fault: write a:apply\",\"98652 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"98759 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit failed\",\"98961 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"98986 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"99400 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"99400 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"996",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref21: commit failed 3 times\",\"notes\":[\"97500 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"98393 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"98519 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit f",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref26: commit failed 3 times\",\"notes\":[\"97869 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"98647 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"98755 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit f",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref17: commit failed 3 times\",\"notes\":[\"97168 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"98397 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"98609 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"98709 commit to ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref17: commit failed 3 times\",\"notes\":[\"98923 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"99304 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"99918 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"96967 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"97067 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"97652 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"40 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"296 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"509 read to c threw: InjectedFault: m0 injected fault: call edge>c:re",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref28: commit failed 3 times\",\"notes\":[\"914 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"1206 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"1817 commit to c threw: InjectedFault: m0 injected fault:",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref7: commit failed 3 times\",\"notes\":[\"3361 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"3623 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"4453 commit to c threw: InjectedFault: m0 injected fault:",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref31: commit failed 3 times\",\"notes\":[\"373 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"1112 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"1338 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"1438 commit to a thr",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: commit failed 3 times\",\"notes\":[\"97234 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"98381 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"98746 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"98959 outcome to",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: commit failed 3 times\",\"notes\":[\"99446 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"176 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"176 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit fail",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref2: commit failed 3 times\",\"notes\":[\"1717 outcome to a threw: Error: m0 injected fault: write a:entry\",\"2260 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"2260 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"3154 commit no",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref0: commit failed 3 times\",\"notes\":[\"1719 outcome to a threw: Error: m0 injected fault: write a:entry\",\"2111 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"2655 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\",\"4248 commit to ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"6222 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"6494 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"7158 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"7258",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref12: commit failed 3 times\",\"notes\":[\"6566 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"7499 commit to b threw: Error: m0 injected fault: write b:append\",\"7764 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"7864 commit t",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref4: commit failed 3 times\",\"notes\":[\"1256 outcome to a threw: Error: m0 injected fault: write a:entry\",\"2017 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"2184 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"2284 commit to a threw: InjectedFault: ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref4: commit failed 3 times\",\"notes\":[\"4521 outcome to a threw: Error: m0 injected fault: write a:entry\",\"5159 commit to b threw: Error: m0 injected fault: write b:append\",\"5611 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"5769 outcome to a threw: Injected",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"7834 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"8106 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"8451 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"8551",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref27: commit failed 3 times\",\"notes\":[\"410 outcome to a threw: Error: m0 injected fault: write a:entry\",\"1113 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"1256 outcome to a threw: Error: m0 injected fault: write a:entry\",\"2006 commit notLeader from b: {\\\"",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref27: commit failed 3 times\",\"notes\":[\"4516 outcome to a threw: Error: m0 injected fault: write a:entry\",\"5158 commit to b threw: Error: m0 injected fault: write b:append\",\"5603 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"5756 outcome to a threw: Injecte",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref8: commit failed 3 times\",\"notes\":[\"4521 outcome to a threw: Error: m0 injected fault: write a:entry\",\"5157 commit to b threw: Error: m0 injected fault: write b:append\",\"5613 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"5713 commit to a threw: InjectedF",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref8: commit failed 3 times\",\"notes\":[\"7716 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"8420 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"8623 outcome to a threw: Error: m0 injected fault: write a:entry\",\"9480 commit no",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref15: commit failed 3 times\",\"notes\":[\"6792 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"8151 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"9205 commit to c threw: Error: call deadline\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref21: commit failed 3 times\",\"notes\":[\"8613 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"9313 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"9698 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref21: commit failed 3 times\",\"notes\":[\"10333 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"10824 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"11045 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcom",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"10030 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"10817 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"10817 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref3: commit failed 3 times\",\"notes\":[\"10746 outcome to a threw: Error: m0 injected fault: write a:entry\",\"11234 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"11234 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"11450 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"11690 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"11790 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"11966 read to c threw: InjectedFault: m0 injected fault: call ed",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref11: commit failed 3 times\",\"notes\":[\"12892 outcome to a threw: Error: m0 injected fault: write a:entry\",\"13231 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"13389 commit to c threw: InjectedFault: m0 injected fault: call edge>c:co",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref0: commit failed 3 times\",\"notes\":[\"11153 outcome to a threw: Error: m0 injected fault: write a:entry\",\"11571 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"11625 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"11848 com",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"11679 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"11937 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"12268 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref8: commit failed 3 times\",\"notes\":[\"12892 outcome to a threw: Error: m0 injected fault: write a:entry\",\"13394 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"13394 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"13825 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref17: commit failed 3 times\",\"notes\":[\"15156 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"15688 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"16058 commit to c threw: InjectedFault: m0 injected fa",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref21: commit failed 3 times\",\"notes\":[\"14985 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"15488 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"15552 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcom",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref26: commit failed 3 times\",\"notes\":[\"11174 outcome to a threw: Error: m0 injected fault: write a:entry\",\"11606 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"11661 commit to a threw: Error: m0 injected fault: write a:apply\",\"12160 commit notLeader from b:",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref26: commit failed 3 times\",\"notes\":[\"12906 outcome to a threw: Error: m0 injected fault: write a:entry\",\"13116 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"13409 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"13611 outc",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: commit failed 3 times\",\"notes\":[\"17917 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"18124 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"18454 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref13: commit failed 3 times\",\"notes\":[\"21604 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"22227 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"22514 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit f",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"21246 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"21499 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"21679 read to c threw: InjectedFault: m0 injected fault: call ed",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref25: outcome failed 3 times\",\"notes\":[\"17108 outcome to a threw: Error: m0 injected fault: write a:entry\",\"17830 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"18252 outcome to a threw: Error: m0 injected fault: write a:apply\",\"18685 commit notLeader from ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"19725 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"20162 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"20162 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"2",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"19630 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"19876 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"20049 read to c threw: InjectedFault: m0 injected fault: call ed",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"17914 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"18432 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"18834 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref10: commit failed 3 times\",\"notes\":[\"22609 commit to a threw: Error: call deadline\",\"22709 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"23862 commit to c threw: Error: call deadline\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"26013 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"26414 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"26414 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"266",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"24466 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"24728 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"25372 read to c threw: InjectedFault: m0 injected fault: call ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"25501 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"25774 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"26140 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"2",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"27690 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"28093 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"28093 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"283",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref12: commit failed 3 times\",\"notes\":[\"27938 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"28341 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"28341 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"28146 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"28575 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"28575 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"2",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"27177 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"27450 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"27722 read to c threw: InjectedFault: m0 injected fault: call ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"28256 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"28692 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"28692 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"2",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref4: commit failed 3 times\",\"notes\":[\"30358 outcome to a threw: Error: m0 injected fault: write a:apply\",\"30623 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"30623 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"31047 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: commit failed 3 times\",\"notes\":[\"29480 outcome to a threw: Error: m0 injected fault: write a:apply\",\"30099 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"30199 commit to c threw: InjectedFault: m0 injected fault: call edge>c:co",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"31782 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"32204 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"32204 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"324",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref27: commit failed 3 times\",\"notes\":[\"29696 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"30255 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"30255 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref9: commit failed 3 times\",\"notes\":[\"32281 outcome to a threw: Error: m0 injected fault: write a:entry\",\"32539 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"32803 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"32903 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref4: commit failed 3 times\",\"notes\":[\"31940 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"32440 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"32440 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref3: commit failed 3 times\",\"notes\":[\"31498 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"32173 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"32275 outcome to a threw: Error: m0 injected fault: write a:entry\",\"32853 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"32807 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"33080 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"33354 read to c threw: InjectedFault: m0 injected fault: call ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"33470 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"34332 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"34572 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"34672 read to a threw: I",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"34467 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"34876 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"34876 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"351",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref19: commit failed 3 times\",\"notes\":[\"34555 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"34812 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"35386 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref14: commit failed 3 times\",\"notes\":[\"33920 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"34291 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"34291 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref29: commit failed 3 times\",\"notes\":[\"35731 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"35947 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"36569 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref1: commit failed 3 times\",\"notes\":[\"37740 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"38167 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"38222 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref10: commit failed 3 times\",\"notes\":[\"38161 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"38682 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"39108 commit to c threw: InjectedFault: m0 injected fa",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"37449 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"37721 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"38061 read notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"3",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref9: commit failed 3 times\",\"notes\":[\"38033 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"38598 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"39110 outcome to a threw: Error: m0 injected fault: write a:entry\",\"39369 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"40794 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"41221 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"41221 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"4",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"40809 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"41062 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"41162 read to c threw: InjectedFault: m0 injected fault: call ed",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: outcome failed 3 times\",\"notes\":[\"41578 outcome to a threw: Error: m0 injected fault: write a:apply\",\"41843 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"42051 commit to c threw: InjectedFault: m0 injected fault: call edge>c:c",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref4: commit failed 3 times\",\"notes\":[\"43907 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"44178 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"44733 commit to c threw: Error: m0 injected fault: writ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"43445 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"43720 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"43898 read to c threw: InjectedFault: m0 injected fault: call ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref28: commit failed 3 times\",\"notes\":[\"41593 outcome to a threw: Error: m0 injected fault: write a:apply\",\"42029 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"42875 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\",\"42975 commit to a threw: InjectedFau",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref28: commit failed 3 times\",\"notes\":[\"43815 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"44654 commit to b threw: Error: m0 injected fault: write b:append\",\"45039 commit to c threw: Error: m0 injected fault: write c:append\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref28: commit failed 3 times\",\"notes\":[\"45776 outcome to a threw: Error: m0 injected fault: write a:apply\",\"46226 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"46226 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"46508 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"46298 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"46556 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"46767 read to c threw: InjectedFault: m0 injected fault: call ed",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref27: commit failed 3 times\",\"notes\":[\"41583 outcome to a threw: Error: m0 injected fault: write a:apply\",\"42002 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"42876 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\",\"44318 commit to a threw: Error: call",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref27: commit failed 3 times\",\"notes\":[\"44537 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"45111 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"45111 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref24: commit failed 3 times\",\"notes\":[\"48320 outcome to a threw: Error: m0 injected fault: write a:entry\",\"49420 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"50639 commit to c threw: Error: call deadline\",\"50792 commit to a threw: ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref26: commit failed 3 times\",\"notes\":[\"48501 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"49146 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"49200 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcom",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref22: commit failed 3 times\",\"notes\":[\"48151 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"49401 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"49753 outcome to a threw: Error: m0 injected fault: write a:apply\",\"51006 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"47498 commit to a threw: Error: call deadline\",\"47761 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"48926 commit to c threw: Error: call deadline\"]}",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"49247 outcome to a threw: Error: m0 injected fault: write a:entry\",\"50511 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"50564 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"51411 co",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"53836 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"54255 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"54255 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"53370 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"53770 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"53770 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"542",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"50651 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"51597 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"51597 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"54291 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"54899 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"55411 outcome to a threw: Error: m0 injected fault: write a:entry\",\"55668 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref12: commit failed 3 times\",\"notes\":[\"54072 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"54489 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"54897 outcome to a threw: Error: m0 injected fault: write a:entry\",\"55588 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref20: commit failed 3 times\",\"notes\":[\"54565 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"54997 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"55302 commit to c threw: InjectedFault: m0 injected fa",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref31: commit failed 3 times\",\"notes\":[\"56890 outcome to a threw: Error: m0 injected fault: write a:apply\",\"57311 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"57311 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"57569 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref26: commit failed 3 times\",\"notes\":[\"55820 outcome to a threw: Error: m0 injected fault: write a:entry\",\"55920 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"56280 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"56380 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get tok: commit failed 3 times\",\"notes\":[\"58105 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"58519 read notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"58519 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"587",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref3: commit failed 3 times\",\"notes\":[\"58770 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"59594 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"59775 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"59875 commit to a",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"54902 outcome to a threw: Error: m0 injected fault: write a:entry\",\"55582 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"55582 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"55792 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"56889 outcome to a threw: Error: m0 injected fault: write a:apply\",\"57308 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"57308 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"57725 comm",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref18: commit failed 3 times\",\"notes\":[\"59924 outcome to a threw: Error: m0 injected fault: write a:apply\",\"60256 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"60415 commit to c threw: InjectedFault: m0 injected fault: call edge>c:co",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on get authz: commit failed 3 times\",\"notes\":[\"57828 read to a threw: InjectedFault: m0 injected fault: call edge>a:read failed\",\"58100 read to b threw: InjectedFault: m0 injected fault: call edge>b:read failed\",\"58279 read to c threw: InjectedFault: m0 injected fault: call ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref2: commit failed 3 times\",\"notes\":[\"59202 outcome to a threw: Error: m0 injected fault: write a:apply\",\"59862 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"59862 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"60535 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref0: commit failed 3 times\",\"notes\":[\"57853 outcome to a threw: Error: m0 injected fault: write a:apply\",\"59179 commit to b threw: Error: m0 injected fault: write b:append\",\"59747 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit failed\",\"60352 ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref1: commit failed 3 times\",\"notes\":[\"57195 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"57618 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"57618 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit f",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref1: commit failed 3 times\",\"notes\":[\"60175 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"60809 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"60862 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit ",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref28: commit failed 3 times\",\"notes\":[\"56884 outcome to a threw: Error: m0 injected fault: write a:apply\",\"56984 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"58729 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":null}\",\"59164 outco",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref7: commit failed 3 times\",\"notes\":[\"60175 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"60807 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"60913 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"61013 commit to",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"56835 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"57099 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"58729 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref30: commit failed 3 times\",\"notes\":[\"60394 outcome to a threw: Error: m0 injected fault: write a:entry\",\"60825 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"60941 commit to c threw: InjectedFault: m0 injected fault: call edge>c:commit failed\",\"61098 outco",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref6: commit failed 3 times\",\"notes\":[\"60347 outcome to a threw: Error: m0 injected fault: write a:entry\",\"60835 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"61057 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"61210 outcome to a threw: InjectedFa",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref5: commit failed 3 times\",\"notes\":[\"59415 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"59839 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"59940 outcome to a threw: Error: m0 injected fault: write a:apply\",\"60547 commi",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref5: commit failed 3 times\",\"notes\":[\"60940 outcome to a threw: InjectedFault: m0 injected fault: call edge>a:outcome failed\",\"61897 commit notLeader from b: {\\\"term\\\":2,\\\"leader\\\":null}\",\"62185 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"62285 commit to",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref5: commit failed 3 times\",\"notes\":[\"63095 commit to a threw: InjectedFault: m0 injected fault: call edge>a:commit failed\",\"63483 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"63774 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\",
+      1
+    ],
+    [
+      "Error: /op: 500 {\"error\":\"Error: gave up on put ref11: commit failed 3 times\",\"notes\":[\"62379 commit to a threw: Error: m0 injected fault: write a:entry\",\"63112 commit to b threw: InjectedFault: m0 injected fault: call edge>b:commit failed\",\"63782 commit notLeader from c: {\\\"term\\\":2,\\\"leader\\\":\\\"a\\\"}\",\"64012 outco",
+      1
+    ]
+  ],
+  "verdict": "Pass"
+}
