@@ -10,6 +10,7 @@ says the project was formerly called by the old name. Exit code 1 lists each hit
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -21,9 +22,19 @@ ALLOWED_FILES = {"README.md", "FRAME.md"}
 SKIPPED = {"history", "__pycache__", ".git", "node_modules", ".wrangler"}
 
 
+def ignored():
+	"""Paths git ignores, such as build output, so a generated file never fails a check."""
+	out = subprocess.run(["git", "ls-files", "--others", "--ignored", "--exclude-standard", "--directory"],
+		cwd=ROOT, capture_output=True, text=True).stdout
+	return tuple(line.rstrip("/") for line in out.splitlines() if line)
+
+
 def files():
+	skip = ignored()
 	for path in sorted(ROOT.rglob("*")):
 		rel = path.relative_to(ROOT)
+		if any(rel.as_posix() == p or rel.as_posix().startswith(p + "/") for p in skip):
+			continue
 		if path.is_file() and not SKIPPED & set(rel.parts):
 			try:
 				yield rel.as_posix(), path.read_text()
