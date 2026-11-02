@@ -425,11 +425,13 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Cost accepted.** The option needs cloudflared on each client and depends on Tunnel public-hostname routing; native SSH on Enterprise depends on Spectrum. Below Enterprise Spectrum is not in the path, and on Enterprise a Tunnel origin forbids Proxy Protocol, so sshd never sees the client's IP and SSH abuse limits count by key and token. The option runs 3 SSH front containers when on, and Tunnel bytes are not billed (`python3 scripts/cost.py --ssh-option`). Spectrum SSH data on Enterprise costs $1 per GB above the plan allowance, plus an add-on fee no list price was found for [unverified].
 
-**Evidence.** `tests/m0/results/m0-wp7.md`. `design/DESIGN.md`, "Shape" (SSH front), "Commit and read paths" (journey 4), "Tradeoffs accepted", "Open questions and risks", and "Milestone 0". `FRAME.md`, answer 7, its 2026-10-31 note, and "Operator decision, 2026-10-31, SSH ingress". `history/FRAME.md`, answer 7. `history/review/cloudflare-interrogate.md` CF-ACT-12. `research/cloudflare-git.md` finding 26. `history/arena/cloudflare/SYNTHESIS.md`, graft 2. `history/decisions.tsv` rows 132 and 144.
+**Evidence.** `tests/m0/results/m0-wp7.md`, including B0-24a's 24 h run of record (`tests/m0/results/raw/wp7/b0-24a-r4/summary.json`). `design/DESIGN.md`, "Shape" (SSH front), "Commit and read paths" (journey 4), "Tradeoffs accepted", "Open questions and risks", and "Milestone 0". `FRAME.md`, answer 7, its 2026-10-31 note, and "Operator decision, 2026-10-31, SSH ingress". `history/FRAME.md`, answer 7. `history/review/cloudflare-interrogate.md` CF-ACT-12. `research/cloudflare-git.md` finding 26. `history/arena/cloudflare/SYNTHESIS.md`, graft 2. `history/decisions.tsv` rows 132 and 144.
 
-**Flip.** Spectrum on Pro or Business accepting a virtual-network origin, which would make native SSH available there. Or the `cloudflared` option failing its Milestone 0 row, B0-24a (under 99% of sessions over a day with a container killed every 10 minutes), which would leave Pro and Business HTTPS only. B0-24b, Enterprise Spectrum, is not run.
+**Flip.** Spectrum on Pro or Business accepting a virtual-network origin, which would make native SSH available there. Or the `cloudflared` option reaching B0-24a's Fail value (under 99% of sessions over a day with a container killed every 10 minutes) on M6-WP2's rerun on real code, or losing an acknowledged push, which would leave Pro and Business HTTPS only. A no-kill background below 99.9% on that rerun, which would make the option's failures our edge's rather than the kill rate's, reopens whether to offer it. B0-24b, Enterprise Spectrum, is not run.
 
 **Flip fired on Pro, 2026-10-31** (`tests/m0/results/m0-wp7.md`). The original decision put SSH through Spectrum on every plan, subject to Milestone 0's Spectrum-to-Tunnel row on each plan. The Spectrum API refused the design's app on the operator's Pro zone (10012, then 13002; the operator's dashboard attempt got 11002), which executed the operator's own condition in answer 7 ("Keep SSH, subject to Milestone 0's Spectrum-to-Tunnel row on each plan"). The operator then chose the split above: HTTPS by default, the `cloudflared` option on Pro, and SSH on Enterprise.
+
+**B0-24a ended between the lines, 2026-11-01** (`tests/m0/results/m0-wp7.md`, B0-24a; decided under the operator's delegation of 2026-10-30). Over 24.0 h with 143 container kills, the option served 28,230 of 28,347 sessions, 99.587%, between the 99.9% pass and the 99% fail. The `cloudflared` option stays as built, off by default, on Pro and Business, and its gate stays as written and carries to M6-WP2's rerun on real code, like the other between rows. It does not fail the option, for three reasons. No acknowledged push was lost: 9,418 pushes were acknowledged and all 9,418 are in the group log. 85 of the 117 failures came within 2 min of a kill: sessions in flight on a killed container, at a kill every 10 minutes, far above any expected real rate, which puts a floor of about one failure per kill under the rate. The other 32 (the stream closed before the SSH banner, no banner within `ConnectTimeout`, 90 s timeouts) are the Tunnel edge, which nothing on Graftyard's side controls, and they put the no-kill background near 99.89%, matching the 2.2 h run's 99.886%. cloudflared was ready after a kill in p50 about 2.4 s, max 9.7 s [measured, `tests/m0/results/raw/wp7/b0-24a-r4/summary.json`]. Because that background alone sits at about the pass line, the install docs tell SSH-option users that a failed session, a push included, is safe to retry, and the edge's over-cap message keeps naming HTTPS as the default. WP7's build findings (the client stanza with `ConnectTimeout 30` and keepalives, `--ha-connections 2`, sshd's 30 s login grace and client keepalives, and `graft-sshd` retrying through `ssh_outbound` for longer than a group failover) are in `build/BUILD-PLAN.md`, M6-WP2. Beat: failing the option on the number alone, which would count the test's kill rate and Cloudflare's edge against Graftyard's code; or loosening the gate to 99.5%, which changes a gate number with no new evidence.
 
 ### Hosted runners live in a separate runner account
 
@@ -982,6 +984,276 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 **Evidence.** `tests/m0/results/m0-wp9.md`, "Fourth pass", B0-33 runs `p4r1` to `p4r6` and B0-29 runs `p4r1` and `p4r2`, and "Proposed design edits (fourth pass)" 32. Fifth pass, `p5r3` (Human and merge-queue p99 616 ms with the budget on a settled leader). Sixth pass, `p6r1` to `p6r3`, and "Proposed design edits (sixth pass)" 38. Seventh pass, `p7r1` to `p7r3`, with the budget on every group: no entry carried more than 131,072 bytes of Agent inline packs, first entries included, and all three far-flung runs passed every B0-33 line with 0 leader changes and Human and merge-queue p99 746 to 943 ms.
 
 **Flip.** A B0-33 rerun with the budget where Human and merge-queue p99 stays over 1 s with a stable leader, or staging p99 that pushes agent push p99 over B0-29's lines.
+
+### Decisions for a Pro-only build with no GHES, 2026-10-31
+
+> "ok skip. get it done given our current pro plan. i won't have enterprise for a while, if at all. also don't have an active github enterprise either. just get it done given these limitations."
+
+The operator said this after hearing that a Business zone would only confirm the Business cells of B0-20 and B0-21 and Spectrum's refusal on Business. "skip" means no Business zone is bought (`FRAME.md`, "Operator decision, 2026-10-31, Pro only and no GHES"). The run made the four decisions below under that answer and the delegation of 2026-10-30.
+
+#### M1 starts with the between rows carried forward
+
+**Decision.** Milestone 0 is closed for the purpose of starting M1. These rows are short of their Pass value and carry forward, with no gate number changed, to the reruns the Milestone 0 status table already names: B0-02 (M1-WP2 on real code), B0-07 (a rerun on M1-WP3's code), B0-11's site-C fault-coverage note (M1-WP2's 24-hour rerun), B0-29 and LF-12 (LM reruns on real code), B0-34 (a full-scale run with the warm pool), and L0-04, L0-06, and L0-11 (the LM rows that rerun them). A Fail value on any of those reruns still sends the design back. B0-24a, the `cloudflared` SSH option's 24 h rerun, gates only M6-WP2's SSH option and does not block M1; it ended between the lines on 2026-11-01 ("SSH goes through Spectrum, Tunnel, and the container outbound handler"). Rows that need a plan, an instance, or vendor accounts the operator does not have (the Business and Enterprise cells of B0-20 and B0-21, B0-24b, L0-07's vendor cells, L0-08's `ghr_` cell) stay not run with their owners named, and none of them gates M1.
+
+**Why.** No Milestone 0 row reached its Fail value. Each row short of Pass is limited by prototype code or by platform storage stalls and distance, which only real code or a larger run can settle, and each already has a named rerun. The build plan's rule that a between result is not done would otherwise hold M1 on rows M1 itself must build the code for. The rows that need a missing plan cannot run in this account at all.
+
+**Beat.** Holding M1 until every row passes, which waits on code M1 builds and on plans the operator may never buy. Moving the between results to Pass, which changes gate numbers without new evidence.
+
+**Evidence.** `build/BUILD-PLAN.md`, "Milestone 0 status (2026-10-31)" and "How to use this plan"; `tests/m0/results/`, one file per package.
+
+**Flip.** A Fail value on any carried-forward rerun, which sends the design back as a Milestone 0 fail would have. B0-24a reaching its Fail value on M6-WP2's rerun, which leaves Pro and Business HTTPS only and drops M6-WP2's SSH option, but does not reopen M1.
+
+#### Rows that need a plan the operator lacks are owned by the first install on that plan
+
+**Decision.** The Business and Enterprise cells of B0-20 and B0-21, and B0-24b, are recorded as not run, as M0-WP6's Plans paragraph says, and the design's claims for those plans stay [unverified] or [doc] until the first install on that plan runs the row in its own account. The edge's push cap stays parameterized by plan, with Business at 200 MB and Enterprise at 5 GB carried as [doc]. Journey 1's 2 GB push on Enterprise and B0-20's Enterprise cell stay unmeasured. M6-WP2 builds only the `cloudflared` SSH option. The Enterprise Spectrum ingress (a Spectrum app on port 22 to the Tunnel's virtual network) stays in the design and is not built until an Enterprise install exists, and B0-24b then gates it. The operator's "ssh on enterprise" decision stands: the ingress is deferred, not dropped.
+
+**Why.** The operator has only the Pro zone `graftyard.dev` and may never have Enterprise. Building the Spectrum ingress now would ship code no row can test. The SSH front containers, `graft-sshd`, and `ssh_outbound` are the same for both ingresses, so the deferred part is the Spectrum app, its virtual-network route, and their Terraform.
+
+**Beat.** Building both ingresses now and leaving the Spectrum one untested. Dropping native SSH on Enterprise, which would reverse an operator decision with no evidence.
+
+**Evidence.** `build/BUILD-PLAN.md`, M0-WP6 (Plans) and M0-WP7; `tests/m0/results/m0-wp6.md` and `m0-wp7.md`; `FRAME.md`, "Operator decision, 2026-10-31, SSH ingress".
+
+**Flip.** An Enterprise install, which builds the Spectrum ingress and runs B0-24b and B0-20's Enterprise cell in its own account. A Business install, which runs B0-20 and B0-21's Business cells and tests whether Spectrum takes a virtual-network origin there.
+
+#### L0-11's oracle is the pinned GHES 3.22 descriptions and github.com
+
+**Decision.** With no GHES 3.22 instance, L0-11's oracle is the pinned `ghes-3.22` OpenAPI description and the GHES 3.22 GraphQL schema for response shape (`research/clients.md` finding 49; `research/wire-census.md`, "Implications for the design"), plus github.com's API as a behavioral oracle only for operations whose `ghes-3.22` and api.github.com descriptions match, with every difference listed. This oracle is weaker than a GHES appliance [inference]: it checks shape and github.com behavior, not GHES's own behavior where it differs from github.com. The gate text is unchanged. The same reading applies to the other gates that named a GHES instance (L0-08's `ghr_` cell and BF-65's GHES archive, in the two decisions below). Gates whose oracles are unmodified clients (git, gh, Octokit contract runs from the pinned `ghes-3.22` OpenAPI, the Terraform provider, Renovate, and the rest of `design/SHARED.md`, "Surfaces, tiers, and oracles") need no GHES and are unchanged.
+
+**Why.** The operator has no GitHub Enterprise and does have a github.com account, so a github.com oracle is runnable now. The research already suggested the pinned description as the shape oracle.
+
+**Beat.** Leaving L0-11 waiting on an appliance the operator may never have. Using github.com for every operation, which would hide the operations whose GHES and dotcom descriptions differ.
+
+**Evidence.** `tests/m0/results/m0-wp15.md`, L0-11 (partial: 0 of 1,011 differences against the prototype, no GHES oracle). `research/wire-census.md` finding 6 and "Implications for the design"; `research/clients.md` finding 49.
+
+**Flip.** A GHES 3.22 instance becomes available; then rerun L0-11 against it.
+
+#### `graft-mcp` keeps the unscoped token sealed until the next refresh, and `import ghes` is tested on a synthetic archive
+
+**Decision.** AM2-WP1 builds A4's fallback as the behavior. At `/token`, after `token/scoped` narrows the `ghu_`, `graft-mcp` keeps the unscoped `ghu_` sealed in the `McpRefresh` beside its `ghr_`, and deletes it with `DELETE /applications/{client_id}/token` only at the next refresh, after the `ghr_` has been spent. Every call still uses the narrowed token. Revoking the client deletes the narrowed token and the held pair (journey A7 step 7). A4 stays open, and its answer no longer gates anything; L0-08's `ghr_` cell, which no Milestone 0 run could measure, becomes "a refresh succeeds with the unscoped `ghu_` held, and the held `ghu_` is deleted after it"; no number changes. Separately, `graftyard import ghes` (M7-WP6, BF-65) is tested on a synthetic `ghe-migrator` archive built from GitHub's documented format, and that test is recorded as untested against a real GHES export [inference]. Neither the design nor the research says github.com's migrations API produces the same archive, so it is not named as an oracle.
+
+**Why.** The fallback is correct whether or not the `ghr_` survives the delete, and on Graftyard's own host it is required. `graft-mcp` redeems codes only against the install's own host, where a `ghu_` and its `ghr_` are `paired` and "revoking either revokes both" (`design/DESIGN.md`, Shape, Identity; BF-31: "the DELETE revokes"). So the immediate delete written in journey A7 would revoke the `ghr_` there and break every refresh, whatever GHES does; M0-WP15's prototype host modeled survival, which the design's own pairing rule does not give. Holding the unscoped token adds no power beyond the sealed `ghr_` that `McpRefresh` already holds, because a `ghr_` can mint an unscoped `ghu_` [inference]. If a GHES host does let the `ghr_` survive, the only loss is a later delete. No GHES instance exists to produce a real `ghe-migrator` export.
+
+**Beat.** Deleting the unscoped `ghu_` at once, which breaks every refresh on Graftyard's host. Exempting `DELETE /applications/{client_id}/token` from the pairing rule, which would make Graftyard's revocation differ from its own BF-31. Waiting for a GHES instance for either test.
+
+**Evidence.** `decisions/OPEN-QUESTIONS.md`, A4; `design/AGENT-LAYER.md`, journey A7 step 5, Shape (`McpRefresh`), and "Review resolutions" (AG-ACT-8); `design/DESIGN.md`, Shape, Identity (`paired`), and BF-31; `tests/m0/results/m0-wp15.md`, L0-08; `design/SHARED.md`, `rest:migrations`.
+
+**Flip.** A GHES 3.22 instance on which the `ghr_` survives the delete, and a reason to match it, which would allow the earlier delete. A real GHES export whose shape differs from the synthetic archive, which reopens BF-65.
+
+### Shape corrections from the Raft core build (2026-10-31)
+
+**Decision.** `design/DESIGN.md`, Shape, now matches what `crates/raft` had to build. `decide` takes an `EntryView`, the fold at `applied` plus the events of the entry's earlier commands, and the `deps` folds read once through `fresh`, as the write-path prose and "Invariants" already said. `outcome_by_request` takes the command the edge would re-send, because `replay` is a method on it. `MemberState` gains `promised_to` and `saved_at`, which the promise rule and the `boots` rule read. A duplicate answered from its `request` row carries the current leader's latest commit proof, which covers the stored index. A new leader whose term's `Noop` reaches no quorum within 3 s [guess] returns to follower and keeps `led_term` [inference]. The member's own `COMMAND_MAX` refusal is `CallError::TooLarge`, rendered as the edge's refusal before `commit`.
+
+**Why.** The Shape contradicted its own prose or lacked what its own rules need: a `Fresh` is the leader's committed fold, which does not include the entry's earlier commands that BF-13's case depends on; `outcome_by_request` had no command to call `replay` on; the promise and boot rules named state the row did not hold; the original acks of a duplicate are gone when it is answered; and a leader whose `Noop` cannot commit had no stated exit.
+
+**Beat.** Keeping `decide(&Fresh)` and folding earlier commands into a copy of the committed fold, which is the same view under another name. Storing each request's acks with its row so a replay could reuse them, which adds bytes per row for a proof no caller reads beyond its existence.
+
+**Evidence.** `tests/m1/results/m1-wp2.md`, "Where the code departs from the design's Shape", and its simulator runs: 2,000 seeds by 10,000 steps passed every safety check and Porcupine, and BF-13's case returned no refusal from an uncommitted entry [measured, simulator, not yet on the hosted code].
+
+**Flip.** The hosted code (M1-WP2's BF-12 and BF-13 on Durable Objects) needing a different shape for any of these.
+
+### Decisions from the M1 builds, 2026-11-01
+
+M1-WP2 hosted the Raft core on Durable Objects, M1-WP3 built leadership and health in the crate's simulator, M1-WP4 and M1-WP5 built the pack store and the git cache shards on real buckets and containers, M1-WP6 built the git edge, M1-WP7 hosted minimal identity and placement on Durable Objects, and the operator CLI built genesis acceptance (`tests/m1/results/m1-wp2.md` to `m1-wp7.md`, and `m1-cli.md`). The lead made the decisions below under the operator's delegation of 2026-10-30. Two findings are open questions, not decisions: `confirm_slow_min` on quiet groups (F41) and every `STEP_DOWN` holding under frequent resets (F42), each stated in Shape beside its rule.
+
+#### The leader sends AppendEntries before its own append is durable
+
+**Decision.** The leader sends each entry to its followers before its own append is durable, and counts itself toward the quorum only once its own storage has confirmed (Raft dissertation, section 10.2.1). Every follower still confirms before it replies, and a commit is revealed only after the leader's own write is durable. A restarted leader that lost an entry it sent may send another at the same (term, index); followers match entries by digest, and the lost one never committed. The crate's persist-then-send rule changes for the leader's own `Append`, and B0-01 is re-measured on the change. Until then the Rust host's figure stands as measured.
+
+**Why.** The design said "sends to both followers at once" and "confirmed by its own storage before its reply left" without saying whether the leader may send first. Milestone 0's prototype sent first and passed B0-01 at p99 433 to 481 ms. The Rust host let the output gate hold each round for the leader's own write, and six one-minute runs measured p99 645 to 791 ms, between pass and fail in every run, with the leader's own confirm (p50 23 to 25 ms, tail to 312 ms) added to every round under one entry in flight.
+
+**Beat.** Keeping write-then-send and accepting that B0-01's margin is gone. Lowering the load or the gate, which changes a gate number with no new evidence.
+
+**Evidence.** `tests/m1/results/m1-wp2.md`, "On Durable Objects", "Commit latency, B0-01 style" and "What the crate should expose" [measured]; `tests/m0/results/m0-wp2.md`, B0-01; `crates/raft/src/member/follower.rs`, which already matches entries by digest for this case.
+
+**Flip.** The re-measure on the changed crate staying over 600 ms, which shows the leader's write was not the cause; or a lost-entry case the digest match does not cover.
+
+#### Member-call retries are the Raft core's resends
+
+**Decision.** The host sends each member-to-member message once and never retries it. A commit-path call that fails is resent by the core at once at most `COMMIT_RETRIES` (2) times in a row and then on `tick` after each `CALL_DEADLINE`; votes are resent on `tick`; a campaign, or a new leader whose term's `Noop` reaches no quorum, gives up after CALL_DEADLINE x (1 + COMMIT_RETRIES), 3 s. `COMMIT_RETRIES` keeps its meaning: how many resends of a commit-path call before it counts as failed. An edge's re-send under the same request id is separate.
+
+**Why.** "Every receipt and member-to-member call has a 1 s deadline and retries at most twice" read either as a transport retry or as the core's budget. A transport retry under the core's own resends would double them, and the M1 host and crate already work the second way.
+
+**Beat.** A transport retry in the host, which would resend messages the core resends anyway and hide failures from `Health`.
+
+**Evidence.** `tests/m1/results/m1-wp2.md`, "The host" (Transport) and "Design problems found"; `tests/m1/results/m1-wp3.md`, bug 4 (a failed call waited for `tick` until it was resent at once); `crates/raft/src/member/leader.rs` (`append_failed`) and `election.rs` (`CAMPAIGN_DEADLINE`).
+
+**Flip.** A measured case where the core's resends miss a failure a transport retry would have recovered within one `CALL_DEADLINE`.
+
+#### `suspect` names who a report is about, and a transfer vote promises the target
+
+**Decision.** `suspect(follower, from: Colo, about: SiteId, term)`: a report names the member whose receipt missed, or that answered `NotLeader` naming no leader, and counts only when `about` is the leader this follower promised and has heard from in the current term; a higher term clears that leader. A granted transfer vote is also a promise to the target. A target that is drained, under `no_lead_until`, or inside its own RESET_QUARANTINE answers `TransferRefused`, and the leader abandons the transfer at once rather than at LEASE. Shape now defines `Verdict`, `TransferError`, `SuspectError`, and `Colo` as the crate has them.
+
+**Why.** Without `about`, late reports about a transfer's old leader withheld promises from the new one: three leader changes in one run. Without the promise to the target, a report to the old leader before the target's first append reached the other follower let the old leader win that vote back and depose the target, and the group had no leader. Without `TransferRefused`, a refused transfer would hold the group, which appends nothing and serves no `fresh` read during a transfer, until LEASE ran out [inference from Shape, `transfer`].
+
+**Beat.** Counting every report against whoever the follower follows. Breaking promises only for the transfer id, as the design had it, with no promise to the target.
+
+**Evidence.** `tests/m1/results/m1-wp3.md`, "Bugs the tests found" 1 and 2 and "Where the code departs from the design", with the targeted cases `a_transfer_vote_promises_the_target` and `a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease` [measured, simulator]; Milestone 0's prototype also passed a target (`tests/m0/src/raft/member.ts`, `suspect`).
+
+**Flip.** The hosted code (BM-1, B0-07's rerun) showing a leaderless group or a lost promise these rules cause.
+
+#### "Recovered" for the transfer back to `home`
+
+**Decision.** A leader transfers to its group's `home` once `home` answered at least 5 calls in the last `STEP_DOWN` window with none failed, is outside RESET_QUARANTINE, and holds every committed entry, the leader is not tripped, and a window has passed since it started leading. After a failed transfer to `home` the next try waits 60 s. Both numbers are [guess].
+
+**Why.** The design said "recovered and caught up" and defined neither. Asking `home` to hold the last index first held a transfer for about 58 s with no fault, because under load an entry is always in flight; the transfer itself brings `home` to the last index.
+
+**Beat.** Waiting for `home` to hold the last index. Retrying a failed transfer at once, which can bounce a group between sites.
+
+**Evidence.** `tests/m1/results/m1-wp3.md`, bug 6 and the `home` cases (`leadership_returns_home_after_it_recovers_and_catches_up`, `a_quarantined_home_gets_no_transfer`) [measured, simulator]; `crates/raft/src/member/health.rs` (`HOME_CALLS`, `HOME_RETRY`).
+
+**Flip.** A hosted run where groups return to a `home` that is still failing, or stay away from a healthy one for more than a few windows.
+
+#### The pack store and shards follow what the M1 code needed
+
+**Decision.** A `request` row saves an unmarked pack only when its events name that pack's id, so a retried request's orphan from a failed first placement is deleted at 24 h. The edge journals each multipart upload under `R2Key::Upload` before its first part, and the sweeper aborts from the journal, because the R2 binding cannot list in-progress uploads. The `Committed` marker carries (chain, index, checksum, bytes). `IngestCursor` is keyed to a disk id the container writes at first start, and a cursor for another disk, or one behind an `Archived` truncation, means a full rehydrate. "After its last `Promoted`" means after the promoted range's `to`. Pushed packs stay stored as pushed, thin, and every ingest re-indexes with `index-pack --strict --fix-thin`; whether to store them fixed is G5.
+
+**Why.** Each is what the code had to do for a rule the design states. A row that saves any pack under its request id kept the first placement's orphan; the binding has no list call for open uploads; the filler cannot verify a copy from (chain, index) without reading the chain; a restarted container has an empty disk under an unchanged cursor; inline packs between `to` and the `Promoted` entry are not covered by it; and git cannot keep a thin pack, so a stored `.idx` of one is unusable. Storing packs thin keeps the edge's tee, which writes the pushed bytes to the buckets while the shard validates. No result measured the cost of the re-index on real history.
+
+**Beat.** Saving any pack whose request has a row; relying on R2's 7-day multipart expiry; a cursor with no disk id; storing fixed packs now, before G5 measures what the re-index costs.
+
+**Evidence.** `tests/m1/results/m1-wp4.md`, BF-19 (pass on real buckets with the `request` table stubbed: 2,150 of 2,150 orphans deleted at 24 h and 0 committed packs deleted, 10 of 10 multipart orphans aborted) [measured]; `tests/m1/results/m1-wp5.md`, BF-18 (pass on Cloudflare Containers with the chain leader stubbed, 3 runs, 0 failures) [measured]; `crates/git/src/sweep.rs`, `ingest.rs`, and `host.rs`; `containers/git/server/main.go`.
+
+**Flip.** BF-19 or BF-18 failing once the site script hosts the sweeper, `GitCacheShard`, and the real `request` table. For thin storage, G5's B0-22 rerun putting the re-index past 120 s on a real network.
+
+#### The git edge's shape follows what M1-WP6 built
+
+**Decision.** `CloneKey` gains `tags`, the digest of `refs/tags/` at the read, set only when the fetch asks for `include-tag`. SHARED gains `RejectReason::Atomic` for a ref refused only because another ref of an `AllOrNothing` push failed, which git shows as `atomic push failure`. The 10,000-ref cap applies to `--atomic` pushes only; a non-atomic push is bounded only by `COMMAND_MAX`. The member renders `report_status` from `&Acked` and the edge frames the bytes. A command refused inside `decide` still commits an entry with its `request` row, so the refusals that must leave no entry (the atomic cap, `COMMAND_MAX`) are made at the edge before `commit`. SHARED's `GCM_TRACE=1 git clone` oracle stays, recorded as not yet run.
+
+**Why.** With `include-tag` the clone-cache response depends on the tag refs, so a key without them could serve a stale tag set. No reason fit a ref that would have passed in a failed atomic push, and GitHub prints `atomic push failure` for it. SHARED said both "Admission caps a push at 10,000 refs" and "Non-atomic pushes are not capped"; the code and BF-17 follow the table. `Acked` cannot cross a Durable Object binding, and only the member holds it, so the invariant holds with the member rendering. BF-13 needs a refused command's entry to commit, so "no entry" can only come from the edge.
+
+**Beat.** A cache key without tags, which would need every tag move to invalidate the clone cache. Reusing `Stale` for the atomic case, which tells the user the wrong thing. Capping non-atomic pushes too, which GitHub does not do by default. Shipping `Acked` across the binding, which is impossible.
+
+**Evidence.** `tests/m1/results/m1-wp6.md`, "Git clients" (29 of 29 rows on git 2.39.5, 2.51.0, and 2.56.0), BF-17, and "Design problems found" [measured]; `crates/git/src/clone.rs`, `repo.rs`, `smart.rs`, and `crates/git/tests/push.rs`.
+
+**Flip.** A GHES 3.22 or github.com trace showing a different atomic-failure line, or a cap on non-atomic pushes; a clone-cache hit that serves a tag set its key did not digest.
+
+#### BM-1's `git` conformance suite is SHARED's git oracles plus git's own remote-capable transport tests
+
+**Decision.** The "`git` conformance suite" in BM-1 is SHARED's `git-http` and `git-protocol-v2` oracle rows on unmodified git 2.39 and 2.51, plus those of git's own smart-HTTP transport tests in `t/` that can be pointed at a remote host, run by a harness under `tests/m1/wp6`. The gate number is unchanged.
+
+**Why.** No document defined the suite. Git's `t/t55xx` tests start their own Apache with `git-http-backend` as the server under test, so only the ones that can target a remote host test Graftyard without patching git's harness, which would no longer be unmodified git.
+
+**Beat.** All of `t/t55xx` with a patched harness, which tests a modified client. SHARED's rows alone, which leave git's own transport edge cases untested.
+
+**Evidence.** `tests/m1/results/m1-wp6.md`, "The `git conformance suite` (BM-1)".
+
+**Flip.** A remote-capable subset too small to cover a transport behavior an unmodified client depends on, found by a client failure the suite missed.
+
+#### Bootstrap claims a chain, and the committed config owns `home`
+
+**Decision.** A bootstrap member, after reading its record generation from the source, claims its chain in the `MemberRegistry` of the oldest record's first site; the first member generation to claim wins, and a member of another generation that finds a claim stores nothing. A replacement on the same site, a placement retry or `ReplaceMember`, takes two config changes, `Degraded { lost }` then `Normal` with the new member. Once a group exists, its committed config's `home` is authoritative, and the record's `home` only seeds bootstrap. A `MovePlacement` that changes only `home` needs no `Joint`: it is one config change and a transfer.
+
+**Why.** The design's rule, that a member reads the same record generation from the source, held for each of two edges holding two generations during a move, and the chain got two groups in 20 of 20 control rounds; with the claim, 100 of 100 rounds built one. `GroupConfig` counts votes and acks by site, so one config cannot name two members on one site. The transfer back to `home` read the record's `home` and pulled re-homed groups back to their old site in BF-11's first run.
+
+**Beat.** A `Bootstrapped { chain, generation }` row committed once by the `Names` leader, which adds a commit on every chain creation. Creating a chain only from the owner's oldest record still in `moving_from`, which every edge would need to read fresh.
+
+**Evidence.** `tests/m1/results/m1-wp7.md`, "On Durable Objects (2026-11-01)": BF-10 (1,000 of 1,000 chains with one group; 100 of 100 during a move with the claim, 0 of 20 without it) and BF-11 (1,500 of 1,500 requests found the group on the fixed code), and "Design problems found" [measured]; `workers/site/src/member.rs`; `crates/raft/src/member/health.rs` (`home` from the config).
+
+**Flip.** A BF-10 rerun on the hosted `Names` group with two groups for any chain; a registry outage on the oldest record's first site that blocks chain creation for longer than the site's other members are down.
+
+#### Genesis answers a second genesis with 409, and `KeyId` is the public key
+
+**Decision.** The release endpoint answers a replay or a second genesis with 409 and `prev` set to the digest of the genesis it holds, so a retried `graftyard install` after a lost 201 sees its own digest and stops. A `KeyId` is the 32-byte Ed25519 public key. In Milestone 1, `graftyard genesis` reports the scripts it did not create, because none of them exist yet.
+
+**Why.** A genesis has no `prev`, and the design defined 409 only for a stale one. Without this, a retry after a lost 201 cannot tell success from another genesis. `Keys` named keys by `KeyId` without defining it, while `LifeboatAdd` and `SiteLink::Https` use `Ed25519Public`.
+
+**Beat.** A 422 `AlreadyInstalled`, which a retry could not tell apart from a different genesis without another read. A digest-style `KeyId`, which would need the key bytes stored elsewhere in `Keys`.
+
+**Evidence.** `tests/m1/results/m1-cli.md`, "What the edge's release endpoint must accept" and "Design problems found" 2 to 4; `crates/release`.
+
+**Flip.** A signer that needs to rotate a key without changing its id, which a digest `KeyId` would allow.
+
+### BM-1 and the M1-WP8 fixes, 2026-11-02
+
+M1-WP8 ran BM-1's git half on the test install with one site's member class failing every call, and fixed what the first runs found (`tests/m1/results/m1-wp8.md`). The lead made the decisions below under the operator's delegation of 2026-10-30.
+
+#### A replayed push reports each refused ref's own reason
+
+**Decision.** A push's `decide` writes `RepoEvent::Refused` (core tier, in the push's own entry) with each refused ref and its `RejectReason`, beside `Refs` or alone. `Push::replay` answers a duplicate from it, so each refused ref keeps its original reason. Only a `request` row written before this event existed replays an absent ref as `Stale`. SHARED's `RejectReason` also lists `NameConflict` and `AtomicTransaction`, which the code already returned.
+
+**Why.** A `request` row holds the entry's events, and a refused ref left none, so the old rule replayed `AtomicTransaction`, `NameConflict`, `Atomic`, and `Hidden` as `Stale`, and git printed `fetch first`. That was git's t5541 #20 on a lost reply.
+
+**Beat.** Storing the whole `Out` with the row, which duplicates the applied refs and needs a second format. Keeping `Stale`, which misreports every refused ref of a re-sent push.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, fix 1: `a_replay_reports_each_refused_refs_own_reason` fails on the old rule, and t5541 #20 passes on the redeployed edge [measured].
+
+**Flip.** A client that depends on a replayed refusal reading `Stale`, which none of SHARED's oracles do.
+
+#### Calls and catch-up reads are capped by bytes
+
+**Decision.** Each AppendEntries carries at most `APPEND_BYTES_MAX` (1.5 MB) past its first entry, as well as at most 64 entries. A member answers a shard's catch-up read of entries in pages of at most 600 kB of stored bytes, at least one entry each. Both numbers are [guess].
+
+**Why.** A shard's catch-up read answered 239 entries, 4.6 MB with up to 1 MiB inline packs each, in 7.8 s, past the lookup's call deadline, so every attempt timed out and the shard never caught up. 64 full entries in one AppendEntries could reach 96 MB, which no member answers within `CALL_DEADLINE`, and the leader would resend it forever.
+
+**Beat.** A longer deadline for these calls, which delays every failure the deadline exists to catch.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, fix 4: after paging, the catch-up rehydrated 161 inline packs (3.48 MB) in 16.8 s where it had failed after 27 to 30 s; `a_lagging_follower_catches_up_in_calls_under_the_byte_cap` fails on the old code with a 4.0 MB call [measured].
+
+**Flip.** A measured call under the caps that still misses `CALL_DEADLINE`, or catch-up time dominated by page count.
+
+#### The site-loss bound is per request, and a total loss is left by `suspect`
+
+**Decision.** The Summary, journey 5, and the region rows state the outage bound per request: a request to a group led on a lost site waits at most about 11.5 s plus its own commit, counted from that group's first request after the loss. Campaigns stay request-driven. A total loss of a site's member class is left by `suspect` and election; a gray region by `STEP_DOWN`, `suspect`, or a signed drain.
+
+**Why.** Under BM-1's fault the first push took 16.8 s and later ones 5.4 to 6.3 s, while `tokens:1153`, used only near the end of each run, moved 247 to 284 s after the fault, when its first request came. A leader whose every call fails never completes a commit attempt, so its `Health` window never trips: every move in BM-1 was an election, and the one `STEP_DOWN` alarm fired on a new leader off the faulted site. The Summary's "groups led there stop reads and writes for at most about 11.5 s" read as a bound from the loss.
+
+**Beat.** Alarm-driven campaigns, which would move idle groups at once but wake every idle group's members, against B0-15's idle-cost row and the rule that no idle group is woken.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, "Leader moves", "Commit latency during the fault", and "Design problems found" 3 and 4 [measured].
+
+**Flip.** A user-visible request that waits longer than about 11.5 s plus its commit after a site loss, or an idle-group move that a client needs before its first request.
+
+#### BM-1's git half passes with one site's member class failing
+
+**Decision.** BM-1's git half is recorded as passing. `clients.sh` passed 29 of 29 on git 2.39.5 and 2.51.0, and `t/` on 2.51.0 and 2.56.0 lost no baseline pass except t5549 #2, with site 0's member class failing every call for the rest of each run. The 24-hour linearizability half is pending until 2026-11-02T18:27Z. A gray partial-error fault and a 2.39.5 `t/` baseline are not covered and go to BM-1's next rerun.
+
+**Why.** The one lost pass, t5549 #2, checks how many objects a negotiated push wrote, which depends on what the server advertises; the test sets a server-side `receive.hiderefs` the host does not apply, the push itself succeeded, and the same test already differed between two no-fault runs [inference]. 2.39.5's two extra failures are fixtures the hosted slot cannot reproduce (a lock file and a server-side hook).
+
+**Beat.** Holding the git half until a gray fault runs, which BM-1's gate text does not name.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, "BM-1 results" and "What is short of the gate" [measured].
+
+**Flip.** BM-1's next rerun losing a baseline pass under a gray fault, or t5549 #2 failing for a cause the host controls.
+
+### The hosted closing runs, 2026-11-02
+
+BF-14, BF-18, and BF-19 ran on the hosted test install, and BM-1's git half reran under a gray fault (`tests/m1/results/m1-wp8.md`, "Gate rows closed on the hosted install"; `tests/m1/results/m1-wp5.md` and `tests/m1/results/m1-wp4.md`, the 2026-11-02 sections). The lead made the decisions below under the operator's delegation of 2026-10-30.
+
+#### A promotion packs every pack its range names
+
+**Decision.** Before a range is archived, the home shard packs the objects of every pack, inline and stored, that the range names into one `DurablePack`, so the promoted pack is self-contained, and `Archived` follows only once `Promoted` covers the range. Pushed packs stay stored thin; the rest of G5 stays open.
+
+**Why.** Promoting only the inline packs, as the design said, failed BF-18's first hosted run: the range's stored pack was thin against earlier inline packs, a later inline pack named its objects, and rehydrate, which ingests each pack on its own with `--fix-thin`, stopped at `index-pack: fatal: did not receive expected object`. With the stored pack's objects also promoted, run 2 passed.
+
+**Beat.** One `index-pack` over the promoted pack and the range's stored packs together, or ingest order plus `--fix-thin` against the repository, which keeps the promoted pack small but makes every rehydrate depend on ingest order across packs. The chosen rule duplicates the stored packs' objects until compaction consumes them.
+
+**Evidence.** `tests/m1/results/m1-wp5.md`, "BF-18 on the hosted install with a real `ChainLog`", runs 1 and 2 [measured].
+
+**Flip.** Promoted packs whose duplicated stored objects cost more storage than a rehydrate that ingests the range's packs together, measured on real history.
+
+#### BF-14, BF-18, and BF-19 are done, with their stubs recorded
+
+**Decision.** BF-14, BF-18, and BF-19 are recorded as passing and done for M1, each with its remaining stubs in BUILD-PLAN's "Milestone 1 status": BF-14's missed receipts were injected, not real network loss; BF-18's archive is triggered by a test route, with four smaller gaps; BF-19's 24 h ran on the sweeper's injected clock. BM-1's git half also passes the gray fault it lacked. The 24-hour linearizability half stays pending until 2026-11-02T18:27Z.
+
+**Why.** Each row's pass line held on the real code and real groups: 0 of 2,400 commands forwarded; `git fsck` clean and 9 of 9 clones after a real `Promoted` and `Archived`; 0 of 1,000 committed packs deleted and 1,000 of 1,000 markers repaired from the real `request` rows. None of the stubs is something the gate rows name.
+
+**Beat.** Holding them for the M2 soak, which would rerun the same paths without the injections the rows need.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, "Gate rows closed on the hosted install, 2026-11-02 (afternoon)", BF-14 and "BM-1 gray-fault rerun"; `tests/m1/results/m1-wp5.md`, "BF-18 on the hosted install"; `tests/m1/results/m1-wp4.md`, "BF-19 on the hosted cron" [measured].
+
+**Flip.** A real reply loss that forwards a command, a rehydrate that misses an object after a leader-policy archive, or a committed pack deleted on a real clock.
+
+#### A gray region at low load is left by `suspect`, not `STEP_DOWN`
+
+**Decision.** The region row and the Summary say a gray region is left by `suspect` or a signed drain, and by `STEP_DOWN` only on a group busy enough to fill its `Health` window. `commit_fail_min` is unchanged; whether quiet groups need a lower one joins F41 beside `confirm_slow_min`.
+
+**Why.** At 30% call errors on site 0, both BM-1 gray runs moved every affected group by election after the edge's `suspect`, and no `STEP_DOWN` fired on any member. Three failed calls to each of two followers within 10 s takes about 10 appends at that rate, and `repo:196608` committed 7 entries in 5 minutes [inference from the rule and commit counts; the window was not logged].
+
+**Beat.** Lowering `commit_fail_min` now, which brings back the follow-on changes after kills that its 3 removed (B0-06, M0-WP4), with no measurement of a busy group under the gray fault.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, "BM-1 gray-fault rerun: site 0's member calls failing 30%" [measured for the moves and alarms].
+
+**Flip.** A gray-fault run on a group with enough traffic to fill the window where `STEP_DOWN` still does not fire, or a quiet group that `suspect` does not move within B0-06's 20 s.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
