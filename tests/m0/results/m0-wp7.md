@@ -230,11 +230,59 @@ Host ssh-m0.graftyard.dev
 
 ### The run of record: `b0-24a-r4`
 
-**Status: in progress.** The run started at 2026-10-31 07:36:08 UTC and ends at 2026-11-01 07:36:08 UTC. The service `wp7-24h-r4` runs it, and the service `wp7-finish` writes the report and stops the three fronts at 07:41 UTC. This section gets its final numbers when the run ends. Interim at 08:54 UTC (1.3 h): 1,554 sessions, 4 failed, 7 kills. All 4 failures were the session in flight on the killed replica: each started 2.2 to 2.6 s before its kill and was cut by it.
+**Status: done.** The run went from 2026-10-31 07:36:12 to 2026-11-01 07:36:07 UTC, 24.0 h, under the service `wp7-24h-r4`, with no restart and no change to the bed. At 07:41:40 UTC, `wp7-finish` wrote `results/raw/wp7/b0-24a-r4/summary.json` and stopped the three fronts (`results/raw/wp7/finish.log`). Both services were then stopped.
 
 **Setup.** This is the same bed as the 2.2-hour run. The changes are the ones listed above: replicas run `--ha-connections 2`; sshd runs `LoginGraceTime 30` and `ClientAliveInterval 15`; `akc` retries for 25 s; the client uses the documented stanza; and the runner kills a session's whole process group after 90 s. Two workers run one session every 6 s each, rotating clone, fetch, and push, for about 20 sessions a minute and about 28,800 a day. A kill every 10 minutes gives 144 kills. Each kill destroys the replica that served most recently.
 
-**Results.** Pending until the run ends at 07:36 UTC on 2026-11-01. The final table (sessions, success rate against 99.9% and 99%, failure causes, reconnect times after kills, and latency p50 and p99 by operation) comes from `node run/wp7.ts report --run b0-24a-r4`, which writes `results/raw/wp7/b0-24a-r4/summary.json`.
+**Results.** Every figure below was recomputed from `sessions.jsonl` (28,347 lines), `kills.jsonl` (143 lines), and the group log read back from `graft-m0-ssh`. All of them match `summary.json`.
+
+| Measure | Value |
+| --- | --- |
+| Sessions | 28,347: 9,449 clones, 9,449 fetches, 9,449 pushes |
+| Succeeded | 28,230 (**99.587%**). The pass line is 99.9% (at most 28 failures), and the fail line is 99% (more than 283 failures). The run had 117 failures, so the result falls **between the lines** |
+| Kills | 143, one every 10 minutes: `front-b` 65, `front-a` 45, `front-c` 33 |
+| Pushes | 9,418 acknowledged, and all 9,418 are in the group log. Five pushes the client saw fail are also in the log: four cut by a kill after the hook committed, and one whose `group.graft` reply stalled for 20 s after the commit. Their ref updates were committed without an acknowledgement, and the design's request ids exist to make a retry of such a push safe |
+
+| Operation | Sessions | Succeeded | p50 | p99 | Max |
+| --- | --- | --- | --- | --- | --- |
+| clone | 9,449 | 9,404 | 2.65 s | 3.49 s | 19.4 s |
+| fetch | 9,449 | 9,408 | 2.59 s | 3.41 s | 18.4 s |
+| push | 9,449 | 9,418 | 2.96 s | 3.89 s | 17.5 s |
+
+These are about 1 s slower than in the 2.2-hour run (p50 1.4 to 1.7 s). In that run most sessions went to `front-a` in ORD. Here the LAX client was routed mostly to `front-b` in CDG (12,616 sessions, against 9,003 for `front-a` and 6,611 for `front-c`).
+
+**Failure causes** (the classes in `summary.json`):
+
+| Cause | Count |
+| --- | --- |
+| Stream closed before the SSH banner | 46 |
+| 90 s session timeout, with no banner ever seen | 24 |
+| Stream closed after authentication | 23 |
+| No SSH banner within `ConnectTimeout 30` | 23 |
+| Other: the push hook's `group.graft` call timed out at 20 s after the group had committed | 1 |
+
+**Failures near a kill and away from one.** 85 of the 117 failures fall within the 2-minute window after a kill (the per-kill counts sum to 85, and no failure is counted under two kills). The other 32 had no kill near them.
+- **In flight at the kill: 69.** Each was running on the replica that was killed, ended by the kill: 41 closed before the banner, 23 after authentication, 3 timed out at 90 s, and 2 got no banner within 30 s. These are the cost of the kill itself.
+- **Started after the kill but inside its window: 16.** 7 got no banner within 30 s, 5 timed out at 90 s, and 4 closed before the banner. 3 of them started within 2 s of the kill, while the edge still routed to the dead connector. The other 13 started 4.9 to 107 s after it and look like the background failures below.
+- **No kill nearby: 32.** 16 timed out at 90 s, 14 got no banner within 30 s, 1 closed before the banner, and 1 was the stalled `group.graft` reply. None of the 30 stalls reached authentication or named a replica. The 14 cut at 30 s are the silent-connection case `ConnectTimeout 30` was added for. In the 16 that ran to the 90 s timeout, `ConnectTimeout` did not end them. The client log at `VERBOSE` does not show whether a banner arrived. In the stub test, a banner followed by silence also escapes `ConnectTimeout` [inference]. The stalls came in clusters, for example 09:02:13 and 09:02:17, 10:53:17 and 10:53:21, 19:41 to 19:58 (6 failures), and 20:02 to 20:22 (3 failures), which points to edge episodes rather than one bad replica.
+- **Background rate without kills:** 32 failures in 22,627 sessions that fell outside every kill window, a failure rate of 0.141% (99.859% success). That alone is under the 99.9% line, so the path would miss the pass line even with no kills. At that background rate, the 5,720 sessions inside kill windows would have produced about 8 failures anyway. So the kills themselves cost about 77 sessions, roughly 0.54 per kill and about 0.27 points of the day's rate.
+
+**Reconnect after kills** (143 kills, all timed on Cloudflare's clock):
+
+| Measure | p50 | p99 | Max | Note |
+| --- | --- | --- | --- | --- |
+| Container restarted by the supervisor | 1.09 s | 1.99 s | 2.09 s | |
+| New cloudflared reports a ready edge connection | 2.40 s | 3.75 s | 9.71 s | The maximum is kill 125 (`front-c`, hkg12). Every other kill was ready within 3.8 s |
+| First successful session on any replica after the kill | 5.13 s | 10.86 s | 12.14 s | Also kill 125, with 2 failures in its window. The first success after it was on the restarted `front-c` itself, at 12.1 s |
+| First successful session on the killed replica | 6.59 s | 71.8 s | 102.7 s | The maximum is kill 110 (`front-b`): the replica was ready at 2.9 s, and another replica served a session at 5.6 s, but the edge kept the client on the other replica for 102.7 s. This measures where the edge routes traffic, not unavailability |
+
+75 of the 143 kills cost no session, 52 cost one, 15 cost two, and 1 cost three.
+
+**Verdict, B0-24a on Pro: between the lines, 99.587% against 99.9% to pass and 99% to fail.** The path is not broken: the containers, the outbound handler, and the writes held for a day, all 9,418 acknowledged pushes are in the log, and every kill recovered within 12 s. It does not reach 99.9% either. That is for two separate reasons:
+- **Kills:** each costs about 0.5 sessions in flight, because Tunnel connections to a replica die with it and git over SSH does not retry.
+- **Edge stalls:** a background rate of about 1 in 700 sessions, with no kill involved, where the Tunnel edge accepts a `cloudflared access` connection and never connects it to a replica.
+
+Neither can be fixed in the container. Only client-side behavior can turn either into a success: a retry by the user or by a wrapper, or a shorter timeout than the 90 s the runner allows, so that a stall becomes a fast failure the user can retry.
 
 ### What is modeled and what is real (B0-24a)
 
