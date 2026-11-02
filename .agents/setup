@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Orb setup for Graftyard: the Rust to WebAssembly toolchain for the product code (workers-rs),
+# and the Node dependencies of the Milestone 0 harness in tests/m0.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+step() { printf '\n== %s (%s)\n' "$1" "$(date +%T)"; }
+
+WORKER_BUILD_VERSION=0.8.7
+
+step "rustup and the stable toolchain"
+if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+fi
+export PATH="$HOME/.cargo/bin:$PATH"
+if [ -f rust-toolchain.toml ]; then
+  rustup show active-toolchain >/dev/null   # installs the pinned toolchain if missing
+else
+  rustup toolchain install stable --profile minimal --component clippy,rustfmt
+fi
+rustup target add wasm32-unknown-unknown
+
+step "worker-build $WORKER_BUILD_VERSION"
+if ! worker-build --version 2>/dev/null | grep -q "$WORKER_BUILD_VERSION"; then
+  cargo install worker-build --version "$WORKER_BUILD_VERSION" --locked
+fi
+
+step "PATH for login shells"
+marker='# graftyard: cargo bin'
+if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+  printf '\n%s\nexport PATH="$HOME/.cargo/bin:$PATH"\n' "$marker" >> "$HOME/.bash_profile"
+fi
+
+step "tests/m0 Node dependencies"
+for dir in tests/m0 tests/m0/wp15; do
+  if [ -f "$dir/package-lock.json" ]; then
+    (cd "$dir" && npm ci --no-audit --no-fund --prefer-offline >/dev/null)
+  fi
+done
+
+if [ -f Cargo.toml ]; then
+  step "cargo fetch"
+  cargo fetch
+fi
+
+step "done"
