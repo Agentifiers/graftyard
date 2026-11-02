@@ -1,0 +1,5 @@
+[
+  {"id": 0, "script": "graft-m1-site-a", "account": "m0", "region": "enam", "jurisdiction": null, "bucket": "graft-m1-packs-a", "release": null, "link": {"binding": {"member_class": "Member"}}, "spare": false},
+  {"id": 1, "script": "graft-m1-site-b", "account": "m0", "region": "weur", "jurisdiction": null, "bucket": "graft-m1-packs-b", "release": null, "link": {"binding": {"member_class": "Member"}}, "spare": false},
+  {"id": 2, "script": "graft-m1-site-c", "account": "m0", "region": "apac", "jurisdiction": null, "bucket": "graft-m1-packs-c", "release": null, "link": {"binding": {"member_class": "Member"}}, "spare": false}
+]

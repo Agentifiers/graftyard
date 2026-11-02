@@ -1,0 +1,40 @@
+#!/bin/sh
+# Stands in for Apache in git's t/lib-httpd.sh, which is not patched: the harness sets LIB_HTTPD_PATH to this file and
+# LIB_HTTPD_MODULE_PATH to an empty directory. lib-httpd.sh calls
+#   httpd -v                                            (version check: needs Apache 2.4)
+#   httpd -d <root> -f <apache.conf> [-D X]... -c "Listen 127.0.0.1:<port>" -k start
+#   httpd -d <root> -f <apache.conf> [-D X]... -k stop
+# and the front (front/main.go) serves <root>/www through the hosted edge in Apache's place.
+set -e
+case "$1" in
+-v) echo "Server version: Apache/2.4.99 (graftyard conformance front)"; exit 0 ;;
+-V) echo " -D HTTPD_ROOT=\"/nonexistent\""; exit 0 ;;
+esac
+root= listen= action= para=
+while test $# -gt 0; do
+	case "$1" in
+	-d) root=$2; shift ;;
+	-f) shift ;;
+	-D) para="$para $2"; shift ;;
+	-c) listen=${2#Listen }; shift ;;
+	-k) action=$2; shift ;;
+	esac
+	shift
+done
+case "$action" in
+start)
+	"$CONFORMANCE_FRONT" -root "$root" -listen "$listen" -para "$para" >>"$root/error.log" 2>&1 &
+	echo $! >"$root/httpd.pid"
+	# Wait until it listens, as `apachectl -k start` returns once Apache does.
+	i=0
+	while ! curl -s -o /dev/null --noproxy '*' -k "http://$listen/" 2>/dev/null &&
+		! curl -s -o /dev/null --noproxy '*' -k "https://$listen/" 2>/dev/null; do
+		i=$((i + 1))
+		test $i -lt 100 || { cat "$root/error.log" >&2; exit 1; }
+		sleep 0.1
+	done
+	;;
+stop)
+	test -f "$root/httpd.pid" && kill "$(cat "$root/httpd.pid")" 2>/dev/null || :
+	;;
+esac

@@ -1,0 +1,8 @@
+{
+  "_comment": "Test-only system chain records for the graft-m1 test install. Stands in for the signed Genesis.placements until genesis acceptance (R13) lands; deploy.mjs --genesis copies `placements` into each site's GRAFTYARD_GENESIS. Product code reads the variable, not this file.",
+  "placements": {
+    "names":  { "name": "Tri", "sites": [0, 1, 2], "home": 0, "generation": 1, "moving_from": null, "at": 1 },
+    "tokens": { "name": "Tri", "sites": [0, 1, 2], "home": 0, "generation": 1, "moving_from": null, "at": 1 },
+    "ids":    { "name": "Tri", "sites": [0, 1, 2], "home": 0, "generation": 1, "moving_from": null, "at": 1 }
+  }
+}

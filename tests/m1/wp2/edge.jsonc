@@ -1,0 +1,13 @@
+{
+  "name": "graft-m1-wp2-edge",
+  "main": "edge.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m1-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m1-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m1-site-c" }
+  ] },
+  "observability": { "enabled": true }
+}

@@ -1,0 +1,18 @@
+{
+  // graft-m1-lin-tools: the 24-hour run's load clients and chaos loop (lin.ts). Binds only graft-m1-lin-a/b/c, so the
+  // integration redeploys of graft-m1-site-* never touch the run.
+  "name": "graft-m1-lin-tools",
+  "main": "lin.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m1-lin-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m1-lin-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m1-lin-c" },
+    { "name": "CLIENT", "class_name": "LoadClient" },
+    { "name": "CHAOS", "class_name": "Chaos" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["LoadClient", "Chaos"] }],
+  "observability": { "enabled": true }
+}

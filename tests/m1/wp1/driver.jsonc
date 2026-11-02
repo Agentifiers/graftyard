@@ -1,0 +1,15 @@
+{
+  "name": "graft-m1-driver",
+  "main": "driver.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m1-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m1-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m1-site-c" },
+    { "name": "REGISTRY_0", "class_name": "Registry", "script_name": "graft-m1-site-a" },
+    { "name": "REGISTRY_1", "class_name": "Registry", "script_name": "graft-m1-site-b" },
+    { "name": "REGISTRY_2", "class_name": "Registry", "script_name": "graft-m1-site-c" }
+  ] }
+}

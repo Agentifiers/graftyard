@@ -1,0 +1,5 @@
+{
+  "_comment": "Variables every graft-m1-lin site carries (deploy.mjs --vars). GRAFTYARD_FAULTS is B0-11's call-fault plan, set once for the run: 5% of member-to-member calls fail before they leave, and 5% of AppendEntries replies are lost after the callee ran the call. GRAFTYARD_REQUEST_RETENTION_S keeps request rows 15 minutes instead of 48 hours, because the crate holds every row in memory (m1-wp2.md, the 24-hour run); the clients give up after 30 s, so no re-send outlives its row. Both are read only by a test-faults build.",
+  "GRAFTYARD_FAULTS": {"fail_call": 0.05, "drop_append_reply": 0.05},
+  "GRAFTYARD_REQUEST_RETENTION_S": "900"
+}
