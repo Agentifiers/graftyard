@@ -1,0 +1,24 @@
+[workspace]
+resolver = "3"
+members = ["crates/git", "crates/identity", "crates/raft", "crates/types", "workers/site", "tests/m1/wp4", "tests/m1/wp5", "crates/release", "cli", "workers/edge", "tests/m1/wp6/bed", "crates/lookup"]
+
+[workspace.package]
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+arrayvec = { version = "0.7", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+sha2 = "0.10"
+smallvec = { version = "1", features = ["serde", "union"] }
+thiserror = "2"
+worker = "0.8.7"
+graftyard-types = { path = "crates/types" }
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1

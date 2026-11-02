@@ -1,0 +1,23 @@
+{
+  // BF-18 bed (src/lib.rs): git cache shards on Cloudflare Containers with the image in containers/git, three buckets,
+  // and a stub chain leader. Its own script, so it creates no site-script version. Built by `worker-build --release`
+  // in this directory; wrangler builds and pushes the image from ../../../containers/git on deploy.
+  "name": "graft-m1-wp5",
+  "main": "./build/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  // Under `durable_object` the instance size is a start() option (crates/git/src/host.rs), not config. The image map
+  // holds `git` only: this bed has no previous release, so there is no `git_prev`.
+  "containers": [{ "class_name": "GitShard", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "../../../containers/git/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "GitShard" }, { "name": "CHAIN", "class_name": "Chain" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GitShard", "Chain"] }],
+  "r2_buckets": [
+    { "binding": "BUCKET_A", "bucket_name": "graft-m1-wp5-a" },
+    { "binding": "BUCKET_B", "bucket_name": "graft-m1-wp5-b" },
+    { "binding": "BUCKET_C", "bucket_name": "graft-m1-wp5-c" }
+  ],
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": true }
+}

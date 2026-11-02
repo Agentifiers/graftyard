@@ -1,0 +1,478 @@
+//! `Health` and `STEP_DOWN` (`design/DESIGN.md`, Shape, "Chains", `Health`), the `linkErrors` probe, the drain
+//! hand-off, and the transfer back to `home` (Shape, "Leadership").
+//!
+//! The member stays sans-IO: the host reports each member-to-member call that failed or missed CALL_DEADLINE
+//! (`Member::call_failed`), and each storage confirm's begin and end (`Member::confirm_begin`, `Member::confirm_end`).
+//! A reply that arrives is a call that succeeded.
+
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::Duration;
+
+use graftyard_types::{SiteId, Timestamp};
+
+use crate::fold::Command;
+use crate::types::{GroupConfig, Term};
+use crate::{CALL_DEADLINE, RESET_QUARANTINE, STEP_DOWN, after};
+
+use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy};
+
+/// Pings in a `linkErrors` probe, five at a time: one failure in 20 is the 5% threshold.
+const LINK_PINGS: u8 = 20;
+const PING_BATCH: u8 = 5;
+/// How long a leader waits for a probe's answer before the probe counts as unable to run.
+const PROBE_WAIT: Duration = Duration::from_millis(4 * CALL_DEADLINE.as_millis() as u64 + 500);
+/// Confirms are kept this long after they end, for the own-stall exclusion.
+const CONFIRM_KEEP: Duration = Duration::from_secs(30);
+/// The transfer back to `home` needs this many answered calls to `home`, and none failed, in one window [guess].
+const HOME_CALLS: u32 = 5;
+/// After a transfer to `home` is abandoned, the next try waits this long [guess].
+const HOME_RETRY: Duration = Duration::from_secs(60);
+
+fn window() -> Duration {
+    Duration::from_secs(u64::from(STEP_DOWN.window_s))
+}
+
+/// A leader's health window and its `STEP_DOWN` state. Cleared when leadership starts.
+#[derive(Default)]
+pub(super) struct LeaderHealth {
+    /// Per commit-path call: when it ended, to whom, whether it succeeded, and whether the own-stall exclusion
+    /// excused its failure.
+    calls: VecDeque<(Timestamp, SiteId, bool, bool)>,
+    /// Rounds already counted, so a duplicated reply or a failure report after a reply counts once.
+    counted: BTreeSet<(SiteId, u64)>,
+    /// Per storage confirm that ended in the window: when, and how long it took.
+    confirms: VecDeque<(Timestamp, u32)>,
+    /// Followers that answered an AppendEntries in this leadership. A failed call to one not yet heard from is not
+    /// counted: the quorum commits without a follower it has not reached.
+    heard: BTreeSet<SiteId>,
+    hold_until: Option<Timestamp>,
+    probe: Option<LeaderProbe>,
+    /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
+    pub(super) peer_quarantine: BTreeMap<SiteId, (Option<Timestamp>, [Timestamp; 2])>,
+    /// No transfer back to `home` before this: one to it was abandoned.
+    home_after: Option<Timestamp>,
+    /// No automatic hand-off before this: the last one was abandoned.
+    handoff_after: Option<Timestamp>,
+}
+
+struct LeaderProbe {
+    id: u64,
+    why: StepDownWhy,
+    started: Timestamp,
+    sent_at: Timestamp,
+    /// Per candidate: the probe's failed share once it answered.
+    results: BTreeMap<SiteId, Option<f32>>,
+}
+
+/// A `linkErrors` probe a follower runs for its leader: LINK_PINGS pings to `target`, PING_BATCH at a time.
+pub(super) struct Prober {
+    leader: SiteId,
+    term: Term,
+    id: u64,
+    target: SiteId,
+    /// Per ping in the current batch: sent at, and whether it answered (`Some(true)`) or failed (`Some(false)`).
+    batch: BTreeMap<u8, (Timestamp, Option<bool>)>,
+    sent: u8,
+    failed: u8,
+}
+
+impl<C: Command> Member<C> {
+    // ---- inputs ----
+
+    /// The host saw a call this member sent fail: an error, or no reply within CALL_DEADLINE. A reply that still
+    /// arrives later may be passed to `step`; the call counts once, as failed.
+    pub fn call_failed(&mut self, now: Timestamp, f: CallFailure) -> Ready<C, ()> {
+        self.begin(now);
+        match f.call {
+            FailedCall::Append { term, boot, round, sent_at } => {
+                if self.role == Role::Leader && term == self.state.term && boot == self.boot {
+                    self.record_call(f.to, round, false, f.deadline, sent_at);
+                    self.append_failed(f.to, round);
+                    self.check_health();
+                }
+            }
+            FailedCall::Ping { probe, n } => self.on_pong(f.to, probe, n, false),
+        }
+        self.finish(())
+    }
+
+    /// A storage confirm began: the host started making this member's writes durable (every `Ready` with writes,
+    /// before its outputs leave).
+    pub fn confirm_begin(&mut self, now: Timestamp) -> ConfirmId {
+        self.next_confirm += 1;
+        let id = ConfirmId(self.next_confirm);
+        self.confirms.insert(id, (now, None));
+        id
+    }
+
+    /// The confirm `id` ended: its writes are durable.
+    pub fn confirm_end(&mut self, now: Timestamp, id: ConfirmId) -> Ready<C, ()> {
+        self.begin(now);
+        if let Some((began, end)) = self.confirms.get_mut(&id) {
+            *end = Some(now);
+            let ms = now.0.saturating_sub(began.0) as u32;
+            let began = *began;
+            if let Some(lead) = self.lead.as_mut()
+                && began >= lead.started()
+            {
+                lead.health.confirms.push_back((now, ms));
+                self.check_health();
+            }
+        }
+        let keep = Timestamp(now.0.saturating_sub(CONFIRM_KEEP.as_millis() as u64));
+        self.confirms.retain(|_, (_, e)| e.is_none_or(|e| e >= keep));
+        self.finish(())
+    }
+
+    /// The sites whose members may not lead (drained, or under the first day's lead limit), from the `Release`
+    /// group's site modes. A leader on such a site hands off within one LEASE.
+    pub fn set_drained(&mut self, now: Timestamp, sites: impl IntoIterator<Item = SiteId>) -> Ready<C, ()> {
+        self.begin(now);
+        self.drained = sites.into_iter().collect();
+        self.tick_health();
+        self.finish(())
+    }
+
+    /// The `Release` group recorded a rollback of the site whose refusal set `no_lead_until`.
+    pub fn clear_no_lead(&mut self, now: Timestamp) -> Ready<C, ()> {
+        self.begin(now);
+        if self.state.no_lead_until.take().is_some() {
+            self.dirty = true;
+        }
+        self.finish(())
+    }
+
+    // ---- the leader's window ----
+
+    /// One commit-path call by the leader ended: a reply to round `round` (`ok`), or a failure the host reported.
+    pub(super) fn record_call(&mut self, to: SiteId, round: u64, ok: bool, deadline: bool, sent_at: Timestamp) {
+        let excused = !ok && deadline && self.own_stall(sent_at);
+        let now = self.now;
+        let Some(lead) = self.lead.as_mut() else { return };
+        let h = &mut lead.health;
+        if ok {
+            h.heard.insert(to);
+        }
+        if !h.counted.insert((to, round)) || (!ok && !h.heard.contains(&to)) {
+            return;
+        }
+        h.calls.push_back((now, to, ok, excused));
+    }
+
+    /// A confirm of this member's own storage began at or before `sent_at` and was unconfirmed at the call's deadline.
+    fn own_stall(&self, sent_at: Timestamp) -> bool {
+        let deadline = after(sent_at, CALL_DEADLINE);
+        self.confirms.values().any(|(b, e)| *b <= sent_at && e.is_none_or(|e| e > deadline))
+    }
+
+    fn prune(&mut self) {
+        let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
+        let Some(lead) = self.lead.as_mut() else { return };
+        let keep = lead.round().saturating_sub(2048);
+        let h = &mut lead.health;
+        while h.calls.front().is_some_and(|c| c.0 < since) {
+            h.calls.pop_front();
+        }
+        while h.confirms.front().is_some_and(|c| c.0 < since) {
+            h.confirms.pop_front();
+        }
+        if h.counted.len() > 4096 {
+            h.counted.retain(|(_, r)| *r >= keep);
+        }
+    }
+
+    /// Per follower: counted calls and failed calls in the window, after the own-stall exclusion.
+    fn call_counts(&self) -> Vec<(SiteId, u32, u32)> {
+        let Some(lead) = &self.lead else { return Vec::new() };
+        self.peers()
+            .into_iter()
+            .map(|p| {
+                let mine = lead.health.calls.iter().filter(|c| c.1 == p && !c.3);
+                let (n, failed) = mine.fold((0, 0), |(n, f), c| (n + 1, f + u32::from(!c.2)));
+                (p, n, failed)
+            })
+            .collect()
+    }
+
+    fn rate(n: u32, failed: u32) -> f32 {
+        if n == 0 { 0.0 } else { failed as f32 / n as f32 }
+    }
+
+    pub(super) fn quarantined(&self, s: SiteId) -> bool {
+        let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
+        let Some((stepped, boots)) = self.lead.as_ref().and_then(|l| l.health.peer_quarantine.get(&s)) else {
+            return false;
+        };
+        stepped.is_some_and(inside) || (inside(boots[0]) && inside(boots[1]))
+    }
+
+    /// What tripped `STEP_DOWN` in the window, if anything.
+    fn tripped(&self) -> Option<StepDownWhy> {
+        let lead = self.lead.as_ref()?;
+        let counts = self.call_counts();
+        let errors = !counts.is_empty()
+            && counts.iter().all(|(_, n, f)| {
+                Self::rate(*n, *f) > STEP_DOWN.commit_errors && *f >= u32::from(STEP_DOWN.commit_fail_min)
+            });
+        if errors {
+            return Some(StepDownWhy::CommitErrors { calls: counts });
+        }
+        let mut ms: Vec<u32> = lead.health.confirms.iter().map(|c| c.1).collect();
+        ms.sort_unstable();
+        let p99 = ms.get(ms.len() * 99 / 100).copied().unwrap_or(0);
+        let slow = ms.iter().filter(|m| **m > STEP_DOWN.confirm_p99_ms).count() as u32;
+        if p99 > STEP_DOWN.confirm_p99_ms && slow >= u32::from(STEP_DOWN.confirm_slow_min) {
+            return Some(StepDownWhy::Confirm { p99_ms: p99, slow, of: ms.len() as u32 });
+        }
+        None
+    }
+
+    /// `STEP_DOWN`: a leader sick by its own measure transfers to a qualifying follower, or holds for one window.
+    pub(super) fn check_health(&mut self) {
+        self.prune();
+        let Some(lead) = &self.lead else { return };
+        let held = lead.health.hold_until.is_some_and(|u| self.now < u);
+        if !lead.ready() || lead.transfer.is_some() || lead.health.probe.is_some() || held {
+            return;
+        }
+        let Some(why) = self.tripped() else { return };
+        let counts = self.call_counts();
+        let rate = |s: SiteId| counts.iter().find(|c| c.0 == s).map_or(0.0, |c| Self::rate(c.1, c.2));
+        let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
+        // A follower that may lead, outside RESET_QUARANTINE; on a confirm trip also one whose calls from this leader
+        // fail under `commit_errors`.
+        let candidates: Vec<SiteId> = self
+            .peers()
+            .into_iter()
+            .filter(|s| self.may_lead_target(*s) && !self.quarantined(*s))
+            .filter(|s| errors_trip || rate(*s) <= STEP_DOWN.commit_errors)
+            .collect();
+        if candidates.is_empty() {
+            self.hold(why);
+            return;
+        }
+        if !errors_trip {
+            self.step_down_to(why, candidates);
+            return;
+        }
+        // On a commit-error trip the leader's calls fail to every follower by definition, so a target qualifies on the
+        // other follower's calls to it: that follower probes it.
+        let id = self.rand();
+        let term = self.state.term;
+        let peers = self.peers();
+        let mut results = BTreeMap::new();
+        for t in candidates {
+            results.insert(t, None);
+            if let Some(other) = peers.iter().copied().find(|p| *p != t) {
+                self.send(other, Message::Probe { term, id, target: t });
+            }
+        }
+        let now = self.now;
+        self.lead.as_mut().expect("leading").health.probe =
+            Some(LeaderProbe { id, why, started: now, sent_at: now, results });
+    }
+
+    fn hold(&mut self, why: StepDownWhy) {
+        let until = after(self.now, window());
+        if let Some(lead) = self.lead.as_mut() {
+            lead.health.hold_until = Some(until);
+        }
+        self.out.alarms.push(Alarm::StepDown { why, to: None });
+    }
+
+    /// Transfers to the qualifying candidate whose calls failed least, then the most caught up.
+    fn step_down_to(&mut self, why: StepDownWhy, mut ok: Vec<SiteId>) {
+        let counts = self.call_counts();
+        let failed = |s: SiteId| counts.iter().find(|c| c.0 == s).map_or(0, |c| c.2);
+        let lead = self.lead.as_ref().expect("leading");
+        ok.sort_by_key(|s| (failed(*s), std::cmp::Reverse(lead.matched(*s))));
+        let Some(to) = ok.first().copied() else {
+            self.hold(why);
+            return;
+        };
+        match self.start_transfer(to, true) {
+            Ok(_) => self.out.alarms.push(Alarm::StepDown { why, to: Some(to) }),
+            Err(_) => self.hold(why),
+        }
+    }
+
+    pub(super) fn on_probe_res(&mut self, term: Term, id: u64, target: SiteId, failed: u8, of: u8) {
+        if term != self.state.term {
+            return;
+        }
+        let Some(p) = self.lead.as_mut().and_then(|l| l.health.probe.as_mut()) else { return };
+        if p.id != id {
+            return;
+        }
+        if let Some(r) = p.results.get_mut(&target) {
+            *r = Some(if of == 0 { 1.0 } else { f32::from(failed) / f32::from(of) });
+        }
+        if p.results.values().all(Option::is_some) {
+            self.finish_probe();
+        }
+    }
+
+    /// Decides on the probes' answers. A probe that did not answer disqualifies its target.
+    fn finish_probe(&mut self) {
+        let Some(p) = self.lead.as_mut().and_then(|l| l.health.probe.take()) else { return };
+        let ok: Vec<SiteId> = p
+            .results
+            .iter()
+            .filter(|(_, r)| r.is_some_and(|f| f <= STEP_DOWN.commit_errors))
+            .map(|(s, _)| *s)
+            .collect();
+        let still: Vec<SiteId> = ok.into_iter().filter(|s| self.may_lead_target(*s) && !self.quarantined(*s)).collect();
+        self.step_down_to(p.why, still);
+    }
+
+    pub(super) fn tick_health(&mut self) {
+        let Some(lead) = &self.lead else { return };
+        if lead.health.probe.as_ref().is_some_and(|p| self.now >= after(p.started, PROBE_WAIT)) {
+            self.finish_probe();
+        } else if let Some(p) = &lead.health.probe
+            && self.now >= after(p.sent_at, CALL_DEADLINE)
+        {
+            // A probe request or its answer lost on the way is asked again, like any member call.
+            let (id, term, peers) = (p.id, self.state.term, self.peers());
+            let waiting: Vec<SiteId> = p.results.iter().filter(|(_, r)| r.is_none()).map(|(s, _)| *s).collect();
+            self.lead.as_mut().expect("leading").health.probe.as_mut().expect("probe").sent_at = self.now;
+            for t in waiting {
+                if let Some(other) = peers.iter().copied().find(|p| *p != t) {
+                    self.send(other, Message::Probe { term, id, target: t });
+                }
+            }
+        }
+        self.classify_refusals();
+        self.check_health();
+        self.maybe_hand_off();
+    }
+
+    /// A leader on a drained site, or one whose group's `home` has recovered and caught up, transfers.
+    fn maybe_hand_off(&mut self) {
+        let Some(lead) = &self.lead else { return };
+        if !lead.ready() || lead.transfer.is_some() || lead.health.probe.is_some() {
+            return;
+        }
+        if lead.health.handoff_after.is_some_and(|t| self.now < t) {
+            return;
+        }
+        if self.drained.contains(&self.cfg.me) || self.no_lead() {
+            self.hand_off();
+            return;
+        }
+        let home = self.home();
+        if home == self.cfg.me
+            || !self.may_lead_target(home)
+            || self.quarantined(home)
+            // Caught up: `home` holds every committed entry. The transfer itself brings it to the last index; under
+            // load one entry is always in flight, so asking for the last index first would rarely hold.
+            || lead.matched(home) < self.state.commit
+            || self.now < after(lead.started(), window())
+            || lead.health.home_after.is_some_and(|t| self.now < t)
+        {
+            return;
+        }
+        // Recovered: `home` answered at least HOME_CALLS calls in the window and none failed.
+        let calls = lead.health.calls.iter().filter(|c| c.1 == home);
+        let (n, failed) = calls.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
+        if n >= HOME_CALLS && failed == 0 && self.tripped().is_none() {
+            let _ = self.start_transfer(home, false);
+        }
+    }
+
+    /// The group's preferred leader site: the `home` of the latest config's placement, which a config change may move
+    /// (an owner move re-homes the group), not the bootstrap record's.
+    fn home(&self) -> SiteId {
+        match self.log_config() {
+            GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => p.home(),
+            GroupConfig::Joint { new, .. } => new.home(),
+        }
+    }
+
+    /// A transfer was abandoned. After a `STEP_DOWN` transfer the leader holds for one window before it judges
+    /// itself again, so it does not retry at once onto the same target.
+    pub(super) fn health_transfer_failed(&mut self, to: SiteId, step_down: bool) {
+        let (now, home) = (self.now, self.home());
+        let Some(lead) = self.lead.as_mut() else { return };
+        if step_down {
+            lead.health.hold_until = Some(after(now, window()));
+        } else if to == home {
+            lead.health.home_after = Some(after(now, HOME_RETRY));
+        }
+        lead.health.handoff_after = Some(after(now, CALL_DEADLINE * 2));
+    }
+
+    // ---- the follower's probe ----
+
+    pub(super) fn on_probe(&mut self, from: SiteId, term: Term, id: u64, target: SiteId) {
+        if term != self.state.term || self.leader != Some(from) || self.role != Role::Follower || target == self.cfg.me
+        {
+            return;
+        }
+        if let Some((done_id, done_target, failed, of)) = self.probed
+            && done_id == id
+            && done_target == target
+        {
+            self.send(from, Message::ProbeRes { term, id, target, failed, of });
+            return;
+        }
+        if self.probing.as_ref().is_some_and(|p| p.id == id && p.target == target) {
+            return;
+        }
+        self.probing = Some(Prober { leader: from, term, id, target, batch: BTreeMap::new(), sent: 0, failed: 0 });
+        self.send_pings();
+    }
+
+    fn send_pings(&mut self) {
+        let now = self.now;
+        let Some(p) = self.probing.as_mut() else { return };
+        let (probe, target, start) = (p.id, p.target, p.sent);
+        let n = PING_BATCH.min(LINK_PINGS - p.sent);
+        p.batch = (start..start + n).map(|i| (i, (now, None))).collect();
+        p.sent += n;
+        for i in start..start + n {
+            self.send(target, Message::Ping { probe, n: i });
+        }
+    }
+
+    pub(super) fn on_pong(&mut self, from: SiteId, probe: u64, n: u8, ok: bool) {
+        let Some(p) = self.probing.as_mut() else { return };
+        if p.id != probe || p.target != from {
+            return;
+        }
+        if let Some((_, r)) = p.batch.get_mut(&n)
+            && r.is_none()
+        {
+            *r = Some(ok);
+        }
+        self.advance_probe();
+    }
+
+    pub(super) fn tick_probe(&mut self) {
+        let now = self.now;
+        let Some(p) = self.probing.as_mut() else { return };
+        for (sent, r) in p.batch.values_mut() {
+            if r.is_none() && now >= after(*sent, CALL_DEADLINE) {
+                *r = Some(false);
+            }
+        }
+        self.advance_probe();
+    }
+
+    fn advance_probe(&mut self) {
+        let Some(p) = self.probing.as_mut() else { return };
+        if p.batch.values().any(|(_, r)| r.is_none()) {
+            return;
+        }
+        p.failed += p.batch.values().filter(|(_, r)| *r == Some(false)).count() as u8;
+        p.batch.clear();
+        if p.sent < LINK_PINGS {
+            self.send_pings();
+            return;
+        }
+        let p = self.probing.take().expect("probing");
+        self.probed = Some((p.id, p.target, p.failed, p.sent));
+        let msg = Message::ProbeRes { term: p.term, id: p.id, target: p.target, failed: p.failed, of: p.sent };
+        self.send(p.leader, msg);
+    }
+}

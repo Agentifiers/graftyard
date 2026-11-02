@@ -1,0 +1,21 @@
+{
+  // M1-WP6 bed (src/lib.rs): the stand-in repository group and the git cache shard, reached by graft-m1-edge through
+  // cross-script Durable Object bindings. Its own script, so it creates no site-script version. Built by
+  // `worker-build --release` in this directory; wrangler builds and pushes the image from ../../../../containers/git.
+  "name": "graft-m1-wp6-bed",
+  "main": "./build/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "containers": [{ "class_name": "GitShard", "scheduling_policy": "durable_object",
+                   "images": { "git": { "dockerfile": "../../../../containers/git/Dockerfile" } } }],
+  "durable_objects": { "bindings": [{ "name": "SHARD", "class_name": "GitShard" }, { "name": "GROUP", "class_name": "Group" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GitShard", "Group"] }],
+  "r2_buckets": [
+    { "binding": "BUCKET_A", "bucket_name": "graft-m1-wp6-a" },
+    { "binding": "BUCKET_B", "bucket_name": "graft-m1-wp6-b" },
+    { "binding": "BUCKET_C", "bucket_name": "graft-m1-wp6-c" }
+  ],
+  "limits": { "cpu_ms": 300000 },
+  "observability": { "enabled": true }
+}

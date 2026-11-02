@@ -1,0 +1,1003 @@
+//! Targeted cases for M1-WP3 (`build/BUILD-PLAN.md`): `transfer`, `suspect`, `Health` and `STEP_DOWN`, the transfer
+//! back to `home`, the drain hand-off, release-aware refusals, and BF-14. Each names the rule it pins and, where the
+//! design cites one, the past failure it reproduces.
+
+mod common;
+
+use common::cluster::Cluster;
+use common::kv::{FUTURE_FORMAT, KV_FORMAT, KvCmd, KvEvent};
+use common::sim::{SITES, config};
+use graftyard_raft::{
+    Alarm, Colo, CommitError, Deny, Envelope, LEASE, Message, Receipt, ReleaseTag, RequestId, Resolution, Role,
+    StepDownWhy, Term, TransferError, Verdict, VoteReq,
+};
+use graftyard_types::{ReleaseId, SiteId, Timestamp};
+
+const A: SiteId = SITES[0];
+const B: SiteId = SITES[1];
+const C: SiteId = SITES[2];
+
+fn ms(d: std::time::Duration) -> u64 {
+    d.as_millis() as u64
+}
+
+fn put(k: &str, v: &str) -> KvCmd {
+    KvCmd::Put { key: k.into(), value: v.into() }
+}
+
+/// Drives the group for `total` ms in 100 ms steps. Each step the current leader takes one write (when `load`), and
+/// every request `fail` accepts fails: it is not delivered, and the host reports it to its sender with
+/// `call_failed`. Replies are never failed, so each failed call is reported exactly once.
+fn drive(
+    c: &mut Cluster,
+    total: u64,
+    load: bool,
+    next_id: &mut u128,
+    mut fail: impl FnMut(&Envelope<KvEvent>) -> bool,
+) {
+    let mut t = 0;
+    while t < total {
+        c.advance(100);
+        if load && let Some(l) = c.leader() {
+            *next_id += 1;
+            let id = RequestId(graftyard_raft::Ulid(*next_id));
+            let _ = c.on(l, |m, now| m.commit(now, id, put("load", &id.0.to_string())));
+        }
+        for _ in 0..200 {
+            if c.inbox.is_empty() {
+                break;
+            }
+            let batch = std::mem::take(&mut c.inbox);
+            for e in batch {
+                // A call to a member that is down misses its deadline; the host reports it like any failure.
+                let down = c.members[e.to.0 as usize].is_none();
+                if down || fail(&e) {
+                    if let Some(f) = e.failure(false) {
+                        let from = e.from;
+                        if c.members[from.0 as usize].is_some() {
+                            c.on(from, |m, now| m.call_failed(now, f));
+                        }
+                    }
+                    continue;
+                }
+                let Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+        t += 100;
+    }
+}
+
+/// A request, as `drive` sees it: AppendEntries or a probe's ping.
+fn request(e: &Envelope<KvEvent>) -> bool {
+    matches!(e.msg, Message::Append(_) | Message::Ping { .. })
+}
+
+fn step_downs(c: &Cluster) -> Vec<(SiteId, StepDownWhy, Option<SiteId>)> {
+    c.alarms()
+        .iter()
+        .filter_map(|(s, a)| match a {
+            Alarm::StepDown { why, to } => Some((*s, why.clone(), *to)),
+            _ => None,
+        })
+        .collect()
+}
+
+fn vote_res(c: &Cluster, from: SiteId, to: SiteId) -> Option<graftyard_raft::VoteRes> {
+    c.inbox.iter().rev().find_map(|e| match &e.msg {
+        Message::VoteRes(r) if e.from == from && e.to == to => Some(r.clone()),
+        _ => None,
+    })
+}
+
+fn vote(
+    term: Term,
+    candidate: SiteId,
+    pre: bool,
+    last: (u64, Term),
+    transfer: Option<graftyard_raft::TransferId>,
+) -> VoteReq {
+    VoteReq {
+        term,
+        candidate,
+        pre,
+        last_index: graftyard_raft::Index(last.0),
+        last_term: last.1,
+        transfer,
+        boots: [Timestamp(0); 2],
+        stepped_down_at: None,
+        bootstrapped: true,
+    }
+}
+
+// ---- transfer ----
+
+#[test]
+fn transfer_hands_leadership_to_a_caught_up_target() {
+    let mut c = Cluster::new(31);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(A).term();
+    assert!(matches!(c.on(A, |m, now| m.transfer(now, A)), Err(TransferError::Target(_))));
+    assert!(matches!(c.on(B, |m, now| m.transfer(now, C)), Err(TransferError::NotLeader(_))));
+    let id = c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    assert!(matches!(c.on(A, |m, now| m.transfer(now, C)), Err(TransferError::Busy(i)) if i == id));
+    // Every AppendEntries while it runs carries the target and id, and no follower promises on it.
+    let mut seen = 0;
+    c.deliver(|e| {
+        if let Message::Append(a) = &e.msg {
+            assert_eq!(a.transfer, Some((B, id)));
+            seen += 1;
+        }
+        if let Message::AppendRes(r) = &e.msg {
+            assert!(!r.promise, "an ack to a transfer round promised");
+        }
+        true
+    });
+    assert!(seen >= 2);
+    c.run(3_000, 100, |_| true);
+    assert_eq!(c.m(B).role(), Role::Leader);
+    assert_eq!(c.m(B).term(), Term(term.0 + 1));
+    assert_eq!(c.m(A).role(), Role::Follower);
+    // A transfer asked for by the host is not a STEP_DOWN.
+    assert_eq!(c.m(A).state().stepped_down_at, None);
+    c.sync(B);
+    assert!(SITES.iter().all(|s| c.value(*s, "sync").is_some()));
+}
+
+/// B0-07's 40 s leaderless group: the target's vote to the old leader hung, and the other follower, which had not
+/// seen the transfer, refused it as promised. With the wait, the leader sends `TimeoutNow` only once C accepted a
+/// round carrying the id, so C grants the transfer vote alone.
+#[test]
+fn transfer_waits_for_the_other_follower_so_the_target_wins_without_the_old_leader() {
+    let mut c = Cluster::new(32);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    // B's vote request to A hangs throughout, as on the gray link in B0-07. C's appends are lost for 1.5 s: no
+    // TimeoutNow may leave in that time, though B is caught up.
+    let hung = |e: &Envelope<KvEvent>| e.from == B && e.to == A && matches!(e.msg, Message::Vote(_));
+    let mut early = 0;
+    for _ in 0..15 {
+        c.advance(100);
+        c.deliver(|e| {
+            early += usize::from(matches!(e.msg, Message::TimeoutNow { .. }));
+            !(e.to == C && matches!(e.msg, Message::Append(_))) && !hung(e)
+        });
+    }
+    assert_eq!(early, 0, "TimeoutNow before C accepted the transfer id");
+    c.run(3_000, 100, |e| !hung(e));
+    assert_eq!(c.m(B).role(), Role::Leader, "the target did not win with C's vote");
+}
+
+/// Without the wait (the leader sending `TimeoutNow` before C saw the id), C refuses the target as promised: the
+/// control for the case above, so that test proves the wait and not something else.
+#[test]
+fn a_voter_that_has_not_seen_the_transfer_refuses_the_target_as_promised() {
+    let mut c = Cluster::new(33);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(A).term();
+    let last = (c.m(A).log().len() as u64, term);
+    let id = c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    c.inbox.clear();
+    c.on(C, |m, now| m.step(now, B, Message::Vote(vote(Term(term.0 + 1), B, false, last, Some(id)))));
+    assert_eq!(vote_res(&c, C, B).and_then(|r| r.deny), Some(Deny::Promised));
+}
+
+/// A voter disregards its promise only for a transfer vote naming the transfer id of the last AppendEntries it
+/// accepted.
+#[test]
+fn only_the_accepted_transfer_id_breaks_a_promise() {
+    let mut c = Cluster::new(34);
+    c.elect(A);
+    c.sync(A);
+    let term = c.m(A).term();
+    let last = (c.m(A).log().len() as u64, term);
+    let id = c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    c.deliver(|e| !matches!(e.msg, Message::TimeoutNow { .. }));
+    assert_eq!(c.m(C).state().transfer, Some(id));
+    let next = Term(term.0 + 1);
+    c.inbox.clear();
+    c.on(C, |m, now| m.step(now, B, Message::Vote(vote(next, B, false, last, None))));
+    assert_eq!(vote_res(&c, C, B).and_then(|r| r.deny), Some(Deny::Promised), "no transfer id");
+    c.on(C, |m, now| {
+        m.step(now, B, Message::Vote(vote(next, B, false, last, Some(graftyard_raft::TransferId(id.0 ^ 1)))))
+    });
+    assert_eq!(vote_res(&c, C, B).and_then(|r| r.deny), Some(Deny::Promised), "another transfer id");
+    c.on(C, |m, now| m.step(now, B, Message::Vote(vote(next, B, false, last, Some(id)))));
+    assert!(vote_res(&c, C, B).is_some_and(|r| r.granted), "the accepted id");
+}
+
+/// A target that cannot be reached is retried until the LEASE runs out, then the transfer is abandoned: the leader
+/// sends `transfer: None` and serves `fresh` only after a full round, never on the old lease.
+#[test]
+fn an_unreachable_target_is_retried_until_the_lease_then_abandoned() {
+    let mut c = Cluster::new(35);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    c.run(ms(LEASE) - 500, 100, |e| e.to != B);
+    assert!(c.m(A).transferring().is_some(), "gave up before the LEASE");
+    let mut after_abandon = Vec::new();
+    let mut read = None;
+    for _ in 0..10 {
+        c.advance(100);
+        let abandoned = c.m(A).transferring().is_none();
+        if abandoned && read.is_none() {
+            // A read at the moment of abandonment: the old lease is gone, so it waits for a round.
+            let id = c.on(A, |m, now| m.read(now)).expect("leader");
+            assert!(!c.resolutions.iter().any(|(_, r)| matches!(r, Resolution::Read { id: i, .. } if *i == id)));
+            read = Some(id);
+        }
+        c.deliver(|e| {
+            if let Message::Append(a) = &e.msg
+                && abandoned
+            {
+                after_abandon.push(a.transfer);
+            }
+            e.to != B
+        });
+    }
+    assert_eq!(c.m(A).transferring(), None, "not abandoned after one LEASE");
+    assert_eq!(c.m(A).role(), Role::Leader);
+    // The rounds after it carry `transfer: None`, and C took the None.
+    assert!(!after_abandon.is_empty() && after_abandon.iter().all(Option::is_none), "{after_abandon:?}");
+    assert_eq!(c.m(C).state().transfer, None);
+    let id = read.expect("read");
+    let grant = c.resolutions.iter().find_map(|(_, r)| match r {
+        Resolution::Read { id: i, result: Ok(g) } if *i == id => Some(g.clone()),
+        _ => None,
+    });
+    assert!(grant.expect("granted after a round").via_round());
+}
+
+/// A target that refuses (its own site is drained, which the leader has not learned) makes the leader abandon at
+/// once, and the leader's lease from before the transfer is gone: the next read needs a round.
+#[test]
+fn a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease() {
+    let mut c = Cluster::new(38);
+    c.elect(A);
+    c.sync(A);
+    c.on(B, |m, now| m.set_drained(now, [B]));
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    // Deliver everything until the refusal comes back, then nothing more: the round A sends on abandonment must not
+    // be answered before the read.
+    let mut t = 0;
+    while c.m(A).transferring().is_some() && t < 4_000 {
+        c.advance(100);
+        let mut refused = false;
+        c.deliver(|e| {
+            let ok = !refused;
+            refused |= matches!(e.msg, Message::TransferRefused { .. });
+            ok
+        });
+        t += 100;
+    }
+    assert_eq!(c.m(A).transferring(), None, "not abandoned");
+    assert!(t < ms(LEASE), "waited out the LEASE for a refusing target");
+    assert_eq!(c.m(A).role(), Role::Leader);
+    assert!(c.alarms().is_empty());
+    let id = c.on(A, |m, now| m.read(now)).expect("leader");
+    assert!(
+        !c.resolutions.iter().any(|(_, r)| matches!(r, Resolution::Read { id: i, .. } if *i == id)),
+        "served from a lease that predates the transfer"
+    );
+}
+
+/// A target that comes back within the LEASE still takes leadership: catch-up retries do not stop at COMMIT_RETRIES.
+#[test]
+fn a_target_that_returns_within_the_lease_still_takes_over() {
+    let mut c = Cluster::new(36);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    c.run(5_000, 100, |e| e.to != B && e.from != B);
+    c.run(3_000, 100, |_| true);
+    assert_eq!(c.m(B).role(), Role::Leader);
+}
+
+/// A transfer vote is a promise to the target. Without it, a voter whose promise still names the old leader grants
+/// the old leader a vote, and the old leader, deposed and hearing a `suspect` report before its target's first
+/// append reaches that voter, wins the group straight back (liveness runs, calls seed 108).
+#[test]
+fn a_transfer_vote_promises_the_target() {
+    let mut c = Cluster::new(39);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    // Every append from B is lost (B sends appends only once it leads), so neither A nor C has heard from B as leader:
+    // C's promise can come only from its transfer vote, and A knows of no leader.
+    let cut = |e: &Envelope<KvEvent>| e.from == B && matches!(e.msg, Message::Append(_));
+    for _ in 0..40 {
+        c.advance(100);
+        c.deliver(|e| !cut(e));
+        if c.m(B).role() == Role::Leader {
+            break;
+        }
+    }
+    assert_eq!(c.m(B).role(), Role::Leader);
+    assert_eq!(c.m(C).state().voted_for, Some(B));
+    assert_eq!(c.m(C).state().promised_to, Some(B));
+    let term = c.m(B).term();
+    // An edge reports A, which names no leader, to A itself. A's promise named itself, so it may campaign.
+    let nl = c.m(A).not_leader();
+    assert_eq!(nl.leader, None);
+    c.on(A, |m, now| m.suspect(now, Colo(4), A, nl.term));
+    c.run(1_000, 100, |e| !cut(e));
+    assert!(SITES.iter().all(|s| c.m(*s).term() == term), "the old leader started a new term and won its group back");
+    assert_eq!(c.m(B).role(), Role::Leader);
+}
+
+/// A `TimeoutNow` delayed past the abandonment is ignored: its target would otherwise depose a leader whose new
+/// lease rests on the target's promise.
+#[test]
+fn a_late_timeout_now_after_abandonment_is_ignored() {
+    let mut c = Cluster::new(37);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    let mut held = Vec::new();
+    for _ in 0..30 {
+        c.advance(100);
+        c.deliver(|e| {
+            if matches!(e.msg, Message::TimeoutNow { .. }) {
+                held.push(e.clone());
+                return false;
+            }
+            true
+        });
+    }
+    assert!(!held.is_empty());
+    c.run(ms(LEASE), 100, |e| !matches!(e.msg, Message::TimeoutNow { .. }));
+    assert_eq!(c.m(A).transferring(), None);
+    let term = c.m(A).term();
+    for e in held {
+        let Envelope { from, to, msg } = e;
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    c.run(2_000, 100, |_| true);
+    assert_eq!(c.m(A).role(), Role::Leader);
+    assert_eq!(c.m(A).term(), term);
+}
+
+// ---- suspect ----
+
+fn report(c: &mut Cluster, to: SiteId, colo: u32, about: SiteId) -> Verdict {
+    let term = c.m(to).term();
+    c.on(to, |m, now| m.suspect(now, Colo(colo), about, term))
+}
+
+/// Reports from two colos within SUSPECT's window stop promises to a still-renewing leader, so a leader that cannot
+/// measure its own sickness still loses its lease; two colos a window apart do not, nor do reports about a member that
+/// is not the follower's leader.
+#[test]
+fn two_colos_within_the_window_stop_promises_to_a_renewing_leader() {
+    let (colos, window) = graftyard_raft::SUSPECT;
+    assert_eq!(colos, 2);
+    let mut c = Cluster::new(41);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    assert_eq!(report(&mut c, B, 1, A), Verdict::Promised);
+    drive(&mut c, ms(window) + 200, true, &mut id, |_| false);
+    assert_eq!(report(&mut c, B, 2, A), Verdict::Promised);
+    let before = c.m(B).state().promise_until;
+    drive(&mut c, 500, true, &mut id, |_| false);
+    assert!(c.m(B).state().promise_until > before, "B stopped promising on reports a window apart");
+    // A third colo inside the window of the second: B stops promising, though A keeps renewing.
+    assert_eq!(report(&mut c, B, 3, A), Verdict::Promised);
+    let stopped = c.m(B).state().promise_until;
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    assert_eq!(c.m(B).state().promise_until, stopped, "B promised again inside 2 x SUSPECT");
+    // Reports about B, which is not C's leader, count for nothing at C.
+    report(&mut c, C, 1, B);
+    report(&mut c, C, 2, B);
+    let c_promise = c.m(C).state().promise_until;
+    drive(&mut c, 500, true, &mut id, |_| false);
+    assert!(c.m(C).state().promise_until > c_promise);
+}
+
+/// With both followers withholding, the leader loses its lease, and promises come back after 2 x the window.
+#[test]
+fn promises_return_after_twice_the_window() {
+    let (_, window) = graftyard_raft::SUSPECT;
+    let mut c = Cluster::new(42);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    for s in [B, C] {
+        report(&mut c, s, 1, A);
+        report(&mut c, s, 2, A);
+    }
+    let stopped = c.m(B).state().promise_until;
+    drive(&mut c, ms(window) * 2 - 1_000, true, &mut id, |_| false);
+    assert_eq!(c.m(B).state().promise_until, stopped);
+    // A's lease is gone: a read needs a round.
+    let rid = c.on(A, |m, now| m.read(now)).expect("A leads");
+    c.deliver_all();
+    let grant = c.resolutions.iter().find_map(|(_, r)| match r {
+        Resolution::Read { id: i, result: Ok(g) } if *i == rid => Some(g.clone()),
+        _ => None,
+    });
+    assert!(grant.expect("granted after a round").via_round(), "A served from a lease nobody promised");
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    assert!(c.m(B).state().promise_until > stopped, "promises did not return after 2 x SUSPECT");
+}
+
+/// A higher term restores promises, but pre-vote still refuses the reported leader for 2 x the window, so the gray
+/// leader cannot win back the next election (Milestone 0 measured a 24 s move without this rule).
+#[test]
+fn a_higher_term_restores_promises_but_pre_vote_still_refuses_the_reported_leader() {
+    let (_, window) = graftyard_raft::SUSPECT;
+    let mut c = Cluster::new(43);
+    c.elect(A);
+    c.sync(A);
+    let t0 = c.now;
+    for s in [B, C] {
+        report(&mut c, s, 1, A);
+        report(&mut c, s, 2, A);
+    }
+    // Idle, so the promises lapse ELECTION_AFTER after the last append; one more report makes B campaign. B's
+    // appends to C are lost for now, so C votes for B but promises it nothing.
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 200, 200, |_| true);
+    assert_eq!(report(&mut c, B, 3, A), Verdict::Started);
+    c.deliver(|e| !(e.from == B && e.to == C && matches!(e.msg, Message::Append(_))));
+    c.run(500, 100, |e| !(e.from == B && e.to == C && matches!(e.msg, Message::Append(_))));
+    assert_eq!(c.m(B).role(), Role::Leader, "B did not win");
+    assert!(c.now.0 < t0.0 + ms(window) * 2);
+    // C's pre-vote refuses A as suspected: C promises nobody, but two colos reported A within 2 x the window.
+    let term = c.m(C).term();
+    let last = (c.m(A).log().len() as u64, c.m(A).log().last().unwrap().term);
+    c.inbox.clear();
+    c.on(C, |m, now| m.step(now, A, Message::Vote(vote(Term(term.0 + 1), A, true, last, None))));
+    assert_eq!(vote_res(&c, C, A).and_then(|r| r.deny), Some(Deny::Suspected));
+    // The higher term restored C's promises: B's next append gets one, inside the window that withheld them.
+    c.inbox.clear();
+    c.sync(B);
+    assert!(c.now.0 < t0.0 + ms(window) * 2);
+    assert_eq!(c.m(C).state().promised_to, Some(B));
+    assert!(c.m(C).state().promise_until > c.now);
+    // After 2 x the window, and with C's promise to B lapsed, C grants A's pre-vote.
+    c.crash(B);
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 500, 500, |_| false);
+    assert!(c.now.0 > t0.0 + ms(window) * 2);
+    let term = c.m(C).term();
+    let last = (c.m(C).log().len() as u64, c.m(C).log().last().unwrap().term);
+    c.on(C, |m, now| m.step(now, A, Message::Vote(vote(Term(term.0 + 1), A, true, last, None))));
+    assert!(vote_res(&c, C, A).is_some_and(|r| r.granted));
+}
+
+/// A follower whose promise has lapsed campaigns on one report; while it runs, a report only counts.
+#[test]
+fn one_report_starts_a_campaign_once_the_promise_has_lapsed() {
+    let mut c = Cluster::new(44);
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    assert_eq!(report(&mut c, B, 1, A), Verdict::Promised);
+    c.run(ms(graftyard_raft::ELECTION_AFTER), 500, |_| true);
+    assert_eq!(report(&mut c, B, 1, A), Verdict::Started);
+    c.deliver_all();
+    assert_eq!(c.m(B).role(), Role::Leader);
+}
+
+/// The `NotLeader`-with-no-leader path: a deposed leader holding the newest log is reported to as well, and its
+/// followers' promises to it do not bar it, so it wins the next term.
+#[test]
+fn not_leader_naming_no_leader_is_reported_to_that_member_too() {
+    let mut c = Cluster::new(45);
+    c.elect(A);
+    c.sync(A);
+    // A loses its leadership without a successor: its Noop round fails after a restart.
+    c.crash(A);
+    c.advance(100);
+    c.restart(A);
+    let _ = c.on(A, |m, now| m.read(now));
+    c.run(4_000, 200, |e| e.from != A);
+    assert_ne!(c.m(A).role(), Role::Leader);
+    let nl = c.m(A).not_leader();
+    assert_eq!(nl.leader, None);
+    // The edge's receipt for A turns that into reports to every voter, A included.
+    let config = nl.config.clone().unwrap().1;
+    let mut r = Receipt::new(RequestId(graftyard_raft::Ulid(1)), put("k", "v"), A, Colo(9));
+    let reports = r.not_leader(&nl, &config);
+    assert!(reports.iter().any(|s| s.to == A), "{reports:?}");
+    assert_eq!(reports.len(), 3);
+    // B and C still promise A, which does not bar A: A campaigns and wins.
+    for s in reports {
+        let v = c.on(s.to, |m, now| m.suspect(now, s.from, s.about, s.term));
+        r.verdict(s.to, v);
+    }
+    c.run(2_000, 100, |_| true);
+    assert_eq!(c.leader(), Some(A));
+}
+
+// ---- Health and STEP_DOWN ----
+
+/// Fails `per_mille` of the requests (appends and pings) that touch `site`, drawn from a fixed sequence.
+fn gray(site: SiteId, per_mille: u64, seed: u64) -> impl FnMut(&Envelope<KvEvent>) -> bool {
+    let mut rng = common::sim::Rng::new(seed);
+    move |e| request(e) && (e.from == site || e.to == site) && rng.chance(per_mille)
+}
+
+/// A leader whose calls fail 30% trips the commit-error rule, the other follower's probe qualifies a target, and
+/// the leader transfers there: never onto a sick site, and it records `stepped_down_at`.
+#[test]
+fn commit_errors_trip_and_the_probe_picks_a_healthy_target() {
+    let mut c = Cluster::new(51);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    drive(&mut c, 15_000, true, &mut id, gray(A, 300, 1));
+    let sd = step_downs(&c);
+    let (site, why, to) = sd.first().cloned().expect("STEP_DOWN tripped");
+    assert_eq!(site, A);
+    let StepDownWhy::CommitErrors { calls } = why else { panic!("{why:?}") };
+    assert!(calls.iter().all(|(_, n, f)| *f >= 3 && *f as f32 / *n as f32 > 0.05), "{calls:?}");
+    assert!(matches!(to, Some(t) if t != A));
+    assert_ne!(c.leader(), Some(A));
+    assert!(c.m(A).state().stepped_down_at.is_some());
+}
+
+/// One or two failed calls per follower never trip the commit-error rule, whatever the rate (`commit_fail_min`,
+/// F37: a far follower misses CALL_DEADLINE about once in 10 to 15 calls with no fault).
+#[test]
+fn fewer_than_commit_fail_min_failures_never_trip() {
+    let mut c = Cluster::new(52);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 1_000, false, &mut id, |_| false);
+    // With no load, one call per follower a second: 2 of every ~10 fail, a 20% rate, but only 2 a window.
+    let mut n = 0u32;
+    drive(&mut c, 30_000, false, &mut id, |e| {
+        if !matches!(e.msg, Message::Append(_)) || e.from != A {
+            return false;
+        }
+        n += 1;
+        n.is_multiple_of(13)
+    });
+    assert!(step_downs(&c).is_empty(), "{:?}", step_downs(&c));
+    assert_eq!(c.leader(), Some(A));
+}
+
+/// The confirm rule: six confirms over 500 ms in the window move the leader, with no probe, to a follower whose
+/// calls from it fail under `commit_errors`. Five never do (a healthy object reached 4 in Milestone 0).
+#[test]
+fn six_slow_confirms_trip_and_five_do_not() {
+    for (slow, trips) in [(5u32, false), (6, true)] {
+        let mut c = Cluster::new(53);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 2_000, true, &mut id, |_| false);
+        for _ in 0..slow {
+            c.slow_confirm(A, 700);
+            c.deliver_all();
+        }
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        let sd = step_downs(&c);
+        assert_eq!(!sd.is_empty(), trips, "{slow} slow confirms: {sd:?}");
+        if trips {
+            assert!(matches!(sd[0].1, StepDownWhy::Confirm { slow: 6, .. }), "{sd:?}");
+            assert!(!c.inbox.iter().any(|e| matches!(e.msg, Message::Probe { .. })));
+            assert_ne!(c.leader(), Some(A));
+        }
+    }
+}
+
+/// The own-stall exclusion: calls whose deadline elapsed while the leader's own storage confirm was outstanding count
+/// toward neither `commit_errors` nor `commit_fail_min`. In LF-12 one 3.5 s confirm made every failed call to the
+/// near follower in the window, and the commit-error rule moved a healthy group.
+#[test]
+fn deadline_misses_during_the_leaders_own_stall_are_excused() {
+    let run = |excuse: bool| {
+        let mut c = Cluster::new(54);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        // One 3.5 s confirm on A. Every call A sends meanwhile misses its deadline.
+        let now = c.now;
+        let cid = c.members[A.0 as usize].as_mut().unwrap().confirm_begin(now);
+        let mut stalled = Vec::new();
+        for _ in 0..35 {
+            c.advance(100);
+            id += 1;
+            let rid = RequestId(graftyard_raft::Ulid(id));
+            let _ = c.on(A, |m, now| m.commit(now, rid, put("load", "x")));
+            stalled.extend(c.inbox.drain(..).filter(|e| e.from == A && request(e)));
+            c.deliver_all();
+        }
+        c.on(A, |m, now| m.confirm_end(now, cid));
+        for e in stalled {
+            // `excuse` false reports the misses as errors, which the exclusion does not cover: the control.
+            let f = e.failure(excuse).unwrap();
+            c.on(A, |m, now| m.call_failed(now, f));
+        }
+        drive(&mut c, 2_000, true, &mut id, |_| false);
+        step_downs(&c)
+    };
+    let excused = run(true);
+    assert!(excused.iter().all(|s| !matches!(s.1, StepDownWhy::CommitErrors { .. })), "{excused:?}");
+    // The control: the same failures as errors trip the commit-error rule.
+    let counted = run(false);
+    assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
+}
+
+/// A new leader counts a follower's failed calls only once that follower answered it in its term: a killed leader
+/// still resetting is not a sign of the new leader's sickness (7 of 60 groups changed again without this).
+#[test]
+fn a_new_leader_does_not_count_a_follower_it_has_not_heard_from() {
+    let mut c = Cluster::new(55);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    c.elect_after_promises(B);
+    // A is down for 15 s; every call to it fails. C misses 3 calls in the window too.
+    let mut n = 0;
+    drive(&mut c, 15_000, true, &mut id, |e| {
+        if e.to == A && request(e) {
+            return true;
+        }
+        n += 1;
+        e.to == C && request(e) && n % 7 == 0
+    });
+    assert!(step_downs(&c).is_empty(), "{:?}", step_downs(&c));
+    assert_eq!(c.leader(), Some(B));
+}
+
+/// Calls into A fail 40% (A's own pings out work, as for a site whose writes fail), and the B-C link fails 12%: the
+/// healthy pair's link is over 5% only through background misses, as in Milestone 0 F35.
+fn into_a_and_b_c(seed: u64) -> impl FnMut(&Envelope<KvEvent>) -> bool {
+    let mut r = common::sim::Rng::new(seed);
+    move |e| request(e) && (e.to == A && r.chance(400) || (matches!((e.from, e.to), (B, C) | (C, B)) && r.chance(120)))
+}
+
+/// Two healthy sites passing a group back and forth while a third is sick (Milestone 0 F35, `f35-slow3`: 6 changes,
+/// and 11 at 10% slow writes). A leaves by the confirm rule, B moves the group to C on commit errors, and C must then
+/// hold, because B stepped down within RESET_QUARANTINE; without the rule C's probe of B (from A) reads 0.00.
+#[test]
+fn a_stepped_down_member_is_not_a_target_so_healthy_sites_do_not_ping_pong() {
+    let mut c = Cluster::new(56);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    for _ in 0..6 {
+        c.slow_confirm(A, 700);
+        c.deliver_all();
+    }
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(B), "{:?}", step_downs(&c));
+    drive(&mut c, 60_000, true, &mut id, into_a_and_b_c(3));
+    let sd = step_downs(&c);
+    let moves: Vec<(SiteId, SiteId)> = sd.iter().filter_map(|s| s.2.map(|t| (s.0, t))).collect();
+    assert_eq!(moves, vec![(A, B), (B, C)], "{sd:?}");
+    assert!(sd.iter().filter(|s| s.0 == C).all(|s| s.2.is_none()), "C moved: {sd:?}");
+    assert!(sd.iter().any(|s| s.0 == C), "C never tripped, so the case was not reached: {sd:?}");
+    assert_eq!(c.leader(), Some(C));
+}
+
+/// The transfer onto the sick site (Milestone 0 `tgt-writes1`; B0-33 p4r4 cost 6,188 `suspect` reports): B's calls to
+/// A fail, and to C just over 5%. Judged on B's own calls neither qualifies, and judged on each target's calls to the
+/// other follower only A did. The other follower's probe reads `c>a` high and `a>c` 0.00, so B moves to C
+/// (`dr-writes2`).
+#[test]
+fn the_probe_picks_the_healthy_site_never_the_sick_one() {
+    let mut c = Cluster::new(57);
+    let mut id = 0;
+    c.elect(B);
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    drive(&mut c, 20_000, true, &mut id, into_a_and_b_c(9));
+    let sd = step_downs(&c);
+    let (site, _, to) = sd.first().cloned().expect("B never tripped");
+    assert_eq!((site, to), (B, Some(C)), "{sd:?}");
+    assert!(sd.iter().all(|s| s.2 != Some(A)), "transferred onto the sick site: {sd:?}");
+    assert_eq!(c.leader(), Some(C));
+}
+
+/// A sick prober can refuse a healthy target, and then the leader holds; it never transfers onto the sick site.
+/// Here A fails both ways, so A's probe of C fails too (`dr-calls1` `-g2`).
+#[test]
+fn a_sick_prober_makes_the_leader_hold() {
+    let mut c = Cluster::new(60);
+    let mut id = 0;
+    c.elect(B);
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    let mut r = common::sim::Rng::new(9);
+    let mut f = |e: &Envelope<KvEvent>| {
+        request(e) && ((e.from == A || e.to == A) && r.chance(400) || (e.from == B && e.to == C && r.chance(100)))
+    };
+    drive(&mut c, 30_000, true, &mut id, &mut f);
+    let sd = step_downs(&c);
+    assert!(!sd.is_empty(), "B never tripped");
+    assert!(sd.iter().all(|s| s.2.is_none()), "{sd:?}");
+    assert_eq!(c.leader(), Some(B));
+}
+
+/// A sick prober can refuse a healthy target, and then the leader holds; it never transfers onto the sick site.
+/// And when every site fails alike (the June 2025 class), no probe reads under `commit_errors`, so it holds too.
+#[test]
+fn the_leader_holds_when_no_probe_qualifies_a_target() {
+    let mut c = Cluster::new(58);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 3_000, true, &mut id, |_| false);
+    // Every link fails 30%.
+    let mut r = common::sim::Rng::new(11);
+    drive(&mut c, 15_000, true, &mut id, |e| request(e) && r.chance(300));
+    let sd = step_downs(&c);
+    assert!(!sd.is_empty(), "never tripped");
+    assert!(sd.iter().all(|s| s.2.is_none()), "transferred while every site fails: {sd:?}");
+    assert_eq!(c.leader(), Some(A));
+    // The hold lasts one window: trips are at least `window_s` apart.
+    let n = sd.len();
+    assert!(n <= 2, "{n} trips in 15 s: the hold did not hold");
+}
+
+/// A healthy group under load never trips.
+#[test]
+fn a_healthy_leader_never_trips() {
+    let mut c = Cluster::new(59);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 60_000, true, &mut id, |_| false);
+    assert!(step_downs(&c).is_empty());
+    assert_eq!(c.leader(), Some(A));
+}
+
+// ---- home, drain, and led_term ----
+
+/// A group elected away from its `home` (A) transfers back once A has recovered, answered a window of calls with
+/// none failed, and holds every committed entry.
+#[test]
+fn leadership_returns_home_after_it_recovers_and_catches_up() {
+    let mut c = Cluster::new(61);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    c.elect_after_promises(B);
+    drive(&mut c, 15_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(B), "moved home while A was down");
+    c.restart(A);
+    // A is back but failing some calls: not recovered, so no transfer home.
+    let mut r = common::sim::Rng::new(3);
+    drive(&mut c, 15_000, true, &mut id, |e| request(e) && e.to == A && r.chance(200));
+    assert_eq!(c.leader(), Some(B), "moved home onto a failing site");
+    drive(&mut c, 15_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(A), "did not return home");
+    // Nothing committed was lost on the way.
+    c.sync(A);
+    assert!(SITES.iter().all(|s| c.value(*s, "sync").is_some()));
+}
+
+/// A `home` that stepped down within RESET_QUARANTINE is not transferred back to.
+#[test]
+fn a_quarantined_home_gets_no_transfer() {
+    let mut c = Cluster::new(62);
+    let mut id = 0;
+    c.elect(A);
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    for _ in 0..6 {
+        c.slow_confirm(A, 700);
+        c.deliver_all();
+    }
+    drive(&mut c, 30_000, true, &mut id, |_| false);
+    assert!(c.m(A).state().stepped_down_at.is_some());
+    assert_ne!(c.leader(), Some(A), "returned home inside RESET_QUARANTINE");
+}
+
+/// A restarted leader resumes `led_term` after one round, and a resumed leader away from home still goes home.
+#[test]
+fn a_resumed_led_term_still_goes_home() {
+    let mut c = Cluster::new(63);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    c.elect_after_promises(B);
+    let term = c.m(B).term();
+    c.restart(A);
+    drive(&mut c, 2_000, true, &mut id, |_| false);
+    c.crash(B);
+    c.advance(200);
+    c.restart(B);
+    assert_eq!(c.m(B).state().led_term, Some(term));
+    // The next request resumes B's term with no election.
+    id += 1;
+    let rid = RequestId(graftyard_raft::Ulid(id));
+    c.on(B, |m, now| m.commit(now, rid, put("k", "v"))).expect("resumed");
+    c.deliver_all();
+    assert_eq!(c.m(B).term(), term);
+    drive(&mut c, 15_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(A));
+}
+
+/// A leader on a drained site hands off within one LEASE, a drained member refuses a transfer (so the leader
+/// abandons at once), and pre-vote refuses a drained candidate.
+#[test]
+fn a_drained_site_hands_off_and_takes_no_leadership() {
+    let mut c = Cluster::new(64);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    for s in SITES {
+        c.on(s, |m, now| m.set_drained(now, [A, B]));
+    }
+    // B is drained too, so A must pick C.
+    drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(C));
+    // A transfer to drained B is refused.
+    assert!(matches!(c.on(C, |m, now| m.transfer(now, B)), Err(TransferError::Target(t)) if t == B));
+    // Pre-vote refuses drained A.
+    c.crash(C);
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 100, 500, |_| false);
+    let term = c.m(B).term();
+    let last = (c.m(B).log().len() as u64, c.m(B).log().last().unwrap().term);
+    c.inbox.clear();
+    c.on(B, |m, now| m.step(now, A, Message::Vote(vote(Term(term.0 + 1), A, true, last, None))));
+    assert_eq!(vote_res(&c, B, A).and_then(|r| r.deny), Some(Deny::Drained));
+    assert_eq!(report(&mut c, A, 1, C), Verdict::MayNotLead);
+}
+
+// ---- release-aware refusals (`verify`) ----
+
+fn release(s: SiteId, seq: u32, reads_future: bool) -> graftyard_raft::MemberConfig {
+    let mut cfg = config(s);
+    cfg.release = ReleaseTag { id: ReleaseId([seq as u8; 32]), seq };
+    cfg.reads = if reads_future { vec![KV_FORMAT, FUTURE_FORMAT] } else { vec![KV_FORMAT] };
+    cfg
+}
+
+/// Restarts each member on the given release, then elects A and lets the group settle.
+fn on_releases(seed: u64, rel: [(u32, bool); 3]) -> Cluster {
+    let mut c = Cluster::new(seed);
+    c.elect(A);
+    c.sync(A);
+    for (s, (seq, fut)) in SITES.iter().zip(rel) {
+        c.crash(*s);
+        c.advance(6_000);
+        c.restart_with(*s, release(*s, seq, fut));
+    }
+    c.inbox.clear();
+    let _ = c.on(A, |m, now| m.campaign(now));
+    c.run(3_000, 100, |_| true);
+    if c.leader() != Some(A) {
+        c.elect_after_promises(A);
+    }
+    c.sync(A);
+    c
+}
+
+fn future(c: &mut Cluster, id: u128) -> graftyard_raft::Ticket {
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(id)), KvCmd::Future)).expect("admitted").ticket
+}
+
+/// An older follower refuses an uncommitted entry: the leader truncates its uncommitted tail, persists
+/// `no_lead_until`, and transfers; the tickets answer `NotLeader` and nothing unreadable commits. The bar clears when
+/// the leader's release changes.
+#[test]
+fn an_older_refuser_makes_the_leader_truncate_and_hand_off() {
+    let mut c = on_releases(71, [(2, true), (1, false), (1, false)]);
+    let commit = c.m(A).state().commit;
+    let t = future(&mut c, 900);
+    c.run(4_000, 100, |_| true);
+    assert!(c.alarms().iter().any(|(s, a)| *s == A && matches!(a, Alarm::NoLead { .. })), "{:?}", c.alarms());
+    assert_eq!(c.m(A).state().no_lead_until, Some(ReleaseId([2; 32])));
+    assert!(
+        c.ticket_results(t)
+            .iter()
+            .any(|r| matches!(r, Resolution::Ticket { result: Err(CommitError::NotLeader(_)), .. }))
+    );
+    assert!(c.m(A).log().iter().all(|e| e.format != FUTURE_FORMAT), "the refused entry is still in A's log");
+    assert!(SITES.iter().all(|s| c.m(*s).state().commit >= commit));
+    let l = c.leader().expect("a new leader");
+    assert_ne!(l, A);
+    // A neither leads nor campaigns while the bar holds.
+    let nl = c.m(A).not_leader();
+    assert_ne!(nl.leader, Some(A));
+    // A restart on a new release clears it.
+    c.crash(A);
+    c.advance(6_000);
+    c.restart_with(A, release(A, 3, true));
+    assert_eq!(c.m(A).state().no_lead_until, None);
+}
+
+/// Both followers on the leader's own release refuse: its own defect. It truncates, alarms, and keeps leading.
+#[test]
+fn both_same_release_refusers_are_the_leaders_own_defect() {
+    let mut c = on_releases(72, [(1, true), (1, false), (1, false)]);
+    let t = future(&mut c, 900);
+    c.run(4_000, 100, |_| true);
+    assert!(c.alarms().iter().any(|(_, a)| matches!(a, Alarm::OwnDefect { .. })), "{:?}", c.alarms());
+    assert!(
+        c.ticket_results(t)
+            .iter()
+            .any(|r| matches!(r, Resolution::Ticket { result: Err(CommitError::NotLeader(_)), .. }))
+    );
+    assert_eq!(c.leader(), Some(A));
+    assert!(c.m(A).state().cannot_follow.is_empty());
+    c.sync(A);
+    assert!(SITES.iter().all(|s| c.value(*s, "sync").is_some()));
+}
+
+/// One same-or-newer refuser while the other follower stores the entry: it commits, the leader keeps leading, adds
+/// the refuser to `cannot_follow` and alarms. The refuser leaves `cannot_follow` once its release changes and it
+/// stores the leader's entries.
+#[test]
+fn a_same_release_refuser_of_a_committed_entry_cannot_follow_until_its_release_changes() {
+    let mut c = on_releases(73, [(1, true), (1, false), (2, true)]);
+    let t = future(&mut c, 900);
+    c.run(4_000, 100, |_| true);
+    assert!(c.ticket_results(t).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. })));
+    assert!(c.alarms().iter().any(|(_, a)| matches!(a, Alarm::Refused { site, .. } if *site == B)));
+    assert_eq!(c.m(A).state().cannot_follow.as_slice(), &[B]);
+    assert_eq!(c.leader(), Some(A));
+    c.crash(B);
+    c.advance(1_000);
+    c.restart_with(B, release(B, 2, true));
+    c.run(12_000, 500, |_| true);
+    assert!(c.m(A).state().cannot_follow.is_empty());
+    assert_eq!(c.m(B).log().len(), c.m(A).log().len());
+}
+
+// ---- BF-14 ----
+
+/// A missed receipt yields `suspect` reports, which carry no command, and leaves the receipt's one target as it was:
+/// the API has no way to send the command to a second member. The target moves only on a member's answer.
+#[test]
+fn bf14_a_missed_receipt_is_reported_never_forwarded() {
+    let mut c = Cluster::new(81);
+    c.elect(A);
+    c.sync(A);
+    let config = c.m(B).committed_config().unwrap().1.clone();
+    let mut r = Receipt::new(RequestId(graftyard_raft::Ulid(7)), put("k", "v"), A, Colo(1));
+    for _ in 0..5 {
+        let reports = r.missed(&config);
+        assert_eq!(reports.iter().map(|s| s.to).collect::<Vec<_>>(), vec![B, C]);
+        assert!(reports.iter().all(|s| s.about == A));
+        assert_eq!(r.call().0, A, "a missed receipt moved the command");
+    }
+    // A `Promised` verdict from a follower does not move it either; a `Leader` verdict does.
+    r.verdict(B, Verdict::Promised);
+    assert_eq!(r.target(), A);
+    r.verdict(B, Verdict::Leader);
+    assert_eq!(r.target(), B);
+}
+
+/// The group's `home` is the latest config's, not the bootstrap record's: after a config change re-homes the group on
+/// B (an owner move), a leader transferred to B stays there, and a leader on A goes to B. Found on Durable Objects
+/// (BF-11): the leader read `home` from its record and pulled leadership back to A after every move.
+#[test]
+fn home_follows_the_config_not_the_bootstrap_record() {
+    use graftyard_raft::GroupConfig;
+    let mut c = Cluster::new(64);
+    let mut id = 0;
+    c.elect(A);
+    c.sync(A);
+    let Some((_, GroupConfig::Normal(p))) = c.m(A).committed_config().cloned() else { panic!("normal config") };
+    use graftyard_types::{Placement, PlacementChecks, Region, Rtt, Site, SiteTable};
+    let site = |id: SiteId, region| Site {
+        id,
+        script: String::new(),
+        account: "x".into(),
+        region,
+        jurisdiction: None,
+        bucket: String::new(),
+        release: None,
+        link: graftyard_types::SiteLink::Binding { member_class: "Member".into() },
+        spare: false,
+    };
+    let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
+    let rtt: Vec<(SiteId, Rtt)> =
+        [(A, B), (A, C), (B, C)].iter().map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) })).collect();
+    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt };
+    let rehomed = Placement::new(p.voters().iter().cloned().collect(), Default::default(), B, &checks).unwrap();
+    c.on(A, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(rehomed)))).unwrap();
+    c.deliver_all();
+    c.sync(A);
+    drive(&mut c, 30_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(B), "a leader on A did not go to the config's home B");
+    drive(&mut c, 30_000, true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(B), "leadership left the config's home");
+}

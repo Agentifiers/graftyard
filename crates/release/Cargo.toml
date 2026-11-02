@@ -1,0 +1,18 @@
+[package]
+name = "graftyard-release"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+# 2.x builds for wasm32-unknown-unknown with no default features: verification needs no randomness.
+ed25519-dalek = { version = "2.2", default-features = false }
+graftyard-types.workspace = true
+serde.workspace = true
+sha2.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -1,0 +1,18 @@
+{
+  // BF-19 bed (src/lib.rs): the crates/git pack store and sweeper against three real buckets. Its own script, so it
+  // creates no site-script version. Built by `worker-build --release` in this directory.
+  "name": "graft-m1-wp4",
+  "main": "./build/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "BED", "class_name": "Bed" }, { "name": "REQUESTS", "class_name": "Requests" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Bed", "Requests"] }],
+  "r2_buckets": [
+    { "binding": "BUCKET_A", "bucket_name": "graft-m1-wp4-a" },
+    { "binding": "BUCKET_B", "bucket_name": "graft-m1-wp4-b" },
+    { "binding": "BUCKET_C", "bucket_name": "graft-m1-wp4-c" }
+  ],
+  "limits": { "cpu_ms": 300000, "subrequests": 100000 },
+  "observability": { "enabled": true }
+}

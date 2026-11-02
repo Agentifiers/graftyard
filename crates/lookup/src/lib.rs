@@ -1,0 +1,756 @@
+//! The group lookup rule over Durable Object bindings (`design/DESIGN.md`, Shape, "Sites and placement",
+//! `ReplyMeta`), for every Worker that calls a group: a site member (a dependency read, an id-block lease, the
+//! bootstrap check of an owner's record), the git edge, and the release endpoint.
+//!
+//! 1. The config cached from that group's last `NotLeader`, leader first.
+//! 2. Without one, the bootstrap voter names built from the chain's record, in record order.
+//! 3. If none answers with a config, the chain's row in the `MemberRegistry` of each record site.
+//! 4. Then both steps again for each `moving_from` record.
+//!
+//! A member that answers `NotLeader` with a config teaches the caller the group's voters and leader. A caller reaches
+//! site `n`'s classes through its `MEMBER_<n>` and `REGISTRY_<n>` bindings, with the site's location hint.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::future::Future;
+use std::time::Duration;
+
+use futures_util::future::{Either, select};
+use graftyard_raft::{GroupConfig, RequestId, Ulid};
+use graftyard_types::{ChainId, MemberRegistry, PlacementRecord, RegistryRow, SiteId, SiteTable, Timestamp};
+use serde_json::{Value, json};
+use worker::*;
+
+/// How long one lookup-and-call keeps trying.
+pub const LOOKUP_FOR: Duration = Duration::from_secs(20);
+/// One call's deadline.
+pub const CALL: Duration = Duration::from_millis(3_500);
+
+/// The install's sites and the bindings that reach their classes.
+pub struct Bindings<'a> {
+    pub env: &'a Env,
+    pub sites: &'a SiteTable,
+}
+
+impl Bindings<'_> {
+    fn stub(&self, class: &str, site: SiteId, do_name: &str) -> Result<Stub> {
+        let region = self.sites.get(site).ok_or_else(|| Error::RustError(format!("unknown site {site:?}")))?.region;
+        self.env.durable_object(&format!("{class}_{}", site.0))?.get_by_name_with_location_hint(do_name, region.hint())
+    }
+
+    /// The member-class binding for `site`. Every `get()` passes the site's hint, because only the first call
+    /// respects it.
+    pub fn member(&self, site: SiteId, do_name: &str) -> Result<Stub> {
+        self.stub("MEMBER", site, do_name)
+    }
+
+    pub fn registry(&self, site: SiteId, do_name: &str) -> Result<Stub> {
+        self.stub("REGISTRY", site, do_name)
+    }
+}
+
+pub fn now_ms() -> u64 {
+    Date::now().as_millis()
+}
+
+pub async fn within<T>(d: Duration, f: impl Future<Output = T>) -> Option<T> {
+    match select(Box::pin(f), Box::pin(Delay::from(d))).await {
+        Either::Left((v, _)) => Some(v),
+        Either::Right(_) => None,
+    }
+}
+
+/// Per isolate: each chain's voters from its last config, and the leader its replies named.
+#[derive(Clone, Default)]
+struct Known {
+    voters: Vec<(SiteId, String)>,
+    config_index: u64,
+    leader: Option<SiteId>,
+}
+
+thread_local! {
+    static KNOWN: RefCell<HashMap<ChainId, Known>> = RefCell::new(HashMap::new());
+    static COLO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The colo this isolate's `suspect` reports from `call_opt` carry; an edge sets it per request.
+pub fn set_colo(colo: u32) {
+    COLO.with(|c| c.set(colo));
+}
+
+/// Which step of the rule found the group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Cached,
+    Bootstrap { depth: usize },
+    Registry { depth: usize },
+}
+
+fn learn(chain: ChainId, nl: &Value) {
+    let Some(c) = nl.get("config").filter(|c| !c.is_null()) else { return };
+    let index = c.get("index").and_then(Value::as_u64).unwrap_or(0);
+    let Ok(cfg) = serde_json::from_value::<GroupConfig>(c["config"].clone()) else { return };
+    let p = match &cfg {
+        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => p,
+        GroupConfig::Joint { new, .. } => new,
+    };
+    let voters = p.voters().iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    KNOWN.with(|k| {
+        let mut k = k.borrow_mut();
+        let e = k.entry(chain).or_default();
+        if index >= e.config_index {
+            e.voters = voters;
+            e.config_index = index;
+        }
+    });
+}
+
+fn learn_leader(chain: ChainId, v: &Value) {
+    let leader = v.pointer("/meta/leader").and_then(Value::as_u64).map(|s| SiteId(s as u8));
+    KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().leader = leader);
+}
+
+pub fn forget_leader(chain: ChainId) {
+    KNOWN.with(|k| {
+        if let Some(e) = k.borrow_mut().get_mut(&chain) {
+            e.leader = None;
+        }
+    });
+}
+
+/// Drops every cached config and leader, for a caller that must start cold.
+pub fn forget_all() {
+    KNOWN.with(|k| k.borrow_mut().clear());
+}
+
+/// The member that answered a call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub site: SiteId,
+    pub do_name: String,
+}
+
+/// One POST to a member with CALL, its status and JSON body; `None` for a missed or failed call.
+pub async fn post(b: &Bindings<'_>, to: SiteId, do_name: &str, path: &str, body: &[u8]) -> Option<(u16, Value)> {
+    post_within(b, to, do_name, path, body, CALL).await
+}
+
+/// `post` with its own deadline.
+pub async fn post_within(
+    b: &Bindings<'_>,
+    to: SiteId,
+    do_name: &str,
+    path: &str,
+    body: &[u8],
+    deadline: Duration,
+) -> Option<(u16, Value)> {
+    let stub = b.member(to, do_name).ok()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body).into()));
+    let req = Request::new_with_init(&format!("https://member{path}"), &init).ok()?;
+    let call = async move {
+        let mut res = stub.fetch_with_request(req).await.ok()?;
+        let status = res.status_code();
+        let v = res.json::<Value>().await.unwrap_or(Value::Null);
+        Some((status, v))
+    };
+    within(deadline, call).await.flatten()
+}
+
+async fn registry_row(b: &Bindings<'_>, at: SiteId, chain: ChainId) -> Option<RegistryRow> {
+    let reg = MemberRegistry::for_chain(at, chain);
+    let stub = b.registry(at, &reg.do_name()).ok()?;
+    let url = format!("https://registry/row?chain={chain}");
+    let call = async move {
+        let mut res = stub.fetch_with_str(&url).await.ok()?;
+        if res.status_code() != 200 {
+            return None;
+        }
+        res.json::<RegistryRow>().await.ok()
+    };
+    within(CALL, call).await.flatten()
+}
+
+/// The record of a chain whose record the caller does not hold (the `Release` group, before a cold isolate has its
+/// genesis): the voters and generation from the first `MemberRegistry` row any site holds for it, with the sites in
+/// the row's order. Its bootstrap names are the row's voters' names at that generation, as `bootstrap_members` builds.
+pub async fn registry_record(b: &Bindings<'_>, chain: ChainId) -> Option<PlacementRecord> {
+    for s in &b.sites.0 {
+        if let Some(row) = registry_row(b, s.id, chain).await {
+            let name = match row.sites.len() {
+                1 => graftyard_types::PlacementName::Solo,
+                _ => graftyard_types::PlacementName::Tri,
+            };
+            return Some(PlacementRecord {
+                name,
+                home: row.sites.first().copied()?,
+                sites: row.sites.clone(),
+                generation: row.generation,
+                moving_from: None,
+                at: Timestamp(0),
+            });
+        }
+    }
+    None
+}
+
+/// The candidates of one pass, in the rule's order, each with the step that named it.
+async fn candidates(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord) -> Vec<(SiteId, String, Step)> {
+    let mut out: Vec<(SiteId, String, Step)> = Vec::new();
+    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+    if !known.voters.is_empty() {
+        let mut vs = known.voters.clone();
+        vs.sort_by_key(|(s, _)| Some(*s) != known.leader);
+        out.extend(vs.into_iter().map(|(s, n)| (s, n, Step::Cached)));
+    }
+    for (depth, r) in record.lookup_order().enumerate() {
+        for m in r.bootstrap_members(chain) {
+            out.push((m.site, m.do_name.to_string(), Step::Bootstrap { depth }));
+        }
+        for s in &r.sites {
+            if let Some(row) = registry_row(b, *s, chain).await {
+                out.push((*s, row.do_name.to_string(), Step::Registry { depth }));
+            }
+        }
+    }
+    out
+}
+
+/// Calls `path` on the group's leader, found by the rule, with a raw body. Returns the leader's answer, the step
+/// that found the group, and the member that answered; `None` when the chain has no group: on the rule's first pass
+/// every bootstrap member answered that it is not joined, and no site's registry holds a row for the chain. An answer
+/// with `error.notLeader` (or `done.notLeader`) teaches the config and leader and is retried there; a member that is
+/// not joined, or that holds no config, is skipped. `busy` (a read past its deadline) is skipped too. Only
+/// leader-answered routes should be called this way: a command goes to one member at a time, and a member that is
+/// not the leader refuses it.
+pub async fn call_opt(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    path: &str,
+    body: &[u8],
+) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
+    let mut last = String::from("no member answered");
+    let mut first_pass = true;
+    let mut term = 0;
+    while now_ms() < end {
+        let cands = candidates(b, chain, record).await;
+        let mut unjoined = 0;
+        let mut others = 0;
+        let mut tried = std::collections::BTreeSet::new();
+        // Members that missed: once per pass each is reported with `suspect` to the other voters, as a missed commit
+        // receipt is, because campaigns are request-driven and a read-only caller is otherwise never one.
+        let mut missed: Vec<Target> = Vec::new();
+        // A voter that answered `NotLeader` naming no leader: reported to every voter at the end of a pass that found
+        // no leader, as `commit_hedged` does, or a group whose members all reset stays leaderless for a caller
+        // whose only call is this lookup (a commit's `/outcome_by_request`).
+        let mut leaderless: Option<Target> = None;
+        let mut queue: std::collections::VecDeque<(SiteId, String, Step)> = cands.into();
+        while let Some((s, name, step)) = queue.pop_front() {
+            if !tried.insert(name.clone()) {
+                continue;
+            }
+            let Some((status, v)) = post(b, s, &name, path, body).await else {
+                last = format!("{name}: no answer");
+                others += 1;
+                missed.push(Target { site: s, do_name: name });
+                continue;
+            };
+            if status == 409 && matches!(step, Step::Bootstrap { .. }) {
+                last = format!("{name}: not joined");
+                unjoined += 1;
+                continue;
+            }
+            others += 1;
+            if status != 200 {
+                last = format!("{name}: {status}");
+                if status >= 500 {
+                    missed.push(Target { site: s, do_name: name });
+                }
+                continue;
+            }
+            if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
+                term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
+                learn(chain, nl);
+                if nl.get("config").is_none_or(Value::is_null) {
+                    last = format!("{name}: no config");
+                    continue;
+                }
+                if nl.get("leader").is_none_or(Value::is_null) {
+                    leaderless.get_or_insert(Target { site: s, do_name: name.clone() });
+                }
+                // Follow a named leader first, then the config's voters.
+                let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+                let leader = nl.get("leader").and_then(Value::as_u64).map(|l| SiteId(l as u8));
+                let mut next: Vec<(SiteId, String, Step)> =
+                    known.voters.iter().map(|(vs, vn)| (*vs, vn.clone(), step)).collect();
+                next.sort_by_key(|(vs, _, _)| Some(*vs) != leader);
+                for c in next.into_iter().rev() {
+                    queue.push_front(c);
+                }
+                last = format!("{name}: not leader");
+                continue;
+            }
+            if v.get("busy").is_some() {
+                last = format!("{name}: busy");
+                continue;
+            }
+            learn_leader(chain, &v);
+            return Ok(Some((v, step, Target { site: s, do_name: name })));
+        }
+        if first_pass && unjoined > 0 && others == 0 {
+            return Ok(None);
+        }
+        first_pass = false;
+        let colo = COLO.with(|c| c.get());
+        let reports = missed.iter().map(|m| suspect(b, chain, m, term, colo, false));
+        futures_util::future::join_all(reports).await;
+        if let Some(t) = &leaderless {
+            suspect(b, chain, t, term, colo, true).await;
+        }
+        forget_leader(chain);
+        Delay::from(Duration::from_millis(250)).await;
+    }
+    Err(format!("{chain}: {last}"))
+}
+
+/// `call_opt` for a group that must exist: no group is an error.
+pub async fn call_raw(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    path: &str,
+    body: &[u8],
+) -> std::result::Result<(Value, Step, Target), String> {
+    call_opt(b, chain, record, path, body).await?.ok_or_else(|| format!("{chain}: no group"))
+}
+
+/// `call_raw` with a JSON body.
+pub async fn call(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    path: &str,
+    body: &Value,
+) -> std::result::Result<(Value, Step), String> {
+    call_raw(b, chain, record, path, body.to_string().as_bytes()).await.map(|(v, s, _)| (v, s))
+}
+
+/// A fresh request id: the time, then 80 random bits.
+pub fn request_id() -> RequestId {
+    let mut rand = [0u8; 10];
+    for b in &mut rand {
+        *b = (js_sys::Math::random() * 256.0) as u8;
+    }
+    RequestId(Ulid::new(Timestamp(now_ms()), rand))
+}
+
+/// Commits `cmd` (its serde JSON) on `chain` to an outcome under request id `rid`: re-sent under the same id after
+/// `NotLeader`, a missed reply, or a pending ticket, as an edge does. Returns the outcome JSON (`ok` or `refused`).
+pub async fn commit_as(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    rid: RequestId,
+    cmd: Value,
+) -> std::result::Result<Value, String> {
+    let rid = rid.to_string();
+    let end = now_ms() + LOOKUP_FOR.as_millis() as u64 * 2;
+    let mut last = String::new();
+    while now_ms() < end {
+        match call(b, chain, record, "/commit", &json!({ "rid": rid, "cmd": cmd })).await {
+            Ok((v, _)) => {
+                if let Some(done) = v.get("done") {
+                    if done.get("notLeader").is_some() {
+                        forget_leader(chain);
+                        continue;
+                    }
+                    return Ok(done.clone());
+                }
+                if v.get("admitted").is_some() {
+                    // Held past COMMIT_HOLD: the same request id again joins the ticket, or reads its row.
+                    Delay::from(Duration::from_millis(200)).await;
+                    continue;
+                }
+                last = v.to_string();
+                if v.pointer("/error/unsupported").is_some() || v.pointer("/error/tooLarge").is_some() {
+                    return Err(last);
+                }
+            }
+            Err(e) => last = e,
+        }
+        Delay::from(Duration::from_millis(200)).await;
+    }
+    Err(format!("{chain}: commit gave up: {last}"))
+}
+
+/// `commit_as` under a fresh request id.
+pub async fn commit(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    cmd: Value,
+) -> std::result::Result<Value, String> {
+    commit_as(b, chain, record, request_id(), cmd).await
+}
+
+// ---- the edge's commit: one member at a time, hedged only by `suspect` ----
+
+/// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE.
+pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
+
+/// The voters the caller knows for `chain`, from the last config it learned.
+pub fn known_voters(chain: ChainId) -> Vec<Target> {
+    KNOWN
+        .with(|k| k.borrow().get(&chain).map(|e| e.voters.clone()).unwrap_or_default())
+        .into_iter()
+        .map(|(site, do_name)| Target { site, do_name })
+        .collect()
+}
+
+/// A `suspect` report about `about` to every other known voter (to every voter, `about` included, when `all`), in
+/// parallel; returns the voter that answered it leads, if one did. The report carries no command. `all` is for a
+/// member that answered `NotLeader` naming no leader: campaigns are request-driven, so a group whose leader died
+/// stays leaderless until a report reaches its members.
+pub async fn suspect(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    about: &Target,
+    term: u64,
+    colo: u32,
+    all: bool,
+) -> Option<Target> {
+    let body = json!({ "colo": colo, "about": about.site.0, "term": term }).to_string();
+    let others: Vec<Target> = known_voters(chain).into_iter().filter(|v| all || v.site != about.site).collect();
+    let calls = others.iter().map(|v| post(b, v.site, &v.do_name, "/suspect", body.as_bytes()));
+    let answers = futures_util::future::join_all(calls).await;
+    others.into_iter().zip(answers).find_map(|(v, a)| {
+        let verdict = a?.1.get("verdict")?.as_str()?.to_owned();
+        matches!(verdict.as_str(), "leader" | "won" | "resumed").then_some(v)
+    })
+}
+
+/// `commit_hedged`'s test hooks. `first`, when given, is the body of the first `/commit` send only (a test install's
+/// kill rides on it, so a fault fires once); every later send is the command's body. `trace`, when given, collects one
+/// row per step: each `/commit` send with its target and why the edge chose it, each missed receipt, and each
+/// `suspect` answer (BF-14's count).
+#[derive(Clone, Copy, Default)]
+pub struct Hooks<'a> {
+    pub first: Option<&'a [u8]>,
+    pub trace: Option<&'a RefCell<Vec<Value>>>,
+}
+
+/// A command's commit as the edge runs it (`design/DESIGN.md`, "Commit and read paths"): the leader is found with
+/// `/outcome_by_request`, which only a leader answers and which returns the request's outcome if a re-send finds it
+/// already decided; the command (`body`, `{"rid", "cmd"}` under one request id) then goes to that one member. A
+/// missed receipt is hedged by `suspect` to the other voters, and the command is sent again to the same member unless
+/// another answered that it leads. `NotLeader` naming no leader is hedged by `suspect` to every voter, and then, unless
+/// one answered that it leads, starts the lookup again; a lookup that found no leader does the same about the member
+/// last sent to. Returns the reply's `done` outcome, or the
+/// reply's `error` (`unsupported`, `tooLarge`) as `Err(Ok(error))`; `Err(Err(text))` when no outcome came in time.
+/// `hooks` are a test install's; a product caller passes `Hooks::default()`.
+pub async fn commit_hedged(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &[u8],
+    colo: u32,
+    for_ms: u64,
+    hooks: Hooks<'_>,
+) -> std::result::Result<Value, std::result::Result<Value, String>> {
+    let Hooks { first, trace } = hooks;
+    let note = |v: Value| {
+        if let Some(t) = trace {
+            t.borrow_mut().push(v);
+        }
+    };
+    // Why the next send goes where it goes: the first lookup's answer (`lookup`), the previous target again (`same`), a
+    // voter that answered a `suspect` as leader (`suspectLed`), a new lookup after `NotLeader` named a leader
+    // (`notLeader`), the next voter after a `NotLeader` naming none (`leaderless`), or a new lookup after one that
+    // found no leader (`relookup`).
+    let mut why = "lookup";
+    let end = now_ms() + for_ms;
+    let mut first = first;
+    let mut target: Option<Target> = None;
+    let mut prev: Option<Target> = None;
+    let mut tries = 0u32;
+    let mut term = 0;
+    let mut last = String::from("no member answered");
+    while now_ms() < end {
+        let t = match &target {
+            Some(t) => t.clone(),
+            None => match call_raw(b, chain, record, "/outcome_by_request", body).await {
+                Ok((v, _, t)) => {
+                    if let Some(e) = v.get("error").filter(|e| e.get("notLeader").is_none()) {
+                        return Err(Ok(e.clone()));
+                    }
+                    if let Some(done) = v.get("done").filter(|d| d.get("notLeader").is_none()) {
+                        return Ok(done.clone());
+                    }
+                    t
+                }
+                Err(e) => {
+                    last = e;
+                    if let Some(p) = &prev {
+                        target = suspect(b, chain, p, term, colo, true).await;
+                        note(json!({ "suspect": p.site.0, "all": true, "led": target.as_ref().map(|t| t.site.0) }));
+                        why = if target.is_some() { "suspectLed" } else { "relookup" };
+                    }
+                    continue;
+                }
+            },
+        };
+        // The member found is the target until a reply names another or refuses: a missed receipt or outcome is
+        // sent again to it (`design/DESIGN.md`, "Commit and read paths").
+        target = Some(t.clone());
+        prev = Some(t.clone());
+        note(json!({ "send": t.site.0, "name": t.do_name, "why": why }));
+        let r = post_within(b, t.site, &t.do_name, "/commit", first.take().unwrap_or(body), COMMIT_RECEIPT).await;
+        let Some((200, v)) = r else {
+            last = format!("{}: {}", t.do_name, r.as_ref().map_or("missed".into(), |(s, _)| s.to_string()));
+            note(json!({ "missed": t.site.0, "status": r.map(|(s, _)| s) }));
+            match suspect(b, chain, &t, term, colo, false).await {
+                Some(led) => {
+                    note(json!({ "suspect": t.site.0, "all": false, "led": led.site.0 }));
+                    target = Some(led);
+                    why = "suspectLed";
+                }
+                None => {
+                    note(json!({ "suspect": t.site.0, "all": false, "led": null }));
+                    why = "same";
+                    Delay::from(Duration::from_millis(200)).await
+                }
+            }
+            continue;
+        };
+        term = term.max(v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0));
+        if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
+            learn(chain, nl);
+            forget_leader(chain);
+            let named = nl.get("leader").and_then(Value::as_u64);
+            target = match named {
+                Some(_) => None,
+                None => leaderless(b, chain, &t, term, colo, &mut tries).await,
+            };
+            note(json!({ "notLeader": t.site.0, "leader": named, "next": target.as_ref().map(|t| t.site.0) }));
+            why = if named.is_some() { "notLeader" } else { "leaderless" };
+            last = format!("{}: not leader", t.do_name);
+            continue;
+        }
+        if let Some(e) = v.get("error") {
+            return Err(Ok(e.clone()));
+        }
+        if !readable(&v, &["done", "admitted"]) {
+            return Err(Ok(unreadable()));
+        }
+        let mut done = v.get("done").cloned();
+        if let Some(ticket) = v.get("admitted") {
+            let req = json!({ "ticket": ticket, "wait_ms": 10_000 }).to_string();
+            match post_within(b, t.site, &t.do_name, "/outcome", req.as_bytes(), Duration::from_secs(11)).await {
+                Some((200, o)) if o.get("error").is_some() => return Err(Ok(o["error"].clone())),
+                Some((200, o)) if !readable(&o, &["done", "pending"]) => return Err(Ok(unreadable())),
+                Some((200, o)) => done = o.get("done").cloned(),
+                _ => {
+                    note(json!({ "outcomeMissed": t.site.0 }));
+                    if let Some(led) = suspect(b, chain, &t, term, colo, false).await {
+                        note(json!({ "suspect": t.site.0, "all": false, "led": led.site.0 }));
+                        target = Some(led);
+                        why = "suspectLed";
+                    } else {
+                        why = "same";
+                    }
+                    continue;
+                }
+            }
+        }
+        match done {
+            Some(d) if d.get("notLeader").is_some() => {
+                learn(chain, &d["notLeader"]);
+                let named = d.pointer("/notLeader/leader").and_then(Value::as_u64);
+                target = match named {
+                    Some(_) => None,
+                    None => leaderless(b, chain, &t, term, colo, &mut tries).await,
+                };
+                note(json!({ "notLeader": t.site.0, "leader": named, "next": target.as_ref().map(|t| t.site.0) }));
+                why = if named.is_some() { "notLeader" } else { "leaderless" };
+            }
+            None => why = "same",
+            Some(d) => {
+                learn_leader(chain, &v);
+                note(json!({ "done": t.site.0 }));
+                return Ok(d);
+            }
+        }
+    }
+    Err(Err(format!("{chain}: no outcome: {last}")))
+}
+
+/// Whether a member's 200 answer is one of the shapes `keys` names (`{"done": ..}`, `{"admitted": ..}`, ..). Any
+/// other answer is one this caller cannot read, and `commit_hedged` returns it as `Unsupported` rather than treating it
+/// as a lost reply: sending the command again under its request id would answer from the request's row, and a newer
+/// member's answer would reach the client as whatever an older replay says (t5541 #20, `tests/m1/results/m1-wp6.md`).
+fn readable(v: &Value, keys: &[&str]) -> bool {
+    v.as_object().is_some_and(|o| keys.iter().any(|k| o.get(*k).is_some_and(|x| !x.is_null())))
+}
+
+/// `Unsupported` of format 0.0, which no release reads: a member answer that does not parse.
+fn unreadable() -> Value {
+    json!({ "unsupported": { "family": 0, "version": 0 } })
+}
+
+/// After `about` answered `NotLeader` naming no leader: a `suspect` report to every voter, and the voter that answered
+/// it leads, else the next known voter after `about` (every third time after a 200 ms pause), so the next send reaches
+/// a member that may have started a campaign, and its refusal brings the next report. Campaigns are request-driven:
+/// a followers' promise to a dead leader lapses only with time, and until then a report changes nothing, so the
+/// edge keeps reporting rather than waiting through a whole lookup (`call_opt`), during which no member campaigns.
+async fn leaderless(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    about: &Target,
+    term: u64,
+    colo: u32,
+    tries: &mut u32,
+) -> Option<Target> {
+    if let Some(led) = suspect(b, chain, about, term, colo, true).await {
+        return Some(led);
+    }
+    *tries += 1;
+    if (*tries).is_multiple_of(3) {
+        Delay::from(Duration::from_millis(200)).await;
+    }
+    let vs = known_voters(chain);
+    let i = vs.iter().position(|v| v.site == about.site)?;
+    vs.get((i + 1) % vs.len()).cloned()
+}
+
+// ---- creating a group on first use ----
+
+/// Creates `chain`'s group from `record` if the lookup finds none: joins its bootstrap members with `join` (the
+/// `/join` fields beyond `chain`, `me`, and `record`), each of which checks the record against its source and claims
+/// the generation, then campaigns on the record's home until a member leads. Joins are idempotent, and a member of a
+/// generation that lost the claim refuses, so two callers at once still build one group.
+pub async fn create(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    join: &Value,
+) -> std::result::Result<(), String> {
+    let probe = json!({ "q": {} }).to_string();
+    if let Ok(Some(_)) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
+        return Ok(());
+    }
+    let members = record.bootstrap_members(chain);
+    let joins =
+        members.iter().map(|m| {
+            let mut j = join.clone();
+            j["chain"] = json!(chain);
+            j["me"] = json!(m);
+            j["record"] = json!(record);
+            async move {
+                post_within(b, m.site, &m.do_name, "/join", j.to_string().as_bytes(), Duration::from_secs(60)).await
+            }
+        });
+    let answers = futures_util::future::join_all(joins).await;
+    let joined = answers.iter().filter(|a| matches!(a, Some((200, _)))).count();
+    if joined * 2 <= members.len() {
+        // Another generation may hold the chain; the lookup finds its group through the registry rows.
+        return call(b, chain, record, "/read", &json!({ "q": {} }))
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("{chain}: {joined} of {} joined ({answers:?}); {e}", members.len()));
+    }
+    let home = members.iter().find(|m| m.site == record.home).unwrap_or(&members[0]);
+    let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
+    while now_ms() < end {
+        let _ = post(b, home.site, &home.do_name, "/campaign", b"{}").await;
+        if let Ok(Some(_)) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
+            return Ok(());
+        }
+        Delay::from(Duration::from_millis(200)).await;
+    }
+    Err(format!("{chain}: created, but no member leads"))
+}
+
+// ---- the `Release` view ----
+
+thread_local! {
+    static GENESIS: RefCell<Option<graftyard_release::Genesis>> = const { RefCell::new(None) };
+}
+
+pub fn system_of(chain: ChainId) -> Option<graftyard_types::SystemChain> {
+    use graftyard_types::SystemChain as S;
+    match chain {
+        ChainId::Names(_) => Some(S::Names),
+        ChainId::Tokens(_) => Some(S::Tokens),
+        ChainId::Ids => Some(S::Ids),
+        ChainId::Release => Some(S::Release),
+        _ => None,
+    }
+}
+
+/// The genesis bytes a `Release` leader holds, found through the chain's `MemberRegistry` rows: a cold isolate does
+/// not hold the genesis that names the group's record yet.
+pub async fn read_genesis(b: &Bindings<'_>) -> std::result::Result<Vec<u8>, String> {
+    let rec = registry_record(b, ChainId::Release).await.ok_or("no Release group is registered")?;
+    let (v, _) = call(b, ChainId::Release, &rec, "/read", &json!({ "q": { "genesis": true } })).await?;
+    let hex = v.pointer("/value/genesis").and_then(Value::as_str).ok_or_else(|| format!("no genesis held: {v}"))?;
+    unhex(hex).ok_or_else(|| "the genesis is not hex".into())
+}
+
+/// The accepted genesis, read once per isolate and accepted against the caller's own trust anchor, so a member that
+/// answers with another install's or an unsigned genesis is refused (`design/DESIGN.md`, Shape, the `Release` view).
+/// Milestone 1 builds no entry that changes it.
+pub async fn genesis(
+    b: &Bindings<'_>,
+    anchor: &graftyard_release::Anchor,
+) -> std::result::Result<graftyard_release::Genesis, String> {
+    if let Some(g) = GENESIS.with(|g| g.borrow().clone()) {
+        return Ok(g);
+    }
+    let bytes = read_genesis(b).await?;
+    let g = graftyard_release::accept_genesis(anchor, &bytes)
+        .map_err(|e| format!("the Release group's genesis: {}: {e}", e.variant()))?;
+    GENESIS.with(|c| *c.borrow_mut() = Some(g.clone()));
+    Ok(g)
+}
+
+/// A system chain's record from the `Release` view.
+pub async fn system_record(
+    b: &Bindings<'_>,
+    anchor: &graftyard_release::Anchor,
+    chain: ChainId,
+) -> std::result::Result<PlacementRecord, String> {
+    let sc = system_of(chain).ok_or_else(|| format!("{chain} is not a system chain"))?;
+    let g = genesis(b, anchor).await?;
+    g.placement(sc).cloned().ok_or_else(|| format!("the genesis has no {sc:?} record"))
+}
+
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    s.len()
+        .is_multiple_of(2)
+        .then(|| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect())
+        .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_commit_shapes_are_readable() {
+        let keys = ["done", "admitted"];
+        assert!(readable(&json!({ "done": { "ok": {} } }), &keys));
+        assert!(readable(&json!({ "admitted": { "term": 1 }, "meta": {} }), &keys));
+        // A body that did not parse as JSON (`post_within` reads it as null), an empty object, and a shape from a
+        // newer release are not lost replies.
+        for v in [Value::Null, json!({}), json!({ "done": null }), json!({ "decided": { "ok": {} } }), json!([1])] {
+            assert!(!readable(&v, &keys), "{v}");
+        }
+        assert_eq!(unreadable()["unsupported"]["family"], 0);
+    }
+}

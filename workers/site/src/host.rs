@@ -1,0 +1,1590 @@
+//! The Raft core hosted in a member Durable Object (`build/BUILD-PLAN.md`, M1-WP2).
+//!
+//! - Storage. `Ready::persist` hands every `Write` to `SqlStore`, which turns it into SQLite statements on the
+//!   object's own database: `raft_state` (the `MemberState` row), `log` (one row per index, with its digest), and on
+//!   `Apply` the fold (`reg`) and the core-tier `request` table. One input's statements run in one
+//!   `storage.transactionSync`, so they land together or not at all, and the Durable Object output gate holds every
+//!   reply and subrequest issued after them until they are durable. That is the crate's persist-then-send rule on the
+//!   platform: nothing `persist` returns leaves before the writes it depends on.
+//! - Restore. The constructor reads the rows back, rehashes every entry against its stored digest, rebuilds the
+//!   `GroupFold` by applying the log through `MemberState.applied` (the crate has no way to load a `GroupFold` from
+//!   its tables), checks the rebuild against the `reg` and `request` tables, and calls `Member::restore`.
+//! - Transport. Each `Envelope` is one POST of the binary envelope to the peer member's `/raft` through its site's
+//!   binding, with CALL_DEADLINE. The peer steps it and answers with its envelopes for the caller in the response
+//!   body, which its output gate also holds until its writes are durable. A call that errors or misses CALL_DEADLINE
+//!   goes to `Member::call_failed`, and the crate's `tick` resends, so the host never retries a message itself.
+//! - Time. `tick` runs every TICK while an input arrived in the last ACTIVE_FOR_MS or a call is held, and from the
+//!   one alarm the design allows: a leader's, every 2 s while it served a request in the last 60 s (`design/DESIGN.md`,
+//!   Shape, the drain check). `tick` starts no campaign; campaigns start only from `/campaign` and `/suspect`.
+//! - Faults. With the `test-faults` feature only, `crate::faults` adds BF-12's and BF-13's kills, the call faults of
+//!   the 24-hour run, and the harness's tables (`fault`, `dup`, `deps_log`). A product build has none of them.
+
+use std::cell::{Cell, RefCell};
+#[cfg(feature = "test-faults")]
+use std::collections::BTreeSet;
+use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
+use std::rc::Rc;
+use std::time::Duration;
+
+use futures_channel::oneshot;
+use futures_util::future::{Either, select};
+use graftyard_raft::{
+    self as raft, Acked, CallError, CommitError, EntryBody, GroupFold, Index, MemberConfig, NotLeader, Out, ReadId,
+    Ready, ReleaseTag, RequestId, Resolution, Role, Storage, Stored, Ticket, Write, codec,
+};
+use graftyard_types::{ReleaseId, SiteId, Timestamp};
+use serde_json::{Value, json};
+use worker::js_sys;
+use worker::wasm_bindgen::closure::Closure;
+use worker::wasm_bindgen::{JsCast, JsValue};
+use worker::wasm_bindgen_futures::spawn_local;
+use worker::*;
+
+use crate::family::{Err as FErr, Family, Out as FOut, Stmt};
+use crate::member::Join;
+use crate::{SiteEnv, now_ms};
+
+type Entry<F> = raft::LogEntry<<F as Family>::Ev>;
+type Envelope<F> = raft::Envelope<<F as Family>::Ev>;
+
+pub type Outcome<F> = Result<Acked<FOut<F>>, CommitError<FErr<F>>>;
+pub type ReadResult = Result<(Value, Index), NotLeader>;
+
+const TICK: Duration = Duration::from_millis(100);
+const ACTIVE_FOR_MS: u64 = 3_000;
+const DRAIN_CHECK_MS: i64 = 2_000;
+const DRAIN_IDLE_MS: u64 = 60_000;
+/// Restore compares the fold loaded from its tables with the log replayed through `applied`, while at most this many
+/// entries are applied. Longer logs skip it: replaying them would hold every request row the log ever carried.
+const RESTORE_CHECK_MAX: u64 = 20_000;
+/// Latency samples kept for `/stats`.
+const SAMPLES_MAX: usize = 200_000;
+/// Stored bytes per `/entries` page. 239 entries of `wp6/main` were 4.6 MB of JSON and took 7.8 s to answer through
+/// the test edge, past the lookup's 3.5 s CALL, so the git cache shard's rehydrate never finished
+/// (`tests/m1/results/m1-wp8.md`, t-256). A page this size is under 1 MB of JSON [guess for the bound].
+const ENTRIES_PAGE_BYTES: usize = 600_000;
+
+pub const SCHEMA: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS raft_state (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS log (idx INTEGER PRIMARY KEY, term INTEGER NOT NULL, digest BLOB NOT NULL, row BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS reg (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
+    // A repository chain's refs, one row per ref (`family::Repo`).
+    "CREATE TABLE IF NOT EXISTS repo_ref (name BLOB PRIMARY KEY, oid BLOB NOT NULL)",
+    crate::release::RELEASE_SCHEMA,
+    "CREATE TABLE IF NOT EXISTS fold (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS id_block (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS group_config (id INTEGER PRIMARY KEY CHECK (id = 1), idx INTEGER NOT NULL, row BLOB NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS request (rid TEXT PRIMARY KEY, idx INTEGER NOT NULL, at INTEGER NOT NULL, events BLOB NOT NULL)",
+    // Every apply deletes the rows past retention by `at`.
+    "CREATE INDEX IF NOT EXISTS request_at ON request (at)",
+];
+
+#[cfg(feature = "test-faults")]
+use crate::faults::{Fault, Kill};
+
+#[derive(Default)]
+pub struct Stats {
+    /// Leader: a command's admission to its ticket's resolution on the commit-advance path, in ms.
+    pub commit_ms: Vec<u32>,
+    /// Leader: an `Events` entry's append to its apply, in ms.
+    pub round_ms: Vec<u32>,
+    /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
+    /// gate holds the entry's AppendEntries for this long.
+    pub confirm_ms: Vec<u32>,
+    /// Leader: one AppendEntries call with entries, send to reply, per follower site, in ms.
+    pub append_ms: BTreeMap<u8, Vec<u32>>,
+    pub entries: u32,
+    pub commands: u32,
+    pub restores: u32,
+    pub failed_calls: u32,
+    pub dep_reads: u32,
+    /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
+    pub catchups: u32,
+    pub leases: u32,
+    /// `Committed` marker puts that failed after an ok push (the sweeper repairs them).
+    pub marker_failures: u32,
+    /// The stored log's first row after the last truncation (`truncate`).
+    pub truncated_to: u64,
+    /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
+    /// command it could not decode.
+    pub received: BTreeMap<String, u32>,
+    pub alarms: Vec<String>,
+    appended: Vec<(u64, u64)>,
+}
+
+pub struct Core<F: Family> {
+    pub m: raft::Member<F::C>,
+    pub join: Join,
+    applied: Index,
+    waiters: HashMap<Ticket, Vec<oneshot::Sender<Outcome<F>>>>,
+    /// The request id, admission time, and command of each ticket this boot admitted, for kills, latency, and the
+    /// id-block lease loop's re-send.
+    admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
+    reads: HashMap<ReadId, (Value, oneshot::Sender<ReadResult>)>,
+    #[cfg(feature = "test-faults")]
+    pub kills: HashMap<RequestId, (Kill, u64)>,
+    /// A ticket refused `NeedIdBlock` and re-sent after the lease loop recorded a block: old ticket to new.
+    pub reissued: HashMap<Ticket, Ticket>,
+    /// Waiters for `Resolution::IdBlock`.
+    blocks: Vec<(raft::IdBlock, oneshot::Sender<Result<Index, NotLeader>>)>,
+    /// Waiters for `Resolution::Recorded`, by request id.
+    recorded: Vec<(RequestId, oneshot::Sender<Result<Index, NotLeader>>)>,
+    /// Test fault for BF-19: the request ids whose `Committed` marker puts the leader skips, as when it dies after
+    /// `Acked` and before them.
+    #[cfg(feature = "test-faults")]
+    pub no_marker: std::collections::HashSet<RequestId>,
+    /// Dependency reads to hold back, for BF-15's queued commands: until then.
+    #[cfg(feature = "test-faults")]
+    pub hold_deps_until: u64,
+}
+
+/// A storage confirm begun: its id, its start when the leader times it, and the input's `SelfAck`.
+type Unconfirmed = (raft::ConfirmId, Option<u64>, Option<raft::SelfAck>);
+
+pub struct Host<F: Family> {
+    pub state: Rc<State>,
+    pub env: Env,
+    pub core: RefCell<Option<Core<F>>>,
+    pub restore_error: RefCell<Option<String>>,
+    pub dying: Cell<bool>,
+    ticking: Cell<bool>,
+    active_until: Cell<u64>,
+    alarm_at: Cell<u64>,
+    served_at: Cell<u64>,
+    #[cfg(feature = "test-faults")]
+    down_until: Cell<u64>,
+    /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
+    /// transactions follow input order even when an input with early messages waits a turn.
+    queue: RefCell<Vec<Stmt>>,
+    /// A transaction is scheduled for the next macrotask (`defer_flush`).
+    flush_due: Cell<bool>,
+    /// Outputs of inputs whose writes wait for the deferred transaction, and responses waiting for it.
+    held: RefCell<Vec<Out<F::C>>>,
+    flush_waiters: RefCell<Vec<oneshot::Sender<()>>>,
+    /// Confirms begun and `SelfAck`s waiting for the writes of the next `flush` to be durable.
+    unconfirmed: RefCell<Vec<Unconfirmed>>,
+    pub stats: RefCell<Stats>,
+    /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
+    blocked: RefCell<Vec<(Ticket, RequestId, F::C)>>,
+    leasing: Cell<bool>,
+    /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
+    #[cfg(feature = "test-faults")]
+    pub abandon: RefCell<BTreeSet<u64>>,
+}
+
+pub fn err(m: impl Into<String>) -> Error {
+    Error::RustError(m.into())
+}
+
+pub async fn within<T>(d: Duration, f: impl Future<Output = T>) -> Option<T> {
+    match select(Box::pin(f), Box::pin(Delay::from(d))).await {
+        Either::Left((v, _)) => Some(v),
+        Either::Right(_) => None,
+    }
+}
+
+fn seed() -> u64 {
+    let a = (js_sys::Math::random() * 4_294_967_296.0) as u64;
+    let b = (js_sys::Math::random() * 4_294_967_296.0) as u64;
+    (a << 32) ^ b ^ now_ms()
+}
+
+/// The release this build is. Milestone 1 has no release registry, so every build names the same one; `Unsupported`
+/// carries it.
+pub const RELEASE: ReleaseTag = ReleaseTag { id: ReleaseId([1; 32]), seq: 1 };
+
+pub fn member_config<F: Family>(site: &SiteEnv, join: &Join) -> MemberConfig {
+    MemberConfig {
+        chain: join.chain,
+        me: join.me.site,
+        record: join.record.clone(),
+        regions: site.sites.0.iter().map(|s| (s.id, s.region)).collect(),
+        release: RELEASE,
+        reads: F::reads(),
+    }
+}
+
+// ---- storage ----
+
+pub fn int(v: &SqlStorageValue) -> Result<i64> {
+    match v {
+        SqlStorageValue::Integer(i) => Ok(*i),
+        SqlStorageValue::Float(f) => Ok(*f as i64),
+        other => Err(err(format!("expected an integer, got {other:?}"))),
+    }
+}
+
+pub fn blob(v: &SqlStorageValue) -> Result<&[u8]> {
+    match v {
+        SqlStorageValue::Blob(b) => Ok(b),
+        other => Err(err(format!("expected a blob, got {other:?}"))),
+    }
+}
+
+pub fn text(v: &SqlStorageValue) -> Result<&str> {
+    match v {
+        SqlStorageValue::String(s) => Ok(s),
+        other => Err(err(format!("expected text, got {other:?}"))),
+    }
+}
+
+pub fn rows(sql: &SqlStorage, q: &str, args: Vec<SqlStorageValue>) -> Result<Vec<Vec<SqlStorageValue>>> {
+    sql.exec(q, args)?.raw().collect()
+}
+
+pub fn i(v: u64) -> SqlStorageValue {
+    SqlStorageValue::Integer(v as i64)
+}
+
+/// Collects one input's writes as SQL statements; `commit` runs them in one transaction.
+struct SqlStore<'a, F: Family> {
+    m: &'a raft::Member<F::C>,
+    fold: &'a F::Fold,
+    applied: Index,
+    stmts: Vec<Stmt>,
+    /// Archives the applied entries committed (`Family::archived`), for `truncate`.
+    archived: Vec<(String, u64)>,
+}
+
+impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
+    fn write(&mut self, w: &Write<F::Ev>) {
+        match w {
+            Write::State(s) => self
+                .stmts
+                .push(("INSERT OR REPLACE INTO raft_state (id, row) VALUES (1, ?)", vec![codec::to_bytes(s).into()])),
+            Write::Append(e) => self.stmts.push((
+                "INSERT OR REPLACE INTO log (idx, term, digest, row) VALUES (?, ?, ?, ?)",
+                vec![i(e.index.0), i(e.term.0), raft::digest(e).0.to_vec().into(), codec::to_bytes(e).into()],
+            )),
+            Write::Truncate(x) => self.stmts.push(("DELETE FROM log WHERE idx >= ?", vec![i(x.0)])),
+            Write::Apply(to) => {
+                let mut applied = Vec::new();
+                let mut last_at = None;
+                for idx in self.applied.0 + 1..=to.0 {
+                    // Committed entries are never truncated, and `compact` keeps every entry the input applied, so the
+                    // member's log after the input still holds them.
+                    let e = self.m.entry_at(Index(idx)).expect("an entry this input applied is in memory");
+                    // Rows more than REQUEST_RETENTION older than this entry go first, as `GroupFold::apply` drops
+                    // them before it applies the entry.
+                    if last_at != Some(e.at) {
+                        let cut = e.at.0.saturating_sub(self.m.group_fold().retention().as_millis() as u64);
+                        self.stmts.push(("DELETE FROM request WHERE at < ?", vec![i(cut)]));
+                        last_at = Some(e.at);
+                    }
+                    if let EntryBody::Config(c) = &e.body {
+                        self.stmts.push((
+                            "INSERT OR REPLACE INTO group_config (id, idx, row) VALUES (1, ?, ?)",
+                            vec![i(idx), codec::to_bytes(c).into()],
+                        ));
+                    }
+                    if let EntryBody::IdBlock(b) = &e.body {
+                        self.stmts.push((
+                            "INSERT OR REPLACE INTO id_block (id, row) VALUES (1, ?)",
+                            vec![codec::to_bytes(b).into()],
+                        ));
+                    }
+                    self.archived.extend(F::archived(e));
+                    applied.push(e);
+                    let EntryBody::Events(evs) = &e.body else { continue };
+                    for (rid, r) in &e.requests {
+                        let b = codec::to_bytes(&evs[r.start as usize..r.end as usize]);
+                        let hex = rid.to_string();
+                        // A request id applied at a second index is the double apply BF-12 counts.
+                        #[cfg(feature = "test-faults")]
+                        self.stmts.push((
+                            "INSERT INTO dup (rid, idx) SELECT ?, ? WHERE EXISTS (SELECT 1 FROM request WHERE rid = ?)",
+                            vec![hex.clone().into(), i(idx), hex.clone().into()],
+                        ));
+                        self.stmts.push((
+                            "INSERT INTO request (rid, idx, at, events) VALUES (?, ?, ?, ?) ON CONFLICT (rid) DO NOTHING",
+                            vec![hex.into(), i(idx), i(e.at.0), b.into()],
+                        ));
+                    }
+                }
+                if !applied.is_empty() {
+                    F::store_fold(self.fold, &applied, &mut self.stmts);
+                }
+                self.applied = self.applied.max(*to);
+            }
+        }
+    }
+}
+
+/// Runs the statements in one `storage.transactionSync`, which workers-rs 0.8.7 does not bind.
+fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result<(), String> {
+    if stmts.is_empty() {
+        return Ok(());
+    }
+    let sql = storage.sql();
+    let raw: &JsValue = storage.as_raw().as_ref();
+    let f = js_sys::Reflect::get(raw, &JsValue::from_str("transactionSync"))
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .ok_or("no transactionSync")?;
+    let cb = Closure::once_into_js(move || -> std::result::Result<JsValue, JsValue> {
+        for (q, a) in stmts {
+            sql.exec(q, a).map_err(|e| JsValue::from_str(&e.to_string()))?;
+        }
+        Ok(JsValue::UNDEFINED)
+    });
+    f.call1(raw, &cb).map(|_| ()).map_err(|e| format!("{e:?}"))
+}
+
+/// Reads the member's rows back into the crate's `Stored`: the state row, the log above a base `LOG_WINDOW` below
+/// `applied`, checked against its digests, and the `GroupFold` loaded from `reg`, `request`, and `group_config` with
+/// `GroupFold::from_parts`. Entries at or below the base stay on storage; the member asks for them with
+/// `Out::catchup`. While the log is short, the loaded fold is also compared with the log replayed through `applied`.
+fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result<Stored<F::Fold>> {
+    let state = match rows(sql, "SELECT row FROM raft_state WHERE id = 1", vec![])?.first() {
+        Some(r) => {
+            Some(codec::from_bytes::<raft::MemberState>(blob(&r[0])?).map_err(|e| err(format!("raft_state: {e}")))?)
+        }
+        None => None,
+    };
+    let applied = state.as_ref().map_or(Index(0), |s| s.applied);
+    let decode = |r: &[SqlStorageValue]| -> Result<Entry<F>> {
+        let idx = int(&r[0])? as u64;
+        let e: Entry<F> = codec::from_bytes(blob(&r[2])?).map_err(|e| err(format!("log row {idx}: {e}")))?;
+        if e.index.0 != idx {
+            return Err(err(format!("log row {idx} holds index {:?}", e.index)));
+        }
+        if raft::digest(&e).0[..] != *blob(&r[1])? {
+            return Err(err(format!("log row {idx} does not match its stored digest")));
+        }
+        Ok(e)
+    };
+    // A truncated log (`Host::truncate`) starts at its base row; restore starts there at the earliest.
+    let first_row = rows(sql, "SELECT min(idx) FROM log", vec![])?.first().and_then(|r| int(&r[0]).ok()).unwrap_or(1);
+    let truncated = first_row > 1;
+    let base_index = applied.0.saturating_sub(raft::LOG_WINDOW).max(if truncated { first_row as u64 } else { 0 });
+    let mut base = raft::LogBase::default();
+    if base_index > 0 {
+        let r = rows(sql, "SELECT idx, digest, row FROM log WHERE idx = ?", vec![i(base_index)])?;
+        let e = decode(r.first().ok_or_else(|| err(format!("no log row at the base {base_index}")))?)?;
+        base = raft::LogBase { index: e.index, term: e.term, digest: raft::digest(&e) };
+    }
+    let mut log = Vec::new();
+    for r in rows(sql, "SELECT idx, digest, row FROM log WHERE idx > ? ORDER BY idx", vec![i(base_index)])? {
+        let e = decode(&r)?;
+        let prev = log.last().map_or(base.digest, |p: &Entry<F>| raft::digest(p));
+        if e.index.0 != base_index + log.len() as u64 + 1 || e.prev != prev {
+            return Err(err(format!("log row {:?} does not chain after {} rows", e.index, log.len())));
+        }
+        log.push(e);
+    }
+    if applied.0 > base_index + log.len() as u64 {
+        return Err(err(format!("applied {applied:?} past the log's {} rows", base_index + log.len() as u64)));
+    }
+    let folded = F::load_fold(sql, join)?;
+    let id_block = match rows(sql, "SELECT row FROM id_block WHERE id = 1", vec![])?.first() {
+        Some(r) => Some(codec::from_bytes(blob(&r[0])?).map_err(|e| err(format!("id_block: {e}")))?),
+        None => None,
+    };
+    let config = match rows(sql, "SELECT idx, row FROM group_config WHERE id = 1", vec![])?.first() {
+        Some(r) => Some((
+            Index(int(&r[0])? as u64),
+            codec::from_bytes(blob(&r[1])?).map_err(|e| err(format!("group_config: {e}")))?,
+        )),
+        None => None,
+    };
+    let mut requests = Vec::new();
+    for r in rows(sql, "SELECT rid, idx, at, events FROM request", vec![])? {
+        let rid = rid_from(text(&r[0])?)?;
+        let events = codec::from_bytes(blob(&r[3])?).map_err(|e| err(format!("request row {rid}: {e}")))?;
+        let row = raft::RequestRow { index: Index(int(&r[1])? as u64), at: Timestamp(int(&r[2])? as u64), events };
+        requests.push((rid, row));
+    }
+    let mut fold = GroupFold::from_parts(folded, applied, config, id_block, requests);
+    fold.set_retention(retention);
+    if applied.0 <= RESTORE_CHECK_MAX && !truncated {
+        let mut replayed = GroupFold::new(F::new_fold(join));
+        replayed.set_retention(retention);
+        for r in rows(sql, "SELECT idx, digest, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])? {
+            replayed.apply(&decode(&r)?);
+        }
+        if replayed.fold != fold.fold {
+            return Err(err(format!("the fold table differs from the log applied through {applied:?}")));
+        }
+        if replayed.config() != fold.config() || replayed.id_block() != fold.id_block() {
+            return Err(err(format!("group_config differs from the log applied through {applied:?}")));
+        }
+        if !replayed.requests().eq(fold.requests()) {
+            return Err(err(format!("request rows differ from the log applied through {applied:?}")));
+        }
+    }
+    Ok(Stored { state, base, log, fold })
+}
+
+/// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`. `None` if a row is missing,
+/// as it is while its transaction waits.
+fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Option<Vec<Entry<F>>> {
+    let lo = from.0.max(1);
+    let r =
+        rows(sql, "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx", vec![i(lo), i(through.0)]).ok()?;
+    let entries: Vec<Entry<F>> = r.iter().filter_map(|r| codec::from_bytes(blob(&r[0]).ok()?).ok()).collect();
+    (entries.len() as u64 == through.0 + 1 - lo).then_some(entries)
+}
+
+#[cfg(feature = "test-faults")]
+fn outcome_index<F: Family>(o: &Outcome<F>) -> Index {
+    match o {
+        Ok(a) => a.index,
+        Err(CommitError::Refused { index, .. }) => *index,
+        Err(CommitError::NotLeader(_)) => Index(0),
+    }
+}
+
+impl<F: Family> Host<F> {
+    pub fn new(state: Rc<State>, env: Env) -> Rc<Host<F>> {
+        let sql = state.storage().sql();
+        for q in SCHEMA {
+            sql.exec(q, None).expect("member schema");
+        }
+        let h = Rc::new(Host {
+            state,
+            env,
+            core: RefCell::new(None),
+            restore_error: RefCell::new(None),
+            dying: Cell::new(false),
+            ticking: Cell::new(false),
+            active_until: Cell::new(0),
+            alarm_at: Cell::new(0),
+            served_at: Cell::new(0),
+            #[cfg(feature = "test-faults")]
+            down_until: Cell::new(0),
+            queue: RefCell::new(Vec::new()),
+            flush_due: Cell::new(false),
+            held: RefCell::new(Vec::new()),
+            flush_waiters: RefCell::new(Vec::new()),
+            unconfirmed: RefCell::new(Vec::new()),
+            stats: RefCell::new(Stats::default()),
+            blocked: RefCell::new(Vec::new()),
+            leasing: Cell::new(false),
+            #[cfg(feature = "test-faults")]
+            abandon: RefCell::new(BTreeSet::new()),
+        });
+        #[cfg(feature = "test-faults")]
+        for q in crate::faults::SCHEMA {
+            h.state.storage().sql().exec(q, None).expect("fault schema");
+        }
+        #[cfg(feature = "test-faults")]
+        if let Ok(r) = rows(&h.state.storage().sql(), "SELECT v FROM me WHERE k = 'down_until'", vec![])
+            && let Some(v) = r.first().and_then(|r| text(&r[0]).ok()).and_then(|v| v.parse().ok())
+        {
+            h.down_until.set(v);
+        }
+        if let Err(e) = h.restore() {
+            console_error!("member restore failed: {e}");
+            *h.restore_error.borrow_mut() = Some(e.to_string());
+        }
+        h
+    }
+
+    /// The ticket a re-sent `NeedIdBlock` command now waits on.
+    pub fn current(&self, t: Ticket) -> Ticket {
+        let core = self.core.borrow();
+        let mut t = t;
+        if let Some(c) = core.as_ref() {
+            while let Some(n) = c.reissued.get(&t) {
+                t = *n;
+            }
+        }
+        t
+    }
+
+    fn stored_join(&self) -> Result<Option<Join>> {
+        let rows = rows(&self.state.storage().sql(), "SELECT v FROM me WHERE k = 'join'", vec![])?;
+        match rows.first() {
+            Some(r) => Ok(Some(serde_json::from_str(text(&r[0])?)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Builds the core from storage, once the member knows who it is (`/join` stored it).
+    pub fn restore(self: &Rc<Self>) -> Result<()> {
+        let Some(join) = self.stored_join()? else { return Ok(()) };
+        let site = SiteEnv::read(&self.env)?;
+        let retention = request_retention(&self.env);
+        let stored = load::<F>(&self.state.storage().sql(), &join, retention)?;
+        let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
+        let (mut m, ready) =
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), &stored, Timestamp(now_ms()), seed())
+                .map_err(|e| err(e.to_string()))?;
+        m.set_request_retention(retention);
+        m.set_log_window(raft::LOG_WINDOW);
+        let mut store =
+            SqlStore::<F> { m: &m, fold: &m.group_fold().fold, applied, stmts: Vec::new(), archived: Vec::new() };
+        let ((), _out) = ready.persist(&mut store);
+        let (applied, stmts) = (store.applied, store.stmts);
+        self.queue.borrow_mut().extend(stmts);
+        self.flush().map_err(err)?;
+        *self.core.borrow_mut() = Some(Core {
+            m,
+            join,
+            applied,
+            waiters: HashMap::new(),
+            admitted: HashMap::new(),
+            reads: HashMap::new(),
+            #[cfg(feature = "test-faults")]
+            kills: HashMap::new(),
+            reissued: HashMap::new(),
+            blocks: Vec::new(),
+            recorded: Vec::new(),
+            #[cfg(feature = "test-faults")]
+            no_marker: std::collections::HashSet::new(),
+            #[cfg(feature = "test-faults")]
+            hold_deps_until: 0,
+        });
+        self.stats.borrow_mut().restores += 1;
+        Ok(())
+    }
+
+    /// Inside an injected `down_ms` window after a kill: the object answers nothing but `/status`.
+    #[cfg(feature = "test-faults")]
+    pub fn down(&self) -> bool {
+        let until = self.down_until.get();
+        until != 0 && now_ms() < until
+    }
+
+    pub fn joined(&self) -> bool {
+        self.core.borrow().is_some()
+    }
+
+    fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
+        let mut s = self.stats.borrow_mut();
+        let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
+        for w in writes {
+            match w {
+                Write::Append(e) if leading && e.term == term && matches!(e.body, EntryBody::Events(_)) => {
+                    s.entries += 1;
+                    s.commands += e.requests.len() as u32;
+                    s.appended.push((e.index.0, t));
+                }
+                Write::Apply(to) => {
+                    let done: Vec<u64> = s.appended.iter().filter(|(x, _)| *x <= to.0).map(|(_, at)| *at).collect();
+                    s.appended.retain(|(x, _)| *x > to.0);
+                    for at in done {
+                        if s.round_ms.len() < SAMPLES_MAX {
+                            s.round_ms.push(t.saturating_sub(at) as u32);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One input to the member: run it, make its writes durable, and return its reply and outputs, not yet released
+    /// (`dispatch` releases them). The kill faults fire here.
+    pub fn step<R>(
+        self: &Rc<Self>,
+        f: impl FnOnce(&mut raft::Member<F::C>, Timestamp) -> Ready<F::C, R>,
+    ) -> Result<(R, Out<F::C>)> {
+        if self.dying.get() {
+            return Err(err("member is resetting"));
+        }
+        self.kick();
+        let mut guard = self.core.try_borrow_mut().map_err(|_| err("member core busy"))?;
+        let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
+        let t = now_ms();
+        let ready = f(&mut core.m, Timestamp(t));
+        self.note(core, &ready.writes, t);
+        #[cfg(feature = "test-faults")]
+        let appended = self.appended_kill(core, &ready.writes);
+        let wrote = !ready.writes.is_empty();
+        let mut store = SqlStore::<F> {
+            m: &core.m,
+            fold: &core.m.group_fold().fold,
+            applied: core.applied,
+            stmts: vec![],
+            archived: vec![],
+        };
+        let (r, mut out) = ready.persist(&mut store);
+        let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        #[cfg(feature = "test-faults")]
+        if let Some(fl) = Self::fault_for(core, appended, &out) {
+            core.kills.remove(&fl.rid);
+            drop(guard);
+            return Err(self.fire(fl, out, stmts));
+        }
+        core.applied = applied;
+        let early = std::mem::take(&mut out.early);
+        if wrote {
+            let id = core.m.confirm_begin(Timestamp(now_ms()));
+            let timed = core.m.role() == Role::Leader
+                && early
+                    .iter()
+                    .chain(&out.messages)
+                    .any(|e| matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()));
+            self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
+        }
+        drop(guard);
+        self.queue.borrow_mut().extend(stmts);
+        let defer = !early.is_empty() && wrote;
+        // The leader's AppendEntries leave now. Each `send` issues its fetch in a microtask, before the deferred
+        // transaction's macrotask, so the output gate does not hold the round behind the leader's own write (Raft
+        // dissertation 10.2.1, and Milestone 0's prototype). The leader counts its own copy only once its `SelfAck`
+        // comes back after `sync()`.
+        for e in early {
+            self.send(e);
+        }
+        if defer || self.flush_due.get() {
+            self.defer_flush();
+        } else if let Err(e) = self.flush() {
+            self.fail();
+            return Err(err(format!("storage write failed: {e}")));
+        }
+        for (key, to) in archived {
+            let h = self.clone();
+            spawn_local(async move { h.truncate(&key, to).await });
+        }
+        Ok((r, out))
+    }
+
+    /// After an `Archived` through `to` applied: once its key is in two buckets, the stored log keeps no entry below
+    /// `to` (`design/DESIGN.md`, Shape, "Packs": "followers truncate only through a committed range whose key they
+    /// can HEAD in two buckets"). The row at `to` stays as the stored log's base: its term and digest anchor the next
+    /// entry, and restore starts above it. Entries through `to` are archived either way (`RepoFold::first_index`).
+    /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built.
+    async fn truncate(&self, key: &str, to: u64) {
+        self.settled().await;
+        let Ok(site) = SiteEnv::read(&self.env) else { return };
+        let mut held = 0;
+        for s in &site.sites.0 {
+            if let Ok(b) = self.env.bucket(&format!("BUCKET_{}", s.id.0))
+                && let Ok(Some(_)) = b.head(key).await
+            {
+                held += 1;
+            }
+        }
+        if held < 2 {
+            console_error!("archive {key} is in {held} buckets; the log is not truncated");
+            self.stats.borrow_mut().alarms.push(format!("{} archive {key} in {held} buckets", now_ms()));
+            return;
+        }
+        match self.state.storage().sql().exec("DELETE FROM log WHERE idx < ?", vec![i(to)]) {
+            Ok(_) => self.stats.borrow_mut().truncated_to = to,
+            Err(e) => console_error!("truncate below {to}: {e}"),
+        }
+    }
+
+    /// A command marked `before_commit*` whose entry this input appends.
+    #[cfg(feature = "test-faults")]
+    fn appended_kill(&self, core: &Core<F>, writes: &[Write<F::Ev>]) -> Option<(RequestId, Kill, u64, Entry<F>)> {
+        writes.iter().find_map(|w| match w {
+            Write::Append(e) => e.requests.iter().find_map(|(rid, _)| match core.kills.get(rid) {
+                Some((k, down)) if k.at_append() => Some((*rid, *k, *down, e.clone())),
+                _ => None,
+            }),
+            _ => None,
+        })
+    }
+
+    /// The kill this input reaches: a marked command whose entry it appends, or whose ticket it resolves.
+    #[cfg(feature = "test-faults")]
+    fn fault_for(core: &Core<F>, appended: Option<(RequestId, Kill, u64, Entry<F>)>, out: &Out<F::C>) -> Option<Fault> {
+        if let Some((rid, kill, down_ms, e)) = appended {
+            // The crate names the admitted commands this entry's `decide` refused.
+            let carried: BTreeSet<RequestId> = e.requests.iter().map(|(r, _)| *r).collect();
+            let refused: Vec<String> =
+                out.refused.iter().filter(|(i, _)| *i == e.index).map(|(_, r)| r.to_string()).collect();
+            Some(Fault {
+                rid,
+                kill,
+                down_ms,
+                index: e.index,
+                term: e.term,
+                result: json!({
+                    "requests": carried.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
+                    "refusedInEntry": refused,
+                    "digest": digest_hex(&raft::digest(&e)),
+                }),
+            })
+        } else {
+            out.resolutions.iter().find_map(|r| match r {
+                Resolution::Ticket { ticket, result } if !matches!(result, Err(CommitError::NotLeader(_))) => {
+                    let (rid, _, _) = core.admitted.get(ticket)?;
+                    match core.kills.get(rid) {
+                        Some((k @ (Kill::AfterQuorum | Kill::AfterQuorumUnsynced), down)) => Some(Fault {
+                            rid: *rid,
+                            kill: *k,
+                            down_ms: *down,
+                            index: outcome_index::<F>(result),
+                            term: core.m.term(),
+                            result: outcome_json::<F>(result),
+                        }),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+        }
+    }
+
+    /// Fires a kill: make the writes it keeps durable, release what it lets leave, record it, and reset the object.
+    #[cfg(feature = "test-faults")]
+    fn fire(self: &Rc<Self>, fl: Fault, mut out: Out<F::C>, stmts: Vec<Stmt>) -> Error {
+        // Earlier inputs' queued writes run first, as they would have; this input's only for the kills that keep
+        // them.
+        if fl.kill.keeps_writes() {
+            self.queue.borrow_mut().extend(stmts);
+        }
+        if let Err(e) = self.flush() {
+            self.fail();
+            return err(format!("storage write failed: {e}"));
+        }
+        let delay = match fl.kill {
+            Kill::BeforeCommitSent => {
+                // The entry and its messages leave once durable; the leader dies before it hears an answer.
+                self.dying.set(true);
+                self.release(out, None);
+                50
+            }
+            Kill::BeforeCommitEarly => {
+                // Only the AppendEntries leave, before the write, which is never made.
+                self.dying.set(true);
+                for e in std::mem::take(&mut out.early) {
+                    self.send(e);
+                }
+                50
+            }
+            _ => 0,
+        };
+        self.die(Some(fl), Duration::from_millis(delay));
+        err("killed by an injected fault")
+    }
+
+    /// Runs the queued transaction one macrotask from now. Until it has run, every output is held (`dispatch`), and
+    /// every response waits for it (`settled`).
+    fn defer_flush(self: &Rc<Self>) {
+        if self.flush_due.replace(true) {
+            return;
+        }
+        let h = self.clone();
+        spawn_local(async move {
+            Delay::from(Duration::ZERO).await;
+            if h.dying.get() {
+                return;
+            }
+            if let Err(e) = h.flush() {
+                console_error!("deferred storage write failed: {e}");
+                h.fail();
+            }
+        });
+    }
+
+    /// Resolves once no transaction is deferred, so a response sent after it is held by the output gate until the
+    /// writes it may depend on are durable.
+    pub async fn settled(&self) {
+        if !self.flush_due.get() {
+            return;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.flush_waiters.borrow_mut().push(tx);
+        let _ = rx.await;
+    }
+
+    /// Runs every queued statement in one transaction, releases the outputs that waited for it, and reports the
+    /// storage confirm, and each `SelfAck`, once `sync()` says the writes are durable. The Durable Object confirms
+    /// writes in order, so one `sync()` covers every input queued so far.
+    fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
+        let stmts = std::mem::take(&mut *self.queue.borrow_mut());
+        commit_tx(&self.state.storage(), stmts)?;
+        self.flush_due.set(false);
+        let held = std::mem::take(&mut *self.held.borrow_mut());
+        for out in held {
+            self.release(out, None);
+        }
+        for tx in std::mem::take(&mut *self.flush_waiters.borrow_mut()) {
+            let _ = tx.send(());
+        }
+        let pending = std::mem::take(&mut *self.unconfirmed.borrow_mut());
+        if !pending.is_empty() {
+            let h = self.clone();
+            spawn_local(async move {
+                if h.state.storage().sync().await.is_err() || h.dying.get() {
+                    return;
+                }
+                for (id, timed, ack) in pending {
+                    if let Some(t0) = timed {
+                        let mut s = h.stats.borrow_mut();
+                        if s.confirm_ms.len() < SAMPLES_MAX {
+                            s.confirm_ms.push(now_ms().saturating_sub(t0) as u32);
+                        }
+                    }
+                    let _ = h.input(|m, t| m.confirm_end(t, id));
+                    if let Some(ack) = ack {
+                        let _ = h.input(|m, t| m.self_ack(t, ack));
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// Releases what a persisted input produced: ticket and read resolutions to their waiters, messages to peers.
+    /// Envelopes addressed to `reply_to` are returned instead of sent, for the response to the call that carried
+    /// the input.
+    ///
+    /// While a transaction is deferred, everything is held for it but the envelopes for `reply_to`, which go into a
+    /// response that waits for it (`settled`).
+    pub fn dispatch(self: &Rc<Self>, mut out: Out<F::C>, reply_to: Option<SiteId>) -> Vec<Envelope<F>> {
+        if !self.flush_due.get() {
+            return self.release(out, reply_to);
+        }
+        let (back, rest): (Vec<Envelope<F>>, Vec<Envelope<F>>) =
+            std::mem::take(&mut out.messages).into_iter().partition(|e| Some(e.to) == reply_to);
+        out.messages = rest;
+        self.held.borrow_mut().push(out);
+        back
+    }
+
+    fn release(self: &Rc<Self>, out: Out<F::C>, reply_to: Option<SiteId>) -> Vec<Envelope<F>> {
+        let mut back = Vec::new();
+        let mut send = Vec::new();
+        let mut need_block = false;
+        let mut marks = Vec::new();
+        let deps = out.deps;
+        let catchup = out.catchup;
+        {
+            let Ok(mut guard) = self.core.try_borrow_mut() else { return back };
+            let Some(core) = guard.as_mut() else { return back };
+            let now = now_ms();
+            for r in out.resolutions {
+                match r {
+                    Resolution::Ticket { ticket, result } => {
+                        let admitted = core.admitted.remove(&ticket);
+                        #[cfg(feature = "test-faults")]
+                        if let Some((rid, _, _)) = &admitted {
+                            // A kill rides on one admission only: a ticket that ended `NotLeader` drops it.
+                            core.kills.remove(rid);
+                        }
+                        // A command refused only for want of an id block is not answered: the lease loop records a
+                        // block and re-sends it under the same request id, which a refusal left no row for.
+                        if let (Err(CommitError::Refused { err: e, .. }), Some((rid, _, Some(cmd)))) =
+                            (&result, &admitted)
+                            && F::needs_block(e)
+                        {
+                            self.blocked.borrow_mut().push((ticket, *rid, cmd.clone()));
+                            need_block = true;
+                            continue;
+                        }
+                        if let Some((_, at, _)) = admitted
+                            && !matches!(result, Err(CommitError::NotLeader(_)))
+                        {
+                            let mut s = self.stats.borrow_mut();
+                            if s.commit_ms.len() < SAMPLES_MAX {
+                                s.commit_ms.push(now.saturating_sub(at) as u32);
+                            }
+                        }
+                        // The commit's work outside the log, on the leader that decided it: a repository's pack
+                        // markers. Marker puts are create-only, so a re-sent command marks nothing twice.
+                        if let (Ok(a), Some((rid, _, Some(cmd)))) = (&result, &admitted) {
+                            #[cfg(feature = "test-faults")]
+                            let skip = core.no_marker.remove(rid);
+                            #[cfg(not(feature = "test-faults"))]
+                            let skip = {
+                                let _ = rid;
+                                false
+                            };
+                            if !skip {
+                                marks.push((cmd.clone(), a.clone()));
+                            }
+                        }
+                        for tx in core.waiters.remove(&ticket).unwrap_or_default() {
+                            let _ = tx.send(result.clone());
+                        }
+                    }
+                    Resolution::Read { id, result } => {
+                        if let Some((q, tx)) = core.reads.remove(&id) {
+                            // `fresh` only before the member's next input: this runs right after the input. A `dep`
+                            // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
+                            let v = result.and_then(|g| {
+                                core.m.fresh(&g).map(|f| {
+                                    let body = if q.get("dep").is_some() {
+                                        json!(hex(&F::fold_bytes(f.fold())))
+                                    } else if let Some(rid) = q.get("request").and_then(Value::as_str) {
+                                        // The sweeper's `RequestSource`: the row at the same applied index.
+                                        match rid.parse() {
+                                            Ok(rid) => core.m.group_fold().request(rid).map_or(Value::Null, |row| {
+                                                json!({ "index": row.index.0, "packs": F::row_packs(&row.events) })
+                                            }),
+                                            Err(_) => json!({ "badRequestId": rid }),
+                                        }
+                                    } else {
+                                        F::read_json(f.fold(), &q)
+                                    };
+                                    (body, f.index())
+                                })
+                            });
+                            let _ = tx.send(v);
+                        }
+                    }
+                    Resolution::IdBlock { block, result } => {
+                        let (mine, rest): (Vec<_>, Vec<_>) =
+                            std::mem::take(&mut core.blocks).into_iter().partition(|(b, _)| *b == block);
+                        core.blocks = rest;
+                        for (_, tx) in mine {
+                            let _ = tx.send(result.clone());
+                        }
+                    }
+                    Resolution::Recorded { id, result } => {
+                        let (mine, rest): (Vec<_>, Vec<_>) =
+                            std::mem::take(&mut core.recorded).into_iter().partition(|(r, _)| *r == id);
+                        core.recorded = rest;
+                        for (_, tx) in mine {
+                            let _ = tx.send(result.clone());
+                        }
+                    }
+                    Resolution::Campaign(_) => {}
+                }
+            }
+            if !out.alarms.is_empty() {
+                let mut s = self.stats.borrow_mut();
+                for a in out.alarms {
+                    console_log!("member alarm: {a:?}");
+                    if s.alarms.len() < 50 {
+                        s.alarms.push(format!("{now} {a:?}"));
+                    }
+                }
+            }
+            for e in out.early.into_iter().chain(out.messages) {
+                if Some(e.to) == reply_to { back.push(e) } else { send.push(e) }
+            }
+        }
+        for e in send {
+            self.send(e);
+        }
+        // A follower behind the window: its entries come from the `log` table. Every append this member stored is
+        // durable by now (`release` runs after the transaction), so a missing row means the request is stale.
+        for c in catchup {
+            if let Some(entries) = stored_range::<F>(&self.state.storage().sql(), c.from, c.through) {
+                self.stats.borrow_mut().catchups += 1;
+                let _ = self.input(|m, t| m.catchup(t, c, entries));
+            }
+        }
+        for want in deps {
+            self.read_deps(want);
+        }
+        if !marks.is_empty()
+            && let Some(chain) = self.core.borrow().as_ref().map(|c| c.join.chain)
+        {
+            for (cmd, a) in marks {
+                let env = self.env.clone();
+                let h = self.clone();
+                spawn_local(async move {
+                    let failed = F::after_ok(env, chain, cmd, a).await;
+                    h.stats.borrow_mut().marker_failures += failed as u32;
+                });
+            }
+        }
+        if need_block {
+            self.lease();
+        }
+        back
+    }
+
+    /// Steps and releases, for inputs whose reply needs nothing registered first.
+    pub fn input<R>(
+        self: &Rc<Self>,
+        f: impl FnOnce(&mut raft::Member<F::C>, Timestamp) -> Ready<F::C, R>,
+    ) -> Result<R> {
+        let (r, out) = self.step(f)?;
+        self.dispatch(out, None);
+        Ok(r)
+    }
+
+    fn peer_name(&self, to: SiteId) -> Option<String> {
+        let core = self.core.borrow();
+        let join = &core.as_ref()?.join;
+        // The latest config in the log names the members, as it counts their acks; until the group has one, the
+        // bootstrap names from the record.
+        if core.as_ref()?.m.committed_config().is_some() {
+            let c = core.as_ref()?.m.latest_config();
+            let names = match c {
+                raft::GroupConfig::Normal(p) | raft::GroupConfig::Degraded { placement: p, .. } => vec![p],
+                raft::GroupConfig::Joint { old, new } => vec![new, old],
+            };
+            for p in names {
+                if let Some(m) = p.voters().iter().chain(p.learners()).find(|m| m.site == to) {
+                    return Some(m.do_name.to_string());
+                }
+            }
+        }
+        join.record.bootstrap_members(join.chain).into_iter().find(|m| m.site == to).map(|m| m.do_name.into())
+    }
+
+    fn send(self: &Rc<Self>, e: Envelope<F>) {
+        // An abandoned transfer's `TimeoutNow` never reaches the target, so the leader abandons it after the LEASE.
+        #[cfg(feature = "test-faults")]
+        if let raft::Message::TimeoutNow { transfer, .. } = &e.msg
+            && self.abandon.borrow().contains(&transfer.0)
+        {
+            crate::faults::count("abandoned_timeout_now");
+            return;
+        }
+        let h = self.clone();
+        spawn_local(async move {
+            let t0 = now_ms();
+            #[cfg(feature = "test-faults")]
+            if crate::faults::site_down(&h.env).await {
+                crate::faults::count(&format!("site_fault:out>{}", e.to.0));
+                if let Some(f) = e.failure(false) {
+                    let _ = h.input(|m, t| m.call_failed(t, f));
+                }
+                return;
+            }
+            #[cfg(feature = "test-faults")]
+            if crate::faults::fail_call(&h.env, e.to.0) {
+                if let Some(f) = e.failure(false) {
+                    let _ = h.input(|m, t| m.call_failed(t, f));
+                }
+                return;
+            }
+            let r = h.call_peer(&e).await;
+            // The callee ran the call and its answer is lost: the leader sees a call that missed its deadline.
+            #[cfg(feature = "test-faults")]
+            let r = match r {
+                Ok(_)
+                    if matches!(e.msg, raft::Message::Append(_))
+                        && crate::faults::drop_append_reply(&h.env, e.to.0) =>
+                {
+                    Err(true)
+                }
+                r => r,
+            };
+            if r.is_ok() && matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()) {
+                let mut s = h.stats.borrow_mut();
+                let v = s.append_ms.entry(e.to.0).or_default();
+                if v.len() < SAMPLES_MAX {
+                    v.push(now_ms().saturating_sub(t0) as u32);
+                }
+            }
+            match r {
+                Ok(replies) => {
+                    for r in replies {
+                        let from = r.from;
+                        if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(deadline) => {
+                    h.stats.borrow_mut().failed_calls += 1;
+                    if let Some(f) = e.failure(deadline) {
+                        let _ = h.input(|m, t| m.call_failed(t, f));
+                    }
+                }
+            }
+        });
+    }
+
+    /// One member-to-member call. `Err(true)` is a missed CALL_DEADLINE, `Err(false)` an error.
+    async fn call_peer(&self, e: &Envelope<F>) -> std::result::Result<Vec<Envelope<F>>, bool> {
+        let name = self.peer_name(e.to).ok_or(false)?;
+        let site = SiteEnv::read(&self.env).map_err(|_| false)?;
+        let stub = site.member(&self.env, e.to, &name).map_err(|_| false)?;
+        let body = codec::to_bytes(std::slice::from_ref(e));
+        let call = async move {
+            let mut init = RequestInit::new();
+            let body = js_sys::Uint8Array::from(body.as_slice());
+            init.with_method(Method::Post).with_body(Some(JsValue::from(body)));
+            let req = Request::new_with_init("https://member/raft", &init).map_err(|_| false)?;
+            let mut res = stub.fetch_with_request(req).await.map_err(|_| false)?;
+            if res.status_code() != 200 {
+                return Err(false);
+            }
+            let b = res.bytes().await.map_err(|_| false)?;
+            codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|_| false)
+        };
+        within(raft::CALL_DEADLINE, call).await.unwrap_or(Err(true))
+    }
+
+    /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when.
+    pub fn wait_ticket(
+        &self,
+        ticket: Ticket,
+        admitted: Option<(RequestId, u64, Option<F::C>)>,
+    ) -> oneshot::Receiver<Outcome<F>> {
+        let (tx, rx) = oneshot::channel();
+        if let Some(core) = self.core.borrow_mut().as_mut() {
+            core.waiters.entry(ticket).or_default().push(tx);
+            if let Some(a) = admitted {
+                core.admitted.entry(ticket).or_insert(a);
+            }
+        }
+        rx
+    }
+
+    pub fn wait_read(&self, id: ReadId, q: Value) -> oneshot::Receiver<ReadResult> {
+        let (tx, rx) = oneshot::channel();
+        if let Some(core) = self.core.borrow_mut().as_mut() {
+            core.reads.insert(id, (q, tx));
+        }
+        rx
+    }
+
+    /// Registers a waiter for the entry `Member::record` takes under `rid`.
+    #[cfg(feature = "test-faults")]
+    pub fn wait_recorded(&self, rid: RequestId) -> oneshot::Receiver<Result<Index, NotLeader>> {
+        let (tx, rx) = oneshot::channel();
+        if let Some(core) = self.core.borrow_mut().as_mut() {
+            core.recorded.push((rid, tx));
+        }
+        rx
+    }
+
+    pub fn wait_block(&self, b: raft::IdBlock) -> oneshot::Receiver<Result<Index, NotLeader>> {
+        let (tx, rx) = oneshot::channel();
+        if let Some(core) = self.core.borrow_mut().as_mut() {
+            core.blocks.push((b, tx));
+        }
+        rx
+    }
+
+    /// Answers a `DepsWanted`: each chain's fold, read once through its leader's `fresh` (`/read` with `dep`), found
+    /// by the lookup rule, then `deps_read`. A chain that cannot be read is left out, so `decide` fails closed on it
+    /// (`CredentialRefusal::NotRead`). BF-15 may hold the read back (`hold_deps_until`) so commands queue behind it.
+    fn read_deps(self: &Rc<Self>, want: raft::DepsWanted) {
+        let h = self.clone();
+        spawn_local(async move {
+            #[cfg(feature = "test-faults")]
+            {
+                let hold = h.core.borrow().as_ref().map_or(0, |c| c.hold_deps_until);
+                if hold > now_ms() {
+                    Delay::from(Duration::from_millis(hold - now_ms())).await;
+                }
+            }
+            let mut deps = Vec::new();
+            let mut reads = Vec::new();
+            for chain in want.chains.iter().copied() {
+                let record = match crate::release::record_for(&h.env, chain).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        reads.push(json!({ "chain": chain, "error": format!("no record: {e}") }));
+                        continue;
+                    }
+                };
+                let t0 = now_ms();
+                match crate::lookup::call(&h.env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await {
+                    Ok((v, _)) => {
+                        let bytes = v.get("value").and_then(Value::as_str).and_then(unhex);
+                        match bytes.map(|b| F::dep(chain, &b)) {
+                            Some(Ok(d)) => {
+                                deps.push((chain, d));
+                                reads.push(json!({ "chain": chain, "index": v["index"], "ms": now_ms() - t0 }));
+                            }
+                            Some(Err(e)) => reads.push(json!({ "chain": chain, "error": e })),
+                            None => reads.push(json!({ "chain": chain, "error": "no fold" })),
+                        }
+                    }
+                    Err(e) => reads.push(json!({ "chain": chain, "error": e })),
+                }
+            }
+            h.stats.borrow_mut().dep_reads += 1;
+            // The entry these reads decide is appended next, at the log's end + 1.
+            #[cfg(feature = "test-faults")]
+            {
+                let next = h.core.borrow().as_ref().map_or(0, |c| c.m.last_index().0 + 1);
+                let _ = h.state.storage().sql().exec(
+                    "INSERT INTO deps_log (idx, at, reads) VALUES (?, ?, ?)",
+                    vec![i(next), i(now_ms()), json!(reads).to_string().into()],
+                );
+            }
+            let _ = &reads;
+            let _ = h.input(|m, t| m.deps_read(t, want.id, deps));
+        });
+    }
+
+    /// The `NeedIdBlock` lease loop: lease the next block for this chain from the cell's `Ids` group, record it here
+    /// with `Member::id_block`, and once it commits, re-send every command refused for want of it under its request
+    /// id. One loop at a time; commands refused meanwhile join it.
+    fn lease(self: &Rc<Self>) {
+        if self.leasing.replace(true) {
+            return;
+        }
+        let h = self.clone();
+        spawn_local(async move {
+            let r = h.lease_once().await;
+            if let Err(e) = &r {
+                console_error!("id block lease failed: {e}");
+            }
+            h.leasing.set(false);
+            let blocked = std::mem::take(&mut *h.blocked.borrow_mut());
+            for (old, rid, cmd) in blocked {
+                let (r2, out) = match h.step(|m, t| m.commit(t, rid, cmd.clone())) {
+                    Ok(x) => x,
+                    Err(_) => break,
+                };
+                match r2 {
+                    Ok(a) => {
+                        if let Some(core) = h.core.borrow_mut().as_mut() {
+                            let at = now_ms();
+                            core.admitted.insert(a.ticket, (rid, at, Some(cmd)));
+                            let waiting = core.waiters.remove(&old).unwrap_or_default();
+                            core.waiters.entry(a.ticket).or_default().extend(waiting);
+                            core.reissued.insert(old, a.ticket);
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(core) = h.core.borrow_mut().as_mut() {
+                            let nl = match e {
+                                CallError::NotLeader(nl) => nl,
+                                _ => core.m.not_leader(),
+                            };
+                            for tx in core.waiters.remove(&old).unwrap_or_default() {
+                                let _ = tx.send(Err(CommitError::NotLeader(nl.clone())));
+                            }
+                        }
+                    }
+                }
+                h.dispatch(out, None);
+            }
+        });
+    }
+
+    async fn lease_once(self: &Rc<Self>) -> std::result::Result<(), String> {
+        let chain = self.core.borrow().as_ref().map(|c| c.join.chain).ok_or("not joined")?;
+        let ids = crate::release::system_record(&self.env, graftyard_types::ChainId::Ids).await?;
+        let done =
+            crate::lookup::commit(&self.env, graftyard_types::ChainId::Ids, &ids, json!({ "to": chain })).await?;
+        let block: raft::IdBlock = serde_json::from_value(done.pointer("/ok/out").cloned().ok_or(format!("{done}"))?)
+            .map_err(|e| e.to_string())?;
+        self.stats.borrow_mut().leases += 1;
+        let rx = self.wait_block(block);
+        match self.input(|m, t| m.id_block(t, block)).map_err(|e| e.to_string())? {
+            Ok(()) => {}
+            // Recorded already (a re-sent lease answered from its request row).
+            Err(raft::IdBlockError::Behind { .. }) => return Ok(()),
+            Err(raft::IdBlockError::NotLeader(_)) => return Err("not leader".into()),
+        }
+        match within(Duration::from_secs(10), rx).await {
+            Some(Ok(Ok(_))) => Ok(()),
+            other => Err(format!("block {block:?} did not commit: {}", other.is_some())),
+        }
+    }
+
+    fn has_waiters(&self) -> bool {
+        self.core.borrow().as_ref().is_some_and(|c| !c.waiters.is_empty() || !c.reads.is_empty())
+    }
+
+    /// Keeps `tick` running while inputs arrive or calls are held.
+    pub fn kick(self: &Rc<Self>) {
+        self.active_until.set(self.active_until.get().max(now_ms() + ACTIVE_FOR_MS));
+        if self.ticking.replace(true) {
+            return;
+        }
+        let h = self.clone();
+        spawn_local(async move {
+            loop {
+                Delay::from(TICK).await;
+                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) {
+                    break;
+                }
+                if h.tick_once().is_err() {
+                    break;
+                }
+            }
+            h.ticking.set(false);
+        });
+    }
+
+    /// One `tick`, which does not count as activity, so the ticker winds down when inputs stop.
+    fn tick_once(self: &Rc<Self>) -> Result<()> {
+        let until = self.active_until.get();
+        let r = self.step(|m, t| m.tick(t));
+        self.active_until.set(until);
+        let ((), out) = r?;
+        self.dispatch(out, None);
+        Ok(())
+    }
+
+    /// A leader served a client request: keep the drain-check alarm armed while it serves.
+    pub fn served(self: &Rc<Self>) {
+        self.served_at.set(now_ms());
+        self.arm();
+    }
+
+    fn arm(self: &Rc<Self>) {
+        if self.alarm_at.get() != 0 {
+            return;
+        }
+        self.alarm_at.set(now_ms() + DRAIN_CHECK_MS as u64);
+        let h = self.clone();
+        spawn_local(async move {
+            // Unconfirmed, so arming never holds a reply behind the output gate; a lost alarm is re-armed by the next
+            // served request.
+            let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
+            let _ = h.state.storage().set_alarm_with_options(DRAIN_CHECK_MS, opts).await;
+        });
+    }
+
+    /// The leader's alarm: one `tick`, then re-armed only while the member leads and served in the last 60 s.
+    pub fn alarm(self: &Rc<Self>) {
+        self.alarm_at.set(0);
+        let _ = self.tick_once();
+        let leading = self.core.borrow().as_ref().is_some_and(|c| c.m.role() == Role::Leader);
+        if leading && now_ms().saturating_sub(self.served_at.get()) < DRAIN_IDLE_MS {
+            self.arm();
+        }
+    }
+
+    /// A storage write failed: reset the object. Every input from now on is refused, so nothing else leaves.
+    fn fail(self: &Rc<Self>) {
+        self.dying.set(true);
+        abort(&self.state, "graftyard member storage write failed");
+    }
+
+    /// The fault path: record the kill, wait until the row is durable, and reset the object after `delay`. Every
+    /// input from now on is refused, so nothing else leaves.
+    #[cfg(feature = "test-faults")]
+    fn die(self: &Rc<Self>, fault: Option<Fault>, delay: Duration) {
+        self.dying.set(true);
+        let h = self.clone();
+        spawn_local(async move {
+            if let Some(f) = fault {
+                if f.down_ms > 0 {
+                    let _ = h.state.storage().sql().exec(
+                        "INSERT OR REPLACE INTO me (k, v) VALUES ('down_until', ?)",
+                        vec![(now_ms() + f.down_ms).to_string().into()],
+                    );
+                }
+                let _ = h.state.storage().sql().exec(
+                    "INSERT INTO fault (rid, mode, idx, term, result, at) VALUES (?, ?, ?, ?, ?, ?)",
+                    vec![
+                        f.rid.to_string().into(),
+                        f.kill.name().into(),
+                        i(f.index.0),
+                        i(f.term.0),
+                        f.result.to_string().into(),
+                        i(now_ms()),
+                    ],
+                );
+            }
+            let _ = h.state.storage().sync().await;
+            if !delay.is_zero() {
+                Delay::from(delay).await;
+            }
+            abort(&h.state, "graftyard member fault");
+        });
+    }
+
+    /// Committed entries `from..=to` from storage, at most 2,000, each with its index and the family's fields
+    /// (`Family::entry_json`): what the git cache shard's `ChainLog::entries` reads.
+    pub fn entries_json(&self, from: u64, to: u64) -> Result<Value> {
+        let commit = self.core.borrow().as_ref().map_or(0, |c| c.m.state().commit.0);
+        let to = to.min(commit);
+        let sql = self.state.storage().sql();
+        let r = rows(
+            &sql,
+            "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 2000",
+            vec![i(from.max(1)), i(to)],
+        )?;
+        let mut out = Vec::with_capacity(r.len());
+        let mut bytes = 0;
+        for r in r {
+            // A page stops past ENTRIES_PAGE_BYTES (and always holds one entry), so a log of inline packs answers
+            // well within the lookup's CALL; the shard asks again from the next index.
+            let row = blob(&r[0])?;
+            bytes += row.len();
+            if !out.is_empty() && bytes > ENTRIES_PAGE_BYTES {
+                break;
+            }
+            let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
+            let mut m = F::entry_json(&e);
+            m.insert("index".into(), json!(e.index.0));
+            m.insert("at".into(), json!(e.at.0));
+            out.push(Value::Object(m));
+        }
+        Ok(json!(out))
+    }
+
+    /// The member's stored log, with each entry's request ids, from `from` (at most `n` entries).
+    #[cfg(feature = "test-faults")]
+    pub fn log_json(&self, from: u64, n: usize) -> Result<Value> {
+        let core = self.core.borrow();
+        let Some(core) = core.as_ref() else { return Ok(json!([])) };
+        let commit = core.m.state().commit.0;
+        let sql = self.state.storage().sql();
+        let r = rows(
+            &sql,
+            "SELECT idx, digest, row FROM log WHERE idx >= ? ORDER BY idx LIMIT ?",
+            vec![i(from.max(1)), i(n as u64)],
+        )?;
+        let mut out = Vec::with_capacity(r.len());
+        for r in r {
+            let e: Entry<F> = codec::from_bytes(blob(&r[2])?).map_err(|e| err(e.to_string()))?;
+            let mut row = json!({
+                "index": e.index.0,
+                "term": e.term.0,
+                "digest": hex(blob(&r[1])?),
+                "committed": e.index.0 <= commit,
+                "kind": match &e.body {
+                    EntryBody::Events(_) => "events",
+                    EntryBody::Config(_) => "config",
+                    EntryBody::Noop => "noop",
+                    EntryBody::IdBlock(_) => "idBlock",
+                },
+                "requests": e.requests.iter().map(|(r, _)| r.to_string()).collect::<Vec<_>>(),
+            });
+            // The family's fields at the top level, as `tests/m1/wp6/bf17.sh` reads `bytes` and `ref_updates`.
+            for (k, v) in F::entry_json(&e) {
+                row[k] = v;
+            }
+            out.push(row);
+        }
+        Ok(json!(out))
+    }
+
+    /// BF-12's audit over the committed log on storage: request ids at more than one index, `dup` rows written by
+    /// apply, and every register whose key starts with `prefix`, in memory and on disk.
+    #[cfg(feature = "test-faults")]
+    pub fn audit_json(&self, prefix: &str) -> Result<Value> {
+        let core = self.core.borrow();
+        let core = core.as_ref().ok_or_else(|| err("member not joined"))?;
+        let commit = core.m.state().commit.0;
+        let sql = self.state.storage().sql();
+        let mut at: BTreeMap<RequestId, Vec<u64>> = BTreeMap::new();
+        let mut from = 1;
+        while from <= commit {
+            let page = rows(
+                &sql,
+                "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 2000",
+                vec![i(from), i(commit)],
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            for r in &page {
+                let e: Entry<F> = codec::from_bytes(blob(&r[0])?).map_err(|e| err(e.to_string()))?;
+                from = e.index.0 + 1;
+                for (r, _) in &e.requests {
+                    at.entry(*r).or_default().push(e.index.0);
+                }
+            }
+        }
+        let twice: Vec<Value> =
+            at.iter().filter(|(_, v)| v.len() > 1).map(|(r, v)| json!({ "rid": r.to_string(), "at": v })).collect();
+        let dup = rows(&sql, "SELECT rid, idx FROM dup", vec![])?
+            .iter()
+            .map(|r| Ok(json!({ "rid": text(&r[0])?, "idx": int(&r[1])? })))
+            .collect::<Result<Vec<_>>>()?;
+        let request_rows = int(&rows(&sql, "SELECT count(*) FROM request", vec![])?[0][0])?;
+        let fold = F::audit(&sql, &core.m.group_fold().fold, prefix)?;
+        Ok(json!({
+            "last": core.m.last_index().0,
+            "base": core.m.log_base().index.0,
+            "commit": commit,
+            "applied": core.applied.0,
+            "requestIds": at.len(),
+            "requestRows": request_rows,
+            "logTwice": twice,
+            "dupRows": dup,
+            "values": fold.get("values"),
+            "diskValues": fold.get("diskValues"),
+        }))
+    }
+}
+
+/// How long this install keeps `request` rows: `REQUEST_RETENTION`, or with `test-faults` the
+/// `GRAFTYARD_REQUEST_RETENTION_S` variable, which every site of an install sets to the same value.
+pub fn request_retention(env: &Env) -> Duration {
+    #[cfg(feature = "test-faults")]
+    if let Some(s) = env.var("GRAFTYARD_REQUEST_RETENTION_S").ok().and_then(|v| v.to_string().parse().ok()) {
+        return Duration::from_secs(s);
+    }
+    let _ = env;
+    raft::REQUEST_RETENTION
+}
+
+/// `ctx.abort()`: resets the object. workers-rs 0.8.7 does not bind it. The call is deferred to a timer that runs
+/// `abort` bound to the state, so it throws on a stack with no wasm frame: called from inside wasm, the uncatchable
+/// error unwound through the module, the shim marked the instance terminated, and the object hung on every later
+/// request instead of resetting (measured on the first BF-12 kill).
+pub fn abort(state: &State, why: &str) {
+    let raw: &JsValue = state.as_raw().as_ref();
+    let global = js_sys::global();
+    let abort =
+        js_sys::Reflect::get(raw, &JsValue::from_str("abort")).ok().and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+    let timer = js_sys::Reflect::get(&global, &JsValue::from_str("setTimeout"))
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
+    if let (Some(abort), Some(timer)) = (abort, timer) {
+        let bound = abort.bind1(raw, &JsValue::from_str(why));
+        let _ = timer.call2(&global, &bound, &JsValue::from(0));
+    }
+}
+
+// ---- JSON forms of the crate's replies ----
+
+pub fn nl_json(nl: &NotLeader) -> Value {
+    json!({
+        "term": nl.term.0,
+        "leader": nl.leader.map(|s| s.0),
+        "config": nl.config.as_ref().map(|(i, c)| json!({ "index": i.0, "config": c })),
+    })
+}
+
+pub fn outcome_json<F: Family>(o: &Outcome<F>) -> Value {
+    match o {
+        Ok(a) => json!({ "ok": {
+            "index": a.index.0,
+            "out": F::out_json(a),
+            "quorum": a.quorum().sites().iter().map(|s| s.0).collect::<Vec<_>>(),
+        } }),
+        Err(CommitError::Refused { index, err: e }) => {
+            let mut r = F::err_json(e);
+            r["index"] = json!(index.0);
+            json!({ "refused": r })
+        }
+        Err(CommitError::NotLeader(nl)) => json!({ "notLeader": nl_json(nl) }),
+    }
+}
+
+/// A refusal the lease loop answers by re-sending, not the caller.
+pub fn needs_block<F: Family>(o: &Outcome<F>) -> bool {
+    matches!(o, Err(CommitError::Refused { err: e, .. }) if F::needs_block(e))
+}
+
+pub fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+pub fn unhex(s: &str) -> Option<Vec<u8>> {
+    s.len()
+        .is_multiple_of(2)
+        .then(|| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect())
+        .flatten()
+}
+
+pub fn call_error_json(e: &CallError) -> Value {
+    match e {
+        CallError::NotLeader(nl) => json!({ "notLeader": nl_json(nl) }),
+        CallError::Unsupported(u) => {
+            json!({ "unsupported": { "family": u.format.family, "version": u.format.version } })
+        }
+        CallError::TooLarge { len, max } => json!({ "tooLarge": { "len": len, "max": max } }),
+    }
+}
+
+pub fn ticket_json(t: &Ticket) -> Value {
+    json!({ "term": t.term.0, "boot": t.boot.to_string(), "seq": t.seq })
+}
+
+pub fn ticket_from(v: &Value) -> Result<Ticket> {
+    let term = v.get("term").and_then(Value::as_u64).ok_or_else(|| err("ticket.term"))?;
+    let boot = v.get("boot").and_then(Value::as_str).and_then(|s| s.parse().ok()).ok_or_else(|| err("ticket.boot"))?;
+    let seq = v.get("seq").and_then(Value::as_u64).ok_or_else(|| err("ticket.seq"))?;
+    Ok(Ticket { term: raft::Term(term), boot, seq })
+}
+
+#[cfg(feature = "test-faults")]
+pub fn digest_hex(d: &raft::Digest) -> String {
+    d.hex()
+}
+
+/// A request id in its text form, the ULID's 26 characters.
+pub fn rid_from(s: &str) -> Result<RequestId> {
+    s.parse().map_err(|_| err(format!("bad request id {s:?}")))
+}

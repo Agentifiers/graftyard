@@ -1,0 +1,18 @@
+[package]
+name = "graft-m1-wp6-bed"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+graftyard-git = { path = "../../../../crates/git", features = ["worker"] }
+graftyard-raft = { path = "../../../../crates/raft" }
+graftyard-types.workspace = true
+js-sys = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+worker.workspace = true

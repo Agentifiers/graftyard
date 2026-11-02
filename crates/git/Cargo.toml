@@ -1,0 +1,29 @@
+[package]
+name = "graftyard-git"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# The Workers host: R2 buckets and the git container behind a shard object, through worker-rs. Pure decisions and
+# their tests build without it.
+worker = ["dep:worker", "dep:js-sys", "dep:wasm-bindgen"]
+
+[dependencies]
+arrayvec.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+graftyard-identity = { path = "../identity" }
+graftyard-raft = { path = "../raft" }
+graftyard-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+smallvec.workspace = true
+thiserror.workspace = true
+worker = { workspace = true, optional = true }
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+
+[dev-dependencies]
+futures-executor = "0.3"
