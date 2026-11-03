@@ -1,0 +1,9 @@
+{
+ "commands": [
+  "pr checks 1 -R o/r"
+ ],
+ "operation": "PullRequest_fields",
+ "query": "query PullRequest_fields{PullRequest: __type(name: \"PullRequest\"){fields(includeDeprecated: true){name}},StatusCheckRollupContextConnection: __type(name: \"StatusCheckRollupContextConnection\"){fields(includeDeprecated: true){name}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": null
+}

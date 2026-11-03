@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "issue create -R o/r -t T -b B",
+  "issue create -R o/r -t T -b B -l bug"
+ ],
+ "operation": "IssueRepositoryInfo",
+ "query": "\n\tquery IssueRepositoryInfo($owner: String!, $name: String!) {\n\t\trepository(owner: $owner, name: $name) {\n\t\t\tid\n\t\t\tdatabaseId\n\t\t\tname\n\t\t\towner { login }\n\t\t\thasIssuesEnabled\n\t\t\tviewerPermission\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "name": "r",
+  "owner": "o"
+ }
+}

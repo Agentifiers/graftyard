@@ -1,0 +1,16 @@
+{
+ "commands": [
+  "issue create -R o/r -t T -b B",
+  "issue create -R o/r -t T -b B -l bug"
+ ],
+ "operation": "IssueCreate",
+ "query": "\n\tmutation IssueCreate($input: CreateIssueInput!) {\n\t\tcreateIssue(input: $input) {\n\t\t\tissue {\n\t\t\t\tid\n\t\t\t\turl\n\t\t\t}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "input": {
+   "body": "B",
+   "repositoryId": "R_1",
+   "title": "T"
+  }
+ }
+}

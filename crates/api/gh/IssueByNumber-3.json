@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "issue view 1 -R o/r --json number,title,body,state,labels,comments"
+ ],
+ "operation": "IssueByNumber",
+ "query": "\n\tquery IssueByNumber($owner: String!, $repo: String!, $number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\thasIssuesEnabled\n\t\t\tissue: issueOrPullRequest(number: $number) {\n\t\t\t\t__typename\n\t\t\t\t...on Issue{number,title,body,state,labels(first:100){nodes{id,name,description,color},totalCount},comments(first: 100) {nodes {id,author{login,...on User{id,name}},authorAssociation,body,createdAt,includesCreatedEdit,isMinimized,minimizedReason,reactionGroups{content,users{totalCount}},url,viewerDidAuthor},pageInfo{hasNextPage,endCursor},totalCount},id}\n\t\t\t\t...on PullRequest{number,title,body,state,labels(first:100){nodes{id,name,description,color},totalCount},comments(first: 100) {nodes {id,author{login,...on User{id,name}},authorAssociation,body,createdAt,includesCreatedEdit,isMinimized,minimizedReason,reactionGroups{content,users{totalCount}},url,viewerDidAuthor},pageInfo{hasNextPage,endCursor},totalCount},id}\n\t\t\t}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "number": 1,
+  "owner": "o",
+  "repo": "r"
+ }
+}

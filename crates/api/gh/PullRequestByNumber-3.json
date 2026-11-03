@@ -1,0 +1,15 @@
+{
+ "commands": [
+  "pr checks 1 -R o/r",
+  "pr checks 1 -R o/r --required",
+  "pr checks 1 -R o/r --json name,state,bucket,link"
+ ],
+ "operation": "PullRequestByNumber",
+ "query": "\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {number,headRefName,id}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "owner": "o",
+  "pr_number": 1,
+  "repo": "r"
+ }
+}

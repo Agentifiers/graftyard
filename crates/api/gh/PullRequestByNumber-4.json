@@ -1,0 +1,15 @@
+{
+ "commands": [
+  "pr merge 1 -R o/r --merge",
+  "pr merge 1 -R o/r --squash",
+  "pr merge 1 -R o/r --rebase --delete-branch"
+ ],
+ "operation": "PullRequestByNumber",
+ "query": "\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {id,number,state,title,commits(last:1){nodes{commit{oid}}},mergeStateStatus,headRefName,baseRefName,headRefOid,isCrossRepository,isInMergeQueue,isMergeQueueEnabled}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "owner": "o",
+  "pr_number": 1,
+  "repo": "r"
+ }
+}

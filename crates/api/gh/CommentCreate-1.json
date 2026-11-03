@@ -1,0 +1,14 @@
+{
+ "commands": [
+  "issue comment 1 -R o/r -b hi"
+ ],
+ "operation": "CommentCreate",
+ "query": "mutation CommentCreate($input:AddCommentInput!){addComment(input: $input){commentEdge{node{url}}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "input": {
+   "body": "hi",
+   "subjectId": "I_1"
+  }
+ }
+}

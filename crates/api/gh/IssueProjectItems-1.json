@@ -1,0 +1,15 @@
+{
+ "commands": [
+  "issue view 1 -R o/r",
+  "issue view 1 -R o/r --comments"
+ ],
+ "operation": "IssueProjectItems",
+ "query": "query IssueProjectItems($endCursor:String$name:String!$number:Int!$owner:String!){repository(owner: $owner, name: $name){issue(number: $number){projectItems(first: 100, after: $endCursor){totalCount,nodes{id,project{id,title},status:fieldValueByName(name: \"Status\"){... on ProjectV2ItemFieldSingleSelectValue{optionId,name}}},pageInfo{hasNextPage,endCursor}}}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "endCursor": null,
+  "name": "r",
+  "number": 1,
+  "owner": "o"
+ }
+}

@@ -1,0 +1,16 @@
+{
+ "commands": [
+  "issue list -R o/r --json number,title,state,labels,updatedAt"
+ ],
+ "operation": "IssueList",
+ "query": "fragment issue on Issue {number,title,state,labels(first:100){nodes{id,name,description,color},totalCount},updatedAt}\n\tquery IssueList($owner: String!, $repo: String!, $limit: Int, $endCursor: String, $states: [IssueState!] = OPEN, $assignee: String, $author: String, $mention: String) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\thasIssuesEnabled\n\t\t\tissues(first: $limit, after: $endCursor, orderBy: {field: CREATED_AT, direction: DESC}, states: $states, filterBy: {assignee: $assignee, createdBy: $author, mentioned: $mention}) {\n\t\t\t\ttotalCount\n\t\t\t\tnodes {\n\t\t\t\t\t...issue\n\t\t\t\t}\n\t\t\t\tpageInfo {\n\t\t\t\t\thasNextPage\n\t\t\t\t\tendCursor\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n\t",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "limit": 30,
+  "owner": "o",
+  "repo": "r",
+  "states": [
+   "OPEN"
+  ]
+ }
+}

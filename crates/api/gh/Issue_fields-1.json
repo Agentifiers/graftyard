@@ -1,0 +1,9 @@
+{
+ "commands": [
+  "pr create -R o/r -H f -B main -t T -b B"
+ ],
+ "operation": "Issue_fields",
+ "query": "query Issue_fields{Issue: __type(name: \"Issue\"){fields(includeDeprecated: true){name}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": null
+}

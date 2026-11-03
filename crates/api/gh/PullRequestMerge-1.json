@@ -1,0 +1,16 @@
+{
+ "commands": [
+  "pr merge 1 -R o/r --merge",
+  "pr merge 1 -R o/r --squash",
+  "pr merge 1 -R o/r --rebase --delete-branch"
+ ],
+ "operation": "PullRequestMerge",
+ "query": "mutation PullRequestMerge($input:MergePullRequestInput!){mergePullRequest(input: $input){clientMutationId}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "input": {
+   "mergeMethod": "MERGE",
+   "pullRequestId": "PR_1"
+  }
+ }
+}

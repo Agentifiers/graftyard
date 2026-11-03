@@ -1,0 +1,9 @@
+{
+ "commands": [
+  "pr list -R o/r --label bug"
+ ],
+ "operation": "SearchType_enumValues",
+ "query": "query SearchType_enumValues{SearchType: __type(name: \"SearchType\"){enumValues(includeDeprecated: true){name}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": null
+}

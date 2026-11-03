@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "pr list -R o/r --label bug"
+ ],
+ "operation": "PullRequestSearch",
+ "query": "fragment pr on PullRequest{number,title,state,url,headRefName,headRepositoryOwner{id,login,...on User{name}},isCrossRepository,isDraft,createdAt}\n\t\tquery PullRequestSearch(\n\t\t\t$q: String!,\n\t\t\t$type: SearchType!,\n\t\t\t$limit: Int!,\n\t\t\t$endCursor: String,\n\t\t) {\n\t\t\tsearch(query: $q, type: $type, first: $limit, after: $endCursor) {\n\t\t\t\tissueCount\n\t\t\t\tnodes {\n\t\t\t\t\t...pr\n\t\t\t\t}\n\t\t\t\tpageInfo {\n\t\t\t\t\thasNextPage\n\t\t\t\t\tendCursor\n\t\t\t\t}\n\t\t\t}\n\t\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "limit": 30,
+  "q": "label:bug repo:o/r state:open type:pr",
+  "type": "ISSUE_ADVANCED"
+ }
+}
