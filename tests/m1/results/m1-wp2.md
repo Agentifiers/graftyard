@@ -659,3 +659,165 @@ Run as the orb service `wp8c-checks` at 12:06 to 12:17Z. The fmt and clippy rows
 | Porcupine, GRAY | `{"droppedFailedReads":11,"noReplyWrites":209,"operations":2226280,"result":"Ok"}` |
 
 The operation counts differ from the previous pass's because `record` draws from the simulator's random stream, so every seed runs a different schedule. The outputs are in `raw/checks-20261102b/`.
+
+## The 24-hour run's result, 2026-11-02: lin24 does not pass
+
+**Verdict.** lin24 does not pass BM-1's 24 h half. The gate is "zero violations". This history cannot rule out an early ack: the members recorded no commit or send times, and two observations fit an early ack as well as a client-clock artifact (below). Porcupine is Ok at 100 ms and at the measured bound. No acknowledged write was lost. BM-1's 24 h half is rerun as `lin24b`, with member-side evidence that decides the early-ack question.
+
+### The report (`tests/m1/lin/raw/lin24.report.json`)
+
+| Figure | Value |
+| --- | --- |
+| Run | `lin24`, chain `repo:915635`, 2026-11-01T18:27:14.621Z to 2026-11-02T18:27:14.621Z |
+| Load | 3 pinned clients (ATL, LHR, SIN), 4 logical clients each at up to 5 ops/s, 6 keys, 40% reads |
+| Operations | 2,739,691, 0 with no reply |
+| Latency | p50 326 ms, p99 1,009 ms, max 22,274 ms |
+| Chaos | 5,547 resets (3,676 of a leader), 3,743 transfers (1,131 abandoned) |
+| Per-isolate fault counters | 88 isolates. Failed calls: site 0 31,047, site 1 24,289, site 2 22,317. Dropped AppendEntries replies: site 0 29,061, site 1 22,154, site 2 20,915. Abandoned `TimeoutNow`: 27, 54, 54 |
+| Client clocks against the members | Median offset ATL −3.5 ms, LHR −4 ms, SIN −6 ms. p01 to p99: ATL −104.5 to 56, LHR −125.5 to 88, SIN −137.5 to 109 |
+| Pair bounds (1,441 one-minute buckets each) | ATL–LHR p99 92 ms, max 126. ATL–SIN p99 155, max 232. LHR–SIN p99 140, max 550. The widening is 275 ms |
+| Porcupine, recorded clocks | k0, k1, k3 Ok. k2, k4, k5 Illegal (5 segments) |
+| Porcupine, widened 100 ms | Ok on all 6 keys |
+| Porcupine, widened 275 ms | Ok on all 6 keys |
+
+### The finish crash and its fix
+
+The first `finish` crashed with `ERR_STRING_TOO_LONG`. `check()` in `tests/m1/lin/run.ts` read the 584 MB widened history as one string, which is past Node's 512 MB string limit. The fix splits each history by key in one streaming pass (`readline` over `createReadStream`, flushing every 50,000 lines to the key's file), and checks each key's file. The rerun of `finish` wrote the report at 18:44:43Z. `finish` had already called `/clients/stop` and `/chaos/stop`, and both answered `stopped: true`.
+
+### The five Illegal segments are missing history rows
+
+A load client writes an operation's row only after the operation returns. 5 of the run's 12,518 client chunks have a clock `start` row and no `end` row. Each of those chunk alarms was cut short, and the operations in flight when it stopped left no row. Each Illegal segment holds a read of a value written by one of those operations. Each such write is committed in all three members' logs.
+
+| Segment (recorded clocks) | Value read, with no history row | Its entry | Interrupted chunk | First reader |
+| --- | --- | --- | --- | --- |
+| k2 #203, ops 412,315 to 414,325 | `1.mvzgc1do-92` (ATL) | 434,670 | ATL, from 16:06:54Z | SIN client 200 |
+| k4 #51, ops 102,790 to 104,807 | `203.mvyhu5vo-76` (SIN) | 109,039 | SIN, from 00:01:13Z | ATL client 1 |
+| k4 #201, ops 409,248 to 411,321 | `200.mvzfzefa-94` (SIN) | 431,216 | SIN, from 15:57:04Z | LHR client 100 |
+| k5 #64, ops 128,631 to 130,635 | `3.mvykhszl-241` (ATL) | 135,737 | ATL, from 01:15:35Z | LHR clients 101 and 103 |
+| k5 #203, ops 412,593 to 414,681 | `3.mvzgc1do-90` (ATL) | 434,669 | ATL, from 16:06:54Z | SIN clients 203 and 200 |
+
+With each missing write restored (called at its request id's ULID time, returning at the first read of it), Porcupine on the recorded clocks is Ok on k2, k4 and k5, with the report's operation counts. None of the five needs any clock skew. `tests/m0/run/history-skew.py` finds 0 stale reads on every key. As a control, a read planted to return a value overwritten 2.8 s earlier is caught by `history-skew.py` (unexplained by skew) and by Porcupine (Illegal).
+
+### Lost writes: none
+
+The three members' logs were read after the run through `graft-m1-lin-tools` `/member` `/log`.
+
+- They are identical: 479,965 entries each, no gaps, and the same digest at every index.
+- All 869,257 acknowledged writes (puts, plus compare-and-sets that answered `ok`) are in the log.
+- None of the 774,418 refused compare-and-sets is in the log.
+- No request id is in two entries.
+- 9 committed request ids have no history row. One is the `/create` warm-up write. The other 8 are the 5 interrupted chunks' writes above, plus 3 more from the same chunks, none of which was read.
+
+### Why the result is not a pass: two observations an early ack would also explain
+
+The audit compares each acknowledged write's commit order with real time. A write W that returned before a command D was called must commit at or before D's position in the log.
+
+- **One ordering the skew bound cannot explain.** An LHR put (client 102, k3, seq 773,396) returned at 14:10:35.504Z on LHR's clock, 98 ms after its call, in entry 398,032 (term 305). An ATL put (client 1, k2, seq 812,307) was called 52 ms later on ATL's clock and committed in the same entry. With the shortest transit from ATL to any member (41 ms), the two orders agree only if ATL's clock ran 93 ms behind LHR's. That minute's measured ATL–LHR bound is 49 ms (difference 0, error 49). In this entry LHR's ack returned 243 ms before ATL's. In the other 507 term-305 entries with commands from both colos, LHR's returned a median 46 ms after ATL's. The two puts are on different keys, so no single key's history shows it.
+- **17 writes acknowledged faster than any quorum could commit them, on the client's own clock.** For each one, the leader's site was inferred from which colo's reads that second were fastest. Each is faster than the bare round trip from client to leader plus the leader's round trip to its nearest follower (both from the run's clock rows). Examples: ATL in 36 ms, entry 213,897, leader on enam, floor 100 ms. LHR in 22 ms, entry 391,704, leader on weur, floor 89 ms. LHR in 65 ms, entry 438,628, leader on enam, floor 176 ms. All 17 are within about 2 to 15 s of a chaos reset or transfer.
+- **B0-11's single-clock test finds nothing.** For 0 of 869,257 acknowledged writes did a command of the same client object, called after the write returned, commit in its entry or earlier.
+
+Both observations fit two explanations, and the history cannot tell them apart:
+
+- **A client-clock artifact.** 4 of the run's 25,031 clock-sampling rows show round trips below physics: ATL to apac 50 ms, LHR to enam 19 ms, and one ATL row with an identical 102 ms to all three sites. So a client's measured interval can come out short.
+- **An early ack.** The member answered a write before its entry had a quorum, which is the class of the bug in M0's 4-hour run.
+
+The register log records no commit time. The members' `commitMs` samples were reset by restores. No member recorded when it sent an outcome.
+
+### The lin install after the run
+
+The three clients report `running: false` and `end: 0`, with row counts ATL 977,790, LHR 929,615, SIN 832,286, unchanged across reads. The chaos object reports `running: false`, and its last events are `chaos stopped` at 18:34:48Z and 18:38:01Z. At 20:09Z the three members were followers in term 373, at commit 479,964, 479,965 and 479,964. No worker was deleted.
+
+## Member-side ack evidence, 2026-11-03
+
+lin24 could not decide whether a member answered a write before its entry committed, because only client clocks were recorded. Each acknowledged write now carries the answering member's own evidence, and the lin finish step checks every one on that member's clock. The evidence is in the product build: it is a few numbers per reply, and it is what an operator needs to audit any acknowledgment.
+
+### What the member records
+
+- **`crates/raft`.** `QuorumProof` now carries the leader (`leader()`), the commit index it is for (`index()`), the entry's `at` (`entry_at()`), the leader's clock when the commit reached it (`at()`), and one `DurableAck { site, durable, at }` per counted site (`acks()`). For a follower, `durable` is the leader's `matched` for it and `at` is when `matched` last rose. For the leader itself, `durable` is `own_durable` and `at` is when its `SelfAck` raised it. Only the commit-advance path builds the proof, as before. The `Command` trait is unchanged.
+- **`workers/site`.** `Host::reply_json` adds `ok.ack` to every `done` outcome it answers (`/commit`, `/commit_many`, `/outcome`, `/outcome_by_request`): `site`, `index`, `commitIndex`, `entryAt`, `commitAt`, `sentAt` (the member's `now_ms()` as the reply is built), `selfSyncedAt`, and `acks`. `selfSyncedAt` is the host's own record, not the crate's: when its storage `sync()` first confirmed the log durable through `commitIndex`. A truncation caps every older record.
+- **`tests/m1/lin`.** `lin.ts` stores each write's `ack` in the history row. `ackcheck.ts` checks them, and `run.ts` `finish` runs it and puts the result in the report as `check.ackEvidence`.
+
+### The check (`tests/m1/lin/ackcheck.ts`, and `ack_check` in `crates/raft/tests/common/history.rs`)
+
+Every acknowledged write must carry evidence, and the evidence must satisfy every rule, all on the answering member's clock:
+
+| Rule | Assertion |
+| --- | --- |
+| entry | `index <= commitIndex` |
+| sent | `sentAt >= commitAt`: the ack was sent at or after the commit |
+| quorum | at least 2 distinct sites counted, the answering site among them |
+| durable | every counted site's `durable >= commitIndex` |
+| order | every ack was learned at or after `entryAt` and at or before `commitAt` |
+| selfSynced | `selfSyncedAt <= commitAt`: the host's own storage confirm covered the commit before it |
+
+The simulator also checks each `Acked` against what only it knows: every counted site's disk holds the leader's entry at the proof's index, and the counted sites make a quorum of the latest config.
+
+### The planted mutant
+
+The mutant makes the leader count its own append before `self_ack`: `advance_commit` starts from `self.last()` instead of `self.last().min(self.own_durable)`. That is the early ack on the leader's own append. It ran in the simulator, 20 seeds of 4,000 steps per half, with the export path kept, and was then reverted.
+
+| Build | HARSH | GRAY |
+| --- | --- | --- |
+| Control | Ok, 183 acked writes | Ok, 3,767 acked writes |
+| Mutant A, the crate's proof honest | Ok, 183 acked writes | **Violations**: 54 of 3,873 acked writes (durable 54, selfSynced 54, order 47) |
+| Mutant B, A plus a proof that claims the leader durable through `last()` at the commit time | Ok, 183 acked writes | **Violations**: 54 of 3,873 (selfSynced 54) |
+
+Mutant B shows why `selfSyncedAt` comes from the host and not from the crate. A crate that miscounts and also lies in its proof is still caught by the host's own storage confirms. In the default tests, mutant A also fails `the_leader_counts_itself_only_after_its_own_write_confirms` in `scenarios.rs`, and `gray_network_keeps_every_invariant` in `sim.rs`: "seed 5000: SiteId(1) answered Index(20) with bad evidence: no host storage confirm covers the commit". That test now also asserts the proof's timings: the leader's own ack is its confirm, and the follower's ack came before it.
+
+### Cloudflare's clock, and what it explains in lin24
+
+Cloudflare's docs: "APIs that return timers, including performance.now() and Date.now(), only advance or increment after I/O occurs" (https://developers.cloudflare.com/workers/runtime-apis/performance/), and "`Date.now()` returns the time of the last I/O. It does not advance during code execution." (https://developers.cloudflare.com/workers/reference/security-model/).
+
+A load client stamps `call = Date.now()` before its first fetch. With four logical clients in one object, that time is the last I/O the object saw, not the moment the call started.
+
+- 7 of the 17 fast acks were called with no gap after the same client's previous return (`call == prev.ret`). That is normal: 1,206,817 of lin24's 1,643,668 acknowledged writes started that way.
+- In all 17, 2 to 6 other clients of the same object returned inside the write's interval.
+
+So the frozen clock can stretch an interval by however long an earlier I/O and the code after it held the clock, and it can stamp a call at an earlier I/O's time. But a frozen clock only makes an interval look *longer*: `ret` is always stamped after the fetch's I/O, and `call` is never later than the real start. It cannot make a write look 30 to 110 ms *faster* than physics.
+
+The same holds for the 4 sub-physics clock rows: each round trip there is `t1 - t0` around one fetch, and a frozen `t0` can only lengthen it. So the clock rule explains neither the 17 fast acks nor the 4 sub-physics rows [inference from the docs' rule]. They stay unexplained by client clocks. The member-side check above decides them for lin24b instead of inferring.
+
+### F45: restore holds a byte-bounded log
+
+The F43 soak found that `load` read up to `LOG_WINDOW` (1,000) entries into memory with no byte bound, and every `request` row with its events, inline packs included. `repo:196624` (`wp6/f43a`) then failed to construct on all three members (`m1-f43.md`, "A different defect the soak found"). The fix has three parts:
+
+- **`crates/raft`.**
+  - `Member::set_log_window_bytes(n, bytes)` keeps at most `n` applied entries and at most `bytes` of them (canonical encoding) in memory. It keeps the newest that fit, and always the last applied one. `log_bytes()` reports the total. The new constant `LOG_BYTES` is 8,000,000 [guess].
+  - `Fold::row_event` (a default method; the `Command` trait is unchanged) gives the form of an event a `request` row keeps. `RepoFold` drops a `Refs` event's inline pack bytes there, because `Push::replay` reads only refs and the sweeper reads only stored packs. This is the one `crates/git` change, in `repo.rs`.
+- **`workers/site` `load`.** It picks the base with `length(row)` in SQL, newest first, within `LOG_WINDOW` and `LOG_BYTES`, and reads every multi-row result one row at a time (`each_row`) instead of collecting it. `stored_range`, the catch-up read, stops at `APPEND_BYTES_MAX` past its first entry. The host stores request rows in the `row_event` form, and loads old rows into that form.
+- **Test.** `the_in_memory_log_is_bounded_by_bytes` (`crates/raft/tests/scenarios.rs`) commits 20 entries of 100 kB under a 300 kB budget and asserts that the applied entries in memory stay under it, before and after a restart. With the byte bound disabled (the old, count-only behavior) it fails: "2002910 bytes of applied entries in memory, budget 300000".
+- **Recovery on the test install.**
+  - 00:08:06Z, before the deploy: all three `repo:196624` members answered `/status` with no status.
+  - 00:11:38Z: the fix was deployed to `graft-m1-site-a/b/c` (the `test-faults` build).
+  - 00:15:50Z: all three members had restored (`restores: 1`). Each was in term 20 with leader site 0 and base 118. Site 0 and site 2 were at commit 152; site 1 was at 148 and catching up.
+  - 00:16:24 to 00:17:17Z: a push of an 800 kB commit to `wp6/f43a` through `graft-m1-edge` succeeded, creating `f45/recover` at `2dc33931…`, and `ls-remote` returned it.
+  - At 00:18Z all three members were at commit and applied 153, with base 121.
+
+  Raw output: `tests/m1/wp8/raw/f45/`.
+
+Design sentences this contradicts (quoted, not edited): DESIGN, Shape, "Scale": "Entry under 1.5 MB against the 2 MB row limit", together with `LOG_WINDOW` ("Applied entries a Durable Object member keeps in memory", `crates/raft/src/lib.rs`). A count alone is not a memory bound. The member now holds `LOG_BYTES` as well, and `request` rows hold no inline pack bytes. Open question F45's N is `LOG_BYTES` = 8 MB [guess], not yet measured as the largest window that restores.
+
+### Checks after these changes
+
+- `cargo fmt --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: every suite ok.
+- The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`): ok in 352 s.
+  - HARSH: 49,629 acked writes, 226,083 crashes, forwarded 0.
+  - GRAY: 951,227 acked writes, 1,534 step-downs, forwarded 0.
+- Porcupine (`tests/m0/porcupine`, whole history):
+  - HARSH `{"droppedFailedReads":3343,"noReplyWrites":27735,"operations":156723,"result":"Ok"}`
+  - GRAY `{"droppedFailedReads":11,"noReplyWrites":209,"operations":2226280,"result":"Ok"}`
+- The ack check on the sweep's histories: HARSH Ok, 49,629 of 49,629 with evidence. GRAY Ok, 951,227 of 951,227.
+
+### lin24b: the smoke and the start
+
+- **Lin install redeployed, 00:21:02Z.** `graft-m1-lin-a/b/c` (`test-faults` build, `tests/m1/lin/vars.json`) and `graft-m1-lin-tools`, with the code above. Wasm sha256 `b1a13876…98f1`; the bytes are in `tests/m1/lin/raw/lin24b-build/`.
+- **Smoke `lin24b-smoke`.** It ran from 00:22:26Z to 00:52:26Z on `repo:930241`, and `finish` completed end to end at 00:54:12Z.
+  - Load and chaos: 57,137 operations, 0 with no reply, p50 355 ms, p99 973 ms. 162 resets (102 of a leader), 118 transfers (30 abandoned).
+  - Porcupine: Ok on all 6 keys on the recorded clocks, at 100 ms, and at the measured 89 ms.
+  - Ack evidence: Ok, 18,225 of 18,225 acknowledged writes with evidence, 0 violations.
+  - `sentAt − commitAt`: median 0 ms, max 308 ms.
+  - Follower acks after the entry was built, by leader>follower: 0>1 min 87 ms, 1>0 min 108 ms, 2>1 min 153 ms. Each is one round trip on the leader's clock.
+- **`lin24b`.** Same spec as lin24: one pinned client each in ATL, LHR and SIN, concurrency 4, rate 5, 6 keys, 40% reads, the same chaos and call faults. Chain `repo:934783`. It started at **2026-11-03T00:55:07.302Z** and ends at **2026-11-04T00:55:07.302Z**.
+- **Services.** `lin24b-watch` and `lin24b-finish` run `tests/m1/lin/raw/lin24b-services.sh watch|finish`. These are resume loops like lin24's: watch resumes from `raw/lin24b.state.json`, finish loops until `raw/lin24b.report.json` exists, and both end in `sleep infinity`. The finish report adds `check.ackEvidence`. lin24's raw files are untouched.

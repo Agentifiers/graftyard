@@ -4,7 +4,8 @@
 // the changes of (term, leader) and the time between the fault's start and the first sample with a leader off the
 // faulted site. Each member's `now` is Cloudflare's clock, the one the fault plan's `from` is on (the orb's clock ran
 // 11.06 s behind it on 2026-11-02), so moves are timed on member clocks. `--stats` at the end reads each member's `/stats` (`commitMs`: the leader's commit latency samples,
-// `failedCalls`, `alarms` with the `STEP_DOWN` trips) and resets them.
+// `failedCalls`, `alarms` with the `STEP_DOWN` trips, `peers`: per peer site its calls' counts by outcome and failure
+// cause, last errors, and last AppendEntries) and resets them, and prints each member's peer calls.
 //
 //   node tests/m1/wp8/observe.ts --out FILE [--chains repo:196608,...] [--every 2000]
 //   node tests/m1/wp8/observe.ts --stats FILE [--chains ...] [--reset]
@@ -46,7 +47,7 @@ async function sample(): Promise<unknown> {
     return {
       chain,
       members: ms.map((m, s) => m.error ? { site: s, error: m.error } :
-        { site: s, role: m.role, term: m.term, leader: m.leader, commit: m.commit, applied: m.applied, now: m.now }),
+        { site: s, role: m.role, term: m.term, leader: m.leader, last: m.last, commit: m.commit, applied: m.applied, now: m.now }),
     };
   }));
   return { at, groups };
@@ -57,11 +58,26 @@ if (opt.stats) {
   for (const chain of chains) {
     for (const s of [0, 1, 2]) {
       const v = await member(chain, s, `/stats${opt.reset ? "?reset=1" : ""}`);
-      out.push({ chain, site: s, leader: v.role, commitMs: v.commitMs, failedCalls: v.failedCalls, alarms: v.alarms, entries: v.entries, error: v.error });
+      out.push({ chain, site: s, leader: v.role, commitMs: v.commitMs, roundMs: v.roundMs, failedCalls: v.failedCalls,
+        alarms: v.alarms, entries: v.entries, peers: v.peers, error: v.error });
     }
   }
   appendFileSync(opt.stats, JSON.stringify({ at: Date.now(), stats: out }) + "\n");
   console.log(`stats for ${chains.join(",")} -> ${opt.stats}`);
+  const iso = (ms: number) => new Date(ms).toISOString().slice(11, 23);
+  for (const m of out) {
+    for (const [to, p] of Object.entries<any>(m.peers ?? {})) {
+      const failed = Object.entries(p.failed).map(([k, n]) => `${k} ${n}`).join(", ") || "none";
+      const lateFailed = Object.entries(p.lateFailed).map(([k, n]) => `${k} ${n}`).join(", ");
+      console.log(`${m.chain} ${m.site}>${to}: ok ${p.ok}, failed ${failed}, late ${p.late} (max ${p.lateMsMax} ms)` +
+        (lateFailed ? `, late then failed ${lateFailed}` : ""));
+      for (const e of p.errors) {
+        console.log(`  ${iso(e.at)} ${e.kind}${e.late ? " (late)" : ""} ${e.call} ${e.entries} entries ${e.bytes} B ${e.ms} ms: ${e.msg}`);
+      }
+      const a = p.appends.at(-1);
+      if (a) console.log(`  last append ${iso(a.at)} round ${a.round} ${a.first}..${a.last} ${a.bytes} B ${a.ms} ms ${a.end}`);
+    }
+  }
 } else {
   if (!opt.out) throw new Error("--out FILE or --stats FILE");
   for (;;) {

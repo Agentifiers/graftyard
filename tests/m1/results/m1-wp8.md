@@ -7,7 +7,7 @@ Everything below ran on 2026-11-02 against `graft-m1-edge` on the real groups of
 | Half | Status |
 | --- | --- |
 | Git conformance and clients with one site's member class failing mid-run | See "BM-1 results" |
-| Linearizability rerun at 24 hours | **Pending until 2026-11-02T18:27Z.** Run `lin24` on `graft-m1-lin-a/b/c` (`m1-wp2.md`, "The 24-hour linearizability rerun"). Its finish service writes `tests/m1/lin/raw/lin24.report.json` after the end |
+| Linearizability rerun at 24 hours | **Not passed** (2026-11-02; see "The 24-hour half" at the end). It was pending until 2026-11-02T18:27Z. Run `lin24` on `graft-m1-lin-a/b/c` (`m1-wp2.md`, "The 24-hour linearizability rerun"). Its finish service writes `tests/m1/lin/raw/lin24.report.json` after the end |
 
 ## Fixes before the run
 
@@ -72,6 +72,7 @@ Fixes:
 - **`workers/site` `/entries` pages by bytes** (`ENTRIES_PAGE_BYTES` = 600,000 stored bytes, at least one entry). The shard already asks again from the next index. After the redeploy, `/_bed/catchup?repo=196608` rehydrated 161 inline packs (3.48 MB) in 16.8 s and answered 200, where it had answered 500 after 27 to 30 s.
 - **`crates/raft` caps each AppendEntries by bytes** (`APPEND_BYTES_MAX` = 1.5 MB past its first entry, as well as `CATCHUP_MAX` = 64 entries), on both the in-window path and `Member::catchup`. 64 entries of up to `ENTRY_MAX` each could make a single call of up to 96 MB, which no member answers within `CALL_DEADLINE`, and the leader would resend the same call forever. Test: `a_lagging_follower_catches_up_in_calls_under_the_byte_cap` (`crates/raft/tests/scenarios.rs`, ten 400 kB entries). On the old code it fails with `one AppendEntries carried 4001260 bytes`.
 - **What these fixes do not explain.** The stuck follower's missing entries 236 to 239 were 836 bytes in all, so the byte cap does not explain that member. Its calls failed for another reason, which was not found before the redeploy reset it. After the redeploy (05:47Z) it caught up to the leader's 241 within 16 s. If it recurs, look at the leader's `call_peer` errors to that member [unverified].
+- **Correction (2026-11-02, evening).** The cause was found later (`m1-f43.md`). The stuck follower's failed calls were not the 836-byte calls for 236 to 239, which were never sent. They were the 1.08 MB resend of entries 172 to 235. The follower answered each in about 2 s, and the leader's host dropped each answer after `CALL_DEADLINE`, so `next` never moved past 172. The host now keeps a late answer for up to 10 s and steps it (`m1-f43.md`, "The fix").
 
 The redeploy is a new site-script version, so it reset every member of the test install, as any site-script change does. `t-256` was then run again from the start (below).
 
@@ -335,3 +336,28 @@ The product build carries `Member::record` and the truncate-after-`Archived` pat
 - **Repositories seeded by this pass on the install:** `wp6/bf18a` (196621, run 1), `wp6/bf18b` (196623, run 2), `wp6/bf19a` (196622, BF-19's 1,000 committed refs under `bf19/r1/`). Their objects are left in the buckets.
 - **The site fault is off** (`fault.sh off` at 13:22:25Z).
 - **Services:** the scratch orb services of this pass (`wp8b-*`, `wp8c-*`) are stopped. `graft-m1-lin-*` was not touched.
+
+## The 24-hour half, 2026-11-02: lin24 does not pass
+
+BM-1's second half is "Linearizability rerun at 24 hours". Its rows set the pass line at zero violations and zero lost acknowledged entries (B0-11). Run `lin24` ran on `graft-m1-lin-a/b/c` from 2026-11-01T18:27:14.621Z to 2026-11-02T18:27:14.621Z. Its report is `tests/m1/lin/raw/lin24.report.json`, and the full analysis is in `m1-wp2.md`, "The 24-hour run's result".
+
+| Check | Result |
+| --- | --- |
+| Operations | 2,739,691, 0 with no reply; p50 326 ms, p99 1,009 ms |
+| Chaos | 5,547 resets (3,676 of a leader), 3,743 transfers (1,131 abandoned), 88 isolates with fault counters |
+| Porcupine, widened 100 ms and widened 275 ms (the measured LHR–SIN bound of 550 ms, halved) | Ok on all 6 keys |
+| Porcupine, recorded clocks | Illegal on k2, k4 and k5, 5 segments. All 5 come from writes whose history rows were lost when 5 of 12,518 client chunks were cut short. With those writes restored: Ok, no skew needed |
+| Lost acknowledged writes | 0 of 869,257. The three logs are identical over 479,965 entries |
+| Early ack | **Not ruled out.** Entry 398,032: an LHR put returned 52 ms before an ATL put was called, and both committed in the same entry. That needs 93 ms of skew against that minute's measured ATL–LHR bound of 49 ms. 17 writes were acknowledged, on their own client's clock, faster than any quorum could commit them |
+
+**Verdict: BM-1's 24-hour half is not passed.** The history cannot rule out an early ack. The members recorded no commit time and no send time, and a client-clock artifact explains the two observations as well as an early ack does. The finish step first crashed with `ERR_STRING_TOO_LONG` on the 584 MB widened history. `check()` in `tests/m1/lin/run.ts` now splits each history by key in one streaming pass. BM-1's 24-hour half is rerun as `lin24b`, with member-side commit and send times checked for every acknowledged write (`m1-wp2.md`, "Member-side ack evidence").
+
+## The 24-hour half, 2026-11-03: member-side ack evidence, and lin24b
+
+The early-ack question that lin24 left open is now checked from member clocks. Every acknowledged write carries its answering member's `QuorumProof` timings, plus its host's own storage-confirm time. `tests/m1/lin/ackcheck.ts` asserts that the reply left at or after the commit, that a quorum of distinct sites stored the entry durably before it, and that the host's own confirm covered it. A planted early ack on the leader's own append was caught: 54 of 3,873 acknowledged writes failed. It was caught again when the crate's proof was made to hide it (`m1-wp2.md`, "Member-side ack evidence, 2026-11-03").
+
+Cloudflare's rule that `Date.now()` advances only on I/O explains neither the 17 fast acks nor the 4 sub-physics clock rows, because a frozen clock only lengthens intervals. They stay unexplained by client clocks. lin24b decides them with the member check.
+
+F45 is fixed, so `load` and the in-memory log are bounded by bytes (`LOG_BYTES`), and `request` rows hold no inline pack bytes. `repo:196624` restored on all three members and took an 800 kB push (same section).
+
+`lin24b` started on `graft-m1-lin-a/b/c` at 2026-11-03T00:55:07.302Z and ends at 2026-11-04T00:55:07.302Z (`m1-wp2.md`, "lin24b: the smoke and the start"). BM-1's 24-hour half stays pending until its report. It passes only if Porcupine finds zero violations, no acknowledged entry is lost, and the member-side ack check finds zero violations.

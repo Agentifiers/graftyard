@@ -13,8 +13,10 @@
 // finished run's report.
 
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
+import { check as ackCheck } from "./ackcheck.ts";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, options: {
   run: { type: "string" }, hours: { type: "string", default: "24" }, "per-colo": { type: "string", default: "1" },
@@ -202,12 +204,19 @@ async function finish(): Promise<void> {
   const porc = `${ROOT}../../m0/porcupine`;
   const bin = "/tmp/lin-m0check";
   if (!existsSync(bin)) execFileSync("go", ["build", "-o", bin, "."], { cwd: porc, stdio: "inherit" });
-  const keys = [...new Set(readFileSync(histPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l).op.key as string))].sort();
-  const check = (path: string) => {
+  // Split by key in one streaming pass: a 24 h history widened by history-prep.py passes Node's 512 MB string limit.
+  const check = async (path: string) => {
+    const parts = new Map<string, string[]>();
+    for await (const l of createInterface({ input: createReadStream(path) })) {
+      if (!l) continue;
+      const k = JSON.parse(l).op.key as string;
+      const p = parts.get(k) ?? []; parts.set(k, p); p.push(l);
+      if (p.length >= 50_000) { appendFileSync(`${path}.${k}`, p.join("\n") + "\n"); p.length = 0; }
+    }
+    for (const [k, p] of parts) if (p.length) appendFileSync(`${path}.${k}`, p.join("\n") + "\n");
     const out: Record<string, unknown> = {};
-    for (const k of keys) {
+    for (const k of [...parts.keys()].sort()) {
       const kp = `${path}.${k}`;
-      writeFileSync(kp, readFileSync(path, "utf8").split("\n").filter((l) => l && JSON.parse(l).op.key === k).join("\n") + "\n");
       try { out[k] = JSON.parse(execFileSync(bin, ["-seg", "2000", "-timeout", "20m", kp], { encoding: "utf8", maxBuffer: 1 << 26 })); }
       catch (e) { out[k] = JSON.parse((e as { stdout: string }).stdout || "{\"result\":\"error\"}"); }
       rmSync(kp);
@@ -215,18 +224,29 @@ async function finish(): Promise<void> {
     return out;
   };
   // On the recorded clocks, with M0's 100 ms assumption, and with the measured bound.
-  const recorded = check(histPath);
-  const widenedBy = (w: number) => {
+  const recorded = await check(histPath);
+  const widenedBy = async (w: number) => {
     const p = `${RAW}${s.run}.widened${w}.jsonl`;
     execFileSync("python3", [`${ROOT}../../m0/run/history-prep.py`, histPath, p, String(w)], { stdio: "inherit" });
-    const r = check(p);
+    const r = await check(p);
     rmSync(p);
     return r;
   };
-  const at100 = widenedBy(100);
-  const wide = widenedBy(widen);
-  const rows = readFileSync(histPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
-  const lat = rows.filter((r) => r.ok).map((r) => r.ret - r.call).sort((a, b) => a - b);
+  const at100 = await widenedBy(100);
+  const wide = await widenedBy(widen);
+  // The member-side ack evidence of every acknowledged write, on the members' clocks.
+  const acks = await ackCheck(histPath);
+  log(`ack evidence: ${JSON.stringify({ result: acks.result, acked: acks.acked, withEvidence: acks.withEvidence, byRule: acks.byRule })}`);
+  // Latency and counts in one streaming pass: a 24 h history passes Node's 512 MB string limit.
+  const lat: number[] = [];
+  let operations = 0, noReply = 0;
+  for await (const l of createInterface({ input: createReadStream(histPath) })) {
+    if (!l) continue;
+    const r = JSON.parse(l);
+    operations++;
+    if (r.ok) lat.push(r.ret - r.call); else noReply++;
+  }
+  lat.sort((a, b) => a - b);
   const events = existsSync(`${RAW}${s.run}.events.jsonl`) ? readFileSync(`${RAW}${s.run}.events.jsonl`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
   const count = (re: RegExp) => events.filter((e) => re.test(e.what)).length;
   const isolates = JSON.parse(readFileSync(`${RAW}${s.run}.isolates.json`, "utf8")) as { site: number; counts: Record<string, number>; rolls: number }[];
@@ -235,14 +255,14 @@ async function finish(): Promise<void> {
   const status = await call("/status", { chain: s.chain }).catch((e) => String(e));
   const report = {
     run: s.run, chain: s.chain, start: new Date(s.start).toISOString(), end: new Date(s.end).toISOString(), clients: s.clients, spec: s.spec,
-    operations: rows.length, noReply: rows.filter((r) => !r.ok).length,
+    operations, noReply,
     latency: { p50: pct(lat, 0.5), p99: pct(lat, 0.99), max: lat.at(-1) },
     chaos: { resets: count(/^reset/), leaderResets: count(/^reset .*\(leader\)/), transfers: count(/^transfer \d/), abandoned: count(/^transfer \d.*abandon/) },
     isolates: isolates.length, faultTotals, clock: { perColo, pairs: pairStats, widenMs: widen },
-    check: { recorded, widened100: at100, widenedMeasured: wide }, status,
+    check: { recorded, widened100: at100, widenedMeasured: wide, ackEvidence: acks }, status,
   };
   writeFileSync(reportPath, JSON.stringify(report, null, 1));
-  log(`report ${reportPath}: ${JSON.stringify({ ops: report.operations, recorded: Object.values(recorded).map((r: any) => r.result), at100: Object.values(at100).map((r: any) => r.result), measured: Object.values(wide).map((r: any) => r.result) })}`);
+  log(`report ${reportPath}: ${JSON.stringify({ ops: report.operations, recorded: Object.values(recorded).map((r: any) => r.result), at100: Object.values(at100).map((r: any) => r.result), measured: Object.values(wide).map((r: any) => r.result), ackEvidence: acks.result })}`);
 }
 
 if (cmd === "start") await start();

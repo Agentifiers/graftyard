@@ -132,8 +132,9 @@ class Edge {
     return vs[(vs.indexOf(target) + 1) % vs.length];
   }
 
-  /** A write to completion under one RequestId, or `null` after GIVE_UP. */
-  async write(cmd: Exclude<Op, { kind: "get" }>, id: string): Promise<{ ok: boolean } | null> {
+  /** A write to completion under one RequestId, or `null` after GIVE_UP. An acknowledged write carries the answering
+   *  member's evidence (`ack`, `host::ack_json`). */
+  async write(cmd: Exclude<Op, { kind: "get" }>, id: string): Promise<{ ok: boolean; ack?: unknown } | null> {
     const end = Date.now() + GIVE_UP;
     let target = this.leader ?? 0, sends = 0, tries = 0;
     const body = { rid: id, cmd };
@@ -156,7 +157,7 @@ class Edge {
       }
       if (done?.notLeader) { target = await this.notLeader(done.notLeader, target, ++tries); continue; }
       this.leader = target;
-      if (done?.ok) return { ok: true };
+      if (done?.ok) return { ok: true, ack: done.ok.ack ?? null };
       if (done?.refused) return { ok: false };
     }
     return null;
@@ -195,7 +196,11 @@ export class LoadClient extends DurableObject<Env> {
     super(ctx, env);
     this.sql.exec("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
     this.sql.exec(`CREATE TABLE IF NOT EXISTS history (seq INTEGER PRIMARY KEY AUTOINCREMENT, run TEXT NOT NULL, client INTEGER NOT NULL,
-      call INTEGER NOT NULL, ret INTEGER NOT NULL, op TEXT NOT NULL, ok INTEGER NOT NULL, out TEXT, rid TEXT)`);
+      call INTEGER NOT NULL, ret INTEGER NOT NULL, op TEXT NOT NULL, ok INTEGER NOT NULL, out TEXT, rid TEXT, ack TEXT)`);
+    // Clients created before the member-side ack evidence lack the column.
+    if (!this.sql.exec<{ name: string }>("PRAGMA table_info(history)").toArray().some((c) => c.name === "ack")) {
+      this.sql.exec("ALTER TABLE history ADD COLUMN ack TEXT");
+    }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS clock (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, phase TEXT NOT NULL,
       site INTEGER NOT NULL, offset REAL, rtt INTEGER NOT NULL)`);
   }
@@ -240,6 +245,7 @@ export class LoadClient extends DurableObject<Env> {
         const op = this.pick(spec, client, `${chunk}-${n++}`);
         const call = Date.now();
         let out: Out | null;
+        let ack: unknown = null;
         const id = op.kind === "get" ? null : rid();
         try {
           if (op.kind === "get") {
@@ -249,12 +255,14 @@ export class LoadClient extends DurableObject<Env> {
           } else {
             const r = await e.write(op, id!);
             out = r && { ok: r.ok };
+            ack = r?.ack ?? null;
           }
         } catch {
           out = null;
         }
-        this.sql.exec("INSERT INTO history (run, client, call, ret, op, ok, out, rid) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          spec.run, client, call, Date.now(), JSON.stringify(op), out ? 1 : 0, out ? JSON.stringify(out) : null, id);
+        this.sql.exec("INSERT INTO history (run, client, call, ret, op, ok, out, rid, ack) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          spec.run, client, call, Date.now(), JSON.stringify(op), out ? 1 : 0, out ? JSON.stringify(out) : null, id,
+          ack ? JSON.stringify(ack) : null);
         const wait = gap - (Date.now() - t0);
         if (wait > 0) await sleep(wait);
       }
@@ -282,9 +290,10 @@ export class LoadClient extends DurableObject<Env> {
 
   async history(run: string, after: number): Promise<object[]> {
     const c = this.meta("colo") ?? "";
-    return this.sql.exec<any>("SELECT seq, client, call, ret, op, ok, out, rid FROM history WHERE run = ? AND seq > ? ORDER BY seq LIMIT ?",
+    return this.sql.exec<any>("SELECT seq, client, call, ret, op, ok, out, rid, ack FROM history WHERE run = ? AND seq > ? ORDER BY seq LIMIT ?",
       run, after, HISTORY_PAGE).toArray().map((r) => ({ seq: r.seq, client: r.client, colo: c, call: r.call, ret: r.ret,
-      op: JSON.parse(r.op), ok: r.ok === 1, ...(r.out ? { out: JSON.parse(r.out) } : {}), ...(r.rid ? { rid: r.rid } : {}) }));
+      op: JSON.parse(r.op), ok: r.ok === 1, ...(r.out ? { out: JSON.parse(r.out) } : {}), ...(r.rid ? { rid: r.rid } : {}),
+      ...(r.ack ? { ack: JSON.parse(r.ack) } : {}) }));
   }
 
   async clock(after: number): Promise<object[]> {
