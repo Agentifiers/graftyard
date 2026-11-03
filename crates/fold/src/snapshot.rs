@@ -53,6 +53,8 @@ pub struct SnapshotTrailer {
     pub to: Index,
     pub term: Term,
     pub entry: Digest,
+    /// Entry `to`'s time. Not in the design's trailer: a restored tier needs it for snapshot cadence and retention.
+    pub at: Timestamp,
     pub fold_digest: Digest,
     pub release: ReleaseId,
     pub format: graftyard_raft::Format,
@@ -102,8 +104,14 @@ pub fn snapshots_to_keep(snaps: &[(Index, Timestamp)], now: Timestamp) -> Vec<In
 /// A snapshot being written: which table it is in, the last key it emitted, and the hash sum of rows so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotJob {
-    chain: ChainId,
     schema: Schema,
+    cursor: SnapshotCursor,
+}
+
+/// Where a `SnapshotJob` stands, which a host stores at a part boundary and resumes from after its object restarts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotCursor {
+    chain: ChainId,
     at: SnapAt,
     release: ReleaseId,
     format: graftyard_raft::Format,
@@ -149,67 +157,96 @@ impl SnapshotJob {
         if let Some(s) = m.snap {
             return Err(SnapshotError::Running(s.to));
         }
-        let at = SnapAt { to: m.applied, term: m.term, entry: m.last };
+        let at = SnapAt { to: m.applied, term: m.term, entry: m.last, at: m.at };
         m.snap = Some(at);
+        m.snap_sum = m.sum;
         save_meta(store, &m);
-        Ok(SnapshotJob {
-            chain,
-            schema,
-            at,
-            release,
-            format,
-            table: 0,
-            after: None,
-            sum: [0; 32],
-            rows: 0,
-            done: false,
-        })
+        let cursor =
+            SnapshotCursor { chain, at, release, format, table: 0, after: None, sum: [0; 32], rows: 0, done: false };
+        Ok(SnapshotJob { schema, cursor })
+    }
+
+    /// A job from a stored cursor, over the tier whose meta row still names its `to`.
+    pub fn resume(schema: Schema, cursor: SnapshotCursor) -> SnapshotJob {
+        SnapshotJob { schema, cursor }
+    }
+
+    pub fn cursor(&self) -> &SnapshotCursor {
+        &self.cursor
     }
 
     pub fn to(&self) -> Index {
-        self.at.to
+        self.cursor.at.to
+    }
+
+    /// Entry `to`'s time.
+    pub fn to_at(&self) -> Timestamp {
+        self.cursor.at.at
+    }
+
+    /// Whether the trailer has been returned.
+    pub fn done(&self) -> bool {
+        self.cursor.done
+    }
+
+    /// The tier's `fold_digest` at `to`, from the sum `apply` kept when the job began: what the trailer must carry,
+    /// so a host can name the snapshot's key before it reads a row.
+    pub fn want(&self, store: &dyn Store) -> Digest {
+        let m = meta(store);
+        assert_eq!(m.snap, Some(self.cursor.at), "the tier's running snapshot is this job's");
+        let a = self.cursor.at;
+        digest_of(&TierDigest { tier: self.schema.tier, applied: a.to, term: a.term, last: a.entry }, &m.snap_sum)
     }
 
     /// The next frame, with at most `max_rows` rows, read from the store as it stands now; `None` once the trailer has
     /// been returned. Each call fits one request's limits, so a host runs one per alarm while `apply` goes on.
     pub fn next(&mut self, store: &dyn Store, max_rows: usize) -> Option<SnapshotFrame> {
-        if self.done {
+        if self.cursor.done {
             return None;
         }
         let max_rows = max_rows.max(1);
-        while let Some(t) = self.schema.tables.get(self.table) {
+        while let Some(t) = self.schema.tables.get(self.cursor.table) {
             let rows = self.read(store, t.name, max_rows);
             if rows.is_empty() {
-                self.table += 1;
-                self.after = None;
+                self.cursor.table += 1;
+                self.cursor.after = None;
                 continue;
             }
             for r in &rows {
-                add(&mut self.sum, &row_hash(t.name, &r.key, &Stored { written: r.written, cols: r.cols.clone() }));
+                add(
+                    &mut self.cursor.sum,
+                    &row_hash(t.name, &r.key, &Stored { written: r.written, cols: r.cols.clone() }),
+                );
             }
-            self.rows += rows.len() as u64;
-            self.after = rows.last().map(|r| r.key.clone());
+            self.cursor.rows += rows.len() as u64;
+            self.cursor.after = rows.last().map(|r| r.key.clone());
             return Some(SnapshotFrame::Rows { table: t.name.into(), rows });
         }
-        self.done = true;
-        let d = TierDigest { tier: self.schema.tier, applied: self.at.to, term: self.at.term, last: self.at.entry };
-        Some(SnapshotFrame::End(SnapshotTrailer {
-            chain: self.chain,
+        self.cursor.done = true;
+        let d = TierDigest {
             tier: self.schema.tier,
-            to: self.at.to,
-            term: self.at.term,
-            entry: self.at.entry,
-            fold_digest: digest_of(&d, &self.sum),
-            release: self.release,
-            format: self.format,
-            rows: self.rows,
+            applied: self.cursor.at.to,
+            term: self.cursor.at.term,
+            last: self.cursor.at.entry,
+        };
+        Some(SnapshotFrame::End(SnapshotTrailer {
+            chain: self.cursor.chain,
+            tier: self.schema.tier,
+            to: self.cursor.at.to,
+            term: self.cursor.at.term,
+            entry: self.cursor.at.entry,
+            at: self.cursor.at.at,
+            fold_digest: digest_of(&d, &self.cursor.sum),
+            release: self.cursor.release,
+            format: self.cursor.format,
+            rows: self.cursor.rows,
         }))
     }
 
-    /// Up to `max` rows of `table` as of `to`, after `self.after`, merging the live table and its undo copies.
+    /// Up to `max` rows of `table` as of `to`, after `self.cursor.after`, merging the live table and its undo copies.
     fn read(&self, store: &dyn Store, table: &str, max: usize) -> Vec<Row> {
         let undo = undo_table(table);
-        let from = self.after.clone().unwrap_or_default();
+        let from = self.cursor.after.clone().unwrap_or_default();
         // Each side is read `batch` rows at a time. A side that filled its batch is known only up to its last key, so
         // rows are final below the lower such key; read more until `max` final rows exist or both sides ran out.
         let mut batch = max + 1;
@@ -221,9 +258,10 @@ impl SnapshotJob {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             };
-            let mut out: BTreeMap<Key, Stored> = live.into_iter().filter(|(_, s)| s.written <= self.at.to).collect();
+            let mut out: BTreeMap<Key, Stored> =
+                live.into_iter().filter(|(_, s)| s.written <= self.cursor.at.to).collect();
             out.extend(copies);
-            if let Some(a) = &self.after {
+            if let Some(a) = &self.cursor.after {
                 out.remove(a);
             }
             let rows: Vec<Row> = out
@@ -244,31 +282,19 @@ impl SnapshotJob {
 /// `Archived` for the snapshot, or when it abandons one.
 pub fn end_snapshot(store: &mut dyn Store, schema: &Schema) {
     for t in schema.tables {
-        let undo = undo_table(t.name);
-        loop {
-            let rows = store.scan(&undo, &[], 512);
-            if rows.is_empty() {
-                break;
-            }
-            for (k, _) in rows {
-                store.delete(&undo, &k);
-            }
-        }
+        store.clear(&undo_table(t.name));
     }
     let mut m = meta(store);
     m.snap = None;
+    m.snap_sum = [0; 32];
     save_meta(store, &m);
 }
 
 /// The bytes of a frame stream: the magic, the frame format, then each frame as a `u32` length and its postcard bytes.
 pub fn encode_frames(frames: &[SnapshotFrame]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&FRAME_FORMAT.to_be_bytes());
+    let mut out = frames_header();
     for f in frames {
-        let b = postcard::to_allocvec(f).expect("frames encode");
-        out.extend_from_slice(&(b.len() as u32).to_be_bytes());
-        out.extend_from_slice(&b);
+        encode_frame(f, &mut out);
     }
     out
 }
@@ -304,6 +330,105 @@ pub fn decode_frames(mut b: &[u8]) -> Result<Vec<SnapshotFrame>, SnapshotError> 
         return Err(bad("no trailer"));
     }
     Ok(out)
+}
+
+/// Checks a frame stream as it arrives, without holding it: what `restore` checks, for a reader that cannot hold a
+/// whole tier (`tests/m2`'s verifier streams a 4 GB snapshot through it). Each table of the schema at most once, in
+/// schema order, rows in key order, the row count, and the digest of the rows against the trailer.
+#[derive(Clone, Debug)]
+pub struct FrameCheck {
+    schema: Schema,
+    table: usize,
+    last: Option<Key>,
+    sum: [u8; 32],
+    rows: u64,
+    trailer: Option<SnapshotTrailer>,
+}
+
+impl FrameCheck {
+    pub fn new(schema: Schema) -> FrameCheck {
+        FrameCheck { schema, table: 0, last: None, sum: [0; 32], rows: 0, trailer: None }
+    }
+
+    pub fn frame(&mut self, f: &SnapshotFrame) -> Result<(), SnapshotError> {
+        if self.trailer.is_some() {
+            return Err(SnapshotError::Malformed("frames after the trailer".into()));
+        }
+        match f {
+            SnapshotFrame::Rows { table, rows } => {
+                let at = self.schema.tables.iter().position(|t| t.name == &**table);
+                let at = at.ok_or_else(|| SnapshotError::Table(table.clone()))?;
+                if at < self.table {
+                    return Err(SnapshotError::Order(table.clone()));
+                }
+                if at > self.table {
+                    (self.table, self.last) = (at, None);
+                }
+                for r in rows {
+                    if self.last.as_ref().is_some_and(|l| *l >= r.key) {
+                        return Err(SnapshotError::Order(table.clone()));
+                    }
+                    add(&mut self.sum, &row_hash(table, &r.key, &Stored { written: r.written, cols: r.cols.clone() }));
+                    self.last = Some(r.key.clone());
+                    self.rows += 1;
+                }
+                Ok(())
+            }
+            SnapshotFrame::End(tr) => {
+                if tr.tier != self.schema.tier {
+                    return Err(SnapshotError::Wrong {
+                        got: format!("{:?}", tr.tier),
+                        want: format!("{:?}", self.schema.tier),
+                    });
+                }
+                self.trailer = Some(tr.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// The trailer, once the rows' count and digest match it.
+    pub fn finish(self) -> Result<SnapshotTrailer, SnapshotError> {
+        let tr = self.trailer.ok_or_else(|| SnapshotError::Malformed("no trailer".into()))?;
+        if self.rows != tr.rows {
+            return Err(SnapshotError::Rows { got: self.rows, want: tr.rows });
+        }
+        let got = digest_of(&TierDigest { tier: tr.tier, applied: tr.to, term: tr.term, last: tr.entry }, &self.sum);
+        if got != tr.fold_digest {
+            return Err(SnapshotError::Digest { got, want: tr.fold_digest });
+        }
+        Ok(tr)
+    }
+}
+
+/// The frame stream's header, then each frame's bytes as `encode_frames` writes them, so a writer can emit a stream
+/// one frame at a time.
+pub fn frames_header() -> Vec<u8> {
+    let mut out = MAGIC.to_vec();
+    out.extend_from_slice(&FRAME_FORMAT.to_be_bytes());
+    out
+}
+
+pub fn encode_frame(f: &SnapshotFrame, out: &mut Vec<u8>) {
+    let b = postcard::to_allocvec(f).expect("frames encode");
+    out.extend_from_slice(&(b.len() as u32).to_be_bytes());
+    out.extend_from_slice(&b);
+}
+
+/// Splits complete frames off the front of `buf`, after its header has been taken off: the frames, and how many
+/// bytes they used.
+pub fn decode_some(buf: &[u8]) -> Result<(Vec<SnapshotFrame>, usize), SnapshotError> {
+    let mut at = 0;
+    let mut out = Vec::new();
+    while buf.len() >= at + 4 {
+        let n = u32::from_be_bytes(buf[at..at + 4].try_into().expect("4")) as usize;
+        if buf.len() < at + 4 + n {
+            break;
+        }
+        out.push(postcard::from_bytes(&buf[at + 4..at + 4 + n]).map_err(|e| SnapshotError::Malformed(e.to_string()))?);
+        at += 4 + n;
+    }
+    Ok((out, at))
 }
 
 /// Installs a snapshot into an empty tier: the rows, then a meta row at the trailer's `to` that chains to its `entry`.
@@ -354,7 +479,18 @@ pub fn restore(
     if count != tr.rows {
         return Err(SnapshotError::Rows { got: count, want: tr.rows });
     }
-    save_meta(store, &crate::tier::Meta { applied: tr.to, term: tr.term, last: tr.entry, sum, snap: None });
+    save_meta(
+        store,
+        &crate::tier::Meta {
+            applied: tr.to,
+            term: tr.term,
+            at: tr.at,
+            last: tr.entry,
+            sum,
+            snap: None,
+            snap_sum: [0; 32],
+        },
+    );
     let got = refold_digest(store, schema);
     if got != tr.fold_digest {
         return Err(SnapshotError::Digest { got, want: tr.fold_digest });

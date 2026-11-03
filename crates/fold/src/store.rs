@@ -52,6 +52,65 @@ pub trait Store {
     fn put(&mut self, table: &str, key: Key, row: Stored);
     fn delete(&mut self, table: &str, key: &[Val]);
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)>;
+    /// Deletes every row of `table`.
+    fn clear(&mut self, table: &str) {
+        loop {
+            let rows = self.scan(table, &[], 512);
+            if rows.is_empty() {
+                return;
+            }
+            for (k, _) in rows {
+                self.delete(table, &k);
+            }
+        }
+    }
+}
+
+/// A store a fold value owns: a `MemStore`, or a host's handle on its own tables, which clones as another handle on the
+/// same tables. A fold that holds `Box<dyn TierStore>` so runs unchanged in tests and on a Durable Object.
+pub trait TierStore: Store + std::fmt::Debug {
+    fn clone_box(&self) -> Box<dyn TierStore>;
+    /// The concrete store, for a host that reads its own tables beside the trait (a search index).
+    fn as_any(&self) -> &dyn std::any::Any;
+    /// Whether the tier has caught up and `apply` writes it. A host's metadata tier loads lazily: until it has, a
+    /// fold applies the core tier alone, and a command that reads the metadata tier is refused.
+    fn loaded(&self) -> bool {
+        true
+    }
+}
+
+/// A boxed tier is a store, so `&Box<dyn TierStore>` reads as `&dyn Read`.
+impl Store for Box<dyn TierStore> {
+    fn get(&self, table: &str, key: &[Val]) -> Option<Stored> {
+        (**self).get(table, key)
+    }
+    fn put(&mut self, table: &str, key: Key, row: Stored) {
+        (**self).put(table, key, row)
+    }
+    fn delete(&mut self, table: &str, key: &[Val]) {
+        (**self).delete(table, key)
+    }
+    fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
+        (**self).scan(table, from, limit)
+    }
+    fn clear(&mut self, table: &str) {
+        (**self).clear(table)
+    }
+}
+
+impl Clone for Box<dyn TierStore> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+impl TierStore for MemStore {
+    fn clone_box(&self) -> Box<dyn TierStore> {
+        Box::new(self.clone())
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// The in-memory store tests use.

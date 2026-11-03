@@ -11,11 +11,14 @@ pub mod store;
 mod tier;
 
 pub use snapshot::{
-    RESTORE_WINDOW, Row, SNAPSHOT_BYTES, SNAPSHOT_EVERY, SnapshotError, SnapshotFrame, SnapshotJob, SnapshotTrailer,
-    decode_frames, encode_frames, end_snapshot, restore, snapshot_due, snapshot_writer, snapshots_to_keep,
+    FrameCheck, RESTORE_WINDOW, Row, SNAPSHOT_BYTES, SNAPSHOT_EVERY, SnapshotCursor, SnapshotError, SnapshotFrame,
+    SnapshotJob, SnapshotTrailer, decode_frames, decode_some, encode_frame, encode_frames, end_snapshot, frames_header,
+    restore, snapshot_due, snapshot_writer, snapshots_to_keep,
 };
-pub use store::{Key, MemStore, Overlay, Read, Rows, Schema, Store, Stored, TableDef, Val};
+pub use store::{
+    Key, META, MemStore, Overlay, Read, Rows, Schema, Store, Stored, TableDef, TierStore, Val, undo_table,
+};
 pub use tier::{
-    AuditReport, FoldError, Meta, Mismatch, SnapAt, TierDigest, Tiered, apply, fold_audit_compare, fold_digest, has,
-    meta, refold_digest, tier_bit,
+    AuditReport, DIGESTS, DIGESTS_KEEP, FoldError, Meta, Mismatch, SnapAt, TierDigest, Tiered, add_row, apply,
+    digest_at, digest_with, fold_audit_compare, fold_digest, has, meta, refold_digest, seed, tier_bit,
 };
