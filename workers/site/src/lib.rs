@@ -13,6 +13,7 @@ use worker::*;
 mod family;
 #[cfg(feature = "test-faults")]
 mod faults;
+mod fold_audit;
 mod host;
 mod lookup;
 mod member;
@@ -21,7 +22,9 @@ mod register;
 mod registry;
 mod release;
 mod shard;
+mod snap;
 mod sweep;
+mod tier;
 
 pub use member::Member;
 pub use registry::Registry;
@@ -100,12 +103,17 @@ async fn fetch(_req: Request, _env: Env, _ctx: Context) -> Result<Response> {
     Response::error("not found", 404)
 }
 
-/// The sweeper's Cron Trigger (`crate::sweep`). Its report goes to the script's logs.
+/// The site's Cron Trigger: the pack sweeper (`crate::sweep`), then the fold audit (`crate::fold_audit`). Reports go to the
+/// script's logs.
 #[event(scheduled)]
 async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     match sweep::run(&env).await {
         Ok(r) => console_log!("sweep {r}"),
         Err(e) => console_error!("sweep failed: {e}"),
+    }
+    match fold_audit::run(&env, None).await {
+        Ok(r) => console_log!("fold audit {r}"),
+        Err(e) => console_error!("fold audit failed: {e}"),
     }
 }
 

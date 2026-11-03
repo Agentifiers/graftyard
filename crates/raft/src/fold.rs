@@ -31,10 +31,36 @@ pub trait Fold: Clone + fmt::Debug {
         Self: 'a;
 
     fn scratch(&self) -> Self::Scratch<'_>;
+    /// The scratch view for an entry with time `at` and tier tag `tiers`: the leader's `decide` passes the entry it is
+    /// building (every tier, since its tag is the union of its commands' `tiers()`), and `verify` the entry it checks.
+    /// A tiered fold overrides it: its writes stamp the entry's time, and its `check` refuses an event whose tiers the
+    /// tag leaves out, which its `apply` could not write.
+    fn scratch_at(&self, _at: Timestamp, _tiers: TierSet) -> Self::Scratch<'_> {
+        self.scratch()
+    }
     fn apply(&mut self, event: &Self::Event);
     /// A committed `EntryBody::IdBlock`: the fold's next assignments come from `block`. Folds that assign no ids
     /// ignore it.
     fn apply_id_block(&mut self, _block: IdBlock) {}
+    /// Applies one committed entry, whatever its body: its index, `prev`, time, and tier tag included. By default
+    /// each event of an `Events` entry in order, and an `IdBlock`'s block. A tiered fold (`graftyard_fold::apply`)
+    /// needs the whole entry, so it overrides this and leaves `apply` and `apply_id_block` unused.
+    fn apply_entry(&mut self, e: &LogEntry<Self::Event>) {
+        match &e.body {
+            EntryBody::Events(events) => {
+                for ev in events {
+                    self.apply(ev);
+                }
+            }
+            EntryBody::IdBlock(b) => self.apply_id_block(*b),
+            EntryBody::Config(_) | EntryBody::Noop => {}
+        }
+    }
+    /// The tiers an event writes, which a recorded entry (`Member::record`) is tagged with. By default the core tier,
+    /// the only one an untiered fold has.
+    fn tiers(_event: &Self::Event) -> TierSet {
+        TierSet::CORE
+    }
     /// The form of an event a `request` row keeps for `REQUEST_RETENTION`: all that `Command::replay` and the host's
     /// row readers need. A fold whose events carry bulk the row does not need, such as a repository's inline pack
     /// bytes, drops it here, so a member does not hold two days of it in memory (F45). By default the whole event.
@@ -177,11 +203,9 @@ impl<F: Fold> GroupFold<F> {
             self.expiry.pop_first();
             self.requests.remove(&id);
         }
+        self.fold.apply_entry(e);
         match &e.body {
             EntryBody::Events(events) => {
-                for ev in events {
-                    self.fold.apply(ev);
-                }
                 for (id, range) in &e.requests {
                     let events = events[range.start as usize..range.end as usize].iter().map(F::row_event).collect();
                     let prior = self.requests.insert(*id, RequestRow { index: e.index, at: e.at, events });
@@ -196,10 +220,7 @@ impl<F: Fold> GroupFold<F> {
             }
             EntryBody::Config(c) => self.config = Some((e.index, c.clone())),
             EntryBody::Noop => {}
-            EntryBody::IdBlock(b) => {
-                self.id_block = Some(*b);
-                self.fold.apply_id_block(*b);
-            }
+            EntryBody::IdBlock(b) => self.id_block = Some(*b),
         }
         self.applied = e.index;
     }

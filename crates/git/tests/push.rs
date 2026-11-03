@@ -532,6 +532,25 @@ fn promoted_and_archived_follow_each_other_and_archive_only_promoted_ranges() {
         })
     };
     let check = |f: &RepoFold, ev: &RepoEvent| f.scratch().check(ev);
+    // A committed entry of one event, chained to the last: what the tiers apply.
+    let mut prev = graftyard_raft::PREV_ZERO;
+    let mut index = 0;
+    let mut commit = |f: &mut RepoFold, ev: RepoEvent| {
+        index += 1;
+        let e = graftyard_raft::LogEntry {
+            term: graftyard_raft::Term(2),
+            index: Index(index),
+            prev,
+            format: graftyard_git::repo::REPO_FORMAT_V1,
+            tiers: graftyard_raft::TierSet::CORE,
+            at: Timestamp(index),
+            requests: SmallVec::new(),
+            extend: None,
+            body: graftyard_raft::EntryBody::Events(vec![ev]),
+        };
+        prev = graftyard_raft::digest(&e);
+        f.apply_entry(&e);
+    };
     // No archive before a promotion covers the range.
     assert!(check(&fold, &archived(1, 8, key(1, 8, 5))).is_err());
     assert!(check(&fold, &promoted(2, 8, &stored)).is_err(), "the first range starts at 1");
@@ -542,15 +561,74 @@ fn promoted_and_archived_follow_each_other_and_archive_only_promoted_ranges() {
     s.apply(&promoted(1, 8, &stored));
     assert!(s.check(&archived(1, 8, key(1, 8, 5))).is_ok());
     drop(s);
-    fold.apply(&promoted(1, 8, &stored));
+    commit(&mut fold, promoted(1, 8, &stored));
     assert!(check(&fold, &archived(1, 9, key(1, 9, 5))).is_err(), "past the last promotion");
     assert!(check(&fold, &archived(1, 8, key(1, 8, 6))).is_err(), "the key names another digest");
     assert!(check(&fold, &archived(1, 8, key(1, 7, 5))).is_err(), "the key names another range");
     assert!(check(&fold, &archived(1, 8, key(1, 8, 5))).is_ok());
-    fold.apply(&archived(1, 8, key(1, 8, 5)));
+    commit(&mut fold, archived(1, 8, key(1, 8, 5)));
     assert_eq!(fold.first_index(), Index(9));
     assert!(check(&fold, &archived(1, 8, key(1, 8, 5))).is_err(), "an archive does not repeat");
     assert!(check(&fold, &promoted(1, 12, &stored)).is_err(), "a promotion does not overlap the last one");
     assert!(check(&fold, &promoted(9, 12, &stored)).is_ok());
-    assert!(fold.refs.is_empty(), "neither event changes a ref");
+    assert!(fold.refs().is_empty(), "neither event changes a ref");
+}
+
+/// An `Archived` with a snapshot key records the tier's snapshot without moving the log's archive ranges, its key
+/// must name this chain at `to` from 0, and each new one drops the rows `RESTORE_WINDOW` no longer keeps: every
+/// snapshot inside the window, and the newest one before it.
+#[test]
+fn a_snapshot_archived_keeps_one_snapshot_at_or_below_every_index_in_the_window() {
+    use graftyard_git::repo::{RepoEvent, RepoFold};
+    use graftyard_git::{Archived, R2Key, tiers};
+    use graftyard_raft::{Fold, Scratch};
+    use graftyard_types::{ChainId, Index, RepoId, Tier};
+
+    let repo = RepoId(DbId(7));
+    let mut fold = RepoFold::new(repo, AccountId(DbId(OWNER)));
+    let day = 86_400_000;
+    let snap = |chain: RepoId, to: u64, at: u64| {
+        RepoEvent::Archived(Archived {
+            key: R2Key::Snapshot {
+                chain: ChainId::Repo(chain),
+                tier: Tier::Metadata,
+                from: Index(0),
+                to: Index(to),
+                digest: Digest([to as u8; 32]),
+            },
+            from: Index(0),
+            to: Index(to),
+            from_at: Timestamp(at),
+            to_at: Timestamp(at),
+            digest: Digest([to as u8; 32]),
+        })
+    };
+    assert!(fold.scratch().check(&snap(RepoId(DbId(8)), 1, 0)).is_err(), "another chain's snapshot");
+    let mut prev = graftyard_raft::PREV_ZERO;
+    let mut index = 0;
+    // Snapshots at 1, 2, ..., 50, each one day after the last, entry `n` at day `n`.
+    for n in 1..=50u64 {
+        index += 1;
+        let ev = snap(repo, n, n * day);
+        assert!(fold.scratch().check(&ev).is_ok());
+        let e = graftyard_raft::LogEntry {
+            term: graftyard_raft::Term(2),
+            index: Index(index),
+            prev,
+            format: graftyard_git::repo::REPO_FORMAT_V1,
+            tiers: graftyard_raft::TierSet::CORE,
+            at: Timestamp(n * day),
+            requests: SmallVec::new(),
+            extend: None,
+            body: graftyard_raft::EntryBody::Events(vec![ev]),
+        };
+        prev = graftyard_raft::digest(&e);
+        fold.apply_entry(&e);
+    }
+    let kept: Vec<u64> = tiers::snapshots(&*fold.core, Tier::Metadata).iter().map(|(to, _, _)| to.0).collect();
+    // The window is 35 days back from day 50: days 15..=50 are inside, and 14 is the newest before it.
+    assert_eq!(kept, (14..=50).collect::<Vec<_>>());
+    assert!(tiers::snapshots(&*fold.core, Tier::Core).is_empty());
+    assert_eq!(fold.first_index(), Index(1), "a snapshot does not move the log's archive ranges");
+    assert!(fold.archived().is_none());
 }

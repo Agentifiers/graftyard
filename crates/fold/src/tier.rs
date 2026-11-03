@@ -23,12 +23,16 @@ use crate::store::{Key, META, Read, Rows, Schema, Store, Stored, Val, undo_table
 pub struct Meta {
     pub applied: Index,
     pub term: Term,
+    /// The time of entry `applied`.
+    pub at: Timestamp,
     /// The digest of entry `applied`, which entry `applied + 1` names as `prev`. Zero before index 1.
     pub last: Digest,
     /// Sum mod 2^256 of every row's hash.
     pub sum: [u8; 32],
     /// The snapshot being written, while `snap_undo` copies are kept.
     pub snap: Option<SnapAt>,
+    /// `sum` when the running snapshot began: the tier's digest at its `to`.
+    pub snap_sum: [u8; 32],
 }
 
 /// Where a running snapshot stands: entry `to`, its term, and its digest, captured when the snapshot began.
@@ -37,6 +41,8 @@ pub struct SnapAt {
     pub to: Index,
     pub term: Term,
     pub entry: Digest,
+    /// Entry `to`'s time, which the snapshot's `Archived.to_at` carries for retention.
+    pub at: Timestamp,
 }
 
 pub fn meta(store: &dyn Store) -> Meta {
@@ -45,7 +51,15 @@ pub fn meta(store: &dyn Store) -> Meta {
             Some(Val::Blob(b)) => postcard::from_bytes(b).expect("the tier's own meta row"),
             _ => panic!("meta row has no blob"),
         },
-        None => Meta { applied: Index(0), term: Term(0), last: graftyard_raft::PREV_ZERO, sum: [0; 32], snap: None },
+        None => Meta {
+            applied: Index(0),
+            term: Term(0),
+            at: Timestamp(0),
+            last: graftyard_raft::PREV_ZERO,
+            sum: [0; 32],
+            snap: None,
+            snap_sum: [0; 32],
+        },
     }
 }
 
@@ -195,9 +209,52 @@ pub fn apply<T: Tiered>(t: &T, store: &mut dyn Store, tier: Tier, e: &LogEntry<T
     let mut m = w.meta;
     m.applied = e.index;
     m.term = e.term;
+    m.at = e.at;
     m.last = digest(e);
     save_meta(store, &m);
+    let d = digest_of(&TierDigest { tier, applied: m.applied, term: m.term, last: m.last }, &m.sum);
+    store.put(
+        DIGESTS,
+        vec![Val::Int(e.index.0 as i64)],
+        Stored { written: e.index, cols: vec![Val::Blob(d.0.to_vec().into())] },
+    );
+    if let Some(old) = e.index.0.checked_sub(DIGESTS_KEEP) {
+        store.delete(DIGESTS, &[Val::Int(old as i64)]);
+    }
     Ok(())
+}
+
+/// The tier's own table of its `fold_digest` after each of the last `DIGESTS_KEEP` entries it applied, so an audit
+/// compares members at one index whatever batches they applied in. Outside the schema: not in the digest, not in a
+/// snapshot.
+pub const DIGESTS: &str = "_digest";
+/// Entries whose digests a tier keeps [guess].
+pub const DIGESTS_KEEP: u64 = 20_000;
+
+/// The tier's `fold_digest` after entry `index`, while it is among the last `DIGESTS_KEEP`.
+pub fn digest_at(store: &dyn Store, index: Index) -> Option<Digest> {
+    match store.get(DIGESTS, &[Val::Int(index.0 as i64)])?.cols.first() {
+        Some(Val::Blob(b)) => Some(Digest(b[..].try_into().ok()?)),
+        _ => None,
+    }
+}
+
+/// Test installs only: puts `rows` into `table` of a tier stamped `written`, at or below the tier's `applied`, and
+/// keeps the row-hash sum, as `apply` would. The rows come from no entry, so a refold of the log does not reproduce
+/// them; every member that seeds the same rows at the same `written` keeps the same `fold_digest`.
+pub fn seed(store: &mut dyn Store, schema: &Schema, table: &str, written: Index, rows: Vec<(Key, Vec<Val>)>) {
+    assert!(schema.tables.iter().any(|t| t.name == table), "table {table} is not in the {:?} tier", schema.tier);
+    let mut m = meta(store);
+    assert!(written <= m.applied && m.snap.is_none(), "seed at or below applied, with no snapshot running");
+    for (key, cols) in rows {
+        if let Some(old) = store.get(table, &key) {
+            sub(&mut m.sum, &row_hash(table, &key, &old));
+        }
+        let row = Stored { written, cols };
+        add(&mut m.sum, &row_hash(table, &key, &row));
+        store.put(table, key, row);
+    }
+    save_meta(store, &m);
 }
 
 /// What `fold_digest` covers besides the rows.
@@ -221,6 +278,16 @@ pub(crate) fn digest_of(d: &TierDigest, sum: &[u8; 32]) -> Digest {
 pub fn fold_digest(store: &dyn Store, tier: Tier) -> Digest {
     let m = meta(store);
     digest_of(&TierDigest { tier, applied: m.applied, term: m.term, last: m.last }, &m.sum)
+}
+
+/// Adds one row's hash to a running sum, as a refold that reads a tier in pages does.
+pub fn add_row(sum: &mut [u8; 32], table: &str, key: &[Val], row: &Stored) {
+    add(sum, &row_hash(table, key, row));
+}
+
+/// A tier's digest with `meta`'s `applied`, term, and entry digest, and the row-hash sum `sum`.
+pub fn digest_with(schema: &Schema, meta: &Meta, sum: &[u8; 32]) -> Digest {
+    digest_of(&TierDigest { tier: schema.tier, applied: meta.applied, term: meta.term, last: meta.last }, sum)
 }
 
 /// The same digest with the sum recomputed from every row, as an audit or a restored snapshot checks it.

@@ -210,7 +210,7 @@ impl Family for Release {
     fn reads() -> Vec<Format> {
         vec![RELEASE_FORMAT]
     }
-    fn new_fold(_join: &Join) -> ReleaseState {
+    fn new_fold(_sql: &SqlStorage, _join: &Join) -> ReleaseState {
         ReleaseState { fold: ReleaseFold::default(), anchor: cached_anchor(), entries: Vec::new() }
     }
     fn store_fold(_fold: &ReleaseState, entries: &[&raft::LogEntry<Accepted>], stmts: &mut Vec<Stmt>) {
@@ -226,7 +226,7 @@ impl Family for Release {
         }
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<ReleaseState> {
-        let mut f = Self::new_fold(join);
+        let mut f = Self::new_fold(sql, join);
         for r in rows(sql, "SELECT bytes FROM release_entry ORDER BY idx, k", vec![])? {
             f.apply(&Accepted(blob(&r[0])?.to_vec()));
         }

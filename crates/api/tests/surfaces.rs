@@ -483,6 +483,7 @@ fn timestamps_render_as_github_does() {
 fn core_rows(m: &MemStore) -> MemStore {
     let mut rows = m.clone();
     rows.0.remove(META);
+    rows.0.remove(graftyard_fold::DIGESTS);
     rows
 }
 

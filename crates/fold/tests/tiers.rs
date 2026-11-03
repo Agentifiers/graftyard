@@ -2,9 +2,10 @@
 //! rows, `applied`, `fold_digest`, and the snapshot it writes and restores.
 
 use graftyard_fold::{
-    FoldError, MemStore, Read, Rows, SNAPSHOT_EVERY, Schema, SnapshotError, SnapshotFrame, SnapshotJob, Store,
-    TableDef, Tiered, Val, apply, decode_frames, encode_frames, end_snapshot, fold_audit_compare, fold_digest, meta,
-    refold_digest, restore, snapshot_due, snapshot_writer, snapshots_to_keep,
+    FoldError, FrameCheck, MemStore, Read, Rows, SNAPSHOT_EVERY, Schema, SnapshotError, SnapshotFrame, SnapshotJob,
+    Store, TableDef, Tiered, Val, apply, decode_frames, decode_some, encode_frame, encode_frames, end_snapshot,
+    fold_audit_compare, fold_digest, frames_header, meta, refold_digest, restore, snapshot_due, snapshot_writer,
+    snapshots_to_keep,
 };
 use graftyard_raft::{EntryBody, Format, LogEntry, PREV_ZERO, Record, Term, TierSet, digest};
 use graftyard_types::{
@@ -274,6 +275,53 @@ fn a_snapshot_taken_while_apply_continues_holds_the_tier_at_to_and_restores_ther
         restore(&mut MemStore::default(), &CORE, &tampered, (CHAIN, Index(3))),
         Err(SnapshotError::Digest { .. })
     ));
+}
+
+#[test]
+fn a_job_resumed_from_its_stored_cursor_streams_what_frame_check_accepts_at_the_key_digest() {
+    // A host stores the cursor after each batch and resumes from it after a reset; the byte stream goes up in parts
+    // cut anywhere. The digest the key names (`want`, taken at begin) is what the streamed trailer and rows prove.
+    let entries = log((0..12).map(|b| (0..5).map(|k| Ev::Meta(b * 5 + k, Some(k))).collect()).collect());
+    let mut s = MemStore::default();
+    apply_all(&mut s, Tier::Metadata, &entries[..8]);
+    let at_eight = fold_digest(&s, Tier::Metadata);
+    let job = SnapshotJob::begin(&mut s, META, CHAIN, ReleaseId([1; 32]), FMT).unwrap();
+    let want = job.want(&s);
+    assert_eq!(want, at_eight);
+    let mut cursor = job.cursor().clone();
+    let mut bytes = frames_header();
+    let mut next = 8;
+    loop {
+        let stored = serde_json::to_vec(&cursor).unwrap();
+        let mut job = SnapshotJob::resume(META, serde_json::from_slice(&stored).unwrap());
+        let Some(f) = job.next(&s, 7) else { break };
+        encode_frame(&f, &mut bytes);
+        cursor = job.cursor().clone();
+        if next < entries.len() {
+            apply(&Toy, &mut s, Tier::Metadata, &entries[next]).unwrap();
+            next += 1;
+        }
+    }
+    let check = |bytes: &[u8]| {
+        let mut fc = FrameCheck::new(META);
+        let mut buf = Vec::new();
+        for part in bytes[10..].chunks(13) {
+            buf.extend_from_slice(part);
+            let (frames, used) = decode_some(&buf)?;
+            for f in &frames {
+                fc.frame(f)?;
+            }
+            buf.drain(..used);
+        }
+        fc.finish()
+    };
+    let tr = check(&bytes).unwrap();
+    assert_eq!((tr.to, tr.rows, tr.fold_digest), (Index(8), 40, want));
+    // One flipped byte in a row's value is caught, whichever check sees it first.
+    let mut bad = bytes.clone();
+    let at = bad.len() / 2;
+    bad[at] ^= 1;
+    assert!(check(&bad).is_err());
 }
 
 #[test]

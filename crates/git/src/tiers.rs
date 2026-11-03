@@ -87,6 +87,11 @@ pub const CORE: Schema = Schema {
         t("settings", &[]),
         t("unresolved", &["n"]),
         t("verdict_by_review", &["review"]),
+        // The last `Promoted` and `Archived` of a log range, and each tier's committed snapshots by (tier, to), which
+        // `verify` and the snapshot writer read.
+        t("promoted", &[]),
+        t("archived", &[]),
+        t("snapshot", &["tier", "to"]),
     ],
 };
 
@@ -352,6 +357,39 @@ fn retention_days(r: &(impl Read + ?Sized)) -> u16 {
     get_rec(r, "retention", &[]).unwrap_or(CHECK_RETENTION_DEFAULT)
 }
 
+/// A tier's snapshot rows, `(to, entry time at to, archived record)`, in index order.
+pub fn snapshots(
+    r: &(impl Read + ?Sized),
+    tier: Tier,
+) -> Vec<(graftyard_types::Index, Timestamp, crate::pack::Archived)> {
+    r.prefix("snapshot", &[tier_key(tier)])
+        .into_iter()
+        .filter_map(|(k, _)| get_rec::<crate::pack::Archived>(r, "snapshot", &k))
+        .map(|a| (a.to, a.to_at, a))
+        .collect()
+}
+
+fn tier_key(t: Tier) -> Val {
+    int(match t {
+        Tier::Core => 0,
+        Tier::Metadata => 1,
+    })
+}
+
+/// A committed snapshot of `tier` at `to`: its row, then every row `snapshots_to_keep` no longer keeps at this
+/// entry's time, so each tier keeps one snapshot at or below every index inside `RESTORE_WINDOW` and every member
+/// drops the same rows. The snapshot's objects in R2 go once their row has (`workers/site`).
+fn snapshot_committed(w: &mut dyn Rows, tier: Tier, to: graftyard_types::Index, a: &crate::pack::Archived) {
+    put_rec(w, "snapshot", vec![tier_key(tier), int(to.0 as i64)], a);
+    let all = snapshots(w, tier);
+    let keep = graftyard_fold::snapshots_to_keep(&all.iter().map(|(i, t, _)| (*i, *t)).collect::<Vec<_>>(), a.to_at);
+    for (i, _, _) in all {
+        if !keep.contains(&i) {
+            w.delete("snapshot", &[tier_key(tier), int(i.0 as i64)]);
+        }
+    }
+}
+
 // ---- writes ----
 
 /// The repository chain's tiers. `repo` is the chain's own repository, which a same-repository head belongs to, and
@@ -431,7 +469,12 @@ impl RepoTiers {
                     }
                 }
             }
-            RepoEvent::Refused { .. } | RepoEvent::Promoted(_) | RepoEvent::Archived(_) => {}
+            RepoEvent::Refused { .. } => {}
+            RepoEvent::Promoted(p) => put_rec(w, "promoted", Vec::new(), p),
+            RepoEvent::Archived(a) => match &a.key {
+                crate::key::R2Key::Snapshot { tier, to, .. } => snapshot_committed(w, *tier, *to, a),
+                _ => put_rec(w, "archived", Vec::new(), a),
+            },
             RepoEvent::IssueOpened { n, capture } => {
                 assigned(w, ev, Tier::Core, capture.id);
                 put_rec(w, "counter", Vec::new(), &n.0)

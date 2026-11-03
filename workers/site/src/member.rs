@@ -209,8 +209,9 @@ impl DurableObject for Member {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if let Some(h) = self.hosts.borrow().as_ref().map(Hosted::clone) {
-            each!(&h, x => if x.joined() { x.alarm() });
+        let hosted = self.hosts.borrow().as_ref().map(Hosted::clone);
+        if let Some(h) = hosted {
+            each!(&h, x => if x.joined() { x.alarm().await });
         }
         Response::empty()
     }
@@ -383,6 +384,17 @@ impl<F: Family> Routes<F> {
                 self.reply(json!({ "entries": e }))
             }
             (Method::Get, "/stats") => self.stats(crate::registry::query(&url, "reset").is_ok()),
+            (Method::Post, p) if F::route_paths().contains(&p) => {
+                let body: Value = req.json().await?;
+                let path = p.to_owned();
+                self.ready_or(|| async {
+                    match F::route(&self.host, &path, body).await {
+                        Some(r) => self.reply(r?),
+                        None => Response::error("not found", 404),
+                    }
+                })
+                .await
+            }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
             #[cfg(not(feature = "test-faults"))]
@@ -813,6 +825,8 @@ impl<F: Family> Routes<F> {
             "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
             "commitMs": s.commit_ms,
             "roundMs": s.round_ms,
+            "applyMs": s.apply_ms,
+            "applySteps": s.apply_steps,
             "confirmMs": s.confirm_ms,
             "appendMs": s.append_ms,
             "entries": s.entries,
@@ -826,11 +840,16 @@ impl<F: Family> Routes<F> {
             "truncatedTo": s.truncated_to,
             "received": s.received,
             "alarms": s.alarms,
+            "alarmRuns": s.alarm_runs,
+            "alarmLast": s.alarm_last,
+            "alarmArms": s.alarm_arms,
             "peers": s.peers,
         });
         if reset {
             s.commit_ms.clear();
             s.round_ms.clear();
+            s.apply_ms.clear();
+            s.apply_steps.clear();
             s.confirm_ms.clear();
             s.append_ms.clear();
             s.entries = 0;

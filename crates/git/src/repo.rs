@@ -7,12 +7,15 @@
 
 use std::collections::BTreeMap;
 
+use graftyard_fold::{MemStore, Overlay, Read, TierStore, Tiered, Val, fold_digest, has};
 use graftyard_identity::{
     Actor, AuthzRead, Credential, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, ScopeSet, UserId,
     check_credential, credential_chains,
 };
-use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Digest, Index, RepoId, RequestId, SiteSet, Ulid};
+use graftyard_raft::{Command, Enc, Ev, Fold, Format, LogEntry, Record, Scratch, TierSet};
+use graftyard_types::{
+    AccountId, ChainId, CredentialShard, Digest, Index, RepoId, RequestId, SiteSet, Tier, Timestamp, Ulid,
+};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -23,6 +26,7 @@ use crate::issues::{
 use crate::key::R2Key;
 use crate::pack::{Archived, PackId, PackRef, Promoted};
 use crate::refs::{Atomicity, ObjectId, RefName, RefUpdate};
+use crate::tiers::{RepoTiers, get_rec, ref_key, tier_of};
 
 /// The repository chain's command records. Version 2 adds `Push.agent`; an edge sends it only once `FormatsEnable`
 /// has enabled it. No registry of family numbers exists yet (`crates/identity` took 0x10 to 0x13), so 0x20 is this
@@ -178,16 +182,36 @@ impl RepoEvent {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// The repository chain's fold: its two tiers (`design/SHARED.md`, "Folds"; `crate::tiers`). The core tier's `ref`
+/// table is the only copy of the refs: `Push` decides on it and a `fresh` read answers from it, so a push and a pull
+/// request's head read one source. `repo` and `owner` are what every member knows without the log; the owner names the
+/// `Authz` chain in `deps` until a `Settings` entry names another.
+///
+/// The tiers are stores the fold owns: `MemStore` in tests, and in a site member handles on its SQLite tables, which
+/// clone as handles on the same tables (`graftyard_fold::TierStore`). Until the metadata tier is `loaded`, the fold
+/// applies the core tier alone, and a core request never waits for the metadata tier.
+#[derive(Clone, Debug)]
 pub struct RepoFold {
     pub repo: Option<RepoId>,
-    /// `RepoSettings.owner`, which names the owner's `Authz` chain in `deps`.
     pub owner: Option<AccountId>,
-    pub refs: BTreeMap<RefName, ObjectId>,
-    /// The last committed `Promoted`.
-    pub promoted: Option<Promoted>,
-    /// The last committed `Archived`: entries through its `to` are archived, and the chain's log starts after it.
-    pub archived: Option<Archived>,
+    pub core: Box<dyn TierStore>,
+    pub meta: Box<dyn TierStore>,
+}
+
+impl Default for RepoFold {
+    fn default() -> RepoFold {
+        RepoFold { repo: None, owner: None, core: Box::new(MemStore::default()), meta: Box::new(MemStore::default()) }
+    }
+}
+
+/// Two folds are equal when their tiers hold the same rows: the same `fold_digest` per tier.
+impl PartialEq for RepoFold {
+    fn eq(&self, o: &RepoFold) -> bool {
+        let meta = |f: &RepoFold| f.meta.loaded().then(|| fold_digest(&*f.meta, Tier::Metadata));
+        (self.repo, self.owner) == (o.repo, o.owner)
+            && fold_digest(&*self.core, Tier::Core) == fold_digest(&*o.core, Tier::Core)
+            && meta(self) == meta(o)
+    }
 }
 
 impl RepoFold {
@@ -195,9 +219,73 @@ impl RepoFold {
         RepoFold { repo: Some(repo), owner: Some(owner), ..RepoFold::default() }
     }
 
+    /// A fold over tiers a host holds.
+    pub fn with_tiers(
+        repo: Option<RepoId>,
+        owner: Option<AccountId>,
+        core: Box<dyn TierStore>,
+        meta: Box<dyn TierStore>,
+    ) -> RepoFold {
+        RepoFold { repo, owner, core, meta }
+    }
+
+    /// The tiers' chain-specific half. A fold with no repository (the CLI's latency probe) uses repository 0.
+    pub fn tiers(&self) -> RepoTiers {
+        RepoTiers {
+            repo: self.repo.unwrap_or(RepoId(graftyard_types::DbId(0))),
+            owner: self.owner.unwrap_or(AccountId(graftyard_types::DbId(0))),
+        }
+    }
+
+    pub fn get(&self, name: &RefName) -> Option<ObjectId> {
+        get_rec(&*self.core, "ref", &[ref_key(name)])
+    }
+
+    /// Every ref, in name order.
+    pub fn refs(&self) -> Vec<(RefName, ObjectId)> {
+        self.core
+            .prefix("ref", &[])
+            .into_iter()
+            .filter_map(|(k, v)| match (k.first(), v.first()) {
+                (Some(Val::Blob(n)), Some(Val::Blob(o))) => {
+                    Some((RefName::parse(n).ok()?, postcard::from_bytes(o).ok()?))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn promoted(&self) -> Option<Promoted> {
+        get_rec(&*self.core, "promoted", &[])
+    }
+
+    pub fn archived(&self) -> Option<Archived> {
+        get_rec(&*self.core, "archived", &[])
+    }
+
+    /// The owner whose `Authz` chain gates the repository: `RepoSettings.owner` once a `Settings` entry committed.
+    pub fn authz_owner(&self) -> Option<AccountId> {
+        get_rec::<RepoSettings>(&*self.core, "settings", &[]).map(|s| s.owner).or(self.owner)
+    }
+
     /// The first index still in the chain's log (`ChainLog::first_index`).
     pub fn first_index(&self) -> Index {
-        Index(self.archived.as_ref().map_or(0, |a| a.to.0) + 1)
+        Index(self.archived().map_or(0, |a| a.to.0) + 1)
+    }
+
+    /// Applies one committed entry to the core tier, and to the metadata tier when it is loaded. A tier refuses an
+    /// entry that does not follow its own `applied`; that is a host bug, so it panics as `GroupFold::apply` does.
+    pub fn apply_core(&mut self, e: &LogEntry<RepoEvent>) {
+        let t = self.tiers();
+        graftyard_fold::apply(&t, &mut *self.core, Tier::Core, e).expect("core tier applies the next entry");
+    }
+
+    pub fn apply_meta(&mut self, e: &LogEntry<RepoEvent>) {
+        let t = self.tiers();
+        if self.meta.loaded() {
+            graftyard_fold::apply(&t, &mut *self.meta, Tier::Metadata, e)
+                .expect("metadata tier applies the next entry");
+        }
     }
 }
 
@@ -217,13 +305,21 @@ fn check_promoted(prev: Option<&Promoted>, p: &Promoted) -> Result<(), Box<str>>
 /// `verify`'s rule for an `Archived` after `prev` with `promoted` the last promotion: the range starts right after
 /// the previous one, ends at or before the last promotion's `to`, and its key is the `Archive` key of this chain,
 /// range, and digest. Stricter than the design, which lets a range that names no inline pack go without `Promoted`
-/// [inference]: the fold cannot see the range's entries, so every archived range must be promoted first.
+/// [inference]: the fold cannot see the range's entries, so every archived range must be promoted first. An
+/// `Archived` whose key is a `Snapshot` of this chain names a snapshot of one tier at `to`, from 0, with no ordering
+/// against the log's archive ranges.
 fn check_archived(
     repo: Option<RepoId>,
     prev: Option<&Archived>,
     promoted: Option<&Promoted>,
     a: &Archived,
 ) -> Result<(), Box<str>> {
+    if let R2Key::Snapshot { chain, from, to, digest, .. } = &a.key {
+        if repo.map(ChainId::Repo) != Some(*chain) || *from != Index(0) || *to != a.to || *digest != a.digest {
+            return Err(format!("snapshot key {} does not name this chain at {:?} from 0", a.key, a.to).into());
+        }
+        return Ok(());
+    }
     let from = Index(prev.map_or(0, |q| q.to.0) + 1);
     if a.from != from || a.to < a.from {
         return Err(format!("archived {:?}..={:?} where the next range starts at {from:?}", a.from, a.to).into());
@@ -241,23 +337,35 @@ fn check_archived(
     Ok(())
 }
 
+/// The fold at `applied` with an entry's earlier events written on top, by the same code `apply` runs: what `decide`
+/// and `verify` read. Only the tiers the entry's tag names are written, as only those apply it; `check` refuses an
+/// event whose tiers the tag leaves out. `check` reads only the core tier, so a follower whose metadata tier is still
+/// loading verifies as any other; a command whose `decide` reads the metadata tier finds `view()` empty then.
 pub struct RepoScratch<'a> {
     base: &'a RepoFold,
-    over: BTreeMap<RefName, Option<ObjectId>>,
-    promoted: Option<Promoted>,
-    archived: Option<Archived>,
+    tag: TierSet,
+    at: Timestamp,
+    core: Overlay<'a, dyn Read + 'a>,
+    meta: Option<Overlay<'a, dyn Read + 'a>>,
 }
 
 impl RepoScratch<'_> {
     pub fn get(&self, name: &RefName) -> Option<ObjectId> {
-        match self.over.get(name) {
-            Some(v) => *v,
-            None => self.base.refs.get(name).copied(),
-        }
+        get_rec(&self.core, "ref", &[ref_key(name)])
     }
 
     pub fn fold(&self) -> &RepoFold {
         self.base
+    }
+
+    /// The owner whose `Authz` chain gates the repository, with the entry's earlier `Settings` on top.
+    pub fn authz_owner(&self) -> Option<AccountId> {
+        get_rec::<RepoSettings>(&self.core, "settings", &[]).map(|s| s.owner).or(self.base.owner)
+    }
+
+    /// Both tiers as `IssueCmd::decide` reads them. `None` while the metadata tier is not loaded.
+    pub fn view(&self) -> Option<(&dyn Read, &dyn Read)> {
+        Some((&self.core, self.meta.as_ref()?))
     }
 
     /// The refs, in the fold or written earlier in the entry, that `name` is a directory or a file of.
@@ -275,15 +383,35 @@ impl RepoScratch<'_> {
                 consider(&p);
             }
         }
-        // Its children: refs under "name/".
+        // Its children: refs under "name/". Ref keys are blobs, which sort by bytes, so they are one run from "name/".
         let mut dir = b.to_vec();
         dir.push(b'/');
-        for n in self.base.refs.keys().chain(self.over.keys()) {
-            if n.as_bytes().starts_with(&dir) {
-                consider(n);
+        let mut from = vec![Val::Blob(dir.clone().into())];
+        // Few refs sit under a name, often none, so the scan reads a few rows at a time: one large read here costs
+        // every push in an entry a copy of the rows the entry wrote after it (BF-20).
+        loop {
+            let batch = self.core.scan("ref", &from, 8);
+            let full = batch.len() == 8;
+            for (k, _) in &batch {
+                let Some(Val::Blob(n)) = k.first() else { continue };
+                if !n.starts_with(&dir) {
+                    return out;
+                }
+                if let Ok(n) = RefName::parse(n) {
+                    consider(&n);
+                }
+            }
+            match batch.last() {
+                Some((k, _)) if full => {
+                    let Some(Val::Blob(n)) = k.first() else { return out };
+                    // The next key after `n`: `n` followed by a zero byte.
+                    let mut next = n.to_vec();
+                    next.push(0);
+                    from = vec![Val::Blob(next.into())];
+                }
+                _ => return out,
             }
         }
-        out
     }
 }
 
@@ -296,29 +424,37 @@ pub fn dir_or_file(a: &RefName, b: &RefName) -> bool {
 
 impl Scratch for RepoScratch<'_> {
     type Event = RepoEvent;
+
+    /// Writes the event into the tiers the entry's tag names, as `apply` will.
     fn apply(&mut self, ev: &RepoEvent) {
-        match ev {
-            RepoEvent::Refs { updates, .. } => {
-                for u in updates {
-                    self.over.insert(u.name.clone(), u.new);
-                }
-            }
-            RepoEvent::Promoted(p) => self.promoted = Some(p.clone()),
-            RepoEvent::Archived(a) => self.archived = Some(a.clone()),
-            _ => {}
+        let (t, set) = (self.base.tiers(), tier_of(ev));
+        if has(set, Tier::Core) && has(self.tag, Tier::Core) {
+            t.write(ev, Tier::Core, self.at, &mut self.core);
+        }
+        if let Some(m) = self.meta.as_mut()
+            && has(set, Tier::Metadata)
+            && has(self.tag, Tier::Metadata)
+        {
+            t.write(ev, Tier::Metadata, self.at, m);
         }
     }
 
-    /// `verify`'s replay: each update's `expect` against the running state, so an entry whose order or base differs
-    /// from the follower's fold is refused.
+    /// `verify`'s replay: the entry's tag covers the event's tiers, each update's `expect` holds against the running
+    /// state, and `Promoted` and `Archived` follow the last committed ranges. An entry whose order or base differs
+    /// from the follower's fold is refused. Only the core tier is read, so a member whose metadata tier is not loaded
+    /// verifies the same.
     fn check(&self, ev: &RepoEvent) -> Result<(), Box<str>> {
-        let promoted = self.promoted.as_ref().or(self.base.promoted.as_ref());
+        let needs = tier_of(ev);
+        if needs.0 & !self.tag.0 != 0 {
+            return Err(format!("the entry is tagged {:?} but the event needs {needs:?}", self.tag).into());
+        }
+        let promoted: Option<Promoted> = get_rec(&self.core, "promoted", &[]);
         let updates = match ev {
             RepoEvent::Refs { updates, .. } => updates,
-            RepoEvent::Promoted(p) => return check_promoted(promoted, p),
+            RepoEvent::Promoted(p) => return check_promoted(promoted.as_ref(), p),
             RepoEvent::Archived(a) => {
-                let prev = self.archived.as_ref().or(self.base.archived.as_ref());
-                return check_archived(self.base.repo, prev, promoted, a);
+                let prev: Option<Archived> = get_rec(&self.core, "archived", &[]);
+                return check_archived(self.base.repo, prev.as_ref(), promoted.as_ref(), a);
             }
             _ => return Ok(()),
         };
@@ -337,24 +473,36 @@ impl Scratch for RepoScratch<'_> {
 impl Fold for RepoFold {
     type Event = RepoEvent;
     type Scratch<'a> = RepoScratch<'a>;
+
     fn scratch(&self) -> RepoScratch<'_> {
-        RepoScratch { base: self, over: BTreeMap::new(), promoted: None, archived: None }
+        self.scratch_at(Timestamp(0), TierSet(u8::MAX))
     }
-    fn apply(&mut self, ev: &RepoEvent) {
-        match ev {
-            RepoEvent::Refs { updates, .. } => {
-                for u in updates {
-                    match u.new {
-                        Some(o) => self.refs.insert(u.name.clone(), o),
-                        None => self.refs.remove(&u.name),
-                    };
-                }
-            }
-            RepoEvent::Promoted(p) => self.promoted = Some(p.clone()),
-            RepoEvent::Archived(a) => self.archived = Some(a.clone()),
-            _ => {}
+
+    fn scratch_at(&self, at: Timestamp, tiers: TierSet) -> RepoScratch<'_> {
+        RepoScratch {
+            base: self,
+            tag: tiers,
+            at,
+            core: Overlay::new(&self.core as &dyn Read),
+            meta: self.meta.loaded().then(|| Overlay::new(&self.meta as &dyn Read)),
         }
     }
+
+    /// Never called: a tiered fold applies whole entries (`apply_entry`), which carry the index, `prev`, time, and tag
+    /// a tier checks and stamps.
+    fn apply(&mut self, _ev: &RepoEvent) {
+        unreachable!("RepoFold applies whole entries")
+    }
+
+    fn apply_entry(&mut self, e: &LogEntry<RepoEvent>) {
+        self.apply_core(e);
+        self.apply_meta(e);
+    }
+
+    fn tiers(ev: &RepoEvent) -> TierSet {
+        tier_of(ev)
+    }
+
     /// A `request` row keeps a push's `Refs` without its inline pack's bytes: `Push::replay` reads only the refs,
     /// and the sweeper's `RequestSource` only stored packs (`packs_of`), while the bytes stay in the log entry. Two
     /// days of 1 MB inline packs in every member's memory ran its isolate out of memory (F45).
@@ -779,7 +927,7 @@ impl Command for Push {
     /// The actor's `Account` and token rows, and the owner's `Authz`, named by the fold's `RepoSettings`.
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
-        if let Some(o) = fold.owner {
+        if let Some(o) = fold.authz_owner() {
             d.push(ChainId::Authz(o));
         }
         d
@@ -795,7 +943,7 @@ impl Command for Push {
             return Err(PushErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(PushErr::Unauthorized)?;
-        let owner = s.fold().owner;
+        let owner = s.authz_owner();
         let authz = owner.and_then(|o| {
             deps.iter().find_map(|(c, d)| match d {
                 IdentityDep::Authz(f) if *c == ChainId::Authz(o) => Some(f as &dyn AuthzRead),

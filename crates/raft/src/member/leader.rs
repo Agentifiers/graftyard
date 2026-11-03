@@ -595,7 +595,7 @@ impl<C: Command> Member<C> {
         let mut tiers = TierSet::NONE;
         let mut format = Format { family: 0, version: 0 };
         {
-            let mut s = self.fold.fold.scratch();
+            let mut s = self.fold.fold.scratch_at(self.now, TierSet(u8::MAX));
             for q in &batch {
                 tiers = tiers.union(q.cmd.tiers());
                 format = format.max(q.cmd.format());
@@ -660,12 +660,13 @@ impl<C: Command> Member<C> {
     fn append_record(&mut self, id: RequestId, format: Format, events: Vec<crate::Ev<C>>) {
         let last = self.last();
         let n = u32::try_from(events.len()).expect("events fit an entry");
+        let tiers = events.iter().fold(TierSet::NONE, |t, ev| t.union(C::Fold::tiers(ev)));
         let e = LogEntry {
             term: self.state.term,
             index: last.next(),
             prev: self.digest_at(last).expect("tail digest"),
             format,
-            tiers: TierSet::CORE,
+            tiers,
             at: self.now,
             requests: smallvec::smallvec![(id, 0..n)],
             extend: None,
