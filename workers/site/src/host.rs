@@ -74,8 +74,6 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS raft_state (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS log (idx INTEGER PRIMARY KEY, term INTEGER NOT NULL, digest BLOB NOT NULL, row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS reg (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
-    // A repository chain's refs, one row per ref (`family::Repo`).
-    "CREATE TABLE IF NOT EXISTS repo_ref (name BLOB PRIMARY KEY, oid BLOB NOT NULL)",
     crate::release::RELEASE_SCHEMA,
     "CREATE TABLE IF NOT EXISTS fold (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS id_block (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
@@ -499,7 +497,7 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
 }
 
 /// Runs the statements in one `storage.transactionSync`, which workers-rs 0.8.7 does not bind.
-fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result<(), String> {
+pub fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result<(), String> {
     if stmts.is_empty() {
         return Ok(());
     }
@@ -629,8 +627,8 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
     })?;
     let mut fold = GroupFold::from_parts(folded, applied, config, id_block, requests);
     fold.set_retention(retention);
-    if applied.0 <= RESTORE_CHECK_MAX && !truncated {
-        let mut replayed = GroupFold::new(F::new_fold(join));
+    if applied.0 <= RESTORE_CHECK_MAX && !truncated && !F::tiered() {
+        let mut replayed = GroupFold::new(F::new_fold(sql, join));
         replayed.set_retention(retention);
         each_row(sql, "SELECT idx, digest, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)], |r| {
             replayed.apply(&decode(&r)?);
@@ -692,7 +690,7 @@ fn outcome_index<F: Family>(o: &Outcome<F>) -> Index {
 impl<F: Family> Host<F> {
     pub fn new(state: Rc<State>, env: Env) -> Rc<Host<F>> {
         let sql = state.storage().sql();
-        for q in SCHEMA {
+        for q in SCHEMA.iter().chain(F::schema()) {
             sql.exec(q, None).expect("member schema");
         }
         let h = Rc::new(Host {
@@ -880,6 +878,11 @@ impl<F: Family> Host<F> {
         };
         let (r, mut out) = ready.persist(&mut store);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        if let Some(ms) = F::fold_alarm_ms()
+            && applied > core.applied
+        {
+            self.arm_in(ms);
+        }
         #[cfg(feature = "test-faults")]
         if let Some(fl) = Self::fault_for(core, appended, &out) {
             core.kills.remove(&fl.rid);
@@ -1069,6 +1072,11 @@ impl<F: Family> Host<F> {
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
         commit_tx(&self.state.storage(), stmts)?;
+        if let Ok(core) = self.core.try_borrow()
+            && let Some(c) = core.as_ref()
+        {
+            F::flushed(&c.m.group_fold().fold);
+        }
         self.flush_due.set(false);
         let held = std::mem::take(&mut *self.held.borrow_mut());
         for out in held {
@@ -1475,7 +1483,6 @@ impl<F: Family> Host<F> {
     }
 
     /// Registers a waiter for the entry `Member::record` takes under `rid`.
-    #[cfg(feature = "test-faults")]
     pub fn wait_recorded(&self, rid: RequestId) -> oneshot::Receiver<Result<Index, NotLeader>> {
         let (tx, rx) = oneshot::channel();
         if let Some(core) = self.core.borrow_mut().as_mut() {
@@ -1656,25 +1663,38 @@ impl<F: Family> Host<F> {
     }
 
     fn arm(self: &Rc<Self>) {
-        if self.alarm_at.get() != 0 {
+        self.arm_in(DRAIN_CHECK_MS);
+    }
+
+    /// Arms the object's one alarm `ms` from now, unless one is set sooner.
+    pub fn arm_in(self: &Rc<Self>, ms: i64) {
+        let at = now_ms() + ms as u64;
+        if self.alarm_at.get() != 0 && self.alarm_at.get() <= at {
             return;
         }
-        self.alarm_at.set(now_ms() + DRAIN_CHECK_MS as u64);
+        self.alarm_at.set(at);
         let h = self.clone();
         spawn_local(async move {
             // Unconfirmed, so arming never holds a reply behind the output gate; a lost alarm is re-armed by the next
             // served request.
             let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
-            let _ = h.state.storage().set_alarm_with_options(DRAIN_CHECK_MS, opts).await;
+            let _ = h.state.storage().set_alarm_with_options(ms, opts).await;
         });
     }
 
-    /// The leader's alarm: one `tick`, then re-armed only while the member leads and served in the last 60 s.
-    pub fn alarm(self: &Rc<Self>) {
+    /// The leader's alarm: one `tick`, then re-armed only while the member leads and served in the last 60 s. The
+    /// family's own alarm work (a snapshot writer's batches) runs first and asks for the next alarm itself.
+    pub async fn alarm(self: &Rc<Self>) {
         self.alarm_at.set(0);
-        let _ = self.tick_once();
+        F::on_alarm(self).await;
+        // A follower woken only for its fold work does not run Raft's timers: before the family's alarms, only a
+        // member that served had one.
+        let recent = now_ms().saturating_sub(self.served_at.get()) < DRAIN_IDLE_MS;
         let leading = self.core.borrow().as_ref().is_some_and(|c| c.m.role() == Role::Leader);
-        if leading && now_ms().saturating_sub(self.served_at.get()) < DRAIN_IDLE_MS {
+        if leading || recent {
+            let _ = self.tick_once();
+        }
+        if leading && recent {
             self.arm();
         }
     }

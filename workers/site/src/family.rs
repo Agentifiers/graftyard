@@ -51,10 +51,48 @@ pub trait Family: 'static {
 
     /// The formats this release decodes for the family.
     fn reads() -> Vec<Format>;
-    /// The fold of a member that has applied nothing, from what it was joined with.
-    fn new_fold(join: &Join) -> Self::Fold;
+    /// The fold of a member that has applied nothing, from what it was joined with. A tiered fold's tiers live in
+    /// `sql` (`crate::tier`), and are empty here.
+    fn new_fold(sql: &SqlStorage, join: &Join) -> Self::Fold;
     /// Statements storing the fold after `entries` applied, inside `Write::Apply`'s transaction.
     fn store_fold(fold: &Self::Fold, entries: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>);
+    /// Every statement of the input's transaction has run (`host::flush`).
+    fn flushed(_fold: &Self::Fold) {}
+    /// The fold keeps its own tables beside the log (`crate::tier`): restore does not replay the log into a second
+    /// fold to compare, which would write those tables; a tier refuses an entry out of order instead.
+    fn tiered() -> bool {
+        false
+    }
+    /// How soon after applying entries the member's alarm runs the family's fold work (`on_alarm`), if it has any.
+    fn fold_alarm_ms() -> Option<i64> {
+        None
+    }
+    /// The family's own tables beside the member's.
+    fn schema() -> &'static [&'static str] {
+        &[]
+    }
+    /// The paths `route` serves.
+    fn route_paths() -> &'static [&'static str] {
+        &[]
+    }
+    /// The family's own member routes: `None` for a path it does not serve.
+    async fn route(
+        _host: &std::rc::Rc<crate::host::Host<Self>>,
+        _path: &str,
+        _body: Value,
+    ) -> Option<worker::Result<Value>>
+    where
+        Self: Sized,
+    {
+        None
+    }
+    /// The family's work on the member's alarm, before the Raft tick: a repository member's snapshot batches and
+    /// metadata load (`crate::snap`).
+    async fn on_alarm(_host: &std::rc::Rc<crate::host::Host<Self>>)
+    where
+        Self: Sized,
+    {
+    }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<Self::Fold>;
     /// A committed output's JSON. It takes the whole `Acked`, so a family can render from it what only `&Acked` may
     /// build, as the repository's `report_status` bytes (`graftyard_git::group::PushReport::of`).
@@ -157,53 +195,90 @@ impl Family for Repo {
     fn reads() -> Vec<Format> {
         vec![git::repo::REPO_FORMAT_V1]
     }
-    /// The repository and its owner, from the join; a member joined with no owner holds none, and every push to it
-    /// is refused `Forbidden` (`may_write` needs the owner's `Authz`).
-    fn new_fold(join: &Join) -> git::repo::RepoFold {
-        match (repo_of(join), join.owner) {
-            (Some(r), Some(o)) => git::repo::RepoFold::new(r, o),
-            (r, o) => git::repo::RepoFold { repo: r, owner: o, ..Default::default() },
-        }
+    /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
+    /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
+    /// `Authz`). The metadata tier is attached by `load_fold`, never on a core request's path.
+    fn new_fold(sql: &SqlStorage, join: &Join) -> git::repo::RepoFold {
+        let (core, meta) = crate::tier::repo_tiers(sql);
+        git::repo::RepoFold::with_tiers(repo_of(join), join.owner, Box::new(core), Box::new(meta))
     }
-    /// One `repo_ref` row per ref an applied entry touched: its name and object id, or no row once deleted. The last
-    /// `Promoted` and `Archived` are the `fold` row, rewritten when an applied entry carried either.
-    fn store_fold(fold: &git::repo::RepoFold, entries: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>) {
-        let mut names = std::collections::BTreeSet::new();
-        let mut ranges = false;
-        for e in entries {
-            if let raft::EntryBody::Events(evs) = &e.body {
-                for ev in evs {
-                    names.extend(ev.updates().iter().map(|u| u.name.clone()));
-                    ranges |= matches!(ev, git::repo::RepoEvent::Promoted(_) | git::repo::RepoEvent::Archived(_));
-                }
-            }
-        }
-        if ranges {
-            store_blob(&(&fold.promoted, &fold.archived), stmts);
-        }
-        for n in names {
-            match fold.refs.get(&n) {
-                Some(o) => stmts.push((
-                    "INSERT OR REPLACE INTO repo_ref (name, oid) VALUES (?, ?)",
-                    vec![n.as_bytes().to_vec().into(), o.0.to_vec().into()],
-                )),
-                None => stmts.push(("DELETE FROM repo_ref WHERE name = ?", vec![n.as_bytes().to_vec().into()])),
-            }
-        }
+    /// The tiers' writes, buffered by `apply`, as statements in the input's transaction (`crate::tier::TierSql`).
+    fn store_fold(fold: &git::repo::RepoFold, _entries: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>) {
+        crate::tier::handle(&*fold.core).seal(stmts);
+        crate::tier::handle(&*fold.meta).seal(stmts);
     }
+    fn flushed(fold: &git::repo::RepoFold) {
+        crate::tier::handle(&*fold.core).flushed();
+        crate::tier::handle(&*fold.meta).flushed();
+    }
+    /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
+    /// alarm loads it (`crate::snap`).
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<git::repo::RepoFold> {
-        let mut fold = Self::new_fold(join);
-        for r in crate::host::rows(sql, "SELECT name, oid FROM repo_ref", vec![])? {
-            let name = git::refs::RefName::parse(crate::host::blob(&r[0])?)
-                .map_err(|e| crate::host::err(format!("repo_ref name: {e}")))?;
-            let oid: [u8; 20] =
-                crate::host::blob(&r[1])?.try_into().map_err(|_| crate::host::err("repo_ref oid is not 20 bytes"))?;
-            fold.refs.insert(name, git::refs::ObjectId(oid));
-        }
-        if let Some((p, a)) = load_blob::<(Option<git::Promoted>, Option<git::Archived>)>(sql)? {
-            (fold.promoted, fold.archived) = (p, a);
-        }
+        let fold = Self::new_fold(sql, join);
+        let caught_up = graftyard_fold::meta(&*fold.meta).applied == graftyard_fold::meta(&*fold.core).applied;
+        crate::tier::handle(&*fold.meta).set_loaded(caught_up);
         Ok(fold)
+    }
+    fn tiered() -> bool {
+        true
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::snap::on_alarm(host).await;
+    }
+    fn schema() -> &'static [&'static str] {
+        crate::snap::SCHEMA
+    }
+    fn fold_alarm_ms() -> Option<i64> {
+        Some(crate::snap::IDLE_MS)
+    }
+    fn route_paths() -> &'static [&'static str] {
+        #[cfg(feature = "test-faults")]
+        return &["/snapshot_commit", "/fold", "/bench_seed"];
+        #[cfg(not(feature = "test-faults"))]
+        &["/snapshot_commit", "/fold"]
+    }
+    /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
+    /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
+    /// log (`log`); and on test installs `/bench_seed`.
+    async fn route(
+        host: &std::rc::Rc<crate::host::Host<Self>>,
+        path: &str,
+        body: Value,
+    ) -> Option<worker::Result<Value>> {
+        match path {
+            "/snapshot_commit" => Some(crate::snap::commit(host, body).await),
+            "/fold" => Some((|| {
+                let core = host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+                let fold = &c.m.group_fold().fold;
+                let tier = if body["tier"].as_u64() == Some(1) {
+                    graftyard_types::Tier::Metadata
+                } else {
+                    graftyard_types::Tier::Core
+                };
+                if body.get("replay").is_some() {
+                    drop(core);
+                    return crate::snap::replay(host);
+                }
+                let mut v = match body.get("refold") {
+                    Some(st) => crate::snap::refold_page(
+                        fold,
+                        tier,
+                        Some(st.clone()),
+                        body["budget"].as_u64().unwrap_or(20_000) as usize,
+                    )?,
+                    None => crate::snap::tiers_json(fold, body["at"].as_u64()),
+                };
+                if body.get("log").is_some() {
+                    v["log"] = crate::snap::log_json(&host.state.storage().sql())?;
+                    v["dbBytes"] = json!(host.state.storage().sql().database_size());
+                }
+                Ok(v)
+            })()),
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" => Some(crate::snap::bench_seed(host, &body)),
+            _ => None,
+        }
     }
     /// `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render.
     fn out_json(a: &raft::Acked<git::repo::PushOut>) -> Value {
@@ -213,13 +288,18 @@ impl Family for Repo {
         let w = git::group::RefusedWire::of(e, 0);
         json!({ "err": w.err, "status": w.status })
     }
-    /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads; with `{"q": {"ranges": true}}`, the
-    /// last `Promoted` and `Archived` and the first index still in the log, what the shard's `ChainLog` reads.
+    /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier; with `{"q":
+    /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
+    /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
+    /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         if q.get("ranges").is_some() {
-            return json!({ "promoted": fold.promoted, "archived": fold.archived, "first": fold.first_index().0 });
+            return json!({ "promoted": fold.promoted(), "archived": fold.archived(), "first": fold.first_index().0 });
         }
-        json!(fold.refs.iter().map(|(n, o)| (n.display(), o.hex())).collect::<Vec<_>>())
+        if q.get("tiers").is_some() {
+            return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));
+        }
+        json!(fold.refs().iter().map(|(n, o)| (n.display(), o.hex())).collect::<Vec<_>>())
     }
     fn fold_bytes(_fold: &git::repo::RepoFold) -> Vec<u8> {
         Vec::new()
@@ -262,7 +342,9 @@ impl Family for Repo {
     fn archived(e: &raft::LogEntry<Self::Ev>) -> Option<(String, u64)> {
         let raft::EntryBody::Events(evs) = &e.body else { return None };
         evs.iter().find_map(|ev| match ev {
-            git::repo::RepoEvent::Archived(a) => Some((a.key.to_string(), a.to.0)),
+            git::repo::RepoEvent::Archived(a) if matches!(a.key, git::R2Key::Archive { .. }) => {
+                Some((a.key.to_string(), a.to.0))
+            }
             _ => None,
         })
     }
@@ -311,7 +393,7 @@ impl Family for Register {
     fn reads() -> Vec<Format> {
         vec![REG_FORMAT]
     }
-    fn new_fold(_join: &Join) -> Reg {
+    fn new_fold(_sql: &SqlStorage, _join: &Join) -> Reg {
         Reg::default()
     }
     /// One `reg` row per key an applied entry touched.
@@ -421,7 +503,7 @@ impl Family for Names {
     fn reads() -> Vec<Format> {
         vec![id::NAMES_FORMAT]
     }
-    fn new_fold(join: &Join) -> id::NamesFold {
+    fn new_fold(_sql: &SqlStorage, join: &Join) -> id::NamesFold {
         match join.chain {
             ChainId::Names(s) => id::NamesFold::new(s),
             _ => id::NamesFold::default(),
@@ -431,7 +513,7 @@ impl Family for Names {
         store_blob(fold, stmts);
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::NamesFold> {
-        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(join)))
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
     fn out_json(a: &raft::Acked<id::NamesOut>) -> Value {
         serde_json::to_value(&a.out).unwrap_or(Value::Null)
@@ -492,7 +574,7 @@ impl Family for Tokens {
     fn reads() -> Vec<Format> {
         vec![id::TOKENS_FORMAT]
     }
-    fn new_fold(join: &Join) -> id::TokensFold {
+    fn new_fold(_sql: &SqlStorage, join: &Join) -> id::TokensFold {
         match join.chain {
             ChainId::Tokens(s) => id::TokensFold::new(s),
             _ => id::TokensFold::default(),
@@ -502,7 +584,7 @@ impl Family for Tokens {
         store_blob(fold, stmts);
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::TokensFold> {
-        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(join)))
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
     fn out_json(_a: &raft::Acked<()>) -> Value {
         Value::Null
@@ -545,7 +627,7 @@ impl Family for Authz {
     fn reads() -> Vec<Format> {
         vec![id::AUTHZ_FORMAT]
     }
-    fn new_fold(join: &Join) -> id::AuthzFold {
+    fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {
             ChainId::Authz(o) => id::AuthzFold::new(o),
             _ => id::AuthzFold::default(),
@@ -555,7 +637,7 @@ impl Family for Authz {
         store_blob(fold, stmts);
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::AuthzFold> {
-        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(join)))
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
     fn out_json(a: &raft::Acked<id::AuthzOut>) -> Value {
         serde_json::to_value(&a.out).unwrap_or(Value::Null)
@@ -611,14 +693,14 @@ impl Family for Ids {
         vec![id::IDS_FORMAT]
     }
     /// One cell, cell 0, on the test install.
-    fn new_fold(_join: &Join) -> id::IdsFold {
+    fn new_fold(_sql: &SqlStorage, _join: &Join) -> id::IdsFold {
         id::IdsFold::new(0)
     }
     fn store_fold(fold: &id::IdsFold, _: &[&raft::LogEntry<id::IdsEvent>], stmts: &mut Vec<Stmt>) {
         store_blob(fold, stmts);
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::IdsFold> {
-        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(join)))
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
     fn out_json(a: &raft::Acked<id::IdBlock>) -> Value {
         serde_json::to_value(a.out).unwrap_or(Value::Null)

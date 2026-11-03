@@ -209,8 +209,9 @@ impl DurableObject for Member {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        if let Some(h) = self.hosts.borrow().as_ref().map(Hosted::clone) {
-            each!(&h, x => if x.joined() { x.alarm() });
+        let hosted = self.hosts.borrow().as_ref().map(Hosted::clone);
+        if let Some(h) = hosted {
+            each!(&h, x => if x.joined() { x.alarm().await });
         }
         Response::empty()
     }
@@ -383,6 +384,17 @@ impl<F: Family> Routes<F> {
                 self.reply(json!({ "entries": e }))
             }
             (Method::Get, "/stats") => self.stats(crate::registry::query(&url, "reset").is_ok()),
+            (Method::Post, p) if F::route_paths().contains(&p) => {
+                let body: Value = req.json().await?;
+                let path = p.to_owned();
+                self.ready_or(|| async {
+                    match F::route(&self.host, &path, body).await {
+                        Some(r) => self.reply(r?),
+                        None => Response::error("not found", 404),
+                    }
+                })
+                .await
+            }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
             #[cfg(not(feature = "test-faults"))]

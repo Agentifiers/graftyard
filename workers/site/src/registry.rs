@@ -136,6 +136,34 @@ impl DurableObject for Registry {
                     crate::registry::query(&url, "now").ok().and_then(|v| v.parse().ok()).unwrap_or(crate::now_ms());
                 Response::from_json(&crate::sweep::run_at(&self.env, graftyard_types::Timestamp(now)).await?)
             }
+            // Test installs only: one fold audit run, the cron's own.
+            #[cfg(feature = "test-faults")]
+            (Method::Post, "/fold_audit_run") => Response::from_json(&crate::audit::run(&self.env).await?),
+            // The fold audit cron's cursor (`crate::audit`), held only by this site's object `audit`: the last chain
+            // audited, and the last run's report.
+            (Method::Get, "/fold_audit") | (Method::Put, "/fold_audit") => {
+                #[derive(Deserialize)]
+                struct Audit {
+                    next: String,
+                    last: String,
+                }
+                sql.exec(
+                    "CREATE TABLE IF NOT EXISTS audit (k INTEGER PRIMARY KEY CHECK (k = 0), next TEXT NOT NULL, last TEXT NOT NULL)",
+                    None,
+                )?;
+                if req.method() == Method::Put {
+                    let v: serde_json::Value = req.json().await?;
+                    sql.exec(
+                        "INSERT OR REPLACE INTO audit (k, next, last) VALUES (0, ?, ?)",
+                        vec![v["next"].as_str().unwrap_or("").into(), v["last"].to_string().into()],
+                    )?;
+                }
+                let rows: Vec<Audit> = sql.exec("SELECT next, last FROM audit WHERE k = 0", None)?.to_array()?;
+                let last = rows.first().map_or(serde_json::Value::Null, |r| {
+                    serde_json::from_str(&r.last).unwrap_or(serde_json::Value::Null)
+                });
+                Response::from_json(&serde_json::json!({ "next": rows.first().map(|r| r.next.clone()), "last": last }))
+            }
             (Method::Get, "/sweep") | (Method::Put, "/sweep") => {
                 #[derive(Deserialize)]
                 struct Sweep {

@@ -17,13 +17,16 @@ test-faults = []
 arrayvec.workspace = true
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
+graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }
 graftyard-identity = { path = "../../crates/identity" }
 graftyard-lookup = { path = "../../crates/lookup" }
 graftyard-raft = { path = "../../crates/raft" }
 graftyard-release = { path = "../../crates/release" }
 graftyard-types.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 smallvec.workspace = true
+wasm-bindgen-futures = "0.4"
 worker.workspace = true

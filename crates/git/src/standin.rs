@@ -275,7 +275,7 @@ impl StandIn {
                         let reply = match result.and_then(|g| m.fresh(&g)) {
                             Ok(f) => ReadReply::Refs(ReadValue {
                                 index: f.index().0,
-                                value: f.fold().refs.iter().map(|(n, o)| (n.display(), o.hex())).collect(),
+                                value: f.fold().refs().iter().map(|(n, o)| (n.display(), o.hex())).collect(),
                             }),
                             Err(nl) => ReadReply::Error { error: CallErrorWire::NotLeader((&nl).into()) },
                         };
@@ -475,6 +475,6 @@ impl StandIn {
     }
 
     pub fn refs(&self) -> BTreeMap<String, String> {
-        self.members[Self::i(LEADER)].group_fold().fold.refs.iter().map(|(n, o)| (n.display(), o.hex())).collect()
+        self.members[Self::i(LEADER)].group_fold().fold.refs().iter().map(|(n, o)| (n.display(), o.hex())).collect()
     }
 }
