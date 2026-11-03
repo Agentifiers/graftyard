@@ -223,7 +223,7 @@ fn long_sweep() {
 }
 
 fn row(client: usize, call: u64, ret: u64, op: HOp, out: Option<HOut>) -> Row {
-    Row { client, call, ret, op, out }
+    Row { client, call, ret, op, out, ack: None }
 }
 
 fn put(v: &str) -> HOp {

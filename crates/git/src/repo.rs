@@ -355,6 +355,17 @@ impl Fold for RepoFold {
             _ => {}
         }
     }
+    /// A `request` row keeps a push's `Refs` without its inline pack's bytes: `Push::replay` reads only the refs,
+    /// and the sweeper's `RequestSource` only stored packs (`packs_of`), while the bytes stay in the log entry. Two
+    /// days of 1 MB inline packs in every member's memory ran its isolate out of memory (F45).
+    fn row_event(ev: &RepoEvent) -> RepoEvent {
+        match ev {
+            RepoEvent::Refs { push, actor, updates, pack: Some(PackRef::Inline(_)) } => {
+                RepoEvent::Refs { push: *push, actor: *actor, updates: updates.clone(), pack: None }
+            }
+            other => other.clone(),
+        }
+    }
 }
 
 /// The ref namespaces a push may not write.

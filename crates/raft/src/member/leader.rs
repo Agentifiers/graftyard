@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::fold::{Command, Fold, Scratch};
 use crate::outcome::{self, Acked};
-use crate::quorum::{self, QuorumProof};
+use crate::quorum::{self, DurableAck, QuorumProof};
 use crate::read::{Fresh, ReadGrant};
 use crate::types::{
     Admitted, CallError, CommitError, EntryBody, Format, GroupConfig, Index, LogEntry, Next, NotLeader, RequestId,
@@ -66,6 +66,8 @@ pub(super) struct Lead<C: Command> {
     ready: bool,
     next: BTreeMap<SiteId, Index>,
     matched: BTreeMap<SiteId, Index>,
+    /// Per follower, when `matched` last rose, on this leader's clock: the time of its `QuorumProof` ack.
+    matched_at: BTreeMap<SiteId, Timestamp>,
     /// Per follower, the send time of the latest round it promised on, and of the latest round it answered.
     promised_at: BTreeMap<SiteId, Timestamp>,
     acked_at: BTreeMap<SiteId, Timestamp>,
@@ -162,6 +164,7 @@ impl<C: Command> Member<C> {
             ready: false,
             next: peers.iter().map(|p| (*p, next)).collect(),
             matched: peers.iter().map(|p| (*p, Index(0))).collect(),
+            matched_at: BTreeMap::new(),
             promised_at: BTreeMap::new(),
             acked_at: BTreeMap::new(),
             lease_end: Timestamp(0),
@@ -380,6 +383,7 @@ impl<C: Command> Member<C> {
         for p in added {
             lead.next.insert(p, next_index);
             lead.matched.insert(p, Index(0));
+            lead.matched_at.remove(&p);
             lead.sent.remove(&p);
             lead.promised_at.remove(&p);
             lead.acked_at.remove(&p);
@@ -834,6 +838,7 @@ impl<C: Command> Member<C> {
         let matched = lead.matched.entry(from).or_insert(Index(0));
         if (res.ok || res.refused.is_some()) && res.matched > *matched {
             *matched = res.matched;
+            lead.matched_at.insert(from, self.now);
         }
         let matched = *matched;
         let next = lead.next.entry(from).or_insert(last.next());
@@ -1038,7 +1043,7 @@ impl<C: Command> Member<C> {
             let mut acked: BTreeSet<SiteId> = lead.matched.iter().filter(|(_, m)| **m >= n).map(|(s, _)| *s).collect();
             acked.insert(self.cfg.me);
             if quorum::commit(self.log_config(), &acked) {
-                let proof = QuorumProof::counted(&acked, &self.cfg.regions);
+                let proof = self.proof_for(n, &acked);
                 self.set_commit(n);
                 let lead = self.lead.as_mut().expect("leading");
                 lead.proof = Some(proof.clone());
@@ -1064,6 +1069,25 @@ impl<C: Command> Member<C> {
         }
     }
 
+    /// The evidence for a commit at `n` by `acked`: each site's durable index as this leader counted it and when it
+    /// learned it, with the entry's `at` and the time now.
+    fn proof_for(&self, n: Index, acked: &BTreeSet<SiteId>) -> QuorumProof {
+        let lead = self.lead.as_ref().expect("leading");
+        let acks: Vec<DurableAck> = acked
+            .iter()
+            .map(|s| {
+                if *s == self.cfg.me {
+                    DurableAck { site: *s, durable: self.own_durable, at: self.own_durable_at }
+                } else {
+                    let at = lead.matched_at.get(s).copied().unwrap_or(Timestamp(0));
+                    DurableAck { site: *s, durable: lead.matched(*s), at }
+                }
+            })
+            .collect();
+        let entry_at = self.entry_at(n).map_or(Timestamp(0), |e| e.at);
+        QuorumProof::counted(self.cfg.me, n, entry_at, self.now, &acks, &self.cfg.regions)
+    }
+
     /// Marks the leader ready once its term's `Noop` (or its resumed tail) committed and a round reached a quorum,
     /// then serves waiting reads and queued commands.
     pub(super) fn after_ack(&mut self) {
@@ -1079,7 +1103,7 @@ impl<C: Command> Member<C> {
             }
             let proven = lead.proof.is_some() || quorum::commit(self.log_config(), &stored);
             if proven && self.quorum_since(|l| &l.acked_at).is_some_and(|t| t >= started) {
-                let proof = QuorumProof::counted(&stored, &self.cfg.regions);
+                let proof = self.proof_for(lead.ready_at, &stored);
                 let lead = self.lead.as_mut().expect("leading");
                 lead.proof.get_or_insert(proof);
                 lead.ready = true;

@@ -134,7 +134,10 @@ impl<C: Command> Member<C> {
         if matches!(e.body, EntryBody::Config(_)) {
             self.configs.push(e.index);
         }
-        self.digests.push(digest(&e));
+        let (d, len) = crate::encode::digest_len(&e);
+        self.digests.push(d);
+        self.sizes.push(len);
+        self.log_bytes += len;
         self.writes.push(Write::Append(e.clone()));
         if self.role == super::Role::Leader {
             self.own_appended = Some(e.index);
@@ -161,6 +164,7 @@ impl<C: Command> Member<C> {
         let keep = self.pos(i).expect("above commit, so in the window");
         self.log.truncate(keep);
         self.digests.truncate(keep);
+        self.log_bytes -= self.sizes.drain(keep..).sum::<usize>();
         self.configs.retain(|c| *c < i);
     }
 
@@ -198,15 +202,27 @@ impl<C: Command> Member<C> {
         self.compact();
     }
 
-    /// Drops applied entries from memory once more than `2 x window` have applied above `base`, keeping `window`,
-    /// and never one applied in the current input: the host reads those from `log()` for its `Write::Apply`. They
-    /// stay on the host's storage, and a follower that needs them gets them through `Out::catchup`.
+    /// Drops applied entries from memory once more than `2 x window` have applied above `base`, keeping `window`, or
+    /// once the applied ones pass `window_bytes`, keeping the newest that fit (and at least the last applied one).
+    /// Never one applied in the current input: the host reads those from `log()` for its `Write::Apply`. They stay on
+    /// the host's storage, and a follower that needs them gets them through `Out::catchup`.
     pub(super) fn compact(&mut self) {
         let applied = self.fold.applied();
-        if applied.0 <= self.base.index.0 + 2 * self.window {
-            return;
+        let held = applied.0.saturating_sub(self.base.index.0) as usize;
+        let mut to = self.base.index;
+        if applied.0 > self.base.index.0 + 2 * self.window {
+            to = Index(applied.0 - self.window);
         }
-        let to = Index((applied.0 - self.window).min(self.input_applied.0));
+        // The applied entries' bytes, newest first: everything below the newest run that fits goes.
+        let mut kept = 0usize;
+        for k in (0..held).rev() {
+            kept += self.sizes[k];
+            if kept > self.window_bytes && k + 1 < held {
+                to = to.max(Index(self.base.index.0 + k as u64 + 1));
+                break;
+            }
+        }
+        let to = to.min(self.input_applied);
         if to <= self.base.index {
             return;
         }
@@ -215,6 +231,7 @@ impl<C: Command> Member<C> {
         self.base = super::LogBase { index: to, term: e.term, digest: self.digests[n - 1] };
         self.log.drain(..n);
         self.digests.drain(..n);
+        self.log_bytes -= self.sizes.drain(..n).sum::<usize>();
         self.configs.retain(|c| *c > to);
     }
 

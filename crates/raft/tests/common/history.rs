@@ -27,7 +27,8 @@ pub enum HOut {
     Ok(bool),
 }
 
-/// `out: None` is an operation that got no reply: a write may have taken effect any time after its call.
+/// `out: None` is an operation that got no reply: a write may have taken effect any time after its call. `ack` is the
+/// answering member's evidence for an acknowledged write (`Ack`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub client: usize,
@@ -35,6 +36,69 @@ pub struct Row {
     pub ret: u64,
     pub op: HOp,
     pub out: Option<HOut>,
+    pub ack: Option<Ack>,
+}
+
+/// An acknowledged write's evidence, all on the answering member's clock, in the shape the lin install's members
+/// answer (`workers/site/src/host.rs`, `outcome_json`) and `tests/m1/lin/ackcheck.ts` checks: the member, the write's
+/// entry, the commit its `QuorumProof` is for, when that entry was built and committed, when the answer was built,
+/// when the host's storage confirmed the commit durable on the answering site, and each counted site's durable index
+/// and when the leader learned it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ack {
+    pub site: u8,
+    pub index: u64,
+    pub commit_index: u64,
+    pub entry_at: u64,
+    pub commit_at: u64,
+    pub sent_at: u64,
+    /// The host's own record, not the crate's: when its storage first confirmed the log durable through
+    /// `commit_index`.
+    pub self_synced_at: Option<u64>,
+    pub acks: Vec<(u8, u64, u64)>,
+}
+
+/// The answering member's evidence for one acknowledged write, checked on its own clock alone: the write's entry is
+/// at or below the proof's commit index; the reply was built at or after the commit; at least `quorum` distinct
+/// sites, the answering one among them, are counted; each counted site's durable index reaches the commit index; and
+/// each ack was learned no earlier than the entry was built and no later than the commit; and the host's own storage
+/// confirm of the commit came at or before it. `tests/m1/lin/ackcheck.ts`
+/// applies the same rules to the lin install's history.
+pub fn ack_check(a: &Ack, quorum: usize) -> Result<(), String> {
+    if a.index > a.commit_index {
+        return Err(format!("entry {} above the proof's commit {}", a.index, a.commit_index));
+    }
+    if a.sent_at < a.commit_at {
+        return Err(format!("sent at {} before its commit at {}", a.sent_at, a.commit_at));
+    }
+    let mut sites: Vec<u8> = a.acks.iter().map(|x| x.0).collect();
+    sites.sort_unstable();
+    sites.dedup();
+    if sites.len() < quorum || sites.len() != a.acks.len() {
+        return Err(format!("{} distinct sites counted, {} needed", sites.len(), quorum));
+    }
+    if !sites.contains(&a.site) {
+        return Err(format!("the answering site {} is not counted", a.site));
+    }
+    match a.self_synced_at {
+        None => return Err("no host storage confirm covers the commit".into()),
+        Some(t) if t > a.commit_at => {
+            return Err(format!("the host confirmed the commit durable at {t}, after the commit at {}", a.commit_at));
+        }
+        Some(_) => {}
+    }
+    for (site, durable, at) in &a.acks {
+        if *durable < a.commit_index {
+            return Err(format!("site {site} durable through {durable}, below the commit {}", a.commit_index));
+        }
+        if *at > a.commit_at {
+            return Err(format!("site {site}'s ack learned at {at}, after the commit at {}", a.commit_at));
+        }
+        if *at < a.entry_at {
+            return Err(format!("site {site}'s ack learned at {at}, before the entry was built at {}", a.entry_at));
+        }
+    }
+    Ok(())
 }
 
 fn step(state: &Option<String>, op: &HOp, out: &Option<HOut>) -> Option<Option<String>> {
@@ -190,8 +254,24 @@ pub fn jsonl(rows: &[Row], prefix: &str, client_base: usize) -> String {
             Some(HOut::Value(v)) => (true, format!("{{\"value\":{}}}", jopt(v))),
             Some(HOut::Ok(b)) => (true, format!("{{\"ok\":{b}}}")),
         };
+        let ack = r.ack.as_ref().map_or(String::new(), |a| {
+            let acks: Vec<String> =
+                a.acks.iter().map(|(s, d, t)| format!("{{\"site\":{s},\"durable\":{d},\"at\":{t}}}")).collect();
+            let synced = a.self_synced_at.map_or("null".to_owned(), |t| t.to_string());
+            format!(
+                ",\"ack\":{{\"site\":{},\"index\":{},\"commitIndex\":{},\"entryAt\":{},\"commitAt\":{},\"sentAt\":{},\
+                 \"selfSyncedAt\":{synced},\"acks\":[{}]}}",
+                a.site,
+                a.index,
+                a.commit_index,
+                a.entry_at,
+                a.commit_at,
+                a.sent_at,
+                acks.join(",")
+            )
+        });
         out.push_str(&format!(
-            "{{\"client\":{},\"call\":{},\"ret\":{},\"op\":{op},\"ok\":{ok},\"out\":{res}}}\n",
+            "{{\"client\":{},\"call\":{},\"ret\":{},\"op\":{op},\"ok\":{ok},\"out\":{res}{ack}}}\n",
             r.client + client_base,
             r.call,
             r.ret

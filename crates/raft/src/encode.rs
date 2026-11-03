@@ -156,7 +156,14 @@ pub fn encode_entry<E: Record>(e: &LogEntry<E>) -> Vec<u8> {
 
 /// SHA-256 of the entry's canonical bytes. The next entry's `prev`.
 pub fn digest<E: Record>(e: &LogEntry<E>) -> Digest {
-    Digest(Sha256::digest(encode_entry(e)).into())
+    digest_len(e).0
+}
+
+/// The digest and the length of the canonical bytes, which is what the entry costs a member's memory, give or take
+/// its in-memory form.
+pub(crate) fn digest_len<E: Record>(e: &LogEntry<E>) -> (Digest, usize) {
+    let b = encode_entry(e);
+    (Digest(Sha256::digest(&b).into()), b.len())
 }
 
 /// A group's first entry: `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`, no requests,

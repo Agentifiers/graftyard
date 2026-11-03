@@ -663,7 +663,7 @@ impl<F: Family> Routes<F> {
                         within(left, rx).await
                     };
                     match r {
-                        Some(Ok(o)) => json!({ "done": host::outcome_json::<F>(&o) }),
+                        Some(Ok(o)) => json!({ "done": self.host.reply_json(&o) }),
                         Some(Err(_)) => return Err(err("member reset")),
                         None => json!({ "admitted": host::ticket_json(&self.host.current(ticket)) }),
                     }
@@ -681,12 +681,12 @@ impl<F: Family> Routes<F> {
         let now =
             self.host.core.borrow().as_ref().and_then(|c| c.m.outcome(ticket)).filter(|o| !host::needs_block::<F>(o));
         if let Some(o) = now {
-            return self.reply(json!({ "done": host::outcome_json::<F>(&o) }));
+            return self.reply(json!({ "done": self.host.reply_json(&o) }));
         }
         let rx = self.host.wait_ticket(ticket, None);
         self.host.kick();
         match within(Duration::from_millis(wait), rx).await {
-            Some(Ok(o)) => self.reply(json!({ "done": host::outcome_json::<F>(&o) })),
+            Some(Ok(o)) => self.reply(json!({ "done": self.host.reply_json(&o) })),
             Some(Err(_)) => Response::error("member reset", 503),
             None => self.reply(json!({ "pending": host::ticket_json(&ticket) })),
         }
@@ -697,7 +697,7 @@ impl<F: Family> Routes<F> {
         let core = self.host.core.borrow();
         let m = &core.as_ref().ok_or_else(|| err("member not joined"))?.m;
         let v = match m.outcome_by_request(rid, &body.cmd) {
-            Ok(ByRequest::Done(a)) => json!({ "done": host::outcome_json::<F>(&Ok(a)) }),
+            Ok(ByRequest::Done(a)) => json!({ "done": self.host.reply_json(&Ok(a)) }),
             Ok(ByRequest::Pending(t)) => json!({ "pending": host::ticket_json(&t) }),
             Ok(ByRequest::Unknown) => json!({ "unknown": true }),
             Err(nl) => json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }),
@@ -826,6 +826,7 @@ impl<F: Family> Routes<F> {
             "truncatedTo": s.truncated_to,
             "received": s.received,
             "alarms": s.alarms,
+            "peers": s.peers,
         });
         if reset {
             s.commit_ms.clear();
@@ -835,6 +836,7 @@ impl<F: Family> Routes<F> {
             s.entries = 0;
             s.commands = 0;
             s.failed_calls = 0;
+            s.peers.clear();
         }
         Response::from_json(&v)
     }

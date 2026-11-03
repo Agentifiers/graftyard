@@ -724,9 +724,21 @@ fn the_leader_counts_itself_only_after_its_own_write_confirms() {
     assert_eq!(c.m(B).log().len() as u64, index.0, "B stored the entry");
     assert_eq!(c.m(A).outcome(t), None, "A counted its own unconfirmed copy toward the quorum");
     assert!(c.m(A).state().commit < index);
+    let b_acked = c.now;
+    c.advance(40);
     c.confirm(pending);
-    let got = c.m(A).outcome(t).expect("resolved once A's own write confirmed");
-    assert_eq!(got.map(|a| a.index), Ok(index));
+    let got = c.m(A).outcome(t).expect("resolved once A's own write confirmed").expect("acked");
+    assert_eq!(got.index, index);
+    // The proof says so on A's clock: A's own copy counted only once its confirm came back, after B's ack, and the
+    // commit came no earlier than either.
+    let p = got.quorum();
+    assert_eq!((p.leader(), p.index()), (A, index));
+    let own = p.acks().iter().find(|d| d.site == A).expect("A counted");
+    let b = p.acks().iter().find(|d| d.site == B).expect("B counted");
+    assert!(own.durable >= index && b.durable >= index);
+    assert_eq!(own.at, c.now, "A's ack is its own confirm");
+    assert!(b.at >= p.entry_at() && b.at <= b_acked);
+    assert_eq!(p.at(), c.now, "the commit came with A's own confirm");
 }
 
 /// A leader's AppendEntries left, then it reset before its own write was durable: C holds an entry at (term, k) that
@@ -1024,4 +1036,47 @@ fn a_lagging_follower_catches_up_in_calls_under_the_byte_cap() {
     }
     assert_eq!(c.m(C).digests(), c.m(A).digests(), "C caught up");
     assert!(most <= graftyard_raft::APPEND_BYTES_MAX, "one AppendEntries carried {most} bytes");
+}
+
+/// F45: a window bounded by entry count alone holds 1,000 entries of up to 1.5 MB, which a 128 MB isolate cannot
+/// (`tests/m1/results/m1-f43.md`, "A different defect the soak found"). With a byte bound the leader keeps only the
+/// newest applied entries that fit, and the last applied one even when it alone is larger; `restore` compacts to the
+/// same bound.
+#[test]
+fn the_in_memory_log_is_bounded_by_bytes() {
+    let mut c = Cluster::new(45);
+    c.elect(A);
+    c.sync(A);
+    let budget = 300_000;
+    for s in SITES {
+        c.members[s.0 as usize].as_mut().unwrap().set_log_window_bytes(1_000, budget);
+    }
+    let big = "x".repeat(100_000);
+    for i in 0..20u128 {
+        admit(&mut c, A, 5_000 + i, put(&format!("k{i}"), &big));
+        c.deliver_all();
+        c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        c.deliver_all();
+    }
+    let m = c.m(A);
+    let applied = m.state().applied.0 - m.log_base().index.0;
+    assert!(m.state().applied.0 >= 20, "the entries applied");
+    let held: usize = m.log()[..applied as usize].iter().map(|e| graftyard_raft::encode_entry(e).len()).sum();
+    assert!(held <= budget, "{held} bytes of applied entries in memory, budget {budget}");
+    assert!(m.log_bytes() < budget + 2 * 101_000, "log_bytes {}", m.log_bytes());
+    assert_eq!(c.value(A, "k19").as_deref(), Some(big.as_str()), "the fold is whole");
+    // One entry above the budget still stays: the last applied one.
+    c.members[0].as_mut().unwrap().set_log_window_bytes(1_000, 1_000);
+    let a = c.m(A);
+    assert_eq!(a.log_base().index.0, a.state().applied.0 - 1, "only the last applied entry stays");
+    assert!(a.entry_at(a.state().applied).is_some());
+    // A restart under the same bound holds no more than the bound, whatever the stored log holds.
+    c.crash(B);
+    c.restart(B);
+    c.members[1].as_mut().unwrap().set_log_window_bytes(1_000, budget);
+    let b = c.m(B);
+    let applied = (b.state().applied.0 - b.log_base().index.0) as usize;
+    let held: usize = b.log()[..applied].iter().map(|e| graftyard_raft::encode_entry(e).len()).sum();
+    assert!(held <= budget, "restored B holds {held} bytes of applied entries");
+    assert!(b.log_base().index.0 > 0, "restore compacted");
 }

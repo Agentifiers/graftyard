@@ -532,10 +532,15 @@ pub struct Member<C: Command> {
     /// any not yet applied. Index 0 unless the host set a window.
     base: LogBase,
     window: u64,
+    /// At most this many bytes of applied entries stay in memory (`set_log_window`), beside `window`.
+    window_bytes: usize,
     /// `applied` when the current input began, so `compact` keeps what this input applied.
     input_applied: Index,
     log: Vec<LogEntry<Ev<C>>>,
     digests: Vec<Digest>,
+    /// Each entry's canonical length, beside `digests`, and their sum.
+    sizes: Vec<usize>,
+    log_bytes: usize,
     /// Indexes of the `Config` entries in the log, oldest first.
     configs: Vec<Index>,
     fold: GroupFold<C::Fold>,
@@ -580,6 +585,8 @@ pub struct Member<C: Command> {
     /// The highest index of this member's log that it knows is durable on its own storage: the stored log at
     /// `restore`, then raised only by `self_ack`. A leader counts itself toward a commit only up to here.
     own_durable: Index,
+    /// When `own_durable` last rose, on this member's clock: `restore`, then each `self_ack` that raised it.
+    own_durable_at: Timestamp,
     /// Counts truncations, so a `SelfAck` from before one does not vouch for an entry appended after it.
     epoch: u64,
     /// The last entry the current input appended as leader, for the input's `SelfAck`.
@@ -610,6 +617,7 @@ impl<C: Command> Member<C> {
         assert!(stored.base.index <= stored.fold.applied(), "stored log base above the applied fold");
         let mut m = Self::build(cfg, state, stored.base, stored.log.clone(), stored.fold.clone(), seed)?;
         m.begin(now);
+        m.own_durable_at = now;
         if m.state.saved_at.0 != 0 && now < after(m.state.saved_at, BOOT_IDLE) {
             m.state.boots = [m.state.boots[1], now];
             m.dirty = true;
@@ -633,7 +641,8 @@ impl<C: Command> Member<C> {
     ) -> Result<Member<C>, PlacementError> {
         let boot_entry = bootstrap(cfg.chain, &cfg.record)?;
         let boot_digest = digest(&boot_entry);
-        let digests = log.iter().map(digest).collect();
+        let (digests, sizes): (Vec<Digest>, Vec<usize>) = log.iter().map(crate::encode::digest_len).unzip();
+        let log_bytes = sizes.iter().sum();
         let configs = log.iter().filter(|e| matches!(e.body, crate::EntryBody::Config(_))).map(|e| e.index).collect();
         // The last time this member heard a leader, as far as its persisted row says: a promise is given on an
         // append, ELECTION_AFTER before it lapses. A restarted voter so keeps its quarantine waiver honest.
@@ -650,9 +659,12 @@ impl<C: Command> Member<C> {
             state,
             base,
             window: KEEP_ALL,
+            window_bytes: usize::MAX,
             input_applied: Index(0),
             log,
             digests,
+            sizes,
+            log_bytes,
             configs,
             fold,
             role: Role::Follower,
@@ -681,6 +693,7 @@ impl<C: Command> Member<C> {
             drained: BTreeSet::new(),
             stand_aside_until: Timestamp(0),
             own_durable,
+            own_durable_at: Timestamp(0),
             epoch: 0,
             own_appended: None,
             early_from: Index(0),
@@ -762,8 +775,22 @@ impl<C: Command> Member<C> {
     /// must serve `Out::catchup` from its storage. By default every entry stays in memory. Call it before the first
     /// input, with the same `n` after every restore: `restore` compacts at once if the stored window is larger.
     pub fn set_log_window(&mut self, n: u64) {
+        self.set_log_window_bytes(n, usize::MAX);
+    }
+
+    /// `set_log_window`, and also keep at most `bytes` of applied entries (their canonical encoding) in memory,
+    /// dropping the oldest applied ones once they pass it, though never the last applied entry. Entries not yet
+    /// applied stay whatever their size. A host that loads a window at restore bounds it the same way
+    /// (`workers/site`, `load`, with `LOG_BYTES`).
+    pub fn set_log_window_bytes(&mut self, n: u64, bytes: usize) {
         self.window = n.clamp(1, KEEP_ALL);
+        self.window_bytes = bytes;
         self.compact();
+    }
+
+    /// Bytes of the entries in memory, applied or not, by their canonical encoding.
+    pub fn log_bytes(&self) -> usize {
+        self.log_bytes
     }
     /// How long `request` rows are kept after their entry's `at`. Every member of a group must use the same value,
     /// because each drops rows as it applies. Default `REQUEST_RETENTION`.
@@ -841,7 +868,11 @@ impl<C: Command> Member<C> {
     pub fn self_ack(&mut self, now: Timestamp, ack: SelfAck) -> Ready<C, ()> {
         self.begin(now);
         if ack.boot == self.boot && ack.epoch == self.epoch {
-            self.own_durable = self.own_durable.max(ack.index.min(self.last()));
+            let to = self.own_durable.max(ack.index.min(self.last()));
+            if to > self.own_durable {
+                self.own_durable = to;
+                self.own_durable_at = now;
+            }
             self.advance_commit();
             self.after_ack();
         }

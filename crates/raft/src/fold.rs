@@ -35,6 +35,12 @@ pub trait Fold: Clone + fmt::Debug {
     /// A committed `EntryBody::IdBlock`: the fold's next assignments come from `block`. Folds that assign no ids
     /// ignore it.
     fn apply_id_block(&mut self, _block: IdBlock) {}
+    /// The form of an event a `request` row keeps for `REQUEST_RETENTION`: all that `Command::replay` and the host's
+    /// row readers need. A fold whose events carry bulk the row does not need, such as a repository's inline pack
+    /// bytes, drops it here, so a member does not hold two days of it in memory (F45). By default the whole event.
+    fn row_event(event: &Self::Event) -> Self::Event {
+        event.clone()
+    }
 }
 
 pub trait Scratch {
@@ -177,7 +183,7 @@ impl<F: Fold> GroupFold<F> {
                     self.fold.apply(ev);
                 }
                 for (id, range) in &e.requests {
-                    let events = events[range.start as usize..range.end as usize].to_vec();
+                    let events = events[range.start as usize..range.end as usize].iter().map(F::row_event).collect();
                     let prior = self.requests.insert(*id, RequestRow { index: e.index, at: e.at, events });
                     assert!(
                         prior.is_none(),

@@ -22,7 +22,7 @@ use graftyard_raft::{
 };
 use graftyard_types::{ChainId, DbId, PlacementName, PlacementRecord, Region, ReleaseId, RepoId, SiteId, Timestamp};
 
-use super::history::{HOp, HOut, Row};
+use super::history::{Ack, HOp, HOut, Row};
 use super::kv::{KV_FORMAT, Kv, KvCmd, KvEvent};
 
 pub const SITES: [SiteId; 3] = [SiteId(0), SiteId(1), SiteId(2)];
@@ -352,6 +352,9 @@ pub struct Sim {
     pub confirm_log: Vec<(Timestamp, SiteId, u64, bool)>,
     /// `Out::catchup` requests not yet served, with the generation of the member that asked.
     catchups: Vec<(SiteId, u64, graftyard_raft::Catchup)>,
+    /// Per site, the host's own record of its storage confirms: (the disk's last index once a confirm that appended
+    /// ended, the site's clock then), for `Ack::self_synced_at`. Reset on restart.
+    synced: [Vec<(u64, u64)>; 3],
 }
 
 /// Applied entries each simulated member keeps in memory: small, so compaction and `Out::catchup` run all the time.
@@ -399,6 +402,7 @@ impl Sim {
             record_confirms: false,
             confirm_log: Vec::new(),
             catchups: Vec::new(),
+            synced: [vec![(0, 0)], vec![(0, 0)], vec![(0, 0)]],
         };
         for k in 0..3 {
             sim.skew[k] = sim.rng.below(2 * SKEW_MS + 1) as i64 - SKEW_MS as i64;
@@ -602,6 +606,26 @@ impl Sim {
         self.reset_site(s);
     }
 
+    /// The host's record of a storage confirm that ended: a truncation caps what earlier confirms vouch for, and an
+    /// append records the disk's new last index at the site's clock.
+    fn note_synced(&mut self, s: SiteId, appended: bool) {
+        let d = &self.disks[s.0 as usize].stored;
+        let last = d.base.index.0 + d.log.len() as u64;
+        let at = self.clock(s).0;
+        let ring = &mut self.synced[s.0 as usize];
+        for r in ring.iter_mut() {
+            r.0 = r.0.min(last);
+        }
+        if appended {
+            ring.push((last, at));
+        }
+    }
+
+    /// The earliest time this site's host confirmed its log durable through `index`.
+    fn synced_at(&self, s: SiteId, index: u64) -> Option<u64> {
+        self.synced[s.0 as usize].iter().filter(|r| r.0 >= index).map(|r| r.1).min()
+    }
+
     /// A reset loses the member's outstanding calls, its unconfirmed writes, and every output its gate still held,
     /// and opens its output gate.
     fn reset_site(&mut self, s: SiteId) {
@@ -621,6 +645,7 @@ impl Sim {
                 graftyard_raft::Storage::write(&mut self.disks[s.0 as usize], w);
             }
         }
+        self.synced[s.0 as usize].clear();
     }
 
     pub fn crash_now(&mut self, s: SiteId, down_ms: u64) {
@@ -648,6 +673,9 @@ impl Sim {
         let (mut m, ready) = Member::restore(config(s), &self.disks[s.0 as usize].stored, now, seed).expect("restore");
         m.set_log_window(SIM_WINDOW);
         self.checked[s.0 as usize] = 0;
+        // Everything the restore read back is durable.
+        let d = &self.disks[s.0 as usize].stored;
+        self.synced[s.0 as usize] = vec![(d.base.index.0 + d.log.len() as u64, now.0)];
         let (_, out) = ready.persist(&mut self.disks[s.0 as usize]);
         self.slots[s.0 as usize] = Slot::Up(Box::new(m));
         let res = self.deliver_out(s, out);
@@ -674,6 +702,7 @@ impl Sim {
                 for w in writes {
                     graftyard_raft::Storage::write(&mut self.disks[s.0 as usize], w);
                 }
+                self.note_synced(*s, writes.iter().any(|w| matches!(w, Write::Append(_))));
             }
         }
         for (_, s, generation, id, _, ack) in ends {
@@ -987,10 +1016,11 @@ impl Sim {
             let by = self.member(target).expect("up").outcome_by_request(id, &cmd);
             match by {
                 Ok(ByRequest::Done(a)) => {
+                    let ack = self.ack_evidence(target, &a);
                     let op = self.ops[c].take().expect("op");
                     self.outstanding.remove(&op.id);
                     self.stats.replays += 1;
-                    self.write_done(target, op, Ok((a.index, a.out)));
+                    self.write_done(target, op, Ok((a.index, a.out)), Some(ack));
                     return;
                 }
                 Ok(ByRequest::Pending(t2)) if t2 == t => {
@@ -1198,8 +1228,9 @@ impl Sim {
         ticket: Ticket,
         result: Result<graftyard_raft::Acked<bool>, CommitError<super::kv::KvErr>>,
     ) {
-        // Every resolution, of any client, must rest on a committed entry.
+        // Every resolution, of any client, must rest on a committed entry, and every `Acked` on its evidence.
         if let Ok(a) = &result {
+            self.ack_evidence(s, a);
             self.check_committed_at(s, a.index.0, "Acked");
         }
         if let Err(CommitError::Refused { index, .. }) = &result {
@@ -1215,17 +1246,18 @@ impl Sim {
         };
         match result {
             Ok(a) => {
+                let ack = self.ack_evidence(s, &a);
                 let op = self.ops[c].take().expect("op");
                 self.outstanding.remove(&op.id);
                 let d = self.held(s, a.index.0).expect("acked entry is held").0;
                 let t = self.member(s).expect("up").term();
                 self.acked.push((op.id, a.index.0, d, t));
-                self.write_done(s, op, Ok((a.index, a.out)));
+                self.write_done(s, op, Ok((a.index, a.out)), Some(ack));
             }
             Err(CommitError::Refused { index, .. }) => {
                 let op = self.ops[c].take().expect("op");
                 self.outstanding.remove(&op.id);
-                self.write_done(s, op, Err(index));
+                self.write_done(s, op, Err(index), None);
             }
             Err(CommitError::NotLeader(nl)) => self.not_leader(c, &nl),
         }
@@ -1241,7 +1273,45 @@ impl Sim {
         );
     }
 
-    fn write_done(&mut self, s: SiteId, op: Op, r: Result<(Index, bool), Index>) {
+    /// The answering member's evidence for an `Acked` it answers now, as a host renders it, after the sim checks it
+    /// against what only the sim knows: each counted site's disk holds the leader's entry at the proof's index.
+    fn ack_evidence(&self, s: SiteId, a: &graftyard_raft::Acked<bool>) -> Ack {
+        let seed = self.seed;
+        let p = a.quorum();
+        let m = self.member(s).expect("up");
+        let ack = Ack {
+            site: s.0,
+            index: a.index.0,
+            commit_index: p.index().0,
+            entry_at: p.entry_at().0,
+            commit_at: p.at().0,
+            sent_at: self.clock(s).0,
+            self_synced_at: self.synced_at(s, p.index().0),
+            acks: p.acks().iter().map(|d| (d.site.0, d.durable.0, d.at.0)).collect(),
+        };
+        if let Err(e) = super::history::ack_check(&ack, 2) {
+            panic!("seed {seed}: {s:?} answered {:?} with bad evidence: {e} ({ack:?})", a.index);
+        }
+        let want = self.held(s, p.index().0).expect("the proof's entry is held").0;
+        for d in p.acks() {
+            let on_disk = self.disks[d.site.0 as usize].digests.get(p.index().0 as usize - 1);
+            assert_eq!(
+                on_disk,
+                Some(&want),
+                "seed {seed}: {s:?} counted {:?} toward {:?}, whose disk does not hold it ({ack:?})",
+                d.site,
+                p.index()
+            );
+        }
+        assert!(
+            graftyard_raft::quorums::commit(m.latest_config(), &p.sites().iter().copied().collect()),
+            "seed {seed}: {s:?}'s proof for {:?} names no quorum ({ack:?})",
+            p.index()
+        );
+        ack
+    }
+
+    fn write_done(&mut self, s: SiteId, op: Op, r: Result<(Index, bool), Index>, ack: Option<Ack>) {
         match r {
             Ok(_) => {
                 self.stats.acked += 1;
@@ -1250,7 +1320,7 @@ impl Sim {
             Err(_) => self.stats.refused += 1,
         }
         let ok = r.as_ref().is_ok_and(|(_, o)| *o);
-        self.finish(op, Some(HOut::Ok(ok)));
+        self.finish_with(op, Some(HOut::Ok(ok)), ack);
     }
 
     fn read_done(
@@ -1279,7 +1349,11 @@ impl Sim {
     }
 
     fn finish(&mut self, op: Op, out: Option<HOut>) {
-        self.history.push(Row { client: op.client, call: op.call.0, ret: self.now.0, op: op.op, out });
+        self.finish_with(op, out, None);
+    }
+
+    fn finish_with(&mut self, op: Op, out: Option<HOut>, ack: Option<Ack>) {
+        self.history.push(Row { client: op.client, call: op.call.0, ret: self.now.0, op: op.op, out, ack });
     }
 
     // ---- invariants ----

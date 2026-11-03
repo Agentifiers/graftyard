@@ -36,7 +36,7 @@ pub use member::{
     Write, verify,
 };
 pub use outcome::Acked;
-pub use quorum::QuorumProof;
+pub use quorum::{DurableAck, QuorumProof};
 pub use read::{Fresh, ReadGrant, ReadView, Stale};
 pub use types::{
     Admitted, CallError, Colo, CommitError, Committed, EntryBody, ExtendLeases, Format, GroupConfig, LogEntry,
@@ -87,6 +87,11 @@ pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);
 /// storage. A member holds every entry and request row in memory otherwise, which a 128 MB isolate cannot do for
 /// long (`tests/m1/results/m1-wp2.md`, the 24-hour run).
 pub const LOG_WINDOW: u64 = 1_000;
+/// Bytes of applied entries (their canonical encoding) a Durable Object member keeps in memory, and `load` reads
+/// back, beside `LOG_WINDOW` [guess]: 1,000 entries of up to `ENTRY_MAX` would be 1.5 GB against a 128 MB isolate,
+/// and a member with about 50 MB of inline packs in its window ran out of memory in `load` (F45,
+/// `tests/m1/results/m1-f43.md`). Entries not yet applied are held whatever their size.
+pub const LOG_BYTES: usize = 8_000_000;
 /// The largest encoded command, in bytes [guess].
 pub const COMMAND_MAX: usize = 1_200_000;
 /// The largest `Events` entry: "Every command that arrives during a round goes into the next entry, up to 1.5 MB".

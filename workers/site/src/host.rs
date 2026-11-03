@@ -12,7 +12,9 @@
 //! - Transport. Each `Envelope` is one POST of the binary envelope to the peer member's `/raft` through its site's
 //!   binding, with CALL_DEADLINE. The peer steps it and answers with its envelopes for the caller in the response
 //!   body, which its output gate also holds until its writes are durable. A call that errors or misses CALL_DEADLINE
-//!   goes to `Member::call_failed`, and the crate's `tick` resends, so the host never retries a message itself.
+//!   goes to `Member::call_failed`, and the crate's `tick` resends, so the host never retries a message itself. A call
+//!   that missed CALL_DEADLINE is still awaited for LATE_LIMIT, and its answer, if it comes, is stepped (`answer`).
+//!   Every call's outcome, and the cause of each failure, is kept per peer for `/stats` (`PeerCalls`).
 //! - Time. `tick` runs every TICK while an input arrived in the last ACTIVE_FOR_MS or a call is held, and from the
 //!   one alarm the design allows: a leader's, every 2 s while it served a request in the last 60 s (`design/DESIGN.md`,
 //!   Shape, the drain check). `tick` starts no campaign; campaigns start only from `/campaign` and `/suspect`.
@@ -22,7 +24,7 @@
 use std::cell::{Cell, RefCell};
 #[cfg(feature = "test-faults")]
 use std::collections::BTreeSet;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::rc::Rc;
 use std::time::Duration;
@@ -60,6 +62,9 @@ const DRAIN_IDLE_MS: u64 = 60_000;
 const RESTORE_CHECK_MAX: u64 = 20_000;
 /// Latency samples kept for `/stats`.
 const SAMPLES_MAX: usize = 200_000;
+/// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
+/// its commit, and a confirm row a minute old covers every index at or below it.
+const SYNCED_KEEP: usize = 256;
 /// Stored bytes per `/entries` page. 239 entries of `wp6/main` were 4.6 MB of JSON and took 7.8 s to answer through
 /// the test edge, past the lookup's 3.5 s CALL, so the git cache shard's rehydrate never finished
 /// (`tests/m1/results/m1-wp8.md`, t-256). A page this size is under 1 MB of JSON [guess for the bound].
@@ -111,7 +116,177 @@ pub struct Stats {
     pub received: BTreeMap<String, u32>,
     pub alarms: Vec<String>,
     appended: Vec<(u64, u64)>,
+    /// Every member-to-member call this member sent, by the peer's site id.
+    pub peers: BTreeMap<u8, PeerCalls>,
 }
+
+/// Why a member-to-member call failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallFail {
+    /// No member of the group on that site, by the latest config or the bootstrap record.
+    Peer,
+    SiteEnv,
+    Stub,
+    Request,
+    /// The stub's `fetch` threw.
+    Fetch,
+    /// The peer answered, not 200.
+    Status,
+    Body,
+    Decode,
+    /// No answer within CALL_DEADLINE.
+    Deadline,
+    #[cfg(feature = "test-faults")]
+    Injected,
+}
+
+impl CallFail {
+    fn name(self) -> &'static str {
+        match self {
+            CallFail::Peer => "peer",
+            CallFail::SiteEnv => "siteEnv",
+            CallFail::Stub => "stub",
+            CallFail::Request => "request",
+            CallFail::Fetch => "fetch",
+            CallFail::Status => "status",
+            CallFail::Body => "body",
+            CallFail::Decode => "decode",
+            CallFail::Deadline => "deadline",
+            #[cfg(feature = "test-faults")]
+            CallFail::Injected => "injected",
+        }
+    }
+}
+
+/// A failed call's cause and the error text it carried.
+pub struct PeerErr {
+    kind: CallFail,
+    msg: String,
+}
+
+impl PeerErr {
+    fn new(kind: CallFail, msg: impl ToString) -> PeerErr {
+        let mut msg = msg.to_string();
+        if msg.len() > PEER_MSG_MAX {
+            let mut cut = PEER_MSG_MAX;
+            while !msg.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            msg.truncate(cut);
+        }
+        PeerErr { kind, msg }
+    }
+}
+
+/// Recent errors and AppendEntries calls kept per peer: enough to read a stall's cause from `/stats`, few enough to
+/// keep in every member.
+const PEER_ERRORS: usize = 8;
+const PEER_APPENDS: usize = 32;
+const PEER_MSG_MAX: usize = 200;
+
+/// The calls this member sent to one peer. A call that misses CALL_DEADLINE counts under `failed` as `deadline`, and
+/// once more under `late` if its answer then arrives (which is stepped) or `lateFailed` if it then fails.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerCalls {
+    /// Answered within CALL_DEADLINE.
+    pub ok: u32,
+    pub failed: BTreeMap<&'static str, u32>,
+    pub late: u32,
+    pub late_ms_max: u32,
+    /// Missed CALL_DEADLINE, then failed, by cause.
+    pub late_failed: BTreeMap<&'static str, u32>,
+    /// Newest last, each `{at, kind, msg, call, entries, bytes, ms}`.
+    pub errors: VecDeque<Value>,
+    /// AppendEntries calls with entries, newest last, each `{at, round, first, last, bytes, ms, end}` (`first` and
+    /// `last` are entry indexes). A call that missed its deadline shows twice: `deadline` then, and `late` or its
+    /// error when it ended.
+    pub appends: VecDeque<Value>,
+}
+
+/// One call as sent: to whom, what it carried, and when.
+struct Call {
+    to: u8,
+    msg: &'static str,
+    /// An AppendEntries call's round and the indexes of its first and last entry.
+    append: Option<(u64, u64, u64)>,
+    entries: usize,
+    bytes: usize,
+    at: u64,
+}
+
+impl Call {
+    fn of<E>(e: &raft::Envelope<E>, bytes: usize) -> Call {
+        let msg = match &e.msg {
+            raft::Message::Append(_) => "append",
+            raft::Message::AppendRes(_) => "appendRes",
+            raft::Message::Vote(_) => "vote",
+            raft::Message::VoteRes(_) => "voteRes",
+            raft::Message::Propose(_) => "propose",
+            raft::Message::Proposed { .. } => "proposed",
+            raft::Message::TimeoutNow { .. } => "timeoutNow",
+            raft::Message::TransferRefused { .. } => "transferRefused",
+            raft::Message::Probe { .. } => "probe",
+            raft::Message::ProbeRes { .. } => "probeRes",
+            raft::Message::Ping { .. } => "ping",
+            raft::Message::Pong { .. } => "pong",
+        };
+        let (append, entries) = match &e.msg {
+            raft::Message::Append(a) => {
+                (Some((a.round, a.prev_index.0 + 1, a.prev_index.0 + a.entries.len() as u64)), a.entries.len())
+            }
+            _ => (None, 0),
+        };
+        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms() }
+    }
+}
+
+/// How a call ended.
+enum End {
+    Ok,
+    /// Answered after CALL_DEADLINE, within LATE_LIMIT more.
+    Late,
+    Failed(PeerErr),
+    /// Missed CALL_DEADLINE, then failed.
+    LateFailed(PeerErr),
+}
+
+/// How a call ended against its deadline.
+#[derive(Debug, PartialEq)]
+pub enum Answer<T> {
+    InTime(T),
+    /// The deadline passed first, and the call ended before `limit`.
+    Late(T),
+    Missed,
+}
+
+/// Races `call` against `deadline`. A call that misses it runs `missed` at once, so the Raft core hears of the miss
+/// at its deadline, and is then awaited until `limit`. Its answer, if it comes, is returned as `Late`, for the core to
+/// step (`Member::call_failed`: "A reply that still arrives later may be passed to `step`"). A follower whose
+/// AppendEntries take longer than CALL_DEADLINE to transfer and apply answers only late, and a leader that drops
+/// those answers never learns it caught up, so it resends the same entries forever (`tests/m1/results/m1-f43.md`).
+pub async fn answer<T>(
+    call: impl Future<Output = T>,
+    deadline: impl Future<Output = ()>,
+    limit: impl Future<Output = ()>,
+    missed: impl FnOnce(),
+) -> Answer<T> {
+    let mut call = Box::pin(call);
+    match select(call.as_mut(), Box::pin(deadline)).await {
+        Either::Left((v, _)) => Answer::InTime(v),
+        Either::Right(_) => {
+            missed();
+            match select(call, Box::pin(limit)).await {
+                Either::Left((v, _)) => Answer::Late(v),
+                Either::Right(_) => Answer::Missed,
+            }
+        }
+    }
+}
+
+/// How long past CALL_DEADLINE a call is still awaited [guess]: the slowest AppendEntries a follower answered in the
+/// F43 logs took 2.0 s on the callee (`tests/m1/results/m1-f43.md`).
+const LATE_LIMIT: Duration = Duration::from_secs(10);
 
 pub struct Core<F: Family> {
     pub m: raft::Member<F::C>,
@@ -165,6 +340,13 @@ pub struct Host<F: Family> {
     /// Confirms begun and `SelfAck`s waiting for the writes of the next `flush` to be durable.
     unconfirmed: RefCell<Vec<Unconfirmed>>,
     pub stats: RefCell<Stats>,
+    /// The host's own record of its storage confirms, for each `Acked`'s evidence (`ack_json`): the log's last index
+    /// once a transaction that appended was confirmed durable, and `now_ms()` then. A truncation caps every row.
+    synced: RefCell<VecDeque<(u64, u64)>>,
+    /// The last log index the queued transaction leaves, when it appends.
+    queued_last: Cell<Option<u64>>,
+    /// Truncations stepped, numbered, with the index each left the log at.
+    truncs: RefCell<VecDeque<(u64, u64)>>,
     /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
     blocked: RefCell<Vec<(Ticket, RequestId, F::C)>>,
     leasing: Cell<bool>,
@@ -288,7 +470,12 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                     applied.push(e);
                     let EntryBody::Events(evs) = &e.body else { continue };
                     for (rid, r) in &e.requests {
-                        let b = codec::to_bytes(&evs[r.start as usize..r.end as usize]);
+                        // The row's form of each event, as `GroupFold::apply` keeps it (`Fold::row_event`).
+                        let row: Vec<F::Ev> = evs[r.start as usize..r.end as usize]
+                            .iter()
+                            .map(<F::Fold as raft::Fold>::row_event)
+                            .collect();
+                        let b = codec::to_bytes(&row);
                         let hex = rid.to_string();
                         // A request id applied at a second index is the double apply BF-12 counts.
                         #[cfg(feature = "test-faults")]
@@ -331,10 +518,50 @@ fn commit_tx(storage: &worker::Storage, stmts: Vec<Stmt>) -> std::result::Result
     f.call1(raw, &cb).map(|_| ()).map_err(|e| format!("{e:?}"))
 }
 
-/// Reads the member's rows back into the crate's `Stored`: the state row, the log above a base `LOG_WINDOW` below
-/// `applied`, checked against its digests, and the `GroupFold` loaded from `reg`, `request`, and `group_config` with
-/// `GroupFold::from_parts`. Entries at or below the base stay on storage; the member asks for them with
-/// `Out::catchup`. While the log is short, the loaded fold is also compared with the log replayed through `applied`.
+/// Rows one at a time: `rows` copies every row of a result into wasm memory first, and a log of 1 MB inline packs read
+/// that way ran the isolate out of memory in `load` (F45, `tests/m1/results/m1-f43.md`).
+fn each_row(
+    sql: &SqlStorage,
+    q: &str,
+    args: Vec<SqlStorageValue>,
+    mut f: impl FnMut(Vec<SqlStorageValue>) -> Result<bool>,
+) -> Result<()> {
+    for r in sql.exec(q, args)?.raw() {
+        if !f(r?)? {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// The base `load` restores above: every entry above `applied` is loaded, and below it the newest applied entries that
+/// fit both `LOG_WINDOW` entries and `LOG_BYTES` bytes, at least the last applied one, and never below `floor` (a
+/// truncated log's first row, which stays as its base).
+fn load_base(sql: &SqlStorage, applied: Index, floor: u64) -> Result<u64> {
+    let mut base = applied.0.saturating_sub(raft::LOG_WINDOW).max(floor);
+    let mut bytes = 0u64;
+    each_row(
+        sql,
+        "SELECT idx, length(row) FROM log WHERE idx > ? AND idx <= ? ORDER BY idx DESC",
+        vec![i(base), i(applied.0)],
+        |r| {
+            let (idx, len) = (int(&r[0])? as u64, int(&r[1])? as u64);
+            bytes += len;
+            if bytes > raft::LOG_BYTES as u64 && idx < applied.0 {
+                base = idx;
+                return Ok(false);
+            }
+            Ok(true)
+        },
+    )?;
+    Ok(base)
+}
+
+/// Reads the member's rows back into the crate's `Stored`: the state row, the log above a base below `applied`
+/// (`load_base`: `LOG_WINDOW` entries and `LOG_BYTES` bytes at most), checked against its digests, and the
+/// `GroupFold` loaded from `reg`, `request`, and `group_config` with `GroupFold::from_parts`. Entries at or below the
+/// base stay on storage; the member asks for them with `Out::catchup`. While the log is short, the loaded fold is also
+/// compared with the log replayed through `applied`. Every multi-row read goes one row at a time.
 fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result<Stored<F::Fold>> {
     let state = match rows(sql, "SELECT row FROM raft_state WHERE id = 1", vec![])?.first() {
         Some(r) => {
@@ -357,22 +584,24 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
     // A truncated log (`Host::truncate`) starts at its base row; restore starts there at the earliest.
     let first_row = rows(sql, "SELECT min(idx) FROM log", vec![])?.first().and_then(|r| int(&r[0]).ok()).unwrap_or(1);
     let truncated = first_row > 1;
-    let base_index = applied.0.saturating_sub(raft::LOG_WINDOW).max(if truncated { first_row as u64 } else { 0 });
+    let base_index = load_base(sql, applied, if truncated { first_row as u64 } else { 0 })?;
     let mut base = raft::LogBase::default();
     if base_index > 0 {
         let r = rows(sql, "SELECT idx, digest, row FROM log WHERE idx = ?", vec![i(base_index)])?;
         let e = decode(r.first().ok_or_else(|| err(format!("no log row at the base {base_index}")))?)?;
         base = raft::LogBase { index: e.index, term: e.term, digest: raft::digest(&e) };
     }
-    let mut log = Vec::new();
-    for r in rows(sql, "SELECT idx, digest, row FROM log WHERE idx > ? ORDER BY idx", vec![i(base_index)])? {
+    let mut log: Vec<Entry<F>> = Vec::new();
+    let mut prev = base.digest;
+    each_row(sql, "SELECT idx, digest, row FROM log WHERE idx > ? ORDER BY idx", vec![i(base_index)], |r| {
         let e = decode(&r)?;
-        let prev = log.last().map_or(base.digest, |p: &Entry<F>| raft::digest(p));
         if e.index.0 != base_index + log.len() as u64 + 1 || e.prev != prev {
             return Err(err(format!("log row {:?} does not chain after {} rows", e.index, log.len())));
         }
+        prev = raft::digest(&e);
         log.push(e);
-    }
+        Ok(true)
+    })?;
     if applied.0 > base_index + log.len() as u64 {
         return Err(err(format!("applied {applied:?} past the log's {} rows", base_index + log.len() as u64)));
     }
@@ -389,20 +618,24 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
         None => None,
     };
     let mut requests = Vec::new();
-    for r in rows(sql, "SELECT rid, idx, at, events FROM request", vec![])? {
+    each_row(sql, "SELECT rid, idx, at, events FROM request", vec![], |r| {
         let rid = rid_from(text(&r[0])?)?;
-        let events = codec::from_bytes(blob(&r[3])?).map_err(|e| err(format!("request row {rid}: {e}")))?;
+        let events: Vec<F::Ev> = codec::from_bytes(blob(&r[3])?).map_err(|e| err(format!("request row {rid}: {e}")))?;
+        // Rows stored before `Fold::row_event` hold whole events; the fold keeps the row's form.
+        let events = events.iter().map(<F::Fold as raft::Fold>::row_event).collect();
         let row = raft::RequestRow { index: Index(int(&r[1])? as u64), at: Timestamp(int(&r[2])? as u64), events };
         requests.push((rid, row));
-    }
+        Ok(true)
+    })?;
     let mut fold = GroupFold::from_parts(folded, applied, config, id_block, requests);
     fold.set_retention(retention);
     if applied.0 <= RESTORE_CHECK_MAX && !truncated {
         let mut replayed = GroupFold::new(F::new_fold(join));
         replayed.set_retention(retention);
-        for r in rows(sql, "SELECT idx, digest, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])? {
+        each_row(sql, "SELECT idx, digest, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)], |r| {
             replayed.apply(&decode(&r)?);
-        }
+            Ok(true)
+        })?;
         if replayed.fold != fold.fold {
             return Err(err(format!("the fold table differs from the log applied through {applied:?}")));
         }
@@ -416,14 +649,35 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
     Ok(Stored { state, base, log, fold })
 }
 
-/// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`. `None` if a row is missing,
-/// as it is while its transaction waits.
+/// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`, read one row at a time. Past the
+/// anchor at `from` and the first entry after it, it stops at `APPEND_BYTES_MAX`, as `catchup` sends no more. `None`
+/// if a row is missing, as it is while its transaction waits.
 fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Option<Vec<Entry<F>>> {
     let lo = from.0.max(1);
-    let r =
-        rows(sql, "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx", vec![i(lo), i(through.0)]).ok()?;
-    let entries: Vec<Entry<F>> = r.iter().filter_map(|r| codec::from_bytes(blob(&r[0]).ok()?).ok()).collect();
-    (entries.len() as u64 == through.0 + 1 - lo).then_some(entries)
+    let mut entries: Vec<Entry<F>> = Vec::new();
+    let (mut bytes, mut whole) = (0usize, true);
+    let q = "SELECT idx, length(row), row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx";
+    each_row(sql, q, vec![i(lo), i(through.0)], |r| {
+        let idx = int(&r[0])? as u64;
+        if idx != lo + entries.len() as u64 {
+            whole = false;
+            return Ok(false);
+        }
+        if idx > from.0 {
+            bytes += int(&r[1])? as usize;
+            if bytes > raft::APPEND_BYTES_MAX && idx > from.0 + 1 {
+                return Ok(false);
+            }
+        }
+        match codec::from_bytes(blob(&r[2])?) {
+            Ok(e) => entries.push(e),
+            Err(_) => whole = false,
+        }
+        Ok(whole)
+    })
+    .ok()?;
+    let reached = (lo + entries.len() as u64).saturating_sub(1);
+    (whole && !entries.is_empty() && (reached == through.0 || bytes > raft::APPEND_BYTES_MAX)).then_some(entries)
 }
 
 #[cfg(feature = "test-faults")]
@@ -459,6 +713,9 @@ impl<F: Family> Host<F> {
             flush_waiters: RefCell::new(Vec::new()),
             unconfirmed: RefCell::new(Vec::new()),
             stats: RefCell::new(Stats::default()),
+            synced: RefCell::new(VecDeque::new()),
+            queued_last: Cell::new(None),
+            truncs: RefCell::new(VecDeque::new()),
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
             #[cfg(feature = "test-faults")]
@@ -508,11 +765,13 @@ impl<F: Family> Host<F> {
         let retention = request_retention(&self.env);
         let stored = load::<F>(&self.state.storage().sql(), &join, retention)?;
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
+        // Everything `load` read back is durable.
+        *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
             raft::Member::<F::C>::restore(member_config::<F>(&site, &join), &stored, Timestamp(now_ms()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
-        m.set_log_window(raft::LOG_WINDOW);
+        m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
         let mut store =
             SqlStore::<F> { m: &m, fold: &m.group_fold().fold, applied, stmts: Vec::new(), archived: Vec::new() };
         let ((), _out) = ready.persist(&mut store);
@@ -593,6 +852,25 @@ impl<F: Family> Host<F> {
         #[cfg(feature = "test-faults")]
         let appended = self.appended_kill(core, &ready.writes);
         let wrote = !ready.writes.is_empty();
+        for w in &ready.writes {
+            match w {
+                Write::Append(e) => self.queued_last.set(Some(e.index.0)),
+                Write::Truncate(x) => {
+                    let cap = x.0 - 1;
+                    self.queued_last.set(self.queued_last.get().map(|l| l.min(cap)));
+                    for r in self.synced.borrow_mut().iter_mut() {
+                        r.0 = r.0.min(cap);
+                    }
+                    let mut t = self.truncs.borrow_mut();
+                    let n = t.back().map_or(0, |t| t.0) + 1;
+                    t.push_back((n, cap));
+                    if t.len() > SYNCED_KEEP {
+                        t.pop_front();
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut store = SqlStore::<F> {
             m: &core.m,
             fold: &core.m.group_fold().fold,
@@ -800,11 +1078,22 @@ impl<F: Family> Host<F> {
             let _ = tx.send(());
         }
         let pending = std::mem::take(&mut *self.unconfirmed.borrow_mut());
+        let last = self.queued_last.take();
+        let truncs = self.truncs.borrow().back().map_or(0, |t| t.0);
         if !pending.is_empty() {
             let h = self.clone();
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
+                }
+                if let Some(l) = last {
+                    // A truncation stepped after this transaction ran, before its confirm, caps what it vouches for.
+                    let l = h.truncs.borrow().iter().filter(|(n, _)| *n > truncs).map(|(_, c)| *c).fold(l, u64::min);
+                    let mut synced = h.synced.borrow_mut();
+                    synced.push_back((l, now_ms()));
+                    while synced.len() > SYNCED_KEEP {
+                        synced.pop_front();
+                    }
                 }
                 for (id, timed, ack) in pending {
                     if let Some(t0) = timed {
@@ -1026,79 +1315,139 @@ impl<F: Family> Host<F> {
         }
         let h = self.clone();
         spawn_local(async move {
-            let t0 = now_ms();
+            let body = codec::to_bytes(std::slice::from_ref(&e));
+            let call = Call::of(&e, body.len());
+            // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
+            let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
+            #[cfg(feature = "test-faults")]
+            let drop_reply = matches!(e.msg, raft::Message::Append(_));
+            drop(e);
             #[cfg(feature = "test-faults")]
             if crate::faults::site_down(&h.env).await {
-                crate::faults::count(&format!("site_fault:out>{}", e.to.0));
-                if let Some(f) = e.failure(false) {
-                    let _ = h.input(|m, t| m.call_failed(t, f));
-                }
-                return;
+                crate::faults::count(&format!("site_fault:out>{}", to.0));
+                h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "site fault")));
+                return h.call_failed(on_error);
             }
             #[cfg(feature = "test-faults")]
-            if crate::faults::fail_call(&h.env, e.to.0) {
-                if let Some(f) = e.failure(false) {
-                    let _ = h.input(|m, t| m.call_failed(t, f));
-                }
-                return;
+            if crate::faults::fail_call(&h.env, to.0) {
+                h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "fail_call")));
+                return h.call_failed(on_error);
             }
-            let r = h.call_peer(&e).await;
+            let missed = || {
+                h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "no answer within CALL_DEADLINE")));
+                h.stats.borrow_mut().failed_calls += 1;
+                h.call_failed(on_miss);
+            };
+            // `answer` starts the limit's timer only once the deadline passed.
+            let (late, r) =
+                match answer(h.call_peer(to, body), Delay::from(raft::CALL_DEADLINE), Delay::from(LATE_LIMIT), missed)
+                    .await
+                {
+                    Answer::InTime(r) => (false, r),
+                    Answer::Late(r) => (true, r),
+                    Answer::Missed => return,
+                };
+            let replies = match r {
+                Ok(replies) => replies,
+                Err(pe) if late => return h.ended(&call, End::LateFailed(pe)),
+                Err(pe) => {
+                    h.ended(&call, End::Failed(pe));
+                    h.stats.borrow_mut().failed_calls += 1;
+                    return h.call_failed(on_error);
+                }
+            };
             // The callee ran the call and its answer is lost: the leader sees a call that missed its deadline.
             #[cfg(feature = "test-faults")]
-            let r = match r {
-                Ok(_)
-                    if matches!(e.msg, raft::Message::Append(_))
-                        && crate::faults::drop_append_reply(&h.env, e.to.0) =>
-                {
-                    Err(true)
-                }
-                r => r,
-            };
-            if r.is_ok() && matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()) {
-                let mut s = h.stats.borrow_mut();
-                let v = s.append_ms.entry(e.to.0).or_default();
-                if v.len() < SAMPLES_MAX {
-                    v.push(now_ms().saturating_sub(t0) as u32);
-                }
-            }
-            match r {
-                Ok(replies) => {
-                    for r in replies {
-                        let from = r.from;
-                        if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
-                            break;
-                        }
-                    }
-                }
-                Err(deadline) => {
+            if drop_reply && crate::faults::drop_append_reply(&h.env, to.0) {
+                if !late {
+                    h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "drop_append_reply")));
                     h.stats.borrow_mut().failed_calls += 1;
-                    if let Some(f) = e.failure(deadline) {
-                        let _ = h.input(|m, t| m.call_failed(t, f));
-                    }
+                    h.call_failed(on_miss);
+                }
+                return;
+            }
+            h.ended(&call, if late { End::Late } else { End::Ok });
+            for r in replies {
+                let from = r.from;
+                if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
+                    break;
                 }
             }
         });
     }
 
-    /// One member-to-member call. `Err(true)` is a missed CALL_DEADLINE, `Err(false)` an error.
-    async fn call_peer(&self, e: &Envelope<F>) -> std::result::Result<Vec<Envelope<F>>, bool> {
-        let name = self.peer_name(e.to).ok_or(false)?;
-        let site = SiteEnv::read(&self.env).map_err(|_| false)?;
-        let stub = site.member(&self.env, e.to, &name).map_err(|_| false)?;
-        let body = codec::to_bytes(std::slice::from_ref(e));
-        let call = async move {
-            let mut init = RequestInit::new();
-            let body = js_sys::Uint8Array::from(body.as_slice());
-            init.with_method(Method::Post).with_body(Some(JsValue::from(body)));
-            let req = Request::new_with_init("https://member/raft", &init).map_err(|_| false)?;
-            let mut res = stub.fetch_with_request(req).await.map_err(|_| false)?;
-            if res.status_code() != 200 {
-                return Err(false);
+    fn call_failed(self: &Rc<Self>, f: Option<raft::CallFailure>) {
+        if let Some(f) = f {
+            let _ = self.input(|m, t| m.call_failed(t, f));
+        }
+    }
+
+    /// Records how a call ended in `/stats`: per peer, its counts, its last errors, and its last AppendEntries.
+    fn ended(&self, c: &Call, end: End) {
+        let now = now_ms();
+        let ms = now.saturating_sub(c.at) as u32;
+        let mut s = self.stats.borrow_mut();
+        let appended = c.append.is_some() && c.entries > 0;
+        if appended && matches!(end, End::Ok) {
+            let v = s.append_ms.entry(c.to).or_default();
+            if v.len() < SAMPLES_MAX {
+                v.push(ms);
             }
-            let b = res.bytes().await.map_err(|_| false)?;
-            codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|_| false)
+        }
+        let p = s.peers.entry(c.to).or_default();
+        let tag = match &end {
+            End::Ok => {
+                p.ok += 1;
+                "ok"
+            }
+            End::Late => {
+                p.late += 1;
+                p.late_ms_max = p.late_ms_max.max(ms);
+                "late"
+            }
+            End::Failed(e) | End::LateFailed(e) => {
+                let late = matches!(end, End::LateFailed(_));
+                let counts = if late { &mut p.late_failed } else { &mut p.failed };
+                *counts.entry(e.kind.name()).or_insert(0) += 1;
+                p.errors.push_back(json!({
+                    "at": now, "kind": e.kind.name(), "msg": e.msg, "late": late,
+                    "call": c.msg, "entries": c.entries, "bytes": c.bytes, "ms": ms,
+                }));
+                if p.errors.len() > PEER_ERRORS {
+                    p.errors.pop_front();
+                }
+                e.kind.name()
+            }
         };
-        within(raft::CALL_DEADLINE, call).await.unwrap_or(Err(true))
+        if let (true, Some((round, first, last))) = (appended, c.append) {
+            p.appends.push_back(json!({
+                "at": now, "round": round, "first": first, "last": last, "bytes": c.bytes, "ms": ms, "end": tag,
+            }));
+            if p.appends.len() > PEER_APPENDS {
+                p.appends.pop_front();
+            }
+        }
+    }
+
+    /// One member-to-member call, with no deadline (`answer` adds it), and the cause of its failure.
+    async fn call_peer(&self, to: SiteId, body: Vec<u8>) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
+        let name =
+            self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member on site {}", to.0)))?;
+        let site = SiteEnv::read(&self.env).map_err(|x| PeerErr::new(CallFail::SiteEnv, x))?;
+        let stub = site.member(&self.env, to, &name).map_err(|x| PeerErr::new(CallFail::Stub, x))?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(JsValue::from(js_sys::Uint8Array::from(body.as_slice()))));
+        drop(body);
+        let req =
+            Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
+        let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
+        let status = res.status_code();
+        if status != 200 {
+            let text = res.text().await.unwrap_or_default();
+            return Err(PeerErr::new(CallFail::Status, format!("{status} {text}")));
+        }
+        let b = res.bytes().await.map_err(|x| PeerErr::new(CallFail::Body, x))?;
+        codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|x| PeerErr::new(CallFail::Decode, x))
     }
 
     /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when.
@@ -1542,6 +1891,38 @@ pub fn outcome_json<F: Family>(o: &Outcome<F>) -> Value {
     }
 }
 
+/// An `Acked`'s evidence, on this member's clock (`tests/m1/results/m1-wp2.md`, "Member-side ack evidence"): the
+/// write's entry, the commit its `QuorumProof` is for, when the leader built that entry and committed it, when this
+/// reply was built (`sentAt`; the reply leaves at or after it), when this host's own storage confirm first covered the
+/// commit (`selfSyncedAt`, the host's record, not the crate's), and each counted site's durable index with when the
+/// leader learned it. `tests/m1/lin/ackcheck.ts` checks every acknowledged write's.
+impl<F: Family> Host<F> {
+    pub fn ack_json(&self, a: &raft::Acked<FOut<F>>) -> Value {
+        let p = a.quorum();
+        let synced = self.synced.borrow().iter().filter(|r| r.0 >= p.index().0).map(|r| r.1).min();
+        json!({
+            "site": p.leader().0,
+            "index": a.index.0,
+            "commitIndex": p.index().0,
+            "entryAt": p.entry_at().0,
+            "commitAt": p.at().0,
+            "sentAt": now_ms(),
+            "selfSyncedAt": synced,
+            "acks": p.acks().iter().map(|d| json!({ "site": d.site.0, "durable": d.durable.0, "at": d.at.0 }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
+    /// `outcome_json` with the `Acked`'s evidence, for a reply this member sends now.
+    pub fn reply_json(&self, o: &Outcome<F>) -> Value {
+        let mut v = outcome_json::<F>(o);
+        if let Ok(a) = o {
+            v["ok"]["ack"] = self.ack_json(a);
+        }
+        v
+    }
+}
+
 /// A refusal the lease loop answers by re-sending, not the caller.
 pub fn needs_block<F: Family>(o: &Outcome<F>) -> bool {
     matches!(o, Err(CommitError::Refused { err: e, .. }) if F::needs_block(e))
@@ -1587,4 +1968,64 @@ pub fn digest_hex(d: &raft::Digest) -> String {
 /// A request id in its text form, the ULID's 26 characters.
 pub fn rid_from(s: &str) -> Result<RequestId> {
     s.parse().map_err(|_| err(format!("bad request id {s:?}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+    use std::pin::pin;
+    use std::task::{Context, Poll, Waker};
+
+    use futures_channel::oneshot;
+
+    use super::{Answer, answer};
+
+    /// A future that ends when its sender fires.
+    fn gate() -> (oneshot::Sender<()>, impl std::future::Future<Output = ()>) {
+        let (tx, rx) = oneshot::channel::<()>();
+        (tx, async move {
+            let _ = rx.await;
+        })
+    }
+
+    /// An AppendEntries answer that arrives after CALL_DEADLINE: the miss is reported when the deadline passes, and the
+    /// answer is still returned for the core to step. Dropping it is what kept `repo:196608`'s site-0 member at 235
+    /// (`tests/m1/results/m1-f43.md`).
+    #[test]
+    fn an_answer_after_the_deadline_is_kept_and_the_miss_reported_first() {
+        let (answer_tx, answer_rx) = oneshot::channel::<u64>();
+        let (deadline_tx, deadline) = gate();
+        let (_limit_tx, limit) = gate();
+        let missed = Cell::new(false);
+        let call = async move { answer_rx.await.unwrap() };
+        let mut f = pin!(answer(call, deadline, limit, || missed.set(true)));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Pending);
+        deadline_tx.send(()).unwrap();
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Pending, "still waiting for the answer");
+        assert!(missed.get(), "the miss is reported at the deadline, before the answer");
+        answer_tx.send(235).unwrap();
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Ready(Answer::Late(235)));
+    }
+
+    #[test]
+    fn an_answer_in_time_reports_no_miss_and_one_past_the_limit_is_missed() {
+        let missed = Cell::new(false);
+        let (_deadline_tx, deadline) = gate();
+        let (_limit_tx, limit) = gate();
+        let mut f = pin!(answer(async { 7 }, deadline, limit, || missed.set(true)));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Ready(Answer::InTime(7)));
+        assert!(!missed.get());
+
+        let (_answer_tx, answer_rx) = oneshot::channel::<u64>();
+        let (deadline_tx, deadline) = gate();
+        let (limit_tx, limit) = gate();
+        let mut f = pin!(answer(async move { answer_rx.await.unwrap() }, deadline, limit, || missed.set(true)));
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Pending);
+        deadline_tx.send(()).unwrap();
+        limit_tx.send(()).unwrap();
+        assert_eq!(f.as_mut().poll(&mut cx), Poll::Ready(Answer::Missed));
+        assert!(missed.get());
+    }
 }
