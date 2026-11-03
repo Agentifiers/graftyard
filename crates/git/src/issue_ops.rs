@@ -82,8 +82,11 @@ impl<'a> RepoView<'a> {
         get_rec(&self.core, "ref", &[ref_key(name)])
     }
 
-    fn next_id(&self) -> Result<DbId, IssueErr> {
-        ids(&self.meta).peek().ok_or(IssueErr::NeedIdBlock)
+    /// The next free id of `tier`'s own cursor: Core for an event that touches Core, Metadata otherwise
+    /// (`crate::tiers::id_tier`).
+    fn next_id(&self, tier: Tier) -> Result<DbId, IssueErr> {
+        let c = if tier == Tier::Core { ids(&self.core) } else { ids(&self.meta) };
+        c.peek().ok_or(IssueErr::NeedIdBlock)
     }
 
     fn rules(&self) -> Vec<BranchRule> {
@@ -230,7 +233,8 @@ impl IssueCmd {
         match &self.op {
             IssueOp::OpenIssue { .. } | IssueOp::OpenPr { .. } | IssueOp::Close { .. } | IssueOp::Settings(_) => both,
             IssueOp::Change { change: IssueChange::State { .. } | IssueChange::Draft(_), .. } => both,
-            IssueOp::Review { .. } | IssueOp::Dismiss { .. } | IssueOp::SetRule { .. } => both,
+            IssueOp::Review { .. } | IssueOp::Dismiss { .. } => both,
+            IssueOp::SetRule { .. } => TierSet::CORE,
             IssueOp::RecordCheck(_) | IssueOp::RecordStatus(_) => both,
             // A new review thread, a resolution, or a deletion may change the core unresolved count.
             IssueOp::Comment { on: CommentTarget::Review { .. }, reply_to: None, .. } => both,
@@ -281,7 +285,7 @@ impl IssueCmd {
                 }
                 let n = IssueNumber(v.last_number() + 1);
                 let capture = IssueCapture {
-                    id: v.next_id()?,
+                    id: v.next_id(Tier::Core)?,
                     author: me,
                     title: title.clone(),
                     body: body.clone(),
@@ -312,7 +316,7 @@ impl IssueCmd {
                 }
                 let n = IssueNumber(v.last_number() + 1);
                 let issue = IssueCapture {
-                    id: v.next_id()?,
+                    id: v.next_id(Tier::Core)?,
                     author: me,
                     title: title.clone(),
                     body: body.clone(),
@@ -392,7 +396,9 @@ impl IssueCmd {
                 if let Some(r) = reply_to {
                     get_rec::<CommentRow>(v.meta(), "comment", &[int(r.0.0)]).ok_or(IssueErr::NotFound)?;
                 }
-                let id = v.next_id()?;
+                // A review thread's first comment touches Core (`tier_of`), so its id comes from Core.
+                let thread = matches!(on, CommentTarget::Review { .. }) && reply_to.is_none();
+                let id = v.next_id(if thread { Tier::Core } else { Tier::Metadata })?;
                 let ev = CommentEvent::Created {
                     id: CommentId(id),
                     on: on.clone(),
@@ -433,7 +439,7 @@ impl IssueCmd {
                 if *state == ReviewState::Approved && self.author(v, *n).is_some_and(|a| Some(a) == me) {
                     return Err(IssueErr::OwnApproval);
                 }
-                let id = v.next_id()?;
+                let id = v.next_id(Tier::Core)?;
                 let ev = ReviewEvent::Submitted {
                     id: ReviewId(id),
                     n: *n,
@@ -477,7 +483,7 @@ impl IssueCmd {
                         get_rec::<LabelRow>(v.meta(), "label", &[int(i.0.0)]).ok_or(IssueErr::NotFound)?;
                         *i
                     }
-                    None => LabelId(v.next_id()?),
+                    None => LabelId(v.next_id(Tier::Metadata)?),
                 };
                 let ev =
                     LabelEvent::Defined { id, name: name.clone(), color: *color, description: description.clone() };
@@ -508,7 +514,7 @@ impl IssueCmd {
                         *i
                     }
                     None if protection.is_none() => return Err(IssueErr::Invalid("deleting a rule needs its id")),
-                    None => v.next_id()?,
+                    None => v.next_id(Tier::Core)?,
                 };
                 let rule = BranchRule { id, pattern: pattern.clone(), protection: protection.clone() };
                 Ok((one(RepoEvent::Rule(rule)), IssueOut::Id(id)))

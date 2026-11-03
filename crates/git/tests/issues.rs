@@ -325,8 +325,8 @@ fn tier_of_routes_each_event_to_the_tiers_shared_names() {
     c.push("refs/heads/f", oid(2));
     let n = open_pr(&mut c, "refs/heads/f", oid(2));
     let tags: Vec<TierSet> = c.log.iter().skip(1).map(|e| e.tiers).collect();
-    // push, settings, rule, push, PrOpened
-    assert_eq!(tags, vec![TierSet::CORE, both, both, TierSet::CORE, both]);
+    // push, settings, rule (Core alone: it takes its id from Core's cursor), push, PrOpened
+    assert_eq!(tags, vec![TierSet::CORE, both, TierSet::CORE, TierSet::CORE, both]);
     let comment = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Edited {
         id: graftyard_git::issues::CommentId(DbId(1)),
         body: "b".into(),
@@ -690,4 +690,103 @@ fn the_core_tier_counts_unresolved_review_threads_per_pull_request() {
     assert_eq!(c.log.last().unwrap().tiers, TierSet::CORE.union(TierSet::METADATA));
     c.commit(READER, IssueOp::Comment { on: CommentTarget::Issue(n), body: "x".into(), reply_to: None }).unwrap();
     assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
+}
+
+/// After a simulated `MetaSplit`, the parent keeps only Core and the child only Metadata
+/// (`design/DESIGN.md`, Shape, `CHILD_GROUP_AT`). Each assigns ids from its own cursor and reads nothing of the other.
+#[test]
+fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
+    use std::collections::BTreeSet;
+    let mut c = setup(1, 90);
+    c.push("refs/heads/f", oid(2));
+    let n = open_pr(&mut c, "refs/heads/f", oid(2));
+    let split = c.members[0].clone();
+    let at = c.log.len();
+    let mut ids = BTreeSet::new();
+    let mut take = |out: Result<IssueOut, IssueErr>| match out.unwrap() {
+        IssueOut::Id(id) => assert!(ids.insert(id), "id {id:?} assigned twice"),
+        IssueOut::Number(_) | IssueOut::Done => {}
+    };
+    // The parent: core-tier commands decided on a view whose metadata tier is empty and never written, as a parent
+    // after `MetaDropped` holds none.
+    let empty = MemStore::default();
+    let mut parent = split.core.clone();
+    let mut core_ids = Vec::new();
+    for i in 0..40u8 {
+        let op = if i % 2 == 0 {
+            protect(&format!("rel{i}"), &["ci"])
+        } else {
+            IssueOp::Review { n, state: ReviewState::Commented, commit: oid(2), body: "".into() }
+        };
+        let cmd = IssueCmd { op, actor: who(OWNER), request: RequestId(Ulid(u128::from(i))) };
+        let view = RepoView::new(tiers(), &parent, &empty, c.now);
+        let needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+        let d: Vec<_> = needed.iter().map(|k| c.deps.iter().find(|(x, _)| x == k).unwrap().clone()).collect();
+        let (evs, out) = cmd.decide(&view, &d).unwrap();
+        drop(view);
+        if let IssueOut::Id(id) = out {
+            core_ids.push(id);
+        }
+        take(Ok(out));
+        let idx = at + core_ids.len();
+        // A both-tier entry commits whole on the parent, which applies only its core rows.
+        let tag = evs.iter().fold(TierSet::NONE, |t, e| t.union(tier_of(e)));
+        let e = LogEntry {
+            term: Term(2),
+            index: Index(idx as u64),
+            prev: graftyard_fold::meta(&parent).last,
+            format: Format { family: 0x20, version: 3 },
+            tiers: tag,
+            at: c.now,
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(evs.into_vec()),
+        };
+        apply(&tiers(), &mut parent, Tier::Core, &e).unwrap();
+    }
+    // The child: metadata-only commands on a view whose core tier is the split point's, frozen.
+    let mut child = split.meta.clone();
+    let mut meta_ids = Vec::new();
+    for i in 0..40u8 {
+        let op = if i % 2 == 0 {
+            IssueOp::Comment { on: CommentTarget::Issue(n), body: "c".into(), reply_to: None }
+        } else {
+            IssueOp::DefineLabel {
+                id: None,
+                name: graftyard_git::issues::LabelName(format!("l{i}").into()),
+                color: [0; 3],
+                description: None,
+            }
+        };
+        let cmd = IssueCmd { op, actor: who(OWNER), request: RequestId(Ulid(100 + u128::from(i))) };
+        assert_eq!(cmd.tiers(), TierSet::METADATA);
+        let view = RepoView::new(tiers(), &split.core, &child, c.now);
+        let needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+        let d: Vec<_> = needed.iter().map(|k| c.deps.iter().find(|(x, _)| x == k).unwrap().clone()).collect();
+        let (evs, out) = cmd.decide(&view, &d).unwrap();
+        drop(view);
+        if let IssueOut::Id(id) = out {
+            meta_ids.push(id);
+        }
+        take(Ok(out));
+        let e = LogEntry {
+            term: Term(2),
+            index: Index((at + meta_ids.len()) as u64),
+            prev: graftyard_fold::meta(&child).last,
+            format: Format { family: 0x20, version: 3 },
+            tiers: TierSet::METADATA,
+            at: c.now,
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(evs.into_vec()),
+        };
+        apply(&tiers(), &mut child, Tier::Metadata, &e).unwrap();
+    }
+    assert_eq!((core_ids.len(), meta_ids.len()), (40, 40));
+    assert!(core_ids.windows(2).all(|w| w[0] < w[1]) && meta_ids.windows(2).all(|w| w[0] < w[1]));
+    // Both halves come from the one block the group leased.
+    let block = IdBlock::whole(0, 1).unwrap();
+    for id in core_ids.iter().chain(&meta_ids) {
+        assert!(block.index_of(*id).is_some(), "{id:?} is outside the leased block");
+    }
 }

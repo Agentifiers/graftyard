@@ -7,14 +7,18 @@
 //! with `review_thread` mapping each thread to its pull request), which a rule requiring conversation resolution
 //! reads. Metadata holds `issue`, `issue_label`, `issue_assignee`, `label`, `pull`,
 //! `review`, `review_request`, `comment`, `check_run`, `check_suite`, `status`, `check_expiry` (the pruning index),
-//! `retention` (`RepoSettings.check_retention_days`), and `ids`, the `DbId` cursor every id-assigning event advances. A row's record is one postcard blob; its key columns are real
-//! columns a host indexes.
+//! and `retention` (`RepoSettings.check_retention_days`). Each tier also keeps `ids`, its own `DbId` cursor
+//! (`design/DESIGN.md`, Shape, "Chains": "Each fold tier keeps its own `IdBlock` cursor"), over its own half of every
+//! block (`tier_block`), so the two never assign the same id, before a `MetaSplit` or after it, when the parent's core
+//! and the child's metadata tier assign alone. An event that touches Core takes its id from Core, because after a split
+//! its entry commits on the parent; an event that touches only Metadata takes it from Metadata. A row's record is one
+//! postcard blob; its key columns are real columns a host indexes.
 //!
 //! Required checks are pruned in Core when their pull request closes or its head moves, never by time. Check runs,
 //! suites, and statuses are pruned in Metadata once an entry's `at` passes the row's time (the `at` of the entry that
 //! last wrote it) plus the retention, so every member prunes the same rows.
 
-use graftyard_fold::{Read, Rows, Schema, TableDef, Tiered, Val};
+use graftyard_fold::{Read, Rows, Schema, TableDef, Tiered, Val, has};
 use graftyard_identity::IdCursor;
 use graftyard_raft::TierSet;
 use graftyard_types::{AccountId, DbId, IdBlock, RepoId, Tier, Timestamp};
@@ -40,8 +44,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
             TierSet::CORE
         }
         RepoEvent::RequiredCheck { .. } => TierSet::CORE,
-        // Core, and Metadata for the `DbId` cursor a new rule's id advances.
-        RepoEvent::Rule(_) => both,
+        RepoEvent::Rule(_) => TierSet::CORE,
         RepoEvent::IssueOpened { .. } | RepoEvent::PrOpened { .. } | RepoEvent::PrClosed { .. } => both,
         RepoEvent::Settings(_) => both,
         RepoEvent::IssueChanged { change: IssueChange::State { .. } | IssueChange::Draft(_), .. } => both,
@@ -70,6 +73,7 @@ pub const CORE: Schema = Schema {
     tier: Tier::Core,
     tables: &[
         t("counter", &[]),
+        t("ids", &[]),
         t("open_head", &["sha", "n"]),
         t("pull_by_head", &["repo", "branch", "n"]),
         t("pull_head", &["n"]),
@@ -306,11 +310,31 @@ fn count_unresolved(w: &mut dyn Rows, n: IssueNumber, by: i32) {
     if c == 0 { w.delete("unresolved", &[n_key(n)]) } else { put_rec(w, "unresolved", vec![n_key(n)], &c) }
 }
 
+/// The tier an event's ids come from: Core when the event touches Core, else Metadata.
+pub fn id_tier(set: TierSet) -> Tier {
+    if has(set, Tier::Core) { Tier::Core } else { Tier::Metadata }
+}
+
+/// `tier`'s half of a leased block: Metadata assigns its lower half, Core its upper half, so the tiers' cursors never
+/// meet. `None` for Metadata's half of a one-id block.
+pub fn tier_block(block: IdBlock, tier: Tier) -> Option<IdBlock> {
+    let low = block.len() / 2;
+    match tier {
+        Tier::Metadata => IdBlock::new(block.base(), low),
+        Tier::Core => IdBlock::new(DbId(block.base().0 + i64::from(low)), block.len() - low),
+    }
+}
+
+/// A tier's own `DbId` cursor.
 pub(crate) fn ids(r: &(impl Read + ?Sized)) -> IdCursor {
     get_rec(r, "ids", &[]).unwrap_or_default()
 }
 
-fn assigned(w: &mut dyn Rows, id: DbId) {
+/// Records that `ev`'s write assigned `id`, in the tier `id_tier` gives it, so only that tier's cursor moves.
+fn assigned(w: &mut dyn Rows, ev: &RepoEvent, tier: Tier, id: DbId) {
+    if id_tier(tier_of(ev)) != tier {
+        return;
+    }
     let mut c = ids(w);
     c.apply_assigned(id);
     put_rec(w, "ids", Vec::new(), &c);
@@ -400,8 +424,12 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Refused { .. } | RepoEvent::Promoted(_) | RepoEvent::Archived(_) => {}
-            RepoEvent::IssueOpened { n, .. } => put_rec(w, "counter", Vec::new(), &n.0),
+            RepoEvent::IssueOpened { n, capture } => {
+                assigned(w, ev, Tier::Core, capture.id);
+                put_rec(w, "counter", Vec::new(), &n.0)
+            }
             RepoEvent::PrOpened { n, head, base, capture } => {
+                assigned(w, ev, Tier::Core, capture.issue.id);
                 put_rec(w, "counter", Vec::new(), &n.0);
                 let ph = PullHead {
                     head: head.clone(),
@@ -436,6 +464,7 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Review(ReviewEvent::Submitted { id, n, reviewer, state, commit, .. }) => {
+                assigned(w, ev, Tier::Core, id.0);
                 if *state == ReviewState::Pending {
                     return;
                 }
@@ -458,10 +487,13 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Review(ReviewEvent::Requested { .. }) => {}
-            RepoEvent::Rule(r) => match &r.protection {
-                Some(_) => put_rec(w, "rule", vec![int(r.id.0)], r),
-                None => w.delete("rule", &[int(r.id.0)]),
-            },
+            RepoEvent::Rule(r) => {
+                assigned(w, ev, Tier::Core, r.id);
+                match &r.protection {
+                    Some(_) => put_rec(w, "rule", vec![int(r.id.0)], r),
+                    None => w.delete("rule", &[int(r.id.0)]),
+                }
+            }
             RepoEvent::Settings(s) => put_rec(w, "settings", Vec::new(), s),
             RepoEvent::RequiredCheck { sha, name, source, version, conclusion } => {
                 let key = vec![sha_key(sha), text(name), source_key(source)];
@@ -477,6 +509,7 @@ impl RepoTiers {
                 reply_to: None,
                 ..
             }) => {
+                assigned(w, ev, Tier::Core, id.0);
                 put_rec(w, "review_thread", vec![int(id.0.0)], &ThreadRow { n: *n, resolved: false });
                 count_unresolved(w, *n, 1);
             }
@@ -517,7 +550,7 @@ impl RepoTiers {
             | RepoEvent::PrOpened { n, capture: crate::issues::PrCapture { issue: capture, .. }, .. } => {
                 let kind =
                     if matches!(ev, RepoEvent::PrOpened { .. }) { IssueKind::PullRequest } else { IssueKind::Issue };
-                assigned(w, capture.id);
+                assigned(w, ev, Tier::Metadata, capture.id);
                 put_rec(
                     w,
                     "issue",
@@ -580,7 +613,7 @@ impl RepoTiers {
             },
             RepoEvent::Comment(c) => match c {
                 CommentEvent::Created { id, on, author, body, reply_to } => {
-                    assigned(w, id.0);
+                    assigned(w, ev, Tier::Metadata, id.0);
                     put_rec(
                         w,
                         "comment",
@@ -623,7 +656,7 @@ impl RepoTiers {
             },
             RepoEvent::Review(r) => match r {
                 ReviewEvent::Submitted { id, n, reviewer, state, commit, body } => {
-                    assigned(w, id.0);
+                    assigned(w, ev, Tier::Metadata, id.0);
                     put_rec(
                         w,
                         "review",
@@ -655,7 +688,7 @@ impl RepoTiers {
             },
             RepoEvent::Labels(l) => match l {
                 LabelEvent::Defined { id, name, color, description } => {
-                    assigned(w, id.0);
+                    assigned(w, ev, Tier::Metadata, id.0);
                     put_rec(
                         w,
                         "label",
@@ -685,7 +718,6 @@ impl RepoTiers {
                 }
             },
             RepoEvent::Settings(s) => put_rec(w, "retention", Vec::new(), &s.check_retention_days),
-            RepoEvent::Rule(r) => assigned(w, r.id),
             RepoEvent::CheckRun(u) => {
                 put_newer(w, KIND_RUN, vec![int(u.run.0.0)], at, u, |u: &CheckRunUpdate| u.version)
             }
@@ -755,11 +787,11 @@ impl Tiered for RepoTiers {
         }
     }
 
-    /// The metadata tier holds the `DbId` cursor, because every event that assigns an id writes that tier.
+    /// Each tier's cursor moves to its own half of the block.
     fn id_block(&self, block: IdBlock, tier: Tier, w: &mut dyn Rows) {
-        if tier == Tier::Metadata {
+        if let Some(half) = tier_block(block, tier) {
             let mut c = ids(w);
-            c.apply_block(block);
+            c.apply_block(half);
             put_rec(w, "ids", Vec::new(), &c);
         }
     }
