@@ -16,6 +16,10 @@ use graftyard_types::{AccountId, ChainId, CredentialShard, Digest, Index, RepoId
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::issues::{
+    BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent, HeadSpec, IssueCapture,
+    IssueChange, IssueNumber, LabelEvent, PrCapture, RepoSettings, ReviewEvent, StatusUpdate,
+};
 use crate::key::R2Key;
 use crate::pack::{Archived, PackId, PackRef, Promoted};
 use crate::refs::{Atomicity, ObjectId, RefName, RefUpdate};
@@ -103,11 +107,19 @@ pub enum PushErr {
 pub enum RepoEvent {
     /// SHARED's `Refs { push, actor, updates, pack }`: one push's applied updates and the pack that carries their
     /// objects. `push` is its request id, and `actor` the account, which is all the fold reads of the `Actor`.
-    Refs { push: RequestId, actor: Option<AccountId>, updates: Vec<RefUpdate>, pack: Option<PackRef> },
+    Refs {
+        push: RequestId,
+        actor: Option<AccountId>,
+        updates: Vec<RefUpdate>,
+        pack: Option<PackRef>,
+    },
     /// The refs one push's `decide` refused, each with its reason, so a re-send answered from the push's `request`
     /// row reports that reason (`Push::replay`) and not `Stale`. It changes no ref, and a consumer of `Refs` skips it.
     /// Not in SHARED's event list; found by git's t5541 #20 (`tests/m1/results/m1-wp8.md`).
-    Refused { push: RequestId, refs: Vec<(RefName, RejectReason)> },
+    Refused {
+        push: RequestId,
+        refs: Vec<(RefName, RejectReason)>,
+    },
     /// The design's `EntryBody::Promoted`: the objects of every inline pack in `from..=to` packed into one stored pack
     /// by the network's home shard, committed by the leader in an entry of its own with no request
     /// (`graftyard_raft::Member::record`). Ranges follow each other from index 1, and the pack is always stored.
@@ -116,6 +128,44 @@ pub enum RepoEvent {
     /// two buckets, so members truncate their logs through `to` once they can HEAD it in two. It never runs past the
     /// last `Promoted`, and ranges follow each other from index 1.
     Archived(Archived),
+    // Milestone 2 (`design/SHARED.md`, "Event types" and "Issues and pull requests"). Tags 4 onward, in this order;
+    // each payload encodes by `graftyard_fold::canon`. `crate::tiers::tier_of` gives each its tiers.
+    IssueOpened {
+        n: IssueNumber,
+        capture: IssueCapture,
+    },
+    PrOpened {
+        n: IssueNumber,
+        head: HeadSpec,
+        base: RefName,
+        capture: PrCapture,
+    },
+    PrClosed {
+        n: IssueNumber,
+        final_head: ObjectId,
+    },
+    IssueChanged {
+        n: IssueNumber,
+        change: IssueChange,
+        actor: Option<AccountId>,
+    },
+    Comment(CommentEvent),
+    Review(ReviewEvent),
+    Labels(LabelEvent),
+    Rule(BranchRule),
+    Settings(RepoSettings),
+    /// A required conclusion for `sha`. `conclusion: None` is a queued or in-progress run or a pending status, so a
+    /// re-run blocks a merge again. For one (sha, name, source), the highest `version` wins.
+    RequiredCheck {
+        sha: ObjectId,
+        name: Box<str>,
+        source: CheckSource,
+        version: u64,
+        conclusion: Option<CheckConclusion>,
+    },
+    CheckRun(CheckRunUpdate),
+    CheckSuite(CheckSuiteUpdate),
+    Status(StatusUpdate),
 }
 
 impl RepoEvent {
@@ -123,7 +173,7 @@ impl RepoEvent {
     pub fn updates(&self) -> &[RefUpdate] {
         match self {
             RepoEvent::Refs { updates, .. } => updates,
-            RepoEvent::Refused { .. } | RepoEvent::Promoted(_) | RepoEvent::Archived(_) => &[],
+            _ => &[],
         }
     }
 }
@@ -253,9 +303,9 @@ impl Scratch for RepoScratch<'_> {
                     self.over.insert(u.name.clone(), u.new);
                 }
             }
-            RepoEvent::Refused { .. } => {}
             RepoEvent::Promoted(p) => self.promoted = Some(p.clone()),
             RepoEvent::Archived(a) => self.archived = Some(a.clone()),
+            _ => {}
         }
     }
 
@@ -265,12 +315,12 @@ impl Scratch for RepoScratch<'_> {
         let promoted = self.promoted.as_ref().or(self.base.promoted.as_ref());
         let updates = match ev {
             RepoEvent::Refs { updates, .. } => updates,
-            RepoEvent::Refused { .. } => return Ok(()),
             RepoEvent::Promoted(p) => return check_promoted(promoted, p),
             RepoEvent::Archived(a) => {
                 let prev = self.archived.as_ref().or(self.base.archived.as_ref());
                 return check_archived(self.base.repo, prev, promoted, a);
             }
+            _ => return Ok(()),
         };
         let mut seen: BTreeMap<&RefName, Option<ObjectId>> = BTreeMap::new();
         for u in updates {
@@ -300,9 +350,9 @@ impl Fold for RepoFold {
                     };
                 }
             }
-            RepoEvent::Refused { .. } => {}
             RepoEvent::Promoted(p) => self.promoted = Some(p.clone()),
             RepoEvent::Archived(a) => self.archived = Some(a.clone()),
+            _ => {}
         }
     }
 }
@@ -668,6 +718,21 @@ impl Record for RepoEvent {
                 }
                 return;
             }
+            RepoEvent::IssueOpened { n, capture } => return tagged(out, 4, &(n, capture)),
+            RepoEvent::PrOpened { n, head, base, capture } => return tagged(out, 5, &(n, head, base, capture)),
+            RepoEvent::PrClosed { n, final_head } => return tagged(out, 6, &(n, final_head)),
+            RepoEvent::IssueChanged { n, change, actor } => return tagged(out, 7, &(n, change, actor)),
+            RepoEvent::Comment(c) => return tagged(out, 8, c),
+            RepoEvent::Review(r) => return tagged(out, 9, r),
+            RepoEvent::Labels(l) => return tagged(out, 10, l),
+            RepoEvent::Rule(r) => return tagged(out, 11, r),
+            RepoEvent::Settings(s) => return tagged(out, 12, s),
+            RepoEvent::RequiredCheck { sha, name, source, version, conclusion } => {
+                return tagged(out, 13, &(sha, name, source, version, conclusion));
+            }
+            RepoEvent::CheckRun(c) => return tagged(out, 14, c),
+            RepoEvent::CheckSuite(c) => return tagged(out, 15, c),
+            RepoEvent::Status(st) => return tagged(out, 16, st),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -680,6 +745,12 @@ impl Record for RepoEvent {
         }
         e.option(pack.as_ref(), encode_pack);
     }
+}
+
+/// A Milestone 2 event's bytes: its fixed tag, then its payload by the canonical rule.
+fn tagged<T: Serialize + ?Sized>(out: &mut Vec<u8>, tag: u8, payload: &T) {
+    out.push(tag);
+    graftyard_fold::canon::write(out, payload);
 }
 
 impl Command for Push {
@@ -733,7 +804,7 @@ impl Command for Push {
             match ev {
                 RepoEvent::Refs { updates, .. } => was.extend(updates.iter().map(|u| (&u.name, RefOutcome::Ok))),
                 RepoEvent::Refused { refs, .. } => was.extend(refs.iter().map(|(n, r)| (n, RefOutcome::Rejected(*r)))),
-                RepoEvent::Promoted(_) | RepoEvent::Archived(_) => {}
+                _ => {}
             }
         }
         PushOut {
@@ -768,7 +839,7 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
         .iter()
         .filter_map(|ev| match ev {
             RepoEvent::Refs { pack, .. } => pack.clone(),
-            RepoEvent::Refused { .. } | RepoEvent::Promoted(_) | RepoEvent::Archived(_) => None,
+            _ => None,
         })
         .collect()
 }

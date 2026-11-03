@@ -10,6 +10,8 @@ pub mod bucket;
 pub mod clone;
 pub mod group;
 pub mod ingest;
+pub mod issue_ops;
+pub mod issues;
 pub mod key;
 pub mod mem;
 pub mod pack;
@@ -21,6 +23,7 @@ pub mod smart;
 pub mod standin;
 pub mod store;
 pub mod sweep;
+pub mod tiers;
 
 #[cfg(feature = "worker")]
 pub mod host;

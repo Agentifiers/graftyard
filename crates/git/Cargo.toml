@@ -13,9 +13,11 @@ worker = ["dep:worker", "dep:js-sys", "dep:wasm-bindgen"]
 [dependencies]
 arrayvec.workspace = true
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+graftyard-fold = { path = "../fold" }
 graftyard-identity = { path = "../identity" }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -27,3 +29,4 @@ wasm-bindgen = { version = "0.2", optional = true }
 
 [dev-dependencies]
 futures-executor = "0.3"
+postcard.workspace = true

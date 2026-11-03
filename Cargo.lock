@@ -526,16 +526,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-fold"
+version = "0.1.0"
+dependencies = [
+ "graftyard-raft",
+ "graftyard-types",
+ "postcard",
+ "serde",
+ "sha2",
+ "smallvec",
+ "thiserror",
+]
+
+[[package]]
 name = "graftyard-git"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
  "futures-executor",
  "futures-util",
+ "graftyard-fold",
  "graftyard-identity",
  "graftyard-raft",
  "graftyard-types",
  "js-sys",
+ "postcard",
  "serde",
  "serde_json",
  "sha2",
