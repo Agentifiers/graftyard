@@ -138,10 +138,10 @@ impl DurableObject for Registry {
             }
             // Test installs only: one fold audit run, the cron's own.
             #[cfg(feature = "test-faults")]
-            (Method::Post, "/fold_audit_run") => Response::from_json(&crate::audit::run(&self.env).await?),
-            // The fold audit cron's cursor (`crate::audit`), held only by this site's object `audit`: the last chain
-            // audited, and the last run's report.
-            (Method::Get, "/fold_audit") | (Method::Put, "/fold_audit") => {
+            (Method::Post, "/fold_audit_run") => Response::from_json(&crate::fold_audit::run(&self.env).await?),
+            // The fold audit cron's cursor (`crate::fold_audit`), held only by this site's object `fold_audit`: the last
+            // chain audited, and the last run's report.
+            (Method::Get, "/fold_cursor") | (Method::Put, "/fold_cursor") => {
                 #[derive(Deserialize)]
                 struct Audit {
                     next: String,

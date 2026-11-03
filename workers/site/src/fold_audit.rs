@@ -52,7 +52,7 @@ async fn cursor(env: &Env, site: &SiteEnv, put: Option<(&str, &Value)>) -> Resul
     if let Some((next, last)) = put {
         init.with_method(Method::Put).with_body(Some(json!({ "next": next, "last": last }).to_string().into()));
     }
-    let mut res = stub.fetch_with_request(Request::new_with_init("https://registry/fold_audit", &init)?).await?;
+    let mut res = stub.fetch_with_request(Request::new_with_init("https://registry/fold_cursor", &init)?).await?;
     let v: Value = res.json().await?;
     Ok(v["next"].as_str().map(str::to_owned))
 }

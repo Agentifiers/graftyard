@@ -10,10 +10,10 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
-mod audit;
 mod family;
 #[cfg(feature = "test-faults")]
 mod faults;
+mod fold_audit;
 mod host;
 mod lookup;
 mod member;
@@ -103,7 +103,7 @@ async fn fetch(_req: Request, _env: Env, _ctx: Context) -> Result<Response> {
     Response::error("not found", 404)
 }
 
-/// The site's Cron Trigger: the pack sweeper (`crate::sweep`), then the fold audit (`crate::audit`). Reports go to the
+/// The site's Cron Trigger: the pack sweeper (`crate::sweep`), then the fold audit (`crate::fold_audit`). Reports go to the
 /// script's logs.
 #[event(scheduled)]
 async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
@@ -111,7 +111,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         Ok(r) => console_log!("sweep {r}"),
         Err(e) => console_error!("sweep failed: {e}"),
     }
-    match audit::run(&env).await {
+    match fold_audit::run(&env).await {
         Ok(r) => console_log!("fold audit {r}"),
         Err(e) => console_error!("fold audit failed: {e}"),
     }
