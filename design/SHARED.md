@@ -186,10 +186,12 @@ pub enum RepoEvent {
     /// Graft 1, bounded: a required conclusion, from a check run or a commit status, for the head of an open pull request,
     /// a merge-queue ref, or a protected branch tip. `apply` prunes its row when the pull request closes or its head moves.
     /// `conclusion: None` is a queued or in-progress run or a pending status, so a re-run blocks a merge again.
+    /// For one (sha, name), the higher run id wins, then the higher version, and a status's version is its `StatusId`
+    /// [inference]. Runs come from Actions shards, so id order holds only within the group that assigned them.
     RequiredCheck { sha: ObjectId, name: Box<str>, source: CheckSource, version: u64, conclusion: Option<CheckConclusion> },
     /// Metadata tier. Every check run, check suite, and commit status is an entry, required or not. `apply` deletes a
-    /// row once an entry's `at` passes the row's time plus `RepoSettings.check_retention_days`, so every member prunes
-    /// the same rows. The archive keeps the entries.
+    /// row once an entry's `at` passes the row's time (the `at` of the entry that last wrote the row) plus
+    /// `RepoSettings.check_retention_days`, so every member prunes the same rows. The archive keeps the entries.
     CheckRun(CheckRunUpdate), CheckSuite(CheckSuiteUpdate), Status(StatusUpdate),
     /// Core tier. One lazy test merge of pull request `n` (`design/DESIGN.md`, Shape, `TestMerge`). `apply` records
     /// `Mergeability { base, head, result }` on the `pull_head` row and moves `refs/pull/N/merge` to the merge commit, or
@@ -473,15 +475,17 @@ pub async fn record_status(repo: RepoId, status: StatusUpdate, arrived: Instant)
 /// most 65,536 [unverified GitHub limits].
 pub struct IssueCapture { pub id: DbId, pub author: Actor, pub title: Box<str>, pub body: Box<str>,
                           pub labels: SmallVec<[LabelId; 4]>, pub assignees: SmallVec<[AccountId; 2]> }
-/// Metadata tier, plus Core when it changes a pull request's `State` or `Draft`. `State` reopens a closed pull
-/// request; closing one is `PrClosed`.
+/// Metadata tier, plus Core for any `State` or `Draft` change, since `tier_of` sees the event and not the fold.
+/// `State` reopens a closed pull request; closing one is `PrClosed`.
 pub enum IssueChange { Title(Box<str>), Body(Box<str>), State { open: bool, reason: Option<StateReason> },
                        Draft(bool), Locked(Option<LockReason>) }
 pub enum StateReason { Completed, NotPlanned, Reopened }
 pub struct CommentId(DbId);
 /// Metadata tier. Issue, review, and commit comments, with bodies of at most 65,536 characters [unverified]. A review's
 /// comments ride in the entry of its `ReviewEvent`. `Resolved` also updates the core count of unresolved threads per
-/// pull request, which `check_protection` reads when a rule requires conversation resolution.
+/// pull request, which `check_protection` reads when a rule requires conversation resolution, as GHES's "Require
+/// conversation resolution before merging" does, and merges read only Core. So a `Comment` that resolves or unresolves
+/// a thread touches both tiers.
 pub enum CommentEvent {
     Created { id: CommentId, on: CommentTarget, author: Actor, body: Box<str>, reply_to: Option<CommentId> },
     Edited { id: CommentId, body: Box<str>, actor: Actor }, Deleted { id: CommentId, actor: Actor },
@@ -494,7 +498,8 @@ pub struct LineAnchor { pub commit: ObjectId, pub path: Box<str>, pub line: u32,
 pub enum DiffSide { Left, Right }
 pub struct ReviewId(DbId);
 /// `Submitted` touches both tiers: the core `review_verdict` row keeps (reviewer, state, commit), and the metadata
-/// tier keeps the body. A `Pending` review is visible only to its author and is never a verdict.
+/// tier keeps the body. `Dismissed` touches both tiers, because it removes the core `review_verdict`. A `Pending`
+/// review is visible only to its author and is never a verdict.
 pub enum ReviewEvent {
     Submitted { id: ReviewId, n: IssueNumber, reviewer: Actor, state: ReviewState, commit: ObjectId, body: Box<str> },
     Dismissed { id: ReviewId, message: Box<str>, actor: Actor },
@@ -528,7 +533,8 @@ pub enum Pusher { User(UserId), Team(TeamId), App(AppId) }
 pub struct MergeQueueSettings { pub check_timeout_minutes: u16, pub grouping: Grouping, pub max_build: u8,
                                 pub min_merge: u8, pub max_merge: u8, pub min_wait_minutes: u16, pub method: MergeMethod }
 pub enum Grouping { AllGreen, HeadGreen }
-/// Core tier. Every `Settings` entry carries the whole record. `owner` and `enterprise` change only by a transfer or an
+/// Core tier, and Metadata keeps `check_retention_days`, which its pruning reads. Every `Settings` entry carries the
+/// whole record. `owner` and `enterprise` change only by a transfer or an
 /// enterprise change ("Multi-chain operations"), and `Command::deps` reads them.
 pub struct RepoSettings { pub owner: AccountId, pub enterprise: Option<AccountId>, pub visibility: Visibility,
                           pub default_branch: RefName, pub archived: bool, pub description: Option<Box<str>>,
@@ -624,10 +630,14 @@ pub enum Tier { Core, Metadata }
 /// agent_policy (`design/DESIGN.md`, Shape, agent block). Metadata: issue, issue_label, issue_assignee, issue_mention, pull,
 /// review bodies, comment, timeline, reaction, and the agent rows nothing gates on: a task's prompt, summary, and pr,
 /// path_set, provenance, and the activity feed's ring. The entry's `tiers` tag says which tiers must decode it.
-pub fn tier_of(e: &RepoEvent) -> TierSet;   // Merged, PrOpened, and Review touch both tiers; Refs and Refused only Core; Comment only Metadata
+pub fn tier_of(e: &RepoEvent) -> TierSet;   // Merged, PrOpened, Settings, and Review touch both tiers; Refs and Refused only Core;
+                                            // Comment only Metadata, except a `Resolved`, which touches both
 /// The only writer. Refuses an entry whose index is not applied + 1 or whose `prev` digest is wrong. A tier applies the
 /// events it owns and advances `applied` past every entry, so both tiers check the same digest chain.
 pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
+/// A tier's `fold_digest` is SHA-256 of the tier, `applied`, the term and digest of entry `applied`, and the sum mod
+/// 2^256 of SHA-256 over each row's (table, key, writing index, columns) [inference: chosen so members agree whatever
+/// their row order, and `apply` keeps it with one subtract and one add per write; `crates/fold`].
 /// Refolds sampled chains from genesis on each release and daily, compares `fold_digest`, and alarms on any mismatch.
 pub async fn fold_audit(sample: &[ChainId]) -> Result<AuditReport, FoldError>;
 ```

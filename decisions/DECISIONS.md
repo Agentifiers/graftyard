@@ -421,7 +421,7 @@ These are not operator decisions. The run asked them on 2026-10-26 and adopted a
 
 **Why.** Workers accept no inbound TCP and containers expose no public port, so Spectrum is the only Cloudflare product that serves a public port 22, and on Pro it refuses a Tunnel origin: the API rejected `virtual_network_id` as an unknown field for a pay-as-you-go account (10012) and refused even a plain `tcp/22` app with "The requested protocol is not available" (13002) [measured, `tests/m0/results/m0-wp7.md`]; the operator's own attempt from the dashboard with a private-IP origin got 11002 (operator report, 2026-10-31, not in the results file). A virtual-network origin needs the TCP application type, which only Enterprise has [doc]. The Tunnel and SSH front half works without Spectrum: through `cloudflared access ssh`, three cloudflared replicas in `durable_object` containers served 2,634 of 2,637 sessions (99.886%) over 2.2 h with 13 container kills, one session lost to a kill, and the supervisor restarted each container in a median 0.72 s [measured, same]. That path needs cloudflared on every client, which a stock `git clone git@host:...` user lacks, so it is an option and HTTPS stays the default. HTTPS pushes are capped at 100 MB on Pro and 200 MB on Business, so the edge's refusal names the SSH option where the install has it on, SSH on Enterprise, and otherwise Enterprise or splitting the push.
 
-**Beat.** A relay VM outside Cloudflare that terminates port 22 and forwards into the Tunnel, which breaks the Cloudflare-only constraint and adds a failure domain. HTTPS only on Pro with no option, which leaves Pro installs that need SSH for large pushes no path below Enterprise. SSH writes that loop back through the public zone, which candidate 1's outbound-handler graft replaced.
+**Beat.** A relay VM outside Cloudflare that terminates port 22 and forwards into the Tunnel, which breaks the Cloudflare-only constraint and adds a failure domain; the operator later accepted one for `graftyard.dev` until go-live as a dated exception ("Plain SSH through an Oracle Cloud Always Free VM until go-live (2026-11-02)"). HTTPS only on Pro with no option, which leaves Pro installs that need SSH for large pushes no path below Enterprise. SSH writes that loop back through the public zone, which candidate 1's outbound-handler graft replaced.
 
 **Cost accepted.** The option needs cloudflared on each client and depends on Tunnel public-hostname routing; native SSH on Enterprise depends on Spectrum. Below Enterprise Spectrum is not in the path, and on Enterprise a Tunnel origin forbids Proxy Protocol, so sshd never sees the client's IP and SSH abuse limits count by key and token. The option runs 3 SSH front containers when on, and Tunnel bytes are not billed (`python3 scripts/cost.py --ssh-option`). Spectrum SSH data on Enterprise costs $1 per GB above the plan allowance, plus an add-on fee no list price was found for [unverified].
 
@@ -985,6 +985,22 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 
 **Flip.** A B0-33 rerun with the budget where Human and merge-queue p99 stays over 1 s with a stable leader, or staging p99 that pushes agent push p99 over B0-29's lines.
 
+### Plain SSH through an Oracle Cloud Always Free VM until go-live (2026-11-02)
+
+> "oracle has the free for forever tier ... spin up a subagent - use the oracle credentials to deploy a server that is free eligible. save the ssh key in 1password. use that server as the proxy for ssh as we can't have ssh unless on enterprise. i recognize this defeats the point of 'cloudflare' only but will make this an exception until go-live. eventually i will have the enterprise conversation with cloudflare."
+
+**Decision.** Until go-live, `graftyard.dev` takes plain SSH on port 22 through one Oracle Cloud Always Free VM. The VM runs `cloudflared access tcp` on port 22 at the DNS-only `ssh.graftyard.dev`, one Tunnel stream per connection into the hostname the `cloudflared` option uses, so sessions end at the same SSH front, `graft-sshd`, and `ssh_outbound`. It never terminates SSH, so clients check the front's host key, and it holds no git key or credential. Its admin key is in 1Password. It is an exception to "Cloudflare products only" (`FRAME.md`, "Operator decision, 2026-11-02, plain SSH through an Oracle Cloud VM"). The Enterprise Spectrum ingress stays the target and stays designed. HTTPS stays the default, and the `cloudflared` option and B0-24a are unchanged. The VM's Failure-modes rows in `design/DESIGN.md` come from its deployment's measurements.
+
+**Why.** It gives plain SSH on Pro with no `cloudflared` on the client, which a stock `git clone git@host:...` user lacks. Spectrum, the only Cloudflare product with a public port 22, refuses a Tunnel origin on Pro [measured, `tests/m0/results/m0-wp7.md`], and the operator has no Enterprise zone (`FRAME.md`, "Operator decision, 2026-10-31, Pro only and no GHES").
+
+**Beat.** The `cloudflared` ProxyCommand option alone, which leaves stock SSH clients without SSH until Enterprise. Buying Enterprise now, which the operator has deferred. The 2026-10-31 SSH entry's beaten relay VM is this design, now accepted by the operator as a dated exception, not as the product's SSH path.
+
+**Cost accepted.** A new failure domain outside Cloudflare: one VM in one Oracle availability domain, which Oracle may reclaim when idle (CPU p95, network, and, on A1 shapes, memory under 20% over 7 days [doc, https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm]), so the plain-SSH path has single-VM availability (R18). A forwarder restart cuts open sessions. It costs $0 under Always Free and is outside every cost total.
+
+**Evidence.** The operator's quote above; `tests/m0/results/m0-wp7.md` for Spectrum's refusal on Pro and for the Tunnel hostname the VM forwards into; `tests/m1/results/oci-ssh.md`: 249 of 249 sessions in 25 minutes, p50 and p99 level with the `cloudflared` path in the same window, and a forwarder restart that cut the open sessions with about 0.32 s and no listener [measured].
+
+**Flip.** An Enterprise zone with Spectrum, which builds the native ingress and retires the VM. Or go-live, when the exception ends whatever else holds.
+
 ### Decisions for a Pro-only build with no GHES, 2026-10-31
 
 > "ok skip. get it done given our current pro plan. i won't have enterprise for a while, if at all. also don't have an active github enterprise either. just get it done given these limitations."
@@ -1254,6 +1270,69 @@ BF-14, BF-18, and BF-19 ran on the hosted test install, and BM-1's git half rera
 **Evidence.** `tests/m1/results/m1-wp8.md`, "BM-1 gray-fault rerun: site 0's member calls failing 30%" [measured for the moves and alarms].
 
 **Flip.** A gray-fault run on a group with enough traffic to fill the window where `STEP_DOWN` still does not fire, or a quiet group that `suspect` does not move within B0-06's 20 s.
+
+### BM-1's 24-hour half and F43, 2026-11-02
+
+The 24-hour linearizability run `lin24` ended, F43's two stalls were traced, and M2-WP1 and M2-WP2's pure code found gaps in SHARED (`tests/m1/results/m1-wp8.md`, "The 24-hour half"; `tests/m1/results/m1-f43.md`). The lead made the decisions below under the operator's delegation of 2026-10-30.
+
+#### BM-1's 24-hour half is not passed, and reruns with member-side ack times
+
+**Decision.** BM-1's 24-hour half, the rerun of B0-11, is recorded as not passed. It reruns as `lin24b` on code where each member records, for every acknowledged write, its entry's commit time and the ack's send time on its own clock, and the checker asserts that every ack left at or after its entry's commit. No gate number changes.
+
+**Why.** The gate is "24 h, zero violations", and the history cannot rule one out. `lin24` ran 2,739,691 operations on `repo:915635` with 0 unanswered, lost none of 869,257 acknowledged writes, put none of 774,418 refused CAS writes in the log, and kept three identical logs of 479,965 entries. Porcupine was Ok on all 6 keys widened 100 ms and 275 ms, and on the recorded clocks once the writes of 5 cut client chunks were restored from their request ULIDs. Two observations stay unexplained: entry 398032 needs 93 ms of ATL-LHR skew against a measured 49 ms, and 17 writes were acknowledged faster than any quorum could commit them on their own client's clock. Client-clock artifacts would explain both, and 4 of 25,031 clock samples show round trips below physics, but an early ack would too, the class of Milestone 0's 4-hour ticket-reuse bug.
+
+**Beat.** Passing on the widened checks, which accepts the two observations on a clock argument the run cannot prove. Rerunning the same run with tighter clock sampling, which still measures the members' behavior only through client clocks.
+
+**Evidence.** `tests/m1/results/m1-wp8.md`, "The 24-hour half, 2026-11-02: lin24 does not pass"; `tests/m1/lin/raw/lin24.report.json` [measured]. F44.
+
+**Flip.** A member-side check that shows every ack sent at or after its entry's commit over 24 h, which passes BM-1's 24-hour half if Porcupine also passes; or one ack before its commit, which is a violation and sends the write path back.
+
+**Since, 2026-11-03.** `QuorumProof` carries the leader, the commit index, the entry's `at`, the leader's commit time, and one `DurableAck { site, durable, at }` per counted site, and the host adds `sentAt` and `selfSyncedAt` to every `done` reply, in the product build. `ackcheck.ts` asserts six rules on the member's clock (`tests/m1/results/m1-wp2.md`, "Member-side ack evidence, 2026-11-03"). A planted early ack on the leader's own append was caught in 54 of 3,873 acknowledged writes in the simulator's GRAY half, also when the crate's proof hid it. `lin24b` runs on `repo:934783` from 2026-11-03T00:55:07Z to 2026-11-04T00:55:07Z after a 30-minute smoke with 0 violations on 18,225 writes [measured].
+
+#### A late member-call answer is still stepped (F43)
+
+**Decision.** A member-to-member call that misses `CALL_DEADLINE` is reported failed at the deadline, as before, so `STEP_DOWN`'s window and the core's resend timing are unchanged. The host then awaits the answer for up to `LATE_LIMIT` (10 s) [guess] more and steps it if it comes. F43 is resolved and leaves OPEN-QUESTIONS.
+
+**Why.** Both F43 stalls had one cause: the leader's host dropped every answer that came after 1 s, and AppendEntries carrying large inline packs often take 1 to 3 s to a far follower. In stall 1 the leader was resending entries 172 to 235, about 1.08 MB, not the 836 bytes `m1-wp8.md` assumed, and 414 of 424 answers took over 1 s (p50 1,999 ms), so it never learned the follower had matched 235. In stall 2 entry 175's 524 kB was answered in 1.76 to 1.79 s 14 times before one attempt came in under 1 s, holding the round 25 s. `Member::call_failed` already allowed a late reply to be stepped. On the hosted install the old code reproduced the slow round twice (16.6 s and 24.7 s) and the fixed code did not. In a 53-minute chaos soak with 374 pushes no round passed 5 s, no follower stayed behind a live leader, and 250 of 303 deadline misses (6.0% of calls) were answered late, the slowest in 8,802 ms.
+
+**Beat.** A longer `CALL_DEADLINE`, which delays every failure, `suspect` and `STEP_DOWN` included. Smaller AppendEntries, which still lose every late answer to a far follower.
+
+**Evidence.** `tests/m1/results/m1-f43.md`: the original logs, the `lag-old-*` and `lag-new-apac` reproductions, the soak, and `host::tests::an_answer_after_the_deadline_is_kept_and_the_miss_reported_first`, which fails on the old semantics [measured].
+
+**Flip.** A late answer slower than `LATE_LIMIT` in a run (the soak's slowest, 8.8 s, leaves little margin), which raises the limit; or a stepped late answer that a measured case shows to be wrong to apply.
+
+#### `load` holds the log by bytes as well as entries (F45)
+
+**Decision.** A member's `load` keeps at most `LOG_WINDOW` (1,000) applied entries and at most `LOG_BYTES` (8 MB [guess]) of them in memory, the newest that fit and always the last applied. `request` rows store each event in its `Fold::row_event` form, which drops inline pack bytes, and every multi-row read goes one row at a time. The value of `LOG_BYTES` stays open in F45.
+
+**Why.** A count is not a memory bound: 1,000 entries of up to 1.5 MB can pass a 128 MB isolate, and a repository with 53 pushes of 0.7 to 1 MB inline packs failed to restore on all three members after a reset. `Push::replay` reads only refs and the sweeper only stored packs, so a `request` row needs no inline pack bytes.
+
+**Beat.** A smaller `LOG_WINDOW` alone, which still has no byte bound for large entries. Keeping inline packs in `request` rows, which holds every recent pack twice.
+
+**Evidence.** `tests/m1/results/m1-wp2.md`, "F45: restore holds a byte-bounded log": `the_in_memory_log_is_bounded_by_bytes` fails on the old code with 2,002,910 bytes in memory against a 300 kB budget, and `repo:196624` restored on all three members and took an 800 kB push [measured]; `tests/m1/results/m1-f43.md` for the crash.
+
+**Flip.** A measured restore that exceeds the isolate at 8 MB, or catch-up slowed by SQLite reads below it, which sets the value.
+
+#### SHARED's tiers, digest, and trailer as the fold code needs them
+
+**Decision.** From M2-WP1 and M2-WP2's pure code:
+- `SnapshotTrailer` carries `entry`, the digest of entry `to`.
+- `fold_digest` is SHA-256 of the tier, `applied`, the term and digest of entry `applied`, and the sum mod 2^256 of SHA-256 over each row's (table, key, writing index, columns) [inference].
+- Any `State` or `Draft` change touches both tiers, because `tier_of` sees the event and not the fold.
+- `Resolved` keeps the core count of unresolved threads, so a `Comment` that resolves or unresolves a thread touches both tiers.
+- `RepoSettings` is Core, and Metadata keeps `check_retention_days`.
+- `Dismissed` touches both tiers.
+- Each tier keeps its own `IdBlock` cursor.
+- For one (sha, name), the higher run id wins, then the higher version, and a status's version is its `StatusId` [inference].
+- A row's time is the `at` of the entry that last wrote it.
+
+**Why.** Each is a rule the code needed that SHARED left out or stated two ways. A trailer without entry `to`'s digest leaves a restored tier unable to refuse a wrong `prev` on `to + 1`. Members compare `fold_digest`, so its bytes must be defined, and a sum is order-independent and updated per write. `tier_of` cannot tell whether an `IssueChange` targets a pull request. GHES's "Require conversation resolution before merging" gates merges on the unresolved count, and merges read only Core. Metadata pruning reads `check_retention_days`, and dismissal removes a core verdict. Both tiers assign ids after `MetaSplit`, and no tier owned the cursor.
+
+**Beat.** Keeping the unresolved count in Metadata, which would make a merge wait on a metadata load. One shared id cursor, which neither tier could own without reading the other.
+
+**Evidence.** The code in `crates/fold` and `crates/git` (258 workspace tests, 10 of 10 planted bugs caught); `crates/fold/src/tier.rs` and `crates/fold/src/snapshot.rs`.
+
+**Flip.** A run-id order that is not monotonic per (sha, name) because two Actions shards report runs for one check, which needs a cross-shard tiebreak; or a measured `fold_digest` disagreement between members whose rows are equal.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

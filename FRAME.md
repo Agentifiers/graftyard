@@ -52,7 +52,7 @@ The agent layer adds no GHES path and changes no GHES 3.22 response for a client
 
 Graftyard uses only Cloudflare products. A product enters the design only if the first table of `research/cloudflare.md` lists it with a usable status, and `design/DESIGN.md`, "Stack", copies that status. `scripts/check_design.py` enforces both. Workers KV, D1, Artifacts, and K2 are not used (`decisions/DECISIONS.md`, "KV, D1, and K2 are not used" and "Artifacts is not used").
 
-workerd, the Workers runtime that runs outside Cloudflare, is the one exception. It runs only the read-only lifeboat and evaluation installs, under the defaults in "Four Cloudflare questions still carry the run's defaults" below.
+workerd, the Workers runtime that runs outside Cloudflare, is one exception. It runs only the read-only lifeboat and evaluation installs, under the defaults in "Four Cloudflare questions still carry the run's defaults" below. The other, until go-live only, is one Oracle Cloud Always Free VM that relays plain SSH for `graftyard.dev` ("Operator decision, 2026-11-02, plain SSH through an Oracle Cloud VM" below).
 
 ### Three deployment modes, one signed artifact
 
@@ -171,6 +171,12 @@ This refines agent-layer answer 7 after its condition fired on Pro (the note und
 > "ok skip. get it done given our current pro plan. i won't have enterprise for a while, if at all. also don't have an active github enterprise either. just get it done given these limitations."
 
 The operator had just been told that a Business zone would only confirm the Business cells of B0-20 and B0-21 and Spectrum's refusal on Business, and asked whether M1 can start. "skip" means no Business zone is bought. The build proceeds on the one Pro zone, `graftyard.dev`, and the one Milestone 0 account. There is no Business zone, no Enterprise zone, perhaps ever, and no GHES 3.22 instance. Milestone 0 is accepted as closed for starting M1: the rows short of their Pass value carry forward to the reruns the build plan already names, with no gate number changed, and a Fail value on any of them still sends the design back. Rows that need a plan the operator lacks stay not run, owned by the first install on that plan. The Enterprise Spectrum ingress stays designed and is not built until an Enterprise install exists; the SSH ingress decision above stands. Oracles that needed a GHES 3.22 appliance move to the pinned `ghes-3.22` descriptions and github.com, marked weaker [inference] (`decisions/DECISIONS.md`, "Decisions for a Pro-only build with no GHES, 2026-10-31").
+
+### Operator decision, 2026-11-02, plain SSH through an Oracle Cloud VM
+
+> "oracle has the free for forever tier ... spin up a subagent - use the oracle credentials to deploy a server that is free eligible. save the ssh key in 1password. use that server as the proxy for ssh as we can't have ssh unless on enterprise. i recognize this defeats the point of 'cloudflare' only but will make this an exception until go-live. eventually i will have the enterprise conversation with cloudflare."
+
+This refines the SSH ingress decision of 2026-10-31 for the operator's own install, `graftyard.dev`. Until go-live, plain SSH on port 22 reaches the SSH front through one Oracle Cloud Always Free VM, which forwards TCP into the Tunnel public hostname that the `cloudflared` option uses, so a stock `git clone git@ssh.graftyard.dev:...` works with no `cloudflared` on the client. It is an exception to "Cloudflare products only", the only non-Cloudflare product in a serving path, and it ends at go-live. The VM's SSH key is kept in 1Password. The Enterprise Spectrum ingress stays the target: it is designed, and it is built when the operator has the Enterprise conversation with Cloudflare and an Enterprise zone exists. HTTPS stays the default, and the `cloudflared` option and its gate are unchanged. It was deployed and measured on 2026-11-03: `cloudflared access tcp` on port 22 at the DNS-only `ssh.graftyard.dev`, one Tunnel stream per connection, never terminating SSH and holding no git key or credential, with 249 of 249 sessions in 25 minutes [measured, `tests/m1/results/oci-ssh.md`] (`decisions/DECISIONS.md`, "Plain SSH through an Oracle Cloud Always Free VM until go-live (2026-11-02)"; `design/DESIGN.md`, Failure modes, `ssh relay`).
 
 ## Four Cloudflare questions still carry the run's defaults
 
