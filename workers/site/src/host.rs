@@ -92,6 +92,13 @@ pub struct Stats {
     pub commit_ms: Vec<u32>,
     /// Leader: an `Events` entry's append to its apply, in ms.
     pub round_ms: Vec<u32>,
+    /// Every member: each input that applied entries, as (its synchronous ms, from the member's `step` to its
+    /// statements built; the entries it applied; their events) (BF-20's apply time).
+    pub apply_steps: Vec<(u32, u32, u32)>,
+    /// Every member: each entry's age when this member applied it, its `at` (the leader's clock at append) to this
+    /// member's clock at apply, in ms. On a follower it includes the commit round and the wait for the next
+    /// AppendEntries that carries the commit (BF-20).
+    pub apply_ms: Vec<u32>,
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
@@ -113,6 +120,10 @@ pub struct Stats {
     /// command it could not decode.
     pub received: BTreeMap<String, u32>,
     pub alarms: Vec<String>,
+    /// Object alarms that fired, and when the last one did.
+    pub alarm_runs: u32,
+    pub alarm_last: u64,
+    pub alarm_arms: u32,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
@@ -819,6 +830,13 @@ impl<F: Family> Host<F> {
                     s.appended.push((e.index.0, t));
                 }
                 Write::Apply(to) => {
+                    for idx in core.applied.0 + 1..=to.0 {
+                        if let Some(e) = core.m.entry_at(Index(idx))
+                            && s.apply_ms.len() < SAMPLES_MAX
+                        {
+                            s.apply_ms.push(t.saturating_sub(e.at.0) as u32);
+                        }
+                    }
                     let done: Vec<u64> = s.appended.iter().filter(|(x, _)| *x <= to.0).map(|(_, at)| *at).collect();
                     s.appended.retain(|(x, _)| *x > to.0);
                     for at in done {
@@ -845,6 +863,7 @@ impl<F: Family> Host<F> {
         let mut guard = self.core.try_borrow_mut().map_err(|_| err("member core busy"))?;
         let core = guard.as_mut().ok_or_else(|| err("member not joined"))?;
         let t = now_ms();
+        let applied0 = core.applied;
         let ready = f(&mut core.m, Timestamp(t));
         self.note(core, &ready.writes, t);
         #[cfg(feature = "test-faults")]
@@ -878,9 +897,24 @@ impl<F: Family> Host<F> {
         };
         let (r, mut out) = ready.persist(&mut store);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        if applied > applied0 {
+            let events: usize = (applied0.0 + 1..=applied.0)
+                .filter_map(|x| core.m.entry_at(Index(x)))
+                .map(|e| match &e.body {
+                    EntryBody::Events(evs) => evs.len(),
+                    _ => 0,
+                })
+                .sum();
+            let mut s = self.stats.borrow_mut();
+            if s.apply_steps.len() < SAMPLES_MAX {
+                let ms = now_ms().saturating_sub(t) as u32;
+                s.apply_steps.push((ms, (applied.0 - applied0.0) as u32, events as u32));
+            }
+        }
         if let Some(ms) = F::fold_alarm_ms()
             && applied > core.applied
         {
+            self.stats.borrow_mut().alarm_arms += 1;
             self.arm_in(ms);
         }
         #[cfg(feature = "test-faults")]
@@ -1678,7 +1712,12 @@ impl<F: Family> Host<F> {
             // Unconfirmed, so arming never holds a reply behind the output gate; a lost alarm is re-armed by the next
             // served request.
             let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
-            let _ = h.state.storage().set_alarm_with_options(ms, opts).await;
+            if let Err(e) = h.state.storage().set_alarm_with_options(ms, opts).await {
+                let mut s = h.stats.borrow_mut();
+                if s.alarms.len() < 50 {
+                    s.alarms.push(format!("{} set alarm: {e}", now_ms()));
+                }
+            }
         });
     }
 
@@ -1686,6 +1725,11 @@ impl<F: Family> Host<F> {
     /// family's own alarm work (a snapshot writer's batches) runs first and asks for the next alarm itself.
     pub async fn alarm(self: &Rc<Self>) {
         self.alarm_at.set(0);
+        {
+            let mut s = self.stats.borrow_mut();
+            s.alarm_runs += 1;
+            s.alarm_last = now_ms();
+        }
         F::on_alarm(self).await;
         // A follower woken only for its fold work does not run Raft's timers: before the family's alarms, only a
         // member that served had one.

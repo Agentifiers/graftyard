@@ -111,7 +111,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         Ok(r) => console_log!("sweep {r}"),
         Err(e) => console_error!("sweep failed: {e}"),
     }
-    match fold_audit::run(&env).await {
+    match fold_audit::run(&env, None).await {
         Ok(r) => console_log!("fold audit {r}"),
         Err(e) => console_error!("fold audit failed: {e}"),
     }

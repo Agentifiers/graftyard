@@ -15,14 +15,14 @@
 //! - **Retention.** Applying a snapshot's `Archived` drops the `snapshot` rows that `snapshots_to_keep` no longer
 //!   keeps (`graftyard_git::tiers`). The writer then deletes those snapshots' objects from both buckets.
 //!
-//! The job's cursor, its uploads' ids and parts, and the unsent part buffer are kept in `snap_job`, written in the
+//! The job's cursor, its uploads' ids and parts, and the unsent part buffer are kept in `snap_run`, written in the
 //! same alarm as the part they follow, so a reset object resumes at its last stored part.
 
 use std::rc::Rc;
 
 use graftyard_fold::{
-    SNAPSHOT_BYTES, Schema, SnapshotCursor, SnapshotFrame, SnapshotJob, TierStore, digest_at, encode_frame,
-    fold_digest, frames_header, meta, snapshot_due, snapshot_writer,
+    Schema, SnapshotCursor, SnapshotFrame, SnapshotJob, TierStore, digest_at, encode_frame, fold_digest, frames_header,
+    meta, snapshot_due, snapshot_writer,
 };
 use graftyard_git as git;
 use graftyard_raft::{self as raft, GroupConfig, Index};
@@ -35,8 +35,11 @@ use crate::family::Repo;
 use crate::host::{Host, blob, i, rows};
 use crate::{SiteEnv, now_ms};
 
-/// Rows a snapshot batch reads per alarm [guess]: well inside one request's CPU and memory with 2 KB rows.
-const ROWS_PER_ALARM: usize = 4_000;
+/// Rows one read of a snapshot batch takes [guess]. The member yields between reads, so a Raft input waits at most
+/// one read, not a whole batch.
+const ROWS_PER_READ: usize = 500;
+/// An alarm's batch stops after this long reading [guess], or once a part is full, well inside one request's limits.
+const BATCH_MS: u64 = 2_000;
 /// A multipart part. R2 wants every part but the last the same size, and at least 5 MiB.
 const PART_BYTES: usize = 8 << 20;
 /// Entries a metadata load applies per alarm [guess].
@@ -47,8 +50,10 @@ const BUSY_MS: i64 = 20;
 pub const IDLE_MS: i64 = 30_000;
 
 pub const SCHEMA: &[&str] = &[
-    // The running snapshot job of each tier: its state, and the bytes not yet in a part.
-    "CREATE TABLE IF NOT EXISTS snap_job (tier INTEGER PRIMARY KEY, row BLOB NOT NULL, buf BLOB NOT NULL)",
+    // The running snapshot job of each tier.
+    "CREATE TABLE IF NOT EXISTS snap_run (tier INTEGER PRIMARY KEY, row BLOB NOT NULL)",
+    // Its bytes not yet in a part, in chunks of at most BUF_CHUNK: a part is 8 MiB and a row at most 2 MB.
+    "CREATE TABLE IF NOT EXISTS snap_buf (tier INTEGER NOT NULL, seq INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (tier, seq))",
     // A snapshot job's record, per (tier, to): its key, times, and batch sizes, read by BF-20.
     "CREATE TABLE IF NOT EXISTS snap_log (tier INTEGER NOT NULL, to_idx INTEGER NOT NULL, row TEXT NOT NULL, PRIMARY KEY (tier, to_idx))",
     // Snapshot objects this writer put, so retention deletes the ones whose rows the fold dropped.
@@ -62,7 +67,7 @@ struct Upload {
     parts: Vec<(u16, String)>,
 }
 
-/// A running snapshot, as `snap_job` stores it.
+/// A running snapshot, as `snap_run` stores it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Job {
     cursor: SnapshotCursor,
@@ -80,6 +85,8 @@ struct Job {
     /// The longest alarm batch, in ms, and the sum, for BF-20.
     batch_max_ms: u64,
     batch_sum_ms: u64,
+    #[serde(default)]
+    reads: u64,
     rows: u64,
     bytes: u64,
 }
@@ -98,18 +105,33 @@ fn schema(t: Tier) -> Schema {
     }
 }
 
+/// A buffer chunk row's largest size, under Durable Object SQLite's 2 MB row limit.
+const BUF_CHUNK: usize = 1 << 20;
+
 fn load_job(sql: &SqlStorage, t: Tier) -> Result<Option<(Job, Vec<u8>)>> {
-    let r = rows(sql, "SELECT row, buf FROM snap_job WHERE tier = ?", vec![i(tier_int(t))])?;
+    let r = rows(sql, "SELECT row FROM snap_run WHERE tier = ?", vec![i(tier_int(t))])?;
     let Some(r) = r.first() else { return Ok(None) };
     let job: Job = serde_json::from_slice(blob(&r[0])?)?;
-    Ok(Some((job, blob(&r[1])?.to_vec())))
+    let mut buf = Vec::new();
+    for c in rows(sql, "SELECT bytes FROM snap_buf WHERE tier = ? ORDER BY seq", vec![i(tier_int(t))])? {
+        buf.extend_from_slice(blob(&c[0])?);
+    }
+    Ok(Some((job, buf)))
 }
 
+/// Stores the job and its whole unsent buffer, replacing the stored one.
 fn save_job(sql: &SqlStorage, t: Tier, job: &Job, buf: &[u8]) -> Result<()> {
     sql.exec(
-        "INSERT OR REPLACE INTO snap_job (tier, row, buf) VALUES (?, ?, ?)",
-        vec![i(tier_int(t)), serde_json::to_vec(job)?.into(), buf.to_vec().into()],
+        "INSERT OR REPLACE INTO snap_run (tier, row) VALUES (?, ?)",
+        vec![i(tier_int(t)), serde_json::to_vec(job)?.into()],
     )?;
+    sql.exec("DELETE FROM snap_buf WHERE tier = ?", vec![i(tier_int(t))])?;
+    for (n, c) in buf.chunks(BUF_CHUNK).enumerate() {
+        sql.exec(
+            "INSERT INTO snap_buf (tier, seq, bytes) VALUES (?, ?, ?)",
+            vec![i(tier_int(t)), i(n as u64), c.to_vec().into()],
+        )?;
+    }
     Ok(())
 }
 
@@ -117,7 +139,7 @@ fn log_job(sql: &SqlStorage, t: Tier, job: &Job, status: &str) -> Result<()> {
     let v = json!({
         "tier": tier_int(t), "to": job.to, "toAt": job.to_at, "key": job.key, "digest": job.digest.hex(),
         "status": status, "beganMs": job.began_ms, "atMs": now_ms(), "batches": job.batches,
-        "batchMaxMs": job.batch_max_ms, "batchSumMs": job.batch_sum_ms, "rows": job.rows, "bytes": job.bytes,
+        "batchMaxMs": job.batch_max_ms, "batchSumMs": job.batch_sum_ms, "reads": job.reads, "rows": job.rows, "bytes": job.bytes,
     });
     sql.exec(
         "INSERT OR REPLACE INTO snap_log (tier, to_idx, row) VALUES (?, ?, ?)",
@@ -244,7 +266,8 @@ async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
             sql.exec(q, a)?;
         }
         log_job(sql, t, &job, "committed")?;
-        sql.exec("DELETE FROM snap_job WHERE tier = ?", vec![i(tier_int(t))])?;
+        sql.exec("DELETE FROM snap_run WHERE tier = ?", vec![i(tier_int(t))])?;
+        sql.exec("DELETE FROM snap_buf WHERE tier = ?", vec![i(tier_int(t))])?;
         retain(h, sql, t, &*core).await?;
         return Ok(true);
     }
@@ -267,10 +290,11 @@ async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
         return Ok(true);
     }
     let t0 = now_ms();
-    if !job.ended {
-        let mut sj = SnapshotJob::resume(schema(t), job.cursor.clone());
-        // One batch of rows per alarm, so each alarm's reads stay within one request's limits.
-        let f = sj.next(&*store, ROWS_PER_ALARM).ok_or_else(|| Error::RustError("job past its trailer".into()))?;
+    let mut sj = SnapshotJob::resume(schema(t), job.cursor.clone());
+    // Reads until a part is full, the trailer is out, or BATCH_MS passed, yielding between reads so the member's Raft
+    // inputs run in between: `snap_undo` keeps every read at `to` whatever they apply.
+    while !job.ended && buf.len() < PART_BYTES && now_ms() - t0 < BATCH_MS {
+        let f = sj.next(&*store, ROWS_PER_READ).ok_or_else(|| Error::RustError("job past its trailer".into()))?;
         match &f {
             SnapshotFrame::Rows { rows, .. } => job.rows += rows.len() as u64,
             SnapshotFrame::End(tr) => {
@@ -284,8 +308,10 @@ async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
             }
         }
         encode_frame(&f, &mut buf);
-        job.cursor = sj.cursor().clone();
+        job.reads += 1;
+        Delay::from(std::time::Duration::ZERO).await;
     }
+    job.cursor = sj.cursor().clone();
     while buf.len() >= PART_BYTES || (job.ended && !buf.is_empty()) {
         let n = buf.len().min(PART_BYTES);
         let part: Vec<u8> = buf.drain(..n).collect();
@@ -321,11 +347,17 @@ fn last_snapshot(store: &dyn TierStore, t: Tier) -> Option<(Index, Timestamp)> {
 }
 
 /// Log bytes since the tier's last snapshot, from the `log` table's stored rows (an estimate: rows below the last
-/// archive are gone, and they are older than any snapshot that matters here).
+/// archive are gone, and they are older than any snapshot that matters here). It reads every row's length, so it
+/// runs at most once a minute per tier (`BYTES_EVERY_MS`), and only on the writer.
 fn log_bytes_since(sql: &SqlStorage, from: Index) -> Result<u64> {
     let r = rows(sql, "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?", vec![i(from.0)])?;
     Ok(r.first().map(|r| crate::host::int(&r[0]).unwrap_or(0) as u64).unwrap_or(0))
 }
+
+/// How often the writer sums the log's bytes for `snapshot_due` [guess].
+const BYTES_EVERY_MS: u64 = 60_000;
+
+thread_local!(static BYTES_AT: std::cell::Cell<[u64; 2]> = const { std::cell::Cell::new([0; 2]) });
 
 /// Starts a snapshot of the tier if one is due and this member writes it. Whether a job started.
 fn begin(
@@ -342,15 +374,27 @@ fn begin(
     };
     let m = meta(&*store);
     let last = last_snapshot(core, t);
-    let since = last.map_or(Index(0), |l| l.0);
     let forced = take_force(sql, t)?;
-    let bytes = log_bytes_since(sql, since)?;
-    if !forced && !snapshot_due(last, m.applied, m.at, bytes.min(SNAPSHOT_BYTES)) {
+    // The writer is named by the index the snapshot would be at; only it reads the log's size. A member that knows no
+    // leader yet waits.
+    if !forced && leader.is_none_or(|l| snapshot_writer(m.applied, &place, l) != Some(me)) {
         return Ok(false);
     }
-    // The writer is named by the index the snapshot would be at. A group with no leader known waits.
-    let Some(leader) = leader else { return Ok(false) };
-    if snapshot_writer(m.applied, &place, leader) != Some(me) && !forced {
+    let due = || -> Result<bool> {
+        if snapshot_due(last, m.applied, m.at, 0) {
+            return Ok(true);
+        }
+        let k = tier_int(t) as usize;
+        let mut at = BYTES_AT.with(|c| c.get());
+        if now_ms() < at[k] + BYTES_EVERY_MS {
+            return Ok(false);
+        }
+        at[k] = now_ms();
+        BYTES_AT.with(|c| c.set(at));
+        let bytes = log_bytes_since(sql, last.map_or(Index(0), |l| l.0))?;
+        Ok(snapshot_due(last, m.applied, m.at, bytes))
+    };
+    if !forced && !due()? {
         return Ok(false);
     }
     let mut s = store.clone();
@@ -377,6 +421,7 @@ fn begin(
         batches: 0,
         batch_max_ms: 0,
         batch_sum_ms: 0,
+        reads: 0,
         rows: 0,
         bytes: 0,
     };
@@ -602,8 +647,30 @@ pub fn refold_page(fold: &git::repo::RepoFold, t: Tier, state: Option<Value>, bu
     )
 }
 
-/// Test installs: `seed` puts `n` comment rows of `bytes` each into the metadata tier at `written`, the core tier's
-/// `applied`, keeping the row-hash sum (`graftyard_fold::seed`). The rows come from no entry; every member must be
+/// `bytes` of words for seeded comment `k`, the same on every member: from a 4,096-word vocabulary of 3 to 9
+/// letters, so the FTS5 index holds what real text gives it.
+#[cfg(feature = "test-faults")]
+fn words(k: u64, bytes: usize) -> String {
+    let mut x = k.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut out = String::with_capacity(bytes + 10);
+    while out.len() < bytes {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        let mut w = x % 4096;
+        let len = 3 + (w % 7) as usize;
+        for _ in 0..len {
+            out.push(char::from(b'a' + (w % 26) as u8));
+            w = w / 26 + 7;
+        }
+        out.push(' ');
+    }
+    out.truncate(bytes);
+    out
+}
+
+/// Test installs: `seed` puts `n` comment rows of `bytes` each into the metadata tier at index `written`, at or below
+/// its `applied`, keeping the row-hash sum (`graftyard_fold::seed`). The rows come from no entry; every member must be
 /// seeded alike, which BF-20's driver does and checks by `fold_digest`. `force` starts a snapshot of a tier now.
 #[cfg(feature = "test-faults")]
 pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
@@ -617,18 +684,22 @@ pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let start = body["start"].as_u64().ok_or_else(|| Error::RustError("start".into()))?;
     let n = body["n"].as_u64().unwrap_or(1_000);
     let bytes = body["bytes"].as_u64().unwrap_or(1_800) as usize;
+    let written = Index(body["written"].as_u64().ok_or_else(|| Error::RustError("written".into()))?);
     let core = h.core.borrow();
     let c = core.as_ref().ok_or_else(|| Error::RustError("not joined".into()))?;
     let fold = &c.m.group_fold().fold;
     if !fold.meta.loaded() {
         return Ok(json!({ "loading": true }));
     }
-    let written = meta(&*fold.meta).applied;
+    let mm = meta(&*fold.meta);
+    if written > mm.applied || mm.snap.is_some() {
+        return Ok(json!({ "refused": "written is past applied, or a snapshot is running" }));
+    }
     let mut m = crate::tier::handle(&*fold.meta).clone();
     drop(core);
     let rows: Vec<_> = (start..start + n)
         .map(|k| {
-            let body: String = std::iter::repeat_n(char::from(b'a' + (k % 26) as u8), bytes).collect();
+            let body = words(k, bytes);
             let rec = git::tiers::CommentRow {
                 on: git::issues::CommentTarget::Issue(git::issues::IssueNumber(1 + (k % 200_000) as u32)),
                 author: None,
@@ -649,4 +720,109 @@ pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     crate::host::commit_tx(&s, stmts).map_err(Error::RustError)?;
     m.flushed();
     Ok(json!({ "written": written.0, "digest": fold_digest(&m, Tier::Metadata).hex(), "dbBytes": sql.database_size() }))
+}
+
+/// Test installs: BF-20's load, run on the leader. `rate` single-ref pushes a second for `secs` seconds, each a new
+/// ref `refs/heads/bf20/<tag>/<n>` under the writer's stored token `token` (hex), so no two conflict, each its own
+/// `commit` input as an edge's would be. With `edits`, every `edits`-th command the leader also records one entry of
+/// `per` `Edited` events on seeded comments, so the metadata tier changes under a running snapshot (`snap_undo`).
+/// Answers the commands' outcomes by kind and each command's admit-to-outcome time.
+#[cfg(feature = "test-faults")]
+pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
+    use graftyard_identity::{Actor, Credential, Principal, ScopeSet, UserId};
+    let rate = body["rate"].as_u64().unwrap_or(300).max(1);
+    let secs = body["secs"].as_u64().unwrap_or(10);
+    let tag = body["tag"].as_str().unwrap_or("load").to_owned();
+    let account = body["account"].as_i64().ok_or_else(|| Error::RustError("account".into()))?;
+    let hash: [u8; 32] = crate::host::unhex(body["token"].as_str().unwrap_or(""))
+        .and_then(|b| b.try_into().ok())
+        .ok_or_else(|| Error::RustError("token".into()))?;
+    let edits = body["edits"].as_u64().unwrap_or(0);
+    let per = body["per"].as_u64().unwrap_or(1);
+    let seeded = body["seeded"].as_u64().unwrap_or(0);
+    let actor = Principal {
+        actor: Actor::User(UserId(graftyard_types::AccountId(graftyard_types::DbId(account)))),
+        scopes: ScopeSet(1),
+        credential: Credential::Stored(hash),
+        sso_orgs: Default::default(),
+    };
+    let n = rate * secs;
+    let t0 = now_ms();
+    let mut waits = Vec::new();
+    let mut refused = std::collections::BTreeMap::<String, u64>::new();
+    let mut edit_ids = Vec::new();
+    for k in 0..n {
+        // Paced: command k leaves at t0 + k / rate.
+        let due = t0 + k * 1000 / rate;
+        let now = now_ms();
+        if due > now {
+            worker::Delay::from(std::time::Duration::from_millis(due - now)).await;
+        }
+        let name = git::refs::RefName::parse(format!("refs/heads/bf20/{tag}/{k}").as_bytes())
+            .map_err(|e| Error::RustError(e.to_string()))?;
+        let mut oid = [0u8; 20];
+        oid[..8].copy_from_slice(&k.to_be_bytes());
+        oid[8..16].copy_from_slice(&t0.to_be_bytes());
+        let rid = graftyard_lookup::request_id();
+        let push = git::repo::Push {
+            updates: vec![git::refs::RefUpdate { name, expect: None, new: Some(git::refs::ObjectId(oid)) }],
+            atomicity: git::refs::Atomicity::PerRef,
+            pack: None,
+            actor: actor.clone(),
+            options: Vec::new(),
+            request: rid,
+            agent: None,
+        };
+        let at = now_ms();
+        match h.input(|m, t| m.commit(t, rid, push)) {
+            Ok(Ok(a)) => {
+                // Each outcome is timed as it arrives, not after the send loop.
+                let (tx, rx) = futures_channel::oneshot::channel();
+                let w = h.wait_ticket(a.ticket, None);
+                wasm_bindgen_futures::spawn_local(async move {
+                    let r = crate::host::within(std::time::Duration::from_secs(60), w).await;
+                    let _ = tx.send((r, now_ms() - at));
+                });
+                waits.push(rx);
+            }
+            Ok(Err(e)) => *refused.entry(crate::host::call_error_json(&e).to_string()).or_insert(0) += 1,
+            Err(e) => *refused.entry(e.to_string()).or_insert(0) += 1,
+        }
+        if edits > 0 && seeded > 0 && k % edits == 0 {
+            let evs = (0..per)
+                .map(|j| {
+                    let c = (k * per + j) * 7919 % seeded;
+                    git::repo::RepoEvent::Comment(git::issues::CommentEvent::Edited {
+                        id: git::issues::CommentId(graftyard_types::DbId((1 << 40) + c as i64)),
+                        body: format!("edited {tag} {k} {j}").into(),
+                        actor: Some(graftyard_types::AccountId(graftyard_types::DbId(account))),
+                    })
+                })
+                .collect();
+            let rid = graftyard_lookup::request_id();
+            if h.input(|m, t| m.record(t, rid, git::repo::REPO_FORMAT_V1, evs)).is_ok() {
+                edit_ids.push(rid);
+            }
+        }
+        h.served();
+    }
+    let sent_ms = now_ms() - t0;
+    let mut ok = 0u64;
+    let mut other = std::collections::BTreeMap::<String, u64>::new();
+    let mut lat = Vec::with_capacity(waits.len());
+    for rx in waits {
+        match rx.await {
+            Ok((Some(Ok(Ok(_))), ms)) => {
+                ok += 1;
+                lat.push(ms);
+            }
+            Ok((Some(Ok(Err(e))), _)) => *other.entry(format!("{e:?}").chars().take(120).collect()).or_insert(0) += 1,
+            Ok((Some(Err(_)), _)) | Err(_) => *other.entry("member reset".into()).or_insert(0) += 1,
+            Ok((None, _)) => *other.entry("no outcome in 60 s".into()).or_insert(0) += 1,
+        }
+    }
+    Ok(json!({
+        "sent": n, "sentMs": sent_ms, "ok": ok, "refused": refused, "other": other, "edits": edit_ids.len(),
+        "wallMs": now_ms() - t0, "latMs": lat,
+    }))
 }

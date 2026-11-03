@@ -76,15 +76,20 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow) -> Value {
         Ok((v, _)) => v,
         Err(e) => return json!({ "chain": row.chain.to_string(), "error": e }),
     };
-    if replay.get("skip").is_some() || replay.get("index").is_none() {
+    let index = Index(replay["index"].as_u64().unwrap_or(0));
+    if replay.get("skip").is_some() || index == Index(0) {
         return json!({ "chain": row.chain.to_string(), "replay": replay });
     }
-    let index = Index(replay["index"].as_u64().unwrap_or(0));
     let mut members: [Vec<(graftyard_types::SiteId, Digest)>; 2] = [Vec::new(), Vec::new()];
     let mut missing = Vec::new();
     for s in &row.sites {
+        // Each site's member has its own name, which that site's registry row holds.
+        let Some(name) = member_name(env, site, *s, row.chain).await else {
+            missing.push(json!({ "site": s.0, "error": "no registry row" }));
+            continue;
+        };
         let body = serde_json::to_vec(&json!({ "at": index.0 })).unwrap_or_default();
-        let Some((200, v)) = graftyard_lookup::post(&b, *s, &row.do_name, "/fold", &body).await else {
+        let Some((200, v)) = graftyard_lookup::post(&b, *s, &name, "/fold", &body).await else {
             missing.push(json!({ "site": s.0, "error": "no answer" }));
             continue;
         };
@@ -115,10 +120,24 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow) -> Value {
     json!({ "chain": row.chain.to_string(), "index": index.0, "alarm": alarm, "tiers": tiers, "missing": missing })
 }
 
-/// One cron run: `SAMPLE` chains after the cursor, wrapping to the first.
-pub async fn run(env: &Env) -> Result<Value> {
+/// The name of `chain`'s member on site `at`, from that site's registry row.
+async fn member_name(env: &Env, site: &SiteEnv, at: graftyard_types::SiteId, chain: ChainId) -> Option<String> {
+    let stub = site.registry(env, at, &MemberRegistry::for_chain(at, chain).do_name()).ok()?;
+    let mut res = stub.fetch_with_str(&format!("https://registry/row?chain={chain}")).await.ok()?;
+    if res.status_code() != 200 {
+        return None;
+    }
+    Some(res.json::<RegistryRow>().await.ok()?.do_name.into())
+}
+
+/// One cron run: `SAMPLE` chains after the cursor, wrapping to the first. With `only`, that chain alone, if this site
+/// homes it (test installs).
+pub async fn run(env: &Env, only: Option<ChainId>) -> Result<Value> {
     let site = SiteEnv::read(env)?;
-    let all = homed(env, &site).await?;
+    let mut all = homed(env, &site).await?;
+    if let Some(c) = only {
+        all.retain(|r| r.chain == c);
+    }
     let from = cursor(env, &site, None).await?;
     let start = from.as_ref().map_or(0, |f| all.iter().position(|r| r.chain.to_string() > *f).unwrap_or(0));
     let picked: Vec<&RegistryRow> = all.iter().cycle().skip(start).take(SAMPLE.min(all.len())).collect();

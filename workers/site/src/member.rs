@@ -825,6 +825,8 @@ impl<F: Family> Routes<F> {
             "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
             "commitMs": s.commit_ms,
             "roundMs": s.round_ms,
+            "applyMs": s.apply_ms,
+            "applySteps": s.apply_steps,
             "confirmMs": s.confirm_ms,
             "appendMs": s.append_ms,
             "entries": s.entries,
@@ -838,11 +840,16 @@ impl<F: Family> Routes<F> {
             "truncatedTo": s.truncated_to,
             "received": s.received,
             "alarms": s.alarms,
+            "alarmRuns": s.alarm_runs,
+            "alarmLast": s.alarm_last,
+            "alarmArms": s.alarm_arms,
             "peers": s.peers,
         });
         if reset {
             s.commit_ms.clear();
             s.round_ms.clear();
+            s.apply_ms.clear();
+            s.apply_steps.clear();
             s.confirm_ms.clear();
             s.append_ms.clear();
             s.entries = 0;

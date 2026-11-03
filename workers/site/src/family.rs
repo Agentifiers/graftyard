@@ -275,6 +275,14 @@ impl Family for Repo {
                 }
                 Ok(v)
             })()),
+            // Test installs: one fold audit run, the cron's own, from this member's site.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("audit").is_some() => {
+                let only = body["audit"].as_str().and_then(|c| c.parse().ok());
+                Some(crate::fold_audit::run(&host.env, only).await)
+            }
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
             #[cfg(feature = "test-faults")]
             "/bench_seed" => Some(crate::snap::bench_seed(host, &body)),
             _ => None,

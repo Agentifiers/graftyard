@@ -305,9 +305,16 @@ impl Store for TierSql {
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
         let inner = self.0.borrow();
         let lo = (table.to_owned(), from.to_vec());
+        // Each batch's rows from `from`, newest batch last so it wins, up to `limit` of its own visible rows: a later
+        // row of that batch sorts after `limit` visible ones (`graftyard_fold::Overlay::scan`).
         let mut mine: BTreeMap<Key, Option<Stored>> = BTreeMap::new();
         for b in inner.sealed.iter().chain(std::iter::once(&inner.open)) {
+            let mut visible = 0;
             for ((_, k), v) in b.range(lo.clone()..).take_while(|((t, _), _)| t == table) {
+                if visible == limit {
+                    break;
+                }
+                visible += usize::from(v.is_some());
                 mine.insert(k.clone(), v.clone());
             }
         }
