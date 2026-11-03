@@ -69,7 +69,7 @@ pub fn verify<F: Fold>(e: &LogEntry<F::Event>, view: &FoldView<F>) -> Result<(),
         }
         end = r.end;
     }
-    let mut s = view.fold.scratch();
+    let mut s = view.fold.scratch_at(e.at, e.tiers);
     for u in view.unapplied {
         match &u.body {
             EntryBody::Events(evs) => {
