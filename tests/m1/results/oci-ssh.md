@@ -216,6 +216,62 @@ Free by the docs was the bar, and the docs don't say it, so the IP stays ephemer
 | Tunnel's answer | The forwarder's journal logs `failed to connect to origin error="websocket: bad handshake"` for that attempt. The edge answers a WebSocket upgrade to `ssh-m0.graftyard.dev` with HTTP 530, and the tunnel has 0 connectors. All three fronts report `running: false`. So the proxy and the edge work, and the missing piece is the stopped origin |
 | Admin login on 2222 | Works with the 1Password key (`admin-login-ok`); the banner is `SSH-2.0-OpenSSH_9.6p1` |
 
+## Pay As You Go, 2026-11-03
+
+Checked from 05:45 to 05:55 UTC, after the operator reported upgrading the account. This was read-only: nothing in the account, the VM or DNS was changed.
+
+### Upgrade state: submitted, not yet complete
+
+`oci osp-gateway subscription-service subscription list --osp-home-region us-phoenix-1`:
+
+| Field | 02:35 UTC (before) | 05:45 UTC (now) |
+| --- | --- | --- |
+| `plan-type` | `FREE_TIER` | `FREE_TIER` |
+| `upgrade-state` | `PROMO` | **`SUBMITTED`** |
+| `time-plan-upgrade` | null | null |
+| `account-type` | `PERSONAL` | `PERSONAL` |
+| `payment-options` | `[]` | one `CREDIT_CARD`, AMEX, expires 2029-08 (wallet instrument set) |
+
+`oci organizations subscription list` still shows `payment-model: FREE_TRIAL`, ending 2026-12-01. It was last updated 2026-11-02T23:13Z, before the upgrade.
+
+**Console, read only.** I signed in with the vault credentials and TOTP and opened Billing & Cost Management, then Upgrade and Manage Payment. I clicked nothing. Under "Subscription information" the page says exactly: **"Your upgrade is in progress. You will receive an email confirmation when your upgrade is completed"**. Plan type still shows "Free Tier" and Account type "Promo". Payment Method shows "Credit Card, Expires on: 08/29". Screenshot: `.amp/in/artifacts/browser-use/oci-upgrade/upgrade-submitted.png`, which is git-ignored. It shows the holder's name, email and postal address, and no card number.
+
+**Reading.** The upgrade was submitted and is waiting on Oracle, which says it "can take a day or two". It is not yet Pay As You Go. Rerun the subscription query above to see when `plan-type` changes.
+
+### Resources: still running, still Always Free
+
+| Resource | State | Always Free evidence now |
+| --- | --- | --- |
+| Instance `graft-ssh-proxy`, `VM.Standard.E2.1.Micro`, 1 OCPU-equivalent, 1 GB | `RUNNING`; booted 2026-11-03 00:38:52, no reboot pending | `oci compute shape list` in PHX-AD-1 still labels the shape `billing-type: ALWAYS_FREE`; `vm-standard-e2-1-micro-count` 1 used of 2 |
+| Boot volume, 50 GB, 10 VPUs/GB | `AVAILABLE` | `total-free-storage-gb-regional` 50 used, 150 available |
+| VCN `graft-ssh-proxy-vcn`, subnet `graft-ssh-proxy-subnet`, internet gateway `graft-ssh-proxy-igw` | `AVAILABLE` (all three) | No price-list line for any of them |
+| Public IP <ssh-proxy-ip> | `EPHEMERAL`, `ASSIGNED` | The Micro shape "Includes one VNIC with one public IP address" |
+
+The plan has not changed yet. Once it does, the [Always Free Resources](https://docs.oracle.com/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) page still applies: "Oracle doesn't charge for Always Free resources after you upgrade, and will only charge you for resource usage above the Always Free limits." These resources are inside those limits, so they stay at $0. Recheck the `ALWAYS_FREE` label after `plan-type` changes.
+
+### Budget and billing
+
+- Budget `graftyard-oci-1usd`: `ACTIVE`, $1.00 a month, 1 alert rule. Alert `actual-1usd`: `ACTIVE`, `ACTUAL` at 100% of $1, emails `<email>`. Its `actual-spend` is still `null`.
+- Cost and usage for 2026-11-02 and 2026-11-03, daily, grouped by service and SKU: **still no line items** on either query type. The month-to-date cost is empty too. The feed has not filled in, so this is the same weak $0 as the previous check.
+
+### Reserved public IP: still left ephemeral
+
+- [Public IP Addresses](https://docs.oracle.com/iaas/Content/Network/Tasks/managingpublicIPs.htm), reread with a fresh fetch, describes ephemeral and reserved IPs and says nothing about cost.
+- [Networking pricing](https://www.oracle.com/cloud/networking/pricing/) has 0 mentions of a public IP, IPv4 or IP address.
+- Oracle's public SKU feed (668 products) has no public-IP SKU.
+- [Service limits](https://docs.oracle.com/iaas/Content/General/service-limits/default.htm) only gives the count, 50 per region on Pay As You Go.
+- Two sources do call reserved IPs free: Oracle's 2018 launch blog post ("There is no charge to use this feature") and a third-party 2025 post. Neither is current Oracle documentation or the price list.
+
+The current docs are silent, so by the rule given, the IP stays ephemeral. The DNS record, the 1Password notes and `deploy/oci-ssh/` are unchanged.
+
+### Proxy
+
+| Check | Result |
+| --- | --- |
+| DNS | `ssh.graftyard.dev` A <ssh-proxy-ip>, TTL 300 |
+| TCP 22 | `create_connection(('ssh.graftyard.dev', 22))` connects to <ssh-proxy-ip>:22 in 82 ms; cloudflared (pid 5347) holds `*:22`; `graft-ssh-proxy` active, `NRestarts=0`, up since 01:07:04 |
+| Admin 2222 | Login with the 1Password key works (`admin-login-ok`); `ssh.service` active |
+
 ## Teardown
 
 From the repository root, with the OCI CLI configured and `CLOUDFLARE_API_TOKEN` set:

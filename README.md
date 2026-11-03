@@ -6,6 +6,18 @@ Graftyard is a code host that unmodified GitHub clients treat as GitHub Enterpri
 
 The design is complete and nothing is built. The documents here are the specification that implementing agents build from. Every cost, capacity, and latency number is a guess until Milestone 0 measures it (`design/DESIGN.md`, "Build order from zero"), and the documents tag such numbers [guess], [inference], or [unverified].
 
+## What has been tested
+
+Milestones 0 and 1 ran on real Cloudflare and in the Raft simulator. `tests/RESULTS.md` lists every run with its faults, checks, and source, and defines each number below.
+
+- Porcupine checked 9,453,684 operations for linearizability over 80.6 hours of chaos on Cloudflare, under 12,082 member resets and 7,928 leadership transfer attempts [measured]. The 4-hour run was Illegal and found a real bug, since fixed. The 48-hour run passes with a 100 ms clock allowance. The 24-hour M1 rerun, `lin24`, did not pass, and its rerun `lin24b` ends 2026-11-04T00:55Z.
+- 0 of 2,684,130 acknowledged writes were lost in the two runs whose members' logs were audited [measured].
+- 12,000 leader kills between quorum and reply each returned the original outcome (BF-12) [measured].
+- 31,482 SSH git sessions ran, most of them under container kills, and 31,362 succeeded. The 24-hour run's 99.587% is between the pass and fail lines [measured].
+- With a site's members failing, git's own `t/` HTTP tests lost no baseline pass except t5549 #2. `clients.sh` passed 29 of 29 rows in all 12 runs on git 2.39.5, 2.51.0, and 2.56.0, 6 of them under a site fault [measured].
+- The simulator's long sweep ran 40,191,804 steps. Porcupine found both halves' histories linearizable, and all 1,000,856 acknowledged writes carried valid ack evidence [measured].
+- The workspace has 259 Rust tests and 14 Go tests, and its suites caught 84 of 85 planted bugs [measured].
+
 ## Reading order
 
 Read these in order. Each line says why.
@@ -64,6 +76,7 @@ scripts/
   cost_model.py            AWS cost model; holds the shared workload (TIERS, ACTIVITY)
   costs_report.py          regenerates research/costs.md
   census.py                counts GitHub wire surfaces into research/surfaces.json
+  results_lin.py           prints a tests/RESULTS.md row from a lin run's report
 history/                   the verbatim design record; see history/README.md
 ```
 
