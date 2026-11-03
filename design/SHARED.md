@@ -484,8 +484,10 @@ pub struct CommentId(DbId);
 /// Metadata tier. Issue, review, and commit comments, with bodies of at most 65,536 characters [unverified]. A review's
 /// comments ride in the entry of its `ReviewEvent`. `Resolved` also updates the core count of unresolved threads per
 /// pull request, which `check_protection` reads when a rule requires conversation resolution, as GHES's "Require
-/// conversation resolution before merging" does, and merges read only Core. So a `Comment` that resolves or unresolves
-/// a thread touches both tiers.
+/// conversation resolution before merging" does, and merges read only Core. `Resolved` names only the thread, so a
+/// thread's first review comment (`Created` on a review with no `reply_to`), which opens it unresolved and maps it to
+/// its pull request, and every `Deleted`, which does not say whether it named a thread, also touch Core. So those three
+/// `Comment` events touch both tiers (M2-WP2, `crates/git/src/tiers.rs`).
 pub enum CommentEvent {
     Created { id: CommentId, on: CommentTarget, author: Actor, body: Box<str>, reply_to: Option<CommentId> },
     Edited { id: CommentId, body: Box<str>, actor: Actor }, Deleted { id: CommentId, actor: Actor },
@@ -631,7 +633,8 @@ pub enum Tier { Core, Metadata }
 /// review bodies, comment, timeline, reaction, and the agent rows nothing gates on: a task's prompt, summary, and pr,
 /// path_set, provenance, and the activity feed's ring. The entry's `tiers` tag says which tiers must decode it.
 pub fn tier_of(e: &RepoEvent) -> TierSet;   // Merged, PrOpened, Settings, and Review touch both tiers; Refs and Refused only Core;
-                                            // Comment only Metadata, except a `Resolved`, which touches both
+                                            // Comment only Metadata, except a thread's first review comment,
+                                            // `Resolved`, and `Deleted`, which touch both
 /// The only writer. Refuses an entry whose index is not applied + 1 or whose `prev` digest is wrong. A tier applies the
 /// events it owns and advances `applied` past every entry, so both tiers check the same digest chain.
 pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;

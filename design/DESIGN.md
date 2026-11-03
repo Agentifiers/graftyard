@@ -226,9 +226,9 @@ pub enum ChainId { Repo(RepoId), Network(NetworkId), Authz(AccountId), Identity(
                    RepoMeta(RepoId) /* a repository's metadata child group; CHILD_GROUP_AT */ }
 /// `cell` (8 bits) | `block` (29) | `offset` (16), so every id stays below 2^53. The cell's `Ids` group (on `Tri`)
 /// leases blocks to group leaders, and a group commits `EntryBody::IdBlock` before it assigns from one, so a new leader
-/// resumes at the next free id. Each fold tier keeps its own `IdBlock` cursor (M2-WP2). Gaps happen, reuse never. Issue
-/// numbers stay per-repository fold counters. The managed front routes `/repositories/{id}`, `/user/{id}`, node ids,
-/// and installation ids to a cell by the cell bits.
+/// resumes at the next free id. Of each leased block Metadata assigns the lower half and Core the upper (M2-WP2)
+/// [inference]. Gaps happen, reuse never. Issue numbers stay per-repository fold counters. The managed front routes
+/// `/repositories/{id}`, `/user/{id}`, node ids, and installation ids to a cell by the cell bits.
 pub struct DbId(i64);
 pub struct Term(u64);
 pub struct Index(u64);
@@ -497,7 +497,7 @@ pub struct RequestId(Ulid);
 /// index. A command whose id matches one already queued or in flight joins that ticket. A command `decide` refuses
 /// leaves no row, but its entry still commits (BF-13), so a refusal that must leave no entry (`COMMAND_MAX`, SHARED's
 /// 10,000-ref atomic cap) is the edge's, before `commit` (M1-WP6).
-pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);   // [guess]; above the 24 h orphan sweep
+pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);   // [guess]; above the 24 h orphan sweep; F46
 /// The largest encoded command. It sits below the 1.5 MB entry, so one command always fits an empty entry. The edge
 /// encodes each command before `commit` and refuses one over the cap: REST and GraphQL with 422 [guess], git as in
 /// SHARED, "Refs and pushes". The leader checks again and answers `CallError::TooLarge`, which the edge renders the same way.
@@ -1484,7 +1484,7 @@ Numbers are [guess] unless they cite a limit.
 | Hot group reads, learners | Above 500 reads/s; up to 16 learners | 1,000 req/s per learner and per leader | Each learner adds at most 20 read-index calls/s (one in flight, 50 ms floor), so 16 add 320/s and serve about 16,000 reads/s [inference] |
 | Largest owner's `Authz` | About 5,000 authorizations/s at peak for 20,000 developers plus CI [guess] | 1,000 req/s per DO | Learners placed by traffic carry it; the leader sees writes, appends, and read-index calls |
 | Entries per group | About 5 to 9 entries/s per group, one in flight: one round of p50 107 to 189 ms for an enam leader [measured, `tests/m0/results/m0-wp2.md`], plus one read of the entry's `Authz` dependency on a leader in the owner's home region [guess], and fewer for apac [inference], each holding many commands. Milestone 0 carried 573 commands/s on one group at 441 commands per entry, with the round slowed to p50 739 ms by 0.5 to 1.8 MB entries [measured] | Entry under 1.5 MB against the 2 MB row limit; in memory `load` holds at most `LOG_WINDOW` entries and `LOG_BYTES` (8 MB [guess]) of them, reading rows one at a time, because a count alone let 53 inline packs of 0.7 to 1 MB exhaust a 128 MB isolate in `load`, and the byte bound restored that group, whose members then took an 800 kB push (`the_in_memory_log_is_bounded_by_bytes` fails on the old code) [measured, `tests/m1/results/m1-wp2.md`, "F45"] | The monorepo needs about 2 entries/s; the merge queue 0.2/s and bots 0.8/s; the 50 comments/s cap batches into entries |
-| Member storage | Folds plus 30 days of log, capped at `LOG_MAX_BYTES` (2 GB) per member; the largest repository's metadata tier (200,000 issues, 2 million comments) about 4 GB [guess] | 10 GB per DO, after which writes fail with `SQLITE_FULL` (https://developers.cloudflare.com/durable-objects/platform/limits/) | Older entries archive to R2 snapshots, and above the cap to `R2Key::Archive` in two buckets; at `CHILD_GROUP_AT` (8 GiB of member SQLite) the metadata tier moves to a child group (Milestone 7) |
+| Member storage | Folds plus 30 days of log, capped at `LOG_MAX_BYTES` (2 GB) per member; the largest repository's metadata tier (200,000 issues, 2 million comments [guess]) about 6 GB, because a 1,800-byte comment with its FTS5 postings took 2,997 bytes, so 4 GB holds about 1.33 M comments [measured, `tests/m2/results/m2-wp1.md`, "Data size"] | 10 GB per DO, after which writes fail with `SQLITE_FULL` (https://developers.cloudflare.com/durable-objects/platform/limits/) | Older entries archive to R2 snapshots, and above the cap to `R2Key::Archive` in two buckets; at `CHILD_GROUP_AT` (8 GiB of member SQLite) the metadata tier moves to a child group (Milestone 7) |
 | Clone cache reads | 33 GETs/s on one key at a moving tip | No published per-key read rate (`research/cloudflare.md`, R2) | Hot keys are written as 8 replicas (`CloneCache.replica`), read at random. In Milestone 0 one replica served 33 GETs/s of 40 MB at read p99 316 ms, the same as 8 [measured, `tests/m0/results/m0-wp6.md`], so the replicas are a margin, not a need at this rate |
 | Pack writes | One write-once key per pack per bucket | 1 write/s to the same key | Keys are ULIDs, so never contended |
 | Push size | 2 GB | Request body: 100 MB Free and Pro, 200 MB Business, up to 5 GB Enterprise | The edge refuses at its own cap below the plan limit and names SSH on Enterprise or where the install has the `cloudflared` SSH option on, and otherwise Enterprise or splitting the push; install preflight refuses a plan below the largest imported pack |

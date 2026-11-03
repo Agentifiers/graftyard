@@ -1346,6 +1346,8 @@ The 24-hour linearizability run `lin24` ended, F43's two stalls were traced, and
 
 **Flip.** A run-id order that is not monotonic per (sha, name) because two Actions shards report runs for one check, which needs a cross-shard tiebreak; or a measured `fold_digest` disagreement between members whose rows are equal.
 
+**Since, 2026-11-03** (M2-WP2, `crates/git/src/tiers.rs`). A thread's first review comment and every `Deleted` also touch Core, besides `Resolved`, because `Resolved` names only the thread: the first comment opens it unresolved and maps it to its pull request, and a deletion does not say whether it named a thread. Each tier's cursor takes its own half of every leased block, Metadata the lower and Core the upper, and an event that touches Core takes Core's ids [inference: any fixed split works; this one keeps the cursors from meeting].
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.

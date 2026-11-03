@@ -4,7 +4,7 @@ Graftyard is a code host that unmodified GitHub clients treat as GitHub Enterpri
 
 ## Status
 
-The design is complete and nothing is built. The documents here are the specification that implementing agents build from. Every cost, capacity, and latency number is a guess until Milestone 0 measures it (`design/DESIGN.md`, "Build order from zero"), and the documents tag such numbers [guess], [inference], or [unverified].
+The design is the specification that implementing agents build from, and the build is under way (`build/BUILD-PLAN.md`, the "Milestone 0 status" and "Milestone 1 status" tables). Milestone 0 is closed, with its between rows carried to named reruns. Milestone 1 is closed except BM-1's 24-hour linearizability row, which `lin24` did not pass and `lin24b` is rerunning. In Milestone 2, M2-WP1 (folds in member SQLite) and M2-WP2 (issues, pull requests, reviews, and checks) are built, and M2-WP1's gate row BF-20 fails on request-limit errors after a member restore (`tests/m2/results/m2-wp1.md`). Numbers that no run has measured stay tagged [guess], [inference], or [unverified].
 
 ## What has been tested
 
@@ -27,6 +27,7 @@ Read these in order. Each line says why.
 3. `design/SHARED.md`: the platform-independent specification the base reuses. Wire compatibility, event types, tokens, issues and pull requests, folds, Actions, and retention.
 4. `design/AGENT-LAYER.md`: the agent layer. Agent Apps, the MCP server, the controller, leases, the activity feed, and the task API.
 5. `build/BUILD-PLAN.md`: the work packages, their order, and the gate that decides when each is done.
+   `tests/RESULTS.md` lists every test run so far, with its faults, checks, and source, and defines each total in "What has been tested".
 6. `decisions/DECISIONS.md`: why each major choice was made, what it beat, and what would reverse it. Read it before you change a foundation.
 7. `decisions/OPEN-QUESTIONS.md`: what is still unanswered, and which measurement or answer settles each question.
 8. `alternatives/AWS.md`: the AWS design that lost, priced beside this one, with the conditions under which it would win.
