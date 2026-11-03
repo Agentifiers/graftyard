@@ -3,7 +3,9 @@
 //!
 //! Core holds what git, merges, and authorization read: `ref`, `rule`, `settings`, `counter` (the issue-number
 //! counter), `pull_head` and its two indexes `pull_by_head` and `open_head`, `review_verdict` and its index
-//! `verdict_by_review`, and `required_check`. Metadata holds `issue`, `issue_label`, `issue_assignee`, `label`, `pull`,
+//! `verdict_by_review`, `required_check`, and the count of unresolved review threads per pull request (`unresolved`,
+//! with `review_thread` mapping each thread to its pull request), which a rule requiring conversation resolution
+//! reads. Metadata holds `issue`, `issue_label`, `issue_assignee`, `label`, `pull`,
 //! `review`, `review_request`, `comment`, `check_run`, `check_suite`, `status`, `check_expiry` (the pruning index),
 //! `retention` (`RepoSettings.check_retention_days`), and `ids`, the `DbId` cursor every id-assigning event advances. A row's record is one postcard blob; its key columns are real
 //! columns a host indexes.
@@ -46,6 +48,15 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::IssueChanged { .. } => TierSet::METADATA,
         RepoEvent::Review(ReviewEvent::Submitted { .. } | ReviewEvent::Dismissed { .. }) => both,
         RepoEvent::Review(ReviewEvent::Requested { .. }) => TierSet::METADATA,
+        // The core count of unresolved review threads per pull request (`review_thread` and `unresolved`). SHARED's
+        // `tier_of` says "Comment only Metadata, except a `Resolved`, which touches both", but `Resolved` names only
+        // the thread, so Core must also see the comment that starts a thread (it is unresolved from then, and its row
+        // maps the thread to its pull request) and every deletion (the event does not say whether it named a thread).
+        RepoEvent::Comment(
+            CommentEvent::Created { on: CommentTarget::Review { .. }, reply_to: None, .. }
+            | CommentEvent::Resolved { .. }
+            | CommentEvent::Deleted { .. },
+        ) => both,
         RepoEvent::Comment(_) | RepoEvent::Labels(_) => TierSet::METADATA,
         RepoEvent::CheckRun(_) | RepoEvent::CheckSuite(_) | RepoEvent::Status(_) => TierSet::METADATA,
     }
@@ -64,9 +75,11 @@ pub const CORE: Schema = Schema {
         t("pull_head", &["n"]),
         t("ref", &["name"]),
         t("required_check", &["sha", "name", "source"]),
+        t("review_thread", &["thread"]),
         t("review_verdict", &["n", "reviewer"]),
         t("rule", &["id"]),
         t("settings", &[]),
+        t("unresolved", &["n"]),
         t("verdict_by_review", &["review"]),
     ],
 };
@@ -274,6 +287,25 @@ pub(crate) fn pulls_from(r: &(impl Read + ?Sized), repo: RepoId, branch: &RefNam
         .collect()
 }
 
+/// The core `review_thread` row: the pull request a review thread is on, and whether it is resolved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ThreadRow {
+    pub n: IssueNumber,
+    pub resolved: bool,
+}
+
+/// The core count of unresolved review threads on pull request `n`, which `check_protection` reads when a rule sets
+/// `conversation_resolution`.
+pub fn unresolved_threads(core: &(impl Read + ?Sized), n: IssueNumber) -> u32 {
+    get_rec(core, "unresolved", &[n_key(n)]).unwrap_or(0)
+}
+
+/// Adds `by` to `n`'s unresolved count, keeping no row for zero.
+fn count_unresolved(w: &mut dyn Rows, n: IssueNumber, by: i32) {
+    let c = unresolved_threads(w, n).checked_add_signed(by).expect("an unresolved count never goes below zero");
+    if c == 0 { w.delete("unresolved", &[n_key(n)]) } else { put_rec(w, "unresolved", vec![n_key(n)], &c) }
+}
+
 pub(crate) fn ids(r: &(impl Read + ?Sized)) -> IdCursor {
     get_rec(r, "ids", &[]).unwrap_or_default()
 }
@@ -437,6 +469,33 @@ impl RepoTiers {
                 let newer = get_rec::<RequiredRow>(w, "required_check", &key).is_none_or(|o| o.superseded_by(&row));
                 if newer {
                     put_rec(w, "required_check", key, &row);
+                }
+            }
+            RepoEvent::Comment(CommentEvent::Created {
+                id,
+                on: CommentTarget::Review { n, .. },
+                reply_to: None,
+                ..
+            }) => {
+                put_rec(w, "review_thread", vec![int(id.0.0)], &ThreadRow { n: *n, resolved: false });
+                count_unresolved(w, *n, 1);
+            }
+            RepoEvent::Comment(CommentEvent::Resolved { thread, resolved, .. }) => {
+                let key = vec![int(thread.0.0)];
+                if let Some(mut t) = get_rec::<ThreadRow>(w, "review_thread", &key)
+                    && t.resolved != *resolved
+                {
+                    t.resolved = *resolved;
+                    put_rec(w, "review_thread", key, &t);
+                    count_unresolved(w, t.n, if *resolved { -1 } else { 1 });
+                }
+            }
+            RepoEvent::Comment(CommentEvent::Deleted { id, .. }) => {
+                if let Some(t) = get_rec::<ThreadRow>(w, "review_thread", &[int(id.0.0)]) {
+                    w.delete("review_thread", &[int(id.0.0)]);
+                    if !t.resolved {
+                        count_unresolved(w, t.n, -1);
+                    }
                 }
             }
             RepoEvent::Comment(_) | RepoEvent::Labels(_) => {}

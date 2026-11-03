@@ -232,6 +232,9 @@ impl IssueCmd {
             IssueOp::Change { change: IssueChange::State { .. } | IssueChange::Draft(_), .. } => both,
             IssueOp::Review { .. } | IssueOp::Dismiss { .. } | IssueOp::SetRule { .. } => both,
             IssueOp::RecordCheck(_) | IssueOp::RecordStatus(_) => both,
+            // A new review thread, a resolution, or a deletion may change the core unresolved count.
+            IssueOp::Comment { on: CommentTarget::Review { .. }, reply_to: None, .. } => both,
+            IssueOp::Resolve { .. } | IssueOp::DeleteComment { .. } => both,
             _ => TierSet::METADATA,
         }
     }

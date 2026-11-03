@@ -327,11 +327,18 @@ fn tier_of_routes_each_event_to_the_tiers_shared_names() {
     let tags: Vec<TierSet> = c.log.iter().skip(1).map(|e| e.tiers).collect();
     // push, settings, rule, push, PrOpened
     assert_eq!(tags, vec![TierSet::CORE, both, both, TierSet::CORE, both]);
-    let comment = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Deleted {
+    let comment = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Edited {
         id: graftyard_git::issues::CommentId(DbId(1)),
+        body: "b".into(),
         actor: None,
     });
     assert_eq!(tier_of(&comment), TierSet::METADATA);
+    let resolved = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Resolved {
+        thread: graftyard_git::issues::CommentId(DbId(1)),
+        resolved: true,
+        actor: None,
+    });
+    assert_eq!(tier_of(&resolved), both, "a resolution changes the core unresolved count");
     let req = RepoEvent::RequiredCheck {
         sha: oid(2),
         name: "ci".into(),
@@ -606,4 +613,81 @@ fn a_command_that_touches_no_tier_it_tags_is_impossible() {
         c.commit_all(&[cmd]);
     }
     let _ = RepoTiers::schema(Tier::Core);
+}
+
+fn review_comment(c: &mut Chain, n: IssueNumber, reply_to: Option<graftyard_git::issues::CommentId>) -> DbId {
+    let at = graftyard_git::issues::LineAnchor {
+        commit: oid(2),
+        path: "a.rs".into(),
+        line: 1,
+        start_line: None,
+        side: graftyard_git::issues::DiffSide::Right,
+    };
+    let on = CommentTarget::Review { n, review: None, at };
+    match c.commit(READER, IssueOp::Comment { on, body: "nit".into(), reply_to }).unwrap() {
+        IssueOut::Id(id) => id,
+        o => panic!("{o:?}"),
+    }
+}
+
+fn resolve(c: &mut Chain, thread: DbId, resolved: bool) {
+    let thread = graftyard_git::issues::CommentId(thread);
+    c.commit(WRITER, IssueOp::Resolve { thread, resolved }).unwrap();
+}
+
+fn unresolved(c: &Chain, n: IssueNumber) -> u32 {
+    graftyard_git::tiers::unresolved_threads(&c.members[0].core, n)
+}
+
+#[test]
+fn the_core_tier_counts_unresolved_review_threads_per_pull_request() {
+    let mut c = setup(3, 90);
+    c.push("refs/heads/f", oid(2));
+    c.push("refs/heads/g", oid(3));
+    let n = open_pr(&mut c, "refs/heads/f", oid(2));
+    let other = open_pr(&mut c, "refs/heads/g", oid(3));
+    let a = review_comment(&mut c, n, None);
+    let b = review_comment(&mut c, n, None);
+    let _reply = review_comment(&mut c, n, Some(graftyard_git::issues::CommentId(a)));
+    let o = review_comment(&mut c, other, None);
+    c.commit(READER, IssueOp::Comment { on: CommentTarget::Issue(n), body: "plain".into(), reply_to: None }).unwrap();
+    assert_eq!((unresolved(&c, n), unresolved(&c, other)), (2, 1), "a reply and an issue comment start no thread");
+    resolve(&mut c, a, true);
+    assert_eq!(unresolved(&c, n), 1);
+    resolve(&mut c, a, true);
+    assert_eq!(unresolved(&c, n), 1, "resolving twice counts once");
+    resolve(&mut c, a, false);
+    assert_eq!(unresolved(&c, n), 2, "unresolving counts again");
+    resolve(&mut c, a, false);
+    assert_eq!(unresolved(&c, n), 2);
+    // Deleting a resolved thread leaves the count; deleting an unresolved one lowers it.
+    resolve(&mut c, b, true);
+    assert_eq!(unresolved(&c, n), 1);
+    c.commit(READER, IssueOp::DeleteComment { id: graftyard_git::issues::CommentId(b) }).unwrap();
+    assert_eq!(unresolved(&c, n), 1, "a resolved thread was already uncounted");
+    c.commit(READER, IssueOp::DeleteComment { id: graftyard_git::issues::CommentId(a) }).unwrap();
+    assert_eq!(unresolved(&c, n), 0);
+    assert_eq!(c.rows(Tier::Core, "unresolved"), 1, "no row for a zero count; `other` keeps one");
+    // A thread on a closed pull request still counts, and resolving it there is kept for a reopen.
+    c.commit(WRITER, IssueOp::Close { n: other }).unwrap();
+    assert_eq!(unresolved(&c, other), 1);
+    resolve(&mut c, o, true);
+    assert_eq!(unresolved(&c, other), 0);
+    c.commit(WRITER, IssueOp::Change { n: other, change: IssueChange::State { open: true, reason: None } }).unwrap();
+    assert_eq!(unresolved(&c, other), 0);
+    let t = review_comment(&mut c, other, None);
+    assert_eq!(unresolved(&c, other), 1);
+    // Each change is in the core tier's digest on every member, and a late member gets the same counts.
+    c.agree();
+    let mut late = Member::default();
+    for e in &c.log {
+        late.apply(e);
+    }
+    assert_eq!(fold_digest(&late.core, Tier::Core), fold_digest(&c.members[0].core, Tier::Core));
+    assert_eq!(graftyard_git::tiers::unresolved_threads(&late.core, other), 1);
+    // The resolution entry is tagged with both tiers; a plain comment's only Metadata.
+    resolve(&mut c, t, true);
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::CORE.union(TierSet::METADATA));
+    c.commit(READER, IssueOp::Comment { on: CommentTarget::Issue(n), body: "x".into(), reply_to: None }).unwrap();
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
 }
