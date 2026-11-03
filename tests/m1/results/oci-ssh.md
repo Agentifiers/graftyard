@@ -158,6 +158,64 @@ These rows are for the design editor, because this VM is a new failure domain (o
 5. **The bed is stopped.** The fronts were stopped after the test, as they were found. Until they are started, the proxy accepts connections and git fails. Running the three `basic` fronts all month would cost about $22 a month in Cloudflare Containers memory and disk past the included usage, plus CPU [inference from the Containers price list: 3 GiB × 730 h and 12 GB disk × 730 h, at the listed rates].
 6. **Daily reboot window.** Unattended upgrades may reboot the VM at 10:00 UTC when an update needs it. That is about a minute of SSH downtime.
 
+## Follow-ups, 2026-11-03 (02:35 to 02:55 UTC)
+
+The operator approved the Oracle items in "Decisions for the operator". This section covers the upgrade, the budget, the reserved IP, and the billing recheck. Admin port 2222 stays open to all sources, Cloudflare Access stays off, and the M0 fronts stay stopped, as instructed.
+
+### Upgrade to Pay As You Go: blocked, no payment method on file
+
+**The doc check, done before any change.** [Always Free Resources](https://docs.oracle.com/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), Compute: "Remember that Oracle doesn't charge for Always Free resources after you upgrade, and will only charge you for resource usage above the Always Free limits." The [Free Tier FAQ](https://www.oracle.com/cloud/free/faq/) says the same: "You will only be charged for services that you use that exceeds Always Free." [Managing Account Upgrades and Payment Method](https://docs.oracle.com/en-us/iaas/Content/Billing/Tasks/changingpaymentmethod.htm) adds that the upgrade authorizes $100 on the card and reverses it at once, and that the upgrade takes "a day or two" to complete.
+
+**What the account shows.**
+- The API has no upgrade call. `oci osp-gateway subscription-service subscription list` returns `plan-type: FREE_TIER`, `upgrade-state: PROMO`, `account-type: PERSONAL`, and `payment-options: []`.
+- The console's **Upgrade and Manage Payment** page shows Plan type "Free Tier", Account type "Promo", and Payment Method "-". It also shows the warning "Add a payment method to upgrade a subscription plan."
+- The doc says the sign-up card appears as the default payment method. None appears here.
+- I signed in with the vault's username, password and TOTP. Nothing was changed in the console. I did not click "Change Payment Method" or "Upgrade your account".
+- Screenshot: `.amp/in/artifacts/browser-use/oci-upgrade/upgrade-page-no-payment-method.png`. It is git-ignored and shows no card data, but it does show the account holder's postal address.
+
+**The upgrade was not done.** It needs a card entered on that page, which the brief rules out. The plan is still Free Trial, and the subscription API still reads `FREE_TIER` / `PROMO`. Reclamation after 2026-12-01 remains possible.
+
+### Budget
+
+| Item | Value |
+| --- | --- |
+| Budget `graftyard-oci-1usd` | `<ocid>`; $1.00 a month, MONTHLY reset, targeting the root compartment (the whole tenancy), `ACTIVE` |
+| Alert rule `actual-1usd` | `<ocid>`; type `ACTUAL`, 100% of the budget ($1), emails `<email>` (the tenancy admin user's email, `email-verified: true`), `ACTIVE` |
+
+The budget's `actual-spend` is still `null`, because Oracle has not computed spend for it yet. The alert has never fired.
+
+### Reserved public IP: not free by the docs, so not made
+
+- [Always Free Resources](https://docs.oracle.com/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm) gives the Micro shape "one VNIC with one public IP address". That is the instance's ephemeral IP. The page does not list reserved public IPs at all.
+- [Service limits](https://docs.oracle.com/iaas/Content/General/service-limits/default.htm) gives "Reserved public IPs: 50 per region" for Pay As You Go or Trial, with no Always Free column. This tenancy's `reserved-public-ip-count` limit is 6.
+- Neither the [price list](https://www.oracle.com/cloud/networking/pricing/) nor Oracle's public SKU feed (668 products) has a line for public IP addresses. So no published price exists, and no doc says they are Always Free.
+- Oracle's 2018 launch post says "There is no charge to use this feature" (https://blogs.oracle.com/cloud-infrastructure/release-announcement-reserved-public-ips-are-now-available-on-oracle-cloud-infrastructure). That is a blog post, not the current docs.
+
+Free by the docs was the bar, and the docs don't say it, so the IP stays ephemeral (<ssh-proxy-ip>). `ssh.graftyard.dev`, the 1Password notes, and the provision and teardown scripts are unchanged.
+
+### Billing recheck for 2026-11-02 and 2026-11-03
+
+`oci usage-api usage-summary request-summarized-usages` against the tenancy:
+
+| Query | Window | Result |
+| --- | --- | --- |
+| COST, DAILY and MONTHLY | 2026-11-01 to 2026-12-01 | no line items |
+| COST, DAILY, grouped by service, SKU and resource | 2026-11-02 to 2026-11-04 | 0 items |
+| USAGE, DAILY and MONTHLY | 2026-11-01 to 2026-12-01 (and from 2026-10-01 by service) | no line items |
+| CREDIT and ALLCREDIT, MONTHLY | November | no line items |
+
+**Reported cost is $0, and no usage line has been reported yet.** That includes the VM, which has run since 2026-11-03 00:38 UTC, so the absence is not proof of zero. The usage feed on this new trial tenancy (created 2026-11-02 22:56) has not populated, or it omits Always Free usage. Either way, a charge would show here first. The $1 budget alert now covers this going forward.
+
+### Verification
+
+| Check | Result |
+| --- | --- |
+| DNS | `ssh.graftyard.dev` resolves to <ssh-proxy-ip>, TTL 300 (Cloudflare DoH) |
+| TCP connect to port 22 | Connected in 11 ms; cloudflared (pid 5347) holds `*:22`; `graft-ssh-proxy` is active with `NRestarts=0` since 01:07:04 |
+| SSH handshake through the proxy | `ssh -v` reaches "Connection established", then gets `kex_exchange_identification: Connection reset` before any banner, as expected with the fronts stopped |
+| Tunnel's answer | The forwarder's journal logs `failed to connect to origin error="websocket: bad handshake"` for that attempt. The edge answers a WebSocket upgrade to `ssh-m0.graftyard.dev` with HTTP 530, and the tunnel has 0 connectors. All three fronts report `running: false`. So the proxy and the edge work, and the missing piece is the stopped origin |
+| Admin login on 2222 | Works with the 1Password key (`admin-login-ok`); the banner is `SSH-2.0-OpenSSH_9.6p1` |
+
 ## Teardown
 
 From the repository root, with the OCI CLI configured and `CLOUDFLARE_API_TOKEN` set:
@@ -167,7 +225,7 @@ deploy/oci-ssh/teardown.sh   # terminates graft-ssh-proxy and its boot volume, d
                              # and deletes ssh.graftyard.dev only if it carries provision.sh's comment
 ```
 
-Then delete the 1Password item `graftyard-ssh-proxy`, and `~/.ssh/graftyard-ssh-proxy*` and `~/.oci/` in the orb. Teardown does not touch the M0 bed; `tests/m0/results/m0-wp7.md` has its own teardown.
+Delete the budget if the tenancy is being retired: `oci budgets budget budget delete --budget-id <ocid> --force`. Teardown keeps it by default, because the budget guards the tenancy and is not part of the proxy. Then delete the 1Password item `graftyard-ssh-proxy`, and `~/.ssh/graftyard-ssh-proxy*` and `~/.oci/` in the orb. Teardown does not touch the M0 bed; `tests/m0/results/m0-wp7.md` has its own teardown.
 
 ## Raw data
 
