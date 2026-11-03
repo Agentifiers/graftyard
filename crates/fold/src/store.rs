@@ -200,11 +200,22 @@ impl<R: Read + ?Sized> Read for Overlay<'_, R> {
     }
 
     /// Fetches enough base rows that the overlay's deletes cannot leave fewer than `limit`, so any row past the last
-    /// fetched base row sorts after `limit` visible ones and is cut.
+    /// fetched base row sorts after `limit` visible ones and is cut. Overlay rows are taken until `limit` of them are
+    /// visible: any later one sorts after `limit` visible rows. Without that bound each scan copied the whole overlay
+    /// past `from`, and a 2,000-push entry's `decide` took 0.4 s natively in name-conflict scans (BF-20).
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Vec<Val>)> {
         let lo = (table.to_owned(), from.to_vec());
-        let mine: Vec<(&Key, &Option<Vec<Val>>)> =
-            self.over.range(lo..).take_while(|((t, _), _)| t == table).map(|((_, k), v)| (k, v)).collect();
+        let mut visible = 0;
+        let mine: Vec<(&Key, &Option<Vec<Val>>)> = self
+            .over
+            .range(lo..)
+            .take_while(|((t, _), v)| {
+                let more = t == table && visible < limit;
+                visible += usize::from(more && v.is_some());
+                more
+            })
+            .map(|((_, k), v)| (k, v))
+            .collect();
         let deletes = mine.iter().filter(|(_, v)| v.is_none()).count();
         let mut merged: BTreeMap<Key, Vec<Val>> = self.base.scan(table, from, limit + deletes).into_iter().collect();
         for (k, v) in mine {
@@ -223,5 +234,49 @@ impl<R: Read + ?Sized> Rows for Overlay<'_, R> {
     }
     fn delete(&mut self, table: &str, key: &[Val]) {
         self.over.insert((table.to_owned(), key.to_vec()), None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An overlay's scan is the base with the overlay's writes merged in, from `from`, cut at `limit`, whatever mix of
+    /// puts and deletes either side holds.
+    #[test]
+    fn an_overlay_scan_is_the_merged_rows_cut_at_limit() {
+        let mut x: u64 = 7;
+        let mut next = move |n: u64| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x % n
+        };
+        for _ in 0..300 {
+            let mut base = MemStore::default();
+            for _ in 0..next(20) {
+                let k = next(40) as i64;
+                base.put("t", vec![Val::Int(k)], Stored { written: Index(1), cols: vec![Val::Int(k)] });
+            }
+            let mut o = Overlay::new(&base as &dyn Read);
+            let mut want: BTreeMap<Key, Vec<Val>> = Read::scan(&base, "t", &[], 100).into_iter().collect();
+            for _ in 0..next(30) {
+                let k = vec![Val::Int(next(40) as i64)];
+                if next(3) == 0 {
+                    o.delete("t", &k);
+                    want.remove(&k);
+                } else {
+                    let v = vec![Val::Int(-(next(9) as i64))];
+                    o.put("t", k.clone(), v.clone());
+                    want.insert(k, v);
+                }
+            }
+            let from = vec![Val::Int(next(45) as i64)];
+            let limit = 1 + next(10) as usize;
+            let got = o.scan("t", &from, limit);
+            let expect: Vec<(Key, Vec<Val>)> =
+                want.range(from.clone()..).take(limit).map(|(k, v)| (k.clone(), v.clone())).collect();
+            assert_eq!(got, expect, "from {from:?} limit {limit}");
+        }
     }
 }

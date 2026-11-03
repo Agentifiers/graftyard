@@ -387,9 +387,11 @@ impl RepoScratch<'_> {
         let mut dir = b.to_vec();
         dir.push(b'/');
         let mut from = vec![Val::Blob(dir.clone().into())];
+        // Few refs sit under a name, often none, so the scan reads a few rows at a time: one large read here costs
+        // every push in an entry a copy of the rows the entry wrote after it (BF-20).
         loop {
-            let batch = self.core.scan("ref", &from, 256);
-            let full = batch.len() == 256;
+            let batch = self.core.scan("ref", &from, 8);
+            let full = batch.len() == 8;
             for (k, _) in &batch {
                 let Some(Val::Blob(n)) = k.first() else { continue };
                 if !n.starts_with(&dir) {
