@@ -995,7 +995,7 @@ Each decision below was made by the run under that delegation (`FRAME.md`, "Oper
 
 **Beat.** The `cloudflared` ProxyCommand option alone, which leaves stock SSH clients without SSH until Enterprise. Buying Enterprise now, which the operator has deferred. The 2026-10-31 SSH entry's beaten relay VM is this design, now accepted by the operator as a dated exception, not as the product's SSH path.
 
-**Cost accepted.** A new failure domain outside Cloudflare: one VM in one Oracle availability domain, which Oracle may reclaim when idle (CPU p95, network, and, on A1 shapes, memory under 20% over 7 days [doc, https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm]), so the plain-SSH path has single-VM availability (R18). A forwarder restart cuts open sessions. It costs $0 under Always Free and is outside every cost total.
+**Cost accepted.** A new failure domain outside Cloudflare: one VM in one Oracle availability domain, which Oracle may reclaim when idle (CPU p95, network, and, on A1 shapes, memory under 20% over 7 days [doc, https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm]), so the plain-SSH path has single-VM availability (R18). A forwarder restart cuts open sessions. It costs $0 under Always Free and is outside every cost total. The upgrade to Pay As You Go, which keeps Always Free at $0 and by Oracle's notice ends reclamation, is blocked: the account has no payment method on file, so the operator must add a card before the trial ends on 2026-12-01. A $1 actual-spend budget alert on the whole tenancy is live. The public IP stays ephemeral, because Oracle's current docs do not list reserved public IPs as Always Free (`tests/m1/results/oci-ssh.md`, "Follow-ups, 2026-11-03") [measured].
 
 **Evidence.** The operator's quote above; `tests/m0/results/m0-wp7.md` for Spectrum's refusal on Pro and for the Tunnel hostname the VM forwards into; `tests/m1/results/oci-ssh.md`: 249 of 249 sessions in 25 minutes, p50 and p99 level with the `cloudflared` path in the same window, and a forwarder restart that cut the open sessions with about 0.32 s and no listener [measured].
 
@@ -1300,6 +1300,18 @@ The 24-hour linearizability run `lin24` ended, F43's two stalls were traced, and
 **Evidence.** `tests/m1/results/m1-f43.md`: the original logs, the `lag-old-*` and `lag-new-apac` reproductions, the soak, and `host::tests::an_answer_after_the_deadline_is_kept_and_the_miss_reported_first`, which fails on the old semantics [measured].
 
 **Flip.** A late answer slower than `LATE_LIMIT` in a run (the soak's slowest, 8.8 s, leaves little margin), which raises the limit; or a stepped late answer that a measured case shows to be wrong to apply.
+
+#### Porcupine's segmented check cuts each key on its own and keeps observed no-reply writes
+
+**Decision.** The segmented check (`tests/m0/porcupine -seg`) that B0-11, BM-1's `lin24`, and `lin24b` rest on partitions the history by key and cuts each key on its own, from that key's own named state. A no-reply write that a later `get` saw, or a successful `cas` expected, is kept, with its return set to that first observer's return. A no-reply write nobody saw is lent to a segment only when the segment fails without it, and at most once. Cut points stay isolated operations whose result names the state; a failed `cas` is never a cut.
+
+**Why.** The old mode had two bugs. It dropped every no-reply write, which M0 wrote "can only make the check stricter" (`tests/m0/results/m0-wp2.md`, B0-11, "The check"): true for Ok, false for Illegal, because a dropped write that a read saw makes a linearizable history look Illegal. That was the 2,000-seed simulator sweep's false Illegal. It also cut all keys of a file as one list, so a cut on one key set the start state of another key's segment, which can give a false Ok as well as a false Illegal. The gate runs fed one key per file and none had an observed no-reply write, so their verdicts stand: lin24's recorded-clock and 100 ms results and B0-11's at 0 ms and 100 ms are identical segment for segment on the fixed checker. lin24's 275 ms check was not rerun, because one key needed over 7 GB; its input takes the code path both versions share.
+
+**Beat.** Dropping no-reply writes, which is unsound for Illegal. Checking every history whole, which needs more memory than a 24-hour key allows.
+
+**Evidence.** `tests/m1/results/porcupine-seg.md`: 4 regression tests that fail on the old code, 3,000 random histories where segmented and whole checks agree on all 6,000 checks, 8,754 of 8,754 planted violations caught, and the reruns of lin24 and B0-11 [measured].
+
+**Flip.** The segmented and whole-history checks disagreeing on any history.
 
 #### `load` holds the log by bytes as well as entries (F45)
 
