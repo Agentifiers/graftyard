@@ -1,0 +1,20 @@
+{
+ "commands": [
+  "pr create -R o/r -H f -B main -t T -b B",
+  "pr create -R o/r -H f -B main -t T -b B --draft"
+ ],
+ "operation": "PullRequestCreate",
+ "query": "\n\t\tmutation PullRequestCreate($input: CreatePullRequestInput!) {\n\t\t\tcreatePullRequest(input: $input) {\n\t\t\t\tpullRequest {\n\t\t\t\t\tid\n\t\t\t\t\turl\n\t\t\t\t}\n\t\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "input": {
+   "baseRefName": "main",
+   "body": "B",
+   "draft": false,
+   "headRefName": "f",
+   "maintainerCanModify": true,
+   "repositoryId": "R_1",
+   "title": "T"
+  }
+ }
+}

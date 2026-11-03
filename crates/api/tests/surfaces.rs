@@ -1,0 +1,567 @@
+//! Every GraphQL document gh 2.102.1 sent for `gh pr list/view/create/checks/merge` and `gh issue
+//! list/view/create/comment` (`gh/*.json`), run on a repository chain's tiers, plus `GET /commits/{ref}/statuses`.
+//!
+//! Each reply is written to `$GRAFTYARD_REPLIES` when it is set, and `gh/validate.py` checks every one against the
+//! pinned GHES 3.22 SDL and OpenAPI description. The assertions here check behavior the schema cannot: which rows
+//! come back, and that a mutation's payload exists only from `&Acked`.
+
+mod common;
+
+use common::*;
+use graftyard_api::exec::Request;
+use graftyard_api::graphql::{Plan, Target, plan, query, refused, render, render_merge, route};
+use graftyard_api::rest::{Page, list_commit_statuses};
+use graftyard_api::view::Repo;
+use graftyard_api::wire::{Host, node_id, parse_node_id};
+use graftyard_fold::store::META;
+use graftyard_fold::{MemStore, fold_digest, meta};
+use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
+use graftyard_git::issues::{
+    AppId, CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget, IssueNumber,
+    LabelName, MergeMethod, Protection, RepoSettings, RequiredChecks, StatusId, StatusState, StatusUpdate, Url,
+    Visibility,
+};
+use graftyard_raft::{EntryBody, TierSet};
+use graftyard_types::{AccountId, DbId, Tier, Timestamp};
+use serde_json::{Map, Value, json};
+use smallvec::{SmallVec, smallvec};
+
+const GH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/gh");
+
+struct Doc {
+    name: String,
+    query: String,
+    variables: Option<Map<String, Value>>,
+}
+
+fn doc(file: &str) -> Doc {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(format!("{GH}/{file}.json")).unwrap()).unwrap();
+    Doc {
+        name: file.into(),
+        query: v["query"].as_str().unwrap().into(),
+        variables: v["variables"].as_object().cloned(),
+    }
+}
+
+fn every_doc() -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(GH)
+        .unwrap()
+        .filter_map(|e| e.ok()?.file_name().into_string().ok()?.strip_suffix(".json").map(str::to_owned))
+        .collect();
+    v.sort();
+    v
+}
+
+/// Writes a reply for `gh/validate.py`.
+fn keep(case: &str, d: &Doc, vars: &Option<Map<String, Value>>, reply: &Value) {
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let v = json!({ "query": d.query, "variables": vars, "reply": reply, "document": d.name });
+        std::fs::write(format!("{dir}/{case}.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    }
+}
+
+fn keep_rest(case: &str, path: &str, status: u16, body: &Value) {
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let v = json!({ "method": "GET", "path": path, "status": status, "body": body });
+        std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    }
+}
+
+fn settings() -> RepoSettings {
+    RepoSettings {
+        owner: AccountId(DbId(OWNER)),
+        enterprise: None,
+        visibility: Visibility::Private,
+        default_branch: name("refs/heads/main"),
+        archived: false,
+        description: Some("a repository".into()),
+        homepage: None,
+        topics: SmallVec::new(),
+        has_issues: true,
+        has_wiki: false,
+        has_projects: false,
+        merge_methods: smallvec![MergeMethod::Merge, MergeMethod::Squash],
+        delete_branch_on_merge: false,
+        allow_auto_merge: false,
+        allow_update_branch: false,
+        check_retention_days: 90,
+    }
+}
+
+fn protect(checks: &[&str]) -> IssueOp {
+    IssueOp::SetRule {
+        id: None,
+        pattern: "main".into(),
+        protection: Some(Protection {
+            checks: Some(RequiredChecks {
+                strict: false,
+                checks: checks.iter().map(|c| (Box::from(*c), None)).collect(),
+            }),
+            reviews: None,
+            push: None,
+            enforce_admins: false,
+            linear_history: false,
+            force_pushes: false,
+            deletions: false,
+            block_creations: false,
+            conversation_resolution: true,
+            lock_branch: false,
+            signatures: false,
+            merge_queue: None,
+        }),
+    }
+}
+
+fn run(id: i64, sha: u8, check: &str, conclusion: Option<CheckConclusion>) -> IssueOp {
+    IssueOp::RecordCheck(CheckRunUpdate {
+        run: CheckRunId(DbId(id)),
+        suite: CheckSuiteId(DbId(1)),
+        app: AppId(DbId(5)),
+        head_sha: oid(sha),
+        name: check.into(),
+        version: 1,
+        status: if conclusion.is_some() { CheckStatus::Completed } else { CheckStatus::InProgress },
+        conclusion,
+        started: Some(Timestamp(1_700_000_000_000)),
+        completed: conclusion.map(|_| Timestamp(1_700_000_060_000)),
+        external_id: None,
+        details_url: Some(Url(format!("https://ci.example/run/{id}").into())),
+        output: None,
+    })
+}
+
+fn status(id: i64, sha: u8, context: &str, state: StatusState) -> IssueOp {
+    IssueOp::RecordStatus(StatusUpdate {
+        id: StatusId(DbId(id)),
+        sha: oid(sha),
+        context: context.into(),
+        state,
+        target_url: Some(Url("https://jenkins.example/1".into())),
+        description: Some("build".into()),
+        creator: AccountId(DbId(WRITER)),
+    })
+}
+
+/// A repository with issue #1 (labelled `bug`, one comment), pull request #2 from `f` with a required `ci` run, a
+/// non-required `lint` run, and a `jenkins` status, and a closed issue #3.
+fn seeded() -> Chain {
+    seeded_on(1)
+}
+
+/// `seeded` applied by `members` members.
+fn seeded_on(members: usize) -> Chain {
+    let mut c = Chain::new(members);
+    c.push("refs/heads/main", oid(1));
+    c.push("refs/heads/f", oid(2));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    c.commit(OWNER, protect(&["ci"])).unwrap();
+    let bug = match c
+        .commit(
+            WRITER,
+            IssueOp::DefineLabel {
+                id: None,
+                name: LabelName("bug".into()),
+                color: [0xd7, 0x3a, 0x4a],
+                description: None,
+            },
+        )
+        .unwrap()
+    {
+        IssueOut::Id(id) => graftyard_git::issues::LabelId(id),
+        o => panic!("{o:?}"),
+    };
+    c.commit(
+        READER,
+        IssueOp::OpenIssue {
+            title: "it breaks".into(),
+            body: "steps".into(),
+            labels: smallvec![bug],
+            assignees: smallvec![AccountId(DbId(WRITER))],
+        },
+    )
+    .unwrap();
+    c.commit(
+        READER,
+        IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "me too".into(), reply_to: None },
+    )
+    .unwrap();
+    c.commit(
+        WRITER,
+        IssueOp::OpenPr {
+            head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name("refs/heads/f") },
+            base: name("refs/heads/main"),
+            title: "fix it".into(),
+            body: "fixes #1".into(),
+            draft: false,
+            head_sha: oid(2),
+            base_sha: oid(1),
+        },
+    )
+    .unwrap();
+    c.commit(WRITER, run(10, 2, "ci", Some(CheckConclusion::Success))).unwrap();
+    c.commit(WRITER, run(11, 2, "lint", Some(CheckConclusion::Failure))).unwrap();
+    c.commit(WRITER, status(12, 2, "jenkins", StatusState::Pending)).unwrap();
+    c.commit(WRITER, status(13, 2, "jenkins", StatusState::Success)).unwrap();
+    c.commit(
+        READER,
+        IssueOp::OpenIssue {
+            title: "old".into(),
+            body: "".into(),
+            labels: SmallVec::new(),
+            assignees: SmallVec::new(),
+        },
+    )
+    .unwrap();
+    c.commit(OWNER, IssueOp::Close { n: IssueNumber(3) }).unwrap();
+    c
+}
+
+fn host() -> Host {
+    Host("ghes.example.com".into())
+}
+
+/// Replaces the capture fixture's node ids (`I_1`, `PR_1`, `R_1`) in `vars` with this repository's, as gh carries
+/// the id from its previous reply into the next request, and points a pull request document at #2.
+fn with_ids(d: &Doc, r: &Repo<'_>) -> Option<Map<String, Value>> {
+    let mut vars = d.variables.clone();
+    if let Some(v) = vars.as_mut() {
+        if v.contains_key("pr_number") {
+            v.insert("pr_number".into(), json!(2));
+        }
+        if d.name.starts_with("PullRequestProjectItems") {
+            v.insert("number".into(), json!(2));
+        }
+    }
+    let issue = r.item(IssueNumber(1)).unwrap().row.id.0;
+    let pr = r.item(IssueNumber(2)).unwrap().row.id.0;
+    let ids = [
+        ("I_1", node_id("I", &[REPO.0.0, issue])),
+        ("PR_1", node_id("PR", &[REPO.0.0, pr])),
+        ("R_1", node_id("R", &[REPO.0.0])),
+    ];
+    let s = serde_json::to_string(&vars).unwrap();
+    let s = ids.iter().fold(s, |s, (from, to)| s.replace(&format!("\"{from}\""), &format!("\"{to}\"")));
+    serde_json::from_str(&s).unwrap()
+}
+
+fn ask(r: &Repo<'_>, d: &Doc, vars: Option<Map<String, Value>>) -> Value {
+    let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+    match route(&req).unwrap() {
+        None => query(&req, None),
+        Some(t) => {
+            match &t {
+                Target::Name { owner, name } => assert_eq!((owner.as_str(), name.as_str()), ("o", "r")),
+                Target::Id(id) => assert_eq!(*id, REPO.0.0),
+            }
+            query(&req, Some(r))
+        }
+    }
+}
+
+#[test]
+fn every_captured_query_answers_without_errors() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let mut ran = 0;
+    for f in every_doc() {
+        let d = doc(&f);
+        if d.query.trim_start().starts_with("mutation") {
+            continue;
+        }
+        let vars = with_ids(&d, &r);
+        let reply = ask(&r, &d, vars.clone());
+        assert!(reply.get("errors").is_none(), "{f}: {reply}");
+        keep(&f, &d, &vars, &reply);
+        ran += 1;
+    }
+    assert_eq!(ran, 25, "25 of the 29 captured documents are queries");
+}
+
+#[test]
+fn lists_hold_exactly_the_rows_the_fold_holds() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let issues = ask(&r, &doc("IssueList-1"), doc("IssueList-1").variables);
+    let nodes = &issues["data"]["repository"]["issues"]["nodes"];
+    assert_eq!(nodes.as_array().unwrap().len(), 1, "only #1 is an open issue: {issues}");
+    assert_eq!((nodes[0]["number"].clone(), nodes[0]["labels"]["nodes"][0]["name"].clone()), (json!(1), json!("bug")));
+    assert_eq!(issues["data"]["repository"]["issues"]["totalCount"], 1);
+    let mut closed = doc("IssueList-1").variables.unwrap();
+    closed.insert("states".into(), json!(["CLOSED"]));
+    let issues = ask(&r, &doc("IssueList-1"), Some(closed));
+    assert_eq!(issues["data"]["repository"]["issues"]["nodes"][0]["number"], 3);
+    // `--author` and `--assignee` filter by login.
+    let mut by = doc("IssueList-1").variables.unwrap();
+    by.insert("author".into(), json!("alice"));
+    let none = ask(&r, &doc("IssueList-1"), Some(by.clone()));
+    assert_eq!(none["data"]["repository"]["issues"]["totalCount"], 0, "alice opened no issue");
+    by.remove("author");
+    by.insert("assignee".into(), json!("alice"));
+    assert_eq!(ask(&r, &doc("IssueList-1"), Some(by))["data"]["repository"]["issues"]["totalCount"], 1);
+    let prs = ask(&r, &doc("PullRequestList-1"), doc("PullRequestList-1").variables);
+    let nodes = &prs["data"]["repository"]["pullRequests"]["nodes"];
+    assert_eq!(nodes.as_array().unwrap().len(), 1);
+    assert_eq!((nodes[0]["number"].clone(), nodes[0]["headRefName"].clone()), (json!(2), json!("f")));
+    let search = ask(&r, &doc("IssueSearch-1"), doc("IssueSearch-1").variables);
+    let s = &search["data"]["search"];
+    assert_eq!((s["issueCount"].clone(), s["nodes"][0]["number"].clone()), (json!(1), json!(1)));
+}
+
+#[test]
+fn pr_view_and_issue_view_read_both_tiers() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let v = ask(&r, &doc("PullRequestByNumber-1"), with_ids(&doc("PullRequestByNumber-1"), &r));
+    let p = &v["data"]["repository"]["pullRequest"];
+    assert_eq!(p["number"], 2, "{v}");
+    assert_eq!(p["title"], "fix it");
+    assert_eq!(p["state"], "OPEN");
+    assert_eq!(p["author"]["login"], "alice");
+    assert_eq!(p["baseRefName"], "main");
+    let ctx = &p["statusCheckRollup"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"];
+    let names: Vec<&str> =
+        ctx.as_array().unwrap().iter().map(|n| n["name"].as_str().or(n["context"].as_str()).unwrap()).collect();
+    assert_eq!(names, ["ci", "lint", "jenkins"], "one row per run and the latest status per context");
+    assert_eq!(ctx[2]["state"], "SUCCESS", "the newer jenkins status wins");
+    let i = ask(&r, &doc("IssueByNumber-2"), doc("IssueByNumber-2").variables);
+    let i = &i["data"]["repository"]["issue"];
+    assert_eq!((i["__typename"].clone(), i["title"].clone()), (json!("Issue"), json!("it breaks")));
+    assert_eq!(i["comments"]["nodes"][0]["body"], "me too");
+    assert_eq!(i["comments"]["nodes"][0]["author"]["login"], "bob");
+    assert_eq!(i["assignees"]["nodes"][0]["login"], "alice");
+    let mut missing = doc("IssueByNumber-2").variables.unwrap();
+    missing.insert("number".into(), json!(99));
+    let gone = ask(&r, &doc("IssueByNumber-2"), Some(missing));
+    assert_eq!(gone["errors"][0]["type"], "NOT_FOUND", "{gone}");
+}
+
+#[test]
+fn pr_checks_marks_only_the_rule_s_checks_required() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let d = doc("PullRequestStatusChecks-1");
+    let v = ask(&r, &d, with_ids(&d, &r));
+    let nodes = v["data"]["node"]["statusCheckRollup"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let req: Vec<(String, bool)> = nodes
+        .iter()
+        .map(|n| (n["name"].as_str().or(n["context"].as_str()).unwrap().into(), n["isRequired"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(req, [("ci".into(), true), ("lint".into(), false), ("jenkins".into(), false)]);
+}
+
+#[test]
+fn mutations_commit_then_render_from_acked() {
+    let mut c = seeded();
+    c.push("refs/heads/g", oid(4));
+    let (h, dir) = (host(), Dir::new(WRITER));
+    for (f, check) in
+        [("IssueCreate-1", "issue"), ("PullRequestCreate-1", "pullRequest"), ("CommentCreate-1", "comment")]
+    {
+        let d = doc(f);
+        let (planned, vars) = {
+            let r = c.repo(0, &h, &dir);
+            let mut vars = with_ids(&d, &r);
+            if f == "PullRequestCreate-1" {
+                // gh opens from `g`, since `f` already has an open pull request.
+                vars.as_mut().unwrap()["input"]["headRefName"] = json!("g");
+            }
+            let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+            assert_eq!(route(&req).unwrap(), Some(Target::Id(REPO.0.0)));
+            (plan(&req, &r).unwrap(), vars)
+        };
+        let Plan::Issue(op) = planned.plan.clone() else { panic!() };
+        let out = c.commit(WRITER, *op).unwrap();
+        let acked = ack(out);
+        let r = c.repo(0, &h, &dir);
+        let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+        let reply = render(&req, &planned, &acked, &r);
+        assert!(reply.get("errors").is_none(), "{f}: {reply}");
+        keep(f, &d, &vars, &reply);
+        let url = match check {
+            "issue" => reply["data"]["createIssue"]["issue"]["url"].clone(),
+            "pullRequest" => reply["data"]["createPullRequest"]["pullRequest"]["url"].clone(),
+            _ => reply["data"]["addComment"]["commentEdge"]["node"]["url"].clone(),
+        };
+        let want = match check {
+            "issue" => "https://ghes.example.com/o/r/issues/4".to_string(),
+            "pullRequest" => "https://ghes.example.com/o/r/pull/5".to_string(),
+            _ => {
+                let id = r.comments_of(IssueNumber(1)).last().unwrap().0.0.0;
+                format!("https://ghes.example.com/o/r/issues/1#issuecomment-{id}")
+            }
+        };
+        assert_eq!(url, json!(want), "{f}");
+    }
+    // A refused command renders GitHub's error and never a payload.
+    let d = doc("PullRequestCreate-1");
+    let r = c.repo(0, &h, &dir);
+    let req = Request::parse(&d.query, with_ids(&d, &r), None).unwrap();
+    let p = plan(&req, &r).unwrap();
+    drop(r);
+    let Plan::Issue(op) = p.plan.clone() else { panic!() };
+    let err = c.commit(WRITER, *op).unwrap_err();
+    assert_eq!(err, IssueErr::Exists);
+    assert_eq!(refused(&p, &err)["errors"][0]["type"], "UNPROCESSABLE");
+}
+
+#[test]
+fn merge_plans_the_merge_command_and_renders_its_payload() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let d = doc("PullRequestMerge-1");
+    let vars = with_ids(&d, &r);
+    let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+    let p = plan(&req, &r).unwrap();
+    assert_eq!(p.plan, Plan::Merge { n: IssueNumber(2), method: MergeMethod::Merge, expected_head: None });
+    let reply = render_merge(&req, &ack(()));
+    assert_eq!(reply, json!({ "data": { "mergePullRequest": { "clientMutationId": null } } }));
+    keep("PullRequestMerge-1", &d, &vars, &reply);
+    // A method the repository does not allow is refused before any commit.
+    let mut rebase = vars.unwrap();
+    rebase["input"]["mergeMethod"] = json!("REBASE");
+    let req = Request::parse(&d.query, Some(rebase), None).unwrap();
+    assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
+}
+
+#[test]
+fn an_unserved_field_is_undefined_field_not_null() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let q = "query { repository(owner: \"o\", name: \"r\") { pullRequest(number: 2) { number viewerCanUpdate } } }";
+    let reply = query(&Request::parse(q, None, None).unwrap(), Some(&r));
+    assert_eq!(reply["errors"][0]["type"], "undefinedField");
+    assert!(reply.get("data").is_none());
+}
+
+#[test]
+fn node_ids_round_trip_with_the_repository_id_first() {
+    let id = node_id("PR", &[7, 1 << 40]);
+    assert_eq!(parse_node_id(&id), Some(("PR", vec![7, 1 << 40])));
+    // GitHub's own example from `research/wire-census.md` #27.
+    assert_eq!(parse_node_id("U_kgDOADP9xw"), Some(("U", vec![3_407_303])));
+    assert_eq!(node_id("U", &[3_407_303]), "U_kgDOADP9xw");
+}
+
+#[test]
+fn commit_statuses_list_newest_first_and_page() {
+    let mut c = seeded();
+    for i in 0..5 {
+        c.commit(WRITER, status(20 + i, 2, &format!("s{i}"), StatusState::Success)).unwrap();
+    }
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let page = list_commit_statuses(&r, &oid(2).hex(), Page::parse("per_page=3"));
+    assert_eq!(page.status, 200);
+    let ids: Vec<i64> = page.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [24, 23, 22]);
+    assert!(page.link.as_deref().unwrap().contains("page=2"));
+    keep_rest("statuses-page1", "/repos/{owner}/{repo}/commits/{ref}/statuses", 200, &page.body);
+    let rest = list_commit_statuses(&r, "f", Page::parse("per_page=3&page=3"));
+    let ids: Vec<i64> = rest.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [12], "by branch name: seven statuses, so page 3 holds the oldest");
+    assert_eq!(rest.link, None);
+    assert_eq!(list_commit_statuses(&r, "nope", Page::parse("")).status, 404);
+}
+
+#[test]
+fn timestamps_render_as_github_does() {
+    assert_eq!(graftyard_api::wire::iso(Timestamp(0)), "1970-01-01T00:00:00Z");
+    assert_eq!(graftyard_api::wire::iso(Timestamp(1_793_000_000_000)), "2026-10-26T07:33:20Z");
+    assert_eq!(graftyard_api::wire::iso(Timestamp(951_782_400_000)), "2000-02-29T00:00:00Z");
+}
+
+/// Every core row, without the tier's own bookkeeping row (`applied` moves with every entry).
+fn core_rows(m: &MemStore) -> MemStore {
+    let mut rows = m.clone();
+    rows.0.remove(META);
+    rows
+}
+
+/// Every context `gh pr checks` reads, paging its own document with `endCursor` as gh does. A commit with no checks
+/// has a null rollup, as on GitHub.
+fn pr_checks_contexts(r: &Repo<'_>) -> Vec<Value> {
+    let d = doc("PullRequestStatusChecks-1");
+    let mut vars = with_ids(&d, r).unwrap();
+    let mut out = Vec::new();
+    loop {
+        let v = ask(r, &d, Some(vars.clone()));
+        let rollup = &v["data"]["node"]["statusCheckRollup"]["nodes"][0]["commit"]["statusCheckRollup"];
+        if rollup.is_null() && v.get("errors").is_none() {
+            return out;
+        }
+        let page = &rollup["contexts"];
+        out.extend(page["nodes"].as_array().unwrap_or_else(|| panic!("{v}")).iter().cloned());
+        if page["pageInfo"]["hasNextPage"] != true {
+            return out;
+        }
+        vars.insert("endCursor".into(), page["pageInfo"]["endCursor"].clone());
+    }
+}
+
+/// BF-22's pure half: 10,000 non-required check runs and statuses on the head of an open pull request, read back by
+/// `gh pr checks` and `GET /commits/{sha}/statuses`, then pruned once entry time passes `check_retention_days`.
+#[test]
+fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
+    const EACH: i64 = 5_000;
+    let mut c = seeded_on(2);
+    let core_before = core_rows(&c.members[0].core);
+    let core_sum = meta(&c.members[0].core).sum;
+    let ops: Vec<IssueOp> = (0..EACH)
+        .map(|i| run(1_000 + i, 2, &format!("lint-{i}"), Some(CheckConclusion::Success)))
+        .chain((0..EACH).map(|i| status(100_000 + i, 2, &format!("ctx-{i}"), StatusState::Success)))
+        .collect();
+    for chunk in ops.chunks(100) {
+        for out in c.commit_all(chunk.iter().map(|op| (WRITER, op.clone())).collect()) {
+            out.unwrap();
+        }
+    }
+    assert_eq!(c.members[0], c.members[1]);
+    assert_eq!(core_rows(&c.members[0].core), core_before, "a non-required check wrote a core row");
+    assert_eq!(meta(&c.members[0].core).sum, core_sum);
+
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(1, &h, &dir);
+    let mut ids = Vec::new();
+    for page in 1.. {
+        let p = list_commit_statuses(&r, &oid(2).hex(), Page::parse(&format!("per_page=100&page={page}")));
+        assert_eq!(p.status, 200);
+        ids.extend(p.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()));
+        if p.link.is_none() {
+            break;
+        }
+    }
+    let want: Vec<i64> = (100_000..100_000 + EACH).rev().chain([13, 12]).collect();
+    assert_eq!(ids, want, "every status, newest first");
+    let ctx = pr_checks_contexts(&r);
+    let runs = ctx.iter().filter(|n| n["__typename"] == "CheckRun").count();
+    let statuses = ctx.iter().filter(|n| n["__typename"] == "StatusContext").count();
+    assert_eq!((runs, statuses), (EACH as usize + 2, EACH as usize + 1), "ci, lint, and jenkins plus the new rows");
+    let required: Vec<&str> =
+        ctx.iter().filter(|n| n["isRequired"] == true).map(|n| n["name"].as_str().unwrap()).collect();
+    assert_eq!(required, ["ci"]);
+
+    c.now = Timestamp(c.now.0 + 91 * DAY);
+    c.entry(EntryBody::Noop, TierSet::NONE);
+    let r = c.repo(1, &h, &dir);
+    assert!(r.check_runs(&oid(2)).is_empty() && r.check_suites(&oid(2)).is_empty());
+    assert_eq!(list_commit_statuses(&r, &oid(2).hex(), Page::parse("")).body, json!([]));
+    assert!(pr_checks_contexts(&r).is_empty());
+    for t in ["check_run", "check_suite", "status", "check_expiry"] {
+        assert!(c.members.iter().all(|m| m.meta.0.get(t).is_none_or(|rows| rows.is_empty())), "{t} not pruned");
+    }
+    assert_eq!(core_rows(&c.members[0].core), core_before, "pruning touched the core tier");
+    assert_eq!(meta(&c.members[0].core).sum, core_sum);
+    for tier in [Tier::Core, Tier::Metadata] {
+        let store = |i: usize| if tier == Tier::Core { &c.members[i].core } else { &c.members[i].meta };
+        assert_eq!(fold_digest(store(0), tier), fold_digest(store(1), tier), "{tier:?}");
+    }
+}

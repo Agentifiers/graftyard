@@ -1,0 +1,9 @@
+{
+ "commands": [
+  "pr checks 1 -R o/r"
+ ],
+ "operation": "PullRequest_fields2",
+ "query": "query PullRequest_fields2{WorkflowRun: __type(name: \"WorkflowRun\"){fields(includeDeprecated: true){name}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": null
+}

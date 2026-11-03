@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "pr view 1 -R o/r --json number,title,state,body,mergeable,statusCheckRollup,reviewDecision,headRefOid"
+ ],
+ "operation": "PullRequestByNumber",
+ "query": "\n\tquery PullRequestByNumber($owner: String!, $repo: String!, $pr_number: Int!) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequest(number: $pr_number) {number,title,state,body,mergeable,statusCheckRollup: commits(last: 1) {nodes {commit {statusCheckRollup {contexts(first:100) {nodes {__typename...on StatusContext {context,state,targetUrl,createdAt,description},...on CheckRun {name,checkSuite{workflowRun{workflow{name}}},status,conclusion,startedAt,completedAt,detailsUrl}},pageInfo{hasNextPage,endCursor}}}}}},reviewDecision,headRefOid,id}\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "owner": "o",
+  "pr_number": 1,
+  "repo": "r"
+ }
+}

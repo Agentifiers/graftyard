@@ -1,0 +1,2 @@
+DELETE /api/v3/repos/{owner}/{repo}/git/refs/heads%2Ff	pr merge 1 -R o/r --rebase --delete-branch
+GET /api/v3/meta	pr list -R o/r --label bug

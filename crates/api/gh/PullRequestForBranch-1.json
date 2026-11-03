@@ -1,0 +1,17 @@
+{
+ "commands": [
+  "pr create -R o/r -H f -B main -t T -b B",
+  "pr create -R o/r -H f -B main -t T -b B --draft"
+ ],
+ "operation": "PullRequestForBranch",
+ "query": "\n\tquery PullRequestForBranch($owner: String!, $repo: String!, $headRefName: String!, $states: [PullRequestState!]) {\n\t\trepository(owner: $owner, name: $repo) {\n\t\t\tpullRequests(headRefName: $headRefName, states: $states, first: 30, orderBy: { field: CREATED_AT, direction: DESC }) {\n\t\t\t\tnodes {url,id,number,state,baseRefName,headRefName,isCrossRepository,headRepositoryOwner{id,login,...on User{name}}}\n\t\t\t}\n\t\t\tdefaultBranchRef { name }\n\t\t}\n\t}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "headRefName": "f",
+  "owner": "o",
+  "repo": "r",
+  "states": [
+   "OPEN"
+  ]
+ }
+}

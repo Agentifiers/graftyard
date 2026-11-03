@@ -325,13 +325,20 @@ fn tier_of_routes_each_event_to_the_tiers_shared_names() {
     c.push("refs/heads/f", oid(2));
     let n = open_pr(&mut c, "refs/heads/f", oid(2));
     let tags: Vec<TierSet> = c.log.iter().skip(1).map(|e| e.tiers).collect();
-    // push, settings, rule, push, PrOpened
-    assert_eq!(tags, vec![TierSet::CORE, both, both, TierSet::CORE, both]);
-    let comment = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Deleted {
+    // push, settings, rule (Core alone: it takes its id from Core's cursor), push, PrOpened
+    assert_eq!(tags, vec![TierSet::CORE, both, TierSet::CORE, TierSet::CORE, both]);
+    let comment = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Edited {
         id: graftyard_git::issues::CommentId(DbId(1)),
+        body: "b".into(),
         actor: None,
     });
     assert_eq!(tier_of(&comment), TierSet::METADATA);
+    let resolved = RepoEvent::Comment(graftyard_git::issues::CommentEvent::Resolved {
+        thread: graftyard_git::issues::CommentId(DbId(1)),
+        resolved: true,
+        actor: None,
+    });
+    assert_eq!(tier_of(&resolved), both, "a resolution changes the core unresolved count");
     let req = RepoEvent::RequiredCheck {
         sha: oid(2),
         name: "ci".into(),
@@ -606,4 +613,180 @@ fn a_command_that_touches_no_tier_it_tags_is_impossible() {
         c.commit_all(&[cmd]);
     }
     let _ = RepoTiers::schema(Tier::Core);
+}
+
+fn review_comment(c: &mut Chain, n: IssueNumber, reply_to: Option<graftyard_git::issues::CommentId>) -> DbId {
+    let at = graftyard_git::issues::LineAnchor {
+        commit: oid(2),
+        path: "a.rs".into(),
+        line: 1,
+        start_line: None,
+        side: graftyard_git::issues::DiffSide::Right,
+    };
+    let on = CommentTarget::Review { n, review: None, at };
+    match c.commit(READER, IssueOp::Comment { on, body: "nit".into(), reply_to }).unwrap() {
+        IssueOut::Id(id) => id,
+        o => panic!("{o:?}"),
+    }
+}
+
+fn resolve(c: &mut Chain, thread: DbId, resolved: bool) {
+    let thread = graftyard_git::issues::CommentId(thread);
+    c.commit(WRITER, IssueOp::Resolve { thread, resolved }).unwrap();
+}
+
+fn unresolved(c: &Chain, n: IssueNumber) -> u32 {
+    graftyard_git::tiers::unresolved_threads(&c.members[0].core, n)
+}
+
+#[test]
+fn the_core_tier_counts_unresolved_review_threads_per_pull_request() {
+    let mut c = setup(3, 90);
+    c.push("refs/heads/f", oid(2));
+    c.push("refs/heads/g", oid(3));
+    let n = open_pr(&mut c, "refs/heads/f", oid(2));
+    let other = open_pr(&mut c, "refs/heads/g", oid(3));
+    let a = review_comment(&mut c, n, None);
+    let b = review_comment(&mut c, n, None);
+    let _reply = review_comment(&mut c, n, Some(graftyard_git::issues::CommentId(a)));
+    let o = review_comment(&mut c, other, None);
+    c.commit(READER, IssueOp::Comment { on: CommentTarget::Issue(n), body: "plain".into(), reply_to: None }).unwrap();
+    assert_eq!((unresolved(&c, n), unresolved(&c, other)), (2, 1), "a reply and an issue comment start no thread");
+    resolve(&mut c, a, true);
+    assert_eq!(unresolved(&c, n), 1);
+    resolve(&mut c, a, true);
+    assert_eq!(unresolved(&c, n), 1, "resolving twice counts once");
+    resolve(&mut c, a, false);
+    assert_eq!(unresolved(&c, n), 2, "unresolving counts again");
+    resolve(&mut c, a, false);
+    assert_eq!(unresolved(&c, n), 2);
+    // Deleting a resolved thread leaves the count; deleting an unresolved one lowers it.
+    resolve(&mut c, b, true);
+    assert_eq!(unresolved(&c, n), 1);
+    c.commit(READER, IssueOp::DeleteComment { id: graftyard_git::issues::CommentId(b) }).unwrap();
+    assert_eq!(unresolved(&c, n), 1, "a resolved thread was already uncounted");
+    c.commit(READER, IssueOp::DeleteComment { id: graftyard_git::issues::CommentId(a) }).unwrap();
+    assert_eq!(unresolved(&c, n), 0);
+    assert_eq!(c.rows(Tier::Core, "unresolved"), 1, "no row for a zero count; `other` keeps one");
+    // A thread on a closed pull request still counts, and resolving it there is kept for a reopen.
+    c.commit(WRITER, IssueOp::Close { n: other }).unwrap();
+    assert_eq!(unresolved(&c, other), 1);
+    resolve(&mut c, o, true);
+    assert_eq!(unresolved(&c, other), 0);
+    c.commit(WRITER, IssueOp::Change { n: other, change: IssueChange::State { open: true, reason: None } }).unwrap();
+    assert_eq!(unresolved(&c, other), 0);
+    let t = review_comment(&mut c, other, None);
+    assert_eq!(unresolved(&c, other), 1);
+    // Each change is in the core tier's digest on every member, and a late member gets the same counts.
+    c.agree();
+    let mut late = Member::default();
+    for e in &c.log {
+        late.apply(e);
+    }
+    assert_eq!(fold_digest(&late.core, Tier::Core), fold_digest(&c.members[0].core, Tier::Core));
+    assert_eq!(graftyard_git::tiers::unresolved_threads(&late.core, other), 1);
+    // The resolution entry is tagged with both tiers; a plain comment's only Metadata.
+    resolve(&mut c, t, true);
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::CORE.union(TierSet::METADATA));
+    c.commit(READER, IssueOp::Comment { on: CommentTarget::Issue(n), body: "x".into(), reply_to: None }).unwrap();
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
+}
+
+/// After a simulated `MetaSplit`, the parent keeps only Core and the child only Metadata
+/// (`design/DESIGN.md`, Shape, `CHILD_GROUP_AT`). Each assigns ids from its own cursor and reads nothing of the other.
+#[test]
+fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
+    use std::collections::BTreeSet;
+    let mut c = setup(1, 90);
+    c.push("refs/heads/f", oid(2));
+    let n = open_pr(&mut c, "refs/heads/f", oid(2));
+    let split = c.members[0].clone();
+    let at = c.log.len();
+    let mut ids = BTreeSet::new();
+    let mut take = |out: Result<IssueOut, IssueErr>| match out.unwrap() {
+        IssueOut::Id(id) => assert!(ids.insert(id), "id {id:?} assigned twice"),
+        IssueOut::Number(_) | IssueOut::Done => {}
+    };
+    // The parent: core-tier commands decided on a view whose metadata tier is empty and never written, as a parent
+    // after `MetaDropped` holds none.
+    let empty = MemStore::default();
+    let mut parent = split.core.clone();
+    let mut core_ids = Vec::new();
+    for i in 0..40u8 {
+        let op = if i % 2 == 0 {
+            protect(&format!("rel{i}"), &["ci"])
+        } else {
+            IssueOp::Review { n, state: ReviewState::Commented, commit: oid(2), body: "".into() }
+        };
+        let cmd = IssueCmd { op, actor: who(OWNER), request: RequestId(Ulid(u128::from(i))) };
+        let view = RepoView::new(tiers(), &parent, &empty, c.now);
+        let needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+        let d: Vec<_> = needed.iter().map(|k| c.deps.iter().find(|(x, _)| x == k).unwrap().clone()).collect();
+        let (evs, out) = cmd.decide(&view, &d).unwrap();
+        drop(view);
+        if let IssueOut::Id(id) = out {
+            core_ids.push(id);
+        }
+        take(Ok(out));
+        let idx = at + core_ids.len();
+        // A both-tier entry commits whole on the parent, which applies only its core rows.
+        let tag = evs.iter().fold(TierSet::NONE, |t, e| t.union(tier_of(e)));
+        let e = LogEntry {
+            term: Term(2),
+            index: Index(idx as u64),
+            prev: graftyard_fold::meta(&parent).last,
+            format: Format { family: 0x20, version: 3 },
+            tiers: tag,
+            at: c.now,
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(evs.into_vec()),
+        };
+        apply(&tiers(), &mut parent, Tier::Core, &e).unwrap();
+    }
+    // The child: metadata-only commands on a view whose core tier is the split point's, frozen.
+    let mut child = split.meta.clone();
+    let mut meta_ids = Vec::new();
+    for i in 0..40u8 {
+        let op = if i % 2 == 0 {
+            IssueOp::Comment { on: CommentTarget::Issue(n), body: "c".into(), reply_to: None }
+        } else {
+            IssueOp::DefineLabel {
+                id: None,
+                name: graftyard_git::issues::LabelName(format!("l{i}").into()),
+                color: [0; 3],
+                description: None,
+            }
+        };
+        let cmd = IssueCmd { op, actor: who(OWNER), request: RequestId(Ulid(100 + u128::from(i))) };
+        assert_eq!(cmd.tiers(), TierSet::METADATA);
+        let view = RepoView::new(tiers(), &split.core, &child, c.now);
+        let needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+        let d: Vec<_> = needed.iter().map(|k| c.deps.iter().find(|(x, _)| x == k).unwrap().clone()).collect();
+        let (evs, out) = cmd.decide(&view, &d).unwrap();
+        drop(view);
+        if let IssueOut::Id(id) = out {
+            meta_ids.push(id);
+        }
+        take(Ok(out));
+        let e = LogEntry {
+            term: Term(2),
+            index: Index((at + meta_ids.len()) as u64),
+            prev: graftyard_fold::meta(&child).last,
+            format: Format { family: 0x20, version: 3 },
+            tiers: TierSet::METADATA,
+            at: c.now,
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(evs.into_vec()),
+        };
+        apply(&tiers(), &mut child, Tier::Metadata, &e).unwrap();
+    }
+    assert_eq!((core_ids.len(), meta_ids.len()), (40, 40));
+    assert!(core_ids.windows(2).all(|w| w[0] < w[1]) && meta_ids.windows(2).all(|w| w[0] < w[1]));
+    // Both halves come from the one block the group leased.
+    let block = IdBlock::whole(0, 1).unwrap();
+    for id in core_ids.iter().chain(&meta_ids) {
+        assert!(block.index_of(*id).is_some(), "{id:?} is outside the leased block");
+    }
 }

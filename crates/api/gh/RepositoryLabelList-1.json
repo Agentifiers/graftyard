@@ -1,0 +1,13 @@
+{
+ "commands": [
+  "issue create -R o/r -t T -b B -l bug"
+ ],
+ "operation": "RepositoryLabelList",
+ "query": "query RepositoryLabelList($endCursor:String$name:String!$owner:String!){repository(owner: $owner, name: $name){labels(first: 100, orderBy: {field: NAME, direction: ASC}, after: $endCursor){nodes{id,name},pageInfo{hasNextPage,endCursor}}}}",
+ "user_agent": "GitHub CLI v2.102.1",
+ "variables": {
+  "endCursor": null,
+  "name": "r",
+  "owner": "o"
+ }
+}
