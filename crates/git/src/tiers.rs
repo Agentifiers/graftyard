@@ -5,8 +5,10 @@
 //! counter), `pull_head` and its two indexes `pull_by_head` and `open_head`, `review_verdict` and its index
 //! `verdict_by_review`, `required_check`, and the count of unresolved review threads per pull request (`unresolved`,
 //! with `review_thread` mapping each thread to its pull request), which a rule requiring conversation resolution
-//! reads. Metadata holds `issue`, `issue_label`, `issue_assignee`, `label`, `pull`,
-//! `review`, `review_request`, `comment`, `check_run`, `check_suite`, `status`, `check_expiry` (the pruning index),
+//! reads. Metadata holds `issue` with its indexes `issue_order` (kind, open, newest first) and `issue_by_id`,
+//! `issue_label`, `issue_assignee`, `label`, `pull`, `review` and its index by pull
+//! request `review_by_pull`, `review_request`, `comment` and its index by issue `comment_by_issue`, `check_run` and
+//! `check_suite` keyed by head SHA first, `status` keyed by SHA and newest first, `check_expiry` (the pruning index),
 //! and `retention` (`RepoSettings.check_retention_days`). Each tier also keeps `ids`, its own `DbId` cursor
 //! (`design/DESIGN.md`, Shape, "Chains": "Each fold tier keeps its own `IdBlock` cursor"), over its own half of every
 //! block (`tier_block`), so the two never assign the same id, before a `MetaSplit` or after it, when the parent's core
@@ -28,7 +30,7 @@ use serde::de::DeserializeOwned;
 use crate::issues::{
     CHECK_RETENTION_DEFAULT, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
     CommentTarget, Grantee, HeadSpec, IssueChange, IssueKind, IssueNumber, LabelEvent, LabelName, LockReason, PrState,
-    PullHead, ReviewEvent, ReviewState, StatusUpdate,
+    PullHead, ReviewEvent, ReviewState, StateReason, StatusUpdate,
 };
 use crate::refs::{ObjectId, RefName};
 use crate::repo::RepoEvent;
@@ -92,34 +94,38 @@ pub const METADATA: Schema = Schema {
     tier: Tier::Metadata,
     tables: &[
         t("check_expiry", &["at", "kind", "key"]),
-        t("check_run", &["run"]),
-        t("check_suite", &["suite"]),
+        t("check_run", &["sha", "run"]),
+        t("check_suite", &["sha", "suite"]),
         t("comment", &["id"]),
+        t("comment_by_issue", &["n", "id"]),
         t("ids", &[]),
         t("issue", &["n"]),
+        t("issue_by_id", &["id"]),
         t("issue_assignee", &["n", "account"]),
         t("issue_label", &["n", "label"]),
+        t("issue_order", &["kind", "open", "rev_n"]),
         t("label", &["id"]),
         t("pull", &["n"]),
         t("retention", &[]),
         t("review", &["id"]),
+        t("review_by_pull", &["n", "id"]),
         t("review_request", &["n", "grantee"]),
-        t("status", &["sha", "context", "id"]),
+        t("status", &["sha", "rev_id"]),
     ],
 };
 
 // ---- rows ----
 
-pub(crate) fn int(v: i64) -> Val {
+pub fn int(v: i64) -> Val {
     Val::Int(v)
 }
-pub(crate) fn n_key(n: IssueNumber) -> Val {
+pub fn n_key(n: IssueNumber) -> Val {
     Val::Int(i64::from(n.0))
 }
-pub(crate) fn sha_key(o: &ObjectId) -> Val {
+pub fn sha_key(o: &ObjectId) -> Val {
     Val::Blob(o.0.to_vec().into())
 }
-pub(crate) fn ref_key(r: &RefName) -> Val {
+pub fn ref_key(r: &RefName) -> Val {
     Val::Blob(r.as_bytes().to_vec().into())
 }
 fn text(s: &str) -> Val {
@@ -135,7 +141,7 @@ pub(crate) fn source_key(s: &CheckSource) -> Val {
     }
 }
 
-pub(crate) fn get_rec<T: DeserializeOwned>(r: &(impl Read + ?Sized), table: &str, key: &[Val]) -> Option<T> {
+pub fn get_rec<T: DeserializeOwned>(r: &(impl Read + ?Sized), table: &str, key: &[Val]) -> Option<T> {
     match r.get(table, key)?.first() {
         Some(Val::Blob(b)) => Some(postcard::from_bytes(b).expect("a fold row this release wrote")),
         _ => panic!("row {table} has no record"),
@@ -195,6 +201,8 @@ pub struct IssueRow {
     pub closed: Option<Timestamp>,
     pub comments: u32,
     pub locked: Option<LockReason>,
+    /// The reason of the last `State` change, which GraphQL's `stateReason` reads.
+    pub reason: Option<StateReason>,
 }
 
 /// The metadata `pull` row.
@@ -276,7 +284,7 @@ fn put_timed<T: Serialize + DeserializeOwned>(w: &mut dyn Rows, kind: i64, key: 
 
 // ---- reads shared by apply and decide ----
 
-pub(crate) fn pull_head(r: &(impl Read + ?Sized), n: IssueNumber) -> Option<PullHead> {
+pub fn pull_head(r: &(impl Read + ?Sized), n: IssueNumber) -> Option<PullHead> {
     get_rec(r, "pull_head", &[n_key(n)])
 }
 
@@ -540,8 +548,13 @@ impl RepoTiers {
         let issue = |w: &dyn Rows, n: IssueNumber| get_rec::<IssueRow>(w, "issue", &[n_key(n)]);
         let touch = |w: &mut dyn Rows, n: IssueNumber, f: &dyn Fn(&mut IssueRow)| {
             if let Some(mut row) = get_rec::<IssueRow>(w, "issue", &[n_key(n)]) {
+                let was = row.open;
                 f(&mut row);
                 row.updated = at;
+                if was != row.open {
+                    w.delete("issue_order", &order_key(row.kind, was, n));
+                    mark(w, "issue_order", order_key(row.kind, row.open, n));
+                }
                 put_rec(w, "issue", vec![n_key(n)], &row);
             }
         };
@@ -567,8 +580,11 @@ impl RepoTiers {
                         closed: None,
                         comments: 0,
                         locked: None,
+                        reason: None,
                     },
                 );
+                mark(w, "issue_order", order_key(kind, true, *n));
+                put_rec(w, "issue_by_id", vec![int(capture.id.0)], &n.0);
                 for l in &capture.labels {
                     mark(w, "issue_label", vec![n_key(*n), int(l.0.0)]);
                 }
@@ -598,9 +614,10 @@ impl RepoTiers {
             RepoEvent::IssueChanged { n, change, .. } => match change {
                 IssueChange::Title(t) => touch(w, *n, &|r| r.title = t.clone()),
                 IssueChange::Body(b) => touch(w, *n, &|r| r.body = b.clone()),
-                IssueChange::State { open, .. } => touch(w, *n, &|r| {
+                IssueChange::State { open, reason } => touch(w, *n, &|r| {
                     r.open = *open;
                     r.closed = (!open).then_some(at);
+                    r.reason = *reason;
                 }),
                 IssueChange::Locked(l) => touch(w, *n, &|r| r.locked = *l),
                 IssueChange::Draft(d) => {
@@ -631,6 +648,9 @@ impl RepoTiers {
                     if let Some(n) = target_issue(on) {
                         touch(w, n, &|r| r.comments += 1);
                     }
+                    if let CommentTarget::Issue(n) = on {
+                        mark(w, "comment_by_issue", vec![n_key(*n), int(id.0.0)]);
+                    }
                 }
                 CommentEvent::Edited { id, body, .. } => {
                     if let Some(mut row) = get_rec::<CommentRow>(w, "comment", &[int(id.0.0)]) {
@@ -642,6 +662,9 @@ impl RepoTiers {
                 CommentEvent::Deleted { id, .. } => {
                     if let Some(row) = get_rec::<CommentRow>(w, "comment", &[int(id.0.0)]) {
                         w.delete("comment", &[int(id.0.0)]);
+                        if let CommentTarget::Issue(n) = row.on {
+                            w.delete("comment_by_issue", &[n_key(n), int(id.0.0)]);
+                        }
                         if let Some(n) = target_issue(&row.on) {
                             touch(w, n, &|r| r.comments = r.comments.saturating_sub(1));
                         }
@@ -671,6 +694,7 @@ impl RepoTiers {
                             at,
                         },
                     );
+                    mark(w, "review_by_pull", vec![n_key(*n), int(id.0.0)]);
                     touch(w, *n, &|_| {});
                 }
                 ReviewEvent::Dismissed { id, message, .. } => {
@@ -719,13 +743,17 @@ impl RepoTiers {
             },
             RepoEvent::Settings(s) => put_rec(w, "retention", Vec::new(), &s.check_retention_days),
             RepoEvent::CheckRun(u) => {
-                put_newer(w, KIND_RUN, vec![int(u.run.0.0)], at, u, |u: &CheckRunUpdate| u.version)
+                put_newer(w, KIND_RUN, vec![sha_key(&u.head_sha), int(u.run.0.0)], at, u, |u: &CheckRunUpdate| {
+                    u.version
+                })
             }
             RepoEvent::CheckSuite(u) => {
-                put_newer(w, KIND_SUITE, vec![int(u.suite.0.0)], at, u, |u: &CheckSuiteUpdate| u.version)
+                put_newer(w, KIND_SUITE, vec![sha_key(&u.head_sha), int(u.suite.0.0)], at, u, |u: &CheckSuiteUpdate| {
+                    u.version
+                })
             }
             RepoEvent::Status(s) => {
-                let key = vec![sha_key(&s.sha), text(&s.context), int(s.id.0.0)];
+                let key = vec![sha_key(&s.sha), int(-s.id.0.0)];
                 put_newer(w, KIND_STATUS, key, at, s, |_: &StatusUpdate| 0)
             }
             _ => {}
@@ -751,11 +779,16 @@ fn put_newer<T: Clone + Serialize + DeserializeOwned>(
     put_timed(w, kind, key, at, rec.clone());
 }
 
-pub(crate) fn grantee_key(g: &Grantee) -> Val {
+pub fn grantee_key(g: &Grantee) -> Val {
     match g {
         Grantee::User(u) => Val::Text(format!("user:{}", u.0.0.0).into()),
         Grantee::Team(t) => Val::Text(format!("team:{}", t.0.0).into()),
     }
+}
+
+/// The `issue_order` key: kind, open, and the number negated, so a forward scan lists the newest first.
+pub fn order_key(kind: IssueKind, open: bool, n: IssueNumber) -> Vec<Val> {
+    vec![int(kind as i64), int(i64::from(open)), int(-i64::from(n.0))]
 }
 
 /// The issue or pull request a comment counts toward.
