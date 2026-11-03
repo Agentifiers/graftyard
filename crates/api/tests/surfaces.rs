@@ -13,13 +13,16 @@ use graftyard_api::graphql::{Plan, Target, plan, query, refused, render, render_
 use graftyard_api::rest::{Page, list_commit_statuses};
 use graftyard_api::view::Repo;
 use graftyard_api::wire::{Host, node_id, parse_node_id};
+use graftyard_fold::store::META;
+use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::{
     AppId, CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget, IssueNumber,
     LabelName, MergeMethod, Protection, RepoSettings, RequiredChecks, StatusId, StatusState, StatusUpdate, Url,
     Visibility,
 };
-use graftyard_types::{AccountId, DbId, Timestamp};
+use graftyard_raft::{EntryBody, TierSet};
+use graftyard_types::{AccountId, DbId, Tier, Timestamp};
 use serde_json::{Map, Value, json};
 use smallvec::{SmallVec, smallvec};
 
@@ -142,7 +145,12 @@ fn status(id: i64, sha: u8, context: &str, state: StatusState) -> IssueOp {
 /// A repository with issue #1 (labelled `bug`, one comment), pull request #2 from `f` with a required `ci` run, a
 /// non-required `lint` run, and a `jenkins` status, and a closed issue #3.
 fn seeded() -> Chain {
-    let mut c = Chain::new(1);
+    seeded_on(1)
+}
+
+/// `seeded` applied by `members` members.
+fn seeded_on(members: usize) -> Chain {
+    let mut c = Chain::new(members);
     c.push("refs/heads/main", oid(1));
     c.push("refs/heads/f", oid(2));
     c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
@@ -469,4 +477,91 @@ fn timestamps_render_as_github_does() {
     assert_eq!(graftyard_api::wire::iso(Timestamp(0)), "1970-01-01T00:00:00Z");
     assert_eq!(graftyard_api::wire::iso(Timestamp(1_793_000_000_000)), "2026-10-26T07:33:20Z");
     assert_eq!(graftyard_api::wire::iso(Timestamp(951_782_400_000)), "2000-02-29T00:00:00Z");
+}
+
+/// Every core row, without the tier's own bookkeeping row (`applied` moves with every entry).
+fn core_rows(m: &MemStore) -> MemStore {
+    let mut rows = m.clone();
+    rows.0.remove(META);
+    rows
+}
+
+/// Every context `gh pr checks` reads, paging its own document with `endCursor` as gh does. A commit with no checks
+/// has a null rollup, as on GitHub.
+fn pr_checks_contexts(r: &Repo<'_>) -> Vec<Value> {
+    let d = doc("PullRequestStatusChecks-1");
+    let mut vars = with_ids(&d, r).unwrap();
+    let mut out = Vec::new();
+    loop {
+        let v = ask(r, &d, Some(vars.clone()));
+        let rollup = &v["data"]["node"]["statusCheckRollup"]["nodes"][0]["commit"]["statusCheckRollup"];
+        if rollup.is_null() && v.get("errors").is_none() {
+            return out;
+        }
+        let page = &rollup["contexts"];
+        out.extend(page["nodes"].as_array().unwrap_or_else(|| panic!("{v}")).iter().cloned());
+        if page["pageInfo"]["hasNextPage"] != true {
+            return out;
+        }
+        vars.insert("endCursor".into(), page["pageInfo"]["endCursor"].clone());
+    }
+}
+
+/// BF-22's pure half: 10,000 non-required check runs and statuses on the head of an open pull request, read back by
+/// `gh pr checks` and `GET /commits/{sha}/statuses`, then pruned once entry time passes `check_retention_days`.
+#[test]
+fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
+    const EACH: i64 = 5_000;
+    let mut c = seeded_on(2);
+    let core_before = core_rows(&c.members[0].core);
+    let core_sum = meta(&c.members[0].core).sum;
+    let ops: Vec<IssueOp> = (0..EACH)
+        .map(|i| run(1_000 + i, 2, &format!("lint-{i}"), Some(CheckConclusion::Success)))
+        .chain((0..EACH).map(|i| status(100_000 + i, 2, &format!("ctx-{i}"), StatusState::Success)))
+        .collect();
+    for chunk in ops.chunks(100) {
+        for out in c.commit_all(chunk.iter().map(|op| (WRITER, op.clone())).collect()) {
+            out.unwrap();
+        }
+    }
+    assert_eq!(c.members[0], c.members[1]);
+    assert_eq!(core_rows(&c.members[0].core), core_before, "a non-required check wrote a core row");
+    assert_eq!(meta(&c.members[0].core).sum, core_sum);
+
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(1, &h, &dir);
+    let mut ids = Vec::new();
+    for page in 1.. {
+        let p = list_commit_statuses(&r, &oid(2).hex(), Page::parse(&format!("per_page=100&page={page}")));
+        assert_eq!(p.status, 200);
+        ids.extend(p.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()));
+        if p.link.is_none() {
+            break;
+        }
+    }
+    let want: Vec<i64> = (100_000..100_000 + EACH).rev().chain([13, 12]).collect();
+    assert_eq!(ids, want, "every status, newest first");
+    let ctx = pr_checks_contexts(&r);
+    let runs = ctx.iter().filter(|n| n["__typename"] == "CheckRun").count();
+    let statuses = ctx.iter().filter(|n| n["__typename"] == "StatusContext").count();
+    assert_eq!((runs, statuses), (EACH as usize + 2, EACH as usize + 1), "ci, lint, and jenkins plus the new rows");
+    let required: Vec<&str> =
+        ctx.iter().filter(|n| n["isRequired"] == true).map(|n| n["name"].as_str().unwrap()).collect();
+    assert_eq!(required, ["ci"]);
+
+    c.now = Timestamp(c.now.0 + 91 * DAY);
+    c.entry(EntryBody::Noop, TierSet::NONE);
+    let r = c.repo(1, &h, &dir);
+    assert!(r.check_runs(&oid(2)).is_empty() && r.check_suites(&oid(2)).is_empty());
+    assert_eq!(list_commit_statuses(&r, &oid(2).hex(), Page::parse("")).body, json!([]));
+    assert!(pr_checks_contexts(&r).is_empty());
+    for t in ["check_run", "check_suite", "status", "check_expiry"] {
+        assert!(c.members.iter().all(|m| m.meta.0.get(t).is_none_or(|rows| rows.is_empty())), "{t} not pruned");
+    }
+    assert_eq!(core_rows(&c.members[0].core), core_before, "pruning touched the core tier");
+    assert_eq!(meta(&c.members[0].core).sum, core_sum);
+    for tier in [Tier::Core, Tier::Metadata] {
+        let store = |i: usize| if tier == Tier::Core { &c.members[i].core } else { &c.members[i].meta };
+        assert_eq!(fold_digest(store(0), tier), fold_digest(store(1), tier), "{tier:?}");
+    }
 }
