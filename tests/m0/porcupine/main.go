@@ -187,22 +187,12 @@ func load(paths []string) ([]porcupine.Operation, int, error) {
 func main() {
 	timeout := flag.Duration("timeout", 10*time.Minute, "give up and report Unknown after this long")
 	viz := flag.String("viz", "", "write Porcupine's HTML visualization here")
-	seg := flag.Int("seg", 0, "check one key's history in segments of at least this many ops, cut at isolated ops (see segmented); 0 checks it whole")
+	seg := flag.Int("seg", 0, "check each key in segments of at least this many ops, cut at isolated ops (see segmented); 0 checks it whole")
 	flag.Parse()
-	if *seg > 0 {
-		segmented(flag.Args(), seg, timeout)
-		return
-	}
 	ops, dropped, err := load(flag.Args())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
-	}
-	res, info := porcupine.CheckOperationsVerbose(model, ops, *timeout)
-	if *viz != "" {
-		if err := porcupine.VisualizePath(model, info, *viz); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		}
 	}
 	unknown := 0
 	for _, o := range ops {
@@ -210,33 +200,88 @@ func main() {
 			unknown++
 		}
 	}
-	summary, _ := json.Marshal(map[string]interface{}{"result": res, "operations": len(ops), "noReplyWrites": unknown, "droppedFailedReads": dropped})
-	fmt.Println(string(summary))
+	summary := map[string]interface{}{"operations": len(ops), "noReplyWrites": unknown, "droppedFailedReads": dropped}
+	var res porcupine.CheckResult
+	if *seg > 0 {
+		res, summary["segments"] = segmented(ops, *seg, *timeout)
+	} else {
+		var info porcupine.LinearizationInfo
+		res, info = porcupine.CheckOperationsVerbose(model, ops, *timeout)
+		if *viz != "" {
+			if err := porcupine.VisualizePath(model, info, *viz); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
+	}
+	summary["result"] = res
+	out, _ := json.Marshal(summary)
+	fmt.Println(string(out))
 	if res != porcupine.Ok {
 		os.Exit(1)
 	}
 }
 
-// Segmented check for one key's history. No-reply writes are dropped: a linearization without them extends to one
-// with them placed last, so Ok without them implies Ok with them. The history is cut after an isolated op (every
-// earlier op returned before it was called, every later op was called after it returned); every linearization puts
-// it between the two sides, so the next segment starts from the state it leaves.
-func segmented(paths []string, target *int, timeout *time.Duration) {
-	all, dropped, err := load(paths)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+// Segmented check, per key. Each key's history is cut after an isolated op (every earlier op returned before it was
+// called, every later op was called after it returned) whose result names the state: every linearization puts it
+// between the two sides, so the next segment starts from the state it leaves.
+//
+// A no-reply write would overlap everything after its call, so it is taken out of the cut search. One whose value a
+// read or a successful cas saw took effect before that op returned, so it returns there (values are unique per key;
+// a shared value keeps it pending). One nobody saw is pending: it may take effect at any time after its call, or
+// never. A segment is checked without the pending writes first, which can only be stricter. If that is Illegal, it
+// is checked again with every pending write called by its end; Illegal then is Illegal. Ok then holds only if no
+// pending write was also lent to an earlier segment, because each takes effect at most once; otherwise Unknown.
+func segmented(all []porcupine.Operation, target int, timeout time.Duration) (porcupine.CheckResult, int) {
+	worst, segs := porcupine.Ok, 0
+	for _, ops := range model.Partition(all) {
+		res, n := segmentedKey(ops, target, timeout)
+		segs += n
+		if res == porcupine.Illegal || (res == porcupine.Unknown && worst == porcupine.Ok) {
+			worst = res
+		}
 	}
-	var ops []porcupine.Operation
-	noReply := 0
+	return worst, segs
+}
+
+func segmentedKey(all []porcupine.Operation, target int, timeout time.Duration) (porcupine.CheckResult, int) {
+	key := all[0].Input.(Op).Key
+	writers := map[string]int{}
+	seenBy := map[string]int64{} // value -> earliest return of an op that saw it
+	for _, o := range all {
+		in, out := o.Input.(Op), o.Output.(output)
+		if in.Kind != "get" {
+			writers[in.Value]++
+		}
+		var v *string
+		switch {
+		case out.unknown:
+		case in.Kind == "get":
+			v = out.value
+		case in.Kind == "cas" && out.ok:
+			v = in.Expect
+		}
+		if v == nil {
+			continue
+		}
+		if t, ok := seenBy[*v]; !ok || o.Return < t {
+			seenBy[*v] = o.Return
+		}
+	}
+	var ops, pending []porcupine.Operation
 	for _, o := range all {
 		if o.Output.(output).unknown {
-			noReply++
-			continue
+			v := o.Input.(Op).Value
+			t, seen := seenBy[v]
+			if !seen || writers[v] != 1 {
+				pending = append(pending, o)
+				continue
+			}
+			o.Return, o.Output = max(t, o.Call), output{ok: true}
 		}
 		ops = append(ops, o)
 	}
 	sort.SliceStable(ops, func(i, j int) bool { return ops[i].Call < ops[j].Call })
+	lent := make([]bool, len(pending))
 	var state *string
 	start, segs, worst := 0, 0, porcupine.Ok
 	var maxRet int64 = math.MinInt64
@@ -245,13 +290,36 @@ func segmented(paths []string, target *int, timeout *time.Duration) {
 		init := state
 		m := model
 		m.Init = func() interface{} { return init }
-		res := porcupine.CheckOperationsTimeout(m, seg, *timeout)
+		res := porcupine.CheckOperationsTimeout(m, seg, timeout)
 		segs++
 		if res == porcupine.Illegal {
-			worst = porcupine.Illegal
-			fmt.Fprintf(os.Stderr, "segment %d (ops %d..%d, calls %d..%d): Illegal\n", segs, start, end, seg[0].Call, seg[len(seg)-1].Call)
-		} else if res == porcupine.Unknown && worst == porcupine.Ok {
-			worst = porcupine.Unknown
+			var segEnd int64 = math.MinInt64
+			for _, o := range seg {
+				segEnd = max(segEnd, o.Return)
+			}
+			var lend []int
+			with := append([]porcupine.Operation(nil), seg...)
+			for j, p := range pending {
+				if p.Call <= segEnd {
+					lend = append(lend, j)
+					with = append(with, p)
+				}
+			}
+			if len(lend) > 0 {
+				res = porcupine.CheckOperationsTimeout(m, with, timeout)
+			}
+			for _, j := range lend {
+				if res == porcupine.Ok && lent[j] {
+					res = porcupine.Unknown
+				}
+				lent[j] = true
+			}
+		}
+		if res != porcupine.Ok {
+			fmt.Fprintf(os.Stderr, "%s segment %d (ops %d..%d, calls %d..%d): %s\n", key, segs, start, end, seg[0].Call, seg[len(seg)-1].Call, res)
+		}
+		if res == porcupine.Illegal || (res == porcupine.Unknown && worst == porcupine.Ok) {
+			worst = res
 		}
 	}
 	for i := range ops {
@@ -260,7 +328,7 @@ func segmented(paths []string, target *int, timeout *time.Duration) {
 		if o.Return > maxRet {
 			maxRet = o.Return
 		}
-		if !isolated || i+1-start < *target {
+		if !isolated || i+1-start < target {
 			continue
 		}
 		in, out := o.Input.(Op), o.Output.(output)
@@ -280,10 +348,5 @@ func segmented(paths []string, target *int, timeout *time.Duration) {
 	if start < len(ops) {
 		flush(len(ops))
 	}
-	summary, _ := json.Marshal(map[string]interface{}{"result": worst, "operations": len(ops), "noReplyWritesDropped": noReply,
-		"droppedFailedReads": dropped, "segments": segs})
-	fmt.Println(string(summary))
-	if worst != porcupine.Ok {
-		os.Exit(1)
-	}
+	return worst, segs
 }
