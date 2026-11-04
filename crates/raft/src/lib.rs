@@ -27,7 +27,7 @@ use graftyard_types::Timestamp;
 
 pub use edge::{Receipt, Suspect};
 pub use encode::{Enc, bootstrap, digest, encode_entry};
-pub use fold::{Command, Ev, Fold, GroupFold, Record, RequestRow, Scratch};
+pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, RequestStore, Scratch};
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
     APPEND_BYTES_MAX, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny, DepsWanted,

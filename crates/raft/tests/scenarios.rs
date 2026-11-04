@@ -801,7 +801,7 @@ fn a_group_fold_loaded_from_its_tables_equals_the_replayed_one() {
         g.applied(),
         g.config().cloned(),
         g.id_block(),
-        g.requests().map(|(id, r)| (*id, r.clone())),
+        Box::new(g.requests().into_iter().collect::<graftyard_raft::MemRequests<_>>()),
     );
     assert_eq!(&loaded, g);
     // And they stay equal as more entries apply, past REQUEST_RETENTION, so both drop the same rows.
@@ -816,7 +816,7 @@ fn a_group_fold_loaded_from_its_tables_equals_the_replayed_one() {
         b.apply(&next);
         assert_eq!(a, b);
     }
-    assert_eq!(a.requests().count(), 1, "older rows expired");
+    assert_eq!(a.requests().len(), 1, "older rows expired");
 }
 
 /// A delayed AppendEntries from a reset leader's earlier instance, in the same term, must not truncate what the

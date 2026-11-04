@@ -330,6 +330,8 @@ pub struct Host<F: Family> {
     pub state: Rc<State>,
     pub env: Env,
     pub core: RefCell<Option<Core<F>>>,
+    /// The group fold's `request` table on storage, which `flush` tells when the queued rows have landed.
+    requests: RefCell<Option<RequestSql<F::Ev>>>,
     pub restore_error: RefCell<Option<String>>,
     pub dying: Cell<bool>,
     ticking: Cell<bool>,
@@ -543,6 +545,118 @@ fn each_row(
     Ok(())
 }
 
+/// The `request` table, read where it lives: in the member's SQLite, one row per point lookup. `GroupFold::apply`
+/// writes a row here before `SqlStore` turns it into the input's `INSERT`, and drops rows past retention before the
+/// input's `DELETE` runs, so until the transaction ran (`flushed`) reads see `pending` and hide rows older than
+/// `cut`. Restore reads no row: holding every row in memory, as `GroupFold`'s in-memory table does, put a member with
+/// 90,048 rows at 174.8 MB of wasm memory after restore, past its 128 MB isolate, and every request that did not
+/// answer in its first poll died with the isolate (`tests/m2/results/m2-wp1.md`, "The restore defect").
+pub struct RequestSql<E> {
+    inner: Rc<RefCell<ReqInner<E>>>,
+}
+
+struct ReqInner<E> {
+    sql: SqlStorage,
+    pending: BTreeMap<RequestId, raft::RequestRow<E>>,
+    cut: Timestamp,
+    /// `Fold::row_event`: rows stored before it hold whole events, and a read keeps the row's form.
+    row_event: fn(&E) -> E,
+}
+
+impl<E> Clone for RequestSql<E> {
+    fn clone(&self) -> Self {
+        RequestSql { inner: self.inner.clone() }
+    }
+}
+
+impl<E> std::fmt::Debug for RequestSql<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RequestSql({} pending)", self.inner.borrow().pending.len())
+    }
+}
+
+impl<E: raft::Record + Clone + std::fmt::Debug + serde::de::DeserializeOwned + 'static> RequestSql<E> {
+    pub fn new(sql: SqlStorage, row_event: fn(&E) -> E) -> RequestSql<E> {
+        RequestSql {
+            inner: Rc::new(RefCell::new(ReqInner { sql, pending: BTreeMap::new(), cut: Timestamp(0), row_event })),
+        }
+    }
+
+    /// The input's transaction ran: every pending row is in the table, and every expired one gone.
+    pub fn flushed(&self) {
+        self.inner.borrow_mut().pending.clear();
+    }
+
+    fn decode(&self, rid: RequestId, r: &[SqlStorageValue]) -> Result<raft::RequestRow<E>> {
+        let i = self.inner.borrow();
+        let events: Vec<E> = codec::from_bytes(blob(&r[2])?).map_err(|e| err(format!("request row {rid}: {e}")))?;
+        Ok(raft::RequestRow {
+            index: Index(int(&r[0])? as u64),
+            at: Timestamp(int(&r[1])? as u64),
+            events: events.iter().map(i.row_event).collect(),
+        })
+    }
+}
+
+impl<E: raft::Record + Clone + std::fmt::Debug + serde::de::DeserializeOwned + 'static> raft::RequestStore<E>
+    for RequestSql<E>
+{
+    fn get(&self, id: RequestId) -> Option<raft::RequestRow<E>> {
+        let (sql, cut) = {
+            let i = self.inner.borrow();
+            if let Some(r) = i.pending.get(&id) {
+                return Some(r.clone());
+            }
+            (i.sql.clone(), i.cut)
+        };
+        let r = rows(&sql, "SELECT idx, at, events FROM request WHERE rid = ?", vec![id.to_string().into()])
+            .expect("a request row read");
+        let row = self.decode(id, r.first()?).expect("a request row decodes");
+        (row.at >= cut).then_some(row)
+    }
+
+    fn put(&mut self, id: RequestId, row: raft::RequestRow<E>) -> bool {
+        if self.get(id).is_some() {
+            return false;
+        }
+        self.inner.borrow_mut().pending.insert(id, row);
+        true
+    }
+
+    fn expire(&mut self, cut: Timestamp) {
+        let mut i = self.inner.borrow_mut();
+        i.cut = i.cut.max(cut);
+        let c = i.cut;
+        i.pending.retain(|_, r| r.at >= c);
+    }
+
+    fn rows(&self) -> Vec<(RequestId, raft::RequestRow<E>)> {
+        let (sql, cut) = {
+            let i = self.inner.borrow();
+            (i.sql.clone(), i.cut)
+        };
+        let mut out = BTreeMap::new();
+        each_row(&sql, "SELECT rid, idx, at, events FROM request", vec![], |r| {
+            let rid = rid_from(text(&r[0])?)?;
+            let row = self.decode(rid, &r[1..])?;
+            if row.at >= cut {
+                out.insert(rid, row);
+            }
+            Ok(true)
+        })
+        .expect("request rows read");
+        out.extend(self.inner.borrow().pending.iter().map(|(k, v)| (*k, v.clone())));
+        out.into_iter().collect()
+    }
+
+    fn clone_box(&self) -> Box<dyn raft::RequestStore<E>> {
+        Box::new(self.clone())
+    }
+}
+
+/// What `load` reads back: the crate's `Stored`, and the handle on its `request` table that `flush` tells.
+type Loaded<F> = (Stored<<F as Family>::Fold>, RequestSql<<F as Family>::Ev>);
+
 /// The base `load` restores above: every entry above `applied` is loaded, and below it the newest applied entries that
 /// fit both `LOG_WINDOW` entries and `LOG_BYTES` bytes, at least the last applied one, and never below `floor` (a
 /// truncated log's first row, which stays as its base).
@@ -571,7 +685,7 @@ fn load_base(sql: &SqlStorage, applied: Index, floor: u64) -> Result<u64> {
 /// `GroupFold` loaded from `reg`, `request`, and `group_config` with `GroupFold::from_parts`. Entries at or below the
 /// base stay on storage; the member asks for them with `Out::catchup`. While the log is short, the loaded fold is also
 /// compared with the log replayed through `applied`. Every multi-row read goes one row at a time.
-fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result<Stored<F::Fold>> {
+fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result<Loaded<F>> {
     let state = match rows(sql, "SELECT row FROM raft_state WHERE id = 1", vec![])?.first() {
         Some(r) => {
             Some(codec::from_bytes::<raft::MemberState>(blob(&r[0])?).map_err(|e| err(format!("raft_state: {e}")))?)
@@ -626,17 +740,8 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
         )),
         None => None,
     };
-    let mut requests = Vec::new();
-    each_row(sql, "SELECT rid, idx, at, events FROM request", vec![], |r| {
-        let rid = rid_from(text(&r[0])?)?;
-        let events: Vec<F::Ev> = codec::from_bytes(blob(&r[3])?).map_err(|e| err(format!("request row {rid}: {e}")))?;
-        // Rows stored before `Fold::row_event` hold whole events; the fold keeps the row's form.
-        let events = events.iter().map(<F::Fold as raft::Fold>::row_event).collect();
-        let row = raft::RequestRow { index: Index(int(&r[1])? as u64), at: Timestamp(int(&r[2])? as u64), events };
-        requests.push((rid, row));
-        Ok(true)
-    })?;
-    let mut fold = GroupFold::from_parts(folded, applied, config, id_block, requests);
+    let requests = RequestSql::<F::Ev>::new(sql.clone(), <F::Fold as raft::Fold>::row_event);
+    let mut fold = GroupFold::from_parts(folded, applied, config, id_block, Box::new(requests.clone()));
     fold.set_retention(retention);
     if applied.0 <= RESTORE_CHECK_MAX && !truncated && !F::tiered() {
         let mut replayed = GroupFold::new(F::new_fold(sql, join));
@@ -651,11 +756,11 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
         if replayed.config() != fold.config() || replayed.id_block() != fold.id_block() {
             return Err(err(format!("group_config differs from the log applied through {applied:?}")));
         }
-        if !replayed.requests().eq(fold.requests()) {
+        if replayed.requests() != fold.requests() {
             return Err(err(format!("request rows differ from the log applied through {applied:?}")));
         }
     }
-    Ok(Stored { state, base, log, fold })
+    Ok((Stored { state, base, log, fold }, requests))
 }
 
 /// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`, read one row at a time. Past the
@@ -708,6 +813,7 @@ impl<F: Family> Host<F> {
             state,
             env,
             core: RefCell::new(None),
+            requests: RefCell::new(None),
             restore_error: RefCell::new(None),
             dying: Cell::new(false),
             ticking: Cell::new(false),
@@ -772,7 +878,8 @@ impl<F: Family> Host<F> {
         let Some(join) = self.stored_join()? else { return Ok(()) };
         let site = SiteEnv::read(&self.env)?;
         let retention = request_retention(&self.env);
-        let stored = load::<F>(&self.state.storage().sql(), &join, retention)?;
+        let (stored, requests) = load::<F>(&self.state.storage().sql(), &join, retention)?;
+        *self.requests.borrow_mut() = Some(requests);
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
@@ -1106,6 +1213,9 @@ impl<F: Family> Host<F> {
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
         commit_tx(&self.state.storage(), stmts)?;
+        if let Some(r) = self.requests.borrow().as_ref() {
+            r.flushed();
+        }
         if let Ok(core) = self.core.try_borrow()
             && let Some(c) = core.as_ref()
         {

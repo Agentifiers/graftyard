@@ -6,8 +6,8 @@ use std::fmt;
 use graftyard_types::{ChainId, IdBlock, Timestamp};
 use smallvec::SmallVec;
 
+use crate::REQUEST_RETENTION;
 use crate::types::{EntryBody, Format, GroupConfig, Index, LogEntry, Next, RequestId, TierSet};
-use crate::{REQUEST_RETENTION, after};
 
 /// A stored-format record: commands and events encode themselves with `crate::encode::Enc`, so an entry's digest
 /// covers them byte for byte.
@@ -23,7 +23,7 @@ pub trait Record {
 
 /// One writer per fold: `apply` on each member, in log order.
 pub trait Fold: Clone + fmt::Debug {
-    type Event: Record + Clone + fmt::Debug + PartialEq;
+    type Event: Record + Clone + fmt::Debug + PartialEq + 'static;
     /// A running view over the fold that events apply to and that is then thrown away: the scratch transaction
     /// `decide` and `verify` run on.
     type Scratch<'a>: Scratch<Event = Self::Event>
@@ -114,16 +114,82 @@ pub struct RequestRow<E> {
     pub events: Vec<E>,
 }
 
+/// Where a group fold keeps its `request` table. `MemRequests` holds every row in memory, as the crate's reference
+/// storage does. A host whose rows outlive what an isolate can hold keeps them on its own storage and answers point
+/// lookups from it (`workers/site`, `RequestSql`): two days of rows at the gate's 300 commands/s are 52 M rows, and a
+/// member that loaded 90,048 of them into memory at restore passed its isolate's limit and served nothing more
+/// (`tests/m2/results/m2-wp1.md`, "The restore defect").
+pub trait RequestStore<E>: fmt::Debug {
+    /// The row of `id`, unless its entry is more than retention older than the last applied one (`expire`).
+    fn get(&self, id: RequestId) -> Option<RequestRow<E>>;
+    /// Adds a row. False if `id` already has one, which is a double apply.
+    fn put(&mut self, id: RequestId, row: RequestRow<E>) -> bool;
+    /// Drops every row whose `at` is before `cut`.
+    fn expire(&mut self, cut: Timestamp);
+    /// Every row, by request id: for checks of a short log only, since a host store reads them all.
+    fn rows(&self) -> Vec<(RequestId, RequestRow<E>)>;
+    fn clone_box(&self) -> Box<dyn RequestStore<E>>;
+}
+
+/// Every row in memory, with the expiry order.
+#[derive(Clone, Debug)]
+pub struct MemRequests<E> {
+    rows: BTreeMap<RequestId, RequestRow<E>>,
+    expiry: BTreeSet<(Timestamp, RequestId)>,
+}
+
+impl<E> Default for MemRequests<E> {
+    fn default() -> Self {
+        MemRequests { rows: BTreeMap::new(), expiry: BTreeSet::new() }
+    }
+}
+
+impl<E> FromIterator<(RequestId, RequestRow<E>)> for MemRequests<E> {
+    fn from_iter<I: IntoIterator<Item = (RequestId, RequestRow<E>)>>(it: I) -> Self {
+        let rows: BTreeMap<RequestId, RequestRow<E>> = it.into_iter().collect();
+        let expiry = rows.iter().map(|(id, r)| (r.at, *id)).collect();
+        MemRequests { rows, expiry }
+    }
+}
+
+impl<E: Clone + fmt::Debug + 'static> RequestStore<E> for MemRequests<E> {
+    fn get(&self, id: RequestId) -> Option<RequestRow<E>> {
+        self.rows.get(&id).cloned()
+    }
+    fn put(&mut self, id: RequestId, row: RequestRow<E>) -> bool {
+        if self.rows.contains_key(&id) {
+            return false;
+        }
+        self.expiry.insert((row.at, id));
+        self.rows.insert(id, row);
+        true
+    }
+    fn expire(&mut self, cut: Timestamp) {
+        while let Some(&(at, id)) = self.expiry.first() {
+            if at >= cut {
+                break;
+            }
+            self.expiry.pop_first();
+            self.rows.remove(&id);
+        }
+    }
+    fn rows(&self) -> Vec<(RequestId, RequestRow<E>)> {
+        self.rows.iter().map(|(id, r)| (*id, r.clone())).collect()
+    }
+    fn clone_box(&self) -> Box<dyn RequestStore<E>> {
+        Box::new(self.clone())
+    }
+}
+
 /// What each member applies committed entries to: the command fold, the core-tier `request` table, and the latest
 /// committed `GroupConfig`. A host stores it with the same writes as the log (`Write::Apply`).
 ///
 /// A host stores the fold, the request rows, and the config in its own tables and loads them back with `from_parts`,
 /// so a restore does not replay the log.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug)]
 pub struct GroupFold<F: Fold> {
     pub fold: F,
-    requests: BTreeMap<RequestId, RequestRow<F::Event>>,
-    expiry: BTreeSet<(Timestamp, RequestId)>,
+    requests: Box<dyn RequestStore<F::Event>>,
     config: Option<(Index, GroupConfig)>,
     /// The latest committed `EntryBody::IdBlock`, which the next one must follow (`verify`).
     id_block: Option<IdBlock>,
@@ -132,32 +198,48 @@ pub struct GroupFold<F: Fold> {
     retention: std::time::Duration,
 }
 
-impl<F: Fold> GroupFold<F> {
-    pub fn new(fold: F) -> GroupFold<F> {
+impl<F: Fold> Clone for GroupFold<F> {
+    fn clone(&self) -> Self {
         GroupFold {
-            fold,
-            requests: BTreeMap::new(),
-            expiry: BTreeSet::new(),
-            config: None,
-            id_block: None,
-            applied: Index(0),
-            retention: REQUEST_RETENTION,
+            fold: self.fold.clone(),
+            requests: self.requests.clone_box(),
+            config: self.config.clone(),
+            id_block: self.id_block,
+            applied: self.applied,
+            retention: self.retention,
         }
+    }
+}
+
+/// Equal folds, configs, and request rows. Reads every row, so only for checks of a short log.
+impl<F: Fold + PartialEq> PartialEq for GroupFold<F> {
+    fn eq(&self, o: &Self) -> bool {
+        self.fold == o.fold
+            && self.config == o.config
+            && self.id_block == o.id_block
+            && self.applied == o.applied
+            && self.retention == o.retention
+            && self.requests.rows() == o.requests.rows()
+    }
+}
+
+impl<F: Fold> GroupFold<F> {
+    /// A fold with no entries applied, its `request` table in memory.
+    pub fn new(fold: F) -> GroupFold<F> {
+        GroupFold::from_parts(fold, Index(0), None, None, Box::new(MemRequests::default()))
     }
 
     /// A group fold as its tables hold it after applying through `applied`: the command fold, the latest committed
-    /// config, the latest committed id block, and the `request` rows that `apply` kept. Equal to the fold the same
+    /// config, the latest committed id block, and the `request` table that `apply` kept. Equal to the fold the same
     /// entries applied to.
     pub fn from_parts(
         fold: F,
         applied: Index,
         config: Option<(Index, GroupConfig)>,
         id_block: Option<IdBlock>,
-        requests: impl IntoIterator<Item = (RequestId, RequestRow<F::Event>)>,
+        requests: Box<dyn RequestStore<F::Event>>,
     ) -> GroupFold<F> {
-        let requests: BTreeMap<RequestId, RequestRow<F::Event>> = requests.into_iter().collect();
-        let expiry = requests.iter().map(|(id, r)| (r.at, *id)).collect();
-        GroupFold { fold, requests, expiry, config, id_block, applied, retention: REQUEST_RETENTION }
+        GroupFold { fold, requests, config, id_block, applied, retention: REQUEST_RETENTION }
     }
 
     /// How long `request` rows are kept after their entry's `at`.
@@ -174,9 +256,9 @@ impl<F: Fold> GroupFold<F> {
         self.id_block
     }
 
-    /// Every `request` row, by request id.
-    pub fn requests(&self) -> impl Iterator<Item = (&RequestId, &RequestRow<F::Event>)> {
-        self.requests.iter()
+    /// Every `request` row, by request id. Reads them all from the store, so only for checks of a short log.
+    pub fn requests(&self) -> Vec<(RequestId, RequestRow<F::Event>)> {
+        self.requests.rows()
     }
 
     pub fn applied(&self) -> Index {
@@ -188,34 +270,28 @@ impl<F: Fold> GroupFold<F> {
         self.config.as_ref()
     }
 
-    pub fn request(&self, id: RequestId) -> Option<&RequestRow<F::Event>> {
-        self.requests.get(&id)
+    pub fn request(&self, id: RequestId) -> Option<RequestRow<F::Event>> {
+        self.requests.get(id)
     }
 
     /// Applies the next committed entry. First every row more than `retention` older than the entry's `at` is dropped,
     /// so every member drops the same rows, and a host drops them with `at < entry.at - retention`.
     pub fn apply(&mut self, e: &LogEntry<F::Event>) {
         assert_eq!(e.index, self.applied.next(), "apply out of order");
-        while let Some(&(at, id)) = self.expiry.first() {
-            if after(at, self.retention) >= e.at {
-                break;
-            }
-            self.expiry.pop_first();
-            self.requests.remove(&id);
-        }
+        self.requests.expire(Timestamp(e.at.0.saturating_sub(self.retention.as_millis() as u64)));
         self.fold.apply_entry(e);
         match &e.body {
             EntryBody::Events(events) => {
                 for (id, range) in &e.requests {
                     let events = events[range.start as usize..range.end as usize].iter().map(F::row_event).collect();
-                    let prior = self.requests.insert(*id, RequestRow { index: e.index, at: e.at, events });
-                    assert!(
-                        prior.is_none(),
-                        "request {id:?} applied twice, at {:?} and {:?}",
-                        prior.map(|p| p.index),
-                        e.index
-                    );
-                    self.expiry.insert((e.at, *id));
+                    let row = RequestRow { index: e.index, at: e.at, events };
+                    if !self.requests.put(*id, row) {
+                        panic!(
+                            "request {id:?} applied twice, at {:?} and {:?}",
+                            self.requests.get(*id).map(|p| p.index),
+                            e.index
+                        );
+                    }
                 }
             }
             EntryBody::Config(c) => self.config = Some((e.index, c.clone())),
