@@ -11,7 +11,7 @@ Run on 2026-11-03 against the test install `graft-m1-site-a/b/c` (enam, weur, ap
 | Apply p99 within 10% of the no-snapshot baseline | **Pass at 150/s, unclear at 300/s.** The apply step stayed under 1 ms on every member in both phases. Leader entry age p99 was +1.7% at 150/s. At 300/s it was +30%, on one sample per phase, with p50 30% lower. See "Load" |
 | Snapshot digest equals a refold at `to` | **Pass.** `snapcheck` refolded all 1,330,000 rows of the R2 object and got the trailer's digest, which is the key's digest, which is the `fold_digest` `apply` kept at `to` = 18 |
 | No request-limit errors | **Fail.** On `repo:196628`, the apac member exceeded its memory limit 4 times during the snapshot (`exceededMemory`, on `/read` and `/snapshot_commit`), after its restore threw a `Critical error`. `repo:196627` did the same twice earlier. See "The defect" |
-| **Verdict** | **Fail.** The snapshot itself works: digest exact, apply not slowed at 150/s. But members of the group hit request limits after a restore, and the group stopped serving, at about 63,000 to 80,000 commands. The cause is not established |
+| **Verdict** | **Fail.** The snapshot itself works: digest exact, apply not slowed at 150/s. But members of the group hit request limits after a restore, and the group stopped serving, at about 63,000 to 80,000 commands. The cause is not established. Superseded by "2026-11-04: restore fix and BF-20 rerun", which passes |
 
 ## What was built
 
@@ -186,3 +186,128 @@ The driver scripts are in `tests/m2/bf20/` and expect to run from `/tmp/bf20`, w
 - Verify a snapshot with `wrangler r2 object get <bucket>/<key> --remote --pipe | snapcheck metadata`, where `snapcheck` is `crates/git/examples/snapcheck.rs`.
 
 `raw/` (not committed) holds every run's load answer and per-member stats, the seed progress files, the tails, and the deploy logs.
+
+## 2026-11-04: restore fix and BF-20 rerun
+
+Branch `restore-fix`, from `1beb531`, on the same test install (`graft-m1-site-a/b/c`, `test-faults`, default 48 h `REQUEST_RETENTION`). Raw data is in `raw/2026-11-04/` (not committed, like the rest of `raw/`): `restore/` for the diagnosis and fixes, `bf20/` for the three-phase rerun, `bf20d/` for the snapshot under load to its commit.
+
+| Clause | Result |
+| --- | --- |
+| A 4 GB metadata tier in one member | **Pass.** `repo:196628`, 1,330,000 seeded comments, 3.99 GB of member SQLite per member. Snapshotted twice in full, at `to` = 853 and `to` = 1313, each 1,330,000 rows and 2,428,465,635 bytes in 290 batches |
+| Snapshot digest equals a refold at `to` | **Pass.** At `to` = 1313, taken under 300/s: `snapcheck metadata` on both copies (`graft-m1-packs-b` and `-c`) refolded 1,330,000 rows to `0320dcfd…3c15`, the key's digest, and `/fold {"at": 1313}` gives that metadata digest on all three members |
+| Apply p99 within 10% at 300 commands/s | **Pass.** The apply step's p99 was 0 ms (under 1 ms) in every phase, n = 867 baseline inputs and 1,095 inputs while the snapshot ran. Leader entry age p99 was 838 ms with the snapshot running against 840 ms for the pooled no-snapshot baseline, -0.2% (n = 387 and 292). The group carried 300/s: 423,000 of 423,000 commands ok across 47 runs |
+| No request-limit errors | **Pass, with one unexplained exception class.** Workers Logs held no `exceededMemory`, `exceededCpu`, or other limit outcome on any site during either rerun. Site c's `repo:196628` member threw 3 exceptions on `/raft` during the snapshot-to-commit run, and 5 during the three-phase run: a wasm `unreachable` inside `host::commit_tx`. See "Not explained" |
+| **Verdict** | **Pass on all three clauses**, with the `commit_tx` abort left open. It is not a request limit, and the group lost no command to it |
+
+### The root cause
+
+The "POSTs hang, GETs answer" wedge had one cause and three defects behind it. Restore memory set it off. Each of the other two then reset the member again whenever it ran.
+
+**1. Restore held every `request` row in memory (hypothesis 1, confirmed).** A throwaway build marked wasm memory through `Host::restore` on `repo:196628` site 0 (`restore/mem-old-repo:196628-0.json`, patch `restore/probe.diff`):
+
+| Mark | Wasm memory |
+| --- | --- |
+| `restore: begin` | 1.4 MB |
+| `load: before request rows` | 35.6 MB |
+| `load: 90048 request rows read, 8400460 event bytes` | 86.3 MB |
+| `load: from_parts` | 91.0 MB |
+| `restore: Member::restore` | 174.8 MB |
+
+`Member::restore` copies the fold, so the 90,048 rows are held twice. 174.8 MB is past the 128 MB isolate. Sites 1 and 2 never answered the probe (`status: null`). An isolate that runs out of memory is reset, and the next request restores again and runs out again. So any request that needs more than its first poll, such as every POST that awaits storage, a call, or a timer, dies with the isolate. That is why it ran at about 0 ms of CPU. A GET that answers synchronously finishes first. The state that survived 4 redeploys was the `request` table itself, at 63,000 to 90,000 rows within its 48 h retention.
+
+**2. A stuck wasm executor (hypothesis 2, ruled out as a cause).** The `memory access out of bounds` and `Cannot invoke closure from previous WASM instance` errors in the tails come from workers-rs 0.8.7's reinit. After a `RuntimeError` or a Rust panic, `shim.js` sets `criticalError`, and the next call builds a new wasm instance for every object in the isolate. Each closure and future from the old instance then throws. The queue was not stuck. It was replaced, and every in-flight request on that isolate lost its future. So any panic in any member resets its neighbours too. That turned defects 3a and 3b into group-wide failures.
+
+**3. With the first fix deployed, `repo:196628` stayed leaderless and its writer idle.** The tails and Workers Logs then showed three more defects, each a panic or an out-of-memory error that reset the isolate:
+
+- **(a) M1-era groups had a core tier behind `applied`.** `repo:196624`, `196625`, `196626`, and `196608` applied entries before their chain had tier tables. Their core tier sat at 0 while `applied` was 341, and their first apply panicked: "core tier applies the next entry: got 342, want 1". They share isolates with the BF-20 members.
+- **(b) Three metadata tables kept their pre-WP2 key.** M2-WP2 rekeyed `check_run`, `check_suite`, and `status` after the BF-20 members were seeded, and `CREATE TABLE IF NOT EXISTS` kept the old shape. The snapshot alarm's first scan of `m_check_run` failed with "no such column: k1" and panicked on every alarm. That is why the writer's `alarmRuns` stayed 0 and job 487 never batched.
+- **(c) The lookup probe read every ref.** `graftyard_lookup::create` probed a chain with `{"q": {}}`, which on a repository reads every ref: 303,144 refs on `repo:196628` (`restore/lookup-196628.txt`). Every edge push that went through `create` ran the leader's `/read` out of memory.
+
+### The fix
+
+| Commit | Change |
+| --- | --- |
+| `3eca218` | `GroupFold` takes a `RequestStore`. `MemRequests` keeps the in-memory table for the crate's reference store and the sim. The site's `RequestSql` reads the member's own `request` table one row at a time, by id, with the input's unflushed rows and the retention cut on top. Restore reads no request row. BF-12's semantics are unchanged: a re-send inside retention gets its stored outcome, whether the row is in memory or on storage |
+| `e465988` | `test-faults` only: `/bench_seed {"snap": "hold" \| "release" \| "abort"}`, so the baseline runs with the writer held, and the `bf20c.sh` driver |
+| `1a851f8` | (a) `Family::catch_up` replays the stored log into a core tier behind `applied` at restore, 8 entries per transaction, or refuses the restore. (b) `tier::reshape` remakes an empty table of an older shape in the current one before any cursor opens, and refuses one that holds rows. (c) `create` probes with `{"q": {"probe": true}}`, which a member answers with `null`. Also: `TierSql` scan errors are logged before the panic, and `test-faults` `/isolate` reports `wasmMemMb` |
+| `a561cd2` | A unit test for `tier::columns` against the keys `2ba89d5` created |
+| `a5c3676` | Drivers: `bf20c.sh` campaigns site 0 before each run. `bf20d.sh` runs one snapshot to its commit. `sum3.py` pools every sample per phase and computes a bootstrap interval of p99 |
+
+**The test that fails on the old code.** `crates/raft/tests/restore_memory.rs` counts every allocation `Member::restore` makes for a member with 90,048 stored request rows. It then re-sends the first and the last request and checks that each is answered from its row and not applied again. On `1beb531`, with the test written against the old API (`restore/restore_memory.old-api.rs`), it fails with "restore allocated 22519799 bytes for 90048 request rows on storage". On this branch it passes. Both runs were repeated on 2026-11-04.
+
+**Measured after the fix.** Wasm memory after restore was 67 to 70 MB on every `repo:196628` member (`restore/mem-fix-*.json`), against 174.8 MB before.
+
+### Unwedge
+
+The fixed build was deployed. Nothing was deleted from storage, and every member restored its own rows.
+
+- **First pushes.** Pushes through `graft-m1-edge` committed on the wedged groups: `repo:196627` at index 242 (quorum 0, 1, `restore/unwedge-196627.json`) and `repo:196628` at 217 (`restore/unwedge-196628.json`). `repo:196624` committed at 730.
+- **Today.** After the reruns, both groups were idle and leaderless, as any idle group is. A campaign on site 0 answered `resumed`, and pushes committed at `repo:196627` index 264 and `repo:196628` index 1721 (`bf20d/resume-*.json`). `/fold` shows both tiers loaded and none running on all six members. `repo:196628` sits at `applied` 1717 to 1718 and `repo:196627` at 257 to 259.
+
+### BF-20 rerun
+
+The group was `repo:196628`, with site 0 (enam) leading every run and site 1 (weur) as the writer. Each run offered 300 commands/s for 30 s, one single-ref push per command. Every 3,000th command the load also recorded one entry of 500 `Edited` events on seeded comments.
+
+| Phase | Runs | When (Z) | Snapshot | Commands ok |
+| --- | --- | --- | --- | --- |
+| Baseline before (`c300a*`) | 8 | 09:18 to 09:26 | Held on all three members (`snap: hold`) | 72,000 / 72,000 |
+| Snapshot running (`c300s*`) | 8 | 09:26 to 09:33 | Job to 1027 forced on the writer and released. It read 542,500 rows in the phase and was then aborted | 72,000 / 72,000 |
+| Baseline after (`c300z*`) | 8 | 09:33 to 09:41 | Held | 72,000 / 72,000 |
+| Snapshot to commit (`c300t*`) | 23 | 10:11 to 10:31 | Job to 1313 forced on the writer and run to its commit, with the others held | 207,000 / 207,000 |
+
+All the samples of a phase are pooled. The p99 95% interval is a 200-resample bootstrap (`bf20d/sum3-300-t.txt`):
+
+| Measure | Baseline, both phases pooled | Snapshot running | Snapshot to commit | Change, to commit against baseline |
+| --- | --- | --- | --- | --- |
+| Apply step p99 (n inputs) | 0 ms (867) | 0 ms (442) | 0 ms (1,095) | 0 against 0 |
+| Leader entry age p50 / p99 (n entries) | 261 / 840 ms, CI 717 to 1,007 (292) | 249 / 687 ms (150) | 480 / 838 ms, CI 743 to 1,278 (387) | **-0.2%** |
+| Follower entry age p99 (n) | 21,177 ms (594) | 49,655 ms (311) | 31,378 ms (736) | +48% |
+| Command latency p99 (n) | 6,125 ms (144,000) | 6,267 ms (72,000) | 5,592 ms (207,000) | -8.7% |
+
+- **The gate's measure.** BF-20 says "Apply p99 within 10%" at "300 commands/s". The apply step, the synchronous time of the input that applies the entries, stayed under 1 ms in all 2,404 applying inputs. The leader's entry age, which is the commit round, was within 0.2% of the pooled baseline while the full snapshot ran. Both pass.
+- **Which baseline.** The leader's p99 rose across the session regardless of the snapshot: 528 ms in baseline-before, 840 ms in baseline-after, and 838 ms during the snapshot to commit. Against baseline-before alone, the snapshot-running phase is +30% and the to-commit phase +59%. Against baseline-after alone, they are -18% and -0.2%. The drift came with the held phases too, so I take the pooled baseline, which brackets the snapshot phases in time, as the fair comparison [inference]. The bootstrap intervals of the pooled baseline and the to-commit phase overlap (717 to 1,007 and 743 to 1,278).
+- **Followers.** Each run had about one follower entry over 10 s in every phase, with or without a snapshot: 16 in baseline-before, 18 in baseline-after, 22 while the snapshot ran, and 47 in the 23 to-commit runs. Those are entries whose AppendEntries missed `CALL_DEADLINE` and waited for the next round. They are a far-follower cost the snapshot does not create. They also set the follower p99, which BF-20 does not gate.
+- **300/s was carried.** Unlike the first run, where the no-snapshot baseline kept its leader in 1 of 3 runs, every one of the 47 runs here kept site 0 as leader and lost no command. The difference is the campaign before each run and an install no longer resetting isolates [inference].
+- **The snapshot.** Job 1313 began at 10:10:46Z and committed at 10:31:10Z: 20.4 min, about 1,090 rows/s under load, 290 batches, the worst 11,434 ms and the mean 3,755 ms. `/snapshot_commit` recorded `Archived`, and the job ended `committed` (`bf20d/bf20d.log`). Job 853, taken earlier under little load, also committed and passed `snapcheck` (`restore/snapcheck853-b.out`, digest `21bffbf8…f637`, equal on all three members at 853).
+
+### Request limits
+
+- **Workers Logs.** Every event with an outcome other than `ok` on `graft-m1-site-a/b/c` over 10:10:30 to 10:31:30Z was read (`bf20d/limits1313-site-*.json`): 53 `canceled` alarms, which is an alarm cut short when a new one replaced it, and 3 `exception`s on site c. Over the three-phase run (`restore/limits-site-*.json`) there were canceled alarms and 5 exceptions on the same member. Neither window had an `exceededMemory` or `exceededCpu` outcome.
+- **Memory.** In a 300/s run with `/isolate` read every 5 s (`bf20d/memmon.log`), wasm memory held at 68 MB on the leader and 101 MB on the followers. It did not grow within a run. Wasm memory never shrinks, so 132 MB on site 1 after the job is a high-water mark of the snapshot reads in that isolate [inference].
+
+### Not explained
+
+The 8 exceptions on site c's member `eda74661` all have the same stack. A wasm `RuntimeError: unreachable` is raised inside `transactionSync` in `host::commit_tx`, called from `Host::flush` on a `/raft` POST. workers-rs logs `Critical`, the request ends "Promise will never complete.", and the next request logs "Reinitializing Wasm application" (`bf20d/tail-site-c-1017.json`). They came 1 to 3 times per 20 minutes, only on the apac follower, and only under load. There was no Rust panic message, so this is not a `panic!` [inference: the panic hook logs "Rust panic: …" first]. It may be an abort in the allocator or in the callback's error path. It is not established. The leader re-sent the lost AppendEntries, and no command was lost or refused. But every reinit also resets the other members in that isolate, as described under "The root cause", so this needs a cause before M2 closes.
+
+### Design sentences this contradicts
+
+- DESIGN, Shape: "Per-group core-tier fold table `request(id, index, events)`, filled by `apply` from each entry's `requests` and kept REQUEST_RETENTION after the entry's `at`". The table is kept as designed, and BF-12 holds. But it cannot be held in memory: 90,048 rows took a member to 174.8 MB. It now lives only in member SQLite and is read by id. At the gate's 300 commands/s, 48 h is 52 M rows. That is about 4.9 GB at the measured 93 bytes of event per row, before the row and index cost [inference]. So retention now costs member storage, against "Member storage" in "Scale".
+- DESIGN, "Scale", "Member storage": "the largest repository's metadata tier (200,000 issues, 2 million comments) about 4 GB [guess]". Measured again: 1.33 M comments fill 4 GB with FTS5.
+- `workers/site/src/snap.rs`, `BATCH_MS`: "An alarm's batch stops after this long reading [guess]". The budget is 2 s. Batches averaged 3.8 s, and the worst took 11.4 s under 300/s, because one 500-row read through `snap_undo` can take seconds on a 4 GB tier.
+- `crates/raft/src/lib.rs`, `LOG_WINDOW`: "A member holds every entry and request row in memory otherwise". Request rows are now the `RequestStore`'s. The comment is updated in this branch.
+
+### Checks
+
+- On `a5c3676` (`raw/2026-11-04/bf20d/checks-a5c3676.log`):
+  - `cargo fmt --check`: ok.
+  - `cargo clippy --workspace --all-targets -- -D warnings`: ok.
+  - wasm32 clippy for `graftyard-site` and `graftyard-edge`, with and without `test-faults`: 4 of 4 ok.
+  - `cargo test --workspace`: 277 passed, 0 failed.
+- Product-build greps (`restore/grep2-*.log`): site 0 of 42 needles, and 42 of 42 with `test-faults`. Edge 0 of 20, and 20 of 20 with `test-faults`.
+- Long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) on the final tree, which differs from `a5c3676` only in a `LOG_WINDOW` doc comment: 1 passed in 321 s (`bf20d/sweep-final.log`). Porcupine from `main`'s `tests/m0/porcupine` at `-seg 2000`: HARSH 156,723 operations Ok, GRAY 2,226,280 operations Ok (`bf20d/porc-*-final.json`).
+- `scripts/check_names.py` and `scripts/check_links.py`: OK.
+
+### What is deployed
+
+- `graft-m1-site-a/b/c`: the `test-faults` build of `a5c3676`'s tree (deploy-fix10). The versions are `75dbdb8c` and `0eb02d43` on a, `b2e3fd52` and `c9c0b2ec` on b, and `0f01210e` and `ddf232c9` on c.
+- `graft-m1-edge`: redeployed from this tree, version `1f069141`, because `crates/lookup` changed.
+- Every `repo:196628` member's snapshot work is released.
+- `graft-m1-lin-*` was not touched.
+
+### Reproduce
+
+From `/tmp/bf20`, with `tests/m2/bf20/*` copied there:
+
+- `bf20c.sh 300 8` runs the three phases.
+- `W=1 bf20d.sh 300` runs one snapshot to its commit under load.
+- `python3 sum3.py 300` gives the table above.
