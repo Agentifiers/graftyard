@@ -66,8 +66,10 @@ pub struct PushReport {
 }
 
 impl PushReport {
-    pub fn of(acked: &Acked<PushOut>) -> PushReport {
-        PushReport { refs: acked.out.outcomes(), status: b64::encode(&crate::smart::report_status(acked)) }
+    /// `None` for an output that is not a push's.
+    pub fn of<T: crate::smart::PushOutOf>(acked: &Acked<T>) -> Option<PushReport> {
+        let refs = acked.out.push_out()?.outcomes();
+        Some(PushReport { refs, status: b64::encode(&crate::smart::report_status(acked)?) })
     }
 
     pub fn status_bytes(&self) -> Option<Vec<u8>> {
@@ -116,7 +118,7 @@ pub fn outcome_wire(o: &Result<Acked<PushOut>, CommitError<PushErr>>) -> PushOut
     match o {
         Ok(a) => PushOutcome::Ok(OkWire {
             index: a.index.0,
-            out: PushReport::of(a),
+            out: PushReport::of(a).expect("a push's output"),
             quorum: a.quorum().sites().iter().map(|s| s.0).collect(),
         }),
         Err(CommitError::Refused { index, err }) => PushOutcome::Refused(RefusedWire::of(err, index.0)),

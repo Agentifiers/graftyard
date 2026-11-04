@@ -17,6 +17,7 @@ pub mod key;
 pub mod mem;
 pub mod pack;
 pub mod pkt;
+pub mod prsync;
 pub mod refs;
 pub mod repo;
 pub mod shard;

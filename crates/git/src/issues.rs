@@ -53,6 +53,28 @@ pub enum MergeabilityResult {
     Conflict { paths: SmallVec<[Box<str>; 4]> },
 }
 
+/// SHARED's `Consumer` ("Event fan-out"), with DESIGN's `MergeQueue`, `Counts`, and `Insights`. Each keeps its own
+/// cursor per chain. A variant's position is its stored tag: add new ones at the end only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum Consumer {
+    Webhooks,
+    ActionsTrigger,
+    RunOwner,
+    PrSync,
+    MergeQueue,
+    Notify,
+    Search,
+    Audit,
+    Counts,
+    Insights,
+}
+
+impl Consumer {
+    pub fn tag(self) -> i64 {
+        self as i64
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeMethod {
     Merge,
