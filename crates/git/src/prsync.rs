@@ -278,16 +278,19 @@ pub struct SyncOut {
     pub cursor: Index,
 }
 
-/// A request id per (batch, command of the batch), so a redelivered batch re-sends under the same ids and its
-/// commands are answered from their `request` rows.
-/// The top 16 bits are a tag no edge-minted id has before the year 10889, since those hold milliseconds there.
-pub fn request_id(from: Index, through: Index, part: u16) -> RequestId {
-    let mask = (1u128 << 48) - 1;
-    let v = (0x5059u128 << 112)
-        | ((u128::from(from.0) & mask) << 64)
-        | ((u128::from(through.0) & mask) << 16)
-        | u128::from(part);
-    RequestId(Ulid(v))
+/// A command's request id, from its content: a redelivered batch planned on the same fold re-sends the same commands
+/// under the same ids, which their `request` rows answer, and a retry planned on a fold its first attempt changed
+/// gets new ids, so no command is answered from a row of a different one. The top 16 bits are a tag no edge-minted
+/// id has before the year 10889, since those hold milliseconds there.
+pub fn request_id(c: &PrSync) -> RequestId {
+    use sha2::Digest as _;
+    let mut zeroed = c.clone();
+    zeroed.request = RequestId(Ulid(0));
+    let mut b = Vec::new();
+    graftyard_fold::canon::write(&mut b, &zeroed);
+    let h = sha2::Sha256::digest(&b);
+    let low = u128::from_be_bytes(h[..16].try_into().expect("16 bytes")) & ((1u128 << 112) - 1);
+    RequestId(Ulid((0x5059u128 << 112) | low))
 }
 
 /// The commands for a batch: the head moves and the test merges, at most `MERGE_BYTES_PER_COMMAND` of merge packs
@@ -319,13 +322,17 @@ pub fn commands(batch: &SyncBatch, views: &[PrView], merges: Vec<TestMerge>) -> 
     chunks
         .into_iter()
         .enumerate()
-        .map(|(i, merges)| PrSync {
-            from: batch.from,
-            through: (i == last).then_some(batch.through),
-            heads: if i == 0 { heads.clone() } else { Vec::new() },
-            merges,
-            unmerged: if i == 0 { unmerged.clone() } else { Vec::new() },
-            request: request_id(batch.from, batch.through, i as u16),
+        .map(|(i, merges)| {
+            let mut c = PrSync {
+                from: batch.from,
+                through: (i == last).then_some(batch.through),
+                heads: if i == 0 { heads.clone() } else { Vec::new() },
+                merges,
+                unmerged: if i == 0 { unmerged.clone() } else { Vec::new() },
+                request: RequestId(Ulid(0)),
+            };
+            c.request = request_id(&c);
+            c
         })
         .collect()
 }

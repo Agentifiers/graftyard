@@ -594,7 +594,7 @@ fn a_reopened_pull_request_is_synced_at_its_branch_tip() {
 
 #[test]
 fn the_member_wire_form_reads_a_push_and_a_sync() {
-    let c = PrSync {
+    let mut c = PrSync {
         from: Index(3),
         through: Some(Index(9)),
         heads: vec![(IssueNumber(1), oid(2))],
@@ -606,11 +606,15 @@ fn the_member_wire_form_reads_a_push_and_a_sync() {
             pack: Some(PackRef::Inline(b"PACK".to_vec())),
         }],
         unmerged: Vec::new(),
-        request: graftyard_git::prsync::request_id(Index(3), Index(9), 0),
+        request: RequestId(Ulid(0)),
     };
+    c.request = graftyard_git::prsync::request_id(&c);
+    let mut again = c.clone();
+    again.request = RequestId(Ulid(7));
+    assert_eq!(graftyard_git::prsync::request_id(&again), c.request, "the id is the content's, not the field's");
     let v = serde_json::to_value(RepoCmd::Sync(c.clone())).unwrap();
     assert!(v.get("prSync").is_some());
-    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), RepoCmd::Sync(c));
+    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), RepoCmd::Sync(c.clone()));
     let push = graftyard_git::repo::Push {
         updates: vec![RefUpdate { name: name("refs/heads/main"), expect: None, new: Some(oid(1)) }],
         atomicity: graftyard_git::refs::Atomicity::PerRef,
@@ -628,8 +632,26 @@ fn the_member_wire_form_reads_a_push_and_a_sync() {
     let v = serde_json::to_value(RepoCmd::Push(push.clone())).unwrap();
     assert!(v.is_string(), "a push keeps its base64 wire form");
     assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), RepoCmd::Push(push));
-    assert_ne!(
-        graftyard_git::prsync::request_id(Index(3), Index(9), 0),
-        graftyard_git::prsync::request_id(Index(3), Index(10), 0)
-    );
+    let mut later = c.clone();
+    later.through = Some(Index(10));
+    assert_ne!(graftyard_git::prsync::request_id(&later), c.request, "another plan, another id");
+}
+
+#[test]
+fn a_batch_split_over_two_commands_moves_the_cursor_when_its_retry_is_planned_again() {
+    let (mut g, mut p) = setup();
+    g.push("refs/heads/g", oid(20));
+    g.open(2, "refs/heads/g");
+    p.cache.pack_bytes = graftyard_git::prsync::MERGE_BYTES_PER_COMMAND / 2 + 1;
+    p.alarm(&g);
+    let b = p.queue.pop().unwrap();
+    let cmds = p.plan(&g, &b);
+    assert_eq!(cmds.len(), 2, "two merges of over half the bound each take two commands");
+    // The first command commits and the consumer dies; Queues retries, and the retry plans again on the new fold.
+    g.commit(cmds[0].clone());
+    p.consume(&mut g, &b);
+    assert_eq!(consumer_cursor(&*g.fold().core, Consumer::PrSync), b.through, "the retry moves the cursor");
+    p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1, 2]);
+    assert_once(&g);
 }
