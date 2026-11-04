@@ -143,6 +143,11 @@ pub trait Family: 'static {
     fn entry_json(_e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
         serde_json::Map::new()
     }
+    /// Test installs: more fields of a log entry on the harness's `/log` only.
+    #[cfg(feature = "test-faults")]
+    fn log_fields(_e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
+        serde_json::Map::new()
+    }
     /// Extra fold state for the BF-12 audit.
     #[cfg(feature = "test-faults")]
     fn audit(_sql: &SqlStorage, _fold: &Self::Fold, _prefix: &str) -> worker::Result<Value> {
@@ -466,6 +471,33 @@ impl Family for Repo {
         }
         m.insert("ref_updates".into(), json!(evs.iter().map(|ev| ev.updates().len()).sum::<usize>()));
         m.insert("bytes".into(), json!(raft::encode_entry(e).len()));
+        m
+    }
+    /// BF-24's driver times a head push's entry to its `TestMerged`'s on the leader's clock: the first 8 ref names an
+    /// entry updates, and each `TestMerged`.
+    #[cfg(feature = "test-faults")]
+    fn log_fields(e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
+        let mut m = serde_json::Map::new();
+        let raft::EntryBody::Events(evs) = &e.body else { return m };
+        let refs: Vec<Value> = evs
+            .iter()
+            .flat_map(|ev| ev.updates().iter())
+            .take(8)
+            .map(|u| json!([u.name.display(), u.new.map(|o| o.hex())]))
+            .collect();
+        m.insert("refs".into(), json!(refs));
+        let merged: Vec<Value> = evs
+            .iter()
+            .filter_map(|ev| match ev {
+                git::repo::RepoEvent::TestMerged { n, head, result, .. } => Some(json!({
+                    "n": n.0,
+                    "head": head.hex(),
+                    "clean": matches!(result, git::issues::MergeabilityResult::Clean { .. }),
+                })),
+                _ => None,
+            })
+            .collect();
+        m.insert("testMerged".into(), json!(merged));
         m
     }
     /// A member joined with no owner holds a fold no push can write (`may_write` needs the owner), so it is trusted

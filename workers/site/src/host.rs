@@ -1960,6 +1960,7 @@ impl<F: Family> Host<F> {
             let mut row = json!({
                 "index": e.index.0,
                 "term": e.term.0,
+                "at": e.at.0,
                 "digest": hex(blob(&r[1])?),
                 "committed": e.index.0 <= commit,
                 "kind": match &e.body {
@@ -1971,7 +1972,7 @@ impl<F: Family> Host<F> {
                 "requests": e.requests.iter().map(|(r, _)| r.to_string()).collect::<Vec<_>>(),
             });
             // The family's fields at the top level, as `tests/m1/wp6/bf17.sh` reads `bytes` and `ref_updates`.
-            for (k, v) in F::entry_json(&e) {
+            for (k, v) in F::entry_json(&e).into_iter().chain(F::log_fields(&e)) {
                 row[k] = v;
             }
             out.push(row);
