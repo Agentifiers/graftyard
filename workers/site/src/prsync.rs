@@ -38,11 +38,15 @@ thread_local! {
     static DISPATCHERS: RefCell<HashMap<String, (u64, Dispatcher)>> = RefCell::default();
 }
 
-/// One queue message: a batch of one repository chain.
+/// One queue message: a batch of one repository chain, and the chain's placement record as its leader joined with,
+/// so the consumer skips the two `Names` and `Authz` reads (about 1 s on the test install). A message from before
+/// the record rode along has none, and the consumer reads it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub repo: i64,
     pub batch: SyncBatch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record: Option<graftyard_types::PlacementRecord>,
 }
 
 /// The leader's half, on the member's alarm.
@@ -53,12 +57,19 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             ChainId::Repo(repo) => {
                 let fold = &c.m.group_fold().fold;
                 let cursor = git::tiers::consumer_cursor(&*fold.core, git::issues::Consumer::PrSync);
-                Some((c.join.me.do_name.to_string(), c.m.term().0, repo, cursor, c.m.state().applied))
+                Some((
+                    c.join.me.do_name.to_string(),
+                    c.m.term().0,
+                    repo,
+                    cursor,
+                    c.m.state().applied,
+                    c.join.record.clone(),
+                ))
             }
             _ => None,
         })
     };
-    let Some((key, term, repo, cursor, applied)) = leading else { return };
+    let Some((key, term, repo, cursor, applied, record)) = leading else { return };
     let mut d = DISPATCHERS.with(|m| match m.borrow().get(&key) {
         Some((t, d)) if *t == term => d.clone(),
         _ => Dispatcher::default(),
@@ -68,7 +79,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
     let batch = d.batch(cursor, Timestamp(now_ms()));
     if let Some(b) = &batch {
-        let m = Message { repo: repo.0.0, batch: b.clone() };
+        let m = Message { repo: repo.0.0, batch: b.clone(), record: Some(record) };
         match h.env.queue("PRSYNC") {
             Ok(q) => match q.send(m).await {
                 Ok(()) => h.stats.borrow_mut().prsync_sent += 1,
@@ -170,12 +181,11 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
     let chain = ChainId::Repo(repo);
     let mut t = vec![now_ms()];
-    let record = match record_of(env, repo).await {
-        Ok(r) => r,
-        Err(e) => {
+    let record = match m.record.clone() {
+        Some(r) => r,
+        None => record_of(env, repo).await.inspect_err(|_| {
             RECORDS.with(|m| m.borrow_mut().remove(&repo.0.0));
-            return Err(e);
-        }
+        })?,
     };
     t.push(now_ms());
     let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
