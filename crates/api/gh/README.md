@@ -48,8 +48,12 @@ uv venv /tmp/ghes/.venv && uv pip install --python /tmp/ghes/.venv/bin/python gr
 mkdir -p /tmp/replies
 GRAFTYARD_REPLIES=/tmp/replies cargo test -p graftyard-api
 /tmp/ghes/.venv/bin/python crates/api/gh/validate.py /tmp/ghes/ghes-3.22.json /tmp/ghes/schema.docs-enterprise.graphql /tmp/replies
-/tmp/ghes/.venv/bin/python crates/api/gh/introspect.py /tmp/ghes/schema.docs-enterprise.graphql   # rewrites src/introspect.txt
+cargo run -p graftyard-api --example gen_schema -- /tmp/ghes/schema.docs-enterprise.graphql > crates/api/src/schema.txt
 ```
+
+`src/schema.txt` is generated from the pinned SDL by `examples/gen_schema.rs`, and its first line names the SDL's
+sha256. The executor takes from it which fields each type has, which fragments apply, and what `__type` answers, and
+it checks every value a resolver returns against the field's type.
 
 `validate.py` checks each GraphQL document against the SDL, then re-executes it over the reply's own values, so every
 type, nullability, enum value, and selected key is checked, and an extra key fails. It checks each REST body with

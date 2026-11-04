@@ -107,9 +107,6 @@ impl Obj for Account<'_> {
     fn type_name(&self) -> &'static str {
         if self.r.dir.is_org(self.id) { "Organization" } else { "User" }
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Actor", "RepositoryOwner", "Node", "RequestedReviewer"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let org = self.r.dir.is_org(self.id);
         Some(match f {
@@ -184,9 +181,6 @@ impl<'r> Repository<'r> {
 impl Obj for Repository<'_> {
     fn type_name(&self) -> &'static str {
         "Repository"
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "SearchResultItem"]
     }
     fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let r = self.r;
@@ -322,9 +316,6 @@ impl Node<'_> {
 impl Obj for Node<'_> {
     fn type_name(&self) -> &'static str {
         if self.it.is_pull() { "PullRequest" } else { "Issue" }
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["IssueOrPullRequest", "Node", "SearchResultItem", "Comment", "Closable", "Labelable", "Assignable"]
     }
     fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let (r, it) = (self.r, &self.it);
@@ -511,9 +502,6 @@ impl Obj for Comment<'_> {
     fn type_name(&self) -> &'static str {
         "IssueComment"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "Comment"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let r = self.r;
         let me = r.dir.viewer();
@@ -552,9 +540,6 @@ impl Obj for Review<'_> {
     fn type_name(&self) -> &'static str {
         "PullRequestReview"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "Comment"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let r = self.r;
         Some(match f {
@@ -592,9 +577,6 @@ struct Team {
 impl Obj for Team {
     fn type_name(&self) -> &'static str {
         "Team"
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["RequestedReviewer", "Node"]
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         Some(match f {
@@ -792,9 +774,6 @@ impl Obj for Run<'_> {
     fn type_name(&self) -> &'static str {
         "CheckRun"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["StatusCheckRollupContext", "Node"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let c = &self.t.rec;
         Some(match f {
@@ -832,9 +811,6 @@ struct Status<'r> {
 impl Obj for Status<'_> {
     fn type_name(&self) -> &'static str {
         "StatusContext"
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["StatusCheckRollupContext", "Node"]
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let s = &self.t.rec;

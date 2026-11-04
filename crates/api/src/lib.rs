@@ -9,5 +9,6 @@ pub mod exec;
 pub mod gql;
 pub mod graphql;
 pub mod rest;
+pub mod schema;
 pub mod view;
 pub mod wire;
