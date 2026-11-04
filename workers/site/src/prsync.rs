@@ -17,12 +17,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use graftyard_git as git;
-use graftyard_git::prsync::{ALARM_MS, Dispatcher, PrView, SyncBatch, WAIT_MS};
+use graftyard_git::prsync::{ALARM_MS, Dispatcher, SyncBatch, WAIT_MS};
 use graftyard_lookup::Bindings;
 use graftyard_raft::{Index, Role};
 use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use worker::MessageExt;
 use worker::*;
 
 use crate::family::Repo;
@@ -123,10 +124,12 @@ pub async fn consume(batch: MessageBatch<Message>, env: Env) -> Result<()> {
             }
         };
         let t0 = now_ms();
+        // From the leader's send to this handler, on two clocks.
+        let queued = t0.saturating_sub(m.timestamp().as_millis());
         match one(&env, m.body()).await {
             Ok(v) => {
                 console_log!(
-                    "prsync {} {}..{} {}ms {v}",
+                    "prsync {} {}..{} queued {queued}ms handled {}ms {v}",
                     m.body().repo,
                     m.body().batch.from.0,
                     m.body().batch.through.0,
@@ -143,17 +146,45 @@ pub async fn consume(batch: MessageBatch<Message>, env: Env) -> Result<()> {
     Ok(())
 }
 
+/// Each repository's owner and the owner's record, as the consumer last read them [guess: 60 s]. A record that
+/// moved fails the next call, which reads it again.
+const RECORD_FOR_MS: u64 = 60_000;
+
+thread_local! {
+    static RECORDS: RefCell<HashMap<i64, (u64, graftyard_types::PlacementRecord)>> = RefCell::default();
+}
+
+async fn record_of(env: &Env, repo: RepoId) -> std::result::Result<graftyard_types::PlacementRecord, String> {
+    if let Some(r) =
+        RECORDS.with(|m| m.borrow().get(&repo.0.0).filter(|(at, _)| now_ms() < at + RECORD_FOR_MS).cloned())
+    {
+        return Ok(r.1);
+    }
+    let owner = crate::member::repo_owner(env, repo).await?;
+    let record = crate::member::owner_record(env, owner).await?;
+    RECORDS.with(|m| m.borrow_mut().insert(repo.0.0, (now_ms(), record.clone())));
+    Ok(record)
+}
+
 async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
     let chain = ChainId::Repo(repo);
-    let owner = crate::member::repo_owner(env, repo).await?;
-    let record = crate::member::owner_record(env, owner).await?;
+    let mut t = vec![now_ms()];
+    let record = match record_of(env, repo).await {
+        Ok(r) => r,
+        Err(e) => {
+            RECORDS.with(|m| m.borrow_mut().remove(&repo.0.0));
+            return Err(e);
+        }
+    };
+    t.push(now_ms());
     let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
     let b = Bindings { env, sites: &site.sites };
     let (v, _) =
         graftyard_lookup::call(&b, chain, &record, "/read", &json!({ "q": { "prsync": m.batch.prs } })).await?;
-    let (cursor, views): (Index, Vec<PrView>) =
+    let git::prsync::SyncRead { cursor, views, .. } =
         serde_json::from_value(v["value"].clone()).map_err(|e| format!("prsync read answered {v}: {e}"))?;
+    t.push(now_ms());
     if cursor >= m.batch.through {
         return Ok(json!({ "skipped": cursor.0 }));
     }
@@ -163,6 +194,7 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
         let answer = merge(env, &site, repo, base, head).await?;
         merges.push(answer.test_merge(view.n, base, head).ok_or("the shard named no object id")?);
     }
+    t.push(now_ms());
     let cmds = git::prsync::commands(&m.batch, &views, merges);
     let mut events = 0;
     for c in cmds {
@@ -172,7 +204,10 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
         events +=
             done.pointer("/ok/out/Sync/events").and_then(Value::as_u64).ok_or_else(|| format!("commit: {done}"))?;
     }
-    Ok(json!({ "prs": views.len(), "events": events }))
+    t.push(now_ms());
+    // Milliseconds in each step: record, read, merges, commits.
+    let steps: Vec<u64> = t.windows(2).map(|w| w[1] - w[0]).collect();
+    Ok(json!({ "prs": views.len(), "events": events, "ms": steps }))
 }
 
 /// The test merge on this site's shard of the network. A site script binds only its own `GitShard` class
@@ -208,9 +243,7 @@ async fn merge(
 pub fn read_json(fold: &git::repo::RepoFold, prs: &Value) -> Value {
     let prs: Vec<git::issues::IssueNumber> = serde_json::from_value(prs.clone()).unwrap_or_default();
     let repo = fold.repo.unwrap_or(RepoId(DbId(0)));
-    let (cursor, views) = git::prsync::views(&fold.core, repo, &prs);
-    let mergeable: Vec<Option<bool>> = views.iter().map(PrView::mergeable).collect();
-    json!({ "cursor": cursor, "views": views, "mergeable": mergeable })
+    json!(git::prsync::SyncRead::of(&fold.core, repo, &prs))
 }
 
 /// Test installs: opens pull request `n` from `head` to `base` by recording its `PrOpened`, since the edge serves no

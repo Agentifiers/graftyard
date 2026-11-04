@@ -213,6 +213,23 @@ pub fn views(core: &dyn Read, repo: RepoId, prs: &[IssueNumber]) -> (Index, Vec<
     (consumer_cursor(core, Consumer::PrSync), views)
 }
 
+/// The leader's answer to the consumer's read (`{"q": {"prsync": [n..]}}`): the cursor, each pull request's view,
+/// and the `mergeable` GraphQL renders for each. One type on both sides of the member route, so they cannot drift.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncRead {
+    pub cursor: Index,
+    pub views: Vec<PrView>,
+    pub mergeable: Vec<Option<bool>>,
+}
+
+impl SyncRead {
+    pub fn of(core: &dyn Read, repo: RepoId, prs: &[IssueNumber]) -> SyncRead {
+        let (cursor, views) = views(core, repo, prs);
+        let mergeable = views.iter().map(PrView::mergeable).collect();
+        SyncRead { cursor, views, mergeable }
+    }
+}
+
 /// One test merge the git cache computed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestMerge {

@@ -10,7 +10,7 @@ use graftyard_git::issues::{
 };
 use graftyard_git::pack::PackRef;
 use graftyard_git::prsync::{
-    Dispatcher, MergeAnswer, PrSync, REDELIVER_AFTER_MS, REPO_FORMAT_V3, SyncBatch, TestMerge, commands, scan, views,
+    Dispatcher, MergeAnswer, PrSync, REDELIVER_AFTER_MS, REPO_FORMAT_V3, SyncBatch, SyncRead, TestMerge, commands, scan,
 };
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut};
@@ -337,7 +337,9 @@ impl Pipe {
 
     /// The consumer Worker on one batch: fresh views, the missing test merges, the batch's commands.
     fn plan(&mut self, g: &G, b: &SyncBatch) -> Vec<PrSync> {
-        let (_, vs) = views(&g.fold().core, REPO, &b.prs);
+        // Through the member route's JSON, as the consumer Worker reads it.
+        let wire = serde_json::to_value(SyncRead::of(&g.fold().core, REPO, &b.prs)).unwrap();
+        let vs = serde_json::from_value::<SyncRead>(wire).unwrap().views;
         let merges =
             vs.iter().filter_map(|v| v.needs_merge().map(|(base, head)| self.cache.merge(v.n, base, head))).collect();
         commands(b, &vs, merges)
