@@ -15,6 +15,7 @@ pub struct MemBucket {
     uploads: RefCell<Vec<(String, String)>>,
     now: Cell<u64>,
     fail_puts: Cell<bool>,
+    fail_gets: Cell<bool>,
     fail_prefix: RefCell<Option<String>>,
 }
 
@@ -25,6 +26,15 @@ impl MemBucket {
 
     pub fn fail_puts(&self, on: bool) {
         self.fail_puts.set(on);
+    }
+
+    /// Makes every `get`, `head`, and `list` fail, as an unreadable bucket does.
+    pub fn fail_gets(&self, on: bool) {
+        self.fail_gets.set(on);
+    }
+
+    fn readable(&self) -> Result<(), StoreError> {
+        if self.fail_gets.get() { Err(StoreError("injected read failure".into())) } else { Ok(()) }
     }
 
     /// Fails only puts whose key starts with `prefix`, such as markers.
@@ -80,14 +90,17 @@ impl Bucket for MemBucket {
     }
 
     async fn head(&self, key: &str) -> Result<Option<ObjectInfo>, StoreError> {
+        self.readable()?;
         Ok(self.objects.borrow().get(key).map(|(_, i)| i.clone()))
     }
 
     async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, StoreError> {
+        self.readable()?;
         Ok(self.objects.borrow().get(key).map(|(b, _)| b.clone()))
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<ObjectInfo>, StoreError> {
+        self.readable()?;
         Ok(self
             .objects
             .borrow()

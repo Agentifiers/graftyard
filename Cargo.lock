@@ -517,15 +517,18 @@ dependencies = [
 name = "graftyard-api"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "graftyard-fold",
  "graftyard-git",
  "graftyard-identity",
  "graftyard-raft",
  "graftyard-types",
+ "graftyard-wire",
  "graphql-parser",
  "postcard",
  "serde",
  "serde_json",
+ "sha2",
  "smallvec",
 ]
 
@@ -541,6 +544,7 @@ dependencies = [
  "graftyard-raft",
  "graftyard-release",
  "graftyard-types",
+ "graftyard-wire",
  "js-sys",
  "serde",
  "serde_json",
@@ -668,6 +672,16 @@ dependencies = [
  "sha2",
  "smallvec",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "graftyard-wire"
+version = "0.1.0"
+dependencies = [
+ "graftyard-types",
+ "serde_json",
+ "sha2",
+ "smallvec",
 ]
 
 [[package]]

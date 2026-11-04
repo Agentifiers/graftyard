@@ -7,7 +7,9 @@ use graftyard_git::issues::{
     AppId, BranchRule, CheckRunUpdate, CheckSuiteUpdate, CommentId, CommentTarget, IssueKind, IssueNumber, PrState,
     Protection, PullHead, RepoSettings, StatusUpdate,
 };
+use graftyard_git::issues::{AssetId, LockId, RepoReleaseId};
 use graftyard_git::refs::{ObjectId, RefName};
+use graftyard_git::tiers::{AssetRow, LfsRow, LockRow, ReleaseRow};
 use graftyard_git::tiers::{
     CommentRow, IssueRow, LabelRow, PullRow, RequiredRow, ReviewRow, Timed, VerdictRow, get_rec, int, n_key, order_key,
     pull_head, ref_key, sha_key,
@@ -320,5 +322,66 @@ impl Repo<'_> {
 
     pub fn unresolved_threads(&self, n: IssueNumber) -> u32 {
         graftyard_git::tiers::unresolved_threads(self.core, n)
+    }
+
+    /// Every release, newest id first, as `releases(orderBy: CREATED_AT DESC)` lists them: ids grow with creation.
+    pub fn releases(&self) -> Vec<(RepoReleaseId, ReleaseRow)> {
+        self.meta
+            .prefix("release", &[])
+            .into_iter()
+            .filter_map(|(k, _)| match k.first() {
+                Some(Val::Int(neg)) => Some((RepoReleaseId(DbId(-neg)), get_rec(self.meta, "release", &k)?)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn release(&self, id: RepoReleaseId) -> Option<ReleaseRow> {
+        graftyard_git::tiers::release_row(self.meta, id)
+    }
+
+    /// The release of `refs/tags/{tag}`.
+    pub fn release_by_tag(&self, tag: &str) -> Option<(RepoReleaseId, ReleaseRow)> {
+        let name = RefName::parse(format!("refs/tags/{tag}").as_bytes()).ok()?;
+        let id = graftyard_git::tiers::release_by_tag(self.meta, &name)?;
+        Some((id, self.release(id)?))
+    }
+
+    /// The latest release: of those published, neither draft nor prerelease, with `make_latest` set, the newest.
+    pub fn latest_release(&self) -> Option<RepoReleaseId> {
+        self.releases().into_iter().find(|(_, r)| !r.rec.draft && !r.rec.prerelease && r.rec.latest).map(|(i, _)| i)
+    }
+
+    /// A release's assets in upload order.
+    pub fn assets_of(&self, release: RepoReleaseId) -> Vec<(AssetId, AssetRow)> {
+        self.meta
+            .prefix("asset_by_release", &[int(release.0.0)])
+            .into_iter()
+            .filter_map(|(k, _)| match k.get(1) {
+                Some(Val::Int(id)) => Some((AssetId(DbId(*id)), get_rec(self.meta, "asset", &[int(*id)])?)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn asset(&self, id: AssetId) -> Option<AssetRow> {
+        get_rec(self.meta, "asset", &[int(id.0.0)])
+    }
+
+    /// The LFS object a `verify` committed.
+    pub fn lfs_object(&self, oid: &graftyard_types::Digest) -> Option<LfsRow> {
+        get_rec(self.meta, "lfs_object", &[graftyard_git::tiers::lfs_key(oid)])
+    }
+
+    /// Every LFS lock, in id order.
+    pub fn locks(&self) -> Vec<(LockId, LockRow)> {
+        self.meta
+            .prefix("lfs_lock", &[])
+            .into_iter()
+            .filter_map(|(k, _)| match k.first() {
+                Some(Val::Int(id)) => Some((LockId(DbId(*id)), get_rec(self.meta, "lfs_lock", &k)?)),
+                _ => None,
+            })
+            .collect()
     }
 }

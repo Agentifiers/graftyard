@@ -1,0 +1,9 @@
+{
+ "commands": [
+  "release list"
+ ],
+ "operation": "Release_fields",
+ "query": "query Release_fields{Release: __type(name: \"Release\"){fields{name}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": null
+}

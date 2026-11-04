@@ -51,6 +51,14 @@ pub enum R2Key {
         repo: RepoId,
         oid: Digest,
     },
+    /// A derived codeload archive in the warm site's bucket beside `CloneCache` entries, named by no entry and rebuilt
+    /// by `git archive` on a miss. `tree` is the commit's id joined to a hash of the archive's prefix
+    /// (`crate::blob::archive_key`).
+    ArchiveCache {
+        network: NetworkId,
+        tree: String,
+        format: crate::blob::ArchiveFormat,
+    },
     /// Marker for a committed `Pack` or `Blob`. `R2Key::committed` is the only constructor that callers use, so a
     /// marker never names another kind.
     Committed {
@@ -106,6 +114,9 @@ impl fmt::Display for R2Key {
             }
             R2Key::CloneCache { network, key, replica } => write!(f, "clone/{}/{}/{replica}", network.0.0, key.hex()),
             R2Key::Blob { repo, oid } => write!(f, "blob/{}/{}", repo.0.0, oid.hex()),
+            R2Key::ArchiveCache { network, tree, format } => {
+                write!(f, "archive-cache/{}/{tree}.{}", network.0.0, format.ext())
+            }
             R2Key::Committed { of } => match &**of {
                 R2Key::Pack { network, id } => write!(f, "committed/pack/{}/{id}", network.0.0),
                 R2Key::Blob { repo, oid } => write!(f, "committed/blob/{}/{}", repo.0.0, oid.hex()),
@@ -168,6 +179,13 @@ impl FromStr for R2Key {
                 replica: r.parse().ok().filter(|v: &u8| *r == v.to_string()).ok_or_else(bad)?,
             },
             ["blob", r, o] => R2Key::Blob { repo: RepoId(id(r)?), oid: digest(o)? },
+            ["archive-cache", n, file] => {
+                let (tree, ext) = file.split_once('.').ok_or_else(bad)?;
+                let ok = !tree.is_empty()
+                    && tree.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase() || b == b'-');
+                let format = crate::blob::ArchiveFormat::parse(ext).filter(|_| ok).ok_or_else(bad)?;
+                R2Key::ArchiveCache { network: net(n)?, tree: tree.to_owned(), format }
+            }
             ["committed", "pack", n, i] => R2Key::committed(R2Key::Pack { network: net(n)?, id: pack_id(i)? }).unwrap(),
             ["committed", "blob", r, o] => {
                 R2Key::committed(R2Key::Blob { repo: RepoId(id(r)?), oid: digest(o)? }).unwrap()
@@ -216,6 +234,12 @@ mod tests {
             },
             R2Key::CloneCache { network, key: digest, replica: 7 },
             R2Key::Blob { repo: RepoId(DbId(5)), oid: digest },
+            R2Key::ArchiveCache {
+                network,
+                tree: format!("{}-0011223344556677", "ab".repeat(20)),
+                format: crate::blob::ArchiveFormat::TarGz,
+            },
+            R2Key::ArchiveCache { network, tree: "ab".repeat(20), format: crate::blob::ArchiveFormat::Zip },
             R2Key::committed(R2Key::Pack { network, id }).unwrap(),
             R2Key::committed(R2Key::Blob { repo: RepoId(DbId(5)), oid: digest }).unwrap(),
             R2Key::Upload { network, id },
@@ -276,6 +300,10 @@ mod tests {
             format!("committed/upload/77/{id}"),
             format!("committed/pack/77/{}", id.to_lowercase()),
             "snapshot/repo:1/cold/".to_owned(),
+            "archive-cache/77/abc.tar".to_owned(),
+            "archive-cache/77/ABC.zip".to_owned(),
+            "archive-cache/77/.zip".to_owned(),
+            format!("committed/archive-cache/77/{}.zip", "a".repeat(40)),
         ] {
             assert!(bad.parse::<R2Key>().is_err(), "{bad}");
         }

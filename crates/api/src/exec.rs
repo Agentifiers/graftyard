@@ -3,8 +3,12 @@
 //! `undefinedField` errors").
 //!
 //! It implements what gh's documents use: named operations, variables with defaults, aliases, fragment spreads,
-//! inline fragments with a type condition, `__typename`, and `__type(name:)` from `introspect.txt`. Field selection
-//! on an object that does not resolve a name is the GraphQL error `undefinedField`, never a silent null.
+//! inline fragments with a type condition, `__typename`, and `__type(name:)`. The schema generated from the pinned
+//! GHES 3.22 SDL (`crate::schema`) decides which fields exist, which type conditions apply, and what each `__type`
+//! probe answers, and every value a resolver returns is checked against its field's type. A field the schema lacks,
+//! or one no resolver serves, is the GraphQL error `undefinedField`, never a silent null. A value that breaks its
+//! field's type is the error `INTERNAL` with the field null, so a resolver bug never reaches a client as a wrong
+//! shape.
 
 use std::collections::BTreeMap;
 
@@ -13,6 +17,8 @@ use graphql_parser::query::{
     Value as Gv, parse_query,
 };
 use serde_json::{Map, Value, json};
+
+use crate::schema::{Kind, Schema, TypeRef};
 
 /// One field's arguments, with variables substituted.
 pub type Args = BTreeMap<String, Value>;
@@ -43,21 +49,14 @@ impl<T: Obj + ?Sized> Obj for &T {
     fn type_name(&self) -> &'static str {
         (**self).type_name()
     }
-    fn implements(&self) -> &'static [&'static str] {
-        (**self).implements()
-    }
     fn field<'s>(&'s self, field: &str, args: &Args) -> Option<Out<'s>> {
         (**self).field(field, args)
     }
 }
 
-/// An object of a GHES type: its concrete type name, the abstract types it implements, and its fields.
+/// An object of a GHES object type: its type name, which must be an object type of the schema, and its fields.
 pub trait Obj {
     fn type_name(&self) -> &'static str;
-    /// The interfaces and unions this type belongs to, for inline fragments on them.
-    fn implements(&self) -> &'static [&'static str] {
-        &[]
-    }
     /// `None` when this resolver does not serve `field`, which the executor answers with `undefinedField`.
     fn field<'s>(&'s self, field: &str, args: &Args) -> Option<Out<'s>>;
 }
@@ -203,7 +202,7 @@ struct Ex<'a, 'q> {
 
 impl<'a, 'q> Ex<'a, 'q> {
     fn applies(o: &dyn Obj, cond: &str) -> bool {
-        cond == o.type_name() || o.implements().contains(&cond)
+        Schema::get().applies(o.type_name(), cond)
     }
 
     /// The fields of `set` that apply to `o`, in document order, with fragments flattened.
@@ -266,57 +265,212 @@ impl<'a, 'q> Ex<'a, 'q> {
         if f.name == "__type" {
             return introspect(args.get("name").and_then(Value::as_str).unwrap_or(""), &f.selection_set);
         }
-        match o.field(&f.name, &args) {
-            Some(Out::Leaf(v)) => v,
-            Some(Out::Null) => Value::Null,
-            Some(Out::Err(kind, message)) => {
-                self.errors.push(GqlError { kind, message, path: path.clone() });
-                Value::Null
-            }
-            Some(Out::Obj(c)) => self.object(c.as_ref(), &sets, path),
-            Some(Out::List(items)) => Value::Array(
-                items
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| {
-                        path.push(i.to_string());
-                        let v = self.object(c.as_ref(), &sets, path);
-                        path.pop();
-                        v
-                    })
-                    .collect(),
-            ),
+        let undefined = |path: &[String]| GqlError {
+            kind: "undefinedField",
+            message: format!("Field '{}' doesn't exist on type '{}'", f.name, o.type_name()),
+            path: path.to_vec(),
+        };
+        let Some(ty) = Schema::get().ty(o.type_name()).and_then(|t| t.field(&f.name)).map(|d| d.ty) else {
+            self.errors.push(undefined(path));
+            return Value::Null;
+        };
+        let wrong = |path: &[String], why: String| GqlError {
+            kind: "INTERNAL",
+            message: format!("{}.{} is {}: {why}", o.type_name(), f.name, ty.0),
+            path: path.to_vec(),
+        };
+        let out = match o.field(&f.name, &args) {
             None => {
-                self.errors.push(GqlError {
-                    kind: "undefinedField",
-                    message: format!("Field '{}' doesn't exist on type '{}'", f.name, o.type_name()),
-                    path: path.clone(),
-                });
-                Value::Null
+                self.errors.push(undefined(path));
+                return Value::Null;
             }
-        }
+            Some(out) => out,
+        };
+        let checked = match out {
+            Out::Leaf(v) => leaf_fits(ty, &v).map(|()| v),
+            Out::Null if ty.non_null() => Err("null".into()),
+            Out::Null => Ok(Value::Null),
+            Out::Err(kind, message) => {
+                self.errors.push(GqlError { kind, message, path: path.clone() });
+                return Value::Null;
+            }
+            Out::Obj(c) => match object_fits(ty.nullable(), c.type_name()) {
+                Ok(()) => Ok(self.object(c.as_ref(), &sets, path)),
+                Err(e) => Err(e),
+            },
+            Out::List(items) => match ty.item() {
+                None => Err("a list".into()),
+                Some(item) => {
+                    match items.iter().map(|c| object_fits(item.nullable(), c.type_name())).find(Result::is_err) {
+                        Some(e) => e.map(|()| Value::Null),
+                        None => Ok(Value::Array(
+                            items
+                                .iter()
+                                .enumerate()
+                                .map(|(i, c)| {
+                                    path.push(i.to_string());
+                                    let v = self.object(c.as_ref(), &sets, path);
+                                    path.pop();
+                                    v
+                                })
+                                .collect(),
+                        )),
+                    }
+                }
+            },
+        };
+        checked.unwrap_or_else(|why| {
+            self.errors.push(wrong(path, why));
+            Value::Null
+        })
     }
 }
 
-const INTROSPECT: &str = include_str!("introspect.txt");
+/// Whether an object of `object` may stand where the schema says `ty`.
+fn object_fits(ty: TypeRef<'_>, object: &str) -> Result<(), String> {
+    let s = Schema::get();
+    let named = ty.named();
+    if ty.item().is_some() {
+        return Err(format!("an object of {object} where a list was expected"));
+    }
+    match s.ty(object).map(|t| t.kind) {
+        Some(Kind::Object) if s.applies(object, named) => Ok(()),
+        _ => Err(format!("an object of {object}")),
+    }
+}
 
-/// `__type(name:)` for the types gh probes: `fields(includeDeprecated: true){name}` or
-/// `enumValues(includeDeprecated: true){name}`, from the pinned GHES 3.22 SDL (`gh/introspect.py`).
+/// Whether a leaf value fits a scalar or enum type: GraphQL's result coercion, checked.
+fn leaf_fits(ty: TypeRef<'_>, v: &Value) -> Result<(), String> {
+    if v.is_null() {
+        return if ty.non_null() { Err("null".into()) } else { Ok(()) };
+    }
+    if let Some(item) = ty.item() {
+        let Value::Array(a) = v else { return Err(format!("{v}, not a list")) };
+        return a.iter().try_for_each(|x| leaf_fits(item, x));
+    }
+    let name = ty.named();
+    let Some(t) = Schema::get().ty(name) else { return Err(format!("unknown type {name}")) };
+    let ok = match (t.kind, name) {
+        (Kind::Enum, _) => v.as_str().is_some_and(|s| t.values.iter().any(|(n, _)| *n == s)),
+        (Kind::Scalar, "Int") => v.as_i64().is_some_and(|i| i32::try_from(i).is_ok()),
+        (Kind::Scalar, "Float") => v.is_number(),
+        (Kind::Scalar, "Boolean") => v.is_boolean(),
+        (Kind::Scalar, "ID") => v.is_string() || v.is_i64(),
+        // Every other scalar in the GHES schema (String, DateTime, URI, HTML, GitObjectID, BigInt, ...) is a string.
+        (Kind::Scalar, _) => v.is_string(),
+        _ => false,
+    };
+    if ok { Ok(()) } else { Err(format!("{v}")) }
+}
+
+/// `__type(name:)`: `name`, `kind`, and `fields` or `enumValues` with `includeDeprecated`, each item's `name`,
+/// from the generated schema, so gh's field probes see exactly GHES 3.22's lists.
 fn introspect(name: &str, set: &SelectionSet<'_, String>) -> Value {
-    let Some(line) = INTROSPECT.lines().find(|l| l.split(' ').next() == Some(name)) else { return Value::Null };
-    let mut parts = line.split(' ').skip(1);
-    let kind = parts.next();
-    let names: Vec<Value> = parts.map(|p| json!({ "name": p.trim_end_matches('!') })).collect();
+    let Some(t) = Schema::get().ty(name) else { return Value::Null };
     let mut m = Map::new();
     for s in &set.items {
         let Selection::Field(f) = s else { continue };
         let key = f.alias.clone().unwrap_or_else(|| f.name.clone());
-        let v = match (f.name.as_str(), kind) {
-            ("fields", Some("F")) | ("enumValues", Some("E")) => Value::Array(names.clone()),
-            ("name", _) => json!(name),
+        let all = f.arguments.iter().any(|(k, v)| k == "includeDeprecated" && matches!(v, Gv::Boolean(true)));
+        let names = |items: Vec<(&str, bool)>| {
+            let pick = |n: &str| {
+                let mut o = Map::new();
+                for x in &f.selection_set.items {
+                    if let Selection::Field(x) = x {
+                        let v = if x.name == "name" { json!(n) } else { Value::Null };
+                        o.insert(x.alias.clone().unwrap_or_else(|| x.name.clone()), v);
+                    }
+                }
+                Value::Object(o)
+            };
+            Value::Array(items.into_iter().filter(|(_, dep)| all || !dep).map(|(n, _)| pick(n)).collect())
+        };
+        let v = match f.name.as_str() {
+            "name" => json!(name),
+            "kind" => json!(t.kind.introspection()),
+            "fields" if matches!(t.kind, Kind::Object | Kind::Interface) => {
+                names(t.fields.iter().map(|x| (x.name, x.deprecated)).collect())
+            }
+            "enumValues" if t.kind == Kind::Enum => names(t.values.clone()),
             _ => Value::Null,
         };
         m.insert(key, v);
     }
     Value::Object(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fake {
+        ty: &'static str,
+        number: Value,
+    }
+
+    impl Obj for Fake {
+        fn type_name(&self) -> &'static str {
+            self.ty
+        }
+        fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+            Some(match f {
+                "number" => Out::Leaf(self.number.clone()),
+                "state" => leaf("OPEN"),
+                "title" => Out::Null,
+                "repository" => obj(Fake { ty: "Issue", number: json!(1) }),
+                _ => return None,
+            })
+        }
+    }
+
+    struct Root(Fake);
+
+    impl Obj for Root {
+        fn type_name(&self) -> &'static str {
+            "Query"
+        }
+        fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+            (f == "node").then(|| obj(&self.0))
+        }
+    }
+
+    fn run(q: &str, number: Value) -> Value {
+        Request::parse(q, None, None).unwrap().run(&Root(Fake { ty: "PullRequest", number }))
+    }
+
+    #[test]
+    fn every_value_is_checked_against_the_generated_schema() {
+        let ok = run(r#"{ node(id: "x") { ... on PullRequest { number state } } }"#, json!(2));
+        assert_eq!(ok, json!({ "data": { "node": { "number": 2, "state": "OPEN" } } }));
+        // A string where `Int!` stands, a null where `String!` stands, and an `Issue` where `Repository!` stands.
+        for (q, n) in [("number", json!("2")), ("title", json!(2)), ("repository { __typename }", json!(2))] {
+            let r = run(&format!(r#"{{ node(id: "x") {{ ... on PullRequest {{ {q} }} }} }}"#), n);
+            assert_eq!(r["errors"][0]["type"], "INTERNAL", "{q}: {r}");
+        }
+        // A field GHES does not have is `undefinedField` before any resolver runs.
+        let r = run(r#"{ node(id: "x") { ... on PullRequest { nope } } }"#, json!(2));
+        assert_eq!(r["errors"][0]["type"], "undefinedField");
+        // A fragment on an interface the object implements applies; one on an unrelated type does not.
+        let r = run(r#"{ node(id: "x") { ... on Closable { __typename } ... on Issue { number } } }"#, json!(2));
+        assert_eq!(r, json!({ "data": { "node": { "__typename": "PullRequest" } } }));
+    }
+
+    #[test]
+    fn type_probes_list_exactly_ghes_fields() {
+        let q = r#"{ Release: __type(name: "Release") { fields(includeDeprecated: true) { name } } }"#;
+        let r = Request::parse(q, None, None).unwrap().run(&Root(Fake { ty: "Issue", number: json!(1) }));
+        let names: Vec<&str> =
+            r["data"]["Release"]["fields"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        let want: Vec<&str> = Schema::get().ty("Release").unwrap().fields.iter().map(|f| f.name).collect();
+        assert_eq!(names, want);
+        assert!(names.contains(&"isLatest") && names.contains(&"immutable"));
+        // gh's own probe asks with `includeDeprecated: true`; `Issue.timeline` is deprecated in GHES 3.22.
+        let probe = |all: bool| {
+            let q = format!(r#"{{ t: __type(name: "Issue") {{ fields(includeDeprecated: {all}) {{ name }} }} }}"#);
+            let r = Request::parse(&q, None, None).unwrap().run(&Root(Fake { ty: "Issue", number: json!(1) }));
+            r["data"]["t"]["fields"].as_array().unwrap().iter().any(|f| f["name"] == "timeline")
+        };
+        assert!(probe(true), "a deprecated field is listed when asked for");
+        assert!(!probe(false), "and only then");
+    }
 }

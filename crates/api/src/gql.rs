@@ -6,19 +6,20 @@
 //! (`design/SHARED.md`, "Surfaces, tiers, and oracles": `rest:projects` T2, `rest:reactions` T1), so they are empty or
 //! null, never invented.
 
+use graftyard_git::issues::RepoReleaseId;
 use graftyard_git::issues::{
     CheckConclusion, CheckRunUpdate, CheckStatus, IssueKind, IssueNumber, MergeMethod, PrState, ReviewState,
     StateReason, StatusState, StatusUpdate,
 };
 use graftyard_git::refs::{ObjectId, RefName};
-use graftyard_git::tiers::{CommentRow, LabelRow, ReviewRow, Timed};
+use graftyard_git::tiers::{CommentRow, LabelRow, ReleaseRow, ReviewRow, Timed};
 use graftyard_identity::RepoPermission;
 use graftyard_types::{AccountId, DbId, RepoId};
 use serde_json::{Value, json};
 
 use crate::exec::{Args, Obj, Out, leaf, obj};
 use crate::view::{Item, Repo, RepoRef, StateFilter};
-use crate::wire::{association, color, cursor, iso, node_id, parse_cursor};
+use crate::wire::{NodeId, NodeType, account_node, association, color, cursor, iso, parse_cursor, scoped};
 
 fn branch(name: &RefName) -> String {
     let s = name.display();
@@ -107,16 +108,13 @@ impl Obj for Account<'_> {
     fn type_name(&self) -> &'static str {
         if self.r.dir.is_org(self.id) { "Organization" } else { "User" }
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Actor", "RepositoryOwner", "Node", "RequestedReviewer"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let org = self.r.dir.is_org(self.id);
         Some(match f {
             "login" => leaf(self.r.dir.login(self.id).unwrap_or_else(|| "ghost".into())),
-            "id" => leaf(node_id(if org { "O" } else { "U" }, &[self.id.0.0])),
+            "id" => leaf(account_node(self.r.dir, self.id)),
             "name" => leaf(self.r.dir.name(self.id)),
-            "databaseId" if !org => leaf(self.id.0.0),
+            "databaseId" if !org => leaf(graftyard_wire::database_id(self.id.0.0)),
             _ => return None,
         })
     }
@@ -143,7 +141,7 @@ impl Obj for Label {
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         Some(match f {
-            "id" => leaf(node_id("LA", &[self.repo.0.0, self.id.0])),
+            "id" => leaf(NodeId::scoped(NodeType::Label, self.repo, self.id.0).encode()),
             "name" => leaf(&*self.row.name.0),
             "description" => leaf(self.row.description.as_deref()),
             "color" => leaf(color(self.row.color)),
@@ -185,20 +183,17 @@ impl Obj for Repository<'_> {
     fn type_name(&self) -> &'static str {
         "Repository"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "SearchResultItem"]
-    }
     fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let r = self.r;
         let s = r.settings().filter(|_| self.home());
         let at = &self.at;
         Some(match f {
-            "id" => leaf(node_id("R", &[at.id.0.0])),
-            "databaseId" => leaf(at.id.0.0),
+            "id" => leaf(NodeId::top(NodeType::Repository, at.id.0.0).encode()),
+            "databaseId" => leaf(graftyard_wire::database_id(at.id.0.0)),
             "name" => leaf(&*at.name),
             "nameWithOwner" => leaf(format!("{}/{}", at.owner, at.name)),
             "owner" => obj(Account { r, id: at.owner_id }),
-            "sshUrl" => leaf(format!("git@{}:{}/{}.git", r.host.0, at.owner, at.name)),
+            "sshUrl" => leaf(format!("git@{}:{}/{}.git", r.host.name(), at.owner, at.name)),
             "description" => leaf(s.as_ref().and_then(|s| s.description.as_deref().map(str::to_owned))),
             "hasIssuesEnabled" => leaf(s.as_ref().is_none_or(|s| s.has_issues)),
             "hasWikiEnabled" => leaf(s.as_ref().is_some_and(|s| s.has_wiki)),
@@ -242,6 +237,19 @@ impl Obj for Repository<'_> {
             "issues" => obj(list(r, IssueKind::Issue, a)),
             "pullRequests" => obj(list(r, IssueKind::PullRequest, a)),
             "labels" => obj(Conn::window("LabelConnection", labels(r, r.labels()), a)),
+            // `release(tagName:)` finds drafts too, as gh's `RepositoryReleaseByTag` relies on for a draft's id.
+            "release" => {
+                let tag = a.get("tagName").and_then(Value::as_str).unwrap_or("");
+                match r.release_by_tag(tag) {
+                    Some((id, row)) => obj(Release { r, id, row }),
+                    None => Out::Null,
+                }
+            }
+            "latestRelease" => match r.latest_release().and_then(|id| Some((id, r.release(id)?))) {
+                Some((id, row)) => obj(Release { r, id, row }),
+                None => Out::Null,
+            },
+            "releases" => obj(releases(r, a)),
             _ => return None,
         })
     }
@@ -315,16 +323,13 @@ pub struct Node<'r> {
 
 impl Node<'_> {
     fn pull_number_id(&self) -> String {
-        node_id(if self.it.is_pull() { "PR" } else { "I" }, &[self.r.at.id.0.0, self.it.row.id.0])
+        scoped(if self.it.is_pull() { NodeType::PullRequest } else { NodeType::Issue }, self.r, self.it.row.id.0)
     }
 }
 
 impl Obj for Node<'_> {
     fn type_name(&self) -> &'static str {
         if self.it.is_pull() { "PullRequest" } else { "Issue" }
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["IssueOrPullRequest", "Node", "SearchResultItem", "Comment", "Closable", "Labelable", "Assignable"]
     }
     fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let (r, it) = (self.r, &self.it);
@@ -511,14 +516,11 @@ impl Obj for Comment<'_> {
     fn type_name(&self) -> &'static str {
         "IssueComment"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "Comment"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let r = self.r;
         let me = r.dir.viewer();
         Some(match f {
-            "id" => leaf(node_id("IC", &[r.at.id.0.0, self.id.0])),
+            "id" => leaf(scoped(NodeType::IssueComment, r, self.id.0)),
             "author" => account(r, self.row.author),
             "authorAssociation" => leaf(association(r, self.row.author)),
             "body" => leaf(&*self.row.body),
@@ -552,13 +554,10 @@ impl Obj for Review<'_> {
     fn type_name(&self) -> &'static str {
         "PullRequestReview"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["Node", "Comment"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let r = self.r;
         Some(match f {
-            "id" => leaf(node_id("PRR", &[r.at.id.0.0, self.id.0])),
+            "id" => leaf(scoped(NodeType::PullRequestReview, r, self.id.0)),
             "author" => account(r, self.row.reviewer),
             "authorAssociation" => leaf(association(r, self.row.reviewer)),
             "submittedAt" => leaf(iso(self.row.at)),
@@ -592,9 +591,6 @@ struct Team {
 impl Obj for Team {
     fn type_name(&self) -> &'static str {
         "Team"
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["RequestedReviewer", "Node"]
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         Some(match f {
@@ -792,9 +788,6 @@ impl Obj for Run<'_> {
     fn type_name(&self) -> &'static str {
         "CheckRun"
     }
-    fn implements(&self) -> &'static [&'static str] {
-        &["StatusCheckRollupContext", "Node"]
-    }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let c = &self.t.rec;
         Some(match f {
@@ -832,9 +825,6 @@ struct Status<'r> {
 impl Obj for Status<'_> {
     fn type_name(&self) -> &'static str {
         "StatusContext"
-    }
-    fn implements(&self) -> &'static [&'static str] {
-        &["StatusCheckRollupContext", "Node"]
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let s = &self.t.rec;
@@ -895,4 +885,58 @@ pub fn search<'r>(r: &'r Repo<'r>, a: &Args) -> Out<'r> {
     let mut c = Conn::window("SearchResultItemConnection", nodes, a);
     c.extra.push(("issueCount", json!(total)));
     obj(c)
+}
+
+// ---- releases ----
+
+/// `Release`, for gh's `RepositoryReleaseByTag` and `RepositoryReleaseList`.
+struct Release<'r> {
+    r: &'r Repo<'r>,
+    id: RepoReleaseId,
+    row: ReleaseRow,
+}
+
+impl Obj for Release<'_> {
+    fn type_name(&self) -> &'static str {
+        "Release"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        let (r, rec) = (self.r, &self.row.rec);
+        let tag = rec.tag.display();
+        let tag = tag.strip_prefix("refs/tags/").map(str::to_owned).unwrap_or(tag);
+        Some(match f {
+            "id" => leaf(scoped(NodeType::Release, r, self.id.0.0)),
+            "databaseId" => leaf(graftyard_wire::database_id(self.id.0.0)),
+            "name" => leaf((!rec.name.is_empty()).then(|| rec.name.to_string())),
+            "description" => leaf((!rec.body.is_empty()).then(|| rec.body.to_string())),
+            "tagName" => leaf(tag),
+            "isDraft" => leaf(rec.draft),
+            "isPrerelease" => leaf(rec.prerelease),
+            "isLatest" => leaf(r.latest_release() == Some(self.id)),
+            "immutable" => leaf(false),
+            "createdAt" => leaf(iso(self.row.created)),
+            "publishedAt" => leaf(self.row.published.map(iso)),
+            "author" => account(r, rec.author),
+            _ => return None,
+        })
+    }
+}
+
+/// `Repository.releases(first:, after:, orderBy: {field: CREATED_AT, direction:})`, keyed by id, which grows with
+/// creation. `NAME` order is not one gh sends.
+fn releases<'r>(r: &'r Repo<'r>, a: &Args) -> Conn<'r> {
+    let mut all = r.releases();
+    if a.get("orderBy").and_then(|o| o.get("direction")).and_then(Value::as_str) == Some("ASC") {
+        all.reverse();
+    }
+    let total = all.len();
+    let after = a.get("after").and_then(Value::as_str).and_then(parse_cursor);
+    let start = after.map_or(0, |c| c as usize);
+    let n = first_or_last(a);
+    let page: Vec<(RepoReleaseId, ReleaseRow)> = all.into_iter().skip(start).take(n + 1).collect();
+    let more = page.len() > n;
+    let nodes: Vec<Box<dyn Obj + 'r>> =
+        page.into_iter().take(n).map(|(id, row)| Box::new(Release { r, id, row }) as Box<dyn Obj + 'r>).collect();
+    let end = (!nodes.is_empty()).then(|| cursor((start + nodes.len()) as i64));
+    Conn { ty: "ReleaseConnection", nodes, total, more, end, extra: Vec::new() }
 }

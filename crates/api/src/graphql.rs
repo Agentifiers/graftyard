@@ -17,7 +17,7 @@ use smallvec::SmallVec;
 use crate::exec::{Args, GqlError, Obj, Out, Request, leaf, obj};
 use crate::gql::{Node, Repository, search};
 use crate::view::Repo;
-use crate::wire::parse_node_id;
+use crate::wire::{NodeId, NodeType};
 
 /// Which repository an operation addresses: by owner and name, or by the repository id inside a node id.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,12 +45,12 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
                 let (o, n) = v.split_once('/')?;
                 Some(Target::Name { owner: o.into(), name: n.into() })
             }),
-            "node" => str_arg(&a, "id").and_then(|id| Some(Target::Id(*parse_node_id(id)?.1.first()?))),
+            "node" => str_arg(&a, "id").and_then(route_id),
             _ => a.get("input").and_then(|i| {
                 ["repositoryId", "subjectId", "pullRequestId"]
                     .iter()
                     .find_map(|k| i.get(*k).and_then(Value::as_str))
-                    .and_then(|id| Some(Target::Id(*parse_node_id(id)?.1.first()?)))
+                    .and_then(route_id)
             }),
         };
         if t.is_some() {
@@ -58,6 +58,11 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
         }
     }
     Ok(None)
+}
+
+/// The repository a node id routes to. A legacy repository-scoped id names none, so it routes nowhere.
+fn route_id(id: &str) -> Option<Target> {
+    NodeId::parse(id)?.repo().map(|r| Target::Id(r.0.0))
 }
 
 /// The `Query` root over one repository, or over none for a probe.
@@ -95,14 +100,15 @@ impl Obj for QueryRoot<'_> {
     }
 }
 
-/// The issue or pull request a node id names in this repository.
+/// The issue or pull request a node id names in this repository, in either id format.
 fn item_of(r: &Repo<'_>, id: &str) -> Option<IssueNumber> {
-    let (prefix, ids) = parse_node_id(id)?;
-    if !matches!(prefix, "I" | "PR") || ids.first() != Some(&r.at.id.0.0) {
+    let id = NodeId::parse(id)?;
+    // A legacy id names no repository: it resolves once the request named the repository another way.
+    if !matches!(id.ty, NodeType::Issue | NodeType::PullRequest) || !(id.legacy || id.repo() == Some(r.at.id)) {
         return None;
     }
-    let it = r.item_by_id(DbId(*ids.get(1)?))?;
-    (it.is_pull() == (prefix == "PR")).then_some(it.n)
+    let it = r.item_by_id(DbId(id.id()))?;
+    (it.is_pull() == (id.ty == NodeType::PullRequest)).then_some(it.n)
 }
 
 /// Runs a query. `r` is the repository `route` named, read through `fresh`, or `None` when it named none.
@@ -154,7 +160,9 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
     };
     let input = args.get("input").and_then(Value::as_object).cloned().unwrap_or_default();
     let s = |k: &str| input.get(k).and_then(Value::as_str);
-    let repo_ok = |k: &str| s(k).and_then(parse_node_id).is_some_and(|(p, ids)| p == "R" && ids == [r.at.id.0.0]);
+    let repo_ok = |k: &str| {
+        s(k).and_then(NodeId::parse).is_some_and(|n| n.ty == NodeType::Repository && n.repo() == Some(r.at.id))
+    };
     let planned = |plan, subject| Ok(Planned { field: field.clone(), plan, subject });
     match field.as_str() {
         "createIssue" => {
@@ -171,8 +179,8 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                     return Err(unprocessable(field, format!("{k} is not served")));
                 }
             }
-            let labels = ids(&input, "labelIds", "LA", r).map_err(|m| not_found(field, m))?;
-            let assignees = ids(&input, "assigneeIds", "U", r).map_err(|m| not_found(field, m))?;
+            let labels = ids(&input, "labelIds", NodeType::Label, r).map_err(|m| not_found(field, m))?;
+            let assignees = ids(&input, "assigneeIds", NodeType::User, r).map_err(|m| not_found(field, m))?;
             let op = IssueOp::OpenIssue {
                 title: s("title").unwrap_or("").into(),
                 body: s("body").unwrap_or("").into(),
@@ -187,10 +195,10 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
             }
             let head_repo = match s("headRepositoryId") {
                 None => r.at.clone(),
-                Some(id) => match parse_node_id(id) {
-                    Some(("R", ids)) if ids.len() == 1 => r
+                Some(id) => match NodeId::parse(id).filter(|n| n.ty == NodeType::Repository) {
+                    Some(n) => r
                         .dir
-                        .repo(graftyard_types::RepoId(DbId(ids[0])))
+                        .repo(graftyard_types::RepoId(DbId(n.id())))
                         .ok_or_else(|| not_found(field, "Could not resolve to a Repository with that id."))?,
                     _ => return Err(not_found(field, "Could not resolve to a Repository with that id.")),
                 },
@@ -254,17 +262,14 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
     }
 }
 
-/// Node ids of `prefix` in `input[key]`, each scoped to this repository (`[repo, id]`) or an account (`[id]`).
-fn ids(input: &Map<String, Value>, key: &str, prefix: &str, r: &Repo<'_>) -> Result<Vec<i64>, String> {
+/// Node ids of `ty` in `input[key]`: a repository-scoped type must name this repository; an account type names one id.
+fn ids(input: &Map<String, Value>, key: &str, ty: NodeType, r: &Repo<'_>) -> Result<Vec<i64>, String> {
     let Some(list) = input.get(key).and_then(Value::as_array) else { return Ok(Vec::new()) };
     list.iter()
         .map(|v| {
             let id = v.as_str().unwrap_or("");
-            match parse_node_id(id) {
-                Some((p, ids)) if p == prefix && prefix == "LA" && ids.len() == 2 && ids[0] == r.at.id.0.0 => {
-                    Ok(ids[1])
-                }
-                Some((p, ids)) if p == prefix && prefix == "U" && ids.len() == 1 => Ok(ids[0]),
+            match NodeId::parse(id) {
+                Some(n) if n.ty == ty && (!ty.repo_scoped() || n.repo() == Some(r.at.id)) => Ok(n.id()),
                 _ => Err(format!("Could not resolve to a node with the global id of '{id}'.")),
             }
         })

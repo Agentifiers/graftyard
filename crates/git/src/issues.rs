@@ -419,3 +419,43 @@ pub struct PullHead {
     pub head_sha: ObjectId,
     pub state: PrState,
 }
+
+// ---- Releases, release assets, and LFS (`design/SHARED.md`, "Event types"; `build/BUILD-PLAN.md`, M2-WP4) ----
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RepoReleaseId(pub DbId);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct AssetId(pub DbId);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LockId(pub DbId);
+
+/// SHARED's `ReleaseRecord`. `target` is the commit the tag names or will name once a draft is published. `latest` is
+/// the client's `make_latest`: of the published releases that are neither drafts nor prereleases and have it set, the
+/// newest is the latest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRecord {
+    pub tag: RefName,
+    pub target: ObjectId,
+    pub name: Box<str>,
+    pub body: Box<str>,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub latest: bool,
+    pub author: ActorId,
+}
+
+/// SHARED's `AssetRecord`. Its `blob` comes only from a `DurableBlob` (`crate::blob`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssetRecord {
+    pub name: Box<str>,
+    pub label: Option<Box<str>>,
+    pub content_type: Box<str>,
+    pub blob: crate::blob::BlobRef,
+}
+
+/// SHARED's `LfsLock(LfsLockEvent)`: a lock on one path, which `git lfs lock` takes and `git lfs unlock` releases.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LfsLockEvent {
+    Created { id: LockId, path: Box<str>, refspec: Option<RefName>, owner: AccountId },
+    Deleted { id: LockId, actor: ActorId },
+}

@@ -9,8 +9,9 @@ use std::net::TcpListener;
 use common::*;
 use graftyard_api::exec::Request;
 use graftyard_api::graphql::{Plan, plan, query, refused, render, render_merge, route};
-use graftyard_api::rest::{Page, list_commit_statuses};
+use graftyard_api::rest::list_commit_statuses;
 use graftyard_api::wire::Host;
+use graftyard_api::wire::Page;
 use graftyard_git::issue_ops::IssueOp;
 use graftyard_git::issues::{
     AppId, CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget, IssueNumber,
@@ -125,7 +126,7 @@ fn serve() {
         }),
     )
     .unwrap();
-    let host = Host("ghes.graftyard.test".into());
+    let host = Host::new("ghes.graftyard.test", false).unwrap();
     let dir = Dir::new(WRITER);
     let l = TcpListener::bind(("127.0.0.1", port)).unwrap();
     for s in l.incoming() {
@@ -177,7 +178,7 @@ fn serve() {
             let (reference, q) = rest.split_once("/statuses").unwrap_or((rest, ""));
             let reply =
                 list_commit_statuses(&c.repo(0, &host, &dir), reference, Page::parse(q.trim_start_matches('?')));
-            (reply.status, reply.body)
+            (reply.status, reply.value().clone())
         } else if path.starts_with("/api/v3/meta") {
             (200, json!({ "installed_version": "3.22.0", "verifiable_password_authentication": false }))
         } else if method == "DELETE" {

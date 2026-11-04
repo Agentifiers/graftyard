@@ -78,12 +78,6 @@ pub fn route(path: &str, query: &str) -> Option<Route> {
     })
 }
 
-/// `X-GitHub-Request-Id` in GitHub's colon-separated hex shape, carrying the whole request id.
-pub fn request_id_header(rid: graftyard_types::RequestId) -> String {
-    let h = format!("{:032X}", rid.0.0);
-    format!("{}:{}:{}:{}:{}", &h[..4], &h[4..8], &h[8..16], &h[16..24], &h[24..])
-}
-
 /// Whether the client asked for protocol v2 in its `Git-Protocol` header (`version=2`, colon-separated).
 pub fn wants_v2(git_protocol: Option<&str>) -> bool {
     git_protocol.is_some_and(|h| h.split(':').any(|kv| kv.trim() == "version=2"))
@@ -548,14 +542,6 @@ mod tests {
         );
         assert_eq!(route("/", ""), None);
         assert_eq!(route("/o", ""), None);
-    }
-
-    #[test]
-    fn the_request_id_header_has_githubs_shape_and_the_whole_id() {
-        let rid = graftyard_types::RequestId(graftyard_types::Ulid(0x0123_4567_89ab_cdef_0011_2233_4455_6677));
-        let h = request_id_header(rid);
-        assert_eq!(h, "0123:4567:89ABCDEF:00112233:44556677");
-        assert_eq!(u128::from_str_radix(&h.replace(':', ""), 16).unwrap(), rid.0.0);
     }
 
     #[test]

@@ -6,6 +6,7 @@
 //! The `worker` feature adds the Workers host: an R2 `Bucket` and the shard object's container calls, which a site
 //! script hosts.
 
+pub mod blob;
 pub mod bucket;
 pub mod clone;
 pub mod group;

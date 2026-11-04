@@ -3,11 +3,19 @@
 //! request-to-response code over a repository's fold tiers. The edge Worker hosts them (`design/DESIGN.md`, "Stack":
 //! the edge serves "HTTPS git, REST, GraphQL"); nothing here needs a Worker, so tests run them on `MemStore` tiers.
 //!
-//! The scope is the requests a pinned gh sends, captured in `gh/` (see `gh/README.md`), and nothing beyond them.
+//! M2-WP4 adds `lfs` over HTTPS, `rest:releases`, `uploads-release-assets`, `codeload-archives`, `meta-endpoint`,
+//! `rest:meta`, `rest:rate-limit`, and `DELETE /git/refs/{ref}` (`lfs`, `release`, `rest`), with blobs in the store of
+//! `graftyard_git::blob`.
+//!
+//! The scope is the requests a pinned gh and git-lfs send, captured in `gh/` and `lfs/` (see their READMEs), and
+//! nothing beyond them.
 
 pub mod exec;
 pub mod gql;
 pub mod graphql;
+pub mod lfs;
+pub mod release;
 pub mod rest;
+pub mod schema;
 pub mod view;
 pub mod wire;
