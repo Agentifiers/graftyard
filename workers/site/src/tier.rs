@@ -92,15 +92,7 @@ fn tables(schema: &Schema) -> Vec<(String, usize)> {
 pub fn ddl(schema: &Schema) -> Vec<String> {
     let mut out = Vec::new();
     for (name, n) in tables(schema) {
-        let t = sql_name(schema.tier, &name);
-        out.push(if n == 0 {
-            format!(
-                "CREATE TABLE IF NOT EXISTS \"{t}\" (one INTEGER PRIMARY KEY CHECK (one = 0), written INTEGER NOT NULL, v BLOB NOT NULL)"
-            )
-        } else {
-            let k = cols(n).join(", ");
-            format!("CREATE TABLE IF NOT EXISTS \"{t}\" ({k}, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY ({k}))")
-        });
+        out.push(create(&sql_name(schema.tier, &name), n));
     }
     if schema.tier == Tier::Metadata {
         out.push(
@@ -113,6 +105,52 @@ pub fn ddl(schema: &Schema) -> Vec<String> {
         );
     }
     out
+}
+
+fn create(t: &str, n: usize) -> String {
+    if n == 0 {
+        return format!(
+            "CREATE TABLE IF NOT EXISTS \"{t}\" (one INTEGER PRIMARY KEY CHECK (one = 0), written INTEGER NOT NULL, v BLOB NOT NULL)"
+        );
+    }
+    let k = cols(n).join(", ");
+    format!("CREATE TABLE IF NOT EXISTS \"{t}\" ({k}, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY ({k}))")
+}
+
+/// `CREATE TABLE IF NOT EXISTS` keeps a table whose key the schema has since changed: M2-WP2 gave `check_run`,
+/// `check_suite`, and `status` new keys after the BF-20 members were seeded, and the snapshot alarm's first scan of
+/// `m_check_run` failed with `no such column: k1`, panicked, and reset every member in the isolate
+/// (`tests/m2/results/m2-wp1.md`, "2026-11-04"). An empty table of the old shape is made again in the new one; a table
+/// that holds rows of the old shape refuses the restore, since its rows need a refold, not a rename.
+pub fn reshape(sql: &SqlStorage, schema: &Schema) -> worker::Result<Vec<String>> {
+    let mut made = Vec::new();
+    for (name, n) in tables(schema) {
+        let t = sql_name(schema.tier, &name);
+        // Each cursor is read to its end before the next statement: an open one holds the table, and `DROP TABLE`
+        // under it fails with SQLITE_LOCKED.
+        let have: Vec<String> = sql
+            .exec(&format!("SELECT name FROM pragma_table_info('{t}') ORDER BY cid"), None)?
+            .raw()
+            .map(|r| crate::host::text(&r?[0]).map(str::to_owned))
+            .collect::<worker::Result<_>>()?;
+        if have == columns(n) {
+            continue;
+        }
+        let rows: Vec<_> = sql.exec(&format!("SELECT 1 FROM \"{t}\" LIMIT 1"), None)?.raw().collect();
+        if !rows.is_empty() {
+            return Err(worker::Error::RustError(format!("fold table {t} holds rows keyed {have:?}, not {n} columns")));
+        }
+        sql.exec(&format!("DROP TABLE \"{t}\""), None)?;
+        sql.exec(&create(&t, n), None)?;
+        made.push(t);
+    }
+    Ok(made)
+}
+
+/// The columns `create` gives a table with an `n`-column key, in order.
+fn columns(n: usize) -> Vec<String> {
+    let key = if n == 0 { vec!["one".into()] } else { cols(n) };
+    key.into_iter().chain(["written".into(), "v".into()]).collect()
 }
 
 pub fn to_sql(v: &Val) -> SqlStorageValue {
@@ -258,8 +296,14 @@ impl Inner {
         let mut args: Vec<SqlStorageValue> = from[..m].iter().map(to_sql).collect();
         args.push(SqlStorageValue::Integer(limit as i64));
         let mut out = Vec::new();
-        for r in self.sql.exec(&q, args).expect("a fold scan").raw() {
-            let mut r = r.expect("a fold row");
+        // Workers Logs keeps a panic's stack, not its message, so the cause is logged first.
+        let fail = |what: &str, e: worker::Error| -> ! {
+            worker::console_error!("{what} of {t} from {from:?}: {e}");
+            panic!("{what} of {t}: {e}")
+        };
+        let rows = self.sql.exec(&q, args).unwrap_or_else(|e| fail("a fold scan", e));
+        for r in rows.raw() {
+            let mut r = r.unwrap_or_else(|e| fail("a fold row", e));
             let v = r.pop().expect("v");
             let w = r.pop().expect("written");
             let key: Key = r.into_iter().map(from_sql).collect();
@@ -403,4 +447,46 @@ fn search(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_fold::{Schema, TableDef};
+    use graftyard_types::Tier;
+
+    use super::{columns, create, tables};
+
+    /// The metadata tables `2ba89d5` created on the BF-20 members, before M2-WP2 rekeyed three of them.
+    const SEEDED: Schema = Schema {
+        tier: Tier::Metadata,
+        tables: &[
+            TableDef { name: "check_run", key: &["run"] },
+            TableDef { name: "check_suite", key: &["suite"] },
+            TableDef { name: "status", key: &["sha", "context", "id"] },
+            TableDef { name: "comment", key: &["id"] },
+        ],
+    };
+
+    /// `CREATE TABLE IF NOT EXISTS` with this release's DDL keeps a table created under an older key, so restore
+    /// compares each table's columns with the shape `create` makes: the rekeyed tables differ, an unchanged one does
+    /// not.
+    #[test]
+    fn a_table_created_under_an_older_key_is_told_apart_from_this_releases_shape() {
+        let now = graftyard_git::tiers::METADATA;
+        let arity = |s: &Schema, name: &str| tables(s).into_iter().find(|(t, _)| t == name).map(|(_, n)| n);
+        let mut differ = Vec::new();
+        for t in SEEDED.tables {
+            let (old, new) = (arity(&SEEDED, t.name).unwrap(), arity(&now, t.name).unwrap());
+            if columns(old) != columns(new) {
+                differ.push(t.name);
+            }
+        }
+        assert_eq!(differ, ["check_run", "check_suite", "status"]);
+        assert_eq!(columns(2), ["k0", "k1", "written", "v"]);
+        assert_eq!(columns(0), ["one", "written", "v"]);
+        assert!(
+            create("m_check_run", 2)
+                .contains("(k0, k1, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY (k0, k1))")
+        );
+    }
 }

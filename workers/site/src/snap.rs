@@ -253,6 +253,9 @@ fn placement(c: &GroupConfig) -> &Placement {
 /// One alarm's worth of a tier's snapshot: begin one if due and this member writes it; read and upload the next
 /// batch; complete it and ask the leader to commit; or end it once committed. Whether more work is waiting.
 async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
+    if held(sql)? {
+        return Ok(false);
+    }
     let Some((store, core)) = tier_store(h, t) else { return Ok(false) };
     let Some((mut job, mut buf)) = load_job(sql, t)? else {
         return begin(h, sql, t, store, &*core);
@@ -428,6 +431,18 @@ fn begin(
     save_job(sql, t, &j, &frames_header())?;
     log_job(sql, t, &j, "began")?;
     Ok(true)
+}
+
+/// Test installs set `snap_hold` so the writer starts and steps no snapshot: BF-20's no-snapshot baseline.
+#[cfg(feature = "test-faults")]
+fn held(sql: &SqlStorage) -> Result<bool> {
+    sql.exec("CREATE TABLE IF NOT EXISTS snap_hold (one INTEGER PRIMARY KEY)", None)?;
+    Ok(!rows(sql, "SELECT one FROM snap_hold", vec![])?.is_empty())
+}
+
+#[cfg(not(feature = "test-faults"))]
+fn held(_: &SqlStorage) -> Result<bool> {
+    Ok(false)
 }
 
 /// Test installs set a one-shot `snap_force` row to start a snapshot now, whatever the cadence (BF-20).
@@ -675,6 +690,42 @@ fn words(k: u64, bytes: usize) -> String {
 #[cfg(feature = "test-faults")]
 pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let sql = h.state.storage().sql();
+    // `snap`: `hold` stops this member's snapshot work, `release` resumes it, and `abort` abandons the running job
+    // of each tier, which a later one restarts from `begin`.
+    match body.get("snap").and_then(Value::as_str) {
+        Some("hold") => {
+            held(&sql)?;
+            sql.exec("INSERT OR REPLACE INTO snap_hold (one) VALUES (1)", None)?;
+            return Ok(json!({ "held": true }));
+        }
+        Some("release") => {
+            held(&sql)?;
+            sql.exec("DELETE FROM snap_hold", None)?;
+            h.arm_in(BUSY_MS);
+            return Ok(json!({ "held": false }));
+        }
+        Some("abort") => {
+            let mut aborted = Vec::new();
+            for t in [Tier::Core, Tier::Metadata] {
+                let Some((store, _)) = tier_store(h, t) else { continue };
+                let Some((job, _)) = load_job(&sql, t)? else { continue };
+                let mut st = store.clone();
+                graftyard_fold::end_snapshot(&mut st, &schema(t));
+                let mut stmts = Vec::new();
+                crate::tier::handle(&*st).seal(&mut stmts);
+                for (q, a) in stmts {
+                    sql.exec(q, a)?;
+                }
+                crate::tier::handle(&*st).flushed();
+                log_job(&sql, t, &job, "aborted")?;
+                sql.exec("DELETE FROM snap_run WHERE tier = ?", vec![i(tier_int(t))])?;
+                sql.exec("DELETE FROM snap_buf WHERE tier = ?", vec![i(tier_int(t))])?;
+                aborted.push(job.to);
+            }
+            return Ok(json!({ "aborted": aborted }));
+        }
+        _ => {}
+    }
     if let Some(t) = body.get("force").and_then(Value::as_u64) {
         sql.exec("CREATE TABLE IF NOT EXISTS snap_force (tier INTEGER PRIMARY KEY)", None)?;
         sql.exec("INSERT OR REPLACE INTO snap_force (tier) VALUES (?)", vec![i(t)])?;

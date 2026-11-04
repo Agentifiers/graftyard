@@ -93,7 +93,16 @@ pub trait Family: 'static {
         Self: Sized,
     {
     }
+    /// Brings the family's own tables to this release's shape, first thing at restore.
+    fn prepare(_sql: &SqlStorage) -> worker::Result<()> {
+        Ok(())
+    }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<Self::Fold>;
+    /// Brings a fold that keeps its own tables up to the member's `applied` from the stored log, at restore, or
+    /// refuses to restore; `apply` would otherwise meet an entry its tables do not follow.
+    fn catch_up(_storage: &worker::Storage, _fold: &Self::Fold, _applied: raft::Index) -> worker::Result<()> {
+        Ok(())
+    }
     /// A committed output's JSON. It takes the whole `Acked`, so a family can render from it what only `&Acked` may
     /// build, as the repository's `report_status` bytes (`graftyard_git::group::PushReport::of`).
     fn out_json(a: &raft::Acked<Out<Self>>) -> Value;
@@ -213,11 +222,69 @@ impl Family for Repo {
     }
     /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
     /// alarm loads it (`crate::snap`).
+    /// Before any cursor is open: `DROP TABLE` under an open statement fails with SQLITE_LOCKED, and `load` reads
+    /// the log with cursors it stops early.
+    fn prepare(sql: &SqlStorage) -> worker::Result<()> {
+        for schema in [git::tiers::CORE, git::tiers::METADATA] {
+            let made = crate::tier::reshape(sql, &schema)?;
+            if !made.is_empty() {
+                worker::console_log!("fold tables made again in this release's shape: {made:?}");
+            }
+        }
+        Ok(())
+    }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<git::repo::RepoFold> {
         let fold = Self::new_fold(sql, join);
         let caught_up = graftyard_fold::meta(&*fold.meta).applied == graftyard_fold::meta(&*fold.core).applied;
         crate::tier::handle(&*fold.meta).set_loaded(caught_up);
         Ok(fold)
+    }
+    /// A member that applied entries before its chain had tier tables (an M1 group on an M2 build) has a core tier
+    /// behind `applied`. Its next `apply` panicked, and a panic resets the wasm instance of every member in the
+    /// isolate (`tests/m2/results/m2-wp1.md`, "2026-11-04"). The stored log replays into the core tier here, 8 entries
+    /// (at most 1.5 MB each) per transaction. A log that no longer holds the missing entries refuses the restore. The
+    /// metadata tier is then loaded by the alarm (`crate::snap`).
+    fn catch_up(storage: &worker::Storage, fold: &git::repo::RepoFold, applied: raft::Index) -> worker::Result<()> {
+        use worker::Error;
+        let from = graftyard_fold::meta(&*fold.core).applied;
+        if from >= applied {
+            return Ok(());
+        }
+        let (sql, tiers) = (storage.sql(), fold.tiers());
+        let mut core = crate::tier::handle(&*fold.core).clone();
+        let mut next = from.0 + 1;
+        while next <= applied.0 {
+            let q = "SELECT idx, row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 8";
+            let page = crate::host::rows(&sql, q, vec![crate::host::i(next), crate::host::i(applied.0)])?;
+            let mut gap = page.is_empty();
+            for r in &page {
+                let idx = crate::host::int(&r[0])? as u64;
+                if idx != next {
+                    gap = true;
+                    break;
+                }
+                let e: raft::LogEntry<git::repo::RepoEvent> =
+                    codec::from_bytes(crate::host::blob(&r[1])?).map_err(|e| Error::RustError(e.to_string()))?;
+                graftyard_fold::apply(&tiers, &mut core, graftyard_types::Tier::Core, &e)
+                    .map_err(|e| Error::RustError(format!("core tier catch-up at {idx}: {e}")))?;
+                next += 1;
+            }
+            let mut stmts = Vec::new();
+            core.seal(&mut stmts);
+            crate::host::commit_tx(storage, stmts).map_err(Error::RustError)?;
+            core.flushed();
+            if gap {
+                break;
+            }
+        }
+        if next != applied.0 + 1 {
+            return Err(Error::RustError(format!(
+                "core tier at {from:?} behind applied {applied:?}, and the stored log does not hold entry {next}"
+            )));
+        }
+        let meta = graftyard_fold::meta(&*fold.meta).applied;
+        crate::tier::handle(&*fold.meta).set_loaded(meta == applied);
+        Ok(())
     }
     fn tiered() -> bool {
         true
@@ -283,6 +350,15 @@ impl Family for Repo {
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
+            // Test installs: the object's alarm as storage holds it, and the host's own idea of it.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("alarm").is_some() => Some(
+                host.state
+                    .storage()
+                    .get_alarm()
+                    .await
+                    .map(|at| json!({ "alarm": at, "armedAt": host.armed_at(), "now": crate::now_ms() })),
+            ),
             #[cfg(feature = "test-faults")]
             "/bench_seed" => Some(crate::snap::bench_seed(host, &body)),
             _ => None,

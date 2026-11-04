@@ -27,7 +27,7 @@ use graftyard_types::Timestamp;
 
 pub use edge::{Receipt, Suspect};
 pub use encode::{Enc, bootstrap, digest, encode_entry};
-pub use fold::{Command, Ev, Fold, GroupFold, Record, RequestRow, Scratch};
+pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, RequestStore, Scratch};
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
     APPEND_BYTES_MAX, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny, DepsWanted,
@@ -84,8 +84,9 @@ pub const COMMIT_HOLD: Duration = Duration::from_secs(1);
 /// [guess]; above the 24 h orphan sweep.
 pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);
 /// Applied entries a Durable Object member keeps in memory (`Member::set_log_window`); older ones are read from
-/// storage. A member holds every entry and request row in memory otherwise, which a 128 MB isolate cannot do for
-/// long (`tests/m1/results/m1-wp2.md`, the 24-hour run).
+/// storage. A member holds every entry in memory otherwise, which a 128 MB isolate cannot do for long
+/// (`tests/m1/results/m1-wp2.md`, the 24-hour run). Request rows are the `RequestStore`'s: a host keeps them on
+/// storage.
 pub const LOG_WINDOW: u64 = 1_000;
 /// Bytes of applied entries (their canonical encoding) a Durable Object member keeps in memory, and `load` reads
 /// back, beside `LOG_WINDOW` [guess]: 1,000 entries of up to `ENTRY_MAX` would be 1.5 GB against a 128 MB isolate,
