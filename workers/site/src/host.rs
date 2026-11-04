@@ -685,7 +685,9 @@ fn load_base(sql: &SqlStorage, applied: Index, floor: u64) -> Result<u64> {
 /// `GroupFold` loaded from `reg`, `request`, and `group_config` with `GroupFold::from_parts`. Entries at or below the
 /// base stay on storage; the member asks for them with `Out::catchup`. While the log is short, the loaded fold is also
 /// compared with the log replayed through `applied`. Every multi-row read goes one row at a time.
-fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result<Loaded<F>> {
+fn load<F: Family>(storage: &worker::Storage, join: &Join, retention: Duration) -> Result<Loaded<F>> {
+    let sql = &storage.sql();
+    F::prepare(sql)?;
     let state = match rows(sql, "SELECT row FROM raft_state WHERE id = 1", vec![])?.first() {
         Some(r) => {
             Some(codec::from_bytes::<raft::MemberState>(blob(&r[0])?).map_err(|e| err(format!("raft_state: {e}")))?)
@@ -729,6 +731,7 @@ fn load<F: Family>(sql: &SqlStorage, join: &Join, retention: Duration) -> Result
         return Err(err(format!("applied {applied:?} past the log's {} rows", base_index + log.len() as u64)));
     }
     let folded = F::load_fold(sql, join)?;
+    F::catch_up(storage, &folded, applied)?;
     let id_block = match rows(sql, "SELECT row FROM id_block WHERE id = 1", vec![])?.first() {
         Some(r) => Some(codec::from_bytes(blob(&r[0])?).map_err(|e| err(format!("id_block: {e}")))?),
         None => None,
@@ -878,7 +881,7 @@ impl<F: Family> Host<F> {
         let Some(join) = self.stored_join()? else { return Ok(()) };
         let site = SiteEnv::read(&self.env)?;
         let retention = request_retention(&self.env);
-        let (stored, requests) = load::<F>(&self.state.storage().sql(), &join, retention)?;
+        let (stored, requests) = load::<F>(&self.state.storage(), &join, retention)?;
         *self.requests.borrow_mut() = Some(requests);
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
         // Everything `load` read back is durable.
@@ -1343,7 +1346,10 @@ impl<F: Family> Host<F> {
                             // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
                                 core.m.fresh(&g).map(|f| {
-                                    let body = if q.get("dep").is_some() {
+                                    // `probe`: only that a member leads (`graftyard_lookup::create`).
+                                    let body = if q.get("probe").is_some() {
+                                        Value::Null
+                                    } else if q.get("dep").is_some() {
                                         json!(hex(&F::fold_bytes(f.fold())))
                                     } else if let Some(rid) = q.get("request").and_then(Value::as_str) {
                                         // The sweeper's `RequestSource`: the row at the same applied index.
@@ -1808,6 +1814,11 @@ impl<F: Family> Host<F> {
 
     fn arm(self: &Rc<Self>) {
         self.arm_in(DRAIN_CHECK_MS);
+    }
+
+    #[cfg(feature = "test-faults")]
+    pub fn armed_at(&self) -> u64 {
+        self.alarm_at.get()
     }
 
     /// Arms the object's one alarm `ms` from now, unless one is set sooner.

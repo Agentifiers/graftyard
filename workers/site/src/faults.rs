@@ -249,6 +249,13 @@ pub async fn site_down(env: &Env) -> bool {
     plan.site == Some(me) && plan.from <= now && now < plan.until && plan.rate.is_none_or(roll)
 }
 
+fn wasm_mem_mb() -> f64 {
+    #[cfg(target_arch = "wasm32")]
+    return core::arch::wasm32::memory_size::<0>() as f64 * 65_536.0 / 1e6;
+    #[cfg(not(target_arch = "wasm32"))]
+    0.0
+}
+
 /// This isolate's counters, for `/isolate`.
 pub fn isolate_json(env: &Env) -> Value {
     let p = plan(env);
@@ -257,6 +264,8 @@ pub fn isolate_json(env: &Env) -> Value {
         json!({
             "isolate": i.id,
             "since": i.since,
+            // The isolate's wasm linear memory, which only grows: a member restore or a large read shows here first.
+            "wasmMemMb": wasm_mem_mb(),
             "plan": { "failCall": p.fail_call, "dropAppendReply": p.drop_append_reply },
             "rolls": i.rolls,
             "counts": i.counts,

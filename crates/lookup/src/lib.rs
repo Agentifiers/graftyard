@@ -636,7 +636,10 @@ pub async fn create(
     record: &PlacementRecord,
     join: &Value,
 ) -> std::result::Result<(), String> {
-    let probe = json!({ "q": {} }).to_string();
+    // A read that answers nothing of the fold: a repository's `{"q": {}}` is every ref, and at 303,144 refs it ran
+    // the leader and the edge out of memory on every commit (`tests/m2/results/m2-wp1.md`, "2026-11-04"). A member
+    // built before `probe` answers it as `{"q": {}}`.
+    let probe = json!({ "q": { "probe": true } }).to_string();
     if let Ok(Some(_)) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
         return Ok(());
     }
@@ -655,7 +658,7 @@ pub async fn create(
     let joined = answers.iter().filter(|a| matches!(a, Some((200, _)))).count();
     if joined * 2 <= members.len() {
         // Another generation may hold the chain; the lookup finds its group through the registry rows.
-        return call(b, chain, record, "/read", &json!({ "q": {} }))
+        return call(b, chain, record, "/read", &json!({ "q": { "probe": true } }))
             .await
             .map(|_| ())
             .map_err(|e| format!("{chain}: {joined} of {} joined ({answers:?}); {e}", members.len()));

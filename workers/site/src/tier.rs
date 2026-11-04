@@ -92,15 +92,7 @@ fn tables(schema: &Schema) -> Vec<(String, usize)> {
 pub fn ddl(schema: &Schema) -> Vec<String> {
     let mut out = Vec::new();
     for (name, n) in tables(schema) {
-        let t = sql_name(schema.tier, &name);
-        out.push(if n == 0 {
-            format!(
-                "CREATE TABLE IF NOT EXISTS \"{t}\" (one INTEGER PRIMARY KEY CHECK (one = 0), written INTEGER NOT NULL, v BLOB NOT NULL)"
-            )
-        } else {
-            let k = cols(n).join(", ");
-            format!("CREATE TABLE IF NOT EXISTS \"{t}\" ({k}, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY ({k}))")
-        });
+        out.push(create(&sql_name(schema.tier, &name), n));
     }
     if schema.tier == Tier::Metadata {
         out.push(
@@ -113,6 +105,50 @@ pub fn ddl(schema: &Schema) -> Vec<String> {
         );
     }
     out
+}
+
+fn create(t: &str, n: usize) -> String {
+    if n == 0 {
+        return format!(
+            "CREATE TABLE IF NOT EXISTS \"{t}\" (one INTEGER PRIMARY KEY CHECK (one = 0), written INTEGER NOT NULL, v BLOB NOT NULL)"
+        );
+    }
+    let k = cols(n).join(", ");
+    format!("CREATE TABLE IF NOT EXISTS \"{t}\" ({k}, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY ({k}))")
+}
+
+/// `CREATE TABLE IF NOT EXISTS` keeps a table whose key the schema has since changed: M2-WP2 gave `check_run`,
+/// `check_suite`, and `status` new keys after the BF-20 members were seeded, and the snapshot alarm's first scan of
+/// `m_check_run` failed with `no such column: k1`, panicked, and reset every member in the isolate
+/// (`tests/m2/results/m2-wp1.md`, "2026-11-04"). An empty table of the old shape is made again in the new one; a table
+/// that holds rows of the old shape refuses the restore, since its rows need a refold, not a rename.
+pub fn reshape(sql: &SqlStorage, schema: &Schema) -> worker::Result<Vec<String>> {
+    let mut made = Vec::new();
+    for (name, n) in tables(schema) {
+        let t = sql_name(schema.tier, &name);
+        let want: Vec<String> = if n == 0 { vec!["one".into()] } else { cols(n) }
+            .into_iter()
+            .chain(["written".into(), "v".into()])
+            .collect();
+        // Each cursor is read to its end before the next statement: an open one holds the table, and `DROP TABLE`
+        // under it fails with SQLITE_LOCKED.
+        let have: Vec<String> = sql
+            .exec(&format!("SELECT name FROM pragma_table_info('{t}') ORDER BY cid"), None)?
+            .raw()
+            .map(|r| crate::host::text(&r?[0]).map(str::to_owned))
+            .collect::<worker::Result<_>>()?;
+        if have == want {
+            continue;
+        }
+        let rows: Vec<_> = sql.exec(&format!("SELECT 1 FROM \"{t}\" LIMIT 1"), None)?.raw().collect();
+        if !rows.is_empty() {
+            return Err(worker::Error::RustError(format!("fold table {t} holds rows keyed {have:?}, not {want:?}")));
+        }
+        sql.exec(&format!("DROP TABLE \"{t}\""), None)?;
+        sql.exec(&create(&t, n), None)?;
+        made.push(t);
+    }
+    Ok(made)
 }
 
 pub fn to_sql(v: &Val) -> SqlStorageValue {
@@ -258,8 +294,14 @@ impl Inner {
         let mut args: Vec<SqlStorageValue> = from[..m].iter().map(to_sql).collect();
         args.push(SqlStorageValue::Integer(limit as i64));
         let mut out = Vec::new();
-        for r in self.sql.exec(&q, args).expect("a fold scan").raw() {
-            let mut r = r.expect("a fold row");
+        // Workers Logs keeps a panic's stack, not its message, so the cause is logged first.
+        let fail = |what: &str, e: worker::Error| -> ! {
+            worker::console_error!("{what} of {t} from {from:?}: {e}");
+            panic!("{what} of {t}: {e}")
+        };
+        let rows = self.sql.exec(&q, args).unwrap_or_else(|e| fail("a fold scan", e));
+        for r in rows.raw() {
+            let mut r = r.unwrap_or_else(|e| fail("a fold row", e));
             let v = r.pop().expect("v");
             let w = r.pop().expect("written");
             let key: Key = r.into_iter().map(from_sql).collect();
