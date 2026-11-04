@@ -1,0 +1,1121 @@
+[
+ {
+  "body": {
+   "ref": {
+    "name": "refs/heads/main"
+   }
+  },
+  "capture_status": 401,
+  "command": "git push",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks/verify"
+ },
+ {
+  "body": {
+   "ref": {
+    "name": "refs/heads/main"
+   }
+  },
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks/verify"
+ },
+ {
+  "body": {
+   "hash_algo": "sha256",
+   "objects": [
+    {
+     "oid": "ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5",
+     "size": 3000000
+    },
+    {
+     "oid": "9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf",
+     "size": 1000
+    }
+   ],
+   "operation": "upload",
+   "ref": {
+    "name": "refs/heads/main"
+   },
+   "transfers": [
+    "lfs-standalone-file",
+    "basic",
+    "ssh"
+   ]
+  },
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/batch"
+ },
+ {
+  "body": null,
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Authorization": "present",
+   "Content-Type": "application/octet-stream",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "PUT",
+  "path": "/_lfs/9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf"
+ },
+ {
+  "body": null,
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Authorization": "present",
+   "Content-Type": "application/octet-stream",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "PUT",
+  "path": "/_lfs/ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5"
+ },
+ {
+  "body": {
+   "oid": "ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5",
+   "size": 3000000
+  },
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/verify"
+ },
+ {
+  "body": {
+   "oid": "9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf",
+   "size": 1000
+  },
+  "capture_status": 200,
+  "command": "git push",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/verify"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "lfs locks",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "GET",
+  "path": "/o/r.git/info/lfs/locks?refspec=refs%2Fheads%2Fmain"
+ },
+ {
+  "body": {
+   "path": "a.bin",
+   "ref": {
+    "name": "refs/heads/main"
+   }
+  },
+  "capture_status": 201,
+  "command": "lfs lock",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "lfs locks after lock",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "GET",
+  "path": "/o/r.git/info/lfs/locks?refspec=refs%2Fheads%2Fmain"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "lfs unlock",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "GET",
+  "path": "/o/r.git/info/lfs/locks?path=a.bin&refspec=refs%2Fheads%2Fmain"
+ },
+ {
+  "body": {
+   "force": true,
+   "ref": {
+    "name": "refs/heads/main"
+   }
+  },
+  "capture_status": 200,
+  "command": "lfs unlock",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks/1/unlock"
+ },
+ {
+  "body": {
+   "ref": {
+    "name": "refs/heads/main"
+   }
+  },
+  "capture_status": 200,
+  "command": "lfs push --all",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks/verify"
+ },
+ {
+  "body": {
+   "hash_algo": "sha256",
+   "objects": [
+    {
+     "oid": "ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5",
+     "size": 3000000
+    },
+    {
+     "oid": "9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf",
+     "size": 1000
+    }
+   ],
+   "operation": "upload",
+   "ref": {
+    "name": "refs/heads/main"
+   },
+   "transfers": [
+    "lfs-standalone-file",
+    "basic",
+    "ssh"
+   ]
+  },
+  "capture_status": 200,
+  "command": "lfs push --all",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/batch"
+ },
+ {
+  "body": {
+   "hash_algo": "sha256",
+   "objects": [
+    {
+     "oid": "ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5",
+     "size": 3000000
+    },
+    {
+     "oid": "9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf",
+     "size": 1000
+    }
+   ],
+   "operation": "download",
+   "ref": {
+    "name": "refs/heads/main"
+   },
+   "transfers": [
+    "lfs-standalone-file",
+    "basic",
+    "ssh"
+   ]
+  },
+  "capture_status": 401,
+  "command": "clone2",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/batch"
+ },
+ {
+  "body": {
+   "hash_algo": "sha256",
+   "objects": [
+    {
+     "oid": "ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5",
+     "size": 3000000
+    },
+    {
+     "oid": "9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf",
+     "size": 1000
+    }
+   ],
+   "operation": "download",
+   "ref": {
+    "name": "refs/heads/main"
+   },
+   "transfers": [
+    "lfs-standalone-file",
+    "basic",
+    "ssh"
+   ]
+  },
+  "capture_status": 200,
+  "command": "clone2",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/objects/batch"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "clone2",
+  "headers": {
+   "Authorization": "present",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "GET",
+  "path": "/_lfs/ac123329e9d3b426958717625e98b48b5bc2bffdca147846df4a0283a09336a5"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "clone2",
+  "headers": {
+   "Authorization": "present",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "GET",
+  "path": "/_lfs/9333ea8e2dc08ba2f7f46b75bd20f52635adbad7d7ac294c3f8b76c530e858cf"
+ },
+ {
+  "body": {
+   "ref": {
+    "name": "refs/tags/v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "lfs pull",
+  "headers": {
+   "Accept": "application/vnd.git-lfs+json",
+   "Authorization": "present",
+   "Content-Type": "application/vnd.git-lfs+json; charset=utf-8",
+   "User-Agent": "git-lfs/3.8.0 (GitHub; linux amd64; go 1.27.0-X:nodwarf5)"
+  },
+  "method": "POST",
+  "path": "/o/r.git/info/lfs/locks/verify"
+ },
+ {
+  "body": {
+   "draft": false,
+   "generate_release_notes": true,
+   "prerelease": false,
+   "tag_name": "v1"
+  },
+  "capture_status": 201,
+  "command": "release create --generate-notes",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/v3/repos/o/r/releases"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release upload",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release upload",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "bytes": 3,
+   "sha256": "98ea6e4f216f2fb4b69fff9b3a44842c38686ca685f3f55dc48c5d3fb1107be4"
+  },
+  "capture_status": 201,
+  "command": "release upload",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/x-gtar",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/uploads/repos/o/r/releases/1/assets?label=&name=app.tgz"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release upload --clobber",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release upload --clobber",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "bytes": 6,
+   "sha256": "1ab094ade32450c63a421b4dda9fa4351896c54c8073795d64786ac97da000eb"
+  },
+  "capture_status": 201,
+  "command": "release upload --clobber",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "text/plain; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/uploads/repos/o/r/releases/1/assets?label=&name=notes.txt"
+ },
+ {
+  "body": {
+   "query": "query Release_fields{Release: __type(name: \"Release\"){fields{name}}}"
+  },
+  "capture_status": 200,
+  "command": "release list",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseList($direction:OrderDirection!$endCursor:String$name:String!$owner:String!$perPage:Int!){repository(owner: $owner, name: $name){releases(first: $perPage, orderBy: {field: CREATED_AT, direction: $direction}, after: $endCursor){nodes{name,tagName,isDraft,immutable,isLatest,isPrerelease,createdAt,publishedAt},pageInfo{hasNextPage,endCursor}}}}",
+   "variables": {
+    "direction": "DESC",
+    "endCursor": null,
+    "name": "r",
+    "owner": "o",
+    "perPage": 30
+   }
+  },
+  "capture_status": 200,
+  "command": "release list",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release view",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release view",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release download",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download",
+  "headers": {
+   "Accept": "application/octet-stream",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/assets/101"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download",
+  "headers": {
+   "Accept": "application/octet-stream",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/assets/100"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download -p",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release download -p",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download -p",
+  "headers": {
+   "Accept": "application/octet-stream",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/assets/100"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download --archive=tar.gz",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release download --archive=tar.gz",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 302,
+  "command": "release download --archive=tar.gz",
+  "headers": {
+   "Accept": "application/octet-stream, application/json",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/tarball/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download --archive=tar.gz",
+  "headers": {
+   "Accept": "application/octet-stream, application/json",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/_codeload/o/r/legacy.tar.gz/refs/tags/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download --archive=zip",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release download --archive=zip",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 302,
+  "command": "release download --archive=zip",
+  "headers": {
+   "Accept": "application/octet-stream, application/json",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/zipball/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release download --archive=zip",
+  "headers": {
+   "Accept": "application/octet-stream, application/json",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/_codeload/o/r/legacy.zip/refs/tags/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 404,
+  "command": "release create notes",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "HEAD",
+  "path": "/api/v3/repos/o/r/releases/tags/v2"
+ },
+ {
+  "body": {
+   "body": "x",
+   "draft": true,
+   "prerelease": false,
+   "tag_name": "v2",
+   "target_commitish": "main"
+  },
+  "capture_status": 201,
+  "command": "release create notes",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/v3/repos/o/r/releases"
+ },
+ {
+  "body": {
+   "bytes": 3,
+   "sha256": "98ea6e4f216f2fb4b69fff9b3a44842c38686ca685f3f55dc48c5d3fb1107be4"
+  },
+  "capture_status": 201,
+  "command": "release create notes",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/x-gtar",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/uploads/repos/o/r/releases/2/assets?label=&name=app.tgz"
+ },
+ {
+  "body": {
+   "draft": false
+  },
+  "capture_status": 200,
+  "command": "release create notes",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "PATCH",
+  "path": "/api/v3/repos/o/r/releases/2"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release upload --clobber same name",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release upload --clobber same name",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 204,
+  "command": "release upload --clobber same name",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "DELETE",
+  "path": "/api/v3/repos/o/r/releases/assets/100"
+ },
+ {
+  "body": {
+   "bytes": 3,
+   "sha256": "98ea6e4f216f2fb4b69fff9b3a44842c38686ca685f3f55dc48c5d3fb1107be4"
+  },
+  "capture_status": 201,
+  "command": "release upload --clobber same name",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/x-gtar",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/uploads/repos/o/r/releases/1/assets?label=&name=app.tgz"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release edit",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release edit",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": {
+   "name": "T",
+   "tag_name": "v1"
+  },
+  "capture_status": 200,
+  "command": "release edit",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "PATCH",
+  "path": "/api/v3/repos/o/r/releases/1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release delete-asset",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release delete-asset",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": "",
+  "capture_status": 204,
+  "command": "release delete-asset",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "DELETE",
+  "path": "/api/v3/repos/o/r/releases/assets/101"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v1"
+   }
+  },
+  "capture_status": 200,
+  "command": "release view --json",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release view --json",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v1"
+ },
+ {
+  "body": {
+   "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+   "variables": {
+    "name": "r",
+    "owner": "o",
+    "tagName": "v2"
+   }
+  },
+  "capture_status": 200,
+  "command": "release delete --cleanup-tag",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "POST",
+  "path": "/api/graphql"
+ },
+ {
+  "body": "",
+  "capture_status": 200,
+  "command": "release delete --cleanup-tag",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "GET",
+  "path": "/api/v3/repos/o/r/releases/tags/v2"
+ },
+ {
+  "body": "",
+  "capture_status": 204,
+  "command": "release delete --cleanup-tag",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "DELETE",
+  "path": "/api/v3/repos/o/r/releases/2"
+ },
+ {
+  "body": "",
+  "capture_status": 204,
+  "command": "release delete --cleanup-tag",
+  "headers": {
+   "Accept": "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview",
+   "Authorization": "present",
+   "Content-Type": "application/json; charset=utf-8",
+   "User-Agent": "GitHub CLI v2.102.1 Agent/amp",
+   "X-Github-Api-Version": "2022-11-28"
+  },
+  "method": "DELETE",
+  "path": "/api/v3/repos/o/r/git/refs/tags%2Fv2"
+ }
+]

@@ -1,0 +1,15 @@
+{
+ "commands": [
+  "release list"
+ ],
+ "operation": "RepositoryReleaseList",
+ "query": "query RepositoryReleaseList($direction:OrderDirection!$endCursor:String$name:String!$owner:String!$perPage:Int!){repository(owner: $owner, name: $name){releases(first: $perPage, orderBy: {field: CREATED_AT, direction: $direction}, after: $endCursor){nodes{name,tagName,isDraft,immutable,isLatest,isPrerelease,createdAt,publishedAt},pageInfo{hasNextPage,endCursor}}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "direction": "DESC",
+  "endCursor": null,
+  "name": "r",
+  "owner": "o",
+  "perPage": 30
+ }
+}

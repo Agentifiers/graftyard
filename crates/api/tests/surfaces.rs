@@ -281,7 +281,10 @@ fn every_captured_query_answers_without_errors() {
         keep(&f, &d, &vars, &reply);
         ran += 1;
     }
-    assert_eq!(ran, 25, "25 of the 29 captured documents are queries");
+    assert_eq!(
+        ran, 28,
+        "28 of the 32 captured documents are queries (the 3 `gh release` ones too; tests/blobs.rs runs them on releases)"
+    );
 }
 
 #[test]

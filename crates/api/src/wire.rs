@@ -2,7 +2,9 @@
 //! rules (headers, pagination, errors, hosts, ids) are `graftyard_wire`'s, re-exported here.
 
 use graftyard_types::{AccountId, DbId};
-pub use graftyard_wire::{Host, NodeId, NodeType, Page, Reply, cursor, iso, parse_cursor};
+pub use graftyard_wire::{
+    FieldError, Host, NodeId, NodeType, Page, Reply, cursor, iso, parse_cursor, validation_error,
+};
 use serde_json::{Value, json};
 
 use crate::view::{Directory, Repo};

@@ -52,7 +52,7 @@ pub enum R2Key {
         oid: Digest,
     },
     /// A derived codeload archive in the warm site's bucket beside `CloneCache` entries, named by no entry and rebuilt
-    /// by `git archive` on a miss. `tree` is the tree's id joined to a hash of the archive's prefix
+    /// by `git archive` on a miss. `tree` is the commit's id joined to a hash of the archive's prefix
     /// (`crate::blob::archive_key`).
     ArchiveCache {
         network: NetworkId,

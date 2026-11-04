@@ -122,6 +122,26 @@ impl<B: Bucket> BlobStore<'_, B> {
         Ok(DurableBlob { blob: BlobRef { oid, bytes: bytes.len() as u64, sites }, _sealed: () })
     }
 
+    /// LFS `verify`: the blob the transfer placed earlier, as a `DurableBlob` again, once a HEAD of every bucket shows
+    /// the key with SHA-256 `oid` and `bytes` in two sites in two regions. A bucket that errs, lacks the key, or holds
+    /// other bytes does not count, so `verify` fails while only one bucket holds the object (BF-25).
+    pub async fn confirm(&self, repo: RepoId, oid: Digest, bytes: u64) -> Result<DurableBlob, BlobError> {
+        let key = R2Key::Blob { repo, oid }.to_string();
+        let mut results = Vec::new();
+        for (site, bucket) in self.buckets {
+            let region = self.sites.get(*site).ok_or(PlaceError::UnknownSite(*site))?.region;
+            let outcome = match bucket.head(&key).await {
+                Ok(Some(o)) if o.sha256 == Some(oid) && o.size == bytes => PutOutcome::ExistedSame,
+                Ok(Some(_)) => PutOutcome::ExistedOther,
+                Ok(None) => PutOutcome::Failed("absent".into()),
+                Err(StoreError(e)) => PutOutcome::Failed(e),
+            };
+            results.push((*site, region, outcome));
+        }
+        let sites = durable_sites(&results, self.copies)?;
+        Ok(DurableBlob { blob: BlobRef { oid, bytes, sites }, _sealed: () })
+    }
+
     /// The bytes of `blob`: the sites it names first, in table order, then any other bucket of the placement (the
     /// filler may have copied it there). A bucket that errs, lacks the key, or returns bytes whose SHA-256 is not the
     /// oid is skipped. `Ok(None)` when every bucket answered and none has a good copy; an error when some bucket could
@@ -219,21 +239,25 @@ pub trait Archiver {
     ) -> Result<Vec<u8>, String>;
 }
 
-/// One archive request, after the ref resolved to a commit and its tree.
+/// One archive request, after the ref resolved to a commit.
 pub struct ArchiveRequest<'a> {
     pub network: NetworkId,
+    /// The commit's hex id.
     pub commit: &'a str,
-    /// The commit's tree: the cache key, so two refs on one tree share an object.
-    pub tree: &'a str,
     pub prefix: &'a str,
     pub format: ArchiveFormat,
 }
 
-/// Where the cached object lives. The prefix is part of the bytes, so it is part of the key: the design's
-/// `ArchiveCache { network, tree, format }` names two different archives when two refs name one tree. This hashes the
-/// prefix into the key's tree segment [inference: the design's key leaves the prefix out].
+/// Where the cached object lives. The design's key is `ArchiveCache { network, tree, format }`, but `git archive` of a
+/// commit writes the commit's time into every entry and the prefix is part of the bytes, so two commits on one tree,
+/// or one commit under two prefixes, are different archives. The key's `tree` segment holds the commit id and a hash
+/// of the prefix instead [inference].
 pub fn archive_key(r: &ArchiveRequest<'_>) -> R2Key {
-    R2Key::ArchiveCache { network: r.network, tree: format!("{}-{}", r.tree, prefix_hash(r.prefix)), format: r.format }
+    R2Key::ArchiveCache {
+        network: r.network,
+        tree: format!("{}-{}", r.commit, prefix_hash(r.prefix)),
+        format: r.format,
+    }
 }
 
 fn prefix_hash(prefix: &str) -> String {
@@ -329,6 +353,25 @@ mod tests {
     }
 
     #[test]
+    fn confirm_needs_two_regions_holding_the_same_bytes() {
+        let sites = tri();
+        let (a, b, c) = (MemBucket::default(), MemBucket::default(), MemBucket::default());
+        let bk = [(SiteId(0), &a), (SiteId(1), &b), (SiteId(2), &c)];
+        let s = BlobStore { sites: &sites, buckets: &bk, copies: Copies::TwoRegions };
+        let blob = block_on(s.place(REPO, b"obj", None, meta())).unwrap().blob();
+        assert_eq!(block_on(s.confirm(REPO, blob.oid, 3)).unwrap().blob().oid, blob.oid);
+        assert!(block_on(s.confirm(REPO, blob.oid, 4)).is_err(), "the size is checked");
+        b.fail_gets(true);
+        c.fail_gets(true);
+        assert!(
+            matches!(block_on(s.confirm(REPO, blob.oid, 3)), Err(BlobError::Place(PlaceError::TooFew { held: 1, .. }))),
+            "one readable bucket is not durable"
+        );
+        let other = sha(b"never put");
+        assert!(block_on(s.confirm(REPO, other, 9)).is_err());
+    }
+
+    #[test]
     fn the_declared_oid_and_size_must_be_the_bytes() {
         let sites = tri();
         let (a, b, c) = (MemBucket::default(), MemBucket::default(), MemBucket::default());
@@ -386,13 +429,8 @@ mod tests {
     fn an_archive_is_rebuilt_on_a_miss_with_the_same_bytes() {
         let warm = MemBucket::default();
         let git = Git(std::cell::Cell::new(0));
-        let req = ArchiveRequest {
-            network: NetworkId(DbId(7)),
-            commit: "c1",
-            tree: "t1",
-            prefix: "r-v1/",
-            format: ArchiveFormat::TarGz,
-        };
+        let req =
+            ArchiveRequest { network: NetworkId(DbId(7)), commit: "c1", prefix: "r-v1/", format: ArchiveFormat::TarGz };
         let (first, src) = block_on(archive(&warm, &git, &req)).unwrap();
         assert_eq!(src, Source::Built);
         let (again, src) = block_on(archive(&warm, &git, &req)).unwrap();

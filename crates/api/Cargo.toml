@@ -18,5 +18,6 @@ serde_json.workspace = true
 smallvec.workspace = true
 
 [dev-dependencies]
+futures-executor = "0.3"
 sha2.workspace = true
 serde.workspace = true

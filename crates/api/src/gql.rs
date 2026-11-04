@@ -6,12 +6,13 @@
 //! (`design/SHARED.md`, "Surfaces, tiers, and oracles": `rest:projects` T2, `rest:reactions` T1), so they are empty or
 //! null, never invented.
 
+use graftyard_git::issues::RepoReleaseId;
 use graftyard_git::issues::{
     CheckConclusion, CheckRunUpdate, CheckStatus, IssueKind, IssueNumber, MergeMethod, PrState, ReviewState,
     StateReason, StatusState, StatusUpdate,
 };
 use graftyard_git::refs::{ObjectId, RefName};
-use graftyard_git::tiers::{CommentRow, LabelRow, ReviewRow, Timed};
+use graftyard_git::tiers::{CommentRow, LabelRow, ReleaseRow, ReviewRow, Timed};
 use graftyard_identity::RepoPermission;
 use graftyard_types::{AccountId, DbId, RepoId};
 use serde_json::{Value, json};
@@ -236,6 +237,19 @@ impl Obj for Repository<'_> {
             "issues" => obj(list(r, IssueKind::Issue, a)),
             "pullRequests" => obj(list(r, IssueKind::PullRequest, a)),
             "labels" => obj(Conn::window("LabelConnection", labels(r, r.labels()), a)),
+            // `release(tagName:)` finds drafts too, as gh's `RepositoryReleaseByTag` relies on for a draft's id.
+            "release" => {
+                let tag = a.get("tagName").and_then(Value::as_str).unwrap_or("");
+                match r.release_by_tag(tag) {
+                    Some((id, row)) => obj(Release { r, id, row }),
+                    None => Out::Null,
+                }
+            }
+            "latestRelease" => match r.latest_release().and_then(|id| Some((id, r.release(id)?))) {
+                Some((id, row)) => obj(Release { r, id, row }),
+                None => Out::Null,
+            },
+            "releases" => obj(releases(r, a)),
             _ => return None,
         })
     }
@@ -871,4 +885,58 @@ pub fn search<'r>(r: &'r Repo<'r>, a: &Args) -> Out<'r> {
     let mut c = Conn::window("SearchResultItemConnection", nodes, a);
     c.extra.push(("issueCount", json!(total)));
     obj(c)
+}
+
+// ---- releases ----
+
+/// `Release`, for gh's `RepositoryReleaseByTag` and `RepositoryReleaseList`.
+struct Release<'r> {
+    r: &'r Repo<'r>,
+    id: RepoReleaseId,
+    row: ReleaseRow,
+}
+
+impl Obj for Release<'_> {
+    fn type_name(&self) -> &'static str {
+        "Release"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        let (r, rec) = (self.r, &self.row.rec);
+        let tag = rec.tag.display();
+        let tag = tag.strip_prefix("refs/tags/").map(str::to_owned).unwrap_or(tag);
+        Some(match f {
+            "id" => leaf(scoped(NodeType::Release, r, self.id.0.0)),
+            "databaseId" => leaf(graftyard_wire::database_id(self.id.0.0)),
+            "name" => leaf((!rec.name.is_empty()).then(|| rec.name.to_string())),
+            "description" => leaf((!rec.body.is_empty()).then(|| rec.body.to_string())),
+            "tagName" => leaf(tag),
+            "isDraft" => leaf(rec.draft),
+            "isPrerelease" => leaf(rec.prerelease),
+            "isLatest" => leaf(r.latest_release() == Some(self.id)),
+            "immutable" => leaf(false),
+            "createdAt" => leaf(iso(self.row.created)),
+            "publishedAt" => leaf(self.row.published.map(iso)),
+            "author" => account(r, rec.author),
+            _ => return None,
+        })
+    }
+}
+
+/// `Repository.releases(first:, after:, orderBy: {field: CREATED_AT, direction:})`, keyed by id, which grows with
+/// creation. `NAME` order is not one gh sends.
+fn releases<'r>(r: &'r Repo<'r>, a: &Args) -> Conn<'r> {
+    let mut all = r.releases();
+    if a.get("orderBy").and_then(|o| o.get("direction")).and_then(Value::as_str) == Some("ASC") {
+        all.reverse();
+    }
+    let total = all.len();
+    let after = a.get("after").and_then(Value::as_str).and_then(parse_cursor);
+    let start = after.map_or(0, |c| c as usize);
+    let n = first_or_last(a);
+    let page: Vec<(RepoReleaseId, ReleaseRow)> = all.into_iter().skip(start).take(n + 1).collect();
+    let more = page.len() > n;
+    let nodes: Vec<Box<dyn Obj + 'r>> =
+        page.into_iter().take(n).map(|(id, row)| Box::new(Release { r, id, row }) as Box<dyn Obj + 'r>).collect();
+    let end = (!nodes.is_empty()).then(|| cursor((start + nodes.len()) as i64));
+    Conn { ty: "ReleaseConnection", nodes, total, more, end, extra: Vec::new() }
 }

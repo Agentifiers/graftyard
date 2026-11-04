@@ -31,6 +31,10 @@ The `*.json` files here are every GraphQL document that gh 2.102.1 (`/usr/bin/gh
 `--author`, `--assignee`, `--draft`, and `--base` on `pr list` and `issue list` were also run. They send only
 `PullRequestSearch`, `IssueList`, and `PullRequestList` documents that are already here, with other variables.
 
+M2-WP4 added `RepositoryReleaseByTag-1.json`, `RepositoryReleaseList-1.json`, and `Release_fields-1.json`, the three
+documents gh sent for the `gh release` commands in `../lfs/README.md`, which also lists that run's REST and LFS
+requests.
+
 ## The oracle
 
 `decisions/DECISIONS.md`, "L0-11's oracle is the pinned GHES 3.22 descriptions and github.com", sets the oracle. These
@@ -46,7 +50,7 @@ are the files:
 ```
 uv venv /tmp/ghes/.venv && uv pip install --python /tmp/ghes/.venv/bin/python graphql-core jsonschema
 mkdir -p /tmp/replies
-GRAFTYARD_REPLIES=/tmp/replies cargo test -p graftyard-api
+GRAFTYARD_REPLIES=/tmp/replies cargo test -p graftyard-api   # surfaces.rs and blobs.rs write replies
 /tmp/ghes/.venv/bin/python crates/api/gh/validate.py /tmp/ghes/ghes-3.22.json /tmp/ghes/schema.docs-enterprise.graphql /tmp/replies
 cargo run -p graftyard-api --example gen_schema -- /tmp/ghes/schema.docs-enterprise.graphql > crates/api/src/schema.txt
 ```
@@ -57,7 +61,7 @@ it checks every value a resolver returns against the field's type.
 
 `validate.py` checks each GraphQL document against the SDL, then re-executes it over the reply's own values, so every
 type, nullability, enum value, and selected key is checked, and an extra key fails. It checks each REST body with
-jsonschema against the operation's response schema.
+jsonschema against the operation's response schema, and each LFS body against git-lfs's schema in `../lfs/schemas/`.
 
 To drive the handlers with gh itself, run `GRAFTYARD_SERVE=18471 cargo test -p graftyard-api --test gh_serve --
 --ignored`, and have the TLS capture server forward to that port.

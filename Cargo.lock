@@ -517,6 +517,7 @@ dependencies = [
 name = "graftyard-api"
 version = "0.1.0"
 dependencies = [
+ "futures-executor",
  "graftyard-fold",
  "graftyard-git",
  "graftyard-identity",

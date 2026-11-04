@@ -1,0 +1,24 @@
+{
+ "commands": [
+  "release upload",
+  "release upload --clobber",
+  "release view",
+  "release download",
+  "release download -p",
+  "release download --archive=tar.gz",
+  "release download --archive=zip",
+  "release upload --clobber same name",
+  "release edit",
+  "release delete-asset",
+  "release view --json",
+  "release delete --cleanup-tag"
+ ],
+ "operation": "RepositoryReleaseByTag",
+ "query": "query RepositoryReleaseByTag($name:String!$owner:String!$tagName:String!){repository(owner: $owner, name: $name){release(tagName: $tagName){databaseId,isDraft}}}",
+ "user_agent": "GitHub CLI v2.102.1 Agent/amp",
+ "variables": {
+  "name": "r",
+  "owner": "o",
+  "tagName": "v1"
+ }
+}
