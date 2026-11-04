@@ -1384,6 +1384,34 @@ BM-1's 24-hour half passed on `lin24b`, which answered F44, and M2-WP4's pure co
 
 **Flip.** A captured client that needs a presigned or third-party href, such as a custom LFS transfer agent; a client that classifies a label-allowed host as GitHub.com; or a measured blob that needs more than `BLOB_MAX`.
 
+### BF-20 passes after the restore fix, 2026-11-04
+
+BF-20's 2026-11-03 failure was traced and fixed on branch `restore-fix`, and the rerun passed all three clauses (`tests/m2/results/m2-wp1.md`, "2026-11-04: restore fix and BF-20 rerun").
+
+#### BF-20's wedge: restore held every `request` row in memory (F46)
+
+**Decision.** A group's `request` rows live only in member SQLite. `GroupFold` takes a `RequestStore`, and the site's `RequestSql` reads the member's own `request` table one row at a time by id, with the input's unflushed rows and the retention cut on top; restore reads no request row. BF-12's semantics are unchanged: a re-send inside `REQUEST_RETENTION` gets its stored outcome. `REQUEST_RETENTION` stays 48 h [guess]. F46 is resolved and leaves OPEN-QUESTIONS.
+
+**Why.** The trigger was restore. A probe build on `repo:196628` measured wasm memory at 35.6 MB before the `request` rows, 86.3 MB after reading 90,048 of them (8.4 MB of events), and 174.8 MB after `Member::restore`, which copies the fold, against a 128 MB isolate. An isolate out of memory is reset, and the next request restores and runs out again, so every POST that awaited anything died while synchronous GETs answered. It persisted across 4 redeploys because the `request` table survives redeploys within `REQUEST_RETENTION`. Three more defects then kept `repo:196628` down, each a panic or out-of-memory error: M1-era groups whose core tier sat at 0 behind `applied` panicked on their first apply; three metadata tables rekeyed by M2-WP2 after seeding kept their old shape under `CREATE TABLE IF NOT EXISTS`, so the snapshot alarm panicked on every scan; and the edge's lookup probe `{"q": {}}` read all 303,144 refs and ran the leader's `/read` out of memory. They spread because workers-rs 0.8.7, after any panic or wasm error, rebuilds the wasm instance for every Durable Object in the isolate, so one member's panic fails its neighbours' in-flight requests; DESIGN's chain-group instance row now says so. Fixes: `Family::catch_up` replays the stored log into a core tier behind `applied` or refuses the restore, `tier::reshape` remakes an empty table of an older shape and refuses one with rows, and the probe is `{"q": {"probe": true}}`.
+
+**Beat.** Holding the rows in memory under a count or byte bound, as F45 does for the log, which still loads them at restore and caps the duplicates a group can answer. A shorter retention, which the 24 h orphan sweep bounds below and which the M1 `names` chains' restore check refused when tried (deploys 12 and 13).
+
+**Evidence.** `crates/raft/tests/restore_memory.rs` fails on `1beb531` ("restore allocated 22519799 bytes for 90048 request rows on storage") and passes on the fix; wasm memory after restore was 67 to 70 MB on every `repo:196628` member, against 174.8 MB; commits `3eca218` and `1a851f8` [measured]. On storage the rows cost about 4.9 GB at a sustained 300 commands/s over 48 h (52 M rows at the measured 93 bytes of event each, before row and index cost) [inference]; that does not fit beside a 4 GB metadata tier and a 2 GB log under `CHILD_GROUP_AT`, while journey 9's 27.6 commands/s needs about 0.44 GB (`design/DESIGN.md`, Scale, "Member storage").
+
+**Flip.** A group that sustains near 300 commands/s for hours, whose `request` rows then push member SQLite toward `CHILD_GROUP_AT` or `SQLITE_FULL`, which needs a shorter retention or a per-group byte cap; or a duplicate lookup by id measured slow enough to show in commit latency.
+
+#### BF-20 passes, on a pooled baseline
+
+**Decision.** BF-20 is recorded as passing all three clauses at 300 commands/s, judged against the pooled held baseline.
+
+**Why.** The 3.99 GB tier was snapshotted twice; the snapshot under load, to 1313, refolds to the key's digest from both copies and matches all three members. The apply step's p99 was 0 ms in every phase. The leader's entry-age p99 was 838 ms during the snapshot against 840 ms for the pooled held baseline. Workers Logs held no memory or CPU limit outcome, and 423,000 of 423,000 commands succeeded. The baseline drifted across the session, 528 ms before and 840 ms after, with the snapshot held in both, so the drift is not the snapshot's; against the earlier baseline alone the to-commit phase is +59%, and pooling the two held phases, which bracket the snapshot in time, is a judgement call [inference]. Their bootstrap intervals overlap.
+
+**Beat.** Failing on the earlier baseline alone, which charges the session's drift to the snapshot. Passing on the later one alone (-0.2% as well), which hides the drift.
+
+**Evidence.** `tests/m2/results/m2-wp1.md`, "BF-20 rerun" and "Request limits" [measured]. The `commit_tx` aborts on site c are F47.
+
+**Flip.** A rerun with held phases interleaved with snapshot phases in which the snapshot phase is more than 10% slower than its neighbours; or a limit outcome in Workers Logs during a snapshot.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.
