@@ -126,10 +126,6 @@ pub fn reshape(sql: &SqlStorage, schema: &Schema) -> worker::Result<Vec<String>>
     let mut made = Vec::new();
     for (name, n) in tables(schema) {
         let t = sql_name(schema.tier, &name);
-        let want: Vec<String> = if n == 0 { vec!["one".into()] } else { cols(n) }
-            .into_iter()
-            .chain(["written".into(), "v".into()])
-            .collect();
         // Each cursor is read to its end before the next statement: an open one holds the table, and `DROP TABLE`
         // under it fails with SQLITE_LOCKED.
         let have: Vec<String> = sql
@@ -137,18 +133,24 @@ pub fn reshape(sql: &SqlStorage, schema: &Schema) -> worker::Result<Vec<String>>
             .raw()
             .map(|r| crate::host::text(&r?[0]).map(str::to_owned))
             .collect::<worker::Result<_>>()?;
-        if have == want {
+        if have == columns(n) {
             continue;
         }
         let rows: Vec<_> = sql.exec(&format!("SELECT 1 FROM \"{t}\" LIMIT 1"), None)?.raw().collect();
         if !rows.is_empty() {
-            return Err(worker::Error::RustError(format!("fold table {t} holds rows keyed {have:?}, not {want:?}")));
+            return Err(worker::Error::RustError(format!("fold table {t} holds rows keyed {have:?}, not {n} columns")));
         }
         sql.exec(&format!("DROP TABLE \"{t}\""), None)?;
         sql.exec(&create(&t, n), None)?;
         made.push(t);
     }
     Ok(made)
+}
+
+/// The columns `create` gives a table with an `n`-column key, in order.
+fn columns(n: usize) -> Vec<String> {
+    let key = if n == 0 { vec!["one".into()] } else { cols(n) };
+    key.into_iter().chain(["written".into(), "v".into()]).collect()
 }
 
 pub fn to_sql(v: &Val) -> SqlStorageValue {
@@ -445,4 +447,46 @@ fn search(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_fold::{Schema, TableDef};
+    use graftyard_types::Tier;
+
+    use super::{columns, create, tables};
+
+    /// The metadata tables `2ba89d5` created on the BF-20 members, before M2-WP2 rekeyed three of them.
+    const SEEDED: Schema = Schema {
+        tier: Tier::Metadata,
+        tables: &[
+            TableDef { name: "check_run", key: &["run"] },
+            TableDef { name: "check_suite", key: &["suite"] },
+            TableDef { name: "status", key: &["sha", "context", "id"] },
+            TableDef { name: "comment", key: &["id"] },
+        ],
+    };
+
+    /// `CREATE TABLE IF NOT EXISTS` with this release's DDL keeps a table created under an older key, so restore
+    /// compares each table's columns with the shape `create` makes: the rekeyed tables differ, an unchanged one does
+    /// not.
+    #[test]
+    fn a_table_created_under_an_older_key_is_told_apart_from_this_releases_shape() {
+        let now = graftyard_git::tiers::METADATA;
+        let arity = |s: &Schema, name: &str| tables(s).into_iter().find(|(t, _)| t == name).map(|(_, n)| n);
+        let mut differ = Vec::new();
+        for t in SEEDED.tables {
+            let (old, new) = (arity(&SEEDED, t.name).unwrap(), arity(&now, t.name).unwrap());
+            if columns(old) != columns(new) {
+                differ.push(t.name);
+            }
+        }
+        assert_eq!(differ, ["check_run", "check_suite", "status"]);
+        assert_eq!(columns(2), ["k0", "k1", "written", "v"]);
+        assert_eq!(columns(0), ["one", "written", "v"]);
+        assert!(
+            create("m_check_run", 2)
+                .contains("(k0, k1, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY (k0, k1))")
+        );
+    }
 }
