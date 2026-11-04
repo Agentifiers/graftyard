@@ -63,8 +63,9 @@ pub trait Family: 'static {
     fn tiered() -> bool {
         false
     }
-    /// How soon after applying entries the member's alarm runs the family's fold work (`on_alarm`), if it has any.
-    fn fold_alarm_ms() -> Option<i64> {
+    /// How soon after applying entries the member's alarm runs the family's fold work (`on_alarm`), if it has any;
+    /// `leading` when the member leads.
+    fn fold_alarm_ms(_leading: bool) -> Option<i64> {
         None
     }
     /// The family's own tables beside the member's.
@@ -198,11 +199,13 @@ fn repo_of(join: &Join) -> Option<RepoId> {
 impl Family for Repo {
     type Ev = git::repo::RepoEvent;
     type Fold = git::repo::RepoFold;
-    type C = git::repo::Push;
+    type C = git::repo::RepoCmd;
 
-    /// 32.1 only, until a release enables 32.2 through `FormatsEnable`.
+    /// 32.1, and 32.3 for the `PrSync` consumer's commands and the `TestMerged` and `ConsumerCursor` events. 32.2
+    /// waits for a release to enable it through `FormatsEnable`. This test build reads 32.3 before any `FormatsEnable`,
+    /// since only its own site scripts write it (`tests/m2/results/m2-wp5.md`, "Design gaps").
     fn reads() -> Vec<Format> {
-        vec![git::repo::REPO_FORMAT_V1]
+        vec![git::repo::REPO_FORMAT_V1, git::prsync::REPO_FORMAT_V3]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
     /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
@@ -290,13 +293,15 @@ impl Family for Repo {
         true
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::prsync::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
     }
     fn schema() -> &'static [&'static str] {
         crate::snap::SCHEMA
     }
-    fn fold_alarm_ms() -> Option<i64> {
-        Some(crate::snap::IDLE_MS)
+    /// A leader's alarm runs the `PrSync` dispatcher at once; every member's checks for a due snapshot.
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        Some(if leading { crate::prsync::LEADER_ALARM_MS } else { crate::snap::IDLE_MS })
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
@@ -349,6 +354,8 @@ impl Family for Repo {
                 Some(crate::fold_audit::run(&host.env, only).await)
             }
             #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
+            #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
             // Test installs: the object's alarm as storage holds it, and the host's own idea of it.
             #[cfg(feature = "test-faults")]
@@ -364,9 +371,13 @@ impl Family for Repo {
             _ => None,
         }
     }
-    /// `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render.
-    fn out_json(a: &raft::Acked<git::repo::PushOut>) -> Value {
-        serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null)
+    /// A push's `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render. A
+    /// sync's output is `{"Sync": SyncOut}`.
+    fn out_json(a: &raft::Acked<git::repo::RepoOut>) -> Value {
+        match &a.out {
+            git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
+            git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
+        }
     }
     fn err_json(e: &git::repo::PushErr) -> Value {
         let w = git::group::RefusedWire::of(e, 0);
@@ -377,6 +388,9 @@ impl Family for Repo {
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
+        if let Some(prs) = q.get("prsync") {
+            return crate::prsync::read_json(fold, prs);
+        }
         if q.get("ranges").is_some() {
             return json!({ "promoted": fold.promoted(), "archived": fold.archived(), "first": fold.first_index().0 });
         }
@@ -402,11 +416,12 @@ impl Family for Repo {
     async fn after_ok(
         env: worker::Env,
         chain: ChainId,
-        cmd: git::repo::Push,
-        acked: raft::Acked<git::repo::PushOut>,
+        cmd: git::repo::RepoCmd,
+        acked: raft::Acked<git::repo::RepoOut>,
     ) -> usize {
+        let (git::repo::RepoCmd::Push(cmd), git::repo::RepoOut::Push(out)) = (&cmd, &acked.out) else { return 0 };
         let (Some(pack @ git::PackRef::Stored { .. }), ChainId::Repo(repo)) = (&cmd.pack, chain) else { return 0 };
-        if !acked.out.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) {
+        if !out.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) {
             return 0;
         }
         let env = &env;

@@ -17,6 +17,7 @@ mod fold_audit;
 mod host;
 mod lookup;
 mod member;
+mod prsync;
 #[cfg(feature = "test-faults")]
 mod register;
 mod registry;
@@ -115,6 +116,12 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         Ok(r) => console_log!("fold audit {r}"),
         Err(e) => console_error!("fold audit failed: {e}"),
     }
+}
+
+/// The site's queue: `PrSync` batches its repository leaders sent (`crate::prsync`).
+#[event(queue)]
+async fn queue(batch: MessageBatch<prsync::Message>, env: Env, _ctx: Context) -> Result<()> {
+    prsync::consume(batch, env).await
 }
 
 pub(crate) fn now_ms() -> u64 {

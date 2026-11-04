@@ -88,6 +88,13 @@ function config(site, targets) {
       scheduling_policy: "durable_object",
       images: { git: image ? { image } : { dockerfile: resolve(here, "../../containers/git/Dockerfile") } },
     }],
+    // One queue per site (design/DESIGN.md, Scale, fan-out): its repository leaders produce `PrSync` batches, and this
+    // script consumes them (workers/site/src/prsync.rs). Batches of one message wait at most 0 s, so a head push's
+    // batch is handled at once [guess]; Queues retries a failed message 10 times, 2 s apart.
+    queues: {
+      producers: [{ binding: "PRSYNC", queue: queueOf(site) }],
+      consumers: [{ queue: queueOf(site), max_batch_size: 10, max_batch_timeout: 0, max_retries: 10, retry_delay: 2 }],
+    },
     limits: { cpu_ms: 300000 },
     // The pack sweeper (workers/site/src/sweep.rs). Each site sweeps the networks it is home for.
     triggers: { crons: [SWEEP_CRON] },
@@ -116,6 +123,14 @@ const listed = JSON.parse(
     `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts`,
   ]),
 ).result.map((s) => s.id);
+
+// Each site's queue, created if missing (`graft-m1-site-a` has `graft-m1-prsync-a`).
+const queueOf = (s) => s.script.replace(/-site-/, "-prsync-");
+const queues = JSON.parse(
+  execFileSync("curl", ["-sf", "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/queues?per_page=100`]),
+).result.map((q) => q.queue_name);
+for (const s of sites.filter((s) => !queues.includes(queueOf(s)))) wrangler(["queues", "create", queueOf(s)]);
 
 // Phase 1: every site gets its own classes (a new site binds only itself; an existing one keeps its member and
 // registry bindings to the sites that exist).

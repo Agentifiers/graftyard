@@ -124,6 +124,8 @@ pub struct Stats {
     pub alarm_runs: u32,
     pub alarm_last: u64,
     pub alarm_arms: u32,
+    /// `PrSync` batches this member's leader alarm sent to its site's queue.
+    pub prsync_sent: u32,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
@@ -769,6 +771,12 @@ fn load<F: Family>(storage: &worker::Storage, join: &Join, retention: Duration) 
 /// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`, read one row at a time. Past the
 /// anchor at `from` and the first entry after it, it stops at `APPEND_BYTES_MAX`, as `catchup` sends no more. `None`
 /// if a row is missing, as it is while its transaction waits.
+/// One stored log entry, if the log still holds it.
+pub fn stored_entry<F: Family>(sql: &SqlStorage, at: Index) -> Option<Entry<F>> {
+    let r = rows(sql, "SELECT row FROM log WHERE idx = ?", vec![i(at.0)]).ok()?;
+    codec::from_bytes(blob(&r.first()?[0]).ok()?).ok()
+}
+
 fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Option<Vec<Entry<F>>> {
     let lo = from.0.max(1);
     let mut entries: Vec<Entry<F>> = Vec::new();
@@ -1021,7 +1029,7 @@ impl<F: Family> Host<F> {
                 s.apply_steps.push((ms, (applied.0 - applied0.0) as u32, events as u32));
             }
         }
-        if let Some(ms) = F::fold_alarm_ms()
+        if let Some(ms) = F::fold_alarm_ms(core.m.role() == Role::Leader)
             && applied > core.applied
         {
             self.stats.borrow_mut().alarm_arms += 1;
