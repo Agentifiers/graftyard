@@ -16,17 +16,19 @@ use graftyard_raft::TierSet;
 use graftyard_types::{AccountId, ChainId, DbId, RequestId, Tier, Timestamp};
 use smallvec::{SmallVec, smallvec};
 
+use crate::blob::DurableBlob;
+use crate::issues::{AssetId, AssetRecord, LfsLockEvent, LockId, ReleaseRecord, RepoReleaseId};
 use crate::issues::{
     BODY_MAX, BranchRule, CHECK_RETENTION_MAX, CheckConclusion, CheckRunUpdate, CheckSource, CheckStatus, CommentEvent,
     CommentId, CommentTarget, Grantee, HeadSpec, IssueCapture, IssueChange, IssueNumber, LABEL_MAX, LabelEvent,
     LabelId, LabelName, PrCapture, PrState, Protection, RepoSettings, ReviewEvent, ReviewId, ReviewState, StatusState,
     StatusUpdate, TITLE_MAX, Visibility,
 };
-use crate::refs::{ObjectId, RefName};
+use crate::refs::{ObjectId, RefName, RefUpdate};
 use crate::repo::RepoEvent;
 use crate::tiers::{
-    CommentRow, IssueRow, LabelRow, RepoTiers, get_rec, ids, int, n_key, pull_head, pulls_from, ref_key, sha_key,
-    tier_of,
+    AssetRow, CommentRow, IssueRow, LabelRow, LockRow, RepoTiers, get_rec, ids, int, n_key, pull_head, pulls_from,
+    ref_key, release_by_tag, release_row, sha_key, tier_of,
 };
 
 /// Both tiers at `applied`, with an entry's earlier events on top: what `decide` and `verify` read.
@@ -176,6 +178,46 @@ pub enum IssueOp {
     RecordCheck(CheckRunUpdate),
     /// SHARED's `record_status`.
     RecordStatus(StatusUpdate),
+    /// Creates (`id: None`) or edits a release. `target` is the commit the edge resolved `target_commitish` to; when
+    /// the tag already exists its value wins. Publishing a release whose tag does not exist creates the tag in the same
+    /// entry, at `target`.
+    PutRelease {
+        id: Option<RepoReleaseId>,
+        tag: RefName,
+        target: ObjectId,
+        name: Box<str>,
+        body: Box<str>,
+        draft: bool,
+        prerelease: bool,
+        latest: bool,
+    },
+    DeleteRelease {
+        id: RepoReleaseId,
+    },
+    /// An uploaded asset. It takes a `DurableBlob`, which only `BlobStore::place` builds, so the 201 that renders from
+    /// this command's `&Acked` comes after two buckets hold the bytes (BF-25).
+    PutAsset {
+        release: RepoReleaseId,
+        name: Box<str>,
+        label: Option<Box<str>>,
+        content_type: Box<str>,
+        blob: DurableBlob,
+    },
+    DeleteAsset {
+        id: AssetId,
+    },
+    /// An LFS object the transfer placed: the `LfsObject` row that `verify` and a download batch read.
+    LfsObject(DurableBlob),
+    LockLfs {
+        path: Box<str>,
+        refspec: Option<RefName>,
+    },
+    /// `force` releases another account's lock, which needs `Admin` [guess: GitHub documents force unlock for
+    /// repository admins].
+    UnlockLfs {
+        id: LockId,
+        force: bool,
+    },
 }
 
 /// A command on the repository chain. `request` is the edge's id for the client request.
@@ -236,6 +278,8 @@ impl IssueCmd {
             IssueOp::Review { .. } | IssueOp::Dismiss { .. } => both,
             IssueOp::SetRule { .. } => TierSet::CORE,
             IssueOp::RecordCheck(_) | IssueOp::RecordStatus(_) => both,
+            // A release may create its tag in Core.
+            IssueOp::PutRelease { .. } => both,
             // A new review thread, a resolution, or a deletion may change the core unresolved count.
             IssueOp::Comment { on: CommentTarget::Review { .. }, reply_to: None, .. } => both,
             IssueOp::Resolve { .. } | IssueOp::DeleteComment { .. } => both,
@@ -571,6 +615,108 @@ impl IssueCmd {
                 }
                 Ok((evs, IssueOut::Done))
             }
+            IssueOp::PutRelease { id, tag, target, name, body, draft, prerelease, latest } => {
+                need(RepoPermission::Write)?;
+                if chars(name) > TITLE_MAX || chars(body) > BODY_MAX {
+                    return Err(IssueErr::Invalid("release name or body too long"));
+                }
+                if !tag.as_bytes().starts_with(b"refs/tags/") {
+                    return Err(IssueErr::Invalid("a release tag is under refs/tags/"));
+                }
+                let by_tag = release_by_tag(v.meta(), tag);
+                let old = match id {
+                    Some(i) => Some(release_row(v.meta(), *i).ok_or(IssueErr::NotFound)?),
+                    None => None,
+                };
+                if by_tag.is_some() && by_tag != *id {
+                    return Err(IssueErr::Exists);
+                }
+                let existing = v.ref_value(tag);
+                let target = existing.unwrap_or(*target);
+                let create = (!draft && existing.is_none()).then(|| RefUpdate {
+                    name: tag.clone(),
+                    expect: None,
+                    new: Some(target),
+                });
+                let id = match id {
+                    Some(i) => *i,
+                    None => RepoReleaseId(v.next_id(if create.is_some() { Tier::Core } else { Tier::Metadata })?),
+                };
+                let author = old.map_or(me, |o| o.rec.author);
+                let record = ReleaseRecord {
+                    tag: tag.clone(),
+                    target,
+                    name: name.clone(),
+                    body: body.clone(),
+                    draft: *draft,
+                    prerelease: *prerelease,
+                    latest: *latest,
+                    author,
+                };
+                Ok((one(RepoEvent::Release { id, record: Some(record), tag: create, actor: me }), IssueOut::Id(id.0)))
+            }
+            IssueOp::DeleteRelease { id } => {
+                need(RepoPermission::Write)?;
+                release_row(v.meta(), *id).ok_or(IssueErr::NotFound)?;
+                Ok((one(RepoEvent::Release { id: *id, record: None, tag: None, actor: me }), IssueOut::Done))
+            }
+            IssueOp::PutAsset { release, name, label, content_type, blob } => {
+                need(RepoPermission::Write)?;
+                release_row(v.meta(), *release).ok_or(IssueErr::NotFound)?;
+                if name.is_empty() || chars(name) > TITLE_MAX {
+                    return Err(IssueErr::Invalid("asset name"));
+                }
+                let taken =
+                    v.meta().prefix("asset_by_release", &[int(release.0.0)]).into_iter().any(|(k, _)| {
+                        get_rec::<AssetRow>(v.meta(), "asset", &k[1..]).is_some_and(|a| a.rec.name == *name)
+                    });
+                if taken {
+                    return Err(IssueErr::Exists);
+                }
+                let id = AssetId(v.next_id(Tier::Metadata)?);
+                let asset = AssetRecord {
+                    name: name.clone(),
+                    label: label.clone(),
+                    content_type: content_type.clone(),
+                    blob: blob.blob(),
+                };
+                let ev = RepoEvent::ReleaseAsset { release: *release, id, asset: Some(asset), actor: me };
+                Ok((one(ev), IssueOut::Id(id.0)))
+            }
+            IssueOp::DeleteAsset { id } => {
+                need(RepoPermission::Write)?;
+                let row = get_rec::<AssetRow>(v.meta(), "asset", &[int(id.0.0)]).ok_or(IssueErr::NotFound)?;
+                let ev = RepoEvent::ReleaseAsset { release: row.release, id: *id, asset: None, actor: me };
+                Ok((one(ev), IssueOut::Done))
+            }
+            IssueOp::LfsObject(blob) => {
+                need(RepoPermission::Write)?;
+                Ok((one(RepoEvent::LfsObject { blob: blob.blob(), actor: me }), IssueOut::Done))
+            }
+            IssueOp::LockLfs { path, refspec } => {
+                need(RepoPermission::Write)?;
+                let owner = me.ok_or(IssueErr::Forbidden)?;
+                if path.is_empty() {
+                    return Err(IssueErr::Invalid("lock path"));
+                }
+                if v.meta().get("lfs_lock_by_path", &[Val::Text(path.as_ref().into())]).is_some() {
+                    return Err(IssueErr::Exists);
+                }
+                let id = LockId(v.next_id(Tier::Metadata)?);
+                let ev = LfsLockEvent::Created { id, path: path.clone(), refspec: refspec.clone(), owner };
+                Ok((one(RepoEvent::LfsLock(ev)), IssueOut::Id(id.0)))
+            }
+            IssueOp::UnlockLfs { id, force } => {
+                need(RepoPermission::Write)?;
+                let row = get_rec::<LockRow>(v.meta(), "lfs_lock", &[int(id.0.0)]).ok_or(IssueErr::NotFound)?;
+                if Some(row.owner) != me {
+                    if !force {
+                        return Err(IssueErr::Forbidden);
+                    }
+                    need(RepoPermission::Admin)?;
+                }
+                Ok((one(RepoEvent::LfsLock(LfsLockEvent::Deleted { id: *id, actor: me })), IssueOut::Done))
+            }
         }
     }
 
@@ -588,6 +734,9 @@ impl IssueCmd {
                 RepoEvent::Review(ReviewEvent::Submitted { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Labels(LabelEvent::Defined { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Rule(r) if matches!(self.op, IssueOp::SetRule { .. }) => return IssueOut::Id(r.id),
+                RepoEvent::Release { id, record: Some(_), .. } => return IssueOut::Id(id.0),
+                RepoEvent::ReleaseAsset { id, asset: Some(_), .. } => return IssueOut::Id(id.0),
+                RepoEvent::LfsLock(LfsLockEvent::Created { id, .. }) => return IssueOut::Id(id.0),
                 _ => {}
             }
         }

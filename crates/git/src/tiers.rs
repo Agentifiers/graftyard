@@ -27,6 +27,8 @@ use graftyard_types::{AccountId, DbId, IdBlock, RepoId, Tier, Timestamp};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::blob::BlobRef;
+use crate::issues::{AssetRecord, LfsLockEvent, ReleaseRecord, RepoReleaseId};
 use crate::issues::{
     CHECK_RETENTION_DEFAULT, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
     CommentTarget, Grantee, HeadSpec, IssueChange, IssueKind, IssueNumber, LabelEvent, LabelName, LockReason, PrState,
@@ -64,6 +66,9 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         ) => both,
         RepoEvent::Comment(_) | RepoEvent::Labels(_) => TierSet::METADATA,
         RepoEvent::CheckRun(_) | RepoEvent::CheckSuite(_) | RepoEvent::Status(_) => TierSet::METADATA,
+        RepoEvent::Release { tag: Some(_), .. } => both,
+        RepoEvent::Release { tag: None, .. } => TierSet::METADATA,
+        RepoEvent::ReleaseAsset { .. } | RepoEvent::LfsObject { .. } | RepoEvent::LfsLock(_) => TierSet::METADATA,
     }
 }
 
@@ -116,6 +121,15 @@ pub const METADATA: Schema = Schema {
         t("review_by_pull", &["n", "id"]),
         t("review_request", &["n", "grantee"]),
         t("status", &["sha", "rev_id"]),
+        // Releases keyed by id negated, so a forward scan lists the newest first; `release_by_tag` maps a tag to its
+        // release. Assets by id, with `asset_by_release`. LFS objects by oid, locks by id with `lfs_lock_by_path`.
+        t("release", &["rev_id"]),
+        t("release_by_tag", &["tag"]),
+        t("asset", &["id"]),
+        t("asset_by_release", &["release", "id"]),
+        t("lfs_object", &["oid"]),
+        t("lfs_lock", &["id"]),
+        t("lfs_lock_by_path", &["path"]),
     ],
 };
 
@@ -250,6 +264,57 @@ pub struct LabelRow {
     pub name: LabelName,
     pub color: [u8; 3],
     pub description: Option<Box<str>>,
+}
+
+/// The metadata `release` row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct ReleaseRow {
+    pub rec: ReleaseRecord,
+    pub created: Timestamp,
+    /// When it was first published, `None` while a draft.
+    pub published: Option<Timestamp>,
+}
+
+/// The metadata `asset` row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct AssetRow {
+    pub release: RepoReleaseId,
+    pub rec: AssetRecord,
+    pub uploader: Option<AccountId>,
+    pub created: Timestamp,
+    pub updated: Timestamp,
+}
+
+/// The metadata `lfs_object` row: the blob a `verify` committed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LfsRow {
+    pub blob: BlobRef,
+    pub at: Timestamp,
+}
+
+/// The metadata `lfs_lock` row.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct LockRow {
+    pub path: Box<str>,
+    pub refspec: Option<RefName>,
+    pub owner: AccountId,
+    pub at: Timestamp,
+}
+
+pub fn release_key(id: RepoReleaseId) -> Val {
+    int(-id.0.0)
+}
+
+pub fn release_row(r: &(impl Read + ?Sized), id: RepoReleaseId) -> Option<ReleaseRow> {
+    get_rec(r, "release", &[release_key(id)])
+}
+
+pub fn release_by_tag(r: &(impl Read + ?Sized), tag: &RefName) -> Option<RepoReleaseId> {
+    get_rec::<i64>(r, "release_by_tag", &[ref_key(tag)]).map(|i| RepoReleaseId(DbId(i)))
+}
+
+pub fn lfs_key(oid: &graftyard_types::Digest) -> Val {
+    Val::Blob(oid.0.to_vec().into())
 }
 
 /// A metadata check row: the entry time that last wrote it, which pruning reads, and the record.
@@ -584,6 +649,16 @@ impl RepoTiers {
             }
             RepoEvent::Comment(_) | RepoEvent::Labels(_) => {}
             RepoEvent::CheckRun(_) | RepoEvent::CheckSuite(_) | RepoEvent::Status(_) => {}
+            RepoEvent::Release { id, tag, .. } => {
+                assigned(w, ev, Tier::Core, id.0);
+                if let Some(u) = tag {
+                    match u.new {
+                        Some(o) => put_rec(w, "ref", vec![ref_key(&u.name)], &o),
+                        None => w.delete("ref", &[ref_key(&u.name)]),
+                    }
+                }
+            }
+            RepoEvent::ReleaseAsset { .. } | RepoEvent::LfsObject { .. } | RepoEvent::LfsLock(_) => {}
         }
     }
 
@@ -798,6 +873,66 @@ impl RepoTiers {
             RepoEvent::Status(s) => {
                 let key = vec![sha_key(&s.sha), int(-s.id.0.0)];
                 put_newer(w, KIND_STATUS, key, at, s, |_: &StatusUpdate| 0)
+            }
+            RepoEvent::Release { id, record, .. } => {
+                assigned(w, ev, Tier::Metadata, id.0);
+                let old = release_row(w, *id);
+                if let Some(o) = &old {
+                    w.delete("release_by_tag", &[ref_key(&o.rec.tag)]);
+                }
+                match record {
+                    Some(rec) => {
+                        let published = old.as_ref().and_then(|o| o.published).or((!rec.draft).then_some(at));
+                        let created = old.as_ref().map_or(at, |o| o.created);
+                        put_rec(w, "release_by_tag", vec![ref_key(&rec.tag)], &id.0.0);
+                        put_rec(
+                            w,
+                            "release",
+                            vec![release_key(*id)],
+                            &ReleaseRow { rec: rec.clone(), created, published },
+                        );
+                    }
+                    None => {
+                        w.delete("release", &[release_key(*id)]);
+                        for (k, _) in w.prefix("asset_by_release", &[int(id.0.0)]) {
+                            w.delete("asset", &k[1..]);
+                            w.delete("asset_by_release", &k);
+                        }
+                    }
+                }
+            }
+            RepoEvent::ReleaseAsset { release, id, asset, actor } => {
+                assigned(w, ev, Tier::Metadata, id.0);
+                let key = vec![int(id.0.0)];
+                match asset {
+                    Some(rec) => {
+                        let old = get_rec::<AssetRow>(w, "asset", &key);
+                        let created = old.as_ref().map_or(at, |o| o.created);
+                        let uploader = old.as_ref().map_or(*actor, |o| o.uploader);
+                        mark(w, "asset_by_release", vec![int(release.0.0), int(id.0.0)]);
+                        let row = AssetRow { release: *release, rec: rec.clone(), uploader, created, updated: at };
+                        put_rec(w, "asset", key, &row);
+                    }
+                    None => {
+                        w.delete("asset", &key);
+                        w.delete("asset_by_release", &[int(release.0.0), int(id.0.0)]);
+                    }
+                }
+            }
+            RepoEvent::LfsObject { blob, .. } => {
+                put_rec(w, "lfs_object", vec![lfs_key(&blob.oid)], &LfsRow { blob: *blob, at })
+            }
+            RepoEvent::LfsLock(LfsLockEvent::Created { id, path, refspec, owner }) => {
+                assigned(w, ev, Tier::Metadata, id.0);
+                put_rec(w, "lfs_lock_by_path", vec![text(path)], &id.0.0);
+                let row = LockRow { path: path.clone(), refspec: refspec.clone(), owner: *owner, at };
+                put_rec(w, "lfs_lock", vec![int(id.0.0)], &row);
+            }
+            RepoEvent::LfsLock(LfsLockEvent::Deleted { id, .. }) => {
+                if let Some(row) = get_rec::<LockRow>(w, "lfs_lock", &[int(id.0.0)]) {
+                    w.delete("lfs_lock_by_path", &[text(&row.path)]);
+                    w.delete("lfs_lock", &[int(id.0.0)]);
+                }
             }
             _ => {}
         }

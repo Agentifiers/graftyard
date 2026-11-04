@@ -19,9 +19,11 @@ use graftyard_types::{
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::blob::BlobRef;
 use crate::issues::{
-    BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent, HeadSpec, IssueCapture,
-    IssueChange, IssueNumber, LabelEvent, PrCapture, RepoSettings, ReviewEvent, StatusUpdate,
+    AssetId, AssetRecord, BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
+    HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, PrCapture, ReleaseRecord,
+    RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
 };
 use crate::key::R2Key;
 use crate::pack::{Archived, PackId, PackRef, Promoted};
@@ -170,13 +172,38 @@ pub enum RepoEvent {
     CheckRun(CheckRunUpdate),
     CheckSuite(CheckSuiteUpdate),
     Status(StatusUpdate),
+    /// Metadata, plus Core when `tag` is set: publishing a release whose tag does not exist creates the tag in the same
+    /// entry. `record: None` deletes the release.
+    Release {
+        id: RepoReleaseId,
+        record: Option<ReleaseRecord>,
+        tag: Option<RefUpdate>,
+        actor: Option<AccountId>,
+    },
+    /// Metadata. Committed by the upload after the bytes are a `DurableBlob`. `asset: None` deletes it.
+    ReleaseAsset {
+        release: RepoReleaseId,
+        id: AssetId,
+        asset: Option<AssetRecord>,
+        actor: Option<AccountId>,
+    },
+    /// Metadata. Committed by the LFS `verify` action after the bytes are a `DurableBlob`; the batch API answers a
+    /// download from these rows.
+    LfsObject {
+        blob: BlobRef,
+        actor: Option<AccountId>,
+    },
+    /// Metadata [inference: SHARED's `RepoEvent` lists `LfsLock` but its `tier_of` names no tier; a lock gates no git
+    /// operation here, since the server does not refuse a push to a locked path, so Core does not need it].
+    LfsLock(LfsLockEvent),
 }
 
 impl RepoEvent {
-    /// The ref updates the event applies: a `Refs`'s, and none for a `Refused`.
+    /// The ref updates the event applies: a `Refs`'s, a `Release`'s tag, and none for a `Refused`.
     pub fn updates(&self) -> &[RefUpdate] {
         match self {
             RepoEvent::Refs { updates, .. } => updates,
+            RepoEvent::Release { tag: Some(t), .. } => std::slice::from_ref(t),
             _ => &[],
         }
     }
@@ -892,6 +919,12 @@ impl Record for RepoEvent {
             RepoEvent::CheckRun(c) => return tagged(out, 14, c),
             RepoEvent::CheckSuite(c) => return tagged(out, 15, c),
             RepoEvent::Status(st) => return tagged(out, 16, st),
+            RepoEvent::Release { id, record, tag, actor } => return tagged(out, 17, &(id, record, tag, actor)),
+            RepoEvent::ReleaseAsset { release, id, asset, actor } => {
+                return tagged(out, 18, &(release, id, asset, actor));
+            }
+            RepoEvent::LfsObject { blob, actor } => return tagged(out, 19, &(blob, actor)),
+            RepoEvent::LfsLock(l) => return tagged(out, 20, l),
         };
         e.u8(0);
         e.u128(push.0.0);

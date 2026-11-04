@@ -790,3 +790,171 @@ fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
         assert!(block.index_of(*id).is_some(), "{id:?} is outside the leased block");
     }
 }
+
+// ---- releases, assets, and LFS (M2-WP4) ----
+
+fn durable(bytes: &[u8]) -> graftyard_git::blob::DurableBlob {
+    use graftyard_git::blob::BlobStore;
+    use graftyard_git::mem::MemBucket;
+    use graftyard_types::{Region, Site, SiteId, SiteLink, SiteTable};
+    let site = |id: u8, region| Site {
+        id: SiteId(id),
+        script: format!("s{id}"),
+        account: "x".into(),
+        region,
+        jurisdiction: None,
+        bucket: format!("b{id}"),
+        release: None,
+        link: SiteLink::Binding { member_class: "Member".into() },
+        spare: false,
+    };
+    let sites = SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur), site(2, Region::Apac)]);
+    let (a, b, c) = (MemBucket::default(), MemBucket::default(), MemBucket::default());
+    let bk = [(SiteId(0), &a), (SiteId(1), &b), (SiteId(2), &c)];
+    let store = BlobStore { sites: &sites, buckets: &bk, copies: graftyard_git::Copies::TwoRegions };
+    let meta = graftyard_git::ObjectMeta { chain: ChainId::Repo(REPO), request: RequestId(Ulid(1)) };
+    futures_executor::block_on(store.place(REPO, bytes, None, meta)).unwrap()
+}
+
+fn release_op(id: Option<DbId>, tag: &str, draft: bool) -> IssueOp {
+    IssueOp::PutRelease {
+        id: id.map(graftyard_git::issues::RepoReleaseId),
+        tag: name(tag),
+        target: oid(1),
+        name: "".into(),
+        body: "".into(),
+        draft,
+        prerelease: false,
+        latest: true,
+    }
+}
+
+fn id_of(out: Result<IssueOut, IssueErr>) -> DbId {
+    match out.unwrap() {
+        IssueOut::Id(id) => id,
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn publishing_a_release_creates_its_tag_in_core_and_a_draft_does_not() {
+    use graftyard_git::tiers::{release_by_tag, release_row};
+    let mut c = setup(3, 90);
+    let draft = id_of(c.commit(WRITER, release_op(None, "refs/tags/v2", true)));
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA, "a draft touches only Metadata");
+    assert_eq!(c.ref_of(&name("refs/tags/v2")), None);
+    let pubd = id_of(c.commit(WRITER, release_op(None, "refs/tags/v1", false)));
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::CORE.union(TierSet::METADATA));
+    assert_eq!(c.ref_of(&name("refs/tags/v1")), Some(oid(1)), "the tag is created in the same entry");
+    // Publishing the draft (gh's `PATCH {draft:false}` after its uploads) creates its tag then.
+    c.commit(WRITER, release_op(Some(draft), "refs/tags/v2", false)).unwrap();
+    assert_eq!(c.ref_of(&name("refs/tags/v2")), Some(oid(1)));
+    // An existing tag wins over the requested target, and a second release on one tag is refused.
+    c.push("refs/tags/v3", oid(9));
+    let third = id_of(c.commit(WRITER, release_op(None, "refs/tags/v3", false)));
+    let m = &c.members[0];
+    assert_eq!(release_row(&m.meta, graftyard_git::issues::RepoReleaseId(third)).unwrap().rec.target, oid(9));
+    assert_eq!(c.commit(WRITER, release_op(None, "refs/tags/v1", false)), Err(IssueErr::Exists));
+    assert_eq!(c.commit(READER, release_op(None, "refs/tags/v9", false)), Err(IssueErr::Forbidden));
+    assert_eq!(
+        c.commit(WRITER, release_op(None, "refs/heads/main", false)).map(|_| ()).unwrap_err(),
+        IssueErr::Invalid("a release tag is under refs/tags/")
+    );
+    let m = &c.members[0];
+    assert_eq!(release_by_tag(&m.meta, &name("refs/tags/v1")), Some(graftyard_git::issues::RepoReleaseId(pubd)));
+    c.agree();
+}
+
+#[test]
+fn an_asset_names_a_durable_blob_and_goes_with_its_release() {
+    use graftyard_git::issues::{AssetId, RepoReleaseId};
+    use graftyard_git::tiers::AssetRow;
+    let mut c = setup(3, 90);
+    let rel = RepoReleaseId(id_of(c.commit(WRITER, release_op(None, "refs/tags/v1", false))));
+    let blob = durable(b"app");
+    let put = |name: &str| IssueOp::PutAsset {
+        release: rel,
+        name: name.into(),
+        label: None,
+        content_type: "application/gzip".into(),
+        blob,
+    };
+    let a = AssetId(id_of(c.commit(WRITER, put("app.tgz"))));
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
+    assert_eq!(c.commit(WRITER, put("app.tgz")), Err(IssueErr::Exists), "one name per release");
+    let _b = id_of(c.commit(WRITER, put("notes.txt")));
+    let row: AssetRow = graftyard_git::tiers::get_rec(&c.members[0].meta, "asset", &[Val::Int(a.0.0)]).unwrap();
+    assert_eq!(row.rec.blob, blob.blob());
+    assert_eq!(row.uploader, Some(AccountId(DbId(WRITER))));
+    // gh's `--clobber`: delete the asset of that name, then upload again.
+    c.commit(WRITER, IssueOp::DeleteAsset { id: a }).unwrap();
+    assert_eq!(c.rows(Tier::Metadata, "asset"), 1);
+    id_of(c.commit(WRITER, put("app.tgz")));
+    // Deleting the release deletes its assets; its tag stays, as GitHub's does until `--cleanup-tag` deletes the ref.
+    c.commit(WRITER, IssueOp::DeleteRelease { id: rel }).unwrap();
+    assert_eq!((c.rows(Tier::Metadata, "asset"), c.rows(Tier::Metadata, "asset_by_release")), (0, 0));
+    assert_eq!(c.rows(Tier::Metadata, "release_by_tag"), 0);
+    assert!(c.ref_of(&name("refs/tags/v1")).is_some());
+    assert_eq!(c.commit(WRITER, put("late")), Err(IssueErr::NotFound));
+    c.agree();
+}
+
+#[test]
+fn lfs_objects_and_locks_are_metadata_rows() {
+    use graftyard_git::issues::LockId;
+    use graftyard_git::tiers::{LfsRow, get_rec, lfs_key};
+    let mut c = setup(3, 90);
+    let blob = durable(b"lfs object");
+    c.commit(WRITER, IssueOp::LfsObject(blob)).unwrap();
+    assert_eq!(c.log.last().unwrap().tiers, TierSet::METADATA);
+    let row: LfsRow = get_rec(&c.members[0].meta, "lfs_object", &[lfs_key(&blob.blob().oid)]).unwrap();
+    assert_eq!(row.blob, blob.blob());
+    assert_eq!(c.commit(READER, IssueOp::LfsObject(blob)), Err(IssueErr::Forbidden), "an upload needs write");
+    let lock = |path: &str| IssueOp::LockLfs { path: path.into(), refspec: Some(name("refs/heads/main")) };
+    let l = LockId(id_of(c.commit(WRITER, lock("a.bin"))));
+    assert_eq!(c.commit(OWNER, lock("a.bin")), Err(IssueErr::Exists), "one lock per path");
+    assert_eq!(c.commit(OWNER, IssueOp::UnlockLfs { id: l, force: false }), Err(IssueErr::Forbidden));
+    c.commit(OWNER, IssueOp::UnlockLfs { id: l, force: true }).unwrap();
+    assert_eq!(c.rows(Tier::Metadata, "lfs_lock") + c.rows(Tier::Metadata, "lfs_lock_by_path"), 0);
+    let l = LockId(id_of(c.commit(OWNER, lock("a.bin"))));
+    assert_eq!(
+        c.commit(WRITER, IssueOp::UnlockLfs { id: l, force: true }),
+        Err(IssueErr::Forbidden),
+        "force needs admin"
+    );
+    c.commit(OWNER, IssueOp::UnlockLfs { id: l, force: false }).unwrap();
+    c.agree();
+}
+
+#[test]
+fn release_and_blob_commands_write_only_inside_their_declared_tiers() {
+    let mut c = setup(1, 90);
+    let rel = graftyard_git::issues::RepoReleaseId(id_of(c.commit(WRITER, release_op(None, "refs/tags/v0", true))));
+    let ops = vec![
+        release_op(None, "refs/tags/v1", false),
+        release_op(None, "refs/tags/v2", true),
+        IssueOp::PutAsset {
+            release: rel,
+            name: "a".into(),
+            label: None,
+            content_type: "x".into(),
+            blob: durable(b"a"),
+        },
+        IssueOp::LfsObject(durable(b"b")),
+        IssueOp::LockLfs { path: "p".into(), refspec: None },
+        IssueOp::DeleteRelease { id: rel },
+    ];
+    for op in ops {
+        let cmd = IssueCmd { op, actor: who(OWNER), request: RequestId(Ulid(1)) };
+        let m = &c.members[0];
+        let view = RepoView::new(tiers(), &m.core, &m.meta, c.now);
+        let needed: Vec<ChainId> = cmd.deps(&view).into_iter().collect();
+        let d: Vec<_> = needed.iter().map(|k| c.deps.iter().find(|(x, _)| x == k).unwrap().clone()).collect();
+        let (evs, _) = cmd.decide(&view, &d).unwrap();
+        for e in &evs {
+            assert_eq!(tier_of(e).0 & !cmd.tiers().0, 0, "{:?} writes outside {:?}", e, cmd.tiers());
+        }
+        drop(view);
+        c.commit_all(&[cmd]);
+    }
+}
