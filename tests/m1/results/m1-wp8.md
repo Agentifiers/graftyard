@@ -361,3 +361,18 @@ Cloudflare's rule that `Date.now()` advances only on I/O explains neither the 17
 F45 is fixed, so `load` and the in-memory log are bounded by bytes (`LOG_BYTES`), and `request` rows hold no inline pack bytes. `repo:196624` restored on all three members and took an 800 kB push (same section).
 
 `lin24b` started on `graft-m1-lin-a/b/c` at 2026-11-03T00:55:07.302Z and ends at 2026-11-04T00:55:07.302Z (`m1-wp2.md`, "lin24b: the smoke and the start"). BM-1's 24-hour half stays pending until its report. It passes only if Porcupine finds zero violations, no acknowledged entry is lost, and the member-side ack check finds zero violations.
+
+## The 24-hour half, 2026-11-04: lin24b passes
+
+`lin24b` ran on `graft-m1-lin-a/b/c`, chain `repo:934783`, from 2026-11-03T00:55:07.302Z to 2026-11-04T00:55:07.302Z, with the same spec as lin24. Its report is `tests/m1/lin/raw/lin24b.report.json`, and the full analysis is in `m1-wp2.md`, "The 24-hour rerun's result, 2026-11-04".
+
+| Check | Result |
+| --- | --- |
+| Operations | 2,850,523, 0 with no reply; p50 314 ms, p99 952 ms |
+| Chaos | 4,176 resets (2,795 of a leader), 2,752 transfers (855 abandoned), 97 isolates with fault counters |
+| Porcupine, widened 100 ms and widened 153 ms (the measured ATL–SIN bound of 305 ms, halved) | Ok on all 6 keys |
+| Porcupine, recorded clocks | Illegal on k0 to k4, 20 segments. 18 come from writes whose history rows were lost when 15 of 12,535 client chunks were cut short, and are Ok with those writes restored. 2 are cross-colo ties that are Ok with 1 ms (LHR–SIN) and 4 ms (ATL–LHR) of skew, against that minute's measured bounds of 92 ms and 63 ms. None is same-colo |
+| Lost acknowledged writes | 0 of 904,294. The three logs are identical over 513,232 entries, no request id is in two entries, and none of the 805,201 refused CAS writes is in them |
+| Member-side ack check | Ok, 904,294 of 904,294 with evidence, 0 violations. B0-11's same-clock early-ack test: 0 |
+
+**Verdict: BM-1's 24-hour half passes.** It meets the rule: zero Porcupine violations, no acknowledged entry lost, and zero ack-check violations. The recorded-clock Illegals are read as B0-11's and lin24's were: lost client rows, or skew inside the measured bound. This answers F44 as a client-clock artifact. 59 acknowledged writes again returned faster on their client's clock than the round trip in their own quorum proof, and all 59 pass the member check. Member clocks also stalled across an I/O completion in 15 entries, so a Workers clock stamp can be early as well as late. `finish`'s final `status` failed because the orb could not reach workers.dev at the time. Afterwards the three members answered as followers in term 367 at commit 513,231 to 513,232, with load and chaos stopped.

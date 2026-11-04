@@ -821,3 +821,85 @@ Design sentences this contradicts (quoted, not edited): DESIGN, Shape, "Scale": 
   - Follower acks after the entry was built, by leader>follower: 0>1 min 87 ms, 1>0 min 108 ms, 2>1 min 153 ms. Each is one round trip on the leader's clock.
 - **`lin24b`.** Same spec as lin24: one pinned client each in ATL, LHR and SIN, concurrency 4, rate 5, 6 keys, 40% reads, the same chaos and call faults. Chain `repo:934783`. It started at **2026-11-03T00:55:07.302Z** and ends at **2026-11-04T00:55:07.302Z**.
 - **Services.** `lin24b-watch` and `lin24b-finish` run `tests/m1/lin/raw/lin24b-services.sh watch|finish`. These are resume loops like lin24's: watch resumes from `raw/lin24b.state.json`, finish loops until `raw/lin24b.report.json` exists, and both end in `sleep infinity`. The finish report adds `check.ackEvidence`. lin24's raw files are untouched.
+
+## The 24-hour rerun's result, 2026-11-04: lin24b passes
+
+**Verdict.** lin24b passes BM-1's 24 h half. The pass rule is zero Porcupine violations, no acknowledged entry lost, and zero violations of the member-side ack check (`build/BUILD-PLAN.md`, "Milestone 1 status", BM-1 24 h). Porcupine is Ok on all 6 keys widened 100 ms and widened by the measured bound. The 20 recorded-clock Illegal segments are 18 reads of writes whose client rows were lost when 15 of 12,535 chunks were cut short, plus 2 cross-colo ties that need 1 ms and 4 ms of skew, inside that minute's measured bounds. None is same-colo. No acknowledged write was lost. The ack check found 0 violations on 904,294 acknowledged writes. This answers F44: the fast acks are a client-clock artifact, and the member-side check rules out an early ack.
+
+### The report (`tests/m1/lin/raw/lin24b.report.json`)
+
+| Figure | Value |
+| --- | --- |
+| Run | `lin24b`, chain `repo:934783`, 2026-11-03T00:55:07.302Z to 2026-11-04T00:55:07.302Z |
+| Load | Same spec as lin24: 3 pinned clients (ATL, LHR, SIN), 4 logical clients each at up to 5 ops/s, 6 keys, 40% reads |
+| Operations | 2,850,523, 0 with no reply. 1,141,028 gets, 854,483 puts, 49,811 CAS ok, 805,201 CAS refused |
+| Latency | p50 314 ms, p99 952 ms, max 29,259 ms |
+| Chaos | 4,176 resets (2,795 of a leader), 2,752 transfers (855 abandoned) |
+| Per-isolate fault counters | 97 isolates. Failed calls: site 0 32,306, site 1 28,644, site 2 22,259. Dropped AppendEntries replies: site 0 30,441, site 1 26,591, site 2 20,572. Abandoned `TimeoutNow`: 72, 99, 27 |
+| Client clocks against the members | Median offset ATL −6 ms, LHR −6.5 ms, SIN −12.5 ms. p01 to p99: ATL −107.5 to 32.5, LHR −114.5 to 64, SIN −111 to 142 |
+| Pair bounds (1,441 one-minute buckets each) | ATL–LHR p99 123 ms, max 257. ATL–SIN p99 192, max 305. LHR–SIN p99 156, max 289. The widening is 153 ms |
+| Porcupine `-seg 2000` per key, recorded clocks | k5 Ok. k0 to k4 Illegal (20 segments) |
+| Porcupine, widened 100 ms | Ok on all 6 keys |
+| Porcupine, widened 153 ms | Ok on all 6 keys |
+| Ack check (`check.ackEvidence`) | Ok. 904,294 of 904,294 acknowledged writes with evidence, 0 violations. `sentAt − commitAt` min 0, median 0, max 1,004 ms |
+| `status` | `TypeError: fetch failed`: the orb could not reach workers.dev at the time (below) |
+
+The finish step ran end to end. Load and chaos stopped at 00:59:22Z, and the report was written at 01:08:14Z.
+
+### The recorded-clock Illegals
+
+Porcupine was rerun per key with `-seg 2000` to list the Illegal segments. 15 of the run's 12,535 client chunks have a clock `start` row and no `end` row. Operations in flight when such a chunk stopped left no history row, as in lin24. 17 values that were read have no writer row, and each one comes from an interrupted chunk. The 17 segments that hold the first read of one of those values are Ok on the recorded clocks once the missing writes are restored (called at the request id's ULID time, returning at the first read; `tests/m0/run/history-prep.py`, widen 0).
+
+| Segment | Writer colo | Value read, with no history row | Interrupted chunk | First reader | Cause | Skew needed |
+| --- | --- | --- | --- | --- | --- | --- |
+| k0 #41, ops 81,660 to 83,677 | SIN | `201.mw080xdm-181` | SIN, 05:02:04Z | ATL client 3 | lost row | none |
+| k0 #199, ops 404,263 to 406,269 | SIN | `203.mw177y1f-142` | SIN, 21:27:18Z | LHR client 102 | lost row | none |
+| k0 #219, ops 444,936 to 447,012 | SIN | `200.mw1bk04l-149` | SIN, 23:28:39Z | LHR client 102 | lost row | none |
+| k1 #24, ops 46,919 to 48,926 | ATL | `0.mw04d1dq-272` | ATL, 03:19:31Z | SIN client 202 | lost row | none |
+| k1 #69, ops 139,006 to 141,040 | LHR | `102.mw0dw1z4-138` | LHR, 07:46:15Z | ATL client 0 | lost row | none |
+| k1 #155, ops 314,380 to 316,401 | ATL | `0.mw0wzlre-100` | ATL, 16:40:53Z | LHR client 103 | lost row | none |
+| k1 #175, ops 354,954 to 357,216 | LHR | `100.mw11dzwk-19` | LHR, 18:44:03Z | SIN client 203 | lost row | none |
+| k1 #188, ops 381,890 to 383,950 | ATL | `0.mw14t7u2-139` | ATL, 20:19:52Z | LHR client 103 | lost row | none |
+| k2 #24, ops 46,835 to 48,868 | LHR | `103.mw04a74s-46` | LHR, 03:17:18Z | ATL client 3 | lost row | none |
+| k2 #70, ops 140,428 to 142,474 | ATL | `0.mw0e1nvi-53` | ATL, 07:50:36Z | SIN client 201 | lost row | none |
+| k2 #83, ops 167,130 to 169,266 | SIN | `200.mw0gqmd7-58` | SIN, 09:06:00Z | ATL client 1 | lost row | none |
+| k2 #218, ops 442,603 to 444,603 | LHR | `100.mw1bdu3r-155` | LHR, 23:23:52Z | SIN client 201 | lost row | none |
+| k3 #25, ops 48,776 to 50,801 | ATL | `3.mw04d1dq-271` | ATL, 03:19:31Z | SIN client 202 | lost row | none |
+| k3 #154, ops 312,936 to 314,967 | ATL | `1.mw0wzlre-99` | ATL, 16:40:53Z | LHR client 103 | lost row | none |
+| k4 #82, ops 165,394 to 167,402 | SIN | `203.mw0gqmd7-59` | SIN, 09:06:00Z | ATL client 1 | lost row | none |
+| k4 #188, ops 382,331 to 384,358 | ATL | `1.mw14t7u2-141` | ATL, 20:19:52Z | LHR client 102 | lost row | none |
+| k4 #198, ops 402,882 to 404,889 | SIN | `200.mw177y1f-143` | SIN, 21:27:18Z | ATL client 2 | lost row | none |
+| k3 #198, ops 402,669 to 404,705 | SIN | none read: a pending write no read saw | SIN, 21:27:18Z | none | lost row | none. Without the lost write, 40 ms ATL–LHR, against that minute's bound of 63 to 82 ms |
+| k4 #137, ops 277,732 to 279,735 | LHR, SIN | none | none nearby | none | cross-colo tie | 1 ms LHR–SIN, against that minute's bound of 92 to 128 ms |
+| k1 #233, ops 473,616 to 475,474 | ATL, LHR | none | none nearby | none | cross-colo tie | 4 ms ATL–LHR, against that minute's bound of 63 to 68 ms |
+
+- **k3 #198.** Entry 439,208 holds 3 committed request ids that have no history row. Their ULIDs were minted at 21:27:36.860, .861 and .864Z, the last returns of SIN clients 203, 200 and 201 before their chunk stopped. The segment is Ok once one of them is added as a pending write that no read observed.
+- **k4 #137.** On the recorded clocks, a SIN get (client 200) was called at 14:47:30.737Z, 1 ms after an LHR put of `102.mw0sxfqb-139` (entry 298,810) returned. The get read `201.mw0sxf7a-176` (entry 298,808), the value before that put. It is Ok with LHR's clock 1 ms ahead, or SIN's 1 ms behind.
+- **k1 #233.** ATL put `2.mw1eh8em-82` (entry 511,627) returned at 00:50:34.364Z on ATL's clock. An LHR get called 4 ms later on LHR's clock read `0.mw1eh8em-80` (entry 511,626), the value that put overwrote. It is Ok with ATL's clock 4 ms ahead, or LHR's 4 ms behind.
+- **Same-colo.** None. `tests/m0/run/history-skew.py` on every per-key history finds 0 stale reads and 0 same-colo stale reads.
+
+### Lost writes: none
+
+The three members' logs were read after the run, read-only, through `graft-m1-lin-tools` `/member` `/log`.
+
+- They are identical: 513,232 entries each, indexes 1 to 513,232 with no gaps, and the same digest and the same request list at every index.
+- They hold 904,318 request ids, and no request id is in two entries.
+- All 904,294 acknowledged writes (puts, plus compare-and-sets that answered `ok`) are in the log, each at its ack's evidence index. On sites 1 and 2 every one is committed. On site 0, 2 of them are in entry 513,232, which site 0 holds but has not yet marked committed: its commit is 513,231 and the group has no leader to advance it. That is not a lost write.
+- None of the 805,201 refused compare-and-sets is in the log. No write was left without a reply.
+- 24 committed request ids have no history row. One is the `/create` warm-up write in entry 3. The other 23 have ULID times inside the 15 interrupted chunks.
+- **B0-11's same-clock early-ack test.** For 0 of 904,294 acknowledged writes did a later command from the same client object commit in the write's entry or earlier.
+
+### F44: answered by the member clocks
+
+- **The member check.** Every acknowledged write's reply left at or after its commit on the answering member's clock. Each was counted by a durable quorum of two distinct sites, including the answering site, and its host's own storage confirm covered the commit. The quorum and durable rules are causal, not timed: a follower counts only through an AppendEntries reply naming the index, and the leader counts itself only through its `SelfAck`. A stalled clock cannot satisfy them for an early ack.
+- **The fast acks came back, on writes the check passes.** 59 acknowledged writes have a client interval (`ret − call`) shorter than the site-to-site round trip that their own proof contains (M1-WP1's measured 98, 186 and 194 ms). The worst is entry 446,542. SIN clients 200 and 201 recorded 28 ms from call to return. The apac leader built the entry at .424 on its clock, enam's ack reached it at .646, and the host stamped `sentAt` at .646. On the leader's clock, 137 writes have a client interval shorter than `commitAt − entryAt`, by up to 194 ms. A write cannot return before its entry exists, so these client intervals are short by that much.
+- **Member clocks stall too.** In 15 entries a weur or enam follower's ack reached the leader 0 to 40 ms after the entry was built, on the leader's own clock, over a link whose round trip is about 98 ms (for example entry 51,526, 2 ms; entry 322,990, 0 ms). In 13 of the 15, the entry was built in the same step that took that follower's ack for the entry before it, at the same timestamp. The other 2 have no evidence for the entry before. The leader's `entryAt` never steps backwards. So a Workers clock can stay still across an I/O completion. A stamp taken after I/O can then be early, and an interval can come out *shorter* as well as longer. That corrects the inference in "Cloudflare's clock, and what it explains in lin24" that a frozen clock can only lengthen an interval [measured here; the runtime's mechanism is not established]. These entries break no rule of the ack check: each committed at the later of the two durable acks, 24 to 187 ms after the entry.
+- **Client clock rows.** In 2,689 of the 25,054 clock-sampling rows (ATL 1,179, LHR 1,456, SIN 54), one colo's simultaneous readings of the three sites cannot share one offset within their round trips. The client-side clock readings are not reliable to a few tens of ms.
+
+So lin24's 17 fast acks and its entry-398,032 ordering are a client-clock artifact [inference: the same pattern recurs here on 59 writes whose member evidence is clean]. lin24's own history still cannot show that, because its members recorded no evidence.
+
+### The `/status` failure at the end, and the lin install's health
+
+- **Cause.** The orb's network path to `*.workers.dev`, not the install. From 01:17 to 01:23Z, curl from the orb got `000` through proxy `172.28.0.25:3128` ("CONNECT 502") while `cloudflare.com` and `api.cloudflare.com` answered 200. `finish`'s `/status` retries ran from 01:06 to 01:08Z, and the driver log shows `/chaos/events` failures in the same stretch. A probe every 60 s from 01:21 to 02:18Z got 44 answers and 12 `000`s, so the path was still intermittent then.
+- **Members (01:25Z and 02:19:50Z).** All three are joined followers in term 367 with no leader. Commit and applied are 513,231 on site 0 and 513,232 on sites 1 and 2, with last 513,232 on all three and `restores: 1`. The configuration is the generation-1 config at index 1. With no load there is no leader, because campaigns are request-driven.
+- **Load and chaos.** The three clients report `running: false`, `end: 0`, `failed: 0`, with rows ATL 1,024,145, LHR 984,552 and SIN 841,826. Their last return was 00:55:07.782Z. The chaos object reports `running: false`, and its last events are `chaos ended` at 00:55:04Z and `chaos stopped` at 00:59:27Z. No worker was deleted and nothing was redeployed.

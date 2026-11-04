@@ -4,14 +4,14 @@ Graftyard is a code host that unmodified GitHub clients treat as GitHub Enterpri
 
 ## Status
 
-The design is the specification that implementing agents build from, and the build is under way (`build/BUILD-PLAN.md`, the "Milestone 0 status" and "Milestone 1 status" tables). Milestone 0 is closed, with its between rows carried to named reruns. Milestone 1 is closed except BM-1's 24-hour linearizability row, which `lin24` did not pass and `lin24b` is rerunning. In Milestone 2, M2-WP1 (folds in member SQLite) and M2-WP2 (issues, pull requests, reviews, and checks) are built, and M2-WP1's gate row BF-20 fails on request-limit errors after a member restore (`tests/m2/results/m2-wp1.md`). Numbers that no run has measured stay tagged [guess], [inference], or [unverified].
+The design is the specification that implementing agents build from, and the build is under way (`build/BUILD-PLAN.md`, the "Milestone 0 status" and "Milestone 1 status" tables). Milestone 0 is closed, with its between rows carried to named reruns. Milestone 1's runs are done: BM-1's 24-hour linearizability row, which `lin24` did not pass, passed on its rerun `lin24b`. In Milestone 2, M2-WP1 (folds in member SQLite) and M2-WP2 (issues, pull requests, reviews, and checks) are built, and M2-WP1's gate row BF-20 fails on request-limit errors after a member restore (`tests/m2/results/m2-wp1.md`). Numbers that no run has measured stay tagged [guess], [inference], or [unverified].
 
 ## What has been tested
 
 Milestones 0 and 1 ran on real Cloudflare and in the Raft simulator. `tests/RESULTS.md` lists every run with its faults, checks, and source, and defines each number below.
 
-- Porcupine checked 9,453,684 operations for linearizability over 80.6 hours of chaos on Cloudflare, under 12,082 member resets and 7,928 leadership transfer attempts [measured]. The 4-hour run was Illegal and found a real bug, since fixed. The 48-hour run passes with a 100 ms clock allowance. The 24-hour M1 rerun, `lin24`, did not pass, and its rerun `lin24b` ends 2026-11-04T00:55Z.
-- 0 of 2,684,130 acknowledged writes were lost in the two runs whose members' logs were audited [measured].
+- Porcupine checked 12,304,207 operations for linearizability over 104.6 hours of chaos on Cloudflare, under 16,258 member resets and 10,680 leadership transfer attempts [measured]. The 4-hour run was Illegal and found a real bug, since fixed. The 48-hour run passes with a 100 ms clock allowance. The 24-hour M1 rerun, `lin24`, did not pass because it could not rule out an early ack. Its rerun `lin24b` passes, with every acknowledged write checked against its member's commit time.
+- 0 of 3,588,424 acknowledged writes were lost in the three runs whose members' logs were audited [measured].
 - 12,000 leader kills between quorum and reply each returned the original outcome (BF-12) [measured].
 - 31,482 SSH git sessions ran, most of them under container kills, and 31,362 succeeded. The 24-hour run's 99.587% is between the pass and fail lines [measured].
 - With a site's members failing, git's own `t/` HTTP tests lost no baseline pass except t5549 #2. `clients.sh` passed 29 of 29 rows in all 12 runs on git 2.39.5, 2.51.0, and 2.56.0, 6 of them under a site fault [measured].
