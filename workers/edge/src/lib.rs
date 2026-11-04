@@ -28,7 +28,7 @@ use graftyard_git::refs::{Atomicity, ObjectId, RefName};
 use graftyard_git::repo::{ATOMIC_REFS_MAX, Push, REPO_FORMAT_V1, REPO_FORMAT_V2};
 use graftyard_git::smart::{
     self, Plan, PushCaps, ReceivePack, Refusal, Route, Service, cap_refusal, parse_receive_pack, parse_v2,
-    receive_pack_advertisement, receive_pack_caps, request_id_header, upload_pack_v2_advertisement, wants_v2, wrap,
+    receive_pack_advertisement, receive_pack_caps, upload_pack_v2_advertisement, wants_v2, wrap,
 };
 use graftyard_git::{Copies, INLINE_MAX, ObjectMeta, PART_SIZE, PackId, PackIndex, PackStore, Stage, TeeError};
 use graftyard_identity::{
@@ -47,7 +47,6 @@ use worker::*;
 mod release;
 
 const AGENT: &str = "git/graftyard-m1";
-const ENTERPRISE_VERSION: &str = "3.22.0";
 /// `design/DESIGN.md`, Shape, `Unsupported`: "The edge renders it as 503 with `Retry-After: 5` [guess]".
 const UNSUPPORTED_RETRY_AFTER: &str = "5";
 
@@ -193,12 +192,12 @@ async fn system_read(
 
 // ---- responses ----
 
-/// Every response carries `X-GitHub-Request-Id` and `X-GitHub-Enterprise-Version` (`design/SHARED.md`,
-/// "Cross-cutting conventions").
+/// Every response carries `X-GitHub-Request-Id` and `X-GitHub-Enterprise-Version`, from the shared wire layer
+/// (`design/SHARED.md`, "Cross-cutting conventions").
 fn headers(rid: RequestId) -> Result<Headers> {
     let h = Headers::new();
-    h.set("x-github-request-id", &request_id_header(rid))?;
-    h.set("x-github-enterprise-version", ENTERPRISE_VERSION)?;
+    h.set("x-github-request-id", &graftyard_wire::request_id_header(rid))?;
+    h.set("x-github-enterprise-version", graftyard_wire::ENTERPRISE_VERSION)?;
     Ok(h)
 }
 
@@ -706,7 +705,7 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service) ->
                 .iter()
                 .filter_map(|(n, o)| Some((RefName::parse(n.as_bytes()).ok()?, ObjectId::parse_hex(o.as_bytes())?)))
                 .collect();
-            let caps = receive_pack_caps(AGENT, &request_id_header(c.rid));
+            let caps = receive_pack_caps(AGENT, &graftyard_wire::request_id_header(c.rid));
             Ok(Response::from_bytes(receive_pack_advertisement(&refs, &caps))?
                 .with_headers(git_headers(c.rid, &service.advertisement_type())?))
         }
@@ -1310,12 +1309,14 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     if path.starts_with("/_bed/") {
         return bed(&c, &mut req, &path).await;
     }
-    if req.headers().get("user-agent")?.is_none() {
-        return text(
-            rid,
-            403,
-            "Request forbidden by administrative rules. Please make sure your request has a User-Agent header.\n",
-        );
+    let ua = req.headers().get("user-agent")?;
+    let incoming = graftyard_wire::Incoming { user_agent: ua.as_deref(), ..Default::default() };
+    if let Err(refused) = graftyard_wire::serve(&incoming, graftyard_wire::Surface::Git) {
+        let body = match refused.body {
+            graftyard_wire::Body::Bytes(b) => String::from_utf8(b).unwrap_or_default(),
+            _ => String::new(),
+        };
+        return text(rid, refused.status, &body);
     }
     let Some(route) = smart::route(&path, url.query().unwrap_or("")) else { return text(rid, 404, "Not Found\n") };
     let (owner, name) = match &route {

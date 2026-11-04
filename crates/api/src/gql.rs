@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use crate::exec::{Args, Obj, Out, leaf, obj};
 use crate::view::{Item, Repo, RepoRef, StateFilter};
-use crate::wire::{association, color, cursor, iso, node_id, parse_cursor};
+use crate::wire::{NodeId, NodeType, account_node, association, color, cursor, iso, parse_cursor, scoped};
 
 fn branch(name: &RefName) -> String {
     let s = name.display();
@@ -114,9 +114,9 @@ impl Obj for Account<'_> {
         let org = self.r.dir.is_org(self.id);
         Some(match f {
             "login" => leaf(self.r.dir.login(self.id).unwrap_or_else(|| "ghost".into())),
-            "id" => leaf(node_id(if org { "O" } else { "U" }, &[self.id.0.0])),
+            "id" => leaf(account_node(self.r.dir, self.id)),
             "name" => leaf(self.r.dir.name(self.id)),
-            "databaseId" if !org => leaf(self.id.0.0),
+            "databaseId" if !org => leaf(graftyard_wire::database_id(self.id.0.0)),
             _ => return None,
         })
     }
@@ -143,7 +143,7 @@ impl Obj for Label {
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         Some(match f {
-            "id" => leaf(node_id("LA", &[self.repo.0.0, self.id.0])),
+            "id" => leaf(NodeId::scoped(NodeType::Label, self.repo, self.id.0).encode()),
             "name" => leaf(&*self.row.name.0),
             "description" => leaf(self.row.description.as_deref()),
             "color" => leaf(color(self.row.color)),
@@ -193,12 +193,12 @@ impl Obj for Repository<'_> {
         let s = r.settings().filter(|_| self.home());
         let at = &self.at;
         Some(match f {
-            "id" => leaf(node_id("R", &[at.id.0.0])),
-            "databaseId" => leaf(at.id.0.0),
+            "id" => leaf(NodeId::top(NodeType::Repository, at.id.0.0).encode()),
+            "databaseId" => leaf(graftyard_wire::database_id(at.id.0.0)),
             "name" => leaf(&*at.name),
             "nameWithOwner" => leaf(format!("{}/{}", at.owner, at.name)),
             "owner" => obj(Account { r, id: at.owner_id }),
-            "sshUrl" => leaf(format!("git@{}:{}/{}.git", r.host.0, at.owner, at.name)),
+            "sshUrl" => leaf(format!("git@{}:{}/{}.git", r.host.name(), at.owner, at.name)),
             "description" => leaf(s.as_ref().and_then(|s| s.description.as_deref().map(str::to_owned))),
             "hasIssuesEnabled" => leaf(s.as_ref().is_none_or(|s| s.has_issues)),
             "hasWikiEnabled" => leaf(s.as_ref().is_some_and(|s| s.has_wiki)),
@@ -315,7 +315,7 @@ pub struct Node<'r> {
 
 impl Node<'_> {
     fn pull_number_id(&self) -> String {
-        node_id(if self.it.is_pull() { "PR" } else { "I" }, &[self.r.at.id.0.0, self.it.row.id.0])
+        scoped(if self.it.is_pull() { NodeType::PullRequest } else { NodeType::Issue }, self.r, self.it.row.id.0)
     }
 }
 
@@ -518,7 +518,7 @@ impl Obj for Comment<'_> {
         let r = self.r;
         let me = r.dir.viewer();
         Some(match f {
-            "id" => leaf(node_id("IC", &[r.at.id.0.0, self.id.0])),
+            "id" => leaf(scoped(NodeType::IssueComment, r, self.id.0)),
             "author" => account(r, self.row.author),
             "authorAssociation" => leaf(association(r, self.row.author)),
             "body" => leaf(&*self.row.body),
@@ -558,7 +558,7 @@ impl Obj for Review<'_> {
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         let r = self.r;
         Some(match f {
-            "id" => leaf(node_id("PRR", &[r.at.id.0.0, self.id.0])),
+            "id" => leaf(scoped(NodeType::PullRequestReview, r, self.id.0)),
             "author" => account(r, self.row.reviewer),
             "authorAssociation" => leaf(association(r, self.row.reviewer)),
             "submittedAt" => leaf(iso(self.row.at)),

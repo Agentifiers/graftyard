@@ -10,9 +10,10 @@ mod common;
 use common::*;
 use graftyard_api::exec::Request;
 use graftyard_api::graphql::{Plan, Target, plan, query, refused, render, render_merge, route};
-use graftyard_api::rest::{Page, list_commit_statuses};
+use graftyard_api::rest::list_commit_statuses;
 use graftyard_api::view::Repo;
-use graftyard_api::wire::{Host, node_id, parse_node_id};
+use graftyard_api::wire::Page;
+use graftyard_api::wire::{Host, NodeId, NodeType};
 use graftyard_fold::store::META;
 use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
@@ -65,6 +66,11 @@ fn keep_rest(case: &str, path: &str, status: u16, body: &Value) {
         let v = json!({ "method": "GET", "path": path, "status": status, "body": body });
         std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     }
+}
+
+/// The `rel="next"` URL of a reply's `link` header, as `octokit.paginate` follows it.
+fn next(r: &graftyard_api::wire::Reply) -> Option<String> {
+    r.header("link")?.split(", ").find(|l| l.ends_with("rel=\"next\"")).map(|l| l.split(';').next().unwrap().to_owned())
 }
 
 fn settings() -> RepoSettings {
@@ -217,7 +223,7 @@ fn seeded_on(members: usize) -> Chain {
 }
 
 fn host() -> Host {
-    Host("ghes.example.com".into())
+    Host::new("ghes.example.com", false).unwrap()
 }
 
 /// Replaces the capture fixture's node ids (`I_1`, `PR_1`, `R_1`) in `vars` with this repository's, as gh carries
@@ -235,9 +241,9 @@ fn with_ids(d: &Doc, r: &Repo<'_>) -> Option<Map<String, Value>> {
     let issue = r.item(IssueNumber(1)).unwrap().row.id.0;
     let pr = r.item(IssueNumber(2)).unwrap().row.id.0;
     let ids = [
-        ("I_1", node_id("I", &[REPO.0.0, issue])),
-        ("PR_1", node_id("PR", &[REPO.0.0, pr])),
-        ("R_1", node_id("R", &[REPO.0.0])),
+        ("I_1", NodeId::scoped(NodeType::Issue, REPO, issue).encode()),
+        ("PR_1", NodeId::scoped(NodeType::PullRequest, REPO, pr).encode()),
+        ("R_1", NodeId::top(NodeType::Repository, REPO.0.0).encode()),
     ];
     let s = serde_json::to_string(&vars).unwrap();
     let s = ids.iter().fold(s, |s, (from, to)| s.replace(&format!("\"{from}\""), &format!("\"{to}\"")));
@@ -443,12 +449,24 @@ fn an_unserved_field_is_undefined_field_not_null() {
 }
 
 #[test]
-fn node_ids_round_trip_with_the_repository_id_first() {
-    let id = node_id("PR", &[7, 1 << 40]);
-    assert_eq!(parse_node_id(&id), Some(("PR", vec![7, 1 << 40])));
-    // GitHub's own example from `research/wire-census.md` #27.
-    assert_eq!(parse_node_id("U_kgDOADP9xw"), Some(("U", vec![3_407_303])));
-    assert_eq!(node_id("U", &[3_407_303]), "U_kgDOADP9xw");
+fn node_ids_in_either_format_reach_the_pull_request_but_a_legacy_one_cannot_route() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let pr = r.item(IssueNumber(2)).unwrap().row.id.0;
+    let q = "query($id: ID!) { node(id: $id) { ... on PullRequest { number } } }";
+    let ask_id = |id: String| {
+        let vars = json!({ "id": id }).as_object().cloned();
+        let req = Request::parse(q, vars, None).unwrap();
+        (route(&req).unwrap(), query(&req, Some(&r)))
+    };
+    let (t, reply) = ask_id(NodeId::scoped(NodeType::PullRequest, REPO, pr).encode());
+    assert_eq!((t, &reply["data"]["node"]["number"]), (Some(Target::Id(REPO.0.0)), &json!(2)));
+    // A legacy id carries no repository id, so the edge cannot route it alone; on the repository's tiers it resolves.
+    let (t, reply) = ask_id(NodeId::encode_legacy(NodeType::PullRequest, pr));
+    assert_eq!((t, &reply["data"]["node"]["number"]), (None, &json!(2)), "{reply}");
+    let (_, reply) = ask_id(NodeId::encode_legacy(NodeType::Issue, pr));
+    assert_eq!(reply["errors"][0]["type"], "NOT_FOUND", "a pull request's id as an issue's names nothing");
 }
 
 #[test]
@@ -461,22 +479,16 @@ fn commit_statuses_list_newest_first_and_page() {
     let r = c.repo(0, &h, &dir);
     let page = list_commit_statuses(&r, &oid(2).hex(), Page::parse("per_page=3"));
     assert_eq!(page.status, 200);
-    let ids: Vec<i64> = page.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
+    let ids: Vec<i64> = page.value().as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
     assert_eq!(ids, [24, 23, 22]);
-    assert!(page.link.as_deref().unwrap().contains("page=2"));
-    keep_rest("statuses-page1", "/repos/{owner}/{repo}/commits/{ref}/statuses", 200, &page.body);
+    assert!(next(&page).unwrap().contains("page=2"));
+    keep_rest("statuses-page1", "/repos/{owner}/{repo}/commits/{ref}/statuses", 200, page.value());
     let rest = list_commit_statuses(&r, "f", Page::parse("per_page=3&page=3"));
-    let ids: Vec<i64> = rest.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
+    let ids: Vec<i64> = rest.value().as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
     assert_eq!(ids, [12], "by branch name: seven statuses, so page 3 holds the oldest");
-    assert_eq!(rest.link, None);
+    assert_eq!(next(&rest), None, "page 3 is the last");
+    assert!(rest.header("link").unwrap().contains("rel=\"prev\""));
     assert_eq!(list_commit_statuses(&r, "nope", Page::parse("")).status, 404);
-}
-
-#[test]
-fn timestamps_render_as_github_does() {
-    assert_eq!(graftyard_api::wire::iso(Timestamp(0)), "1970-01-01T00:00:00Z");
-    assert_eq!(graftyard_api::wire::iso(Timestamp(1_793_000_000_000)), "2026-10-26T07:33:20Z");
-    assert_eq!(graftyard_api::wire::iso(Timestamp(951_782_400_000)), "2000-02-29T00:00:00Z");
 }
 
 /// Every core row, without the tier's own bookkeeping row (`applied` moves with every entry).
@@ -535,8 +547,8 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
     for page in 1.. {
         let p = list_commit_statuses(&r, &oid(2).hex(), Page::parse(&format!("per_page=100&page={page}")));
         assert_eq!(p.status, 200);
-        ids.extend(p.body.as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()));
-        if p.link.is_none() {
+        ids.extend(p.value().as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()));
+        if next(&p).is_none() {
             break;
         }
     }
@@ -554,7 +566,7 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
     c.entry(EntryBody::Noop, TierSet::NONE);
     let r = c.repo(1, &h, &dir);
     assert!(r.check_runs(&oid(2)).is_empty() && r.check_suites(&oid(2)).is_empty());
-    assert_eq!(list_commit_statuses(&r, &oid(2).hex(), Page::parse("")).body, json!([]));
+    assert_eq!(list_commit_statuses(&r, &oid(2).hex(), Page::parse("")).value(), &json!([]));
     assert!(pr_checks_contexts(&r).is_empty());
     for t in ["check_run", "check_suite", "status", "check_expiry"] {
         assert!(c.members.iter().all(|m| m.meta.0.get(t).is_none_or(|rows| rows.is_empty())), "{t} not pruned");

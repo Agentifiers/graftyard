@@ -11,6 +11,7 @@ graftyard-git = { path = "../git" }
 graftyard-identity = { path = "../identity" }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
+graftyard-wire = { path = "../wire" }
 graphql-parser = "0.4.1"
 postcard.workspace = true
 serde_json.workspace = true
