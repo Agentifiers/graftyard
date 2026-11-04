@@ -27,7 +27,7 @@ In the Approach column, a "row" is a row in a SQLite fold table, derived from ch
 | `git-http` | T0 | `git clone`, `git push --atomic`, `git fetch --filter=blob:none` with git 2.39 and 2.51, plus `GCM_TRACE=1 git clone` with no provider override. M1-WP6 ran every row but the GCM one on 2.39.5, 2.51.0, and 2.56.0 (29 of 29 each); `GCM_TRACE` is not yet run, because Git Credential Manager was not installed (`tests/m1/results/m1-wp6.md`) | Smart HTTP only, dumb HTTP refused. Graftyard's own receive-pack, upstream upload-pack on the git cache, refs from the fresh core tier. |
 | `git-ssh` | T0 | `ssh -T git@HOST` prints the GitHub-style greeting and exits 1, then `git clone git@HOST:o/r.git` and push; registering a public key that another account already holds returns 422 | One service host key set. The client key's service-wide unique fingerprint resolves to its account, the repository path comes from the exec command, and the request is authorized and committed as HTTPS is (`design/DESIGN.md`, journey 4, supplies the SSH path). |
 | `git-protocol-v2` | T0 | `GIT_TRACE_PACKET=1 git ls-remote https://HOST/o/r` shows `ls-refs=unborn` and `fetch=shallow wait-for-done filter` | Advertise exactly github.com's capability set (`research/wire-census.md#41`). `bundle-uri` and `packfile-uris` stay off until T2. |
-| `lfs` | T0 | `git lfs track '*.bin' && git push && git lfs fetch --all && git lfs locks` over HTTPS and SSH | Batch API with presigned URLs to `R2Key::Blob` objects, `verify` action required, `LfsObject` entries for verified objects, and locks as `LfsLock` entries on the repository chain. `verify` returns only after the object is a `DurableBlob`, as durable as a stored pack [inference: the source's rule was a second-Region copy before `verify`]. |
+| `lfs` | T0 | `git lfs track '*.bin' && git push && git lfs fetch --all && git lfs locks` over HTTPS and SSH | Batch API whose `basic` transfer hrefs point at the edge, which serves the upload and download itself from `R2Key::Blob` objects, because a presigned URL needs an R2 S3 credential on the request path and names only one bucket (M2-WP4), `verify` action required, `LfsObject` entries for verified objects, and locks as `LfsLock` entries on the repository chain. Objects over `BLOB_MAX` (100 MiB [guess]) get a per-object 422 in the batch; multipart uploads are not built. `verify` returns only after the object is a `DurableBlob`, as durable as a stored pack [inference: the source's rule was a second-Region copy before `verify`]. |
 | `rest:actions` | T0 | `gh run list`, `gh run view --log`, `gh workflow run`, `gh secret set`, plus Octokit contract run | Registration, runners, runs, jobs, secrets (sealed box), variables at T0. Remaining operations T1. |
 | `rest:activity` | T1 | `gh status`, `gh api notifications`, `gh api user/starred`, Octokit contract run | Stars, watches, subscriptions, follows, and notification thread state are `IdentityEvent::Record` entries on the actor's `Identity` chain, off the repository chain. The `Counts` consumer writes coalesced star and watcher counts, and a derived watcher index of stars, watches, and thread subscriptions, to each repository's metadata tier. `/stargazers`, `/subscribers`, and `Notify` read that index. Notifications, feeds, `/issues`, and `/user/repos` come from a derived per-account `Inbox` that the `Notify` consumer fills from chain cursors (`design/DESIGN.md`, "Shape", Identity), and they lag ("Known deviations from GitHub"). |
 | `rest:agent-automations` | Out | none | dotcom-only Copilot agent surface, absent from GHES 3.22. |
@@ -74,9 +74,9 @@ In the Approach column, a "row" is a row in a SQLite fold table, derived from ch
 | `rest:private-registries` | T2 | Octokit contract run | Sealed-box secrets as rows. |
 | `rest:projects` | T2 | `gh project list`, Octokit contract run | Project rows. |
 | `rest:pulls` | T0 | cli/cli acceptance `pr` tests, Renovate onboarding and update PRs | `PrOpened` and related entries on the base chain, merge as one `Merged` entry. |
-| `rest:rate-limit` | T0 | VS Code Pull Requests `HEAD /api/v3/rate_limit`, Jenkins hub4j endpoint check | One `RateCounter` object per key (user, installation, `GITHUB_TOKEN` repository, minted agent token, or IP) holds each window's total (`design/DESIGN.md`, Shape, Identity), with GitHub's documented numbers in managed mode and the error bound in "Public service concerns". `/rate_limit` reads the same objects and does not count against them. |
+| `rest:rate-limit` | T0 | VS Code Pull Requests `HEAD /api/v3/rate_limit`, Jenkins hub4j endpoint check | One `RateCounter` object per key (user, installation, `GITHUB_TOKEN` repository, minted agent token, or IP) holds each window's total, `search` among them, because the pinned GHES 3.22 rate-limit overview requires `core` and `search` (M2-WP4) (`design/DESIGN.md`, Shape, Identity), with GitHub's documented numbers in managed mode and the error bound in "Public service concerns". `/rate_limit` reads the same objects and does not count against them. |
 | `rest:reactions` | T1 | Octokit contract run | Reaction rows. |
-| `rest:releases` | T0 | `gh release create --generate-notes`, `gh release upload`, `gh release download` | `Release` and `ReleaseAsset` entries in the metadata tier, asset bytes as `R2Key::Blob` objects in two buckets. |
+| `rest:releases` | T0 | `gh release create --generate-notes`, `gh release upload`, `gh release download` | `Release` and `ReleaseAsset` entries in the metadata tier, asset bytes as `R2Key::Blob` objects in two buckets. `generate_release_notes` writes the tag as the name with an empty body [guess], because GitHub's notes need the git cache's commit walk. |
 | `rest:repos` | T0 | `go test ./github -run TestAccGithubRepository`, `gh repo create/view/clone`, `gh repo fork`, `gh repo rename`, Octokit contract run | `RepoName` entries on the owner's `Authz` chain, contents through the git cache, renames as `Alias` entries, deletes as `Deleted` tombstones kept 90 days, forks in their network. |
 | `rest:search` | T1 | `gh search issues`, `gh search prs`, `gh search repos` | FTS5 tables in `SearchShard` objects, 16 per residency domain by repository hash [guess] (`design/DESIGN.md`, Shape, Identity), fed by the `Search` consumer. A query fans out to the shards of the `Default` domain and of the viewer's orgs' domains, and filters by public visibility or the viewer's reach from `Authz` folds. A shard that misses a 5 s deadline [guess] is left out and the reply sets `incomplete_results`. Search inside one repository uses that repository's own metadata-tier FTS5 tables ("Folds"). Code search T2. |
 | `rest:secret-scanning` | T2 | Octokit contract run with a seeded secret push | Scanner as a push consumer. |
@@ -125,7 +125,7 @@ These come from `research/wire-census.md` section B. They live in one shared wir
 
 These rules follow `research/clients.md` and `research/actions-protocol.md` section H.
 
-- The install host is validated at install time. It may not end in `github.com`, `ghe.com`, or `localhost`, so every client classifies Graftyard as GHES. Managed is one host, `graftyard.dev`.
+- The install host is validated at install time. No host name label may equal `github.com`, `ghe.com`, or `localhost`, or end in `.github.com`, `.ghe.com`, or `.localhost`, so every client classifies Graftyard as GHES; `notgithub.com` is allowed, since clients classify and normalize only those names and suffixes (`research/clients.md` #1 and #2). Managed is one host, `graftyard.dev`.
 - `/api/v3`, `/api/graphql`, `/api/uploads`, `/login/oauth/*`, and `/login/device/code` live on one bare host on port 443, because gh rejects ports and the runner drops them (`research/clients.md#4`, `research/actions-protocol.md#4`).
 - `GET /status` returns 200 with `X-GitHub-Request-Id` for Dependabot. `GET /api/v3/status` returns a body that starts `GitHub lives!` for VS Code Pull Requests. `GET /api/v3/` returns the root document with `rate_limit_url` for Jenkins (`research/clients.md` implication 4).
 - Self-hosters are told that a `github.` label, for example `github.example.com`, lets GCM and Desktop skip their probe.
@@ -136,7 +136,7 @@ These rules follow `research/clients.md` and `research/actions-protocol.md` sect
 
 - The five first-party OAuth client ids in `FirstPartyClient` ("Identity and tokens") are seeded once, when the managed service or the install is created, and cannot be deleted.
 - Every numeric id is `i64` in storage and JSON, and allocation stops below 2^53. GraphQL exposes `databaseId: Int` only where the value fits, and `fullDatabaseId: BigInt` as a string everywhere (`research/wire-census.md#28`).
-- Node ids use GitHub's new MessagePack format, with the repository id first for repository-scoped types. They accept the legacy base64 form as input and honor `X-Github-Next-Global-ID: 1` (`#26`, `#27`).
+- Node ids use GitHub's new MessagePack format, with the repository id first for repository-scoped types. They accept the legacy base64 form as input and honor `X-Github-Next-Global-ID: 1` (`#26`, `#27`). A legacy repository-scoped id carries no repository id, so it resolves only once the request has named the repository, and it cannot route a request by itself (M2-WP4).
 
 ### Known deviations from GitHub
 
@@ -572,7 +572,8 @@ pub struct StatusUpdate { pub id: StatusId, pub sha: ObjectId, pub context: Box<
                           pub target_url: Option<Url>, pub description: Option<Box<str>>, pub creator: AccountId }
 pub enum StatusState { Error, Failure, Pending, Success }
 /// SHA-256 of the bytes, stored under `R2Key::Blob { repo, oid }` (`design/DESIGN.md`, Shape, "Packs"). LFS objects
-/// and release assets use it. GC deletes a blob RESTORE_WINDOW after the last row that names it is deleted.
+/// and release assets use it. GC deletes a blob RESTORE_WINDOW after the last row that names it is deleted (not built
+/// yet, M2-WP4).
 pub struct BlobRef { pub oid: Digest, pub bytes: u64, pub sites: SiteSet }
 /// Built only when the bytes are in the buckets of two sites in two regions, each put create-only, as `DurablePack`.
 pub struct DurableBlob { blob: BlobRef, _sealed: () }
@@ -580,6 +581,10 @@ pub struct RepoReleaseId(DbId); pub struct AssetId(DbId);
 pub struct ReleaseRecord { pub tag: RefName, pub target: ObjectId, pub name: Box<str>, pub body: Box<str>,
                            pub draft: bool, pub prerelease: bool, pub latest: bool, pub author: Actor }
 pub struct AssetRecord { pub name: Box<str>, pub label: Option<Box<str>>, pub content_type: Box<str>, pub blob: BlobRef }
+/// `RepoEvent::LfsLock`, metadata tier: a lock on one path, which `git lfs lock` takes and `git lfs unlock` releases.
+pub struct LockId(DbId);
+pub enum LfsLockEvent { Created { id: LockId, path: Box<str>, refspec: Option<RefName>, owner: AccountId },
+                        Deleted { id: LockId, actor: Actor } }
 ```
 
 `design/DESIGN.md` adds `MergeQueueEntry` with the `parent_tip` rule, the `QueueEvent` variants, the `QueueOp` and `QueueMerge` commands, and the `MergeQueue` consumer ("Shape", "Merge queue"), and lazy `TestMerge` under a budget ("Shape", agent block).

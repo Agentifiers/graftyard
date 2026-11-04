@@ -1053,7 +1053,7 @@ pub enum R2Key { Pack { network: NetworkId, id: PackId }, Idx { network: Network
                  Archive { chain: ChainId, from: Index, to: Index, digest: Digest },
                  CloneCache { key: CloneKey, replica: u8 }, Export { minute: u64, seq: u32 },
                  Blob { repo: RepoId, oid: Digest } /* SHA-256 of the bytes: LFS objects and release assets */,
-                 ArchiveCache { network: NetworkId, tree: Oid, format: ArchiveFormat } /* derived codeload archive */,
+                 ArchiveCache { network: NetworkId, commit: Oid, prefix: Digest, format: ArchiveFormat } /* derived */,
                  Committed { of: Box<R2Key> } /* marker for a committed `Pack` or `Blob`: (chain, index, checksum, bytes) */,
                  Upload { network: NetworkId, id: PackId } /* journal of an in-flight multipart upload's id */ }
 /// The marker's checksum and size, also in its metadata, let the filler verify a copy without the chain. The binding

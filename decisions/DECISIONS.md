@@ -1283,11 +1283,13 @@ The 24-hour linearizability run `lin24` ended, F43's two stalls were traced, and
 
 **Beat.** Passing on the widened checks, which accepts the two observations on a clock argument the run cannot prove. Rerunning the same run with tighter clock sampling, which still measures the members' behavior only through client clocks.
 
-**Evidence.** `tests/m1/results/m1-wp8.md`, "The 24-hour half, 2026-11-02: lin24 does not pass"; `tests/m1/lin/raw/lin24.report.json` [measured]. F44.
+**Evidence.** `tests/m1/results/m1-wp8.md`, "The 24-hour half, 2026-11-02: lin24 does not pass"; `tests/m1/lin/raw/lin24.report.json` [measured]. F44, since answered ("F44 answered: the fast acks were a client-clock artifact").
 
 **Flip.** A member-side check that shows every ack sent at or after its entry's commit over 24 h, which passes BM-1's 24-hour half if Porcupine also passes; or one ack before its commit, which is a violation and sends the write path back.
 
 **Since, 2026-11-03.** `QuorumProof` carries the leader, the commit index, the entry's `at`, the leader's commit time, and one `DurableAck { site, durable, at }` per counted site, and the host adds `sentAt` and `selfSyncedAt` to every `done` reply, in the product build. `ackcheck.ts` asserts six rules on the member's clock (`tests/m1/results/m1-wp2.md`, "Member-side ack evidence, 2026-11-03"). A planted early ack on the leader's own append was caught in 54 of 3,873 acknowledged writes in the simulator's GRAY half, also when the crate's proof hid it. `lin24b` runs on `repo:934783` from 2026-11-03T00:55:07Z to 2026-11-04T00:55:07Z after a 30-minute smoke with 0 violations on 18,225 writes [measured].
+
+**Flip met, 2026-11-04.** `lin24b` showed every ack sent at or after its entry's commit over 24 h, 0 violations on 904,294 acknowledged writes, with Porcupine Ok and no acknowledged write lost, so BM-1's 24-hour half passes and Milestone 1 closes (`tests/m1/results/m1-wp8.md`, "The 24-hour half, 2026-11-04"; `tests/m1/lin/raw/lin24b.report.json` [measured]; "F44 answered: the fast acks were a client-clock artifact"). The write path stands. This entry stays as the record of why `lin24` alone did not pass.
 
 #### A late member-call answer is still stepped (F43)
 
@@ -1347,6 +1349,40 @@ The 24-hour linearizability run `lin24` ended, F43's two stalls were traced, and
 **Flip.** A run-id order that is not monotonic per (sha, name) because two Actions shards report runs for one check, which needs a cross-shard tiebreak; or a measured `fold_digest` disagreement between members whose rows are equal.
 
 **Since, 2026-11-03** (M2-WP2, `crates/git/src/tiers.rs`). A thread's first review comment and every `Deleted` also touch Core, besides `Resolved`, because `Resolved` names only the thread: the first comment opens it unresolved and maps it to its pull request, and a deletion does not say whether it named a thread. Each tier's cursor takes its own half of every leased block, Metadata the lower and Core the upper, and an event that touches Core takes Core's ids [inference: any fixed split works; this one keeps the cursors from meeting].
+
+### Milestone 1 closes, and M2-WP4's shape, 2026-11-04
+
+BM-1's 24-hour half passed on `lin24b`, which answered F44, and M2-WP4's pure code found gaps in SHARED and DESIGN (`tests/m1/results/m1-wp2.md`, "The 24-hour rerun's result, 2026-11-04: lin24b passes"; `tests/m1/results/m1-wp8.md`, "The 24-hour half, 2026-11-04"; commits `fb03345` to `999e5b9`).
+
+#### F44 answered: the fast acks were a client-clock artifact
+
+**Decision.** `lin24`'s 17 fast acks and its entry-398032 ordering are read as client-clock artifacts, not early acks, and BM-1's 24-hour half passes on `lin24b`. F44 leaves OPEN-QUESTIONS. The earlier inference that a frozen Workers clock can only lengthen a measured interval is withdrawn: a stamp can be early as well as late.
+
+**Why.** `lin24b`'s member-side check found every one of 904,294 acknowledged writes' replies sent at or after its commit on the answering member's clock, each counted by a durable quorum of two distinct sites including the answering site. Its quorum and durable rules are causal, not timed: a follower counts only through an AppendEntries reply naming the index and the leader only through its `SelfAck`, so a stalled clock cannot pass an early ack. The fast-ack pattern recurred on 59 writes whose client interval was shorter than the site-to-site round trip in their own proof, and all 59 pass the member check; 137 writes had a client interval shorter than `commitAt − entryAt` on the leader's clock, by up to 194 ms, which a real interval cannot be. Member clocks stalled too: in 15 entries a follower's ack reached the leader 0 to 40 ms after the entry was built on the leader's clock, over a link of about 98 ms round trip [measured; the runtime's mechanism is not established]. That the same pattern explains `lin24`, whose members recorded no evidence, is [inference].
+
+**Beat.** Keeping F44 open until `lin24`'s own history is explained, which it cannot be without member evidence. Treating the member clocks as exact, which the 15 stalled entries refute.
+
+**Evidence.** `tests/m1/results/m1-wp2.md`, "F44: answered by the member clocks" and "Lost writes: none"; `tests/m1/lin/raw/lin24b.report.json` [measured].
+
+**Flip.** A member-side ack-check violation in any later run, which is an early ack and sends the write path back; or a fast ack whose member evidence is missing or fails a rule.
+
+#### M2-WP4's wire, blob, and archive rules as the code needs them
+
+**Decision.** From M2-WP4's pure code:
+- The LFS batch's `basic` transfer hrefs point at the edge, which serves upload and download itself from `R2Key::Blob` objects.
+- `R2Key::ArchiveCache` is keyed by `network`, `commit`, a digest of the prefix, and `format`, not by tree.
+- `LfsLockEvent` is defined, metadata tier: `Created { id, path, refspec, owner }` and `Deleted { id, actor }`.
+- The install-host rule is by label: no label equal to, or ending in, `.github.com`, `.ghe.com`, or `.localhost` (and not those names themselves); `notgithub.com` is allowed.
+- A legacy repository-scoped node id resolves only after the request names the repository, and cannot route by itself.
+- New guesses: `BLOB_MAX` = 100 MiB; `generate_release_notes` writes the tag as the name with an empty body; `search` is a counted rate-limit window. Blob GC after `RESTORE_WINDOW` is not built.
+
+**Why.** A presigned URL needs an R2 S3 credential on the request path and names only one bucket, while a `DurableBlob` lives in two. `git archive` writes the commit time and the prefix into the bytes, so one tree under two commits or two prefixes gives different archives. SHARED listed `LfsLock` without its type. Clients classify and normalize only those names and suffixes (`research/clients.md` #1 and #2), so the textual rule refused hosts every client treats as GHES. A legacy id carries no repository id. The pinned rate-limit overview requires `core` and `search`.
+
+**Beat.** Presigned URLs per bucket, which put an S3 credential on the edge and lose the second copy on a read. Keying archives by tree, which serves one commit's bytes for another.
+
+**Evidence.** `crates/git/src/blob.rs` (`archive_key` and its test), `crates/wire/src/host.rs`, `crates/api/lfs/README.md`, and `crates/api/tests/blobs.rs`: 65 captured requests replayed and 93 replies validated with 0 failures; BF-25's and BF-26's pure halves pass [measured, in the crate tests].
+
+**Flip.** A captured client that needs a presigned or third-party href, such as a custom LFS transfer agent; a client that classifies a label-allowed host as GitHub.com; or a measured blob that needs more than `BLOB_MAX`.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
