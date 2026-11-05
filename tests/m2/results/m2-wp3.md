@@ -80,3 +80,12 @@ Status: in progress. This file holds progress notes until the gates run.
   is allowed after the new success and is not the stale-success merge BF-23 forbids. Rerun by hand, `gh pr merge
   89 --rebase` exited 0 and the PR is MERGED. 23 trials retried "Base branch was modified" up to 3 times; their
   4-way concurrency is the cause.
+- Planted bugs rerun at `116e1ce` (`tests/m2/wp3/plant.py`, in a detached worktree so the live drivers were not
+  touched): 14 of 14 caught. Plant 12 was re-aimed first, because `tiers()` now has a `MergeCmd::Cursor` arm and its
+  old text no longer matched. It is the same bug: a landing tagged Core only.
+- Local checks at `de87bf9`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test
+  -j 4 --workspace` (42 suites, 355 tests, 0 failed, exit 0), and `go test ./...` in `containers/git/server` all pass.
+  `crates/raft` is untouched, so the long sweep and Porcupine did not run.
+- The per-base timer (`hosted.py timer` on `wp3t`, 196639, `min_merge` 5, `min_wait_minutes` 1): two pull requests
+  enqueued, then no entry until `GroupBuilt` 63.2 s and 63.1 s after the first `Enqueued` in the first two trials,
+  and both land.
