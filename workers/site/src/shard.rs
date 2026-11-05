@@ -123,13 +123,9 @@ impl DurableObject for GitShard {
         let path = url.path().to_owned();
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
-            let (started, configured) = host.images().await.map_err(se)?;
-            return Response::from_json(&json!({
-                "running": running,
-                "alarm": self.state.storage().get_alarm().await?,
-                "startedImage": started,
-                "configuredImage": configured,
-            }));
+            return Response::from_json(
+                &json!({ "running": running, "alarm": self.state.storage().get_alarm().await? }),
+            );
         }
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
