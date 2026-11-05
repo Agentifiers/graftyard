@@ -92,6 +92,9 @@ def leader_site():
                 best = (s, v.get("term", 0))
         if best:
             return best[0]
+        # An idle group's objects sleep, and `/status` does not wake them: a client read through the edge does.
+        http("GET", f"{EDGE}/{OWNER_LOGIN}/{REPO}.git/info/refs?service=git-upload-pack", None,
+             {"authorization": AUTH.split(": ", 1)[1]}, timeout=60)
         time.sleep(1)
     raise RuntimeError("no leader")
 
@@ -749,7 +752,7 @@ def bm2_trial(i):
     for c in cmds:
         body = {"merge": {"format": [32, 4], "cmd": c, "render": None}}
         r = member(s, "/commit", {"rid": rid(), "cmd": body}, deadline=30000).get("v") or {}
-        ref = (r.get("refused") or {}).get("merge", {}).get("refusal")
+        ref = ((r.get("done") or {}).get("refused") or {}).get("merge", {}).get("refusal")
         errs.append(ref["err"] if ref else r)
     after = view()["view"]
     same = [e["built"]["entry"] for e in after["entries"] if e["built"]] == es
