@@ -500,8 +500,10 @@ impl Family for Repo {
                     _ => return 0,
                 }
             }
-            (RepoCmd::Issue(c), RepoOut::Issue(_)) => match c.op.blob() {
-                Some(b) => Err(b),
+            // The blob the member confirmed, whose sites are the buckets that hold it; the edge's names none for a
+            // `verify`.
+            (RepoCmd::Issue(c), RepoOut::Issue(_)) => match c.confirmed {
+                Some(d) => Err(d.blob()),
                 None => return 0,
             },
             _ => return 0,
@@ -516,7 +518,7 @@ impl Family for Repo {
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
         match mark {
             Ok(pack) => git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await,
-            Err(b) => git::blob::mark_blob(&refs, repo, b, chain, acked.index).await,
+            Err(b) => git::blob::mark_blob(&refs, repo, &b, chain, acked.index).await,
         }
     }
     fn row_packs(events: &[git::repo::RepoEvent]) -> Value {
