@@ -19,6 +19,7 @@ pub mod merge;
 pub mod pack;
 pub mod pkt;
 pub mod queue;
+pub mod queue_consumer;
 pub mod refs;
 pub mod repo;
 pub mod shard;
