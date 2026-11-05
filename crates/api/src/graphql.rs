@@ -266,7 +266,8 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
             planned(Plan::Merge { n, method, expected_head }, Some(n))
         }
         "enqueuePullRequest" | "enablePullRequestAutoMerge" | "dequeuePullRequest" => {
-            let n = s("pullRequestId")
+            // GHES names `dequeuePullRequest`'s pull request `id`, the other two `pullRequestId`.
+            let n = s(if field == "dequeuePullRequest" { "id" } else { "pullRequestId" })
                 .filter(|id| id.starts_with("PR_"))
                 .and_then(|id| item_of(r, id))
                 .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
