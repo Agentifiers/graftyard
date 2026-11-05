@@ -173,8 +173,10 @@ pub enum RepoEvent {
     /// event existed still replays an absent ref as `Stale`.
     Refused { push: PushId, refs: Vec<(RefName, RejectReason)> },
     PrOpened { n: IssueNumber, head: HeadSpec, base: RefName, capture: PrCapture },
+    /// Both tiers. `by` is who merged, which `PrState::Merged` records: the caller for `Merge`, the enqueuing user for a
+    /// `QueueMerge` [inference: the state named an actor the event lacked; `crates/git/src/repo.rs`].
     Merged { n: IssueNumber, base: RefUpdate, head: ObjectId, method: MergeMethod, also: Vec<RefUpdate>,
-             pack: Option<PackRef>, verified: TreeDiffDigest, engine: EngineVersion },
+             pack: Option<PackRef>, verified: TreeDiffDigest, engine: EngineVersion, by: UserId },
     PrClosed { n: IssueNumber, final_head: ObjectId }, IssueOpened { n: IssueNumber, capture: IssueCapture },
     IssueChanged { n: IssueNumber, change: IssueChange, actor: Actor },
     Comment(CommentEvent), Review(ReviewEvent), Labels(LabelEvent), Queue(QueueEvent), Rule(BranchRule),
@@ -198,6 +200,9 @@ pub enum RepoEvent {
     /// deletes it on a conflict. `pack` holds the merge commit's objects. Whoever ran the merge commits it: `PrSync`
     /// after a head push, `ActionsTrigger` on dispatch, or the edge on a single pull request GET.
     TestMerged { n: IssueNumber, base: ObjectId, head: ObjectId, result: MergeabilityResult, pack: Option<PackRef> },
+    /// Core tier. A consumer's position on this chain, committed in the same entry as the work it covers, so a new
+    /// leader or a restored member resumes from it ("Event fan-out"). `PrSync` uses it (M2-WP5).
+    ConsumerCursor { consumer: Consumer, through: Index },
     /// Metadata tier, plus Core when `tag` is set: publishing a release whose tag does not exist creates the tag in the
     /// same entry. `record: None` deletes the release.
     Release { id: RepoReleaseId, record: Option<ReleaseRecord>, tag: Option<RefUpdate>, actor: Actor },
@@ -453,11 +458,15 @@ pub struct Mergeability { pub base: ObjectId, pub head: ObjectId, pub result: Me
 pub enum MergeabilityResult { Clean { merge: ObjectId }, Conflict { paths: SmallVec<[Box<str>; 4]> } }
 pub enum MergeMethod { Merge, Squash, Rebase }
 /// Produced by the git cache. The tree-diff check has already passed when this exists (research/uptime.md#49).
-pub struct MergePlan { pub base_old: ObjectId, pub head: ObjectId, pub commit: ObjectId, pub pack: DurablePack, pub method: MergeMethod }
-/// impl Command with tiers() = Core, because review verdicts live in the core tier. `credential()` comes from
-/// `actor.credential`.
+/// `up_to_date` says whether `head` contains `base_old`, which a `strict` rule needs and the fold cannot see [inference].
+pub struct MergePlan { pub base_old: ObjectId, pub head: ObjectId, pub commit: ObjectId, pub pack: DurablePack, pub method: MergeMethod,
+                       pub up_to_date: bool, pub verified: TreeDiffDigest, pub engine: EngineVersion }
+/// impl Command. `decide` reads only the core tier, where review verdicts live, but the entry is tagged with both tiers
+/// because `Merged` touches both. `credential()` comes from `actor.credential`.
 pub struct Merge { pub n: IssueNumber, pub plan: MergePlan, pub expected_head: Option<ObjectId>, pub actor: Principal }
-/// Pure. Reads the rule, `RequiredCheck`, and review-verdict rows from the core tier.
+/// Pure. Reads the rule, `RequiredCheck`, and review-verdict rows from the core tier. A rule whose data the core tier
+/// does not hold yet refuses every merge: `code_owners` (no `CODEOWNERS` read), `last_push` (no last pusher recorded),
+/// and `signatures` (no signature check) [inference: refusing is the safe default; `crates/git/src/merge.rs`].
 pub fn check_protection(rule: &BranchRule, pr: &PrView, required: &[RequiredCheckView], reviews: &[ReviewView]) -> Result<(), RuleViolation>;
 pub enum MergeError { HeadModified, BaseModified, Protection(RuleViolation), NotOpen, Store(StoreError) }
 // Every variant but Store renders GitHub's text and is never retried into success.
@@ -605,7 +614,7 @@ A 409 is never retried into success, because a rerun of `decide` re-runs protect
 
 - A conclusion for a check that a branch rule requires is also a `RequiredCheck` entry on the repository chain. A merge's `decide` sees every required conclusion committed before it, and one committed after it is a check of a merged pull request.
 - Commit statuses that a rule requires take the same path, so a Jenkins-style status cannot race a merge either.
-- Only conclusions for SHAs that are heads of open pull requests, merge-queue refs, or protected branch tips are appended. `apply` prunes the row when the pull request closes or its head moves, so the core tier stays small. Every check run and status is also a metadata-tier `CheckRun` or `Status` entry, which no merge reads.
+- Only conclusions for SHAs that are heads of open pull requests, merge-queue refs, or protected branch tips are appended. `apply` prunes the row when the pull request closes or its head moves, or when a `Queue` event deletes the queue ref whose SHA it names unless an open pull request still has that SHA as its head, so the core tier stays small [inference for queue refs: `crates/git/src/tiers.rs`, `prune_required`]. Every check run and status is also a metadata-tier `CheckRun` or `Status` entry, which no merge reads.
 - If a rule change newly requires a check whose conclusion already exists, the merge planner appends that conclusion as a `RequiredCheck` entry before it plans, idempotent by run and version. A merge never waits on a check that already ran [inference: GitHub counts existing runs].
 - Pinning check versions at plan time instead would reopen the race between a failing required check and a merge.
 
@@ -619,7 +628,7 @@ A 409 is never retried into success, because a rerun of `decide` re-runs protect
 
 - An open pull request's head is the head branch's ref in the fork's fresh core tier.
 - A merge sets the base ref and `Merged { final_head }` in one entry.
-- `refs/pull/N/head` and `refs/pull/N/merge` are derived refs. The `PrSync` consumer moves `refs/pull/N/head` within seconds in a coalesced bot `Refs` entry, ordered below user commands in the entry. A `TestMerged` entry moves `refs/pull/N/merge` each time a lazy test merge runs.
+- `refs/pull/N/head` and `refs/pull/N/merge` are derived refs. The `PrSync` consumer moves `refs/pull/N/head` within seconds in a coalesced bot `Refs` entry, ordered below user commands in the entry. As built in M2-WP5 it moves `refs/pull/N/head` in the same command as the head's `TestMerged`, so the head ref waits on the merge (about 1.5 to 2.5 s, and the 4 of 50 BF-24 trials held about 37 s in Queues) [measured, `tests/m2/results/m2-wp5.md`, design gap 7]; whether to move it first, in its own command, is open (`build/BUILD-PLAN.md`, M2-WP5). A `TestMerged` entry moves `refs/pull/N/merge` each time a lazy test merge runs.
 - Issues and pull requests share one number space. An issue's number comes from the fold that `IssueOpened`'s `decide` saw, so numbering and labels commit together.
 - Comments, reviews, and timeline events are entries. Review comments anchor to `(commit, path, line)` and re-anchor lazily on read.
 - Comments and reactions share the chain under a per-repository cap of 50 entries a second, so a viral issue cannot starve pushes. Stars stay off the repository chain. Check runs, check suites, and statuses are metadata-tier entries that `apply` prunes after `RepoSettings.check_retention_days`.
@@ -647,6 +656,9 @@ pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
 /// 2^256 of SHA-256 over each row's (table, key, writing index, columns) [inference: chosen so members agree whatever
 /// their row order, and `apply` keeps it with one subtract and one add per write; `crates/fold`].
 /// Refolds sampled chains from genesis on each release and daily, compares `fold_digest`, and alarms on any mismatch.
+/// A chain whose stored log through `applied` is over `REPLAY_BYTES` (16 MB [guess]) or `REPLAY_MAX` entries is
+/// reported as skipped, with the reason, and not refolded, because the refold is held in one isolate's memory and a
+/// 102.6 MB log took one past 128 MB [measured, `tests/m2/results/f47.md`]. Large chains are unaudited until F48.
 pub async fn fold_audit(sample: &[ChainId]) -> Result<AuditReport, FoldError>;
 ```
 
@@ -846,7 +858,7 @@ pub struct HookCursor { pub read: Index, pub replay_from: Index }
 - **A slow hook delays only itself.** It holds one slot per queue for at most 10 s, and the owner's other hooks keep at least 25 slots. No other hook's queue and no cursor waits on it.
 - **A lost store loses no delivery.** A delivery store lost with its site is rebuilt by replaying each cursor from `replay_from`. That redelivers finished deliveries in the range under their own GUIDs, which is at-least-once delivery.
 - **Hook management.** The consumer queues a `ping` delivery when it reads a new `Hook` entry, and `POST .../hooks/{id}/pings` queues one with no chain entry. The deliveries list, `.../deliveries/{id}`, `.../attempts`, and manual redelivery read and write the store.
-- **Other consumers.** `PrSync` writes bot `Refs` entries and, after a head push, the `TestMerged` entry of the lazy test merge. `MergeQueue` builds queue groups, ejects failures, and lands groups (`design/DESIGN.md`, "Shape", "Merge queue"). `ActionsTrigger` commits each run's `RunCreated` on its Actions shard. `RunOwner` records run status and writes the repository's check suites, check runs, and required checks ("Multi-chain operations", Workflow run). `Notify` fills each account's `Inbox`, pending invitations included, and `Search` feeds the search index. `Counts` writes coalesced star and watcher counts as bot entries. `Insights` is the agent layer's (`design/DESIGN.md`, agent block). `Audit` finishes multi-chain operations that nobody touched within a minute. The edge writes the `Identity` side of a new credential itself, so `Audit` appends it only when the edge died between the two commits. A consumer whose target is unreachable pauses without counting attempts.
+- **Other consumers.** `PrSync` holds its position as a `RepoEvent::ConsumerCursor` row in the chain's core tier, committed with the work it covers, and the other consumers that commit to the chain they read do the same [inference]; `Webhooks` keeps `HookCursor`. `PrSync` writes bot `Refs` entries and, after a head push, the `TestMerged` entry of the lazy test merge. `MergeQueue` builds queue groups, ejects failures, and lands groups (`design/DESIGN.md`, "Shape", "Merge queue"). `ActionsTrigger` commits each run's `RunCreated` on its Actions shard. `RunOwner` records run status and writes the repository's check suites, check runs, and required checks ("Multi-chain operations", Workflow run). `Notify` fills each account's `Inbox`, pending invitations included, and `Search` feeds the search index. `Counts` writes coalesced star and watcher counts as bot entries. `Insights` is the agent layer's (`design/DESIGN.md`, agent block). `Audit` finishes multi-chain operations that nobody touched within a minute. The edge writes the `Identity` side of a new credential itself, so `Audit` appends it only when the edge died between the two commits. A consumer whose target is unreachable pauses without counting attempts.
 
 ## Record formats and the two-release rule
 

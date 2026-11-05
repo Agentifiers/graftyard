@@ -563,35 +563,35 @@ pub enum QueueEvent {
     Landed { base: RefName, through: IssueNumber, refs: Vec<RefUpdate> } }
 pub enum EjectReason { CheckFailed { name: Box<str> }, CheckTimeout { name: Box<str> }, HeadMoved, Conflict,
                        Protection(RuleViolation), Closed, Dequeued }
-/// impl Command for the first three `QueueEvent`s, `tiers() = Core`, admitted in the MergeQueue lane. `credential()`
-/// comes from `actor.credential`. The edge submits `Enqueue` and `Dequeue` for REST and GraphQL callers, and the
-/// `MergeQueue` consumer submits `Build` and `Eject`. `decide` refuses `Enqueue` unless the pull request is open, not
-/// queued, and passes `check_protection` with its required checks left out. It refuses `Build` unless every entry's
-/// pull request is still queued at its pinned head and the `parent_tip` chain holds from the base tip or from the last
-/// built entry. It refuses `Eject` of a pull request that is not queued.
-pub struct QueueOp { pub op: QueueAction, pub actor: Principal }
+/// impl Command for the first three `QueueEvent`s, `tiers() = Core`, MergeQueue lane. The edge submits `Enqueue` and
+/// `Dequeue` for REST and GraphQL callers, `credential()` from `actor`; the `MergeQueue` consumer submits `Build` and
+/// `Eject` with `actor: None`. `decide` refuses `Enqueue` unless the pull request is open, not queued, and passes
+/// `check_protection` with its required checks left out. It refuses `Build` unless every entry's pull request is still
+/// queued at its pinned head and the `parent_tip` chain holds from the base tip or the last built entry, and `Eject` of
+/// a pull request not queued.
+pub struct QueueOp { pub op: QueueAction, pub actor: Option<Principal> }
 pub enum QueueAction { Enqueue { n: IssueNumber, head: Oid }, Dequeue { n: IssueNumber },
                        Build { base: RefName, entries: SmallVec<[MergeQueueEntry; 8]>, pack: DurablePack },
                        Eject { n: IssueNumber, reason: EjectReason } }
-/// impl Command, `tiers() = Core`, MergeQueue lane: one group's landing, all or nothing. `plans` are built entries in
-/// queue order from the queue's head, and `entry` is the last of them. On a running state, `decide` checks that the
-/// base tip equals the first `parent_tip`, and for each plan that `base_old` is its entry's `parent_tip`, `commit` is its
-/// `group_tip`, `head` is the pinned head of an open pull request, and `check_protection` passes with required checks
-/// read on the queue refs: every entry's under `Grouping::AllGreen`, the last entry's under `HeadGreen`. Any failure
-/// refuses the whole command with the failing pull request's number. Otherwise one entry carries a `Merged` per pull
-/// request, each with its own base `RefUpdate` from `parent_tip` to `group_tip` and `by` set to the enqueuing user,
-/// then `Landed`. So the base moves only to a `group_tip` that descends from its current value, and queue tips only
-/// fast-forward. Out: each pull request's merge commit. Err: `(IssueNumber, MergeError)`.
-pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: MergeQueueEntry, pub actor: Principal }
+/// impl Command, both tiers for its `Merged`s, MergeQueue lane, no actor: one group's landing, all or nothing. `plans`
+/// are built entries in queue order from the queue's head, and `entry` is the last. On a running state, `decide` checks
+/// that the base tip equals the first `parent_tip`, and for each plan that `base_old` is its entry's `parent_tip`,
+/// `commit` is its `group_tip`, `head` is the pinned head of an open PR, and `check_protection` passes with required
+/// checks read on the queue refs: every entry's under `Grouping::AllGreen`, the last entry's under `HeadGreen`, which
+/// also refuses on any entry's failed or pending one. Any failure refuses the whole command with the failing PR's
+/// number. Otherwise one entry carries a `Merged` per PR, each with its own base `RefUpdate` from `parent_tip` to
+/// `group_tip` and `by` set to the enqueuing user, then `Landed`. So the base moves only to a `group_tip` that descends
+/// from its current value, and queue tips only fast-forward. Out: each merge commit. Err: `(IssueNumber, MergeError)`.
+pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: MergeQueueEntry }
 /// The `MergeQueue` consumer (SHARED, "Event fan-out") reads the base chain's `Queue`, `Refs`, `RequiredCheck`,
-/// `PrClosed`, and `Rule` events. Per base branch, under the rule's `MergeQueueSettings`, it does four things.
-/// It builds: once `min_merge` pull requests wait or `min_wait_minutes` passes, and fewer than `max_build` entries are
+/// `PrClosed`, `Merged`, and `Rule` events. Per base branch, under the rule's `MergeQueueSettings`, it does four
+/// things. It builds: once `min_merge` PRs wait or `min_wait_minutes` passes, and fewer than `max_build` entries are
 /// built, it asks `GitCacheShard::merge` for each next entry on the previous `group_tip`, places the pack, and submits
-/// `Build`, or `Eject { Conflict }` on a conflict. It ejects: a failed required conclusion on a queue ref, no conclusion
-/// within `check_timeout_minutes`, a head push, or a close submits `Eject`. It lands: when the oldest built entries, at
-/// most `max_merge`, pass their checks, it submits `QueueMerge`, and a refusal ejects the named pull request. It rebuilds:
-/// a base move that no `QueueMerge` made submits a `Build` from the new base tip. A redelivered event costs at most a
-/// refusal, because `decide` refuses a stale chain.
+/// `Build`, or `Eject { Conflict }` on a conflict. It ejects on a head push or a close, and the first built entry not
+/// yet passing on a failed required conclusion on its queue ref or none within `check_timeout_minutes`. It lands: when
+/// the oldest built entries, at most `max_merge`, pass their checks, it submits `QueueMerge`, and a refusal ejects the
+/// named PR. It rebuilds: a base move that no `QueueMerge` made submits a `Build` from the new tip. A redelivered event
+/// costs at most a refusal, as `decide` refuses a stale chain.
 
 // ---- Agent load and agent safety (journey 9; the layer is design/AGENT-LAYER.md) ----
 /// Leader admission inside group commit. Lanes in every entry are Human and MergeQueue, then Agent up to AGENT_FLOOR of
@@ -1581,7 +1581,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 
 | Component | Failure | Blast radius | Containment |
 | --- | --- | --- | --- |
-| chain groups | instance | One member's object resets; in-flight requests on it fail. A panic or wasm error in any member makes workers-rs 0.8.7 rebuild the wasm instance of every object in that isolate, so its neighbours' in-flight requests fail too [measured, `tests/m2/results/m2-wp1.md`, "The root cause"] | The DO restarts and replays its SQLite, without loading `request` rows, so a restore cannot run the isolate out of memory again (BF-20). The leader commits with the other follower. A reset leader resumes `led_term` after one AppendEntries round; otherwise `suspect` and the 1 s deadline give a new leader within about 11.5 s. A `Solo` group waits for the restart |
+| chain groups | instance | One member's object resets; in-flight requests on it fail. A panic or wasm error in any member makes workers-rs 0.8.7 rebuild the wasm instance of every object in that isolate, so its neighbours' in-flight requests fail too [measured, `tests/m2/results/m2-wp1.md`, "The root cause"] | The DO restarts and replays its SQLite, without loading `request` rows, so a restore cannot run the isolate out of memory again (BF-20). Restore moves the stored log and fold into the member instead of copying them, the fold audit refolds at most `REPLAY_BYTES` (16 MB [guess]) of log in memory, and a reset member's tick loop holds only a `Weak` host, because each held a second large copy of a member's state and the isolate, out of memory, trapped as a wasm `unreachable` [measured, `tests/m2/results/f47.md`]. The leader commits with the other follower. A reset leader resumes `led_term` after one AppendEntries round; otherwise `suspect` and the 1 s deadline give a new leader within about 11.5 s. A `Solo` group waits for the restart |
 | chain groups | data-center | Members whose host DC failed | DO storage follower fencing (`research/cloudflare-uptime.md` finding 32). The quorum continues on the other two sites |
 | chain groups | region | One member of every group with a member there | Two other sites keep a quorum and elect within about 11.5 s of a group's first request. A total loss is left by `suspect` and election, because a leader whose every call fails completes no commit attempt and `STEP_DOWN` cannot trip (BM-1, `tests/m1/results/m1-wp8.md`); a gray region by `suspect` or a signed drain, and by `STEP_DOWN` only on a group busy enough to fill its window: at 30% call errors no `STEP_DOWN` fired in BM-1's gray rerun (F41). `ReplaceMember` runs only on `SiteLost` or 24 h of zero acks, onto the same continent's spare, and `RestorePlacement` moves groups home after recovery. `*2w` groups go `Degraded`. `Solo` groups there wait. Learners there drop out |
 | chain groups | provider-wide | Every member: DO errors (June 2025) or no reachability (November 2025) | 1 s deadlines, a `suspect` report to a follower on another site as the only hedge, and two core resends per commit-path call outside the 10% budget (the host sends each message once). Writes return 503 and nothing acknowledged is lost. Stale reads only under a signed flag. A partial proxy failure (December 2025) leaves binding replication up [inference] |
@@ -1626,14 +1626,14 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | ssh relay | bad-deploy | A `cloud-init.sh` edit that breaks sshd or the forwarder (two such first-boot bugs were found and fixed), or a broken `cloudflared` or OpenSSH from unattended upgrades | The script runs `sshd -t` before any restart and fails unless cloudflared holds port 22 [measured, `tests/m1/results/oci-ssh.md`]; otherwise rerun the fixed script or roll the package back over admin port 2222, or rebuild with `provision.sh`. No Graftyard code or key runs on the VM |
 | ssh relay | bad-config | The DNS record proxied or on an old IP, a wrong Tunnel hostname, or the security list or iptables losing port 22 or 2222 | Clients are refused, time out, or reject a mismatched host key under `StrictHostKeyChecking`. `provision.sh` rewrites the record, route, and security list whole, and `cloud-init.sh` the unit and its env file [measured, `tests/m1/results/oci-ssh.md`] |
 | ssh relay | noisy-tenant | The Micro shares a host: 1/8 OCPU with burst and 50 Mbps to the internet [doc]; a scanner or one client can hold many Tunnel streams, and the VM has no rate limit | Large packs run at 50 Mbps at most (a 100 MB push takes at least 16 s [inference]) and CPU steal adds latency. Limits by key and token apply at `graft-sshd`, as for the other ingresses; per-source limits or a larger shape are operator decisions [measured, `tests/m1/results/oci-ssh.md`] |
-| event pipeline | instance | One consumer invocation, or one `HookSequencer` object | At-least-once redelivery. A cursor advances only after its work is recorded, for webhooks the `HookDelivery` rows. A reset sequencer resumes its queues from its SQLite, and an attempt left unreported for 30 s is re-sent under its GUID |
+| event pipeline | instance | One consumer invocation, or one `HookSequencer` object; for `PrSync`, a batch whose consumer isolate or git cache shard is lost mid-batch | At-least-once redelivery. A `PrSync` batch the committed cursor has not passed `REDELIVER_AFTER_MS` (30 s [guess]) after its send is sent again, from the cursor, by whichever member leads [measured, `tests/m2/results/m2-wp5.md`, "Leader change mid-stream"]. The leader runs a batch's first attempt in band and Queues carries only that re-send (decided 2026-11-05, pending BF-24's rerun; `decisions/DECISIONS.md`). A cursor advances only after its work is recorded, for webhooks the `HookDelivery` rows. A reset sequencer resumes its queues from its SQLite, and an attempt left unreported for 30 s is re-sent under its GUID |
 | event pipeline | data-center | Sequencers on that host set | As instance. Queues and cursors are elsewhere |
-| event pipeline | region | One site's queue and consumers, and the delivery stores of owners homed there | Leaders on other sites keep pushing, and cursors on the lost site resume on the new leader. A lost store is rebuilt on the owner's new home site by replaying each `Webhooks` cursor from `replay_from`, which redelivers finished deliveries under their GUIDs. Delivery history and manual redelivery for that range are lost, as the RPO table states |
+| event pipeline | region | One site's queue and consumers, and the delivery stores of owners homed there; `PrSync` for that site's leaders, which call their own site's git cache shard, so `mergeable` and both `refs/pull/N/*` refs wait [inference] | Leaders on other sites keep pushing, and cursors on the lost site resume on the new leader. A lost store is rebuilt on the owner's new home site by replaying each `Webhooks` cursor from `replay_from`, which redelivers finished deliveries under their GUIDs. Delivery history and manual redelivery for that range are lost, as the RPO table states |
 | event pipeline | provider-wide | Queues or Durable Objects down (June 2025) | Cursors hold position. Webhooks, notifications, and the lifeboat feed deliver late and none are lost |
 | event pipeline | control-plane | None | Queues pre-created per site. Sequencers are created by name on first use |
-| event pipeline | bad-deploy | Wrong or stopped deliveries from one site | Payloads render from captured entry fields. A stopped consumer or sequencer only delays, and replay is by cursor rewind to `replay_from` |
+| event pipeline | bad-deploy | Wrong or stopped deliveries from one site; a `PrSync` consumer that decodes no batch acks none, as M2-WP5's first deploy did [measured, `tests/m2/results/m2-wp5.md`, `3b30017`] | Payloads render from captured entry fields. A stopped consumer or sequencer only delays, and replay is by cursor rewind to `replay_from` |
 | event pipeline | bad-config | A hook owner's concurrency set too high | `HOOK_OWNER_CONCURRENCY` (50 [guess]) is compiled, never config |
-| event pipeline | noisy-tenant | One hook owner with a slow endpoint, or one owner's delivery volume | One attempt in flight per (chain, hook), a 10 s deadline, and failing hooks held to half of the owner's slots, so a slow hook delays only its own queues. Each owner has its own sequencer, so one owner's backlog never delays another's. One owner's sequencer is bounded by the 1,000 req/s soft limit per object (open question) |
+| event pipeline | noisy-tenant | One hook owner with a slow endpoint, or one owner's delivery volume; one network's test merges on its shard, which `TEST_MERGE_BUDGET` bounds [inference] | One attempt in flight per (chain, hook), a 10 s deadline, and failing hooks held to half of the owner's slots, so a slow hook delays only its own queues. Each owner has its own sequencer, so one owner's backlog never delays another's. One owner's sequencer is bounded by the 1,000 req/s soft limit per object (open question) |
 | actions state | instance | One `RunnerBroker` or `LogRelay` object, or one `graft-runners` invocation | Brokers and relays hold derived state. A broker reloads from the shards, and runners re-poll under their sessions, which are entries in the group. A relay's viewers fall back to step log blobs, and the runner's uploads lose nothing. `graft-runners` is stateless, and the next webhook or sweep repeats the demand read. Leases live in the Actions group |
 | actions state | data-center | As chain groups, plus brokers and relays on that host set | As chain groups. Brokers and relays restart as for instance |
 | actions state | region | Job state survives (group). Logs and artifacts in that site's bucket are lost, and so are that site's brokers and relays | Jobs re-queue on lease expiry, and users rerun jobs whose logs were lost. The shards elect leaders elsewhere, and the edge sends polls to fresh brokers on the new leader site. Live views of running jobs fall back to blobs |

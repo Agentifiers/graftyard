@@ -1408,9 +1408,56 @@ BF-20's 2026-11-03 failure was traced and fixed on branch `restore-fix`, and the
 
 **Beat.** Failing on the earlier baseline alone, which charges the session's drift to the snapshot. Passing on the later one alone (-0.2% as well), which hides the drift.
 
-**Evidence.** `tests/m2/results/m2-wp1.md`, "BF-20 rerun" and "Request limits" [measured]. The `commit_tx` aborts on site c are F47.
+**Evidence.** `tests/m2/results/m2-wp1.md`, "BF-20 rerun" and "Request limits" [measured]. The `commit_tx` aborts on site c were F47, since answered ("F47 answered: the wasm `unreachable` is an isolate out of memory").
 
 **Flip.** A rerun with held phases interleaved with snapshot phases in which the snapshot phase is more than 10% slower than its neighbours; or a limit outcome in Workers Logs during a snapshot.
+
+### F47, M2-WP5, and M2-WP3's pure half, 2026-11-05
+
+F47's abort was traced and fixed on `graft-m2b`, M2-WP5 ran BF-24 on the hosted install, and M2-WP3's pure code settled seven gaps in the merge and queue shapes (`tests/m2/results/f47.md`; `tests/m2/results/m2-wp5.md`; commits `80b85ac`, `d0f09be`, `15ddbee`, and `53ac4ee`).
+
+#### F47 answered: the wasm `unreachable` is an isolate out of memory
+
+**Decision.** F47's abort is an isolate out of memory, not a Rust fault, and four fixes remove its causes. `Member::restore` takes the stored state by value and moves the log window and fold into the member. The audit replay reads the log one row at a time. The audit refolds at most `REPLAY_BYTES` (16 MB [guess]) of stored log in memory and reports a larger chain as skipped. `Host::kick`'s tick loop holds a `Weak<Host>` across each delay. F47 leaves OPEN-QUESTIONS, and auditing the skipped chains is F48.
+
+**Why.** A probe build caught the trap at 138.1 MB of wasm memory: inside `transactionSync`, `SqlStorage::exec`'s string import failed with `RangeError: Invalid array buffer length`, wasm-bindgen rethrew it as `Critical error` and set the instance's terminated flag, and the next import shim's check executed `unreachable`, with no Rust panic. Four paths held a second large copy of a member's state: restore's clone of the log and fold (up to 118 MB of live heap), the audit replay collecting every log row (up to 131 MB), the in-memory refold even one row at a time (110 MB for `repo:65536`'s 102.6 MB of log), and a reset member's tick loop parked on a timer `ctx.abort()` never fires, whose `Rc<Host>` kept the reset member alive (1, 2, then 3 hosts at 40, 82, then 124 MB). Because workers-rs 0.8.7 rebuilds the wasm instance of every object in the isolate after such an error, each abort reset its neighbours too.
+
+**Beat.** Catching the error in the glue, which leaves the instance terminated. A larger isolate, which Workers does not offer. Keeping the full audit refold, which takes the isolate past 128 MB on any chain with about 100 MB of log.
+
+**Evidence.** `tests/m2/results/f47.md`: on the old code 13 lost instances in 3.24 h on `graft-m2b` under BF-20's load and an amplifier, and on `e5c6021` none to memory in 1.28 h with 71 audits and 14 resets, peak wasm memory 89 to 120 MB per site against 142.5 MB before; `restore_holds_no_second_copy_of_the_stored_log_or_fold` fails on `7a47f94` and passes on `c3e9fa1` [measured]. The one `Critical` in the final window was a separate Rust panic in `tier.rs` on a storage read refused with "Network connection lost", reported there and not fixed.
+
+**Flip.** A lost instance with F47's signature on the final build; or a member whose own resident state, with no second copy, reaches the isolate limit, which needs a smaller `LOG_BYTES` or tier cache rather than these fixes.
+
+#### `PrSync`'s first attempt runs in band, and Queues carries only the re-send
+
+**Decision.** Operator decision, 2026-11-05, under the delegation (`FRAME.md`, "Operator decision, 2026-10-30, delegation"). After a head push the repository leader runs the `PrSync` batch's first attempt itself: the fresh read, the git cache's `/merge`, and the commit. The per-site queue carries only the re-send of a batch the committed cursor has not passed. The cursor, content-derived request ids, and `decide_sync`'s checks are unchanged. This is being built and measured now, so BF-24's 10 s clause stays failed until its rerun.
+
+**Why.** BF-24 passed on correctness in every run and failed its 10 s clause: 46 of 50 clean head pushes and 25 of 25 conflicts met 10 s, but 4 of 50 queue messages sat in Queues about 36.5 to 37.6 s before their first delivery, with no retries recorded, and the leader's 30 s re-send then covered them. Queue delivery was the largest step, p50 2.0 s and p90 5.1 s, against 1.9 s for the merge and 0.6 s for the commit, so the gate held only while Queues delivered within about 6 s [measured, `tests/m2/results/m2-wp5.md`, "Where the time goes"].
+
+**Beat.** A shorter `REDELIVER_AFTER_MS` (5 s), which bounds the tail near 9.5 s but keeps every push's p50 behind a queue hop and doubles handler runs on slow deliveries. Keeping the queue path and accepting a p99 over 30 s.
+
+**Evidence.** `tests/m2/results/m2-wp5.md`, "BF-24" [measured]. The rerun is pending.
+
+**Flip.** The rerun misses 10 s at p99 with the in-band attempt, or the in-band merge holds a leader's alarm long enough to slow its commits, measured; or a measured Queues delivery bound under about 6 s at p99, which would make the queue path enough.
+
+#### M2-WP3's merge and queue shapes as the code needs them
+
+**Decision.** From M2-WP3's pure code:
+- `Merged` touches both tiers, so `Merge` and `QueueMerge` entries are tagged with both, though `decide` reads only Core.
+- `QueueOp.actor` is `Option<Principal>`: the edge sets it for `Enqueue` and `Dequeue`, and the `MergeQueue` consumer's `Build` and `Eject` carry none. `QueueMerge` has no actor, and each `Merged` names the enqueuing user.
+- Under `HeadGreen`, `QueueMerge` also refuses when any landed entry's own queue ref has a failed or pending required conclusion.
+- The consumer judges only the first built entry without a passing result, and ejects it on a failure or a timeout; every later queue ref holds its changes.
+- `Merged` gains `by`, and `MergePlan` gains `up_to_date`, with `verified` and `engine`.
+- The `code_owners`, `last_push`, and `signatures` rules refuse every merge until the core tier holds their data.
+- Deleting a queue ref prunes the `required_check` rows of its SHA, unless an open pull request has that SHA as its head [inference].
+
+**Why.** A follower that saw a `Merged` in a Core-only entry would refuse it, which the BF-1 plant shows. A consumer names no credential (`design/DESIGN.md`, Shape, `CredentialShard`), but `PrState::Merged` names who merged. DESIGN's `HeadGreen` read only the last entry's checks, so a landing planned before an earlier entry's failure was reported would land past it. A later entry's failure may be the earlier entry's change. `strict` needs ancestry the fold cannot see, and the git cache that ran `merge-tree` can. Without `CODEOWNERS`, the last pusher, or signature checks, passing those rules would merge what GHES refuses. Queue refs come and go with every build, so their required rows would grow the core tier.
+
+**Beat.** A Core-only landing with a separate metadata entry, which splits a merge across two entries. A synthetic consumer principal, which would need a credential no consumer has. Ignoring the three unbuilt rules, which merges past them.
+
+**Evidence.** `crates/git/src/merge.rs`, `queue.rs`, `queue_consumer.rs`, `tiers.rs`, and `repo.rs`; `crates/git/tests/merge_queue.rs`, 13 tests on three Raft members, pass; `tests/m2/wp3/plant.py` catches 14 of 14 planted bugs, rerun on `c7a3b3b` [measured, in the crate tests].
+
+**Flip.** The hosted BF-21 or BF-23 shows a landing the pure tests allowed; or GHES 3.22 is shown to land a `HeadGreen` group past an earlier entry's pending check.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
