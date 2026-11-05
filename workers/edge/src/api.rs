@@ -131,7 +131,8 @@ async fn read(
     };
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = json!({ "q": { "rows": true } }).to_string();
+    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
+    let q = json!({ "q": { "rows": true, "ranges": true } }).to_string();
     let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
     if let Ok(None) = v {
         ensure_group(c, &repo).await.map_err(Error::RustError)?;
@@ -142,7 +143,7 @@ async fn read(
         Ok(None) => return Ok(Err(unavailable("the repository's group has no leader; retry"))),
         Err(e) => return Ok(Err(unavailable(&e))),
     };
-    // A member built before the `rows` read answers the refs as an array: its tiers cannot be served.
+    // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
     let Ok(rows) = serde_json::from_value::<TierRows>(v["value"].clone()) else {
         return Ok(Err(unavailable("the repository's members do not serve tier rows yet (site release)")));
     };
@@ -354,9 +355,9 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
 }
 
 /// A repository's `o/r` from its id: its owner from `RepoOwner` on `Names`, its name from the owner's `Authz` names,
-/// and the owner's login from `LOGINS`, since `Names` keys logins by name and holds no reverse row [inference].
+/// and the owner's login from `logins`, since `Names` keys logins by name and holds no reverse row [inference].
 async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
-    let repo = crate::repo_of(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
+    let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
     let login = logins(c).get(&repo.owner.0.0)?.clone();
     let a = authz(c, &repo).await?;
     let name = a.names.iter().find_map(|(k, e)| match e {
@@ -366,9 +367,16 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
     Some((login, name))
 }
 
-/// The install's known logins by account id, from `LOGINS` (`{"<id>": "<login>"}`).
+/// Logins by account id. No account-to-login read is built (`Names` keys logins by name), so a product edge knows
+/// only the owner's login from the request path; test installs name more in `LOGINS` (`{"<id>": "<login>"}`).
 fn logins(c: &Ctx<'_>) -> std::collections::BTreeMap<i64, String> {
+    #[cfg(feature = "test-faults")]
     let v: Value = c.env.var("LOGINS").ok().and_then(|v| serde_json::from_str(&v.to_string()).ok()).unwrap_or_default();
+    #[cfg(not(feature = "test-faults"))]
+    let v = {
+        let _ = c;
+        Value::Null
+    };
     v.as_object().into_iter().flatten().filter_map(|(k, l)| Some((k.parse().ok()?, l.as_str()?.to_owned()))).collect()
 }
 
@@ -566,7 +574,7 @@ async fn lfs_route(
 async fn transfer(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, method: Method) -> Result<Reply> {
     let Some((repo_id, oid)) = lfs::transfer_path(p) else { return Ok(Reply::not_found()) };
     let Some(who) = authenticate(c, req).await? else { return Ok(lfs::challenge()) };
-    let Ok(repo) = crate::repo_of(c, graftyard_types::RepoId(graftyard_types::DbId(repo_id))).await else {
+    let Ok(repo) = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(repo_id))).await else {
         return Ok(Reply::not_found());
     };
     let raw = buckets(c, &repo)?;

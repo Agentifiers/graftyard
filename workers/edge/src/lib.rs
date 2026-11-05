@@ -715,15 +715,9 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service) ->
 
 // ---- the test driver's routes (test installs only) ----
 
-/// A repository by id: its owner from `RepoOwner` on `Names`, and the owner's record.
-#[cfg(feature = "test-faults")]
+/// A repository by id, as an LFS transfer path and the test driver name it: its owner from `RepoOwner` on `Names`,
+/// and the owner's record.
 async fn repo_by_id(c: &Ctx<'_>, id: RepoId) -> std::result::Result<Repo, String> {
-    repo_of(c, id).await
-}
-
-/// A repository by id, as an LFS transfer path names it: its owner from `RepoOwner` on `Names`, and the owner's
-/// record.
-async fn repo_of(c: &Ctx<'_>, id: RepoId) -> std::result::Result<Repo, String> {
     let v = system_read(c, ChainId::Names(name_shard(&NameKey::Repo(id))), json!({ "repoOwner": id.0.0 })).await?;
     let owner: AccountId = serde_json::from_value::<Option<AccountId>>(v["repoOwner"].clone())
         .map_err(|e| e.to_string())?
