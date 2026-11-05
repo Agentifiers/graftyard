@@ -1,0 +1,5 @@
+self-hosted-runner:
+  # GARM's srv runner pool (Agentifiers/srv-ops, srv-gha).
+  labels:
+    - srv
+config-variables: null

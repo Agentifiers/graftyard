@@ -2,12 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, ci-srv]
   pull_request:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,21 +18,29 @@ env:
 jobs:
   design:
     name: Design checks
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          persist-credentials: false
       - run: python3 scripts/check_design.py
       - run: python3 scripts/check_names.py
       - run: python3 scripts/check_links.py
 
   rust:
     name: Rust fmt, clippy, tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Runner tools
+        run: |
+          for t in rustup cargo rustc sccache go python3; do printf '%-8s ' "$t"; command -v "$t" >/dev/null && "$t" --version 2>&1 | head -1 || echo missing; done
+          nproc; free -g | sed -n 2p
+          grep -h remote_cache /etc/bazel.bazelrc 2>/dev/null || true
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -47,14 +58,18 @@ jobs:
 
   go:
     name: Go tests
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 15
     strategy:
       matrix:
         dir: [tests/m0/porcupine, containers/git/server]
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v5
         with:
           go-version-file: ${{ matrix.dir }}/go.mod
+          cache: false
       - run: go test ./...
         working-directory: ${{ matrix.dir }}
