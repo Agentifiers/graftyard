@@ -43,11 +43,13 @@ pub const LEADER_ALARM_MS: i64 = ALARM_MS;
 /// lookup's own 20 s, plus a cold shard's catch-up].
 const FIRST_FOR: std::time::Duration = std::time::Duration::from_secs(25);
 
+/// Which leadership a dispatcher belongs to: the term, and the member's boot, so an object reset and restored in the
+/// same isolate and term (a `/reset`, a failed write) starts a new one and waits on no attempt of its old self.
+type Leadership = (u64, u64);
+
 thread_local! {
-    /// Per member object of this isolate: the term its dispatcher belongs to, and the dispatcher.
-    static DISPATCHERS: RefCell<HashMap<String, (u64, Dispatcher)>> = RefCell::default();
-    /// Per member object of this isolate: the term whose first attempt is running, if one is.
-    static RUNNING: RefCell<HashMap<String, u64>> = RefCell::default();
+    /// Per member object of this isolate: the leadership its dispatcher belongs to, and the dispatcher.
+    static DISPATCHERS: RefCell<HashMap<String, (Leadership, Dispatcher)>> = RefCell::default();
     /// Test installs: first attempts to drop, per member object, as if each was lost with its isolate.
     #[cfg(feature = "test-faults")]
     static DROP_FIRST: RefCell<HashMap<String, u32>> = RefCell::default();
@@ -83,7 +85,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 let cursor = git::tiers::consumer_cursor(&*fold.core, git::issues::Consumer::PrSync);
                 Some((
                     c.join.me.do_name.to_string(),
-                    c.m.term().0,
+                    (c.m.term().0, c.m.boot()),
                     repo,
                     cursor,
                     c.m.state().applied,
@@ -105,8 +107,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     if h.fold_lost() {
         return;
     }
-    let running = RUNNING.with(|r| r.borrow().get(&key) == Some(&term));
-    let batch = d.batch(cursor, Timestamp(now_ms()), running);
+    let batch = d.batch(cursor, Timestamp(now_ms()));
     let mut first = None;
     match batch {
         Some((b, Delivery::First)) => first = Some(Message { repo: repo.0.0, batch: b, record: Some(record) }),
@@ -129,7 +130,6 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         first = None;
     }
     if let Some(m) = first {
-        RUNNING.with(|r| r.borrow_mut().insert(key.clone(), term));
         h.stats.borrow_mut().prsync_first += 1;
         // Weak, as `Host::kick`'s loop: a member reset while its attempt runs must not stay alive for it (F47).
         let w = Rc::downgrade(h);
@@ -145,23 +145,15 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 Ok(v) => console_log!("prsync {} {from}..{through} first handled {ms}ms {v}", m.repo),
                 Err(e) => console_error!("prsync {} {from}..{through} first: {e}", m.repo),
             }
-            RUNNING.with(|r| {
-                let mut r = r.borrow_mut();
-                if r.get(&key) == Some(&term) {
-                    r.remove(&key);
+            // A failed attempt is sent again through the queue at once, not after `REDELIVER_AFTER_MS`.
+            DISPATCHERS.with(|m| {
+                if let Some((t, d)) = m.borrow_mut().get_mut(&key)
+                    && *t == term
+                {
+                    d.finished(r.is_ok());
                 }
             });
             let Some(h) = w.upgrade() else { return };
-            if r.is_err() {
-                // Sent again through the queue at once, not after `REDELIVER_AFTER_MS`.
-                DISPATCHERS.with(|m| {
-                    if let Some((t, d)) = m.borrow_mut().get_mut(&key)
-                        && *t == term
-                    {
-                        d.unsent();
-                    }
-                });
-            }
             // Batches that waited for this attempt, or the re-send of a failed one.
             h.arm_in(LEADER_ALARM_MS);
         });

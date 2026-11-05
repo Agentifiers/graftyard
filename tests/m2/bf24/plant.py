@@ -61,6 +61,10 @@ PLANTS = [
      "crates/git/src/prsync.rs",
      "        let how = if overdue {\n            Delivery::Again",
      "        let how = if overdue {\n            Delivery::First"),
+    ("a first attempt lost with its isolate holds every later push: it never counts as lost",
+     "crates/git/src/prsync.rs",
+     "        if self.running.is_some_and(|t| now.0 >= t.saturating_add(REDELIVER_AFTER_MS)) {",
+     "        if false && self.running.is_some_and(|t| now.0 >= t.saturating_add(REDELIVER_AFTER_MS)) {"),
 ]
 
 only = int(sys.argv[1]) if sys.argv[1:] else None

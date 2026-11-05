@@ -89,15 +89,16 @@ pub enum Delivery {
 }
 
 /// The leader's half of the cursor, in memory only: `scanned` is the last entry read, `pending` the pull requests
-/// each unhandled entry touched, `sent` the last batch's `through`, and `sent_at` when the work the cursor has not
-/// passed was first handed out, or last sent again. Nothing here outlives the leadership; the committed cursor is
-/// where a new one starts.
+/// each unhandled entry touched, `sent` the last batch's `through`, `sent_at` when the work the cursor has not passed
+/// was first handed out, or last sent again, and `running` when the first attempt in flight started. Nothing here
+/// outlives the leadership; the committed cursor is where a new one starts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dispatcher {
     scanned: Index,
     pending: BTreeMap<Index, Vec<IssueNumber>>,
     sent: Index,
     sent_at: u64,
+    running: Option<u64>,
 }
 
 impl Dispatcher {
@@ -121,10 +122,12 @@ impl Dispatcher {
     /// The batch to send now, if any, and how. `Again` once work the cursor has not passed was handed out
     /// `REDELIVER_AFTER_MS` ago, however many batches went out since, so a first attempt that never returns is
     /// re-sent while pushes keep coming. Otherwise `First` when new entries touched a pull request, or when
-    /// `CURSOR_STRIDE` entries passed the cursor, unless a first attempt is still `running`: the next one then waits
-    /// for it and covers everything since. A batch always starts at the committed cursor and names every pull request
-    /// after it, so no entry between the cursor and `through` goes unhandled, whoever led before.
-    pub fn batch(&mut self, cursor: Index, now: Timestamp, running: bool) -> Option<(SyncBatch, Delivery)> {
+    /// `CURSOR_STRIDE` entries passed the cursor. Only one first attempt runs at a time: new work waits for it and
+    /// goes out as one batch, and a first attempt that has not `finished` `REDELIVER_AFTER_MS` after it started
+    /// counts as lost, so it no longer holds the work behind it. A batch always starts at the
+    /// committed cursor and names every pull request after it, so no entry between the cursor and `through` goes
+    /// unhandled, whoever led before.
+    pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<(SyncBatch, Delivery)> {
         if self.scanned <= cursor {
             return None;
         }
@@ -133,9 +136,16 @@ impl Dispatcher {
         let overdue = outstanding && now.0 >= self.sent_at.saturating_add(REDELIVER_AFTER_MS);
         let stride = self.scanned.0 - cursor.0 >= CURSOR_STRIDE;
         let touched = self.pending.range(Index(self.sent.0 + 1)..).next().is_some();
+        // A first attempt that has not finished in REDELIVER_AFTER_MS died with its isolate or its object: no longer
+        // wait for it. Its own work is overdue by then, and goes out again below.
+        if self.running.is_some_and(|t| now.0 >= t.saturating_add(REDELIVER_AFTER_MS)) {
+            self.running = None;
+        }
+        let due = fresh && (touched || stride);
         let how = if overdue {
             Delivery::Again
-        } else if fresh && (touched || stride) && !running {
+        } else if due && self.running.is_none() {
+            self.running = Some(now.0);
             Delivery::First
         } else {
             return None;
@@ -153,9 +163,18 @@ impl Dispatcher {
         self.sent > cursor || !self.pending.is_empty()
     }
 
-    /// The last batch did not reach the queue, or its first attempt failed: its work is due again at once.
+    /// The last batch did not reach the queue: its work is due again at once.
     pub fn unsent(&mut self) {
         self.sent_at = 0;
+    }
+
+    /// The first attempt in flight returned: the next one may start. One that failed leaves its work due again at
+    /// once, through the queue.
+    pub fn finished(&mut self, ok: bool) {
+        self.running = None;
+        if !ok {
+            self.unsent();
+        }
     }
 }
 

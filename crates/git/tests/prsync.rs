@@ -334,7 +334,7 @@ impl Pipe {
         for _ in 0..4 {
             scan(&mut self.disp, &fold.core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
         }
-        if let Some((b, how)) = self.disp.batch(cursor, g.now, false) {
+        if let Some((b, how)) = self.disp.batch(cursor, g.now) {
             self.sent.push(how);
             self.queue.push(b);
         }
@@ -356,12 +356,14 @@ impl Pipe {
         }
     }
 
-    /// Alarms and deliveries until the queue is empty and the dispatcher sends nothing more.
+    /// Alarms and deliveries until the queue is empty and the dispatcher sends nothing more. Each delivery returns
+    /// to the dispatcher, as the leader's in-band attempt does.
     fn drain(&mut self, g: &mut G) {
         for _ in 0..20 {
             self.alarm(g);
             let Some(b) = self.queue.pop() else { return };
             self.consume(g, &b);
+            self.disp.finished(true);
         }
         panic!("the pipeline never went quiet");
     }
@@ -544,6 +546,8 @@ fn a_late_command_of_an_older_head_moves_nothing_back() {
     p.alarm(&g);
     let old = p.queue.pop().unwrap();
     let stale = p.plan(&g, &old);
+    // Its attempt returns without committing (its isolate is slow), so the next push goes out at once.
+    p.disp.finished(true);
     g.push("refs/heads/f", oid(3));
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
@@ -571,6 +575,7 @@ fn a_consumer_overtaken_by_a_head_push_records_nothing_of_the_older_head() {
     for c in planned {
         g.commit(c);
     }
+    p.disp.finished(true);
     let n = IssueNumber(1);
     assert_eq!(g.get(&merge_ref(n)), None, "no merge ref of the older head");
     assert_eq!(g.get(&head_ref(n)), None, "no head ref at the older head");
@@ -690,8 +695,8 @@ fn a_first_attempt_that_never_returns_is_re_sent_while_pushes_keep_coming() {
     let (mut g, mut p) = setup();
     p.drain(&mut g);
     p.sent.clear();
-    // Every first attempt is lost, and a push lands every 10 s: each one's batch goes out as a new first attempt,
-    // and the work handed out first is still re-sent once it is REDELIVER_AFTER_MS old.
+    // The first attempt never returns, and a push lands every 10 s: they wait behind it, and once the work handed
+    // out first is REDELIVER_AFTER_MS old, all of it goes out again through the queue.
     for i in 0..3 {
         g.push("refs/heads/f", oid(10 + i));
         p.alarm(&g);
@@ -699,7 +704,52 @@ fn a_first_attempt_that_never_returns_is_re_sent_while_pushes_keep_coming() {
         g.pass(10_000);
     }
     p.alarm(&g);
+    assert_eq!(p.sent, [Delivery::First, Delivery::Again]);
+    p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1]);
+    assert_once(&g);
+}
+
+#[test]
+fn first_attempts_that_return_without_passing_the_cursor_do_not_hold_back_the_re_send() {
+    let (mut g, mut p) = setup();
+    p.drain(&mut g);
+    p.sent.clear();
+    // Each first attempt reports back, but its commits never land, and a push lands every 10 s: each push goes out
+    // as a new first attempt, and the work the cursor has not passed is still re-sent once it is REDELIVER_AFTER_MS
+    // old. The dispatcher trusts the cursor, not the attempt's report.
+    for i in 0..3 {
+        g.push("refs/heads/f", oid(10 + i));
+        p.alarm(&g);
+        p.queue.clear();
+        p.disp.finished(true);
+        g.pass(10_000);
+    }
+    p.alarm(&g);
     assert_eq!(p.sent, [Delivery::First, Delivery::First, Delivery::First, Delivery::Again]);
+    p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1]);
+    assert_once(&g);
+}
+
+#[test]
+fn a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes() {
+    let (mut g, mut p) = setup();
+    p.drain(&mut g);
+    p.sent.clear();
+    // A head push's first attempt dies with its isolate and never returns. The re-send covers it.
+    g.push("refs/heads/f", oid(3));
+    p.alarm(&g);
+    p.queue.clear();
+    g.pass(REDELIVER_AFTER_MS);
+    p.alarm(&g);
+    let again = p.queue.pop().expect("re-sent");
+    p.consume(&mut g, &again);
+    assert_eq!(p.sent, [Delivery::First, Delivery::Again]);
+    // The next push must still go out, though the lost attempt never reported back.
+    g.push("refs/heads/f", oid(4));
+    p.alarm(&g);
+    assert_eq!(p.sent.len(), 3, "a later push waited forever behind the lost attempt");
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
     assert_once(&g);
