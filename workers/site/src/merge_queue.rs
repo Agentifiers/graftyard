@@ -44,6 +44,9 @@ const ROUNDS: usize = 8;
 const RETRY_MS: u64 = 30_000;
 /// The earliest a timer fires after it is set, so a step whose `at` is already past does not spin.
 const TIMER_MIN_MS: u64 = 1_000;
+/// Test installs: a base whose landing was held plans again this long after, if the driver did not commit it.
+#[cfg(feature = "test-faults")]
+const HELD_WAKE_MS: u64 = 120_000;
 
 type Leadership = (u64, u64);
 
@@ -311,6 +314,11 @@ async fn run_base(
         };
         for cmd in cmds {
             let rid = git::queue_consumer::request_id(&cmd, &view);
+            #[cfg(feature = "test-faults")]
+            if held(&cmd, rid, &m.leader) {
+                // Idle until the wake, so neither this attempt's failure nor a re-send lands it meanwhile.
+                return Ok((cursor, Some(Timestamp(now_ms() + HELD_WAKE_MS)), committed));
+            }
             committed += 1;
             if let Err(refusal) = commit(b, chain, &m.record, rid, &cmd, Some(&m.leader)).await? {
                 console_log!("mergequeue {} refused #{}: {:?}", base.display(), refusal.n.0, refusal.err);
@@ -326,6 +334,29 @@ async fn run_base(
     Ok((cursor, None, committed))
 }
 
+/// Test installs: a landing `mqHold` holds is kept for `{"mqHeld": true}` instead of committed.
+#[cfg(feature = "test-faults")]
+fn held(cmd: &MergeCmd, rid: graftyard_raft::RequestId, key: &str) -> bool {
+    if !matches!(cmd, MergeCmd::Land(_)) {
+        return false;
+    }
+    let call = MergeCall { cmd: cmd.clone(), render: Value::Null };
+    let held = HOLD.with(|m| {
+        let mut m = m.borrow_mut();
+        let (n, list) = m.get_mut(key)?;
+        if *n == 0 {
+            return None;
+        }
+        *n -= 1;
+        list.push(json!({ "rid": rid.to_string(), "cmd": git::repo::RepoCmd::Merge(Box::new(call)) }));
+        Some(())
+    });
+    if held.is_some() {
+        console_log!("mergequeue landing held (test fault)");
+    }
+    held.is_some()
+}
+
 /// Commits one command; `Ok(Err(refusal))` when `decide` refused it.
 async fn commit(
     b: &Bindings<'_>,
@@ -339,20 +370,6 @@ async fn commit(
     let body = serde_json::to_value(git::repo::RepoCmd::Merge(Box::new(call))).map_err(|e| e.to_string())?;
     #[cfg(feature = "test-faults")]
     if let (MergeCmd::Land(_), Some(key)) = (cmd, leader) {
-        let held = HOLD.with(|m| {
-            let mut m = m.borrow_mut();
-            let (n, list) = m.get_mut(key)?;
-            if *n == 0 {
-                return None;
-            }
-            *n -= 1;
-            list.push(json!({ "rid": rid.to_string(), "cmd": body.clone() }));
-            Some(())
-        });
-        if held.is_some() {
-            console_log!("mergequeue landing held (test fault)");
-            return Err("landing held (test fault)".into());
-        }
         if let Some((kill, down)) = KILL.with(|m| m.borrow_mut().remove(key)) {
             console_log!("mergequeue landing sent with kill {kill} (test fault)");
             let r = graftyard_lookup::call(
