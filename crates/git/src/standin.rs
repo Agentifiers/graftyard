@@ -230,7 +230,8 @@ impl StandIn {
                 disk.fold.apply(e);
             }
             s.boots += 1;
-            let (m, ready) = Member::restore(config(chain, *site, &reads), &disk, now, s.boots).expect("Tri record");
+            let (m, ready) =
+                Member::restore(config(chain, *site, &reads), disk.clone(), now, s.boots).expect("Tri record");
             s.disks.push(disk);
             s.members.push(m);
             readies.push((*site, ready));

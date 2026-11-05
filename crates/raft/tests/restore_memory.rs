@@ -19,13 +19,22 @@ use graftyard_types::Timestamp;
 struct Counting;
 
 thread_local!(static ALLOCATED: Cell<usize> = const { Cell::new(0) });
+thread_local!(static LIVE: Cell<(usize, usize)> = const { Cell::new((0, 0)) });
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, l: Layout) -> *mut u8 {
         let _ = ALLOCATED.try_with(|a| a.set(a.get() + l.size()));
+        let _ = LIVE.try_with(|v| {
+            let (live, peak) = v.get();
+            v.set((live + l.size(), peak.max(live + l.size())));
+        });
         unsafe { System.alloc(l) }
     }
     unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+        let _ = LIVE.try_with(|v| {
+            let (live, peak) = v.get();
+            v.set((live.saturating_sub(l.size()), peak));
+        });
         unsafe { System.dealloc(p, l) }
     }
 }
@@ -35,6 +44,20 @@ static A: Counting = Counting;
 
 fn allocated() -> usize {
     ALLOCATED.with(Cell::get)
+}
+
+/// The thread's live heap bytes, after restarting its high-water mark there.
+fn mark() -> usize {
+    LIVE.with(|v| {
+        let (live, _) = v.get();
+        v.set((live, live));
+        live
+    })
+}
+
+/// How far the thread's live heap rose above `base` since `mark`.
+fn rose(base: usize) -> usize {
+    LIVE.with(|v| v.get().1 - base)
 }
 
 /// The host's table: rows on its storage, read one at a time. Clones share the table, as `RequestSql` handles share
@@ -91,7 +114,7 @@ fn restore_reads_no_request_row_and_a_resend_is_answered_from_storage() {
     let stored = Stored { state: disk.state.clone(), base: disk.base, log: disk.log.clone(), fold };
 
     let before = allocated();
-    let (m, ready) = Member::restore(config(B), &stored, c.now, 7).expect("restore");
+    let (m, ready) = Member::restore(config(B), stored, c.now, 7).expect("restore");
     let grew = allocated() - before;
     assert!(grew < 1_000_000, "restore allocated {grew} bytes for {ROWS} request rows on storage");
 
@@ -111,4 +134,34 @@ fn restore_reads_no_request_row_and_a_resend_is_answered_from_storage() {
     assert_eq!(c.m(B).outcome(t).expect("answered at once").map(|a| a.index), Ok(Index(2)));
     c.deliver_all();
     assert_eq!(c.value(B, "k").as_deref(), Some("x"), "neither re-send applied again");
+}
+
+/// Restore builds the member from what the host read back without a second copy of it (F47). `Host::restore` read
+/// about 30 MB of log window into `Stored`, and restore cloned it and the fold, so a site c member of `repo:65536`
+/// peaked at 118 MB of live heap inside the clone and its isolate went over its 128 MB limit
+/// (`tests/m2/results/f47.md`).
+#[test]
+fn restore_holds_no_second_copy_of_the_stored_log_or_fold() {
+    let mut c = Cluster::new(43);
+    c.elect(SITES[0]);
+    for k in 0..200u128 {
+        let cmd = KvCmd::Put { key: format!("refs/heads/bf20/{k}"), value: "0".repeat(20_000) };
+        c.on(SITES[0], |m, now| m.commit(now, RequestId(Ulid(1_000 + k)), cmd)).expect("admitted");
+        c.deliver_all();
+    }
+    c.sync(SITES[0]);
+    let disk = &c.disks[B.0 as usize];
+    assert!(disk.log.len() > 200, "the log holds every entry");
+
+    let base = mark();
+    let stored = disk.clone();
+    let held = rose(base);
+    assert!(held > 8_000_000, "the stored log and fold hold {held} bytes");
+
+    let entries = stored.log.len() as u64;
+    let base = mark();
+    let (m, _ready) = Member::<KvCmd>::restore(config(B), stored, c.now, 7).expect("restore");
+    let grew = rose(base);
+    assert_eq!(m.last_index().0, entries);
+    assert!(grew < held / 4, "restore raised the live heap by {grew} bytes over {held} bytes stored");
 }

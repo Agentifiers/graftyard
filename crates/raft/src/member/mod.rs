@@ -606,16 +606,17 @@ impl<C: Command> Member<C> {
     }
 
     /// A member after its object restarted: everything from `stored`, nothing else. A boot within `BOOT_IDLE` of
-    /// the last saved state interrupted work and goes into `boots`.
+    /// the last saved state interrupted work and goes into `boots`. It takes `stored` whole, so the log and fold a
+    /// host read back are never held twice: a clone of them took a member's isolate past 128 MB (F47).
     pub fn restore(
         cfg: MemberConfig,
-        stored: &Stored<C::Fold>,
+        stored: Stored<C::Fold>,
         now: Timestamp,
         seed: u64,
     ) -> Result<(Member<C>, Ready<C, ()>), PlacementError> {
-        let state = stored.state.clone().unwrap_or_else(MemberState::fresh);
-        assert!(stored.base.index <= stored.fold.applied(), "stored log base above the applied fold");
-        let mut m = Self::build(cfg, state, stored.base, stored.log.clone(), stored.fold.clone(), seed)?;
+        let Stored { state, base, log, fold } = stored;
+        assert!(base.index <= fold.applied(), "stored log base above the applied fold");
+        let mut m = Self::build(cfg, state.unwrap_or_else(MemberState::fresh), base, log, fold, seed)?;
         m.begin(now);
         m.own_durable_at = now;
         if m.state.saved_at.0 != 0 && now < after(m.state.saved_at, BOOT_IDLE) {

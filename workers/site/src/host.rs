@@ -895,7 +895,7 @@ impl<F: Family> Host<F> {
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), &stored, Timestamp(now_ms()), seed())
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(now_ms()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
@@ -1789,18 +1789,18 @@ impl<F: Family> Host<F> {
         if self.ticking.replace(true) {
             return;
         }
-        let h = self.clone();
+        // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
+        // that held it across one kept the whole reset member in the isolate's memory (F47).
+        let w = Rc::downgrade(self);
         spawn_local(async move {
             loop {
                 Delay::from(TICK).await;
-                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) {
-                    break;
-                }
-                if h.tick_once().is_err() {
-                    break;
+                let Some(h) = w.upgrade() else { return };
+                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
+                    h.ticking.set(false);
+                    return;
                 }
             }
-            h.ticking.set(false);
         });
     }
 

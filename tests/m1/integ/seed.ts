@@ -21,7 +21,8 @@ const { values: opt } = parseArgs({ options: {
 if (!opt.out) throw new Error("usage: seed.ts --login L --repos a,b --out DIR [--owner ID]");
 mkdirSync(opt.out, { recursive: true });
 const ROOT = new URL("./", import.meta.url).pathname;
-const EDGE = "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
+// GRAFT_TOOLS_EDGE points it at another install's test edge (tests/m2/results/install-m2b.md).
+const EDGE = process.env.GRAFT_TOOLS_EDGE ?? "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev";
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const OP = { account: null, key: null };
 const TRI = { name: "Tri", sites: [0, 1, 2], home: 0, generation: 1, moving_from: null, at: 5 };
