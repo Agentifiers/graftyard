@@ -628,7 +628,7 @@ A 409 is never retried into success, because a rerun of `decide` re-runs protect
 
 - An open pull request's head is the head branch's ref in the fork's fresh core tier.
 - A merge sets the base ref and `Merged { final_head }` in one entry.
-- `refs/pull/N/head` and `refs/pull/N/merge` are derived refs. The `PrSync` consumer moves `refs/pull/N/head` within seconds in a coalesced bot `Refs` entry, ordered below user commands in the entry. As built in M2-WP5 it moves `refs/pull/N/head` in the same command as the head's `TestMerged`, so the head ref waits on the merge (about 1.5 to 2.5 s, and the 4 of 50 BF-24 trials held about 37 s in Queues) [measured, `tests/m2/results/m2-wp5.md`, design gap 7]; whether to move it first, in its own command, is open (`build/BUILD-PLAN.md`, M2-WP5). A `TestMerged` entry moves `refs/pull/N/merge` each time a lazy test merge runs.
+- `refs/pull/N/head` and `refs/pull/N/merge` are derived refs. The `PrSync` consumer moves `refs/pull/N/head` within seconds in a coalesced bot `Refs` entry, ordered below user commands in the entry. As built in M2-WP5 it moves `refs/pull/N/head` in the same command as the head's `TestMerged`, so the head ref waits on the merge, `/merge` p50 2.16 s, p90 2.38 s, and since the first attempt runs in band, on nothing else; BF-24's head ref arrived within 10 s in 75 of 75 trials [measured, `tests/m2/results/m2-wp5.md`, design gap 7 and "2026-11-05"]; whether to move it first, in its own command, is open (`build/BUILD-PLAN.md`, M2-WP5). A `TestMerged` entry moves `refs/pull/N/merge` each time a lazy test merge runs.
 - Issues and pull requests share one number space. An issue's number comes from the fold that `IssueOpened`'s `decide` saw, so numbering and labels commit together.
 - Comments, reviews, and timeline events are entries. Review comments anchor to `(commit, path, line)` and re-anchor lazily on read.
 - Comments and reactions share the chain under a per-repository cap of 50 entries a second, so a viral issue cannot starve pushes. Stars stay off the repository chain. Check runs, check suites, and statuses are metadata-tier entries that `apply` prunes after `RepoSettings.check_retention_days`.
@@ -822,7 +822,7 @@ pub struct VariableRecord { pub value: Box<str>, pub updated: Timestamp }
 
 ## Event fan-out
 
-Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers ("Shape" and "Failure modes", `event pipeline`).
+Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers, except `PrSync`, whose leader runs each batch's first attempt in its own isolate and sends only re-sends through Queues ("Shape", "Dominant access patterns", and "Failure modes", `event pipeline`).
 
 ```rust
 pub enum Consumer { Webhooks, ActionsTrigger, RunOwner, PrSync, MergeQueue, Notify, Search, Audit, Counts, Insights }
