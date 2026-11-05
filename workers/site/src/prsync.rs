@@ -194,7 +194,7 @@ fn note(h: &Rc<Host<Repo>>, m: String) {
 }
 
 /// The consumer Worker: each message is one batch, acked once its commands committed and retried otherwise.
-pub async fn consume(batch: MessageBatch<Message>, env: Env) -> Result<()> {
+pub async fn consume(batch: MessageBatch<Value>, env: Env) -> Result<()> {
     for m in batch.iter() {
         let m = match m {
             Ok(m) => m,
@@ -203,22 +203,51 @@ pub async fn consume(batch: MessageBatch<Message>, env: Env) -> Result<()> {
                 continue;
             }
         };
+        if m.body().get("mergeQueue").is_some() {
+            let q: crate::merge_queue::Message = match serde_json::from_value(m.body().clone()) {
+                Ok(q) => q,
+                Err(e) => {
+                    console_error!("mergequeue: a message that does not decode: {e}");
+                    m.ack();
+                    continue;
+                }
+            };
+            match crate::merge_queue::one(&env, &q).await {
+                Ok(v) => {
+                    console_log!("mergequeue {} {}..{} queued handled {v}", q.repo, q.batch.from.0, q.batch.through.0);
+                    m.ack();
+                }
+                Err(e) => {
+                    console_error!("mergequeue {} {}..{}: {e}", q.repo, q.batch.from.0, q.batch.through.0);
+                    m.retry();
+                }
+            }
+            continue;
+        }
+        let body: Message = match serde_json::from_value(m.body().clone()) {
+            Ok(b) => b,
+            Err(e) => {
+                console_error!("prsync: a message that does not decode: {e}");
+                m.ack();
+                continue;
+            }
+        };
         let t0 = now_ms();
         // From the leader's send to this handler, on two clocks.
         let queued = t0.saturating_sub(m.timestamp().as_millis());
-        match one(&env, m.body()).await {
+        match one(&env, &body).await {
             Ok(v) => {
                 console_log!(
                     "prsync {} {}..{} queued {queued}ms handled {}ms {v}",
-                    m.body().repo,
-                    m.body().batch.from.0,
-                    m.body().batch.through.0,
+                    body.repo,
+                    body.batch.from.0,
+                    body.batch.through.0,
                     now_ms() - t0
                 );
                 m.ack();
             }
             Err(e) => {
-                console_error!("prsync {} {}..{}: {e}", m.body().repo, m.body().batch.from.0, m.body().batch.through.0);
+                console_error!("prsync {} {}..{}: {e}", body.repo, body.batch.from.0, body.batch.through.0);
                 m.retry();
             }
         }

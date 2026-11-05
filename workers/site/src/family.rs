@@ -220,9 +220,15 @@ impl Family for Repo {
     /// `FormatsEnable`. This test build reads 32.3 before any `FormatsEnable`, since only its own site scripts write it
     /// (`tests/m2/results/m2-wp5.md`, "Design gaps"). It reads 32.5 so that a later `FormatsEnable` can let the edge
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
-    /// format"). No site member hosts 32.4, the merge commands', yet.
+    /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
+    /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that.
     fn reads() -> Vec<Format> {
-        vec![git::repo::REPO_FORMAT_V1, git::prsync::REPO_FORMAT_V3, git::issue_ops::call::REPO_FORMAT_ISSUES]
+        vec![
+            git::repo::REPO_FORMAT_V1,
+            git::prsync::REPO_FORMAT_V3,
+            git::merge::REPO_FORMAT_V4,
+            git::issue_ops::call::REPO_FORMAT_ISSUES,
+        ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
     /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
@@ -314,6 +320,7 @@ impl Family for Repo {
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
         crate::prsync::on_alarm(host).await;
+        crate::merge_queue::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
     }
     fn schema() -> &'static [&'static str] {
@@ -375,6 +382,12 @@ impl Family for Repo {
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
+            #[cfg(feature = "test-faults")]
+            "/bench_seed"
+                if body.get("mqKill").is_some() || body.get("mqHold").is_some() || body.get("mqHeld").is_some() =>
+            {
+                Some(Ok(crate::merge_queue::fault(host, &body)))
+            }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("prsyncDrop").is_some() => {
                 Some(Ok(crate::prsync::drop_first(host, body["prsyncDrop"].as_u64().unwrap_or(1) as u32)))
@@ -495,6 +508,9 @@ impl Family for Repo {
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
         }
+        if let Some(base) = q.get("mergequeue") {
+            return crate::merge_queue::read_json(fold, base);
+        }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};
             let mut budget = ROWS_MAX;
@@ -523,7 +539,9 @@ impl Family for Repo {
     /// all (format 0.0), answers `Unsupported` and touches nothing. An issue command names its format first.
     fn unreadable(body: &[u8]) -> Option<Value> {
         let v: Value = serde_json::from_slice(body).ok()?;
-        if let Some(f) = v.pointer("/cmd/issue/format").and_then(Value::as_array) {
+        if let Some(f) =
+            v.pointer("/cmd/issue/format").or_else(|| v.pointer("/cmd/merge/format")).and_then(Value::as_array)
+        {
             let n = |i: usize| f.get(i).and_then(Value::as_u64).unwrap_or(0) as u16;
             return Some(json!({ "unsupported": { "family": n(0), "version": n(1) } }));
         }
