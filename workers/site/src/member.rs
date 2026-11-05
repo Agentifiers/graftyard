@@ -638,6 +638,11 @@ impl<F: Family> Routes<F> {
             {
                 core.no_marker.insert(rid);
             }
+            let mut c = c;
+            let chain = self.host.core.borrow().as_ref().map(|k| k.join.chain);
+            if let Some(chain) = chain {
+                F::admit(&self.host.env, chain, &mut c.cmd).await;
+            }
             let at = now_ms();
             let f = raft::Command::format(&c.cmd);
             *self.host.stats.borrow_mut().received.entry(format!("recv:{}.{}", f.family, f.version)).or_insert(0) += 1;

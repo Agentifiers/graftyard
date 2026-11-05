@@ -232,7 +232,7 @@ impl Family for Release {
         }
         Ok(f)
     }
-    fn out_json(a: &raft::Acked<Digest>) -> Value {
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<Digest>) -> Value {
         json!({ "digest": a.out.hex() })
     }
     /// 409 with the held digest for a genesis into an installed group, 422 for the rest

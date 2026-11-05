@@ -825,7 +825,7 @@ pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
             agent: None,
         };
         let at = now_ms();
-        match h.input(|m, t| m.commit(t, rid, push)) {
+        match h.input(|m, t| m.commit(t, rid, git::issue_ops::call::RepoCall::Push(push))) {
             Ok(Ok(a)) => {
                 // Each outcome is timed as it arrives, not after the send loop.
                 let (tx, rx) = futures_channel::oneshot::channel();

@@ -691,6 +691,32 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	}
 }
 
+// handleArchive answers `git archive` of one commit: ?net=&commit=&prefix=&format=tar.gz|zip (codeload-archives).
+// The bytes depend only on the tree, the commit's time, the prefix, and the format, so a rebuild equals the
+// ArchiveCache object it replaces.
+func handleArchive(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	commit, prefix, format := q.Get("commit"), q.Get("prefix"), q.Get("format")
+	if !hexRe.MatchString(commit) || (format != "tar.gz" && format != "zip") || strings.Contains(prefix, "..") {
+		fail(w, 400, "bad archive request")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	out, err := git(rp, nil, nil, "archive", "--format="+format, "--prefix="+prefix, commit)
+	if err != nil {
+		fail(w, 404, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/octet-stream")
+	w.Write(out)
+}
+
 func handleFsck(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
@@ -732,6 +758,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/info-refs", func(w http.ResponseWriter, r *http.Request) { upload(w, r, true) })
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
 	m.HandleFunc("/fsck", handleFsck)
+	m.HandleFunc("/archive", handleArchive)
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	return m
