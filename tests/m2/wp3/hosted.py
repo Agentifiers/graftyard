@@ -242,7 +242,7 @@ def rule_event(queue):
          "merge_queue": None}
     if queue:
         p["merge_queue"] = {"check_timeout_minutes": 60, "grouping": "HeadGreen", "max_build": 5, "min_merge": 5,
-                            "max_merge": 5, "min_wait_minutes": 0, "method": "Merge"}
+                            "max_merge": 5, "min_wait_minutes": 1, "method": "Merge"}
     return {"Rule": {"id": 1, "pattern": "main", "protection": p}}
 
 
@@ -342,48 +342,89 @@ def direct(run):
 
 # ---- BF-23 ----
 
-def bf23(run, trials):
+def bf23(run, trials, workers=4):
     """On a repository whose `main` requires `ci` with no queue. Each trial: a pull request, `ci` success, then a newer
-    pending `ci` (the re-request); `gh pr merge` must fail and leave `main`; then a newer success and the merge."""
+    pending `ci` (the re-request); `gh pr merge` must fail and so must the edge's own `mergePullRequest`, with the pull
+    request still open and none of its changes on `main`; then a newer success, and `gh pr merge` merges. `workers`
+    trials run at once, each in its own work tree; a final merge that races another's and is refused "Base branch was
+    modified" is tried again, as a client would."""
     out, done = resume(run)
-    w = Work(run)
-    out_dir = f"{RAW}/{run}"
-    for i in range(done, trials):
-        try:
-            rec = bf23_trial(w, out_dir, run, i)
-        except Exception as e:
-            log(f"trial {i}: {e}; again")
-            time.sleep(5)
-            continue
-        append(out, rec)
-        log(f"{i} {'pass' if rec['pass'] else 'FAIL'} refused_rc={rec['refused_rc']} merged_rc={rec['merged_rc']}")
+    lock = threading.Lock()
+    nxt = [done]
+
+    def worker(k):
+        w = Work(f"{run}-w{k}")
+        while True:
+            with lock:
+                i = nxt[0]
+                if i >= trials:
+                    return
+                nxt[0] += 1
+            for attempt in range(3):
+                try:
+                    rec = bf23_trial(w, f"{RAW}/{run}", run, i)
+                    break
+                except Exception as e:
+                    log(f"trial {i}: {e}; again")
+                    time.sleep(5)
+            else:
+                rec = {"i": i, "pass": False, "error": "three attempts failed"}
+            with lock:
+                append(out, rec)
+            log(f"{i} {'pass' if rec['pass'] else 'FAIL'} refused_rc={rec.get('refused_rc')} "
+                f"merged_rc={rec.get('merged_rc')} retries={rec.get('retries')}")
+
+    ts = [threading.Thread(target=worker, args=(k,)) for k in range(workers)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
 
 
 def bf23_trial(w, out_dir, run, i):
     method = ["merge", "squash", "rebase"][i % 3]
     # Only the first trials keep gh's replies for the validators; later ones keep the summary line only.
-    keep = i < 3
-    d = out_dir if keep else f"{tempfile.gettempdir()}/wp3-bf23"
-    base = w.fetch_main()
-    head = w.branch(f"{run}-{i}", {f"b/{i}.txt": f"{run} {i}"})
-    n = create_pr(w, d, f"{i:03}0-create", f"{run}-{i}")
+    d = out_dir if i < 3 else f"{tempfile.gettempdir()}/wp3-bf23"
+    w.fetch_main()
+    b = f"{run}-{i}-{int(time.time()) % 100000:05}"
+    path = f"b/{b}.txt"
+    head = w.branch(b, {path: b})
+    n = create_pr(w, d, f"{i:03}0-create", b)
     status(head, "success")
     status(head, "pending")
+
+    def landed():
+        tip = w.fetch_main()
+        return subprocess.run(["git", "cat-file", "-e", f"{tip}:{path}"], cwd=w.dir, capture_output=True).returncode == 0
+
     rc1, _, e1 = w.gh(d, f"{i:03}1-refused", "pr", "merge", str(n), "-R", f"{OWNER_LOGIN}/{REPO}", f"--{method}")
-    after_refusal = w.fetch_main()
+    after_refusal = landed()
     # The edge's mutation, past gh's local mergeStateStatus check: `decide` itself must refuse.
     s, v = gql("mutation($id: ID!) { mergePullRequest(input: {pullRequestId: $id}) { clientMutationId } }",
                {"id": pr_node(n)})
-    direct_refused = s == 200 and v.get("data", {}).get("mergePullRequest") is None and bool(v.get("errors"))
-    after_direct = w.fetch_main()
+    direct_refused = s == 200 and (v.get("data") or {}).get("mergePullRequest") is None and bool(v.get("errors"))
+    after_direct = landed()
+    open_after = pr_state(n) == "OPEN"
     status(head, "success")
-    rc2, _, e2 = w.gh(d, f"{i:03}2-merged", "pr", "merge", str(n), "-R", f"{OWNER_LOGIN}/{REPO}", f"--{method}")
-    tip = w.fetch_main()
-    ok = (rc1 != 0 and after_refusal == base and direct_refused and after_direct == base and rc2 == 0 and tip != base)
-    return {"i": i, "n": n, "method": method, "base": base, "head": head, "refused_rc": rc1,
-            "refused": e1.strip().splitlines()[-2:], "direct": v if not direct_refused else v.get("errors"),
-            "merged_rc": rc2, "merged_err": e2.strip().splitlines()[-1:] if rc2 else [], "tip": tip, "pass": ok,
-            "at": time.time()}
+    retries = 0
+    while True:
+        rc2, _, e2 = w.gh(d, f"{i:03}2-merged-{retries}", "pr", "merge", str(n), "-R", f"{OWNER_LOGIN}/{REPO}",
+                          f"--{method}")
+        if rc2 == 0 or "Base branch was modified" not in e2 or retries >= 5:
+            break
+        retries += 1
+    ok = (rc1 != 0 and not after_refusal and direct_refused and not after_direct and open_after and rc2 == 0
+          and landed() and pr_state(n) == "MERGED")
+    return {"i": i, "n": n, "method": method, "head": head, "refused_rc": rc1,
+            "refused": e1.strip().splitlines()[:1], "direct": v.get("errors") if direct_refused else v,
+            "merged_rc": rc2, "merged_err": e2.strip().splitlines()[-1:] if rc2 else [], "retries": retries,
+            "pass": ok, "at": time.time()}
+
+
+def pr_state(n):
+    s, v = gql("query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n)"
+               " { state } } }", {"o": OWNER_LOGIN, "r": REPO, "n": n})
+    return v["data"]["repository"]["pullRequest"]["state"]
 
 
 def pr_node(n):
@@ -394,11 +435,13 @@ def pr_node(n):
 
 # ---- BF-21 and BF-1 ----
 
-def queue(run, trials, kill_every, fail, bf1):
+def queue(run, trials, kill_every, fail, bf1, offset=0):
+    """Trials `offset..offset+trials` of a run split over repositories: trial i kills when its global index is the
+    last of each `kill_every`."""
     out, done = resume(run)
     w = Work(run)
     for i in range(done, trials):
-        kill = kill_every > 0 and i % kill_every == kill_every - 1
+        kill = kill_every > 0 and (offset + i) % kill_every == kill_every - 1
         try:
             rec = queue_trial(w, run, i, kill, fail, bf1)
         except Exception as e:
@@ -410,6 +453,9 @@ def queue(run, trials, kill_every, fail, bf1):
         log(f"{i} {'pass' if rec.get('pass') else 'FAIL'} kill={kill} {rec.get('summary', rec.get('error'))}")
 
 
+KILLS = []
+
+
 def view():
     return leader_read({"mergequeue": refname("refs/heads/main")})
 
@@ -419,21 +465,23 @@ def queue_trial(w, run, i, kill, fail, bf1):
     t0 = time.time()
     base = w.fetch_main()
     start = int(member(leader_site(), "/status", None)["v"].get("commit", 0))
-    prs, heads = [], {}
-    for k in range(1, 6):
-        b = f"{run}-{i}-{k}"
-        heads[b] = w.branch(b, {f"q/{i}/{k}.txt": f"{run} {i} {k}"})
-        prs.append(create_pr(w, out_dir, f"{i:03}{k}-create", b))
+    tag = format(int(time.time()) % 100000, "05")
+    names = [f"{run}-{i}-{tag}-{k}" for k in range(1, 6)]
+    for k, b in enumerate(names, 1):
+        w.branch(b, {f"q/{i}/{k}.txt": f"{run} {i} {k} {time.time()}"})
+    prs = parallel([lambda k=k, b=b: create_pr(w, out_dir, f"{i:03}{k}-create", b) for k, b in enumerate(names, 1)])
     failing = prs[fail - 1]
     killed = None
     if kill:
-        killed = {"site": leader_site(), "mode": ["after_quorum", "before_commit"][i // 10 % 2]}
-        killed["r"] = seed({"mqKill": {"kill": killed["mode"], "down_ms": 8000}})
+        killed = {"site": leader_site(), "mode": ["after_quorum", "before_commit"][len(KILLS) % 2]}
+        KILLS.append(i)
+        # Down past ELECTION_AFTER (10 s), so a follower is elected and finishes, or redoes, the landing.
+        killed["r"] = seed({"mqKill": {"kill": killed["mode"], "down_ms": 25000}})
     if bf1:
         seed({"mqHold": 1})
-    for k, n in enumerate(prs, 1):
-        rc, o, e = w.gh(out_dir, f"{i:03}{k}-enqueue", "pr", "merge", str(n), "-R", f"{OWNER_LOGIN}/{REPO}",
-                        "--merge")
+    enq = parallel([lambda k=k, n=n: w.gh(out_dir, f"{i:03}{k}-enqueue", "pr", "merge", str(n), "-R",
+                                          f"{OWNER_LOGIN}/{REPO}", "--merge") for k, n in enumerate(prs, 1)])
+    for n, (rc, o, e) in zip(prs, enq):
         if rc != 0:
             raise RuntimeError(f"enqueue #{n}: {rc} {e[-300:]}")
     # CI: a status on every built entry's tip, once each; the failing PR's tip fails, and the later tips (which hold
@@ -443,7 +491,7 @@ def queue_trial(w, run, i, kill, fail, bf1):
     while time.time() < deadline:
         v = view()["view"]
         entries = [e for e in v["entries"] if e["n"] in prs]
-        bad = False
+        bad, todo = False, []
         for e in entries:
             if not e["built"]:
                 break
@@ -451,7 +499,10 @@ def queue_trial(w, run, i, kill, fail, bf1):
             bad |= e["n"] == failing
             if tip not in reported:
                 reported[tip] = "failure" if bad else "success"
-                status(tip, reported[tip])
+                todo.append(tip)
+        # The newest tip first, so under HeadGreen a passing group can land in one QueueMerge.
+        for tip in reversed(todo):
+            status(tip, reported[tip])
         if bf1 and held is None:
             h = seed({"mqHeld": True}).get("held") or []
             if h:
@@ -461,6 +512,9 @@ def queue_trial(w, run, i, kill, fail, bf1):
             break
         time.sleep(2)
     tip = w.fetch_main()
+    if killed:
+        killed["fired"] = fired(killed["site"])
+        killed["after"] = statuses()
     log_ = member_log(start + 1)
     audit = audit_base(log_, base, prs)
     states = {}
@@ -474,12 +528,53 @@ def queue_trial(w, run, i, kill, fail, bf1):
           and states[failing]["state"] == "OPEN" and audit["landed"] == want and audit["ejected"] == [failing])
     rec = {"i": i, "prs": prs, "failing": failing, "base": base, "tip": tip, "kill": killed, "merged": merged,
            "audit": audit, "secs": round(time.time() - t0, 1), "pass": ok,
-           "summary": f"landed {audit['landed']} in {audit['landings']} landings, ejected {audit['ejected']}, "
+           "summary": f"landed {audit['groups']} in {audit['landings']} landings, ejected {audit['ejected']}, "
                       f"{round(time.time() - t0)} s"}
     if bf1:
         rec["bf1"] = bf1_rec if held else None
         rec["pass"] = ok and bool(held) and rec["bf1"]["ok"]
     return rec
+
+
+def parallel(fns):
+    """Each function on its own thread; their results in order, or the first exception."""
+    out = [None] * len(fns)
+
+    def one(k):
+        try:
+            out[k] = (True, fns[k]())
+        except Exception as e:
+            out[k] = (False, e)
+
+    ts = [threading.Thread(target=one, args=(k,)) for k in range(len(fns))]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    for ok, v in out:
+        if not ok:
+            raise v
+    return [v for _, v in out]
+
+
+def fired(site):
+    """The kills this member's fault table recorded, newest last."""
+    try:
+        v = member(site, "/faults", None).get("v") or []
+        return [{k: f.get(k) for k in ("mode", "index", "term", "at")} for f in v][-1:]
+    except Exception as e:
+        return str(e)
+
+
+def statuses():
+    out = {}
+    for s in range(3):
+        try:
+            v = member(s, "/status", None).get("v") or {}
+            out[s] = [v.get("role"), v.get("term"), v.get("commit")]
+        except Exception as e:
+            out[s] = str(e)[:80]
+    return out
 
 
 def drain(w, run, i):
@@ -496,7 +591,7 @@ def drain(w, run, i):
 def audit_base(entries, base, prs):
     """BF-21 over the leader's log from the trial's start: `main` moves only in entries whose events are `Merged`s
     then `Landed`, each move from the previous tip, and the landed set is the group minus the ejected one."""
-    tip, landed, ejected, landings, bad = base, [], [], 0, []
+    tip, landed, ejected, landings, bad, groups = base, [], [], 0, [], []
     for e in entries:
         if not e.get("committed"):
             continue
@@ -520,9 +615,10 @@ def audit_base(entries, base, prs):
                 bad.append(f"entry {e['index']}: main moved from {m[2]} while at {tip}")
             tip = m[3]
         landings += 1
+        groups.append(landed_here)
         landed.extend(n for n in landed_here if n in prs)
     return {"ok": not bad, "bad": bad, "landed": sorted(landed), "ejected": sorted(set(ejected)), "landings": landings,
-            "tip": tip}
+            "groups": groups, "tip": tip}
 
 
 def bf1_commit(w, held, prs):
@@ -662,7 +758,8 @@ def main():
         a = rest[2:]
         k = int(a[a.index("--kill-every") + 1]) if "--kill-every" in a else 10
         f = int(a[a.index("--fail") + 1]) if "--fail" in a else 3
-        queue(rest[0], int(rest[1]), k, f, "--bf1" in a)
+        o = int(a[a.index("--offset") + 1]) if "--offset" in a else 0
+        queue(rest[0], int(rest[1]), k, f, "--bf1" in a, o)
     elif cmd == "bm2":
         bm2(rest[0], int(rest[1]))
     else:

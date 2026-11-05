@@ -46,3 +46,12 @@ Status: in progress. This file holds progress notes until the gates run.
   `gh pr view` shows MERGED. REST `PUT /pulls/n/merge` answers 409 to a stale `sha`, 403 to the reader, 200 to the
   merge, and 405 to a second merge. 30 GraphQL and 8 REST replies validate with 0 failures. Two planted bad replies,
   `clientMutationId: 7` and `merged: "yes"`, both fail validation.
+- BF-23 (`hosted.py bf23 bf23 100` on `wp3c`, 4 trials at a time) is running.
+- The first queue trials on `wp3q` pass. Five PRs enqueued with `gh pr merge --merge` (gh sends
+  `enablePullRequestAutoMerge`). The driver plays CI on each `gh-readonly-queue` tip and fails the 3rd. The log shows
+  `GroupBuilt`, then `Ejected 3 CheckFailed`, a rebuild of the other four, and 4 single landings, each moving `main`
+  from the previous tip. With a kill (`mqKill after_quorum`, down 25 s), the member's fault table records the kill
+  at the landing's index on term 2, a new leader takes term 4, and the outcome is the same. `min_wait_minutes` is
+  now 1, so the five build as one group, and CI reports the newest tip first.
+- BF-21's 100 runs are split over `wp3q`, `wp3q2`, `wp3q3`, and `wp3q4` (196635-196637 from `seed.ts`), 25 each.
+  The leader is killed at global trials 9, 19, ... 99, alternating `after_quorum` and `before_commit`.
