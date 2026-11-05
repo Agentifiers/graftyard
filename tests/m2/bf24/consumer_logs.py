@@ -6,7 +6,10 @@ import json, os, re, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 frm, to = int(float(sys.argv[1]) * 1000), int(float(sys.argv[2]) * 1000)
-LINE = re.compile(r"prsync (\d+) (\d+)\.\.(\d+) queued (\d+)ms handled (\d+)ms (.*)")
+# The install's script prefix, as bf24.py reads it.
+PREFIX = os.environ.get("BF24_PREFIX", "graft-m1")
+# A queue delivery's line, or a first attempt's (`first handled`, no queue delay).
+LINE = re.compile(r"prsync (\d+) (\d+)\.\.(\d+) (?:queued (\d+)ms|first) handled (\d+)ms (.*)")
 
 
 def query(script, a, b):
@@ -25,7 +28,7 @@ for site in "abc":
     seen = set()
     # 10-minute windows keep each query under the 100-event cap.
     for a in range(frm, to, 600_000):
-        for e in query(f"graft-m1-site-{site}", a, min(to, a + 600_000)):
+        for e in query(f"{PREFIX}-site-{site}", a, min(to, a + 600_000)):
             msg = e.get("$metadata", {}).get("message") or ""
             key = (e["timestamp"], msg)
             if key in seen:
@@ -37,5 +40,6 @@ for site in "abc":
                 continue
             v = json.loads(m.group(6))
             print(json.dumps({"site": site, "at": e["timestamp"], "repo": int(m.group(1)), "from": int(m.group(2)),
-                              "through": int(m.group(3)), "queued_ms": int(m.group(4)), "handled_ms": int(m.group(5)),
+                              "through": int(m.group(3)), "path": "queue" if m.group(4) else "first",
+                              "queued_ms": int(m.group(4) or 0), "handled_ms": int(m.group(5)),
                               "steps_ms": v.get("ms"), "skipped": v.get("skipped")}))
