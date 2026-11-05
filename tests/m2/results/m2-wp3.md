@@ -55,8 +55,10 @@ Status: in progress. This file holds progress notes until the gates run.
   now 1, so the five build as one group, and CI reports the newest tip first.
 - BF-21's 100 runs are split over `wp3q`, `wp3q2`, `wp3q3`, and `wp3q4` (196635-196637 from `seed.ts`), 25 each.
   The leader is killed at global trials 9, 19, ... 99, alternating `after_quorum` and `before_commit`.
-- BM-2 (`hosted.py bm2 bm2 100` on `wp3b`) is running: three commands per trial straight to the leader's `/commit`, each
-  refused `StaleChain` so far, with the built chain unchanged.
+- BM-2 passes 100 of 100 (`hosted.py bm2 bm2 100` on `wp3b`). Each trial sends three commands straight to the leader's
+  `/commit`: a `Build` chained to a stale `parent_tip`, a `Build` whose chain breaks inside, and a `Land` whose
+  second plan's `base_old` is stale. All 300 are refused `StaleChain`, and the built chain is unchanged after each
+  trial.
 - BF-1's first try (`wp3f`, 196638) failed for a known reason. The running site build is `ce19408`'s, whose test
   hold lets the next in-band attempt commit the held landing (entry 44, five `Merged` and `Landed`). The driver's
   copy was then refused `NotQueued`; the `PrSync` batch committed alone (entry 52). `29b2f16` and `fa13e9f` keep a
