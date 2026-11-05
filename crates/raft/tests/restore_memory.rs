@@ -114,7 +114,7 @@ fn restore_reads_no_request_row_and_a_resend_is_answered_from_storage() {
     let stored = Stored { state: disk.state.clone(), base: disk.base, log: disk.log.clone(), fold };
 
     let before = allocated();
-    let (m, ready) = Member::restore(config(B), &stored, c.now, 7).expect("restore");
+    let (m, ready) = Member::restore(config(B), stored, c.now, 7).expect("restore");
     let grew = allocated() - before;
     assert!(grew < 1_000_000, "restore allocated {grew} bytes for {ROWS} request rows on storage");
 
@@ -160,7 +160,7 @@ fn restore_holds_no_second_copy_of_the_stored_log_or_fold() {
 
     let entries = stored.log.len() as u64;
     let base = mark();
-    let (m, _ready) = Member::<KvCmd>::restore(config(B), &stored, c.now, 7).expect("restore");
+    let (m, _ready) = Member::<KvCmd>::restore(config(B), stored, c.now, 7).expect("restore");
     let grew = rose(base);
     assert_eq!(m.last_index().0, entries);
     assert!(grew < held / 4, "restore raised the live heap by {grew} bytes over {held} bytes stored");

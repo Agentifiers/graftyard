@@ -583,7 +583,10 @@ pub fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
         Box::new(graftyard_fold::MemStore::default()),
     );
     let mut next = 1;
-    for r in rows(&sql, "SELECT idx, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])? {
+    // One row at a time: collecting the log first held all of it beside the member's own fold, and took the
+    // isolate past 128 MB (F47).
+    for r in sql.exec("SELECT idx, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])?.raw() {
+        let r = r?;
         let idx = crate::host::int(&r[0])? as u64;
         if idx != next {
             return Ok(json!({ "skip": format!("the stored log starts at {idx}, not {next}") }));

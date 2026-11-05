@@ -887,7 +887,7 @@ impl<F: Family> Host<F> {
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), &stored, Timestamp(now_ms()), seed())
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(now_ms()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
