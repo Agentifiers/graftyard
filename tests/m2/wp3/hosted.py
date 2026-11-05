@@ -686,6 +686,54 @@ def bf1_commit(w, held, bys):
     return {"leader": s, "results": results, "per_member": per, "plans": plans, "ok": ok}
 
 
+# ---- the per-base timer ----
+
+def timer(run, trials):
+    """Two pull requests enqueued under `min_merge` 5 and `min_wait_minutes` 1: nothing builds until the timer from
+    `Step::Idle { at }` fires, about 60 s after the first `Enqueued`, with no entry in between. Then CI passes both
+    tips and they land. Each trial records when the group built against the first `Enqueued`, on the leader's clock."""
+    out, done = resume(run)
+    w = Work(run)
+    for i in range(done, trials):
+        start = int(member(leader_site(), "/status", None)["v"].get("commit", 0))
+        tag = format(int(time.time()) % 100000, "05")
+        names = [f"{run}-{i}-{tag}-{k}" for k in (1, 2)]
+        for k, b in enumerate(names, 1):
+            w.branch(b, {f"t/{i}/{k}.txt": f"{run} {i} {k} {time.time()}"})
+        prs = parallel([lambda b=b: create_pr(w, f"{tempfile.gettempdir()}/wp3-t", b, b) for b in names])
+        for n in prs:
+            rc, _, e = w.gh(f"{tempfile.gettempdir()}/wp3-t", f"enq-{n}", "pr", "merge", str(n), "-R",
+                            f"{OWNER_LOGIN}/{REPO}", "--merge")
+            if rc != 0:
+                raise RuntimeError(f"enqueue #{n}: {e[-300:]}")
+        reported = set()
+        t0 = time.time()
+        while time.time() - t0 < 300:
+            v = view()["view"]
+            es = [e for e in v["entries"] if e["n"] in prs]
+            for e in es:
+                if e["built"]:
+                    tip = bytes(e["built"]["entry"]["group_tip"]).hex()
+                    if tip not in reported:
+                        reported.add(tip)
+                        status(tip, "success")
+            if not es:
+                break
+            time.sleep(2)
+        lg = member_log(start + 1)
+        enq = [e["at"] for e in lg if any(k[0] == "Queue" and k[1].startswith("Enqueued") for k in e.get("kinds", []))]
+        built = [(e["at"], e["index"]) for e in lg
+                 if any(k[0] == "Queue" and k[1].startswith("GroupBuilt") for k in e.get("kinds", []))]
+        between = [e["index"] for e in lg if enq and built and enq[-1] < e["at"] < built[0][0]
+                   and any(k[0] in ("Queue", "Refs", "RequiredCheck") for k in e.get("kinds", []))]
+        wait_s = round((built[0][0] - enq[0]) / 1000, 1) if enq and built else None
+        merged = all(pr_state(n) == "MERGED" for n in prs)
+        ok = wait_s is not None and 60 <= wait_s <= 90 and not between and merged
+        rec = {"i": i, "prs": prs, "wait_s": wait_s, "entries_between": between, "merged": merged, "pass": ok}
+        append(out, rec)
+        log(f"{i} {'pass' if ok else 'FAIL'} built {wait_s} s after the first Enqueued, merged={merged}")
+
+
 # ---- BM-2 ----
 
 def bm2(run, trials):
@@ -788,6 +836,8 @@ def main():
         f = int(a[a.index("--fail") + 1]) if "--fail" in a else 3
         o = int(a[a.index("--offset") + 1]) if "--offset" in a else 0
         queue(rest[0], int(rest[1]), k, f, "--bf1" in a, o)
+    elif cmd == "timer":
+        timer(rest[0], int(rest[1]))
     elif cmd == "bm2":
         bm2(rest[0], int(rest[1]))
     else:
