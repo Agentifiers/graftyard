@@ -560,6 +560,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
+        (Method::Post, ["statuses", sha]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let Actor::User(me) = who.actor else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+            let id = graftyard_types::DbId(js_sys::Date::now() as i64);
+            match rest::plan_create_status(sha, &body(req.bytes().await?), me.0, id) {
+                Ok(op) => {
+                    let IssueOp::RecordStatus(st) = &op else { unreachable!("a status") };
+                    let what = What::StatusCreated { sha: st.sha, id: id.0 };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
         (Method::Put, ["pulls", n, "merge"]) => {
             let who = match need(&who) {
                 Ok(w) => w,

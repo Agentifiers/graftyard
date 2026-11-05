@@ -31,26 +31,7 @@ pub fn list_commit_statuses(r: &Repo<'_>, reference: &str, page: Page) -> Reply 
     let more = rows.len() > page.per_page;
     rows.truncate(page.per_page);
     let api = r.host.api();
-    let items: Vec<Value> = rows
-        .iter()
-        .map(|t| {
-            let s = &t.rec;
-            let creator = simple_user(r.host, r.dir, Some(s.creator));
-            json!({
-                "url": format!("{api}/repos/{}/{}/statuses/{}", r.at.owner, r.at.name, sha.hex()),
-                "avatar_url": creator["avatar_url"],
-                "id": s.id.0.0,
-                "node_id": scoped(NodeType::StatusContext, r, s.id.0.0),
-                "state": status_state(s.state),
-                "description": s.description.as_deref(),
-                "target_url": s.target_url.as_ref().map(|u| &*u.0),
-                "context": &*s.context,
-                "created_at": iso(t.at),
-                "updated_at": iso(t.at),
-                "creator": creator,
-            })
-        })
-        .collect();
+    let items: Vec<Value> = rows.iter().map(|t| status_json(r, t)).collect();
     let path = format!("/commits/{}/statuses", sha.hex());
     let link = graftyard_wire::link(&api, r.at.id.0.0, &path, &[], page, more, None);
     let reply = Reply::json(200, Value::Array(items));
@@ -197,5 +178,69 @@ pub fn refused_merge(e: &graftyard_git::merge::MergeError) -> Reply {
         E::Store(_) => Reply::error(503, "Service Unavailable", "rest").with("retry-after", "5"),
         E::Protection(_) | E::MethodNotAllowed | E::NotOpen | E::Draft => Reply::error(405, &e.message(), doc),
         _ => Reply::error(405, "Pull Request is not mergeable", doc),
+    }
+}
+
+fn status_json(r: &Repo<'_>, t: &graftyard_git::tiers::Timed<graftyard_git::issues::StatusUpdate>) -> Value {
+    let s = &t.rec;
+    let creator = simple_user(r.host, r.dir, Some(s.creator));
+    json!({
+        "url": format!("{}/repos/{}/{}/statuses/{}", r.host.api(), r.at.owner, r.at.name, s.sha.hex()),
+        "avatar_url": creator["avatar_url"],
+        "id": s.id.0.0,
+        "node_id": scoped(NodeType::StatusContext, r, s.id.0.0),
+        "state": status_state(s.state),
+        "description": s.description.as_deref(),
+        "target_url": s.target_url.as_ref().map(|u| &*u.0),
+        "context": &*s.context,
+        "created_at": iso(t.at),
+        "updated_at": iso(t.at),
+        "creator": creator,
+    })
+}
+
+/// `POST /repos/{o}/{r}/statuses/{sha}`'s command: a `RecordStatus` by the caller. `id` is the status's id, which the
+/// edge mints increasing (a later status of the same context and creator wins by id) [inference: the repository
+/// chain assigns no status ids yet].
+pub fn plan_create_status(
+    sha: &str,
+    body: &Value,
+    creator: graftyard_types::AccountId,
+    id: graftyard_types::DbId,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use graftyard_git::issues::{StatusId, StatusState, StatusUpdate, Url};
+    let doc = "rest/commits/statuses#create-a-commit-status";
+    let invalid = || Reply::error(422, "Validation Failed", doc);
+    let sha = ObjectId::parse_hex(sha.as_bytes()).ok_or_else(invalid)?;
+    let state = match body.get("state").and_then(Value::as_str) {
+        Some("success") => StatusState::Success,
+        Some("failure") => StatusState::Failure,
+        Some("error") => StatusState::Error,
+        Some("pending") => StatusState::Pending,
+        _ => return Err(invalid()),
+    };
+    let text = |k: &str| body.get(k).and_then(Value::as_str).map(Into::into);
+    Ok(graftyard_git::issue_ops::IssueOp::RecordStatus(StatusUpdate {
+        id: StatusId(id),
+        sha,
+        context: text("context").unwrap_or_else(|| "default".into()),
+        state,
+        target_url: body.get("target_url").and_then(Value::as_str).map(|u| Url(u.into())),
+        description: text("description"),
+        creator,
+    }))
+}
+
+/// The 201 of a committed `RecordStatus`: the status as the leader's tiers hold it after the entry applied.
+pub fn status_created(
+    acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+    sha: ObjectId,
+    id: i64,
+) -> Reply {
+    let _ = &acked.out;
+    match after.statuses(&sha, 0, 1000).into_iter().find(|t| t.rec.id.0.0 == id) {
+        Some(t) => Reply::json(201, status_json(after, &t)),
+        None => Reply::error(500, "Internal Server Error", "rest"),
     }
 }

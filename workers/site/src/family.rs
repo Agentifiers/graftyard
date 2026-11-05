@@ -389,6 +389,10 @@ impl Family for Repo {
                 Some(Ok(crate::merge_queue::fault(host, &body)))
             }
             #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("record").is_some() => {
+                Some(crate::merge_queue::record(host, &body["record"]).await)
+            }
+            #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("prsyncDrop").is_some() => {
                 Some(Ok(crate::prsync::drop_first(host, body["prsyncDrop"].as_u64().unwrap_or(1) as u32)))
             }
@@ -628,6 +632,36 @@ impl Family for Repo {
             .map(|u| json!([u.name.display(), u.new.map(|o| o.hex())]))
             .collect();
         m.insert("refs".into(), json!(refs));
+        // M2-WP3's audits: every event's kind, and each base-branch update with its expected value and the event it
+        // rides in, so BF-21 can check that a base moves only in whole landings and only forward.
+        let kinds: Vec<Value> = evs
+            .iter()
+            .map(|ev| match ev {
+                git::repo::RepoEvent::Merged { n, .. } => json!(["Merged", n.0]),
+                git::repo::RepoEvent::Queue(q) => json!([
+                    "Queue",
+                    match q {
+                        git::queue::QueueEvent::Enqueued { n, .. } => format!("Enqueued {}", n.0),
+                        git::queue::QueueEvent::GroupBuilt { entries, .. } => {
+                            format!("GroupBuilt {:?}", entries.iter().map(|e| e.pr.0).collect::<Vec<_>>())
+                        }
+                        git::queue::QueueEvent::Ejected { n, reason, .. } => format!("Ejected {} {reason:?}", n.0),
+                        git::queue::QueueEvent::Landed { through, .. } => format!("Landed {}", through.0),
+                    }
+                ]),
+                other => json!([format!("{other:?}").split([' ', '(', '{']).next().unwrap_or("").to_owned()]),
+            })
+            .collect();
+        m.insert("kinds".into(), json!(kinds));
+        let moves: Vec<Value> = evs
+            .iter()
+            .enumerate()
+            .flat_map(|(i, ev)| ev.updates().into_iter().map(move |u| (i, u)))
+            .filter(|(_, u)| !u.name.as_bytes().starts_with(b"refs/heads/gh-readonly-queue/"))
+            .filter(|(_, u)| u.name.as_bytes().starts_with(b"refs/heads/"))
+            .map(|(i, u)| json!([i, u.name.display(), u.expect.map(|o| o.hex()), u.new.map(|o| o.hex())]))
+            .collect();
+        m.insert("branchMoves".into(), json!(moves));
         let merged: Vec<Value> = evs
             .iter()
             .filter_map(|ev| match ev {

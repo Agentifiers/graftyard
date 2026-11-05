@@ -133,7 +133,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
     let mut first = None;
     match lead.d.batch(cursor, Timestamp(now)) {
-        Some((b, Delivery::First)) => first = Some(b),
+        Some((b, Delivery::First)) => first = Some((b, true)),
         Some((b, Delivery::Again)) => {
             let m = Message { merge_queue: 1, repo: repo.0.0, batch: b, record: record.clone(), leader: key.clone() };
             if let Err(e) = enqueue(h, m).await {
@@ -146,9 +146,9 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     // Due timers ride on the first attempt, or run alone when no batch is due and none runs.
     let due: Vec<RefName> = lead.timers.iter().filter(|(_, at)| **at <= now).map(|(b, _)| b.clone()).collect();
     if first.is_none() && !due.is_empty() && !lead.running {
-        first = Some(SyncBatch { from: cursor, through: cursor, prs: Vec::new() });
+        first = Some((SyncBatch { from: cursor, through: cursor, prs: Vec::new() }, false));
     }
-    if let Some(b) = first.as_mut() {
+    if let Some((b, _)) = first.as_mut() {
         for base in due {
             lead.timers.remove(&base);
             if !b.prs.contains(&base) {
@@ -162,7 +162,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         lead.running = true;
     }
     LEADS.with(|m| m.borrow_mut().insert(key.clone(), lead));
-    if let Some(batch) = first {
+    if let Some((batch, carried)) = first {
         let m = Message { merge_queue: 1, repo: repo.0.0, batch, record, leader: key.clone() };
         let w = Rc::downgrade(h);
         let env = h.env.clone();
@@ -181,7 +181,10 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                     && lead.leadership == leadership
                 {
                     lead.running = false;
-                    lead.d.finished(r.is_ok());
+                    // Only a batch the dispatcher handed out is its attempt; a timer's is not.
+                    if carried {
+                        lead.d.finished(r.is_ok());
+                    }
                     let now = now_ms();
                     match &r {
                         Ok(v) => {
@@ -403,5 +406,38 @@ pub fn read_json(fold: &git::repo::RepoFold, base: &Value) -> Value {
     match serde_json::from_value::<RefName>(base.clone()) {
         Ok(b) => json!(QueueRead::of(&fold.core, &b)),
         Err(e) => json!({ "error": e.to_string() }),
+    }
+}
+
+/// Test installs: records events on the leader as `crate::prsync::open_pr` does, for what no client route sets yet:
+/// `{"record": [RepoEvent..]}` (a branch rule and the repository settings for the gates). The fold checks each.
+#[cfg(feature = "test-faults")]
+pub async fn record(h: &Rc<Host<Repo>>, events: &Value) -> Result<Value> {
+    use graftyard_raft::{Fold as _, Scratch as _};
+    let events: Vec<git::repo::RepoEvent> =
+        serde_json::from_value(events.clone()).map_err(|e| Error::RustError(e.to_string()))?;
+    {
+        let core = h.core.borrow();
+        let c = core.as_ref().ok_or_else(|| crate::host::err("not joined"))?;
+        let mut s = c.m.group_fold().fold.scratch();
+        for ev in &events {
+            if let Err(why) = s.check(ev) {
+                return Ok(json!({ "refused": why.to_string() }));
+            }
+            s.apply(ev);
+        }
+    }
+    let rid = graftyard_raft::RequestId(graftyard_types::Ulid(
+        (0x5244u128 << 112) | u128::from(now_ms()) << 16 | u128::from(js_sys::Math::random().to_bits() as u16),
+    ));
+    let rx = h.wait_recorded(rid);
+    if let Err(e) = h.input(|m, t| m.record(t, rid, git::repo::REPO_FORMAT_V1, events))? {
+        return Ok(json!({ "error": crate::host::call_error_json(&e) }));
+    }
+    h.served();
+    match crate::host::within(std::time::Duration::from_secs(10), rx).await {
+        Some(Ok(Ok(index))) => Ok(json!({ "recorded": index.0 })),
+        Some(Ok(Err(nl))) => Ok(json!({ "error": crate::host::nl_json(&nl) })),
+        _ => Ok(json!({ "busy": true })),
     }
 }

@@ -180,6 +180,11 @@ pub enum What {
     },
     /// `PUT /repos/{o}/{r}/pulls/{n}/merge`.
     RestMerge,
+    /// `POST /repos/{o}/{r}/statuses/{sha}`: the status's commit and id.
+    StatusCreated {
+        sha: ObjectId,
+        id: i64,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -254,6 +259,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::LfsLocked => WireReply::of(&crate::lfs::locked(acked, &r)),
         What::LfsUnlocked { lock } => WireReply::of(&crate::lfs::unlocked(acked, lock.clone())),
         What::RestMerge => WireReply::of(&Reply::error(500, "a merge rendered as an issue command", "rest")),
+        What::StatusCreated { sha, id } => WireReply::of(&crate::rest::status_created(acked, &r, *sha, *id)),
     }
 }
 
@@ -264,7 +270,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::ReleaseCreated | What::ReleaseUpdated | What::Deleted => WireReply::of(&crate::release::refused(e)),
         What::LfsVerified => WireReply::of(&crate::lfs::not_verified()),
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
-        What::RestMerge => WireReply::of(&Reply::error(422, "Validation Failed", "rest")),
+        What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
     }
 }
 
