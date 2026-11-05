@@ -227,3 +227,198 @@ python3 tests/m2/bf24/audit.py tests/m2/results/raw/wp5/dist.jsonl
 ```
 
 The driver resumes after its last JSON line. It needs `~/.graft-integ/repos.json` and `tokens.txt` (the `wp6/bf24` writer token) and `tests/m0/.m0-token` for the member calls through the M1-WP7 test edge.
+
+## 2026-11-05: the in-band first attempt, and BF-24 rerun on `graft-m2b`
+
+Run on 2026-11-05 against the second test install `graft-m2b-site-a/b/c` (enam, weur, apac) and `graft-m2b-edge` (`tests/m2/results/install-m2b.md`), on branch `bf24-direct`. The repository is `m2b/bf24` (`repo:65538`), seeded with `tests/m1/integ/seed.ts`, with pull request #1 from `refs/heads/pr` to `main`. The queues `graft-m2b-prsync-a/b/c` were created for it. `graft-m1-*` was not touched. Raw data is in `raw/bf24/`.
+
+### The decision, and why it held
+
+The operator's decision is in `decisions/DECISIONS.md`, "`PrSync`'s first attempt runs in band, and Queues carries only the re-send". It held. No flip condition was met:
+
+- **p99 within 10 s.** It held on both builds, at 5.54 s and 6.44 s (below).
+- **No sign that the in-band merge slows the leader.** The first attempt is spawned from the alarm, with a `FIRST_FOR` bound of 25 s. The alarm does not wait for it, and its commits go through the normal path. Over `dist2`'s 75 trials, the leader's `/stats` (`raw/bf24/dist2.stats.jsonl`) showed:
+  - `commitMs` with n 151: p50 1,921 ms, p90 2,223 ms, p99 2,474 ms, max 3,057 ms. This is in line with M1-WP8's steady `Push` commits of 2.1 to 2.8 s at p50.
+  - `roundMs` p50 183 ms and p99 209 ms.
+  - `prsyncFirst` 75 and `prsyncSent` 0.
+- **Queues is not needed for the head push.** No queue delivery was needed, so this flip does not apply.
+
+How it is built (`12ec22a`, `76abf81`):
+
+- `Dispatcher::batch` returns `Delivery::First` or `Delivery::Again`.
+- `First` runs `prsync::one` in the leader's isolate, through the member's own bindings. That is the same handler the queue consumer runs, and it calls no Cloudflare API.
+- `Again` covers work the committed cursor has not passed `REDELIVER_AFTER_MS` (30 s) after it was handed out. It goes to the site's queue, and so does a failed first attempt.
+- One first attempt runs at a time per leadership. Later pushes wait for it and go out as one batch.
+
+Correctness does not depend on the first attempt. Duplicates commit nothing, through the content-derived request ids and `decide_sync`'s checks. A first attempt lost with its isolate or leader is covered by the cursor and the re-send. The leader-change and purge runs below show both.
+
+### BF-24 table
+
+Latency runs from the return of `git push` to the first `ls-remote` that shows the result. "Server" runs on the leader's clock, from the push's entry to the `TestMerged` entry.
+
+| Run, build | Trials | n | Within 10 s | p50 | p90 | p99 | Max | Server p50 / p99 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `dist`, `12ec22a` | Clean | 50 | 50 | 5.08 s | 5.34 s | 5.54 s | 5.54 s | 2.74 / 3.13 s |
+| | Conflict | 25 | 25 | 5.06 s | 5.19 s | 5.31 s | 5.31 s | 2.73 / 2.90 s |
+| `dist2`, `ca0d181` (final) | Clean | 50 | 50 | 5.50 s | 5.86 s | 6.44 s | 6.44 s | 3.18 / 3.45 s |
+| | Conflict | 25 | 25 | 5.49 s | 5.68 s | 5.81 s | 5.81 s | 2.99 / 3.25 s |
+
+- Every clean trial's merge commit had parents (base tip, head).
+- `mergeable` matched each time: true for clean heads, false for conflicts.
+- Every conflict deleted `refs/pull/1/merge`.
+- The leader was site 0 (enam) throughout both runs.
+- All 75 consumer lines of each run came from the in-band path, and none from the queue (`dist.consumer.jsonl`, `dist2.consumer.jsonl`).
+
+**Verdict: pass.** p99 is 6.44 s on the final build, against the 10 s gate. The earlier queue-only run had a p99 over 30 s.
+
+The log audit (`audit.py`) passes over all four runs together, 194 heads across entries 19 to 479 (`raw/bf24/all.audit.txt`):
+
+- every head has exactly one `TestMerged` with the right outcome;
+- `refs/pull/1/head` moved to each head once;
+- the cursor never went back.
+
+### Where the time goes now
+
+From the consumer's log lines matched to `dist2`'s trials (p50, then p90):
+
+| Step | p50 | p90 |
+| --- | --- | --- |
+| Push entry applied to handler start (alarm at 50 ms, scan, spawn) | 226 ms | 253 ms |
+| Record lookup | 0 ms (from the member's join) | 0 ms |
+| Fresh read of the pull request | 372 ms | 396 ms |
+| `/merge` on the enam git cache shard | 2,160 ms | 2,379 ms |
+| The `PrSync` commit | 583 ms | 612 ms |
+| Handler total | 3,138 ms | 3,318 ms |
+| Client gap after the server time (0.5 s polls of a 5.0 s `ls-remote`) | 2,388 ms | 2,645 ms |
+
+- The git cache's `/merge` is now the largest server step, at about 70% of it.
+- The queue hop of p50 2.0 s and p90 5.1 s, with its 37 s outliers, is gone from the head push.
+- The rest of the client latency is the `ls-remote` through the edge. The latency starts after `git push` returns, which itself took p50 9.7 s.
+- `dist` (`12ec22a`) split the same way, with a merge of 1,869 ms and a commit of 506 ms. `dist2` ran about 0.4 s slower, after `main`'s edge-wiring merge. Most of the difference is in the merge (+290 ms). Its cause was not established.
+
+### Leader change, lost first attempts, and purged re-sends
+
+Run `lc` (`raw/bf24/lc.jsonl`) on the final build, 40 trials, every fourth a conflict, with `BF24_DEADLINE` 60 s:
+
+| Fault | Trials | Latency | Server | What covered it |
+| --- | --- | --- | --- | --- |
+| Transfer right after the push | 2, 5, 13, 21 | 6.60 to 6.94 s | 3.6 to 4.6 s | The new leader's dispatcher, from the committed cursor |
+| Transfer, then `/reset` of the old leader | 9, 17, 25 | 6.29 to 7.18 s | 4.4 to 6.4 s | The same; at 9 and 17 the reset member led again later |
+| Queue paused and purged at about 7 s, then transfer | 7, 11, 15, 19 | 14.74 to 15.30 s | 3.7 to 4.4 s | The first attempt, in band. Purging the queue removed nothing it needed. The client time is the harness's pause, purge, and transfer |
+| First attempt dropped (`prsyncDrop`) | 27, 29, 31, 33 | 34.69 to 38.18 s | 34.0 to 37.7 s | The 30 s re-send through `graft-m2b-prsync-a`, queued 0.9 to 4.5 s |
+| | 23 | 13.04 s | 12.7 s | Leadership moved from site b to site a without a transfer the driver injected. The new leader's first attempt covered it |
+| Queue paused, then purged after the first re-send, with no first attempt dropped | 35, 37 | 5.21 to 5.91 s | 2.9 to 3.3 s | The in-band first attempt |
+| No fault | 22 trials | p50 5.66 s, max 6.74 s | 2.9 to 5.6 s | In band |
+
+`lc`'s purge trials could not reach the second re-send, because the in-band first attempt finished first. Run `purge` (`raw/bf24/purge.jsonl`) combines both faults in each of its 4 trials. It drops the first attempt, pauses the leader's queue, and purges it 42.6 to 43.0 s after the push, which is after the first re-send. All 4 synced at 67.1 to 69.3 s (server 66.1 to 68.8 s), from the second re-send at 60 s, through the queue. That includes the conflict trial, with `mergeable` false and the ref deleted.
+
+`audit.py` passes on `lc` (40 heads, entries 213 to 316) and on `purge` (4 heads). Workers Logs show each dropped first attempt (`first dropped (test fault)`) and no second handling of any batch.
+
+### The reset bug the leader-change run found
+
+The first `lc` run, on `f3bac15` (`raw/bf24/lc-buggy.jsonl`, 13 trials), had trial 9 at 36.4 s. Its sequence:
+
+- leadership was transferred, then the old leader on site c was reset at 12:39:43Z;
+- the member restored and regained leadership in the same term;
+- its dispatcher state is thread-local, keyed by DO name, and it outlived the reset;
+- the "first attempt running" flag was keyed by term, so the restored member waited on an attempt that its old self had started and that would never return;
+- Workers Logs show no first attempt after the reset, and the queue's re-send handled `193..197` at 12:40:18Z.
+
+`76abf81` fixes it in two places:
+
+- The dispatcher owns `running`. `finished` clears it, and a run older than `REDELIVER_AFTER_MS` counts as lost.
+- The site keys dispatchers by `(term, boot)`, so a reset member starts a fresh one.
+
+On the final build, trials 9, 17, and 25 took 6.3 to 7.2 s. New test: `a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes`.
+
+### The `tier.rs` panic
+
+F47's subagent saw `TierSql::get` panic on `expect("a fold read")` after "Network connection lost" (`workers/site/src/tier.rs`, then line 280). A panic rebuilds the wasm instance, which resets every member in the isolate.
+
+`131ee88` makes a refused fold read, scan, row, or clear set the tier's `lost`, log `fold storage lost: …`, and answer no rows. The host checks `Family::lost` at these points:
+
+- after each input's step;
+- before a read resolution is answered;
+- before a member reply;
+- before the `PrSync` scan's batch;
+- before a snapshot part uploads.
+
+On a hit, `Host::fail_lost` resets only that object with `ctx.abort()`, as a failed write does. Test installs fail the core tier's next stored read with `/bench_seed {"failRead": true}`.
+
+Verified on the final build (`raw/bf24/tier-failread.log`) on `repo:65537`'s site b member at 15:32:43Z:
+
+- `/fold` answered 503 "member reset: fold storage lost";
+- Workers Logs show `fold storage lost: a fold read of c__fold: Error: no such table: graftyard_no_such_table`;
+- only `repo:65537` got a new boot id, while `repo:65536` and `repo:65538` in the same isolate kept theirs.
+
+A first try at 15:31:32Z armed the fault, then sent a `/read` that the follower answered without a stored read. The fault was still armed when the second try ran.
+
+### Planted bugs
+
+`tests/m2/bf24/plant.py` on `ca0d181` (`raw/bf24/plant.log`): **14 of 14 caught**, exit 0. They are the 11 from M2-WP5 (0 to 10 in the table above) and 3 for the in-band path:
+
+| Plant | Caught by |
+| --- | --- |
+| 11. Every first attempt restarts the redelivery clock, so a first attempt that keeps returning without passing the cursor starves the re-send | `first_attempts_that_return_without_passing_the_cursor_do_not_hold_back_the_re_send` |
+| 12. A re-send goes in band again, not through the queue | 4 tests, including `a_first_attempt_runs_in_band_and_only_a_re_send_goes_to_the_queue` |
+| 13. A first attempt lost with its isolate never counts as lost, so it holds every later push | `a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes` |
+
+After `76abf81`, plant 11 was at first caught by nothing. The test that caught it, `a_first_attempt_that_never_returns_is_re_sent_while_pushes_keep_coming`, now covers a first attempt that never returns, so later pushes wait behind it. The new test covers attempts that do return, and catches the plant again.
+
+### Checks
+
+On `ca0d181`, `main` `31c1fd7` merged in (`raw/bf24/checks.log`):
+
+- `cargo fmt --check`, ok.
+- `cargo clippy --workspace --all-targets -- -D warnings`, ok.
+- wasm32 clippy for site and edge, with and without `test-faults`: all 4 ok.
+- `cargo test --workspace`: 42 suites, all ok.
+- `go test` in `containers/git/server`, ok.
+- Release-build greps: site 0 of 50 needles, edge 0 of 20.
+- `crates/raft` is unchanged, so the long sweep and Porcupine were not rerun.
+
+### Commits on `bf24-direct`
+
+- `131ee88` site: a fold read storage refuses resets the member, not the isolate.
+- `12ec22a` PrSync: the first attempt runs in band; the queue carries only re-sends.
+- `c142f54` tests/m2/bf24: the install from the environment, and first-attempt log lines.
+- `f3bac15` site: test installs drop a leader's next first attempt (`prsyncDrop`).
+- `05faf7c` tests/m2/bf24: purge the re-send, a longer poll, and an audit that elects.
+- `76abf81` PrSync: a reset leader waits on no first attempt of its old self.
+- `ca0d181` Merge `main` (`31c1fd7`) into `bf24-direct`.
+
+### What is deployed on `graft-m2b`
+
+- `graft-m2b-site-a/b/c` run the `test-faults` build of `ca0d181` (`raw/bf24/deploy-site4.log`), versions `06e8ea70`, `db8a7f31`, and `ff84c2b8`, with image `sha256:5be873a0...`.
+- Queues `graft-m2b-prsync-a/b/c`, each bound to its site as producer and consumer, with the M2-WP5 settings.
+- `graft-m2b-edge` (`115bfa6a`) and `graft-m2b-tools-edge` (`a6c76344`) were not redeployed.
+- `repo:65538` (`m2b/bf24`) holds pull request #1 and every trial's commits.
+
+### Aborts seen
+
+Workers Logs on `graft-m2b-site-a/b/c` from 11:00Z to 15:45Z (`raw/bf24/logs-sweep.txt`) have no `unreachable`, `panicked`, `Critical`, or `commit_tx` message. The only `fold storage lost` lines are the planted `failRead` tests on site b, at 11:35Z, 11:36Z, and 15:32Z.
+
+### Design sentences this contradicts
+
+Quoted, not edited:
+
+- DESIGN, "Dominant access patterns": "*Webhook.* Leader alarm, cursor, Queue message, consumer Worker, POST." For `PrSync` the first attempt is now leader alarm, cursor, in-isolate handler, commit. The Queue message is only the re-send.
+- SHARED, "Event fan-out": "`design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers". This no longer holds for `PrSync`'s first attempt.
+- DESIGN, Failure modes, `event pipeline` instance: "(decided 2026-11-05, pending BF-24's rerun; `decisions/DECISIONS.md`)". The rerun is in, and it passes.
+- DECISIONS, the in-band entry: "This is being built and measured now, so BF-24's 10 s clause stays failed until its rerun", and "The rerun is pending."
+- BUILD-PLAN, M2-WP5 BF-24 status: "fails the 10 s clause" and "Decided and pending measurement".
+- SHARED, "Issues and pull requests": "and the 4 of 50 BF-24 trials held about 37 s in Queues". With the in-band attempt, the head ref now waits only on the merge.
+- DESIGN, `event pipeline` region row: "One site's queue and consumers … `PrSync` for that site's leaders". A lost queue now delays only re-sends. A lost git cache shard still holds both refs.
+- Not covered by any row: the in-band first attempt runs in the leader's isolate, so a slow `/merge` holds one isolate's work for up to `FIRST_FOR` (25 s). DESIGN has no Failure-modes row for that.
+
+### Reproduce
+
+```
+. <env with CLOUDFLARE_*, GRAFT_EDGE, GRAFT_TOOLS_EDGE, BF20_HOME=~/.graft-m2b, BF24_OWNER=m2b, BF24_REPO=bf24, BF24_PREFIX=graft-m2b, BF24_RAW>
+python3 tests/m2/bf24/plant.py
+python3 tests/m2/bf24/bf24.py dist2 75 --conflict-every 3
+BF24_DEADLINE=60 python3 tests/m2/bf24/bf24.py lc 40 --conflict-every 4 --transfer-at 2,5,9,13,17,21,25 --lose-at 7,11,15,19 --reset-at 9,17,25 --drop-first-at 23,27,29,31,33 --purge-resend-at 35,37
+BF24_DEADLINE=100 python3 tests/m2/bf24/bf24.py purge 4 --conflict-every 4 --drop-first-at 0,1,2,3 --purge-resend-at 0,1,2,3
+python3 tests/m2/bf24/sum.py $BF24_RAW/dist2.jsonl
+python3 tests/m2/bf24/audit.py $BF24_RAW/dist.jsonl $BF24_RAW/lc.jsonl $BF24_RAW/dist2.jsonl $BF24_RAW/purge.jsonl
+```
