@@ -287,12 +287,8 @@ fn serve(e: &mut Edge<'_>, case: &str, req: &Value) -> u16 {
             assert_eq!(e.location.take().as_deref(), Some(&*format!("https://{HOST}{path}")), "the 302 pointed here");
             let r = repo(&e.c, &host, &dir);
             let c = release::codeload(&r, rest).unwrap();
-            let ar = ArchiveRequest {
-                network: NetworkId(REPO.0),
-                commit: &c.commit.hex(),
-                prefix: &c.prefix,
-                format: c.format,
-            };
+            let ar =
+                ArchiveRequest { network: NetworkId(REPO.0), commit: c.commit, prefix: &c.prefix, format: c.format };
             let (bytes, _) = block_on(archive(&e.warm, &FakeGit, &ar)).unwrap();
             release::archive_reply(&c, bytes).status
         }
@@ -621,12 +617,8 @@ fn bf26_archive_bytes_match_after_the_cache_is_deleted() {
     let download = |rest: &str| {
         let r = c.repo(0, &host, &d);
         let cl = release::codeload(&r, rest).unwrap();
-        let req = ArchiveRequest {
-            network: NetworkId(REPO.0),
-            commit: &cl.commit.hex(),
-            prefix: &cl.prefix,
-            format: cl.format,
-        };
+        let req =
+            ArchiveRequest { network: NetworkId(REPO.0), commit: cl.commit, prefix: &cl.prefix, format: cl.format };
         let key = archive_key(&req).to_string();
         let (bytes, src) = block_on(archive(&warm, &git, &req)).unwrap();
         (release::archive_reply(&cl, bytes), src, key)

@@ -1145,7 +1145,7 @@ impl<F: Family> Host<F> {
                             down_ms: *down,
                             index: outcome_index::<F>(result),
                             term: core.m.term(),
-                            result: outcome_json::<F>(result),
+                            result: outcome_json::<F>(&core.m.group_fold().fold, result),
                         }),
                         _ => None,
                     }
@@ -2069,11 +2069,11 @@ pub fn nl_json(nl: &NotLeader) -> Value {
     })
 }
 
-pub fn outcome_json<F: Family>(o: &Outcome<F>) -> Value {
+pub fn outcome_json<F: Family>(fold: &F::Fold, o: &Outcome<F>) -> Value {
     match o {
         Ok(a) => json!({ "ok": {
             "index": a.index.0,
-            "out": F::out_json(a),
+            "out": F::out_json(fold, a),
             "quorum": a.quorum().sites().iter().map(|s| s.0).collect::<Vec<_>>(),
         } }),
         Err(CommitError::Refused { index, err: e }) => {
@@ -2109,7 +2109,10 @@ impl<F: Family> Host<F> {
 
     /// `outcome_json` with the `Acked`'s evidence, for a reply this member sends now.
     pub fn reply_json(&self, o: &Outcome<F>) -> Value {
-        let mut v = outcome_json::<F>(o);
+        let core = self.core.borrow();
+        let Some(c) = core.as_ref() else { return json!({ "notJoined": true }) };
+        let mut v = outcome_json::<F>(&c.m.group_fold().fold, o);
+        drop(core);
         if let Ok(a) = o {
             v["ok"]["ack"] = self.ack_json(a);
         }

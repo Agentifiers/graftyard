@@ -17,6 +17,7 @@ test-faults = []
 arrayvec.workspace = true
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false }
+graftyard-api = { path = "../../crates/api" }
 graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }
 graftyard-identity = { path = "../../crates/identity" }

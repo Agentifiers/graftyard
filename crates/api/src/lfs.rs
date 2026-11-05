@@ -254,7 +254,7 @@ pub fn refused(e: &IssueErr) -> Reply {
         IssueErr::Forbidden => message(403, "You must have push access to do that"),
         IssueErr::NotFound => message(404, "Lock not found"),
         IssueErr::Exists => message(409, "already created lock"),
-        IssueErr::NeedIdBlock => message(503, "Service Unavailable"),
+        IssueErr::NeedIdBlock | IssueErr::Unavailable => message(503, "Service Unavailable"),
         _ => message(422, "Validation Failed"),
     }
 }

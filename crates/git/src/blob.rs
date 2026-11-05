@@ -19,6 +19,7 @@ use sha2::{Digest as _, Sha256};
 use crate::bucket::{Bucket, PutNew, StoreError};
 use crate::key::R2Key;
 use crate::pack::{Marker, ObjectMeta};
+use crate::refs::ObjectId;
 use crate::store::{Copies, PlaceError, PutOutcome, durable_sites, marker_from_meta, marker_meta};
 
 /// SHARED's `BlobRef`: SHA-256 of the bytes, their size, and the sites whose bucket held a verified copy when the blob
@@ -242,26 +243,20 @@ pub trait Archiver {
 /// One archive request, after the ref resolved to a commit.
 pub struct ArchiveRequest<'a> {
     pub network: NetworkId,
-    /// The commit's hex id.
-    pub commit: &'a str,
+    pub commit: ObjectId,
     pub prefix: &'a str,
     pub format: ArchiveFormat,
 }
 
-/// Where the cached object lives. The design's key is `ArchiveCache { network, tree, format }`, but `git archive` of a
-/// commit writes the commit's time into every entry and the prefix is part of the bytes, so two commits on one tree,
-/// or one commit under two prefixes, are different archives. The key's `tree` segment holds the commit id and a hash
-/// of the prefix instead [inference].
+/// Where the cached object lives. `git archive` of a commit writes the commit's time into every entry and the prefix
+/// is part of the bytes, so the key names the commit and the prefix's SHA-256, not the tree.
 pub fn archive_key(r: &ArchiveRequest<'_>) -> R2Key {
     R2Key::ArchiveCache {
         network: r.network,
-        tree: format!("{}-{}", r.commit, prefix_hash(r.prefix)),
+        commit: r.commit,
+        prefix: Digest(Sha256::digest(r.prefix.as_bytes()).into()),
         format: r.format,
     }
-}
-
-fn prefix_hash(prefix: &str) -> String {
-    Sha256::digest(prefix.as_bytes())[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Whether the archive came from the cache or was rebuilt.
@@ -282,7 +277,7 @@ pub async fn archive<B: Bucket, A: Archiver>(
     if let Ok(Some(b)) = warm.get(&key).await {
         return Ok((b, Source::Cache));
     }
-    let bytes = git.archive(r.network, r.commit, r.prefix, r.format).await?;
+    let bytes = git.archive(r.network, &r.commit.hex(), r.prefix, r.format).await?;
     let sum = Digest(Sha256::digest(&bytes).into());
     let _ = warm.put_new(&key, &bytes, sum, &[]).await;
     Ok((bytes, Source::Built))
@@ -429,8 +424,12 @@ mod tests {
     fn an_archive_is_rebuilt_on_a_miss_with_the_same_bytes() {
         let warm = MemBucket::default();
         let git = Git(std::cell::Cell::new(0));
-        let req =
-            ArchiveRequest { network: NetworkId(DbId(7)), commit: "c1", prefix: "r-v1/", format: ArchiveFormat::TarGz };
+        let req = ArchiveRequest {
+            network: NetworkId(DbId(7)),
+            commit: ObjectId([1; 20]),
+            prefix: "r-v1/",
+            format: ArchiveFormat::TarGz,
+        };
         let (first, src) = block_on(archive(&warm, &git, &req)).unwrap();
         assert_eq!(src, Source::Built);
         let (again, src) = block_on(archive(&warm, &git, &req)).unwrap();

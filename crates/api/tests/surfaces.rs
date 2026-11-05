@@ -635,6 +635,79 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
     }
 }
 
+/// The hosted path: the edge reads the tiers as `TierRows` JSON and plans, the command crosses as JSON with its
+/// `Render`, and the member renders from `&Acked` over its own tiers. The reply equals the in-process render.
+#[test]
+fn a_hosted_mutation_renders_on_the_member_as_in_process() {
+    use graftyard_api::hosted::{HostedDir, Render, TierRows, What, render_ok};
+    use graftyard_git::tiers::{CORE, METADATA};
+    let mut c = seeded();
+    let h = host();
+    let dir = Dir::new(WRITER);
+    let rows = |c: &Chain| {
+        let (mut budget, m) = (100_000, &c.members[0]);
+        let (core, ok1) = TierRows::dump(&m.core, &CORE, &mut budget);
+        let (meta, ok2) = TierRows::dump(&m.meta, &METADATA, &mut budget);
+        let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2 };
+        serde_json::from_value::<TierRows>(serde_json::to_value(&t).unwrap()).unwrap()
+    };
+    let t = rows(&c);
+    assert!(t.complete);
+    let (core, meta) = (TierRows::store(&t.core), TierRows::store(t.meta.as_ref().unwrap()));
+    // The rows `Repo` reads are the member's; the written index and the tier's `META` row do not cross.
+    let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut 100_000).0;
+    assert_eq!(again(&core, &CORE), again(&c.members[0].core, &CORE));
+    assert_eq!(again(&meta, &METADATA), again(&c.members[0].meta, &METADATA));
+    assert!(!t.core.is_empty() && !t.meta.as_ref().unwrap().is_empty());
+    // The owner's `Authz` fold crosses too; its maps have tuple keys, which plain JSON cannot hold.
+    let mut authz = graftyard_identity::AuthzFold::new(AccountId(DbId(1)));
+    authz.opened = Some(graftyard_identity::AccountKind::Org);
+    authz.grants.insert(
+        (dir.home().id, graftyard_identity::UserId(AccountId(DbId(WRITER)))),
+        graftyard_identity::RepoPermission::Write,
+    );
+    let hosted = HostedDir {
+        home: Some(dir.home()),
+        authz: Some(authz),
+        viewer: Some(AccountId(DbId(WRITER))),
+        ..Default::default()
+    };
+    let crossed: HostedDir = serde_json::from_value(serde_json::to_value(&hosted).unwrap()).unwrap();
+    assert_eq!(crossed, hosted);
+    let d = doc("CommentCreate-1");
+    let (planned, vars) = {
+        let r = Repo { host: &h, at: dir.home(), core: &core, meta: &meta, dir: &hosted };
+        let vars = with_ids(&d, &r);
+        let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+        (plan(&req, &r).unwrap(), vars)
+    };
+    let render_req = Render {
+        host: h.name().to_owned(),
+        isolation: false,
+        dir: hosted.clone(),
+        what: What::Graphql {
+            query: d.query.clone(),
+            variables: vars.clone().map(Value::Object).unwrap_or(Value::Null),
+            field: planned.field.clone(),
+            subject: planned.subject.map(|n| n.0),
+        },
+    };
+    let render_req: Render = serde_json::from_value(serde_json::to_value(&render_req).unwrap()).unwrap();
+    let Plan::Issue(op) = planned.plan.clone() else { panic!() };
+    let acked = ack(c.commit(WRITER, *op).unwrap());
+    let m = &c.members[0];
+    let wire = render_ok(&render_req, &acked, &m.core, &m.meta);
+    let req = Request::parse(&d.query, vars, None).unwrap();
+    let direct =
+        render(&req, &planned, &acked, &Repo { host: &h, at: dir.home(), core: &m.core, meta: &m.meta, dir: &hosted });
+    assert_eq!(wire.status, 200);
+    assert_eq!(wire.body.as_ref(), Some(&direct));
+    assert!(direct["data"]["addComment"]["commentEdge"]["node"]["url"].as_str().unwrap().contains("#issuecomment-"));
+    // A refusal renders GitHub's error from the same request.
+    let e = graftyard_api::hosted::render_err(&render_req, &IssueErr::NotFound);
+    assert_eq!(e.body.unwrap()["errors"][0]["type"], "NOT_FOUND");
+}
+
 #[test]
 fn mergeable_reads_the_test_merge_of_the_current_head_and_base_tip() {
     use graftyard_git::issues::MergeabilityResult;

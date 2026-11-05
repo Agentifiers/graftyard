@@ -7,8 +7,8 @@ set -u
 dir=${1:?build dir}
 mode=${2:-}
 needles=(/_bed/ BED_TOKEN x-bed-token x-graft-kill x-graft-down-ms x-graft-outcome-index x-graft-rid FORCE_FORMAT
-  GRAFTYARD_GENESIS ::bed:: ::repo_by_id ::each_member /_bed/fault /site_fault /_bed/identity x-graft-shard ::bed_archive
-  ::bed_place fail_place no_marker)
+  GRAFTYARD_GENESIS ::bed:: ::each_member /_bed/fault /site_fault /_bed/identity x-graft-shard ::bed_archive
+  ::bed_place fail_place no_marker LOGINS)
 found=0
 for n in "${needles[@]}"; do
   c=$(cat "$dir/index_bg.wasm" "$dir/index.js" | grep -a -c -F -- "$n")

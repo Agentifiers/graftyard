@@ -189,6 +189,17 @@ impl DurableObject for GitShard {
                 host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
                 Response::from_json(&host.merge(net, base, head).await.map_err(se)?)
             }
+            // `git archive` of a commit the cache holds once it caught up (`codeload-archives`).
+            "/archive" => {
+                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                let q: String = url
+                    .query_pairs()
+                    .filter(|(k, _)| k != "repo")
+                    .map(|(k, v)| format!("{k}={}", js_sys::encode_uri_component(&v)))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                host.archive(net, &q).await.map_err(se)
+            }
             _ => Response::error("not found", 404),
         }
     }
