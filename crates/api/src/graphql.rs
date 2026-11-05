@@ -8,7 +8,9 @@
 
 use graftyard_git::issue_ops::IssueOp;
 use graftyard_git::issues::{CommentTarget, IssueNumber, LabelId, MergeMethod};
+use graftyard_git::merge::{Merge, MergeError, MergeOut, MergePlan, MergeRequest};
 use graftyard_git::refs::{ObjectId, RefName};
+use graftyard_identity::Principal;
 use graftyard_raft::Acked;
 use graftyard_types::{AccountId, DbId};
 use serde_json::{Map, Value, json};
@@ -127,7 +129,8 @@ pub fn query(req: &Request<'_>, r: Option<&Repo<'_>>) -> Value {
 pub enum Plan {
     /// An `IssueCmd` on the repository chain.
     Issue(Box<IssueOp>),
-    /// `mergePullRequest`: the `Merge` command, its `MergePlan`, and `MergeError` are M2-WP3.
+    /// `mergePullRequest`. The edge asks the git cache for the `MergePlan` of `merge_request(n, method)`, then builds
+    /// the `Merge` command with `merge_command` and commits it.
     Merge { n: IssueNumber, method: MergeMethod, expected_head: Option<ObjectId> },
 }
 
@@ -371,9 +374,36 @@ impl Obj for Edge<'_> {
     }
 }
 
-/// The payload of a committed `mergePullRequest`. gh selects only `clientMutationId`. The `Merge` command and its
-/// `&Acked` are M2-WP3's; any committed output renders the same payload.
-pub fn render_merge<T>(req: &Request<'_>, _acked: &Acked<T>) -> Value {
+/// What the edge asks the git cache to merge for a planned `mergePullRequest`, read from the fresh core tier: the
+/// base's tip and the pull request's head. A pull request that is closed, merged, or a draft is refused here.
+pub fn merge_request(p: &Planned, r: &Repo<'_>) -> Result<MergeRequest, Value> {
+    let Plan::Merge { n, method, .. } = &p.plan else { panic!("not a merge plan") };
+    graftyard_git::merge::merge_request(r.core, *n, *method).map_err(|e| refused_merge(p, &e))
+}
+
+/// The `Merge` command for a planned `mergePullRequest`, from the git cache's plan. Its `decide` re-checks the head,
+/// the base, and every rule on the fold it commits on.
+pub fn merge_command(p: &Planned, plan: MergePlan, actor: Principal) -> Merge {
+    let Plan::Merge { n, expected_head, .. } = &p.plan else { panic!("not a merge plan") };
+    Merge { n: *n, plan, expected_head: *expected_head, actor }
+}
+
+/// The GraphQL reply to a refused merge, with GitHub's text. A 409 is never retried into success.
+pub fn refused_merge(p: &Planned, e: &MergeError) -> Value {
+    let f = &p.field;
+    match e {
+        MergeError::Unauthorized(_) => json!({ "message": "Bad credentials", "status": "401" }),
+        MergeError::Forbidden => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
+            "message": e.message() }] }),
+        MergeError::NotFound => not_found(f, e.message()),
+        MergeError::Store(_) => json!({ "message": "Service Unavailable", "status": "503" }),
+        _ => unprocessable(f, e.message()),
+    }
+}
+
+/// The payload of a committed `mergePullRequest`, from the `Merge` command's `&Acked`. gh selects only
+/// `clientMutationId`.
+pub fn render_merge(req: &Request<'_>, _acked: &Acked<MergeOut>) -> Value {
     req.run(&Merged)
 }
 
