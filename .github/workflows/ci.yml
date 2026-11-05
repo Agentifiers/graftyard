@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  design:
+    name: Design checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 scripts/check_design.py
+      - run: python3 scripts/check_names.py
+      - run: python3 scripts/check_links.py
+
+  rust:
+    name: Rust fmt, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: wasm32 clippy, site and edge, with and without test-faults
+        run: |
+          for crate in workers/site workers/edge; do
+            (cd "$crate" && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
+            (cd "$crate" && cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings)
+          done
+      - run: cargo test --workspace
+
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        dir: [tests/m0/porcupine, containers/git/server]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: ${{ matrix.dir }}/go.mod
+      - run: go test ./...
+        working-directory: ${{ matrix.dir }}
