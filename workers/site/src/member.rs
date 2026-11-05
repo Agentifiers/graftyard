@@ -577,6 +577,10 @@ impl<F: Family> Routes<F> {
     }
 
     fn reply(&self, mut v: Value) -> Result<Response> {
+        // An answer read while storage refused a fold row may lack rows: the caller sees a reset instead.
+        if self.host.fold_lost() {
+            return Response::error("member reset: fold storage lost", 503);
+        }
         v["meta"] = self.meta();
         Response::from_json(&v)
     }
@@ -849,6 +853,7 @@ impl<F: Family> Routes<F> {
             "alarmLast": s.alarm_last,
             "alarmArms": s.alarm_arms,
             "prsyncSent": s.prsync_sent,
+            "prsyncFirst": s.prsync_first,
             "peers": s.peers,
         });
         if reset {

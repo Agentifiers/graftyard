@@ -19,7 +19,7 @@ def fmt(x):
     return ">30" if x == INF else (None if x is None else round(x, 2))
 
 
-steady = [r for r in rows if not (r.get("transfer") or r.get("lost"))]
+steady = [r for r in rows if not (r.get("transfer") or r.get("lost") or r.get("dropped"))]
 for name, sel in [("clean", lambda r: not r["conflict"]), ("conflict", lambda r: r["conflict"]), ("all", lambda r: True)]:
     rs = [r for r in steady if sel(r)]
     lat = [INF if r["latency_s"] is None else r["latency_s"] for r in rs]
@@ -30,9 +30,10 @@ for name, sel in [("clean", lambda r: not r["conflict"]), ("conflict", lambda r:
     print(f"{'':8} server, push entry to TestMerged: p50={fmt(q(srv, .5))}  p99={fmt(q(srv, .99))}  "
           f"max={fmt(max(srv) if srv else None)}")
 for r in rows:
-    if r.get("transfer") or r.get("lost"):
+    if r.get("transfer") or r.get("lost") or r.get("dropped"):
         t = r.get("transfer") or {}
         print(f"trial {r['i']} {'conflict' if r['conflict'] else 'clean'}: leader {t.get('from')}->{t.get('to')} "
               f"{'reset ' + str(t['reset_site']) + ' ' if 'reset_site' in t else ''}"
+              f"{'first attempt dropped ' if r.get('dropped') else ''}"
               f"lost={ {k: v for k, v in (r.get('lost') or {}).items() if k != 'site'} or None}  "
               f"latency={fmt(r['latency_s'])}  mergeable={r['mergeable']}  server={(r.get('server') or {}).get('ms')}")

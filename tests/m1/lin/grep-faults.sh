@@ -14,7 +14,7 @@ needles=(/retire /probe_vote /reset /audit /deps_log ::faults:: ::test_route ::f
   "graftyard member fault" "member down (injected)" GRAFTYARD_GENESIS ::register::
   /site_fault site_fault: "injected site fault" ::site_down
   /arrivals ::receipt_fault receipt_delay receipt_drop "reply dropped (injected)" no_marker /sweep_run ::RecordReq
-  openPr ::open_pr "bf24 #")
+  openPr ::open_pr "bf24 #" failRead fail_next_read graftyard_no_such_table prsyncDrop "first dropped (test fault)")
 found=0
 for n in "${needles[@]}"; do
   c=$(cat "$dir/index_bg.wasm" "$dir/index.js" | grep -a -c -F -- "$n")

@@ -4,9 +4,10 @@
 //! - The cursor is the core-tier row `consumer_cursor`, written only by a committed `ConsumerCursor` event in the same
 //!   entry as the work it covers. It is the group's state, so a new leader and a restored member read the same one.
 //! - The leader's `Dispatcher` is memory only. It reads the log from the cursor, names the pull requests the entries
-//!   touch, and hands out `SyncBatch`es, the Queue messages. A batch always starts at the committed cursor, and a batch
-//!   not covered by the cursor after `REDELIVER_AFTER_MS` is sent again, so a lost message, a dead consumer, or a new
-//!   leader only delays.
+//!   touch, and hands out `SyncBatch`es. A batch always starts at the committed cursor. Its first attempt runs in
+//!   band (`Delivery::First`): the leader runs the consumer's handler itself. Work the cursor has not passed
+//!   `REDELIVER_AFTER_MS` after it was first handed out is sent again (`Delivery::Again`), through the site's queue, so
+//!   a lost attempt, a dead consumer, or a new leader only delays.
 //! - The consumer reads each pull request's state fresh (`views`), has the git cache compute missing test merges, and
 //!   commits a `PrSync`. Its `decide` keeps only what still holds on the fold, so a batch delivered twice, or out of
 //!   order with a later one, changes nothing the first did not.
@@ -29,8 +30,9 @@ use crate::tiers::{consumer_cursor, get_rec, head_ref, merge_ref, mergeability, 
 /// reads it only once a release enables it (`design/SHARED.md`, "Record formats and the two-release rule").
 pub const REPO_FORMAT_V3: Format = Format { family: 0x20, version: 3 };
 
-/// A batch the cursor has not passed this long after it was sent is sent again [guess]. Queues retries a failed
-/// delivery itself; this covers a message lost with its consumer, or a leader change.
+/// Work the cursor has not passed this long after it was first handed out is sent again, through the queue [guess].
+/// The first attempt runs in band, so this covers an attempt that failed silently or never returned, a message lost
+/// with its consumer, or a leader change; Queues retries a failed queue delivery itself.
 pub const REDELIVER_AFTER_MS: u64 = 30_000;
 /// A stretch of entries that touch no pull request is still covered by a cursor entry this often [guess], so a new
 /// leader never reads more than this many entries back.
@@ -78,15 +80,25 @@ pub fn touched(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<Is
     out
 }
 
+/// How a batch goes out: its first attempt, which the leader runs in band, or a re-send of work the cursor has not
+/// passed in `REDELIVER_AFTER_MS`, which goes through the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    First,
+    Again,
+}
+
 /// The leader's half of the cursor, in memory only: `scanned` is the last entry read, `pending` the pull requests
-/// each unhandled entry touched, and `sent` the last batch's `through`. Nothing here outlives the leadership; the
-/// committed cursor is where a new one starts.
+/// each unhandled entry touched, `sent` the last batch's `through`, `sent_at` when the work the cursor has not passed
+/// was first handed out, or last sent again, and `running` when the first attempt in flight started. Nothing here
+/// outlives the leadership; the committed cursor is where a new one starts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dispatcher {
     scanned: Index,
     pending: BTreeMap<Index, Vec<IssueNumber>>,
     sent: Index,
     sent_at: u64,
+    running: Option<u64>,
 }
 
 impl Dispatcher {
@@ -107,25 +119,43 @@ impl Dispatcher {
         }
     }
 
-    /// The batch to send now, if any: when new entries touched a pull request, when `CURSOR_STRIDE` entries passed
-    /// the cursor, or when the last batch has not been covered for `REDELIVER_AFTER_MS`. It always starts at the
+    /// The batch to send now, if any, and how. `Again` once work the cursor has not passed was handed out
+    /// `REDELIVER_AFTER_MS` ago, however many batches went out since, so a first attempt that never returns is
+    /// re-sent while pushes keep coming. Otherwise `First` when new entries touched a pull request, or when
+    /// `CURSOR_STRIDE` entries passed the cursor. Only one first attempt runs at a time: new work waits for it and
+    /// goes out as one batch, and a first attempt that has not `finished` `REDELIVER_AFTER_MS` after it started
+    /// counts as lost, so it no longer holds the work behind it. A batch always starts at the
     /// committed cursor and names every pull request after it, so no entry between the cursor and `through` goes
     /// unhandled, whoever led before.
-    pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<SyncBatch> {
+    pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<(SyncBatch, Delivery)> {
         if self.scanned <= cursor {
             return None;
         }
+        let outstanding = self.sent > cursor;
         let fresh = self.scanned > self.sent;
-        let overdue = self.sent > cursor && now.0 >= self.sent_at.saturating_add(REDELIVER_AFTER_MS);
+        let overdue = outstanding && now.0 >= self.sent_at.saturating_add(REDELIVER_AFTER_MS);
         let stride = self.scanned.0 - cursor.0 >= CURSOR_STRIDE;
         let touched = self.pending.range(Index(self.sent.0 + 1)..).next().is_some();
-        if !(overdue || (fresh && (touched || stride))) {
+        // A first attempt that has not finished in REDELIVER_AFTER_MS died with its isolate or its object: no longer
+        // wait for it. Its own work is overdue by then, and goes out again below.
+        if self.running.is_some_and(|t| now.0 >= t.saturating_add(REDELIVER_AFTER_MS)) {
+            self.running = None;
+        }
+        let due = fresh && (touched || stride);
+        let how = if overdue {
+            Delivery::Again
+        } else if due && self.running.is_none() {
+            self.running = Some(now.0);
+            Delivery::First
+        } else {
             return None;
+        };
+        if how == Delivery::Again || !outstanding {
+            self.sent_at = now.0;
         }
         self.sent = self.scanned;
-        self.sent_at = now.0;
         let prs: BTreeSet<IssueNumber> = self.pending.values().flatten().copied().collect();
-        Some(SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() })
+        Some((SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() }, how))
     }
 
     /// Whether the cursor still trails work, so the leader's alarm should come back for it.
@@ -133,9 +163,18 @@ impl Dispatcher {
         self.sent > cursor || !self.pending.is_empty()
     }
 
-    /// The last batch did not reach the queue: it is due again at once.
+    /// The last batch did not reach the queue: its work is due again at once.
     pub fn unsent(&mut self) {
         self.sent_at = 0;
+    }
+
+    /// The first attempt in flight returned: the next one may start. One that failed leaves its work due again at
+    /// once, through the queue.
+    pub fn finished(&mut self, ok: bool) {
+        self.running = None;
+        if !ok {
+            self.unsent();
+        }
     }
 }
 

@@ -10,6 +10,11 @@
 //!   for the input's one transaction (`host::SqlStore`, `Write::Apply`), so a tier's rows land with the `raft_state`
 //!   row that says they applied, or not at all. Reads see the buffer and every sealed batch until the transaction
 //!   ran (`flushed`).
+//! - Storage loss. `Store`'s reads cannot fail, so a read SQLite refuses ("Network connection lost" when the object
+//!   has moved) marks the tier `lost` and answers no row, logged with its cause. The host checks `lost` before any
+//!   input's writes or outputs, or any reply, leave, and resets the object as it does on a failed write
+//!   (`host::Host::fail`). It never panics: a panic rebuilds the wasm instance, which resets every member in the
+//!   isolate (F47).
 //! - Search. The metadata tier keeps two FTS5 tables over issue and pull request titles and bodies, and comment bodies
 //!   (`m_issue_fts`, `m_comment_fts`). `seal` writes them in the same transaction, from the rows it writes, so search
 //!   has no lag behind the fold. They are derived: not in `fold_digest`, not in a snapshot.
@@ -40,6 +45,12 @@ struct Inner {
     /// Batches sealed into statements whose transaction has not run, oldest first.
     sealed: Vec<Rows>,
     fts: Option<Fts>,
+    /// A read SQLite refused, with its cause: everything read since may be missing rows. Reads borrow `Inner`
+    /// shared, so this has its own cell.
+    lost: RefCell<Option<String>>,
+    /// Test installs: the next stored read runs against a table that does not exist, so SQLite refuses it.
+    #[cfg(feature = "test-faults")]
+    fail_read: std::cell::Cell<bool>,
 }
 
 /// A handle on one tier's tables. Clones share the tables and the write buffer, so the fold, the snapshot writer, and
@@ -205,7 +216,21 @@ impl TierSql {
             loaded: true,
             sealed: Vec::new(),
             fts,
+            lost: RefCell::new(None),
+            #[cfg(feature = "test-faults")]
+            fail_read: std::cell::Cell::new(false),
         })))
+    }
+
+    /// The cause of a read SQLite refused, if one was: the member must not use what it read since.
+    pub fn lost(&self) -> Option<String> {
+        self.0.borrow().lost.borrow().clone()
+    }
+
+    /// Test installs: the next read of a stored row fails in SQLite.
+    #[cfg(feature = "test-faults")]
+    pub fn fail_next_read(&self) {
+        self.0.borrow().fail_read.set(true);
     }
 
     /// The buffered writes as statements for the input's transaction. They stay readable until `flushed`.
@@ -235,6 +260,22 @@ impl TierSql {
 }
 
 impl Inner {
+    /// A refused read: logged with its cause and kept for the host (`TierSql::lost`). The caller answers no rows.
+    fn refused(&self, what: &str, table: &str, e: impl std::fmt::Display) {
+        let why = format!("{what} of {}: {e}", self.name(table));
+        worker::console_error!("fold storage lost: {why}");
+        self.lost.borrow_mut().get_or_insert(why);
+    }
+
+    /// The query a stored read runs: on test installs, once after `fail_next_read`, one SQLite refuses.
+    fn query(&self, q: String) -> String {
+        #[cfg(feature = "test-faults")]
+        if self.fail_read.replace(false) {
+            return "SELECT written, v FROM graftyard_no_such_table".into();
+        }
+        q
+    }
+
     fn arity(&self, table: &str) -> usize {
         *self.arity.get(table).unwrap_or_else(|| panic!("table {table} is not in the {:?} tier", self.tier))
     }
@@ -277,8 +318,20 @@ impl Inner {
         let n = self.arity(table);
         assert_eq!(key.len(), n, "a {table} key has {n} columns");
         let q = format!("SELECT written, v FROM \"{}\"{}", self.name(table), where_eq(n));
-        let mut rows = self.sql.exec(&q, key.iter().map(to_sql).collect::<Vec<_>>()).expect("a fold read").raw();
-        let mut r = rows.next()?.expect("a fold row");
+        let cursor = match self.sql.exec(&self.query(q), key.iter().map(to_sql).collect::<Vec<_>>()) {
+            Ok(c) => c,
+            Err(e) => {
+                self.refused("a fold read", table, e);
+                return None;
+            }
+        };
+        let mut r = match cursor.raw().next()? {
+            Ok(r) => r,
+            Err(e) => {
+                self.refused("a fold row", table, e);
+                return None;
+            }
+        };
         let v = r.pop().expect("v");
         let w = r.pop().expect("written");
         Some(row_of(w, v))
@@ -303,14 +356,21 @@ impl Inner {
         let mut args: Vec<SqlStorageValue> = from[..m].iter().map(to_sql).collect();
         args.push(SqlStorageValue::Integer(limit as i64));
         let mut out = Vec::new();
-        // Workers Logs keeps a panic's stack, not its message, so the cause is logged first.
-        let fail = |what: &str, e: worker::Error| -> ! {
-            worker::console_error!("{what} of {t} from {from:?}: {e}");
-            panic!("{what} of {t}: {e}")
+        let rows = match self.sql.exec(&self.query(q), args) {
+            Ok(r) => r,
+            Err(e) => {
+                self.refused("a fold scan", table, e);
+                return out;
+            }
         };
-        let rows = self.sql.exec(&q, args).unwrap_or_else(|e| fail("a fold scan", e));
         for r in rows.raw() {
-            let mut r = r.unwrap_or_else(|e| fail("a fold row", e));
+            let mut r = match r {
+                Ok(r) => r,
+                Err(e) => {
+                    self.refused("a fold row", table, e);
+                    return out;
+                }
+            };
             let v = r.pop().expect("v");
             let w = r.pop().expect("written");
             let key: Key = r.into_iter().map(from_sql).collect();
@@ -389,7 +449,9 @@ impl Store for TierSql {
             b.retain(|(t, _), _| t != table);
         }
         let q = format!("DELETE FROM \"{}\"", inner.name(table));
-        inner.sql.exec(&q, None).expect("clear a fold table");
+        if let Err(e) = inner.sql.exec(&q, None) {
+            inner.refused("clearing", table, e);
+        }
     }
 }
 

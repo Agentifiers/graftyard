@@ -58,6 +58,11 @@ pub trait Family: 'static {
     fn store_fold(fold: &Self::Fold, entries: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>);
     /// Every statement of the input's transaction has run (`host::flush`).
     fn flushed(_fold: &Self::Fold) {}
+    /// A read of the fold's own tables that storage refused, with its cause (`crate::tier::TierSql::lost`): what was
+    /// read since may lack rows, so the member must reset before anything it computed leaves.
+    fn lost(_fold: &Self::Fold) -> Option<String> {
+        None
+    }
     /// The fold keeps its own tables beside the log (`crate::tier`): restore does not replay the log into a second
     /// fold to compare, which would write those tables; a tier refuses an entry out of order instead.
     fn tiered() -> bool {
@@ -235,6 +240,9 @@ impl Family for Repo {
         crate::tier::handle(&*fold.core).flushed();
         crate::tier::handle(&*fold.meta).flushed();
     }
+    fn lost(fold: &git::repo::RepoFold) -> Option<String> {
+        crate::tier::handle(&*fold.core).lost().or_else(|| crate::tier::handle(&*fold.meta).lost())
+    }
     /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
     /// alarm loads it (`crate::snap`).
     /// Before any cursor is open: `DROP TABLE` under an open statement fails with SQLITE_LOCKED, and `load` reads
@@ -367,6 +375,19 @@ impl Family for Repo {
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("prsyncDrop").is_some() => {
+                Some(Ok(crate::prsync::drop_first(host, body["prsyncDrop"].as_u64().unwrap_or(1) as u32)))
+            }
+            // Test installs: the core tier's next stored read fails in SQLite, as when the object has moved ("Network
+            // connection lost"), so a request can show the member resets alone instead of panicking.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("failRead").is_some() => Some((|| {
+                let core = host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+                crate::tier::handle(&*c.m.group_fold().fold.core).fail_next_read();
+                Ok(json!({ "failRead": true }))
+            })()),
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
             // Test installs: the object's alarm as storage holds it, and the host's own idea of it.

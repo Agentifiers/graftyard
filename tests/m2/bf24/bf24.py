@@ -4,7 +4,7 @@
 bf24.py RUN TRIALS [--conflict-every K] [--transfer-at I,J,...]
 
 Each trial makes a new head commit on the pull request's branch (every K-th one conflicting with the base), pushes it
-with real git through graft-m1-edge, then polls `git ls-remote` for refs/pull/N/head and refs/pull/N/merge, and reads
+with real git through the install's git edge, then polls `git ls-remote` for refs/pull/N/head and refs/pull/N/merge, and reads
 the leader's `mergeable` (the value GraphQL renders, `graftyard_git::prsync::mergeable`), until both match the trial or
 30 s pass. A clean head passes when refs/pull/N/merge is a merge commit whose parents are (base tip, head) and
 `mergeable` is true; a conflicting one when the merge ref is gone and `mergeable` is false. The latency is from the
@@ -14,29 +14,39 @@ push's return to the first poll that shows the pass.
 trial, so the batch for that head is handled by a dispatcher that did not see it: the cursor has to carry it.
 `--lose-at` does more for each listed trial: it pauses delivery on the leader's site queue before the push, purges the
 queue 3 s after (the batch the leader sent is gone), resumes it, then transfers. Only a new leader that starts at the
-committed cursor sends that head's batch again. `--reset-at` resets the new leader's predecessor (member `/reset`)
+committed cursor sends that head's batch again. `--drop-first-at` makes the leader drop the trial's first attempt
+unrun (test-faults `/bench_seed {"prsyncDrop": 1}`), as if it was lost with its isolate: only the re-send through the
+queue covers it. `--purge-resend-at` also pauses delivery on the leader's site queue before the push, purges it
+38 s after (past the first re-send at `REDELIVER_AFTER_MS`), and resumes it, so only the second re-send covers the
+batch. BF24_DEADLINE (default 30 s) is how long a trial polls. `--reset-at` resets the new leader's predecessor (member `/reset`)
 after the transfer, so it restores from its storage, and the next transfer moves leadership back onto a restored
 member.
 
-Resumable: every trial is one JSON line in raw/wp5/RUN.jsonl; a restart picks up after the last line. The work tree is
-raw/wp5/RUN.work.
+Resumable: every trial is one JSON line in $BF24_RAW/RUN.jsonl; a restart picks up after the last line. The work tree
+is $BF24_RAW/RUN.work.
+
+The install comes from the environment, with the graft-m1 test install as the default (tests/m2/results/install-m2b.md
+names graft-m2b's values): GRAFT_EDGE (the git edge), GRAFT_TOOLS_EDGE (the raw /member test edge), BF20_HOME
+(tokens.txt and repos.json), BF24_OWNER (the owner's login in the repository's path), BF24_REPO (its name in
+repos.json), BF24_PREFIX (the install's script prefix, for the site queues), and BF24_RAW (where runs go).
 """
 import base64, json, os, subprocess, sys, threading, time, urllib.request
 
-ROOT = "/home/user/workspace/repo"
-RAW = f"{ROOT}/tests/m2/results/raw/wp5"
-HOST = "graft-m1-edge.<workers-subdomain>.workers.dev"
-REPO_ID = json.load(open(os.path.expanduser("~/.graft-integ/repos.json")))["bf24"]
-WRITER = open(os.path.expanduser("~/.graft-integ/tokens.txt")).read().split("\n")[1].split()[0]
-OWNER_TOKEN = open(os.path.expanduser("~/.graft-integ/tokens.txt")).read().split("\n")[0].split()[0]
-URL = f"https://{HOST}/wp6/bf24.git/"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+RAW = os.environ.get("BF24_RAW", f"{ROOT}/tests/m2/results/raw/wp5")
+EDGE = os.environ.get("GRAFT_EDGE", "https://graft-m1-edge.<workers-subdomain>.workers.dev")
+HOME = os.path.expanduser(os.environ.get("BF20_HOME", "~/.graft-integ"))
+PREFIX = os.environ.get("BF24_PREFIX", "graft-m1")
+REPO_ID = json.load(open(f"{HOME}/repos.json"))[os.environ.get("BF24_REPO", "bf24")]
+WRITER = open(f"{HOME}/tokens.txt").read().split("\n")[1].split()[0]
+URL = f"{EDGE}/{os.environ.get('BF24_OWNER', 'wp6')}/{os.environ.get('BF24_REPO', 'bf24')}.git/"
 # The credential up front, so git skips the 401 round trip on every call.
 AUTH = "Authorization: Basic " + base64.b64encode(f"x:{WRITER}".encode()).decode()
 M0 = open(f"{ROOT}/tests/m0/.m0-token").read().strip()
-WP7 = "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev"
+WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
 CHAIN = f"repo:{REPO_ID}"
 N = 1
-DEADLINE = 30.0
+DEADLINE = float(os.environ.get("BF24_DEADLINE", "30"))
 POLL_EVERY = 0.5
 
 run = sys.argv[1]
@@ -44,7 +54,9 @@ trials = int(sys.argv[2])
 args = sys.argv[3:]
 conflict_every = int(args[args.index("--conflict-every") + 1]) if "--conflict-every" in args else 0
 transfer_at = set(int(x) for x in args[args.index("--transfer-at") + 1].split(",")) if "--transfer-at" in args else set()
+drop_at = set(int(x) for x in args[args.index("--drop-first-at") + 1].split(",")) if "--drop-first-at" in args else set()
 reset_at = set(int(x) for x in args[args.index("--reset-at") + 1].split(",")) if "--reset-at" in args else set()
+purge_resend_at = set(int(x) for x in args[args.index("--purge-resend-at") + 1].split(",")) if "--purge-resend-at" in args else set()
 lose_at = set(int(x) for x in args[args.index("--lose-at") + 1].split(",")) if "--lose-at" in args else set()
 out = f"{RAW}/{run}.jsonl"
 work = f"{RAW}/{run}.work"
@@ -116,7 +128,7 @@ def leader_read(q):
 
 def queue(op, site):
     """`wrangler queues pause-delivery|purge|resume-delivery` on one site's PrSync queue."""
-    name = f"graft-m1-prsync-{'abc'[site]}"
+    name = f"{PREFIX}-prsync-{'abc'[site]}"
     r = subprocess.run(["npx", "--prefix", f"{ROOT}/tests/m0", "wrangler", "queues", op, name, *(["--force"] if op == "purge" else [])],
                        capture_output=True, text=True, timeout=120, input="y\n")
     log(f"queue {op} {name}: {r.returncode} {(r.stdout + r.stderr).strip().splitlines()[-1:]}")
@@ -175,7 +187,11 @@ def trial(i):
     head = git("rev-parse", "HEAD")
     prev_merge = ls_remote().get(f"refs/pull/{N}/merge")
     lost = None
-    if i in lose_at:
+    dropped = None
+    if i in drop_at:
+        s0 = leader_site()
+        dropped = {"site": s0, "r": member(s0, "/bench_seed", {"prsyncDrop": 1}).get("v")}
+    if i in lose_at or i in purge_resend_at:
         s0 = leader_site()
         lost = {"site": s0, "paused": queue("pause-delivery", s0)}
     t_push = time.time()
@@ -183,12 +199,21 @@ def trial(i):
     t0 = time.time()
     git("update-ref", "refs/remotes/origin/pr", head)
     transferred = None
-    if lost:
+    if lost and i in purge_resend_at:
+        # The poll runs meanwhile in its own thread, so the latency still counts from the push.
+        def purge_later(lost=lost, t0=t0):
+            time.sleep(max(0.0, t0 + 38 - time.time()))
+            lost["purged"] = queue("purge", lost["site"])
+            lost["resumed"] = queue("resume-delivery", lost["site"])
+            lost["purged_at_s"] = round(time.time() - t0, 3)
+        purger = threading.Thread(target=purge_later)
+        purger.start()
+    elif lost:
         time.sleep(3)
         lost["purged"] = queue("purge", lost["site"])
         lost["resumed"] = queue("resume-delivery", lost["site"])
         lost["purged_at_s"] = round(time.time() - t0, 3)
-    if i in transfer_at or lost:
+    if i in transfer_at or (lost and i not in purge_resend_at):
         s = leader_site()
         to = (s + 1) % 3
         try:
@@ -228,6 +253,8 @@ def trial(i):
                 stop.set()
     for th in threads:
         th.join()
+    if lost and i in purge_resend_at:
+        purger.join()
     hits = sorted(e for _, e, r in polls if shows(r, head, conflict, prev_merge))
     seen = hits[0] if hits else None
     shown = next((r for _, e, r in sorted(polls, key=lambda p: p[1]) if shows(r, head, conflict, prev_merge)), {})
@@ -243,7 +270,7 @@ def trial(i):
         seen = None
     rec = {
         "i": i, "conflict": conflict, "base": base, "head": head, "push_s": round(t0 - t_push, 3),
-        "latency_s": None if seen is None else round(seen, 3), "polls": len(polls), "transfer": transferred, "lost": lost,
+        "latency_s": None if seen is None else round(seen, 3), "polls": len(polls), "transfer": transferred, "lost": lost, "dropped": dropped,
         "poll_s": round(sum(e - a for a, e, _ in polls) / max(1, len(polls)), 3), "parents": parents,
         "merge_ref": final.get(f"refs/pull/{N}/merge"), "head_ref": final.get(f"refs/pull/{N}/head"),
         "mergeable": v["mergeable"][0] if v and v["mergeable"] else None,

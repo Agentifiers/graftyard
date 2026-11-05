@@ -3,27 +3,33 @@
 //! `graftyard_git::prsync`.
 //!
 //! - **Leader alarm.** A repository member that leads runs its `Dispatcher` on the alarm after it applies entries. It
-//!   reads the log from the group's committed `PrSync` cursor and sends each `SyncBatch` to its own site's queue
-//!   (`PRSYNC`). The dispatcher lives in this isolate's memory for one leadership, so a reset member or a new leader
-//!   starts again at the cursor.
-//! - **Consumer.** The site's queue handler reads each batch's pull requests fresh from the group's leader, has the
-//!   network's git cache shard on its own site compute every missing test merge (`/merge`), and commits
-//!   the batch's `PrSync` commands under their deterministic request ids. A message is acked only once its last
-//!   command, which moves the cursor, committed. Anything else is retried by Queues, and a batch the cursor has not
-//!   passed is sent again by the leader after `REDELIVER_AFTER_MS`.
+//!   reads the log from the group's committed `PrSync` cursor. Each batch's first attempt runs in band: the alarm
+//!   spawns the consumer's handler (`one`) in this isolate, in the background, so the alarm, the member's Raft inputs,
+//!   and its replies never wait on the git cache. One first attempt runs at a time per member; batches meanwhile wait
+//!   and go out as one. Work the cursor has not passed `REDELIVER_AFTER_MS` after it was handed out is sent again
+//!   through the site's queue (`PRSYNC`), as is a first attempt that failed. The dispatcher lives in this isolate's
+//!   memory for one leadership, so a reset member or a new leader starts again at the cursor.
+//! - **Consumer.** `one` is the handler for both paths. It reads each batch's pull requests fresh from the group's
+//!   leader, has the network's git cache shard on its own site compute every missing test merge (`/merge`), and
+//!   commits the batch's `PrSync` commands under their deterministic request ids. The queue handler acks a message
+//!   only once its last command, which moves the cursor, committed; anything else is retried by Queues. Neither path
+//!   is needed for correctness: a duplicate commits nothing, and work no attempt finished is covered by the cursor and
+//!   the re-send. No path calls the Cloudflare API: the first attempt uses the member's own bindings, the re-send the
+//!   queue binding.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use graftyard_git as git;
-use graftyard_git::prsync::{ALARM_MS, Dispatcher, SyncBatch, WAIT_MS};
+use graftyard_git::prsync::{ALARM_MS, Delivery, Dispatcher, SyncBatch, WAIT_MS};
 use graftyard_lookup::Bindings;
 use graftyard_raft::{Index, Role};
 use graftyard_types::{ChainId, DbId, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use worker::MessageExt;
+use worker::wasm_bindgen_futures::spawn_local;
 use worker::*;
 
 use crate::family::Repo;
@@ -33,9 +39,29 @@ use crate::{SiteEnv, now_ms};
 /// How soon after it applies entries a leading repository member's alarm runs the dispatcher.
 pub const LEADER_ALARM_MS: i64 = ALARM_MS;
 
+/// A first attempt with no answer by then counts as failed, and its batch goes to the queue at once [guess: the
+/// lookup's own 20 s, plus a cold shard's catch-up].
+const FIRST_FOR: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Which leadership a dispatcher belongs to: the term, and the member's boot, so an object reset and restored in the
+/// same isolate and term (a `/reset`, a failed write) starts a new one and waits on no attempt of its old self.
+type Leadership = (u64, u64);
+
 thread_local! {
-    /// Per member object of this isolate: the term its dispatcher belongs to, and the dispatcher.
-    static DISPATCHERS: RefCell<HashMap<String, (u64, Dispatcher)>> = RefCell::default();
+    /// Per member object of this isolate: the leadership its dispatcher belongs to, and the dispatcher.
+    static DISPATCHERS: RefCell<HashMap<String, (Leadership, Dispatcher)>> = RefCell::default();
+    /// Test installs: first attempts to drop, per member object, as if each was lost with its isolate.
+    #[cfg(feature = "test-faults")]
+    static DROP_FIRST: RefCell<HashMap<String, u32>> = RefCell::default();
+}
+
+/// Test installs: this member drops its next `n` first attempts unrun (`/bench_seed {"prsyncDrop": n}`), so only the
+/// cursor and the re-send can cover their batches.
+#[cfg(feature = "test-faults")]
+pub fn drop_first(h: &Rc<Host<Repo>>, n: u32) -> Value {
+    let key = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+    DROP_FIRST.with(|d| d.borrow_mut().insert(key, n));
+    json!({ "prsyncDrop": n })
 }
 
 /// One queue message: a batch of one repository chain, and the chain's placement record as its leader joined with,
@@ -59,7 +85,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 let cursor = git::tiers::consumer_cursor(&*fold.core, git::issues::Consumer::PrSync);
                 Some((
                     c.join.me.do_name.to_string(),
-                    c.m.term().0,
+                    (c.m.term().0, c.m.boot()),
                     repo,
                     cursor,
                     c.m.state().applied,
@@ -77,28 +103,71 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     if let Err(e) = scan(h, &mut d, repo, cursor, applied) {
         note(h, format!("prsync scan: {e}"));
     }
+    // A scan that lost a fold read may have missed a pull request an entry touched; a batch past it would skip it.
+    if h.fold_lost() {
+        return;
+    }
     let batch = d.batch(cursor, Timestamp(now_ms()));
-    if let Some(b) = &batch {
-        let m = Message { repo: repo.0.0, batch: b.clone(), record: Some(record) };
-        match h.env.queue("PRSYNC") {
-            Ok(q) => match q.send(m).await {
-                Ok(()) => h.stats.borrow_mut().prsync_sent += 1,
-                Err(e) => {
-                    d.unsent();
-                    note(h, format!("prsync send {}..{}: {e}", b.from.0, b.through.0));
-                }
-            },
-            Err(e) => {
+    let mut first = None;
+    match batch {
+        Some((b, Delivery::First)) => first = Some(Message { repo: repo.0.0, batch: b, record: Some(record) }),
+        Some((b, Delivery::Again)) => {
+            let m = Message { repo: repo.0.0, batch: b, record: Some(record) };
+            if let Err(e) = enqueue(h, &m).await {
                 d.unsent();
-                note(h, format!("prsync queue binding: {e}"));
+                note(h, format!("prsync send {}..{}: {e}", m.batch.from.0, m.batch.through.0));
             }
         }
+        None => {}
     }
     let waiting = d.waiting(cursor);
-    DISPATCHERS.with(|m| m.borrow_mut().insert(key, (term, d)));
+    DISPATCHERS.with(|m| m.borrow_mut().insert(key.clone(), (term, d)));
+    #[cfg(feature = "test-faults")]
+    if first.is_some()
+        && DROP_FIRST.with(|d| d.borrow_mut().get_mut(&key).filter(|n| **n > 0).map(|n| *n -= 1).is_some())
+    {
+        console_log!("prsync {} first dropped (test fault)", repo.0.0);
+        first = None;
+    }
+    if let Some(m) = first {
+        h.stats.borrow_mut().prsync_first += 1;
+        // Weak, as `Host::kick`'s loop: a member reset while its attempt runs must not stay alive for it (F47).
+        let w = Rc::downgrade(h);
+        let env = h.env.clone();
+        spawn_local(async move {
+            let t0 = now_ms();
+            let r = crate::host::within(FIRST_FOR, one(&env, &m))
+                .await
+                .unwrap_or_else(|| Err(format!("no answer in {} s", FIRST_FOR.as_secs())));
+            let ms = now_ms() - t0;
+            let (from, through) = (m.batch.from.0, m.batch.through.0);
+            match &r {
+                Ok(v) => console_log!("prsync {} {from}..{through} first handled {ms}ms {v}", m.repo),
+                Err(e) => console_error!("prsync {} {from}..{through} first: {e}", m.repo),
+            }
+            // A failed attempt is sent again through the queue at once, not after `REDELIVER_AFTER_MS`.
+            DISPATCHERS.with(|m| {
+                if let Some((t, d)) = m.borrow_mut().get_mut(&key)
+                    && *t == term
+                {
+                    d.finished(r.is_ok());
+                }
+            });
+            let Some(h) = w.upgrade() else { return };
+            // Batches that waited for this attempt, or the re-send of a failed one.
+            h.arm_in(LEADER_ALARM_MS);
+        });
+    }
     if waiting {
         h.arm_in(WAIT_MS);
     }
+}
+
+/// The re-send path: one message on this site's queue.
+async fn enqueue(h: &Rc<Host<Repo>>, m: &Message) -> Result<()> {
+    h.env.queue("PRSYNC")?.send(m.clone()).await?;
+    h.stats.borrow_mut().prsync_sent += 1;
+    Ok(())
 }
 
 fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher, repo: RepoId, cursor: Index, applied: Index) -> Result<()> {
