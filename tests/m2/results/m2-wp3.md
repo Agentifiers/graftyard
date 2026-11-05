@@ -34,3 +34,15 @@ Status: in progress. This file holds progress notes until the gates run.
 - Smoke. `gh pr merge 1 -R wp6/wp3m --merge` (gh 2.102.1) moved `main` to `ce3c3b0f`, whose parents are the old base
   `74efdaa2` and the head `a6e16085`, committed by `graftyard-shard`. `gh pr view 1 --json state` answers `MERGED`.
   gh ran without `GH_DEBUG=api`, so this run's replies were not captured; the gate runs below capture every reply.
+- `tests/m2/wp3/hosted.py` drives the hosted gates. `seed.ts` added `wp6/wp3c` (196633, for BF-23) and `wp6/wp3b`
+  (196634, for BM-2). `hosted.py setup` recorded the settings (merge, squash, and rebase allowed) on `wp3m`, a rule
+  requiring `ci` on `wp3c`, and the same rule with a `HeadGreen` queue (5/5/5, `min_wait_minutes` 0) on `wp3q` and
+  `wp3b`.
+- Found and fixed before any queue run: `dequeuePullRequest` read `pullRequestId`, but GHES 3.22's
+  `DequeuePullRequestInput` names it `id` (`915036c`, with a test that fails without the fix). The edge needs a
+  redeploy to carry it.
+- Direct merges (`hosted.py direct d1` on `wp3m`) pass: `gh pr merge --merge` (parents base and head), `--squash`
+  (one parent, the head's tree), and `--rebase` (two replayed commits on the base, the head's tree). Each exits 0 and
+  `gh pr view` shows MERGED. REST `PUT /pulls/n/merge` answers 409 to a stale `sha`, 403 to the reader, 200 to the
+  merge, and 405 to a second merge. 30 GraphQL and 8 REST replies validate with 0 failures. Two planted bad replies,
+  `clientMutationId: 7` and `merged: "yes"`, both fail validation.
