@@ -470,7 +470,7 @@ def queue_trial(w, run, i, kill, fail, bf1):
     for k, b in enumerate(names, 1):
         w.branch(b, {f"q/{i}/{k}.txt": f"{run} {i} {k} {time.time()}"})
     prs = parallel([lambda k=k, b=b: create_pr(w, out_dir, f"{i:03}{k}-create", b) for k, b in enumerate(names, 1)])
-    failing = prs[fail - 1]
+    failing = prs[fail - 1] if fail else None
     killed = None
     if kill:
         killed = {"site": leader_site(), "mode": ["after_quorum", "before_commit"][len(KILLS) % 2]}
@@ -478,6 +478,7 @@ def queue_trial(w, run, i, kill, fail, bf1):
         # Down past ELECTION_AFTER (10 s), so a follower is elected and finishes, or redoes, the landing.
         killed["r"] = seed({"mqKill": {"kill": killed["mode"], "down_ms": 25000}})
     if bf1:
+        bys = bystanders(w, run)
         seed({"mqHold": 1})
     enq = parallel([lambda k=k, n=n: w.gh(out_dir, f"{i:03}{k}-enqueue", "pr", "merge", str(n), "-R",
                                           f"{OWNER_LOGIN}/{REPO}", "--merge") for k, n in enumerate(prs, 1)])
@@ -507,7 +508,7 @@ def queue_trial(w, run, i, kill, fail, bf1):
             h = seed({"mqHeld": True}).get("held") or []
             if h:
                 held = h[0]
-                bf1_rec = bf1_commit(w, held, prs)
+                bf1_rec = bf1_commit(w, held, bys)
         if not entries:
             break
         time.sleep(2)
@@ -524,8 +525,10 @@ def queue_trial(w, run, i, kill, fail, bf1):
         states[n] = v["data"]["repository"]["pullRequest"]
     merged = sorted(n for n, s in states.items() if s["state"] == "MERGED")
     want = sorted(n for n in prs if n != failing)
-    ok = (audit["ok"] and merged == want and not states[failing]["isInMergeQueue"]
-          and states[failing]["state"] == "OPEN" and audit["landed"] == want and audit["ejected"] == [failing])
+    ok = (audit["ok"] and merged == want and audit["landed"] == want
+          and audit["ejected"] == ([failing] if failing else []))
+    if failing:
+        ok = ok and not states[failing]["isInMergeQueue"] and states[failing]["state"] == "OPEN"
     rec = {"i": i, "prs": prs, "failing": failing, "base": base, "tip": tip, "kill": killed, "merged": merged,
            "audit": audit, "secs": round(time.time() - t0, 1), "pass": ok,
            "summary": f"landed {audit['groups']} in {audit['landings']} landings, ejected {audit['ejected']}, "
@@ -621,24 +624,44 @@ def audit_base(entries, base, prs):
             "groups": groups, "tip": tip}
 
 
-def bf1_commit(w, held, prs):
-    """BF-1: the held landing and a `PrSync` batch go to the leader's `/commit_many` as two commands, so they share
-    an entry; then the entry is read on all three members' logs."""
+def bystanders(w, run):
+    """Five open pull requests outside the queue, made once per run, whose heads BF-1's `PrSync` batch moves."""
+    path = f"{RAW}/{run}.bystanders.json"
+    if os.path.exists(path):
+        return json.load(open(path))
+    out = []
+    for k in range(1, 6):
+        b = f"{run}-by-{k}"
+        w.fetch_main()
+        w.branch(b, {f"by/{k}.txt": f"{run} {k} {time.time()}"})
+        out.append([b, create_pr(w, f"{RAW}/{run}", f"by{k}-create", b)])
+    json.dump(out, open(path, "w"))
+    return out
+
+
+def bf1_commit(w, held, bys):
+    """BF-1: with the group's landing held, the leader drops its next `PrSync` first attempt, five bystander heads go
+    up in one push, and the landing and the `PrSync` batch for those heads (what the dropped attempt would have sent,
+    without its cursor move) go to the leader's `/commit_many` as two commands, so they share one entry. The entry
+    must hold both request ids, five `Merged`, `Landed`, and five `refs/pull/N/head` moves, and be the same committed
+    entry on all three members."""
     s = leader_site()
-    st = member(s, "/status", None)["v"]
-    # A `PrSync` batch with no cursor move: the pull requests' heads as `refs/pull/N/head` (already there, so it
-    # carries no update unless one is missing) and nothing else, which `decide_sync` accepts as is.
+    member(s, "/bench_seed", {"prsyncDrop": 1})
     heads = []
-    for n in prs:
-        s_, v = gql("query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number:"
-                    " $n) { headRefOid } } }", {"o": OWNER_LOGIN, "r": REPO, "n": n})
-        heads.append([n, list(bytes.fromhex(v["data"]["repository"]["pullRequest"]["headRefOid"]))])
+    for b, n in bys:
+        w.git("checkout", "-q", b)
+        open(f"{w.dir}/by.txt", "w").write(f"{b} {time.time()}\n")
+        w.git("add", "-A")
+        w.git("commit", "-qm", f"{b} again")
+        heads.append([n, list(bytes.fromhex(w.git("rev-parse", "HEAD")))])
+    w.git("push", "-q", "-f", "origin", *[f"{b}:refs/heads/{b}" for b, _ in bys])
+    st = member(s, "/status", None)["v"]
     sync_rid = rid()
     sync = {"prSync": {"from": 0, "through": None, "heads": heads, "merges": [], "unmerged": [], "request": sync_rid}}
     body = {"cmds": [{"rid": held["rid"], "cmd": held["cmd"]}, {"rid": sync_rid, "cmd": sync}], "hold_ms": 20000}
     r = member(s, "/commit_many", body, deadline=60000)
     results = (r.get("v") or {}).get("results")
-    # The entry that holds both request ids, on every member.
+    seed({"mqHold": 0})
     time.sleep(3)
     per = {}
     for site in range(3):
@@ -648,14 +671,16 @@ def bf1_commit(w, held, prs):
             per[site] = str(e)
             continue
         both = [e for e in lg if held["rid"] in e.get("requests", []) and sync_rid in e.get("requests", [])]
-        per[site] = [{"index": e["index"], "digest": e["digest"], "committed": e["committed"],
-                      "kinds": [k[0] for k in e.get("kinds", [])]} for e in both]
-    entries = [tuple((x["index"], x["digest"]) for x in v) for v in per.values() if isinstance(v, list)]
-    ok = (len(entries) == 3 and len(set(entries)) == 1 and len(entries[0]) == 1
-          and all(x["committed"] for v in per.values() if isinstance(v, list) for x in v)
-          and per[0][0]["kinds"].count("Merged") == len(json.loads(json.dumps(held["cmd"]))["merge"]["cmd"]["land"]["plans"])
-          and "Queue" in per[0][0]["kinds"])
-    return {"leader": s, "results": results, "per_member": per, "ok": ok}
+        per[site] = [{"index": e["index"], "term": e["term"], "digest": e["digest"], "committed": e["committed"],
+                      "kinds": [k[0] if k[0] != "Queue" else k[1].split()[0] for k in e.get("kinds", [])],
+                      "ref_updates": e.get("ref_updates")} for e in both]
+    lists = [v for v in per.values() if isinstance(v, list)]
+    one = lists[0][0] if lists and lists[0] else None
+    plans = len(held["cmd"]["merge"]["cmd"]["land"]["plans"])
+    ok = (len(lists) == 3 and all(len(v) == 1 for v in lists)
+          and len({(v[0]["index"], v[0]["digest"]) for v in lists}) == 1 and all(v[0]["committed"] for v in lists)
+          and one["kinds"].count("Merged") == plans == 5 and "Landed" in one["kinds"] and one["kinds"].count("Refs") == 1)
+    return {"leader": s, "results": results, "per_member": per, "plans": plans, "ok": ok}
 
 
 # ---- BM-2 ----

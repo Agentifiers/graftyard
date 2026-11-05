@@ -88,7 +88,8 @@ pub fn fault(h: &Rc<Host<Repo>>, body: &Value) -> Value {
         HOLD.with(|m| m.borrow_mut().insert(key, (n as u32, Vec::new())));
         return json!({ "mqHold": n });
     }
-    let held = HOLD.with(|m| m.borrow_mut().get_mut(&key).map(|(_, v)| std::mem::take(v)).unwrap_or_default());
+    // Read, not taken: the hold stays until `{"mqHold": 0}`, so the consumer cannot land a held group meanwhile.
+    let held = HOLD.with(|m| m.borrow().get(&key).map(|(_, v)| v.clone()).unwrap_or_default());
     json!({ "held": held })
 }
 
@@ -334,7 +335,8 @@ async fn run_base(
     Ok((cursor, None, committed))
 }
 
-/// Test installs: a landing `mqHold` holds is kept for `{"mqHeld": true}` instead of committed.
+/// Test installs: a landing `mqHold` holds is kept for `{"mqHeld": true}` instead of committed, and so is every
+/// landing after it until `{"mqHold": 0}`.
 #[cfg(feature = "test-faults")]
 fn held(cmd: &MergeCmd, rid: graftyard_raft::RequestId, key: &str) -> bool {
     if !matches!(cmd, MergeCmd::Land(_)) {
@@ -345,7 +347,8 @@ fn held(cmd: &MergeCmd, rid: graftyard_raft::RequestId, key: &str) -> bool {
         let mut m = m.borrow_mut();
         let (n, list) = m.get_mut(key)?;
         if *n == 0 {
-            return None;
+            // Holding already: a later plan of the same landing waits too, until the driver releases the hold.
+            return (!list.is_empty()).then_some(());
         }
         *n -= 1;
         list.push(json!({ "rid": rid.to_string(), "cmd": git::repo::RepoCmd::Merge(Box::new(call)) }));
