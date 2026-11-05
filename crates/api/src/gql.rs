@@ -447,17 +447,34 @@ impl<'r> Node<'r> {
         })
     }
 
-    /// GraphQL's `mergeable`: the test merge runs lazily (`TestMerged`), so it is `UNKNOWN` until one is recorded.
-    fn mergeable(&self) -> &'static str {
-        "UNKNOWN"
+    /// The recorded test merge (`TestMerged`), while it is of the pull request's current head and its base's current
+    /// tip (`graftyard_git::prsync::mergeable`); `None` until `PrSync` records the next one.
+    fn test_merge(&self) -> Option<bool> {
+        let (pull, head) = self.it.pull.as_ref().expect("a pull request");
+        let m = graftyard_git::tiers::mergeability(self.r.core, self.it.n);
+        graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, self.r.ref_value(&pull.base))
     }
 
-    /// GraphQL's `mergeStateStatus`, from what `check_protection` reads in Core: a draft, then failing or missing
-    /// required checks and reviews and unresolved threads (`BLOCKED`), else `UNKNOWN` while the test merge has not run.
+    /// GraphQL's `mergeable`: `MERGEABLE` or `CONFLICTING` from the current test merge, `UNKNOWN` until one is recorded.
+    fn mergeable(&self) -> &'static str {
+        match self.test_merge() {
+            Some(true) => "MERGEABLE",
+            Some(false) => "CONFLICTING",
+            None => "UNKNOWN",
+        }
+    }
+
+    /// GraphQL's `mergeStateStatus`, from what `check_protection` reads in Core and the test merge: a draft, then
+    /// a conflicting test merge (`DIRTY`), then failing or missing required checks and reviews and unresolved threads
+    /// (`BLOCKED`), then `CLEAN` on a clean test merge, else `UNKNOWN` while the current one has not run.
     fn merge_state(&self) -> &'static str {
         let (pull, head) = self.it.pull.as_ref().expect("a pull request");
         if matches!(head.state, PrState::Open { draft: true }) {
             return "DRAFT";
+        }
+        let merge = self.test_merge();
+        if merge == Some(false) {
+            return "DIRTY";
         }
         let r = self.r;
         let ps = r.protections(&pull.base);
@@ -470,7 +487,10 @@ impl<'r> Node<'r> {
         let approvals = r.verdicts(self.it.n).iter().filter(|v| v.state == ReviewState::Approved).count();
         let reviews_ok = ps.iter().filter_map(|p| p.reviews.as_ref()).all(|v| approvals >= usize::from(v.count));
         let threads_ok = !ps.iter().any(|p| p.conversation_resolution) || r.unresolved_threads(self.it.n) == 0;
-        if checks_ok && reviews_ok && threads_ok { "UNKNOWN" } else { "BLOCKED" }
+        if !(checks_ok && reviews_ok && threads_ok) {
+            return "BLOCKED";
+        }
+        if merge == Some(true) { "CLEAN" } else { "UNKNOWN" }
     }
 
     fn review_decision(&self) -> Option<&'static str> {

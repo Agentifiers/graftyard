@@ -20,13 +20,16 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::blob::BlobRef;
+use crate::issues::MergeMethod;
 use crate::issues::{
     AssetId, AssetRecord, BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
-    HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, PrCapture, ReleaseRecord,
-    RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
+    Consumer, HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, MergeabilityResult,
+    PrCapture, ReleaseRecord, RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
 };
 use crate::key::R2Key;
+use crate::merge::{EngineVersion, TreeDiffDigest};
 use crate::pack::{Archived, PackId, PackRef, Promoted};
+use crate::queue::QueueEvent;
 use crate::refs::{Atomicity, ObjectId, RefName, RefUpdate};
 use crate::tiers::{RepoTiers, get_rec, ref_key, tier_of};
 
@@ -196,15 +199,52 @@ pub enum RepoEvent {
     /// Metadata [inference: SHARED's `RepoEvent` lists `LfsLock` but its `tier_of` names no tier; a lock gates no git
     /// operation here, since the server does not refuse a push to a locked path, so Core does not need it].
     LfsLock(LfsLockEvent),
+    /// Core. One lazy test merge of pull request `n` (SHARED, "Event types"): `apply` records the `Mergeability` and
+    /// moves `refs/pull/N/merge` to the merge commit, or deletes it on a conflict. `pack` holds the merge commit's
+    /// objects, so every shard can serve the ref.
+    TestMerged {
+        n: IssueNumber,
+        base: ObjectId,
+        head: ObjectId,
+        result: MergeabilityResult,
+        pack: Option<PackRef>,
+    },
+    /// Core. A consumer's cursor on this chain: every event at or below `through` is handled. It commits in the same
+    /// entry as the work it covers (`crate::prsync`), so the position is the group's and survives a leader change.
+    /// Not in SHARED's event list, which names cursors but no event that moves one [inference].
+    ConsumerCursor {
+        consumer: Consumer,
+        through: Index,
+    },
+    /// Both tiers. SHARED's `Merged`: pull request `n` merged at `head`, `base` moving the base branch from the
+    /// pre-merge tip to the merge commit, `also` the head branch's deletion. `by` is who merged, which `PrState::Merged`
+    /// records [inference: SHARED's `Merged` has no actor field, but its `PrState::Merged` names one] (M2-WP3,
+    /// `crate::merge`).
+    Merged {
+        n: IssueNumber,
+        base: RefUpdate,
+        head: ObjectId,
+        method: MergeMethod,
+        also: Vec<RefUpdate>,
+        pack: Option<PackRef>,
+        verified: TreeDiffDigest,
+        engine: EngineVersion,
+        by: UserId,
+    },
+    /// Core. SHARED's `Queue`: the merge queue's events (`crate::queue`).
+    Queue(QueueEvent),
 }
 
 impl RepoEvent {
-    /// The ref updates the event applies: a `Refs`'s, a `Release`'s tag, and none for a `Refused`.
-    pub fn updates(&self) -> &[RefUpdate] {
+    /// The ref updates the event applies, in order: a `Refs`'s, a `Release`'s tag, a `Merged`'s base and then `also`,
+    /// a `Queue` event's queue refs, and none for a `Refused`.
+    pub fn updates(&self) -> Vec<&RefUpdate> {
         match self {
-            RepoEvent::Refs { updates, .. } => updates,
-            RepoEvent::Release { tag: Some(t), .. } => std::slice::from_ref(t),
-            _ => &[],
+            RepoEvent::Refs { updates, .. } => updates.iter().collect(),
+            RepoEvent::Release { tag: Some(t), .. } => vec![t],
+            RepoEvent::Merged { base, also, .. } => std::iter::once(base).chain(also).collect(),
+            RepoEvent::Queue(q) => q.refs().iter().collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -377,6 +417,11 @@ pub struct RepoScratch<'a> {
 }
 
 impl RepoScratch<'_> {
+    /// The core tier with the entry's earlier events on top.
+    pub fn core(&self) -> &dyn Read {
+        &self.core
+    }
+
     pub fn get(&self, name: &RefName) -> Option<ObjectId> {
         get_rec(&self.core, "ref", &[ref_key(name)])
     }
@@ -477,7 +522,7 @@ impl Scratch for RepoScratch<'_> {
         }
         let promoted: Option<Promoted> = get_rec(&self.core, "promoted", &[]);
         let updates = match ev {
-            RepoEvent::Refs { updates, .. } => updates,
+            RepoEvent::Refs { .. } | RepoEvent::Merged { .. } | RepoEvent::Queue(_) => ev.updates(),
             RepoEvent::Promoted(p) => return check_promoted(promoted.as_ref(), p),
             RepoEvent::Archived(a) => {
                 let prev: Option<Archived> = get_rec(&self.core, "archived", &[]);
@@ -925,6 +970,15 @@ impl Record for RepoEvent {
             }
             RepoEvent::LfsObject { blob, actor } => return tagged(out, 19, &(blob, actor)),
             RepoEvent::LfsLock(l) => return tagged(out, 20, l),
+            RepoEvent::TestMerged { n, base, head, result, pack } => {
+                return tagged(out, 21, &(n, base, head, result, pack));
+            }
+            RepoEvent::ConsumerCursor { consumer, through } => return tagged(out, 22, &(consumer, through)),
+            // Tags 21 and 22 are M2-WP5's `TestMerged` and `ConsumerCursor`.
+            RepoEvent::Merged { n, base, head, method, also, pack, verified, engine, by } => {
+                return tagged(out, 23, &(n, base, head, method, also, pack, verified, engine, by));
+            }
+            RepoEvent::Queue(q) => return tagged(out, 24, q),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1030,8 +1084,142 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            RepoEvent::Refs { pack, .. } => pack.clone(),
+            RepoEvent::Refs { pack, .. } | RepoEvent::TestMerged { pack, .. } | RepoEvent::Merged { pack, .. } => {
+                pack.clone()
+            }
+            RepoEvent::Queue(QueueEvent::GroupBuilt { pack, .. }) => pack.clone(),
             _ => None,
         })
         .collect()
+}
+
+/// What a repository member commits: a client's `Push`, a consumer's `PrSync` (`crate::prsync`), or an issue, pull
+/// request, release, or LFS command from the edge (`crate::issue_ops::call`). A push keeps its wire form, the base64
+/// of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is `{"prSync": ..}`, which only a member
+/// whose release reads `REPO_FORMAT_V3` decodes, and an issue command `{"issue": ..}`, which names its format first.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepoCmd {
+    Push(Push),
+    Sync(crate::prsync::PrSync),
+    Issue(Box<crate::issue_ops::call::IssueCall>),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepoOut {
+    Push(PushOut),
+    Sync(crate::prsync::SyncOut),
+    Issue(crate::issue_ops::call::IssueCallOut),
+}
+
+/// An issue command's refusal carries its render request too, so the member renders the client's error reply.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepoErr {
+    Push(PushErr),
+    Issue { err: crate::issue_ops::IssueErr, render: serde_json::Value },
+}
+
+impl crate::smart::PushOutOf for RepoOut {
+    fn push_out(&self) -> Option<&PushOut> {
+        match self {
+            RepoOut::Push(p) => Some(p),
+            RepoOut::Sync(_) | RepoOut::Issue(_) => None,
+        }
+    }
+}
+
+impl Serialize for RepoCmd {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        enum Tagged<'a> {
+            PrSync(&'a crate::prsync::PrSync),
+            Issue(&'a crate::issue_ops::call::IssueCall),
+        }
+        match self {
+            RepoCmd::Push(p) => p.serialize(s),
+            RepoCmd::Sync(c) => Tagged::PrSync(c).serialize(s),
+            RepoCmd::Issue(c) => Tagged::Issue(c).serialize(s),
+        }
+    }
+}
+
+/// An issue command's own error is kept, so a format this release does not read says so.
+impl<'de> Deserialize<'de> for RepoCmd {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<RepoCmd, D::Error> {
+        use serde::de::Error;
+        let v = serde_json::Value::deserialize(d)?;
+        let one = |k: &str| v.as_object().filter(|m| m.len() == 1).and_then(|m| m.get(k)).cloned();
+        if v.is_string() {
+            serde_json::from_value(v).map(RepoCmd::Push).map_err(D::Error::custom)
+        } else if let Some(c) = one("prSync") {
+            serde_json::from_value(c).map(RepoCmd::Sync).map_err(D::Error::custom)
+        } else if let Some(c) = one("issue") {
+            serde_json::from_value(c).map(|c| RepoCmd::Issue(Box::new(c))).map_err(D::Error::custom)
+        } else {
+            Err(D::Error::custom("not a repository command"))
+        }
+    }
+}
+
+impl Record for RepoCmd {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            RepoCmd::Push(p) => p.encode(out),
+            RepoCmd::Sync(c) => c.encode(out),
+            RepoCmd::Issue(c) => out.extend(serde_json::to_vec(c).expect("an issue command encodes")),
+        }
+    }
+}
+
+impl Command for RepoCmd {
+    type Fold = RepoFold;
+    type Dep = IdentityDep;
+    type Out = RepoOut;
+    type Err = RepoErr;
+
+    fn format(&self) -> Format {
+        match self {
+            RepoCmd::Push(p) => p.format(),
+            RepoCmd::Sync(c) => c.format(),
+            RepoCmd::Issue(_) => crate::issue_ops::call::REPO_FORMAT_ISSUES,
+        }
+    }
+    fn tiers(&self) -> TierSet {
+        match self {
+            RepoCmd::Push(_) | RepoCmd::Sync(_) => TierSet::CORE,
+            RepoCmd::Issue(c) => c.tiers(),
+        }
+    }
+    fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
+        match self {
+            RepoCmd::Push(p) => p.deps(fold),
+            RepoCmd::Sync(_) => SmallVec::new(),
+            RepoCmd::Issue(c) => c.deps(fold),
+        }
+    }
+    fn decide(
+        &self,
+        s: &RepoScratch<'_>,
+        deps: &[(ChainId, IdentityDep)],
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, RepoOut), RepoErr> {
+        match self {
+            RepoCmd::Push(p) => p.decide(s, deps).map(|(e, o)| (e, RepoOut::Push(o))).map_err(RepoErr::Push),
+            RepoCmd::Sync(c) => {
+                let (e, o) = c.decide_sync(s);
+                Ok((e, RepoOut::Sync(o)))
+            }
+            RepoCmd::Issue(c) => c
+                .decide(s, deps)
+                .map(|(e, o)| (e, RepoOut::Issue(o)))
+                .map_err(|err| RepoErr::Issue { err, render: c.render.clone() }),
+        }
+    }
+    fn replay(&self, events: &[RepoEvent]) -> RepoOut {
+        match self {
+            RepoCmd::Push(p) => RepoOut::Push(p.replay(events)),
+            RepoCmd::Sync(c) => RepoOut::Sync(Command::replay(c, events)),
+            RepoCmd::Issue(c) => RepoOut::Issue(c.replay(events)),
+        }
+    }
 }

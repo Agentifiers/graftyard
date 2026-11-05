@@ -848,6 +848,7 @@ impl<F: Family> Routes<F> {
             "alarmRuns": s.alarm_runs,
             "alarmLast": s.alarm_last,
             "alarmArms": s.alarm_arms,
+            "prsyncSent": s.prsync_sent,
             "peers": s.peers,
         });
         if reset {

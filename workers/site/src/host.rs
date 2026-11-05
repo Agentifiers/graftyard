@@ -124,6 +124,8 @@ pub struct Stats {
     pub alarm_runs: u32,
     pub alarm_last: u64,
     pub alarm_arms: u32,
+    /// `PrSync` batches this member's leader alarm sent to its site's queue.
+    pub prsync_sent: u32,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
@@ -769,6 +771,12 @@ fn load<F: Family>(storage: &worker::Storage, join: &Join, retention: Duration) 
 /// Stored entries `from..=through` (from 1 when `from` is 0), for `Member::catchup`, read one row at a time. Past the
 /// anchor at `from` and the first entry after it, it stops at `APPEND_BYTES_MAX`, as `catchup` sends no more. `None`
 /// if a row is missing, as it is while its transaction waits.
+/// One stored log entry, if the log still holds it.
+pub fn stored_entry<F: Family>(sql: &SqlStorage, at: Index) -> Option<Entry<F>> {
+    let r = rows(sql, "SELECT row FROM log WHERE idx = ?", vec![i(at.0)]).ok()?;
+    codec::from_bytes(blob(&r.first()?[0]).ok()?).ok()
+}
+
 fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Option<Vec<Entry<F>>> {
     let lo = from.0.max(1);
     let mut entries: Vec<Entry<F>> = Vec::new();
@@ -887,7 +895,7 @@ impl<F: Family> Host<F> {
         // Everything `load` read back is durable.
         *self.synced.borrow_mut() = VecDeque::from([(stored.base.index.0 + stored.log.len() as u64, now_ms())]);
         let (mut m, ready) =
-            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), &stored, Timestamp(now_ms()), seed())
+            raft::Member::<F::C>::restore(member_config::<F>(&site, &join), stored, Timestamp(now_ms()), seed())
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
@@ -1021,7 +1029,7 @@ impl<F: Family> Host<F> {
                 s.apply_steps.push((ms, (applied.0 - applied0.0) as u32, events as u32));
             }
         }
-        if let Some(ms) = F::fold_alarm_ms()
+        if let Some(ms) = F::fold_alarm_ms(core.m.role() == Role::Leader)
             && applied > core.applied
         {
             self.stats.borrow_mut().alarm_arms += 1;
@@ -1781,18 +1789,18 @@ impl<F: Family> Host<F> {
         if self.ticking.replace(true) {
             return;
         }
-        let h = self.clone();
+        // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
+        // that held it across one kept the whole reset member in the isolate's memory (F47).
+        let w = Rc::downgrade(self);
         spawn_local(async move {
             loop {
                 Delay::from(TICK).await;
-                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) {
-                    break;
-                }
-                if h.tick_once().is_err() {
-                    break;
+                let Some(h) = w.upgrade() else { return };
+                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
+                    h.ticking.set(false);
+                    return;
                 }
             }
-            h.ticking.set(false);
         });
     }
 
@@ -1952,6 +1960,7 @@ impl<F: Family> Host<F> {
             let mut row = json!({
                 "index": e.index.0,
                 "term": e.term.0,
+                "at": e.at.0,
                 "digest": hex(blob(&r[1])?),
                 "committed": e.index.0 <= commit,
                 "kind": match &e.body {
@@ -1963,7 +1972,7 @@ impl<F: Family> Host<F> {
                 "requests": e.requests.iter().map(|(r, _)| r.to_string()).collect::<Vec<_>>(),
             });
             // The family's fields at the top level, as `tests/m1/wp6/bf17.sh` reads `bytes` and `ref_updates`.
-            for (k, v) in F::entry_json(&e) {
+            for (k, v) in F::entry_json(&e).into_iter().chain(F::log_fields(&e)) {
                 row[k] = v;
             }
             out.push(row);

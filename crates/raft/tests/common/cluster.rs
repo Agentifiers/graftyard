@@ -137,7 +137,7 @@ impl Cluster {
     /// Restarts `s` with another config, such as another release.
     pub fn restart_with(&mut self, s: SiteId, cfg: graftyard_raft::MemberConfig) {
         self.boots += 1;
-        let (m, ready) = Member::restore(cfg, &self.disks[s.0 as usize], self.now, self.boots).unwrap();
+        let (m, ready) = Member::restore(cfg, self.disks[s.0 as usize].clone(), self.now, self.boots).unwrap();
         self.members[s.0 as usize] = Some(m);
         let ((), out) = ready.persist(&mut self.disks[s.0 as usize]);
         self.inbox.extend(out.messages);

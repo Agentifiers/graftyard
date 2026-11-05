@@ -561,10 +561,16 @@ pub fn log_json(sql: &SqlStorage) -> Result<Value> {
 /// (`graftyard_fold::DIGESTS_KEEP`), so the index the replay reaches is one every caught-up member can answer for.
 const REPLAY_MAX: u64 = graftyard_fold::DIGESTS_KEEP;
 
+/// Stored log bytes a member refolds in memory for the fold audit [guess]. The refold holds every row the log wrote,
+/// beside the member's own state: `repo:65536`'s 2,000 entries, 102.6 MB of log, grew it by 63 MB and took the isolate
+/// past 128 MB (F47, `tests/m2/results/f47.md`). 16 MB of log is about 10 MB of refold at that ratio.
+const REPLAY_BYTES: u64 = 16_000_000;
+
 /// The fold audit's refold (`design/SHARED.md`, "Folds", `fold_audit`): the stored log from genesis through this
 /// member's `applied`, replayed into a fold in memory by the same `apply`, and each tier's `fold_digest` there. A chain
-/// whose log no longer starts at 1, or is longer than `REPLAY_MAX`, is skipped with the reason: refolding it needs the
-/// archive objects, which hold the entries' JSON, not the entries.
+/// whose log no longer starts at 1, is longer than `REPLAY_MAX`, or holds more than `REPLAY_BYTES` is skipped with the
+/// reason: refolding it needs the archive objects, which hold the entries' JSON, not the entries, or more memory than
+/// an isolate has.
 pub fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
     let (repo, owner, applied) = {
         let core = h.core.borrow();
@@ -576,6 +582,11 @@ pub fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
         return Ok(json!({ "skip": format!("{} entries, past the {REPLAY_MAX} one request replays", applied.0) }));
     }
     let sql = h.state.storage().sql();
+    let r = rows(&sql, "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx <= ?", vec![i(applied.0)])?;
+    let bytes = r.first().map(|r| crate::host::int(&r[0]).unwrap_or(0) as u64).unwrap_or(0);
+    if bytes > REPLAY_BYTES {
+        return Ok(json!({ "skip": format!("{bytes} log bytes, past the {REPLAY_BYTES} one request refolds") }));
+    }
     let mut fold = git::repo::RepoFold::with_tiers(
         repo,
         owner,
@@ -583,7 +594,10 @@ pub fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
         Box::new(graftyard_fold::MemStore::default()),
     );
     let mut next = 1;
-    for r in rows(&sql, "SELECT idx, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])? {
+    // One row at a time: collecting the log first held all of it beside the member's own fold, and took the
+    // isolate past 128 MB (F47).
+    for r in sql.exec("SELECT idx, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])?.raw() {
+        let r = r?;
         let idx = crate::host::int(&r[0])? as u64;
         if idx != next {
             return Ok(json!({ "skip": format!("the stored log starts at {idx}, not {next}") }));
@@ -825,7 +839,7 @@ pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
             agent: None,
         };
         let at = now_ms();
-        match h.input(|m, t| m.commit(t, rid, git::issue_ops::call::RepoCall::Push(push))) {
+        match h.input(|m, t| m.commit(t, rid, git::repo::RepoCmd::Push(push))) {
             Ok(Ok(a)) => {
                 // Each outcome is timed as it arrives, not after the send loop.
                 let (tx, rx) = futures_channel::oneshot::channel();

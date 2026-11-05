@@ -509,6 +509,19 @@ impl ShardHost<'_> {
         r.bytes().await.map_err(worker_err)
     }
 
+    /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which
+    /// runs merge-tree, commit-tree, and the tree-diff check in a quarantine and leaves the repository unchanged.
+    pub async fn merge(
+        &self,
+        network: NetworkId,
+        base: crate::refs::ObjectId,
+        head: crate::refs::ObjectId,
+    ) -> Result<crate::prsync::MergeAnswer, StoreError> {
+        let path = format!("/merge?net={}&base={}&head={}", network.0.0, base.hex(), head.hex());
+        let mut r = self.ok(Method::Post, &path, None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
     /// `GitCacheShard::upload_pack`, as smart HTTP: `info_refs` for the advertisement, else one stateless-rpc round.
     /// The caller passes the client's `Git-Protocol` header through.
     pub async fn upload_pack(

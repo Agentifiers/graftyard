@@ -63,8 +63,9 @@ pub trait Family: 'static {
     fn tiered() -> bool {
         false
     }
-    /// How soon after applying entries the member's alarm runs the family's fold work (`on_alarm`), if it has any.
-    fn fold_alarm_ms() -> Option<i64> {
+    /// How soon after applying entries the member's alarm runs the family's fold work (`on_alarm`), if it has any;
+    /// `leading` when the member leads.
+    fn fold_alarm_ms(_leading: bool) -> Option<i64> {
         None
     }
     /// The family's own tables beside the member's.
@@ -146,6 +147,11 @@ pub trait Family: 'static {
     fn entry_json(_e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
         serde_json::Map::new()
     }
+    /// Test installs: more fields of a log entry on the harness's `/log` only.
+    #[cfg(feature = "test-faults")]
+    fn log_fields(_e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
+        serde_json::Map::new()
+    }
     /// Extra fold state for the BF-12 audit.
     #[cfg(feature = "test-faults")]
     fn audit(_sql: &SqlStorage, _fold: &Self::Fold, _prefix: &str) -> worker::Result<Value> {
@@ -202,13 +208,16 @@ fn repo_of(join: &Join) -> Option<RepoId> {
 impl Family for Repo {
     type Ev = git::repo::RepoEvent;
     type Fold = git::repo::RepoFold;
-    type C = git::issue_ops::call::RepoCall;
+    type C = git::repo::RepoCmd;
 
-    /// 32.1, and 32.4 for issue commands and the events of tags 17 to 20 they write. 32.2 waits for a release to enable
-    /// it through `FormatsEnable`. This release reads 32.4 so that a later `FormatsEnable` can let the edge send it;
-    /// until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the format").
+    /// 32.1; 32.3 for the `PrSync` consumer's commands and the `TestMerged` and `ConsumerCursor` events; and 32.5 for
+    /// issue commands and the events of tags 17 to 20 they write. 32.2 waits for a release to enable it through
+    /// `FormatsEnable`. This test build reads 32.3 before any `FormatsEnable`, since only its own site scripts write it
+    /// (`tests/m2/results/m2-wp5.md`, "Design gaps"). It reads 32.5 so that a later `FormatsEnable` can let the edge
+    /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
+    /// format"). No site member hosts 32.4, the merge commands', yet.
     fn reads() -> Vec<Format> {
-        vec![git::repo::REPO_FORMAT_V1, git::issue_ops::call::REPO_FORMAT_ISSUES]
+        vec![git::repo::REPO_FORMAT_V1, git::prsync::REPO_FORMAT_V3, git::issue_ops::call::REPO_FORMAT_ISSUES]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
     /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
@@ -296,13 +305,15 @@ impl Family for Repo {
         true
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::prsync::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
     }
     fn schema() -> &'static [&'static str] {
         crate::snap::SCHEMA
     }
-    fn fold_alarm_ms() -> Option<i64> {
-        Some(crate::snap::IDLE_MS)
+    /// A leader's alarm runs the `PrSync` dispatcher at once; every member's checks for a due snapshot.
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        Some(if leading { crate::prsync::LEADER_ALARM_MS } else { crate::snap::IDLE_MS })
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
@@ -355,6 +366,8 @@ impl Family for Repo {
                 Some(crate::fold_audit::run(&host.env, only).await)
             }
             #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
+            #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
             // Test installs: the object's alarm as storage holds it, and the host's own idea of it.
             #[cfg(feature = "test-faults")]
@@ -370,16 +383,15 @@ impl Family for Repo {
             _ => None,
         }
     }
-    /// A push's `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render. An
-    /// issue command's `{"issue": {"out", "reply"}}`, the client's reply rendered from the `&Acked` over this member's
-    /// tiers, which have applied the entry (`graftyard_api::hosted::render_ok`).
+    /// A push's `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render. A
+    /// sync's output is `{"Sync": SyncOut}`. An issue command's `{"issue": {"out", "reply"}}`, the client's reply
+    /// rendered from the `&Acked` over this member's tiers, which have applied the entry
+    /// (`graftyard_api::hosted::render_ok`).
     fn out_json(fold: &git::repo::RepoFold, a: &raft::Acked<Out<Self>>) -> Value {
-        use git::issue_ops::call::RepoCallOut;
         match &a.out {
-            RepoCallOut::Push(p) => {
-                serde_json::to_value(git::group::PushReport::of(&a.map(|_| p.clone()))).unwrap_or(Value::Null)
-            }
-            RepoCallOut::Issue(o) => {
+            git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
+            git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
+            git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
                     Err(e) => graftyard_api::hosted::WireReply {
@@ -393,13 +405,13 @@ impl Family for Repo {
         }
     }
     fn err_json(e: &Err<Self>) -> Value {
-        use git::issue_ops::call::RepoCallErr;
+        use git::repo::RepoErr;
         match e {
-            RepoCallErr::Push(e) => {
+            RepoErr::Push(e) => {
                 let w = git::group::RefusedWire::of(e, 0);
                 json!({ "err": w.err, "status": w.status })
             }
-            RepoCallErr::Issue { err, render } => {
+            RepoErr::Issue { err, render } => {
                 let reply = serde_json::from_value::<graftyard_api::hosted::Render>(render.clone())
                     .map(|r| graftyard_api::hosted::render_err(&r, err))
                     .ok();
@@ -408,12 +420,12 @@ impl Family for Repo {
         }
     }
     fn needs_block(e: &Err<Self>) -> bool {
-        matches!(e, git::issue_ops::call::RepoCallErr::Issue { err: git::issue_ops::IssueErr::NeedIdBlock, .. })
+        matches!(e, git::repo::RepoErr::Issue { err: git::issue_ops::IssueErr::NeedIdBlock, .. })
     }
     /// An issue command that names a blob: the `DurableBlob` again, from a HEAD of every bucket of the placement
     /// (`BlobStore::confirm`), so `decide` refuses it unless two buckets in two regions hold the bytes (BF-25).
     async fn admit(env: &worker::Env, chain: ChainId, cmd: &mut Self::C) {
-        let (git::issue_ops::call::RepoCall::Issue(c), ChainId::Repo(repo)) = (cmd, chain) else { return };
+        let (git::repo::RepoCmd::Issue(c), ChainId::Repo(repo)) = (cmd, chain) else { return };
         let Some(b) = c.op.blob().copied() else { return };
         let Ok(site) = crate::SiteEnv::read(env) else { return };
         let buckets: Vec<(graftyard_types::SiteId, git::host::R2)> = site
@@ -435,6 +447,9 @@ impl Family for Repo {
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
+        if let Some(prs) = q.get("prsync") {
+            return crate::prsync::read_json(fold, prs);
+        }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};
             let mut budget = ROWS_MAX;
@@ -474,8 +489,21 @@ impl Family for Repo {
     /// `graftyard_git::mark_committed`, and the blob an ok asset upload or LFS `verify` names, as
     /// `graftyard_git::blob::mark_blob`. A push whose every ref was refused marks nothing.
     async fn after_ok(env: worker::Env, chain: ChainId, cmd: Self::C, acked: raft::Acked<Out<Self>>) -> usize {
-        use git::issue_ops::call::{RepoCall, RepoCallOut};
+        use git::repo::{RepoCmd, RepoOut};
         let ChainId::Repo(repo) = chain else { return 0 };
+        let mark = match (&cmd, &acked.out) {
+            (RepoCmd::Push(p), RepoOut::Push(o)) if o.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) => {
+                match &p.pack {
+                    Some(pack @ git::PackRef::Stored { .. }) => Ok(pack),
+                    _ => return 0,
+                }
+            }
+            (RepoCmd::Issue(c), RepoOut::Issue(_)) => match c.op.blob() {
+                Some(b) => Err(b),
+                None => return 0,
+            },
+            _ => return 0,
+        };
         let Ok(site) = crate::SiteEnv::read(&env) else { return 1 };
         let buckets: Vec<(graftyard_types::SiteId, git::host::R2)> = site
             .sites
@@ -484,19 +512,9 @@ impl Family for Repo {
             .filter_map(|s| env.bucket(&format!("BUCKET_{}", s.id.0)).ok().map(|b| (s.id, git::host::R2(b))))
             .collect();
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
-        match (cmd, &acked.out) {
-            (RepoCall::Push(p), RepoCallOut::Push(o)) => {
-                let Some(pack @ git::PackRef::Stored { .. }) = &p.pack else { return 0 };
-                if !o.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) {
-                    return 0;
-                }
-                git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await
-            }
-            (RepoCall::Issue(c), RepoCallOut::Issue(_)) => match c.op.blob() {
-                Some(b) => git::blob::mark_blob(&refs, repo, b, chain, acked.index).await,
-                None => 0,
-            },
-            _ => 0,
+        match mark {
+            Ok(pack) => git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await,
+            Err(b) => git::blob::mark_blob(&refs, repo, b, chain, acked.index).await,
         }
     }
     fn row_packs(events: &[git::repo::RepoEvent]) -> Value {
@@ -530,6 +548,33 @@ impl Family for Repo {
         }
         m.insert("ref_updates".into(), json!(evs.iter().map(|ev| ev.updates().len()).sum::<usize>()));
         m.insert("bytes".into(), json!(raft::encode_entry(e).len()));
+        m
+    }
+    /// BF-24's driver times a head push's entry to its `TestMerged`'s on the leader's clock: the first 8 ref names an
+    /// entry updates, and each `TestMerged`.
+    #[cfg(feature = "test-faults")]
+    fn log_fields(e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
+        let mut m = serde_json::Map::new();
+        let raft::EntryBody::Events(evs) = &e.body else { return m };
+        let refs: Vec<Value> = evs
+            .iter()
+            .flat_map(|ev| ev.updates())
+            .take(8)
+            .map(|u| json!([u.name.display(), u.new.map(|o| o.hex())]))
+            .collect();
+        m.insert("refs".into(), json!(refs));
+        let merged: Vec<Value> = evs
+            .iter()
+            .filter_map(|ev| match ev {
+                git::repo::RepoEvent::TestMerged { n, head, result, .. } => Some(json!({
+                    "n": n.0,
+                    "head": head.hex(),
+                    "clean": matches!(result, git::issues::MergeabilityResult::Clean { .. }),
+                })),
+                _ => None,
+            })
+            .collect();
+        m.insert("testMerged".into(), json!(merged));
         m
     }
     /// A member joined with no owner holds a fold no push can write (`may_write` needs the owner), so it is trusted

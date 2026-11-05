@@ -330,9 +330,21 @@ fn status(unpack: &str, refs: &[(&RefName, Result<(), &str>)]) -> Vec<u8> {
 /// The only renderer of `ok`: git's report-status section for a push whose entry committed, one line per ref in
 /// the push's order. `Acked` is built only on the leader's host and cannot cross a binding, so the member host calls
 /// this and sends the bytes; the edge wraps them with `wrap` and adds nothing.
-pub fn report_status(acked: &Acked<PushOut>) -> Vec<u8> {
+/// A committed output that may be a push's: `report_status` renders only those.
+pub trait PushOutOf {
+    fn push_out(&self) -> Option<&PushOut>;
+}
+
+impl PushOutOf for PushOut {
+    fn push_out(&self) -> Option<&PushOut> {
+        Some(self)
+    }
+}
+
+pub fn report_status<T: PushOutOf>(acked: &Acked<T>) -> Option<Vec<u8>> {
     let refs: Vec<(&RefName, Result<(), &str>)> = acked
         .out
+        .push_out()?
         .refs
         .iter()
         .map(|(n, o)| {
@@ -345,7 +357,7 @@ pub fn report_status(acked: &Acked<PushOut>) -> Vec<u8> {
             )
         })
         .collect();
-    status("ok", &refs)
+    Some(status("ok", &refs))
 }
 
 /// A refusal of the whole push before or at `commit`: `ng` on every ref, never `ok`, and `remote:` lines that say why.

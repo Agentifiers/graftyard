@@ -181,6 +181,22 @@ impl Chain {
         outs
     }
 
+    /// Decides `m` on member 0's tiers as the leader does and commits its events as one entry.
+    pub fn commit_merge(
+        &mut self,
+        m: graftyard_git::merge::Merge,
+    ) -> Result<graftyard_git::merge::MergeOut, graftyard_git::merge::MergeError> {
+        let mem = &self.members[0];
+        let view = RepoView::new(tiers(), &mem.core, &mem.meta, self.now);
+        let wanted: Vec<ChainId> = m.deps(Some(view.owner())).into_iter().collect();
+        let d: Vec<_> = wanted.iter().map(|c| self.deps.iter().find(|(k, _)| k == c).unwrap().clone()).collect();
+        let (events, out) = m.decide(&view, &d)?;
+        drop(view);
+        let tag = events.iter().fold(TierSet::NONE, |t, e| t.union(tier_of(e)));
+        self.entry(EntryBody::Events(events.into_vec()), tag);
+        Ok(out)
+    }
+
     pub fn commit(&mut self, actor: i64, op: IssueOp) -> Result<IssueOut, IssueErr> {
         self.commit_all(vec![(actor, op)]).pop().unwrap()
     }
@@ -403,4 +419,62 @@ pub fn ack<T: Clone + std::fmt::Debug + PartialEq>(out_value: T) -> Acked<T> {
         Ok(a) => a,
         Err(CommitError::Refused { .. } | CommitError::NotLeader(_)) => panic!("not acknowledged"),
     }
+}
+
+// ---- the git cache ----
+
+/// A plan from the git cache for `req`: the merge commit is a function of the pair, and the tree-diff check passed.
+pub fn cache_plan(req: &graftyard_git::merge::MergeRequest) -> graftyard_git::merge::MergePlan {
+    use graftyard_git::merge::{EngineVersion, MergePlan, TreeDiffDigest};
+    let commit = graftyard_git::refs::ObjectId(std::array::from_fn(|i| req.base_old.0[i] ^ req.head.0[i] ^ 0x5a));
+    MergePlan {
+        base_old: req.base_old,
+        head: req.head,
+        commit,
+        pack: inline_pack(&commit.0),
+        method: req.method,
+        up_to_date: true,
+        verified: TreeDiffDigest(graftyard_types::Digest([1; 32])),
+        engine: EngineVersion("git 2.51".into()),
+    }
+}
+
+pub fn inline_pack(bytes: &[u8]) -> graftyard_git::DurablePack {
+    use graftyard_git::mem::MemBucket;
+    use graftyard_types::{Region, Site, SiteId, SiteLink, SiteTable};
+    use sha2::Digest as _;
+    let site = |id: u8, region| Site {
+        id: SiteId(id),
+        script: format!("s{id}"),
+        account: "x".into(),
+        region,
+        jurisdiction: None,
+        bucket: format!("b{id}"),
+        release: None,
+        link: SiteLink::Binding { member_class: "Member".into() },
+        spare: false,
+    };
+    let sites = SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur)]);
+    let a = MemBucket::default();
+    let bk = [(SiteId(0), &a)];
+    let store = graftyard_git::PackStore { sites: &sites, buckets: &bk, copies: graftyard_git::Copies::TwoRegions };
+    let index = graftyard_git::PackIndex {
+        checksum: graftyard_types::Digest(sha2::Sha256::digest(bytes).into()),
+        bytes: bytes.len() as u64,
+        objects: 1,
+        trailer: "t".into(),
+    };
+    let place = graftyard_git::Place {
+        network: graftyard_types::NetworkId(DbId(1)),
+        id: graftyard_git::PackId(graftyard_types::Ulid(1)),
+        meta: graftyard_git::ObjectMeta {
+            chain: graftyard_types::ChainId::Repo(REPO),
+            request: graftyard_types::RequestId(graftyard_types::Ulid(1)),
+        },
+        bytes,
+        index: &index,
+        idx: None,
+        inline_max: graftyard_git::INLINE_MAX,
+    };
+    futures_executor::block_on(store.place(place)).unwrap()
 }

@@ -30,7 +30,7 @@ def run(site):
         body = json.dumps({"start": start, "n": n, "bytes": 1800, "written": WRITTEN})
         t = time.time()
         env = dict(os.environ, DL="55000", TO="70")
-        out = subprocess.run(["/tmp/bf20/m.sh", str(site), "/bench_seed", body], capture_output=True, text=True, env=env).stdout
+        out = subprocess.run([os.environ.get("BF20_DIR", "/tmp/bf20") + "/m.sh", str(site), "/bench_seed", body], capture_output=True, text=True, env=env).stdout
         ms = int((time.time() - t) * 1000)
         try:
             v = json.loads(out)["v"]

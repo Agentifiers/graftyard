@@ -670,7 +670,8 @@ impl Sim {
             });
             self.stats.ghosts += u64::from(ghost);
         }
-        let (mut m, ready) = Member::restore(config(s), &self.disks[s.0 as usize].stored, now, seed).expect("restore");
+        let (mut m, ready) =
+            Member::restore(config(s), self.disks[s.0 as usize].stored.clone(), now, seed).expect("restore");
         m.set_log_window(SIM_WINDOW);
         self.checked[s.0 as usize] = 0;
         // Everything the restore read back is durable.

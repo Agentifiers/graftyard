@@ -13,7 +13,8 @@ needles=(/retire /probe_vote /reset /audit /deps_log ::faults:: ::test_route ::f
   GRAFTYARD_FAULTS GRAFTYARD_REQUEST_RETENTION_S drop_append_reply abandoned_timeout_now "killed by an injected fault"
   "graftyard member fault" "member down (injected)" GRAFTYARD_GENESIS ::register::
   /site_fault site_fault: "injected site fault" ::site_down
-  /arrivals ::receipt_fault receipt_delay receipt_drop "reply dropped (injected)" no_marker /sweep_run ::RecordReq)
+  /arrivals ::receipt_fault receipt_delay receipt_drop "reply dropped (injected)" no_marker /sweep_run ::RecordReq
+  openPr ::open_pr "bf24 #")
 found=0
 for n in "${needles[@]}"; do
   c=$(cat "$dir/index_bg.wasm" "$dir/index.js" | grep -a -c -F -- "$n")

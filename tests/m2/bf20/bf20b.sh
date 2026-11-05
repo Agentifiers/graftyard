@@ -1,18 +1,18 @@
 #!/bin/bash
 # bf20b.sh : BF-20 on repo 196628 (bf20b), resumable. Baselines at 150/s and 300/s, then the metadata snapshot forced
-# on the writer with the same runs back to back until it commits, then baselines again. Log: /tmp/bf20/bf20b.log.
-export REPO=196628 CH=repo:196628
-LOG=/tmp/bf20/bf20b.log
-run() { [ -s /tmp/bf20/raw/$1.stats2.json ] && return; echo "$(date -u +%FT%TZ) start $1 $2/s" >> $LOG; /tmp/bf20/load.sh $1 $2 30 3000 500 1330000 >> $LOG 2>&1; sleep 15; }
-state() { /tmp/bf20/m.sh $1 /fold '{"log":true}' | python3 -c "
+# on the writer with the same runs back to back until it commits, then baselines again. Log: $B/bf20b.log.
+B=${BF20_DIR:-/tmp/bf20}; export REPO=${REPO:-196628}; export CH=repo:$REPO
+LOG=$B/bf20b.log
+run() { [ -s $B/raw/$1.stats2.json ] && return; echo "$(date -u +%FT%TZ) start $1 $2/s" >> $LOG; $B/load.sh $1 $2 30 3000 500 1330000 >> $LOG 2>&1; sleep 15; }
+state() { $B/m.sh $1 /fold '{"log":true}' | python3 -c "
 import json,sys
 x=json.load(sys.stdin)['v']; l=[r for r in x['log'] if r['tier']==1]; r=l[0] if l else {}
 print(x['metadata']['applied'], x['metadata']['running'], r.get('to'), r.get('status'), r.get('batches'), r.get('batchMaxMs'), r.get('rows'), r.get('bytes'))" 2>/dev/null; }
 for n in pre150a pre300a pre150b pre300b; do run $n ${n:3:3}; done
-W=$(cat /tmp/bf20/bf20b.writer 2>/dev/null)
+W=$(cat $B/bf20b.writer 2>/dev/null)
 if [ -z "$W" ]; then
-  W=1; echo $W > /tmp/bf20/bf20b.writer
-  /tmp/bf20/m.sh $W /bench_seed '{"force":1}' >> $LOG
+  W=1; echo $W > $B/bf20b.writer
+  $B/m.sh $W /bench_seed '{"force":1}' >> $LOG
   echo "$(date -u +%FT%TZ) forced on $W" >> $LOG
 fi
 k=0

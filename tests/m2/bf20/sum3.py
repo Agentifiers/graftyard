@@ -4,9 +4,9 @@ baseline after) and of bf20d.sh (t = snapshot run to its commit). Pools every sa
 member), the entry age at apply on the leader (`applyMs` of the member with `roundMs`) and on each follower, and the
 commands' outcome latency (`latMs`). Prints n, p50, p99, and a 95% bootstrap interval of p99 for each, then the
 snapshot phases' p99 against the pooled baselines'."""
-import json, random, sys
+import json, os, random, sys
 
-rate, raw = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else "/tmp/bf20/raw")
+rate, raw = sys.argv[1], (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("BF20_DIR", "/tmp/bf20") + "/raw")
 
 
 def q(a, p):
