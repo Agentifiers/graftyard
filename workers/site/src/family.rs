@@ -368,6 +368,10 @@ impl Family for Repo {
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("prsyncDrop").is_some() => {
+                Some(Ok(crate::prsync::drop_first(host, body["prsyncDrop"].as_u64().unwrap_or(1) as u32)))
+            }
             // Test installs: the core tier's next stored read fails in SQLite, as when the object has moved ("Network
             // connection lost"), so a request can show the member resets alone instead of panicking.
             #[cfg(feature = "test-faults")]

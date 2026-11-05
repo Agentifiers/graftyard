@@ -14,7 +14,9 @@ push's return to the first poll that shows the pass.
 trial, so the batch for that head is handled by a dispatcher that did not see it: the cursor has to carry it.
 `--lose-at` does more for each listed trial: it pauses delivery on the leader's site queue before the push, purges the
 queue 3 s after (the batch the leader sent is gone), resumes it, then transfers. Only a new leader that starts at the
-committed cursor sends that head's batch again. `--reset-at` resets the new leader's predecessor (member `/reset`)
+committed cursor sends that head's batch again. `--drop-first-at` makes the leader drop the trial's first attempt
+unrun (test-faults `/bench_seed {"prsyncDrop": 1}`), as if it was lost with its isolate: only the re-send through the
+queue covers it. `--reset-at` resets the new leader's predecessor (member `/reset`)
 after the transfer, so it restores from its storage, and the next transfer moves leadership back onto a restored
 member.
 
@@ -50,6 +52,7 @@ trials = int(sys.argv[2])
 args = sys.argv[3:]
 conflict_every = int(args[args.index("--conflict-every") + 1]) if "--conflict-every" in args else 0
 transfer_at = set(int(x) for x in args[args.index("--transfer-at") + 1].split(",")) if "--transfer-at" in args else set()
+drop_at = set(int(x) for x in args[args.index("--drop-first-at") + 1].split(",")) if "--drop-first-at" in args else set()
 reset_at = set(int(x) for x in args[args.index("--reset-at") + 1].split(",")) if "--reset-at" in args else set()
 lose_at = set(int(x) for x in args[args.index("--lose-at") + 1].split(",")) if "--lose-at" in args else set()
 out = f"{RAW}/{run}.jsonl"
@@ -181,6 +184,10 @@ def trial(i):
     head = git("rev-parse", "HEAD")
     prev_merge = ls_remote().get(f"refs/pull/{N}/merge")
     lost = None
+    dropped = None
+    if i in drop_at:
+        s0 = leader_site()
+        dropped = {"site": s0, "r": member(s0, "/bench_seed", {"prsyncDrop": 1}).get("v")}
     if i in lose_at:
         s0 = leader_site()
         lost = {"site": s0, "paused": queue("pause-delivery", s0)}
@@ -249,7 +256,7 @@ def trial(i):
         seen = None
     rec = {
         "i": i, "conflict": conflict, "base": base, "head": head, "push_s": round(t0 - t_push, 3),
-        "latency_s": None if seen is None else round(seen, 3), "polls": len(polls), "transfer": transferred, "lost": lost,
+        "latency_s": None if seen is None else round(seen, 3), "polls": len(polls), "transfer": transferred, "lost": lost, "dropped": dropped,
         "poll_s": round(sum(e - a for a, e, _ in polls) / max(1, len(polls)), 3), "parents": parents,
         "merge_ref": final.get(f"refs/pull/{N}/merge"), "head_ref": final.get(f"refs/pull/{N}/head"),
         "mergeable": v["mergeable"][0] if v and v["mergeable"] else None,

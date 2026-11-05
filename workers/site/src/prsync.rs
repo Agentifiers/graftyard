@@ -48,6 +48,18 @@ thread_local! {
     static DISPATCHERS: RefCell<HashMap<String, (u64, Dispatcher)>> = RefCell::default();
     /// Per member object of this isolate: the term whose first attempt is running, if one is.
     static RUNNING: RefCell<HashMap<String, u64>> = RefCell::default();
+    /// Test installs: first attempts to drop, per member object, as if each was lost with its isolate.
+    #[cfg(feature = "test-faults")]
+    static DROP_FIRST: RefCell<HashMap<String, u32>> = RefCell::default();
+}
+
+/// Test installs: this member drops its next `n` first attempts unrun (`/bench_seed {"prsyncDrop": n}`), so only the
+/// cursor and the re-send can cover their batches.
+#[cfg(feature = "test-faults")]
+pub fn drop_first(h: &Rc<Host<Repo>>, n: u32) -> Value {
+    let key = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+    DROP_FIRST.with(|d| d.borrow_mut().insert(key, n));
+    json!({ "prsyncDrop": n })
 }
 
 /// One queue message: a batch of one repository chain, and the chain's placement record as its leader joined with,
@@ -109,6 +121,13 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
     let waiting = d.waiting(cursor);
     DISPATCHERS.with(|m| m.borrow_mut().insert(key.clone(), (term, d)));
+    #[cfg(feature = "test-faults")]
+    if first.is_some()
+        && DROP_FIRST.with(|d| d.borrow_mut().get_mut(&key).filter(|n| **n > 0).map(|n| *n -= 1).is_some())
+    {
+        console_log!("prsync {} first dropped (test fault)", repo.0.0);
+        first = None;
+    }
     if let Some(m) = first {
         RUNNING.with(|r| r.borrow_mut().insert(key.clone(), term));
         h.stats.borrow_mut().prsync_first += 1;
