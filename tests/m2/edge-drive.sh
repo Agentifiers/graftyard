@@ -5,6 +5,9 @@
 set -u
 OUT=$1; REPO=$2; LINE=$3; shift 3
 TOK=$(sed -n "${LINE}p" ${TOKENS:-$HOME/.graft-integ/tokens.txt} | cut -d" " -f1)
+# Without a token gh sends an empty `Authorization` header and every reply is a correct 401, which reads like a server
+# fault (the `final3` run in tests/m2/results/m2-edge.md).
+[ -n "$TOK" ] || { echo "no token on line $LINE of ${TOKENS:-$HOME/.graft-integ/tokens.txt}" >&2; exit 2; }
 W=$(mktemp -d)
 export HOME=$W/home GH_CONFIG_DIR=$W/gh GH_HOST=graft-m1-edge.<workers-subdomain>.workers.dev GH_ENTERPRISE_TOKEN=$TOK
 export GIT_TERMINAL_PROMPT=0 GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_DEBUG=api
