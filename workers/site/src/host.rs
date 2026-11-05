@@ -1781,18 +1781,18 @@ impl<F: Family> Host<F> {
         if self.ticking.replace(true) {
             return;
         }
-        let h = self.clone();
+        // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
+        // that held it across one kept the whole reset member in the isolate's memory (F47).
+        let w = Rc::downgrade(self);
         spawn_local(async move {
             loop {
                 Delay::from(TICK).await;
-                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) {
-                    break;
-                }
-                if h.tick_once().is_err() {
-                    break;
+                let Some(h) = w.upgrade() else { return };
+                if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
+                    h.ticking.set(false);
+                    return;
                 }
             }
-            h.ticking.set(false);
         });
     }
 
