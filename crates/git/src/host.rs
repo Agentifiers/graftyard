@@ -545,6 +545,11 @@ impl ShardHost<'_> {
         self.call(method, &path, body, &h).await
     }
 
+    /// `git archive` of one commit of `network` (`codeload-archives`).
+    pub async fn archive(&self, network: NetworkId, query: &str) -> Result<Response, StoreError> {
+        self.call(Method::Get, &format!("/archive?net={}&{query}", network.0.0), None, &[]).await
+    }
+
     fn cursor_key(network: NetworkId) -> String {
         format!("cursor:{}", network.0.0)
     }

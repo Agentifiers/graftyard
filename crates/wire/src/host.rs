@@ -14,8 +14,8 @@ pub struct Host {
 pub enum HostError {
     /// Not a lower-case DNS name of labels of `[a-z0-9-]`: a port, a path, or a scheme included.
     NotAHostname,
-    /// Ends in `github.com`, `ghe.com`, or `localhost`, which clients classify as dotcom, GHE.com, or `github.localhost`
-    /// (`research/clients.md` #1 and #2).
+    /// Is or ends in `.github.com`, `.ghe.com`, or `.localhost`, which clients classify as dotcom, GHE.com, or
+    /// `github.localhost` (`research/clients.md` #1 and #2).
     NotGhes,
 }
 
@@ -33,9 +33,8 @@ impl Host {
         if name.len() > 253 || !labels.iter().all(label_ok) {
             return Err(HostError::NotAHostname);
         }
-        // SHARED's rule is textual ("may not end in"), so `notgithub.com` is refused too, though clients would call it
-        // GHES (`research/clients.md` #2 normalizes only `.github.com`).
-        if ["github.com", "ghe.com", "localhost"].iter().any(|s| name.ends_with(s)) {
+        // Whole labels only: clients classify `notgithub.com` as GHES (`research/clients.md` #2).
+        if ["github.com", "ghe.com", "localhost"].iter().any(|s| name == *s || name.ends_with(&format!(".{s}"))) {
             return Err(HostError::NotGhes);
         }
         if labels.len() < 2 {
@@ -216,7 +215,9 @@ mod tests {
             assert_eq!(Host::new(bad, false), Err(HostError::NotAHostname), "{bad}");
         }
         assert!(Host::new("github.example.com", false).is_ok(), "a `github.` label is fine");
-        assert_eq!(Host::new("notgithub.com", false), Err(HostError::NotGhes), "SHARED's rule is textual");
+        for ok in ["notgithub.com", "acme-ghe.com", "mylocalhost.example", "github.com.example.org"] {
+            assert!(Host::new(ok, false).is_ok(), "{ok} is GHES to every client");
+        }
         assert!(Host::new("graftyard.dev", true).is_ok());
     }
 

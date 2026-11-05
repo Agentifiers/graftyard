@@ -30,6 +30,7 @@
 //	POST /merge?net=N&base=B&head=H  the test merge of a pull request, in a quarantine: {"conflict": [paths]}, or
 //	                                 {"merge": oid, "pack": base64} once the tree-diff check passed, the pack holding
 //	                                 only the merge's new objects. The repository is not changed
+//	GET  /archive?net=N&commit=C&prefix=P&format=tar.gz|zip  `git archive` of C
 //	GET  /repos                      the LRU's view of the disk: {"disk": bytes the filesystem holds (or
 //	                                 GRAFT_DISK_BYTES), "repos": [{"network","bytes","used"}]}, where used is the
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
@@ -835,6 +836,32 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"merge": merge, "pack": pack})
 }
 
+// handleArchive answers `git archive` of one commit: ?net=&commit=&prefix=&format=tar.gz|zip (codeload-archives).
+// The bytes depend only on the tree, the commit's time, the prefix, and the format, so a rebuild equals the
+// ArchiveCache object it replaces.
+func handleArchive(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	commit, prefix, format := q.Get("commit"), q.Get("prefix"), q.Get("format")
+	if !hexRe.MatchString(commit) || (format != "tar.gz" && format != "zip") || strings.Contains(prefix, "..") {
+		fail(w, 400, "bad archive request")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	out, err := git(rp, nil, nil, "archive", "--format="+format, "--prefix="+prefix, commit)
+	if err != nil {
+		fail(w, 404, "%v", err)
+		return
+	}
+	w.Header().Set("content-type", "application/octet-stream")
+	w.Write(out)
+}
+
 func handleFsck(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
@@ -877,6 +904,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
 	m.HandleFunc("/fsck", handleFsck)
 	m.HandleFunc("/merge", handleMerge)
+	m.HandleFunc("/archive", handleArchive)
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	return m

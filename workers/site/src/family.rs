@@ -110,10 +110,14 @@ pub trait Family: 'static {
         Ok(())
     }
     /// A committed output's JSON. It takes the whole `Acked`, so a family can render from it what only `&Acked` may
-    /// build, as the repository's `report_status` bytes (`graftyard_git::group::PushReport::of`).
-    fn out_json(a: &raft::Acked<Out<Self>>) -> Value;
+    /// build, as the repository's `report_status` bytes (`graftyard_git::group::PushReport::of`), and the member's
+    /// fold at or after the output's index, which an issue command's reply reads.
+    fn out_json(fold: &Self::Fold, a: &raft::Acked<Out<Self>>) -> Value;
     /// `{"err": .., "status": 401 | 403 | 422}`.
     fn err_json(e: &Err<Self>) -> Value;
+    /// Before the member admits a command: work the command needs outside the fold, such as an issue command's
+    /// `BlobStore::confirm`.
+    async fn admit(_env: &worker::Env, _chain: ChainId, _cmd: &mut Self::C) {}
     /// What a `fresh` read answers for query `q`.
     fn read_json(fold: &Self::Fold, q: &Value) -> Value;
     /// The fold in the crate's codec, for another group's dependency read (`/dep`).
@@ -211,11 +215,14 @@ impl Family for Repo {
     type Fold = git::repo::RepoFold;
     type C = git::repo::RepoCmd;
 
-    /// 32.1, and 32.3 for the `PrSync` consumer's commands and the `TestMerged` and `ConsumerCursor` events. 32.2
-    /// waits for a release to enable it through `FormatsEnable`. This test build reads 32.3 before any `FormatsEnable`,
-    /// since only its own site scripts write it (`tests/m2/results/m2-wp5.md`, "Design gaps").
+    /// 32.1; 32.3 for the `PrSync` consumer's commands and the `TestMerged` and `ConsumerCursor` events; and 32.5 for
+    /// issue commands and the events of tags 17 to 20 they write. 32.2 waits for a release to enable it through
+    /// `FormatsEnable`. This test build reads 32.3 before any `FormatsEnable`, since only its own site scripts write it
+    /// (`tests/m2/results/m2-wp5.md`, "Design gaps"). It reads 32.5 so that a later `FormatsEnable` can let the edge
+    /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
+    /// format"). No site member hosts 32.4, the merge commands', yet.
     fn reads() -> Vec<Format> {
-        vec![git::repo::REPO_FORMAT_V1, git::prsync::REPO_FORMAT_V3]
+        vec![git::repo::REPO_FORMAT_V1, git::prsync::REPO_FORMAT_V3, git::issue_ops::call::REPO_FORMAT_ISSUES]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
     /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
@@ -398,24 +405,83 @@ impl Family for Repo {
         }
     }
     /// A push's `PushReport::of(&acked)`: the outcomes and the `report_status` bytes only an `Acked` can render. A
-    /// sync's output is `{"Sync": SyncOut}`.
-    fn out_json(a: &raft::Acked<git::repo::RepoOut>) -> Value {
+    /// sync's output is `{"Sync": SyncOut}`. An issue command's `{"issue": {"out", "reply"}}`, the client's reply
+    /// rendered from the `&Acked` over this member's tiers, which have applied the entry
+    /// (`graftyard_api::hosted::render_ok`).
+    fn out_json(fold: &git::repo::RepoFold, a: &raft::Acked<Out<Self>>) -> Value {
         match &a.out {
             git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
             git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
+            git::repo::RepoOut::Issue(o) => {
+                let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
+                    Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
+                    Err(e) => graftyard_api::hosted::WireReply {
+                        status: 500,
+                        headers: Vec::new(),
+                        body: Some(json!({ "message": e.to_string() })),
+                    },
+                };
+                json!({ "issue": { "out": format!("{:?}", o.out), "reply": reply } })
+            }
         }
     }
-    fn err_json(e: &git::repo::PushErr) -> Value {
-        let w = git::group::RefusedWire::of(e, 0);
-        json!({ "err": w.err, "status": w.status })
+    fn err_json(e: &Err<Self>) -> Value {
+        use git::repo::RepoErr;
+        match e {
+            RepoErr::Push(e) => {
+                let w = git::group::RefusedWire::of(e, 0);
+                json!({ "err": w.err, "status": w.status })
+            }
+            RepoErr::Issue { err, render } => {
+                let reply = serde_json::from_value::<graftyard_api::hosted::Render>(render.clone())
+                    .map(|r| graftyard_api::hosted::render_err(&r, err))
+                    .ok();
+                json!({ "err": format!("{err:?}"), "status": reply.as_ref().map_or(422, |r| r.status), "issue": reply })
+            }
+        }
+    }
+    fn needs_block(e: &Err<Self>) -> bool {
+        matches!(e, git::repo::RepoErr::Issue { err: git::issue_ops::IssueErr::NeedIdBlock, .. })
+    }
+    /// An issue command that names a blob: the `DurableBlob` again, from a HEAD of every bucket of the placement
+    /// (`BlobStore::confirm`), so `decide` refuses it unless two buckets in two regions hold the bytes (BF-25).
+    async fn admit(env: &worker::Env, chain: ChainId, cmd: &mut Self::C) {
+        let (git::repo::RepoCmd::Issue(c), ChainId::Repo(repo)) = (cmd, chain) else { return };
+        let Some(b) = c.op.blob().copied() else { return };
+        let Ok(site) = crate::SiteEnv::read(env) else { return };
+        let buckets: Vec<(graftyard_types::SiteId, git::host::R2)> = site
+            .sites
+            .0
+            .iter()
+            .filter_map(|s| env.bucket(&format!("BUCKET_{}", s.id.0)).ok().map(|b| (s.id, git::host::R2(b))))
+            .collect();
+        let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
+        let store = git::blob::BlobStore { sites: &site.sites, buckets: &refs, copies: git::Copies::TwoRegions };
+        match store.confirm(repo, b.oid, b.bytes).await {
+            Ok(d) => c.confirm(d),
+            // `decide` refuses the command `Unavailable`; the client's reply does not say why.
+            Err(e) => worker::console_log!("blob {} of {repo:?} not confirmed: {e:?}", b.oid.hex()),
+        }
     }
     /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier; with `{"q":
+    /// {"rows": true}}`, both tiers' rows at this index, at most `graftyard_api::hosted::ROWS_MAX`
+    /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads; with `{"q":
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
+        }
+        if q.get("rows").is_some() {
+            use graftyard_api::hosted::{ROWS_MAX, TierRows};
+            let mut budget = ROWS_MAX;
+            let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
+            let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
+            let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
+            let index = graftyard_fold::meta(&*fold.core).applied.0;
+            return serde_json::to_value(TierRows { index, core, meta: meta.map(|(m, _)| m), complete })
+                .unwrap_or(Value::Null);
         }
         if q.get("ranges").is_some() {
             return json!({ "promoted": fold.promoted(), "archived": fold.archived(), "first": fold.first_index().0 });
@@ -432,26 +498,38 @@ impl Family for Repo {
         identity_dep(chain, bytes)
     }
     /// `decode_commit`'s mapping: a `cmd` in a format this release does not read, or bytes that are no `Push` at
-    /// all (format 0.0), answers `Unsupported` and touches nothing.
+    /// all (format 0.0), answers `Unsupported` and touches nothing. An issue command names its format first.
     fn unreadable(body: &[u8]) -> Option<Value> {
+        let v: Value = serde_json::from_slice(body).ok()?;
+        if let Some(f) = v.pointer("/cmd/issue/format").and_then(Value::as_array) {
+            let n = |i: usize| f.get(i).and_then(Value::as_u64).unwrap_or(0) as u16;
+            return Some(json!({ "unsupported": { "family": n(0), "version": n(1) } }));
+        }
         let e = git::group::decode_commit(body, crate::host::RELEASE.id).err()?;
         serde_json::to_value(e).ok()
     }
     /// The committing leader marks the stored pack an ok push names, in each bucket its `sites` names, as
-    /// `graftyard_git::mark_committed`. A push whose every ref was refused marks nothing.
-    async fn after_ok(
-        env: worker::Env,
-        chain: ChainId,
-        cmd: git::repo::RepoCmd,
-        acked: raft::Acked<git::repo::RepoOut>,
-    ) -> usize {
-        let (git::repo::RepoCmd::Push(cmd), git::repo::RepoOut::Push(out)) = (&cmd, &acked.out) else { return 0 };
-        let (Some(pack @ git::PackRef::Stored { .. }), ChainId::Repo(repo)) = (&cmd.pack, chain) else { return 0 };
-        if !out.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) {
-            return 0;
-        }
-        let env = &env;
-        let Ok(site) = crate::SiteEnv::read(env) else { return 1 };
+    /// `graftyard_git::mark_committed`, and the blob an ok asset upload or LFS `verify` names, as
+    /// `graftyard_git::blob::mark_blob`. A push whose every ref was refused marks nothing.
+    async fn after_ok(env: worker::Env, chain: ChainId, cmd: Self::C, acked: raft::Acked<Out<Self>>) -> usize {
+        use git::repo::{RepoCmd, RepoOut};
+        let ChainId::Repo(repo) = chain else { return 0 };
+        let mark = match (&cmd, &acked.out) {
+            (RepoCmd::Push(p), RepoOut::Push(o)) if o.refs.iter().any(|(_, o)| *o == git::repo::RefOutcome::Ok) => {
+                match &p.pack {
+                    Some(pack @ git::PackRef::Stored { .. }) => Ok(pack),
+                    _ => return 0,
+                }
+            }
+            // The blob the member confirmed, whose sites are the buckets that hold it; the edge's names none for a
+            // `verify`.
+            (RepoCmd::Issue(c), RepoOut::Issue(_)) => match c.confirmed {
+                Some(d) => Err(d.blob()),
+                None => return 0,
+            },
+            _ => return 0,
+        };
+        let Ok(site) = crate::SiteEnv::read(&env) else { return 1 };
         let buckets: Vec<(graftyard_types::SiteId, git::host::R2)> = site
             .sites
             .0
@@ -459,7 +537,10 @@ impl Family for Repo {
             .filter_map(|s| env.bucket(&format!("BUCKET_{}", s.id.0)).ok().map(|b| (s.id, git::host::R2(b))))
             .collect();
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
-        git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await
+        match mark {
+            Ok(pack) => git::mark_committed(&refs, graftyard_types::NetworkId(repo.0), pack, chain, acked.index).await,
+            Err(b) => git::blob::mark_blob(&refs, repo, &b, chain, acked.index).await,
+        }
     }
     fn row_packs(events: &[git::repo::RepoEvent]) -> Value {
         json!(git::repo::packs_of(events))
@@ -568,7 +649,7 @@ impl Family for Register {
         }
         Ok(reg)
     }
-    fn out_json(a: &raft::Acked<bool>) -> Value {
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<bool>) -> Value {
         json!(a.out)
     }
     fn err_json(e: &RegErr) -> Value {
@@ -667,7 +748,7 @@ impl Family for Names {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::NamesFold> {
         Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
-    fn out_json(a: &raft::Acked<id::NamesOut>) -> Value {
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<id::NamesOut>) -> Value {
         serde_json::to_value(&a.out).unwrap_or(Value::Null)
     }
     fn err_json(e: &id::NamesErr) -> Value {
@@ -738,7 +819,7 @@ impl Family for Tokens {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::TokensFold> {
         Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
-    fn out_json(_a: &raft::Acked<()>) -> Value {
+    fn out_json(_fold: &Self::Fold, _a: &raft::Acked<()>) -> Value {
         Value::Null
     }
     fn err_json(e: &id::TokensErr) -> Value {
@@ -791,7 +872,7 @@ impl Family for Authz {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::AuthzFold> {
         Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
-    fn out_json(a: &raft::Acked<id::AuthzOut>) -> Value {
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<id::AuthzOut>) -> Value {
         serde_json::to_value(&a.out).unwrap_or(Value::Null)
     }
     fn err_json(e: &id::AuthzErr) -> Value {
@@ -854,7 +935,7 @@ impl Family for Ids {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::IdsFold> {
         Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
     }
-    fn out_json(a: &raft::Acked<id::IdBlock>) -> Value {
+    fn out_json(_fold: &Self::Fold, a: &raft::Acked<id::IdBlock>) -> Value {
         serde_json::to_value(a.out).unwrap_or(Value::Null)
     }
     fn err_json(e: &id::IdsErr) -> Value {

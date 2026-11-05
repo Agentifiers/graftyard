@@ -48,7 +48,7 @@ pub struct Compare {
 }
 
 /// The repository a request addresses, resolved by the edge from `o/r` (M1-WP1's lookup rule).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RepoRef {
     pub id: RepoId,
     pub owner: String,

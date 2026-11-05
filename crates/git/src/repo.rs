@@ -1093,26 +1093,37 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
         .collect()
 }
 
-/// What a repository member commits: a client's `Push`, or a consumer's `PrSync` (`crate::prsync`). A push keeps its
-/// wire form, the base64 of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is
-/// `{"prSync": ..}`, which only a member whose release reads `REPO_FORMAT_V3` decodes.
+/// What a repository member commits: a client's `Push`, a consumer's `PrSync` (`crate::prsync`), or an issue, pull
+/// request, release, or LFS command from the edge (`crate::issue_ops::call`). A push keeps its wire form, the base64
+/// of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is `{"prSync": ..}`, which only a member
+/// whose release reads `REPO_FORMAT_V3` decodes, and an issue command `{"issue": ..}`, which names its format first.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RepoCmd {
     Push(Push),
     Sync(crate::prsync::PrSync),
+    Issue(Box<crate::issue_ops::call::IssueCall>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RepoOut {
     Push(PushOut),
     Sync(crate::prsync::SyncOut),
+    Issue(crate::issue_ops::call::IssueCallOut),
+}
+
+/// An issue command's refusal carries its render request too, so the member renders the client's error reply.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepoErr {
+    Push(PushErr),
+    Issue { err: crate::issue_ops::IssueErr, render: serde_json::Value },
 }
 
 impl crate::smart::PushOutOf for RepoOut {
     fn push_out(&self) -> Option<&PushOut> {
         match self {
             RepoOut::Push(p) => Some(p),
-            RepoOut::Sync(_) => None,
+            RepoOut::Sync(_) | RepoOut::Issue(_) => None,
         }
     }
 }
@@ -1123,31 +1134,31 @@ impl Serialize for RepoCmd {
         #[serde(rename_all = "camelCase")]
         enum Tagged<'a> {
             PrSync(&'a crate::prsync::PrSync),
+            Issue(&'a crate::issue_ops::call::IssueCall),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
             RepoCmd::Sync(c) => Tagged::PrSync(c).serialize(s),
+            RepoCmd::Issue(c) => Tagged::Issue(c).serialize(s),
         }
     }
 }
 
+/// An issue command's own error is kept, so a format this release does not read says so.
 impl<'de> Deserialize<'de> for RepoCmd {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<RepoCmd, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        enum Tagged {
-            PrSync(crate::prsync::PrSync),
+        use serde::de::Error;
+        let v = serde_json::Value::deserialize(d)?;
+        let one = |k: &str| v.as_object().filter(|m| m.len() == 1).and_then(|m| m.get(k)).cloned();
+        if v.is_string() {
+            serde_json::from_value(v).map(RepoCmd::Push).map_err(D::Error::custom)
+        } else if let Some(c) = one("prSync") {
+            serde_json::from_value(c).map(RepoCmd::Sync).map_err(D::Error::custom)
+        } else if let Some(c) = one("issue") {
+            serde_json::from_value(c).map(|c| RepoCmd::Issue(Box::new(c))).map_err(D::Error::custom)
+        } else {
+            Err(D::Error::custom("not a repository command"))
         }
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Either {
-            Push(Push),
-            Tagged(Tagged),
-        }
-        Ok(match Either::deserialize(d)? {
-            Either::Push(p) => RepoCmd::Push(p),
-            Either::Tagged(Tagged::PrSync(c)) => RepoCmd::Sync(c),
-        })
     }
 }
 
@@ -1156,6 +1167,7 @@ impl Record for RepoCmd {
         match self {
             RepoCmd::Push(p) => p.encode(out),
             RepoCmd::Sync(c) => c.encode(out),
+            RepoCmd::Issue(c) => out.extend(serde_json::to_vec(c).expect("an issue command encodes")),
         }
     }
 }
@@ -1164,40 +1176,50 @@ impl Command for RepoCmd {
     type Fold = RepoFold;
     type Dep = IdentityDep;
     type Out = RepoOut;
-    type Err = PushErr;
+    type Err = RepoErr;
 
     fn format(&self) -> Format {
         match self {
             RepoCmd::Push(p) => p.format(),
             RepoCmd::Sync(c) => c.format(),
+            RepoCmd::Issue(_) => crate::issue_ops::call::REPO_FORMAT_ISSUES,
         }
     }
     fn tiers(&self) -> TierSet {
-        TierSet::CORE
+        match self {
+            RepoCmd::Push(_) | RepoCmd::Sync(_) => TierSet::CORE,
+            RepoCmd::Issue(c) => c.tiers(),
+        }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         match self {
             RepoCmd::Push(p) => p.deps(fold),
             RepoCmd::Sync(_) => SmallVec::new(),
+            RepoCmd::Issue(c) => c.deps(fold),
         }
     }
     fn decide(
         &self,
         s: &RepoScratch<'_>,
         deps: &[(ChainId, IdentityDep)],
-    ) -> Result<(SmallVec<[RepoEvent; 4]>, RepoOut), PushErr> {
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, RepoOut), RepoErr> {
         match self {
-            RepoCmd::Push(p) => p.decide(s, deps).map(|(e, o)| (e, RepoOut::Push(o))),
+            RepoCmd::Push(p) => p.decide(s, deps).map(|(e, o)| (e, RepoOut::Push(o))).map_err(RepoErr::Push),
             RepoCmd::Sync(c) => {
                 let (e, o) = c.decide_sync(s);
                 Ok((e, RepoOut::Sync(o)))
             }
+            RepoCmd::Issue(c) => c
+                .decide(s, deps)
+                .map(|(e, o)| (e, RepoOut::Issue(o)))
+                .map_err(|err| RepoErr::Issue { err, render: c.render.clone() }),
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
         match self {
             RepoCmd::Push(p) => RepoOut::Push(p.replay(events)),
             RepoCmd::Sync(c) => RepoOut::Sync(Command::replay(c, events)),
+            RepoCmd::Issue(c) => RepoOut::Issue(c.replay(events)),
         }
     }
 }
