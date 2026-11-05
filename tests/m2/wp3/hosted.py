@@ -698,6 +698,7 @@ def timer(run, trials):
         start = int(member(leader_site(), "/status", None)["v"].get("commit", 0))
         tag = format(int(time.time()) % 100000, "05")
         names = [f"{run}-{i}-{tag}-{k}" for k in (1, 2)]
+        w.fetch_main()
         for k, b in enumerate(names, 1):
             w.branch(b, {f"t/{i}/{k}.txt": f"{run} {i} {k} {time.time()}"})
         prs = parallel([lambda b=b: create_pr(w, f"{tempfile.gettempdir()}/wp3-t", b, b) for b in names])
