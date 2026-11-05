@@ -1015,6 +1015,12 @@ impl<F: Family> Host<F> {
         };
         let (r, mut out) = ready.persist(&mut store);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        // A fold read storage refused during `decide` or `apply`: nothing this input computed may leave.
+        if let Some(why) = F::lost(&core.m.group_fold().fold) {
+            drop(guard);
+            self.fail_lost(&why);
+            return Err(err(format!("fold storage lost: {why}")));
+        }
         if applied > applied0 {
             let events: usize = (applied0.0 + 1..=applied.0)
                 .filter_map(|x| core.m.entry_at(Index(x)))
@@ -1299,6 +1305,7 @@ impl<F: Family> Host<F> {
         let mut marks = Vec::new();
         let deps = out.deps;
         let catchup = out.catchup;
+        let mut lost = None;
         {
             let Ok(mut guard) = self.core.try_borrow_mut() else { return back };
             let Some(core) = guard.as_mut() else { return back };
@@ -1373,6 +1380,11 @@ impl<F: Family> Host<F> {
                                     (body, f.index())
                                 })
                             });
+                            // An answer read while storage refused a row is not sent: the caller sees a reset.
+                            if let Some(why) = F::lost(&core.m.group_fold().fold) {
+                                lost = Some(why);
+                                continue;
+                            }
                             let _ = tx.send(v);
                         }
                     }
@@ -1407,6 +1419,10 @@ impl<F: Family> Host<F> {
             for e in out.early.into_iter().chain(out.messages) {
                 if Some(e.to) == reply_to { back.push(e) } else { send.push(e) }
             }
+        }
+        if let Some(why) = lost {
+            self.fail_lost(&why);
+            return Vec::new();
         }
         for e in send {
             self.send(e);
@@ -1876,6 +1892,27 @@ impl<F: Family> Host<F> {
     fn fail(self: &Rc<Self>) {
         self.dying.set(true);
         abort(&self.state, "graftyard member storage write failed");
+    }
+
+    /// Whether a fold read storage refused (`Family::lost`); if so the object is resetting, and the caller must let
+    /// nothing it computed from the fold leave: no reply, no batch, no snapshot part.
+    pub fn fold_lost(self: &Rc<Self>) -> bool {
+        let why = self.core.try_borrow().ok().and_then(|c| c.as_ref().and_then(|c| F::lost(&c.m.group_fold().fold)));
+        match why {
+            Some(why) => {
+                self.fail_lost(&why);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A fold read storage refused (`Family::lost`): reset this object, as a failed write does. Only this member
+    /// resets; a panic would rebuild the wasm instance and reset every member in the isolate (F47's site a panic).
+    fn fail_lost(self: &Rc<Self>, why: &str) {
+        console_error!("member reset: fold storage lost: {why}");
+        self.dying.set(true);
+        abort(&self.state, "graftyard member fold storage lost");
     }
 
     /// The fault path: record the kill, wait until the row is durable, and reset the object after `delay`. Every

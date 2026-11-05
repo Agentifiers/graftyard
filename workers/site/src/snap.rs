@@ -315,6 +315,10 @@ async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
         Delay::from(std::time::Duration::ZERO).await;
     }
     job.cursor = sj.cursor().clone();
+    // Frames read while storage refused a row would upload a snapshot that lacks it.
+    if h.fold_lost() {
+        return Ok(false);
+    }
     while buf.len() >= PART_BYTES || (job.ended && !buf.is_empty()) {
         let n = buf.len().min(PART_BYTES);
         let part: Vec<u8> = buf.drain(..n).collect();
