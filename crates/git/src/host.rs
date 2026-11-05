@@ -12,8 +12,11 @@ use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
 use crate::ingest::{ChainLog, Load, LogPacks, rehydrate_plan, tail_start};
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
-use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
+use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, image_restart, region_check, renewal};
 use crate::store::marker_from_meta;
+
+/// The shard's storage key for the image reference its running container was started with.
+const STARTED_IMAGE: &str = "started_image";
 
 fn err(e: impl std::fmt::Display) -> StoreError {
     StoreError(e.to_string())
@@ -340,26 +343,57 @@ impl ShardHost<'_> {
         Err(StoreError(format!("container did not answer in 60 s: {last}")))
     }
 
-    fn start_once(&self) -> Result<(), StoreError> {
+    /// This version's image for `self.image`, and its reference as text.
+    fn configured_image(&self) -> Result<(wasm_bindgen::JsValue, String), StoreError> {
         let c = self.container()?;
-        if c.running() {
-            return Ok(());
-        }
-        // worker-rs 0.8.7's options carry no image or instance, so the object is built here.
-        let o = js_sys::Object::new();
-        let set = |k: &str, v: wasm_bindgen::JsValue| js_sys::Reflect::set(&o, &k.into(), &v).map(|_| ());
         let images = js_sys::Reflect::get(c.as_ref(), &"images".into()).map_err(|_| StoreError("images".into()))?;
         let image = js_sys::Reflect::get(&images, &self.image.into()).map_err(|_| StoreError("image".into()))?;
         if image.is_undefined() {
             return Err(StoreError(format!("no image {:?} in this version's image map", self.image)));
         }
+        let text = match image.as_string() {
+            Some(s) => s,
+            None => js_sys::JSON::stringify(&image).ok().and_then(|s| s.as_string()).unwrap_or_default(),
+        };
+        Ok((image, text))
+    }
+
+    /// The image reference the running container was started with, as the shard recorded it, and this version's.
+    pub async fn images(&self) -> Result<(Option<String>, String), StoreError> {
+        let started = self.state.storage().get(STARTED_IMAGE).await.map_err(worker_err)?;
+        Ok((started, self.configured_image()?.1))
+    }
+
+    /// Starts the container on this version's image if it is not running, and records that image.
+    async fn start_once(&self) -> Result<(), StoreError> {
+        let c = self.container()?;
+        if c.running() {
+            return Ok(());
+        }
+        let (image, text) = self.configured_image()?;
+        // worker-rs 0.8.7's options carry no image or instance, so the object is built here.
+        let o = js_sys::Object::new();
+        let set = |k: &str, v: wasm_bindgen::JsValue| js_sys::Reflect::set(&o, &k.into(), &v).map(|_| ());
         set("image", image)
             .and(set("instance", self.instance.into()))
             .and(set("enableInternet", false.into()))
             .map_err(|_| StoreError("start options".into()))?;
         let start = js_sys::Reflect::get(c.as_ref(), &"start".into()).map_err(|_| StoreError("start".into()))?;
         js_sys::Function::from(start).call1(c.as_ref(), &o).map_err(|e| StoreError(format!("start: {e:?}")))?;
-        Ok(())
+        // The put lands in the object's storage cache at once, so the next request already reads this image.
+        self.state.storage().put(STARTED_IMAGE, text).await.map_err(worker_err)
+    }
+
+    /// Stops a running container that another version's image map started. A new site-script version restarts no
+    /// running container (`tests/m0/results/container-survival.json`), so without this a shard keeps the old image
+    /// until its container stops, up to `WARM_FOR` after its last request.
+    async fn roll_image(&self) -> Result<bool, StoreError> {
+        let (started, configured) = self.images().await?;
+        if !image_restart(self.container()?.running(), started.as_deref(), &configured) {
+            return Ok(false);
+        }
+        self.container()?.destroy(Some("this version's image map names another image")).await.map_err(worker_err)?;
+        Ok(true)
     }
 
     /// Sets the container's inactivity timeout (the API's maximum, 6 h).
@@ -377,10 +411,11 @@ impl ShardHost<'_> {
     /// a container outside the site's container regions is replaced at most `REGION_RETRIES` times, then kept with
     /// an alarm (`check` is `Alarm`).
     pub async fn up(&self) -> Result<Started, StoreError> {
-        let was_running = self.container()?.running();
+        let rolled = self.roll_image().await?;
+        let was_running = !rolled && self.container()?.running();
         let mut replaced = 0;
         loop {
-            self.start_once()?;
+            self.start_once().await?;
             let health = self.wait_up().await?;
             let check = if was_running {
                 RegionCheck::Keep
@@ -426,6 +461,8 @@ impl ShardHost<'_> {
         let last: u64 = s.get("last_request").await.map_err(worker_err)?.unwrap_or(0);
         let r = renewal(now, Timestamp(last));
         if let Renewal::Renew { next } = r {
+            // An idle shard rolls too: its next request starts this version's image.
+            self.roll_image().await?;
             if self.container()?.running() {
                 self.set_inactivity(crate::shard::INACTIVITY.as_millis() as u64).await?;
             }

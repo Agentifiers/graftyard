@@ -44,8 +44,8 @@ pub use pack::{
 };
 pub use shard::{
     DISK_USE_PCT, DiskRepo, FANOUT_MAX, GitCacheShard, HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, REGION_RETRIES,
-    RENEW_EVERY, RegionCheck, Renewal, SHARDS, WARM_FOR, container_regions, evict_plan, image_for, may_start,
-    region_check, renewal, shards_for, validator, warm_sites,
+    RENEW_EVERY, RegionCheck, Renewal, SHARDS, WARM_FOR, container_regions, evict_plan, image_for, image_restart,
+    may_start, region_check, renewal, shards_for, validator, warm_sites,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Place, PlaceError, PutOutcome, Stage, TeeError, durable_sites, mark_committed,

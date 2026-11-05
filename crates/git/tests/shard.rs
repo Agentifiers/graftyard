@@ -214,3 +214,12 @@ fn evict_plan_breaks_ties_by_network_and_counts_the_incoming_rehydrate() {
     // A rehydrate of 750 MiB into a disk holding 900 MiB: everything not kept must go.
     assert_eq!(evict_plan(&tie, disk, 750 << 20, net(6)), [net(4), net(5)]);
 }
+
+#[test]
+fn a_running_container_restarts_only_when_the_image_map_names_another_image() {
+    let (old, new) = ("registry/git@sha256:b7bb", "registry/git@sha256:aa30");
+    assert!(image_restart(true, Some(old), new), "a new version's image rolls a running container");
+    assert!(!image_restart(true, Some(new), new), "the same image keeps it");
+    assert!(image_restart(true, None, new), "a container started before shards recorded their image rolls once");
+    assert!(!image_restart(false, Some(old), new), "a stopped container starts on the new image anyway");
+}

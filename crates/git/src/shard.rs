@@ -161,6 +161,13 @@ impl ImageSlot {
     }
 }
 
+/// Whether a running container must stop so the shard starts the image its version's map now names. `started` is the
+/// image reference the shard recorded when it started the container, `None` when it recorded none (a container started
+/// before shards recorded it), which counts as another image.
+pub fn image_restart(running: bool, started: Option<&str>, configured: &str) -> bool {
+    running && started != Some(configured)
+}
+
 /// Which image a shard starts. `day_step` is how far the site's `ContainerDay` has rolled (0 to 2, covering 10%,
 /// 50%, and 100% of the site's shards in rendezvous order); `None` before the day. A committed `Rollback` returns
 /// every shard to `git_prev`.
