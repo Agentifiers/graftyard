@@ -16,7 +16,9 @@ trial, so the batch for that head is handled by a dispatcher that did not see it
 queue 3 s after (the batch the leader sent is gone), resumes it, then transfers. Only a new leader that starts at the
 committed cursor sends that head's batch again. `--drop-first-at` makes the leader drop the trial's first attempt
 unrun (test-faults `/bench_seed {"prsyncDrop": 1}`), as if it was lost with its isolate: only the re-send through the
-queue covers it. `--reset-at` resets the new leader's predecessor (member `/reset`)
+queue covers it. `--purge-resend-at` also pauses delivery on the leader's site queue before the push, purges it
+38 s after (past the first re-send at `REDELIVER_AFTER_MS`), and resumes it, so only the second re-send covers the
+batch. BF24_DEADLINE (default 30 s) is how long a trial polls. `--reset-at` resets the new leader's predecessor (member `/reset`)
 after the transfer, so it restores from its storage, and the next transfer moves leadership back onto a restored
 member.
 
@@ -44,7 +46,7 @@ M0 = open(f"{ROOT}/tests/m0/.m0-token").read().strip()
 WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
 CHAIN = f"repo:{REPO_ID}"
 N = 1
-DEADLINE = 30.0
+DEADLINE = float(os.environ.get("BF24_DEADLINE", "30"))
 POLL_EVERY = 0.5
 
 run = sys.argv[1]
@@ -54,6 +56,7 @@ conflict_every = int(args[args.index("--conflict-every") + 1]) if "--conflict-ev
 transfer_at = set(int(x) for x in args[args.index("--transfer-at") + 1].split(",")) if "--transfer-at" in args else set()
 drop_at = set(int(x) for x in args[args.index("--drop-first-at") + 1].split(",")) if "--drop-first-at" in args else set()
 reset_at = set(int(x) for x in args[args.index("--reset-at") + 1].split(",")) if "--reset-at" in args else set()
+purge_resend_at = set(int(x) for x in args[args.index("--purge-resend-at") + 1].split(",")) if "--purge-resend-at" in args else set()
 lose_at = set(int(x) for x in args[args.index("--lose-at") + 1].split(",")) if "--lose-at" in args else set()
 out = f"{RAW}/{run}.jsonl"
 work = f"{RAW}/{run}.work"
@@ -188,7 +191,7 @@ def trial(i):
     if i in drop_at:
         s0 = leader_site()
         dropped = {"site": s0, "r": member(s0, "/bench_seed", {"prsyncDrop": 1}).get("v")}
-    if i in lose_at:
+    if i in lose_at or i in purge_resend_at:
         s0 = leader_site()
         lost = {"site": s0, "paused": queue("pause-delivery", s0)}
     t_push = time.time()
@@ -196,12 +199,21 @@ def trial(i):
     t0 = time.time()
     git("update-ref", "refs/remotes/origin/pr", head)
     transferred = None
-    if lost:
+    if lost and i in purge_resend_at:
+        # The poll runs meanwhile in its own thread, so the latency still counts from the push.
+        def purge_later(lost=lost, t0=t0):
+            time.sleep(max(0.0, t0 + 38 - time.time()))
+            lost["purged"] = queue("purge", lost["site"])
+            lost["resumed"] = queue("resume-delivery", lost["site"])
+            lost["purged_at_s"] = round(time.time() - t0, 3)
+        purger = threading.Thread(target=purge_later)
+        purger.start()
+    elif lost:
         time.sleep(3)
         lost["purged"] = queue("purge", lost["site"])
         lost["resumed"] = queue("resume-delivery", lost["site"])
         lost["purged_at_s"] = round(time.time() - t0, 3)
-    if i in transfer_at or lost:
+    if i in transfer_at or (lost and i not in purge_resend_at):
         s = leader_site()
         to = (s + 1) % 3
         try:
@@ -241,6 +253,8 @@ def trial(i):
                 stop.set()
     for th in threads:
         th.join()
+    if lost and i in purge_resend_at:
+        purger.join()
     hits = sorted(e for _, e, r in polls if shows(r, head, conflict, prev_merge))
     seen = hits[0] if hits else None
     shown = next((r for _, e, r in sorted(polls, key=lambda p: p[1]) if shows(r, head, conflict, prev_merge)), {})

@@ -20,7 +20,13 @@ sys.argv = [sys.argv[0], "audit", "0"]
 src = open(__file__.replace("audit.py", "bf24.py")).read().replace("\nmain()\n", "\n")
 g = {"__file__": __file__}
 exec(compile(src, "bf24.py", "exec"), g)
+# An idle group may have no leader until a client request elects one: a `git ls-remote` through the edge does.
 s = g["leader_site"]()
+if s is None:
+    g["ls_remote"]()
+    s = g["leader_site"]()
+if s is None:
+    sys.exit("no member of the chain leads")
 log = []
 at = lo
 while True:
