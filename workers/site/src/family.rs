@@ -481,7 +481,7 @@ impl Family for Repo {
         let raft::EntryBody::Events(evs) = &e.body else { return m };
         let refs: Vec<Value> = evs
             .iter()
-            .flat_map(|ev| ev.updates().iter())
+            .flat_map(|ev| ev.updates())
             .take(8)
             .map(|u| json!([u.name.display(), u.new.map(|o| o.hex())]))
             .collect();

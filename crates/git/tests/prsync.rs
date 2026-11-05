@@ -115,7 +115,7 @@ impl G {
     /// A member restored from what it stored, as a reset Durable Object is.
     fn restart(&mut self, s: SiteId) {
         self.boots += 1;
-        let (m, ready) = Member::restore(config(s), &self.disks[s.0 as usize], self.now, self.boots).unwrap();
+        let (m, ready) = Member::restore(config(s), self.disks[s.0 as usize].clone(), self.now, self.boots).unwrap();
         self.members[s.0 as usize] = Some(m);
         let ((), out) = ready.persist(&mut self.disks[s.0 as usize]);
         self.inbox.extend(out.early.into_iter().chain(out.messages));

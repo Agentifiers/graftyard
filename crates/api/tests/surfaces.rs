@@ -9,7 +9,9 @@ mod common;
 
 use common::*;
 use graftyard_api::exec::Request;
-use graftyard_api::graphql::{Plan, Target, plan, query, refused, render, render_merge, route};
+use graftyard_api::graphql::{
+    Plan, Target, merge_command, merge_request, plan, query, refused, refused_merge, render, render_merge, route,
+};
 use graftyard_api::rest::list_commit_statuses;
 use graftyard_api::view::Repo;
 use graftyard_api::wire::Page;
@@ -421,8 +423,8 @@ fn mutations_commit_then_render_from_acked() {
 }
 
 #[test]
-fn merge_plans_the_merge_command_and_renders_its_payload() {
-    let c = seeded();
+fn merge_commits_the_merge_command_and_renders_its_payload() {
+    let mut c = seeded();
     let (h, dir) = (host(), Dir::new(WRITER));
     let r = c.repo(0, &h, &dir);
     let d = doc("PullRequestMerge-1");
@@ -430,14 +432,65 @@ fn merge_plans_the_merge_command_and_renders_its_payload() {
     let req = Request::parse(&d.query, vars.clone(), None).unwrap();
     let p = plan(&req, &r).unwrap();
     assert_eq!(p.plan, Plan::Merge { n: IssueNumber(2), method: MergeMethod::Merge, expected_head: None });
-    let reply = render_merge(&req, &ack(()));
+    // A method the repository does not allow is refused before any commit.
+    let mut rebase = vars.clone().unwrap();
+    rebase["input"]["mergeMethod"] = json!("REBASE");
+    let rq = Request::parse(&d.query, Some(rebase), None).unwrap();
+    assert_eq!(plan(&rq, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
+    // The seeded rule requires `ci`, which passed, and conversation resolution, with none open: the merge commits.
+    let mr = merge_request(&p, &r).unwrap();
+    assert_eq!((mr.base_old, mr.head), (oid(1), oid(2)));
+    drop(r);
+    let out = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap();
+    let reply = render_merge(&req, &ack(out));
     assert_eq!(reply, json!({ "data": { "mergePullRequest": { "clientMutationId": null } } }));
     keep("PullRequestMerge-1", &d, &vars, &reply);
-    // A method the repository does not allow is refused before any commit.
-    let mut rebase = vars.unwrap();
-    rebase["input"]["mergeMethod"] = json!("REBASE");
-    let req = Request::parse(&d.query, Some(rebase), None).unwrap();
-    assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
+    let r = c.repo(0, &h, &dir);
+    assert_eq!(r.ref_value(&name("refs/heads/main")), Some(out.merge_commit));
+    let state = query(
+        &Request::parse(
+            "query { repository(owner: \"o\", name: \"r\") { pullRequest(number: 2) { state } } }",
+            None,
+            None,
+        )
+        .unwrap(),
+        Some(&r),
+    );
+    assert_eq!(state["data"]["repository"]["pullRequest"]["state"], "MERGED");
+    // A second merge of the merged pull request is refused before the git cache is asked.
+    let e = merge_request(&p, &r).unwrap_err();
+    assert_eq!(e["errors"][0]["message"], "Pull request is not open");
+}
+
+#[test]
+fn a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error() {
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let d = doc("PullRequestMerge-1");
+    let req = Request::parse(&d.query, with_ids(&d, &r), None).unwrap();
+    let p = plan(&req, &r).unwrap();
+    let mr = merge_request(&p, &r).unwrap();
+    drop(r);
+    // The base moved after the plan.
+    c.push("refs/heads/main", oid(9));
+    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap_err();
+    let reply = refused_merge(&p, &e);
+    assert_eq!(reply["errors"][0]["message"], "Base branch was modified. Review and try the merge again.");
+    assert_eq!(reply["errors"][0]["type"], "UNPROCESSABLE");
+    // The required check re-run as a new run, queued: refused with the protection text.
+    c.commit(WRITER, run(14, 2, "ci", None)).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let mr = merge_request(&p, &r).unwrap();
+    drop(r);
+    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap_err();
+    assert_eq!(refused_merge(&p, &e)["errors"][0]["message"], "Required status check \"ci\" is in progress.");
+    // A reader may not merge.
+    let r = c.repo(0, &h, &dir);
+    let mr = merge_request(&p, &r).unwrap();
+    drop(r);
+    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(READER))).unwrap_err();
+    assert_eq!(refused_merge(&p, &e)["errors"][0]["type"], "FORBIDDEN");
 }
 
 #[test]
