@@ -124,8 +124,10 @@ pub struct Stats {
     pub alarm_runs: u32,
     pub alarm_last: u64,
     pub alarm_arms: u32,
-    /// `PrSync` batches this member's leader alarm sent to its site's queue.
+    /// `PrSync` batches this member's leader alarm sent to its site's queue, the re-send path.
     pub prsync_sent: u32,
+    /// `PrSync` first attempts this member's leader alarm ran in band.
+    pub prsync_first: u32,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,

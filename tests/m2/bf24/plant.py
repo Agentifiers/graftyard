@@ -15,8 +15,8 @@ PLANTS = [
      "        self.scanned = self.scanned.max(cursor).max(if self.scanned == Index(0) { applied } else { Index(0) });\n"),
     ("a consumer that skips an event after a leader change: a batch starts at the dispatcher's last send, not the cursor",
      "crates/git/src/prsync.rs",
-     "        Some(SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() })",
-     "        let from = if self.sent_at == now.0 { cursor } else { cursor };\n        let prs: BTreeSet<IssueNumber> = self.pending.range(Index(self.sent.0.max(from.0) + 1)..).flat_map(|(_, v)| v.clone()).collect();\n        Some(SyncBatch { from, through: self.scanned, prs: prs.into_iter().collect() })"),
+     "        Some((SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() }, how))",
+     "        let from = if self.sent_at == now.0 { cursor } else { cursor };\n        let prs: BTreeSet<IssueNumber> = self.pending.range(Index(self.sent.0.max(from.0) + 1)..).flat_map(|(_, v)| v.clone()).collect();\n        Some((SyncBatch { from, through: self.scanned, prs: prs.into_iter().collect() }, how))"),
     ("double-applying a redelivered batch: decide records a test merge already recorded",
      "crates/git/src/prsync.rs",
      "            if head != m.head || recorded {",
@@ -53,6 +53,14 @@ PLANTS = [
      "crates/git/src/prsync.rs",
      "            events.push(RepoEvent::ConsumerCursor { consumer: Consumer::PrSync, through: t });",
      "            let _ = Consumer::PrSync;"),
+    ("the in-band path starves the re-send: every first attempt restarts the redelivery clock",
+     "crates/git/src/prsync.rs",
+     "        if how == Delivery::Again || !outstanding {",
+     "        if true {"),
+    ("a re-send goes in band again, not through the queue",
+     "crates/git/src/prsync.rs",
+     "        let how = if overdue {\n            Delivery::Again",
+     "        let how = if overdue {\n            Delivery::First"),
 ]
 
 only = int(sys.argv[1]) if sys.argv[1:] else None
