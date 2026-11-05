@@ -243,6 +243,10 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     .await;
     Ok(match r {
         Ok(done) => {
+            // The refusal's cause (`IssueErr`) is not in the client's reply, so it is logged.
+            if let Some(e) = done.pointer("/refused/err") {
+                worker::console_log!("issue command {} refused: {e}", c.rid);
+            }
             let wire = done
                 .pointer("/ok/out/issue/reply")
                 .or_else(|| done.pointer("/refused/issue"))

@@ -48,9 +48,10 @@ impl IssueCall {
         IssueCall { op, actor, request, render, confirmed: None }
     }
 
-    /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names.
+    /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
+    /// the sites the sender saw (none for an LFS `verify`) are replaced by the ones `BlobStore::confirm` found.
     pub fn confirm(&mut self, d: DurableBlob) {
-        if self.op.blob() == Some(&d.blob()) {
+        if self.op.blob().is_some_and(|b| same_bytes(b, &d.blob())) {
             self.confirmed = Some(d);
         }
     }
@@ -58,11 +59,15 @@ impl IssueCall {
     fn cmd(&self) -> Result<IssueCmd, IssueErr> {
         let confirmed = self.confirmed;
         let op = self.op.clone().map_blob(|b| match confirmed {
-            Some(d) if d.blob() == b => Ok(d),
+            Some(d) if same_bytes(&b, &d.blob()) => Ok(d),
             _ => Err(IssueErr::Unavailable),
         })?;
         Ok(IssueCmd { op, actor: self.actor.clone(), request: self.request })
     }
+}
+
+fn same_bytes(a: &BlobRef, b: &BlobRef) -> bool {
+    a.oid == b.oid && a.bytes == b.bytes
 }
 
 /// The JSON an `IssueCall` crosses the binding as. `format` comes first and is checked first, so a member that does
@@ -194,6 +199,45 @@ mod tests {
         v["issue"]["op"] = serde_json::json!("a field a later release added");
         let e = serde_json::from_value::<RepoCmd>(v).unwrap_err().to_string();
         assert!(e.contains("is not one this release reads"), "{e}");
+    }
+
+    /// The edge's `verify` names no sites, and an upload names the ones its put saw; the member's `confirm` names
+    /// the ones it found, which decide.
+    #[test]
+    fn a_confirmed_blob_is_matched_by_its_bytes_not_its_sites() {
+        use crate::mem::MemBucket;
+        use graftyard_types::{Region, Site, SiteId, SiteLink, SiteTable};
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: format!("s{id}"),
+            account: "x".into(),
+            region,
+            jurisdiction: None,
+            bucket: format!("b{id}"),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let sites = SiteTable(vec![site(0, Region::Enam), site(1, Region::Weur)]);
+        let (a, b) = (MemBucket::default(), MemBucket::default());
+        let bk = [(SiteId(0), &a), (SiteId(1), &b)];
+        let store = crate::blob::BlobStore { sites: &sites, buckets: &bk, copies: crate::Copies::TwoRegions };
+        let meta = crate::ObjectMeta {
+            chain: ChainId::Repo(graftyard_types::RepoId(DbId(7))),
+            request: RequestId(graftyard_types::Ulid(1)),
+        };
+        let placed = futures_executor::block_on(store.place(graftyard_types::RepoId(DbId(7)), b"obj", None, meta))
+            .unwrap()
+            .blob();
+        let found = futures_executor::block_on(store.confirm(graftyard_types::RepoId(DbId(7)), placed.oid, 3)).unwrap();
+        let mut c = call();
+        c.op = IssueOp::LfsObject(BlobRef { sites: Default::default(), ..placed });
+        c.confirm(found);
+        assert_eq!(c.cmd().unwrap().op.blob().map(|d| d.blob()), Some(found.blob()));
+        let mut wrong = call();
+        wrong.op = IssueOp::LfsObject(BlobRef { bytes: 4, ..placed });
+        wrong.confirm(found);
+        assert_eq!(wrong.cmd().unwrap_err(), IssueErr::Unavailable, "another size is another blob");
     }
 
     #[test]

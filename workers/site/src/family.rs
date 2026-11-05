@@ -436,8 +436,10 @@ impl Family for Repo {
             .collect();
         let refs: Vec<(graftyard_types::SiteId, &git::host::R2)> = buckets.iter().map(|(s, b)| (*s, b)).collect();
         let store = git::blob::BlobStore { sites: &site.sites, buckets: &refs, copies: git::Copies::TwoRegions };
-        if let Ok(d) = store.confirm(repo, b.oid, b.bytes).await {
-            c.confirm(d);
+        match store.confirm(repo, b.oid, b.bytes).await {
+            Ok(d) => c.confirm(d),
+            // `decide` refuses the command `Unavailable`; the client's reply does not say why.
+            Err(e) => worker::console_log!("blob {} of {repo:?} not confirmed: {e:?}", b.oid.hex()),
         }
     }
     /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier; with `{"q":
