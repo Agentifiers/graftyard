@@ -89,9 +89,34 @@ impl TierRows {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostedDir {
     pub home: Option<RepoRef>,
+    /// In the raft codec, as hex: the fold's maps have tuple and struct keys, which JSON cannot hold.
+    #[serde(with = "authz_hex")]
     pub authz: Option<AuthzFold>,
     pub logins: BTreeMap<i64, String>,
     pub viewer: Option<AccountId>,
+}
+
+mod authz_hex {
+    use graftyard_identity::AuthzFold;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(a: &Option<AuthzFold>, s: S) -> Result<S::Ok, S::Error> {
+        match a {
+            Some(a) => {
+                let b = graftyard_raft::codec::to_bytes(a);
+                s.serialize_some(&b.iter().map(|x| format!("{x:02x}")).collect::<String>())
+            }
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<AuthzFold>, D::Error> {
+        let Some(h) = Option::<String>::deserialize(d)? else { return Ok(None) };
+        let b: Option<Vec<u8>> =
+            (0..h.len()).step_by(2).map(|i| u8::from_str_radix(h.get(i..i + 2)?, 16).ok()).collect();
+        let b = b.ok_or_else(|| serde::de::Error::custom("authz is not hex"))?;
+        graftyard_raft::codec::from_bytes(&b).map(Some).map_err(serde::de::Error::custom)
+    }
 }
 
 impl Directory for HostedDir {

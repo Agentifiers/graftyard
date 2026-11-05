@@ -659,7 +659,21 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
     assert_eq!(again(&core, &CORE), again(&c.members[0].core, &CORE));
     assert_eq!(again(&meta, &METADATA), again(&c.members[0].meta, &METADATA));
     assert!(!t.core.is_empty() && !t.meta.as_ref().unwrap().is_empty());
-    let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(WRITER))), ..Default::default() };
+    // The owner's `Authz` fold crosses too; its maps have tuple keys, which plain JSON cannot hold.
+    let mut authz = graftyard_identity::AuthzFold::new(AccountId(DbId(1)));
+    authz.opened = Some(graftyard_identity::AccountKind::Org);
+    authz.grants.insert(
+        (dir.home().id, graftyard_identity::UserId(AccountId(DbId(WRITER)))),
+        graftyard_identity::RepoPermission::Write,
+    );
+    let hosted = HostedDir {
+        home: Some(dir.home()),
+        authz: Some(authz),
+        viewer: Some(AccountId(DbId(WRITER))),
+        ..Default::default()
+    };
+    let crossed: HostedDir = serde_json::from_value(serde_json::to_value(&hosted).unwrap()).unwrap();
+    assert_eq!(crossed, hosted);
     let d = doc("CommentCreate-1");
     let (planned, vars) = {
         let r = Repo { host: &h, at: dir.home(), core: &core, meta: &meta, dir: &hosted };
