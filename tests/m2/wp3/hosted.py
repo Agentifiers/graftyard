@@ -693,7 +693,7 @@ def timer(run, trials):
     `Step::Idle { at }` fires, about 60 s after the first `Enqueued`, with no entry in between. Then CI passes both
     tips and they land. Each trial records when the group built against the first `Enqueued`, on the leader's clock."""
     out, done = resume(run)
-    w = Work(run)
+    w = Work(f"{run}-{REPO}")
     for i in range(done, trials):
         start = int(member(leader_site(), "/status", None)["v"].get("commit", 0))
         tag = format(int(time.time()) % 100000, "05")
