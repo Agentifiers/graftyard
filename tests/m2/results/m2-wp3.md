@@ -31,3 +31,6 @@ Status: in progress. This file holds progress notes until the gates run.
 - `tests/m1/integ/seed.ts` (run from the main checkout, which holds the untracked `tests/m0/.m0-token`) created
   `wp6/wp3m` (196631) for direct merges and `wp6/wp3q` (196632) for the queue. It kept every existing repository and
   token.
+- Smoke. `gh pr merge 1 -R wp6/wp3m --merge` (gh 2.102.1) moved `main` to `ce3c3b0f`, whose parents are the old base
+  `74efdaa2` and the head `a6e16085`, committed by `graftyard-shard`. `gh pr view 1 --json state` answers `MERGED`.
+  gh ran without `GH_DEBUG=api`, so this run's replies were not captured; the gate runs below capture every reply.
