@@ -9,6 +9,7 @@ use graftyard_types::{ChainId, DbId, Digest, Index, NetworkId, RepoId, Tier};
 use serde::{Deserialize, Serialize};
 
 use crate::pack::PackId;
+use crate::refs::ObjectId;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
@@ -52,11 +53,11 @@ pub enum R2Key {
         oid: Digest,
     },
     /// A derived codeload archive in the warm site's bucket beside `CloneCache` entries, named by no entry and rebuilt
-    /// by `git archive` on a miss. `tree` is the commit's id joined to a hash of the archive's prefix
-    /// (`crate::blob::archive_key`).
+    /// by `git archive` on a miss. `prefix` is the SHA-256 of the archive's path prefix (`crate::blob::archive_key`).
     ArchiveCache {
         network: NetworkId,
-        tree: String,
+        commit: ObjectId,
+        prefix: Digest,
         format: crate::blob::ArchiveFormat,
     },
     /// Marker for a committed `Pack` or `Blob`. `R2Key::committed` is the only constructor that callers use, so a
@@ -114,8 +115,8 @@ impl fmt::Display for R2Key {
             }
             R2Key::CloneCache { network, key, replica } => write!(f, "clone/{}/{}/{replica}", network.0.0, key.hex()),
             R2Key::Blob { repo, oid } => write!(f, "blob/{}/{}", repo.0.0, oid.hex()),
-            R2Key::ArchiveCache { network, tree, format } => {
-                write!(f, "archive-cache/{}/{tree}.{}", network.0.0, format.ext())
+            R2Key::ArchiveCache { network, commit, prefix, format } => {
+                write!(f, "archive-cache/{}/{}-{}.{}", network.0.0, commit.hex(), prefix.hex(), format.ext())
             }
             R2Key::Committed { of } => match &**of {
                 R2Key::Pack { network, id } => write!(f, "committed/pack/{}/{id}", network.0.0),
@@ -180,11 +181,14 @@ impl FromStr for R2Key {
             },
             ["blob", r, o] => R2Key::Blob { repo: RepoId(id(r)?), oid: digest(o)? },
             ["archive-cache", n, file] => {
-                let (tree, ext) = file.split_once('.').ok_or_else(bad)?;
-                let ok = !tree.is_empty()
-                    && tree.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase() || b == b'-');
-                let format = crate::blob::ArchiveFormat::parse(ext).filter(|_| ok).ok_or_else(bad)?;
-                R2Key::ArchiveCache { network: net(n)?, tree: tree.to_owned(), format }
+                let (name, ext) = file.split_once('.').ok_or_else(bad)?;
+                let (commit, prefix) = name.split_once('-').ok_or_else(bad)?;
+                R2Key::ArchiveCache {
+                    network: net(n)?,
+                    commit: ObjectId::parse_hex(commit.as_bytes()).ok_or_else(bad)?,
+                    prefix: digest(prefix)?,
+                    format: crate::blob::ArchiveFormat::parse(ext).ok_or_else(bad)?,
+                }
             }
             ["committed", "pack", n, i] => R2Key::committed(R2Key::Pack { network: net(n)?, id: pack_id(i)? }).unwrap(),
             ["committed", "blob", r, o] => {
@@ -236,10 +240,16 @@ mod tests {
             R2Key::Blob { repo: RepoId(DbId(5)), oid: digest },
             R2Key::ArchiveCache {
                 network,
-                tree: format!("{}-0011223344556677", "ab".repeat(20)),
+                commit: ObjectId([0xab; 20]),
+                prefix: digest,
                 format: crate::blob::ArchiveFormat::TarGz,
             },
-            R2Key::ArchiveCache { network, tree: "ab".repeat(20), format: crate::blob::ArchiveFormat::Zip },
+            R2Key::ArchiveCache {
+                network,
+                commit: ObjectId([0xab; 20]),
+                prefix: digest,
+                format: crate::blob::ArchiveFormat::Zip,
+            },
             R2Key::committed(R2Key::Pack { network, id }).unwrap(),
             R2Key::committed(R2Key::Blob { repo: RepoId(DbId(5)), oid: digest }).unwrap(),
             R2Key::Upload { network, id },
@@ -303,6 +313,9 @@ mod tests {
             "archive-cache/77/abc.tar".to_owned(),
             "archive-cache/77/ABC.zip".to_owned(),
             "archive-cache/77/.zip".to_owned(),
+            format!("archive-cache/77/{}.zip", "a".repeat(40)),
+            format!("archive-cache/77/{}-{}.zip", "a".repeat(40), "a".repeat(16)),
+            format!("archive-cache/77/{}-{}.tgz", "a".repeat(40), "a".repeat(64)),
             format!("committed/archive-cache/77/{}.zip", "a".repeat(40)),
         ] {
             assert!(bad.parse::<R2Key>().is_err(), "{bad}");
