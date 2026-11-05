@@ -3,7 +3,7 @@
 // bindings"). A class must exist before another script binds it, so a site that is new to the install is first deployed
 // binding only its own classes. Usage:
 //   node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]
-//                                [--image <digest-pinned image>] [--anchor <install.toml>]
+//                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S).
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
@@ -142,4 +142,31 @@ for (const site of sites) {
 for (const site of sites) {
   writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, sites), null, 2));
   wrangler(["deploy", "-c", `${site.script}.jsonc`]);
+}
+
+// `--roll-shards <edge url>` (test installs only): a new version restarts no running shard container, and
+// `durable_object` containers take part in no Cloudflare rollout, so a shard moves to a new image only when its object
+// restarts the container. In a product install that is the site's `ContainerDay` (design/DESIGN.md, "Git cache shards
+// (derived)"), not built yet. Here every running instance whose image is not `--image` is torn down and caught up
+// again through the test edge's `/_bed/kill` and `/_bed/catchup`, so it starts on the new image. Needs BED_TOKEN_FILE.
+const ri = flags.indexOf("--roll-shards");
+if (ri >= 0) {
+  const edge = flags[ri + 1];
+  if (!flags.includes("--test-faults") || !image) throw new Error("--roll-shards needs --test-faults and --image");
+  const bed = readFileSync(process.env.BED_TOKEN_FILE, "utf8").trim();
+  const api = (path) => JSON.parse(execFileSync("curl", ["-sf", "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
+    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/containers/${path}`])).result;
+  const apps = api("applications");
+  for (const site of sites) {
+    const app = apps.find((a) => a.name === `${site.script}-gitshard`);
+    if (!app) continue;
+    for (const i of api(`applications/${app.id}/instances?per_page=1000`).instances) {
+      const m = i.name.match(/^git#(\d+)#net:(\d+)$/);
+      if (!m || i.status.state !== "running" || i.image === image) continue;
+      const q = `repo=${m[2]}&shard=${m[1]}`;
+      const call = (route) => execFileSync("curl", ["-s", "-m", "300", "-X", "POST", "-H", `x-bed-token: ${bed}`,
+        "-o", "/dev/null", "-w", "%{http_code}", `${edge}/_bed/${route}?${q}`]).toString();
+      console.log(`roll ${i.name} from ${i.image.slice(-12)}: kill ${call("kill")}, catchup ${call("catchup")}`);
+    }
+  }
 }
