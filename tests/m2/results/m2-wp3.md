@@ -66,3 +66,17 @@ Status: in progress. This file holds progress notes until the gates run.
   and BM-2 finish on this version.
 - Validation so far: the gh captures of `b0`, `bf23`, `q0`, `qk`, `bf21-wp3q`, and `bf21-wp3q2` give 291 GraphQL and
   35 REST replies, 0 failed.
+- BF-23 hosted, 100 trials on `wp3c` (`bf23.jsonl`, 34 merge, 33 squash, 33 rebase). In 100 of 100 trials, after
+  `ci` success and then a newer pending `ci`:
+  - `gh pr merge` refuses on BLOCKED.
+  - The edge's own `mergePullRequest` is refused by `decide`. The message is "Required status check "ci" is in
+    progress." in 90 trials, and "Base branch was modified" in 10 where a concurrent trial's merge moved `main`
+    first.
+  - `main` never takes the head's change, and the pull request stays OPEN.
+
+  After a newer success, 99 trials merge. Trial 86's final `gh pr merge --rebase` got a 503 from the git cache:
+  "Durable Object reset because its code was updated". No deploy ran then: `wrangler deployments list` still shows
+  `95edf2c1`/`c07c49a7`/`7e1cb3c7`/`3a048bed`. The reset is Cloudflare's own, not a gate failure, because the merge
+  is allowed after the new success and is not the stale-success merge BF-23 forbids. Rerun by hand, `gh pr merge
+  89 --rebase` exited 0 and the PR is MERGED. 23 trials retried "Base branch was modified" up to 3 times; their
+  4-way concurrency is the cause.
