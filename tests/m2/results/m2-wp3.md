@@ -55,3 +55,12 @@ Status: in progress. This file holds progress notes until the gates run.
   now 1, so the five build as one group, and CI reports the newest tip first.
 - BF-21's 100 runs are split over `wp3q`, `wp3q2`, `wp3q3`, and `wp3q4` (196635-196637 from `seed.ts`), 25 each.
   The leader is killed at global trials 9, 19, ... 99, alternating `after_quorum` and `before_commit`.
+- BM-2 (`hosted.py bm2 bm2 100` on `wp3b`) is running: three commands per trial straight to the leader's `/commit`, each
+  refused `StaleChain` so far, with the built chain unchanged.
+- BF-1's first try (`wp3f`, 196638) failed for a known reason. The running site build is `ce19408`'s, whose test
+  hold lets the next in-band attempt commit the held landing (entry 44, five `Merged` and `Landed`). The driver's
+  copy was then refused `NotQueued`; the `PrSync` batch committed alone (entry 52). `29b2f16` and `fa13e9f` keep a
+  held base idle until the driver releases it. BF-1 runs after a second site day carries them, once BF-21, BF-23,
+  and BM-2 finish on this version.
+- Validation so far: the gh captures of `b0`, `bf23`, `q0`, `qk`, `bf21-wp3q`, and `bf21-wp3q2` give 291 GraphQL and
+  35 REST replies, 0 failed.
