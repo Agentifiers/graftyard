@@ -25,6 +25,12 @@ impl<T> Acked<T> {
     pub fn quorum(&self) -> &QuorumProof {
         &self.quorum
     }
+
+    /// The same acknowledgment of a part of the output, such as one variant of a family's command output. The proof
+    /// travels with it, so a renderer of the part still runs only after the quorum.
+    pub fn map<U>(&self, f: impl FnOnce(&T) -> U) -> Acked<U> {
+        Acked { index: self.index, out: f(&self.out), quorum: self.quorum.clone() }
+    }
 }
 
 /// A decided command's ticket, once its entry at `index` committed with `proof`. A refusal resolves here too, never

@@ -342,7 +342,7 @@ pub fn refused(e: &IssueErr) -> Reply {
         IssueErr::NotFound => Reply::not_found(),
         IssueErr::Exists => invalid("tag_name", "already_exists"),
         IssueErr::Invalid(_) => invalid("tag_name", "invalid"),
-        IssueErr::NeedIdBlock => Reply::error(503, "Service Unavailable", "rest"),
+        IssueErr::NeedIdBlock | IssueErr::Unavailable => Reply::error(503, "Service Unavailable", "rest"),
         _ => Reply::error(422, "Unprocessable Entity", DOC),
     }
 }

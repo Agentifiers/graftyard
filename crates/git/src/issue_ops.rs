@@ -7,6 +7,8 @@
 //! `RequiredCheck` when a rule requires the check and the fresh core tier shows its SHA as the head of an open pull
 //! request, a merge-queue ref, or a protected branch tip.
 
+pub mod call;
+
 use graftyard_fold::{Overlay, Read, Tiered, Val, has};
 use graftyard_identity::{
     Actor, AuthzRead, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, check_credential,
@@ -96,9 +98,10 @@ impl<'a> RepoView<'a> {
     }
 }
 
-/// What one command asks for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum IssueOp {
+/// What one command asks for. `B` is `DurableBlob` where a command is decided, and `BlobRef` on the wire to a member,
+/// which rebuilds the `DurableBlob` with `BlobStore::confirm` before it admits the command (`map_blob`).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum IssueOp<B = DurableBlob> {
     OpenIssue {
         title: Box<str>,
         body: Box<str>,
@@ -201,13 +204,13 @@ pub enum IssueOp {
         name: Box<str>,
         label: Option<Box<str>>,
         content_type: Box<str>,
-        blob: DurableBlob,
+        blob: B,
     },
     DeleteAsset {
         id: AssetId,
     },
     /// An LFS object the transfer placed: the `LfsObject` row that `verify` and a download batch read.
-    LfsObject(DurableBlob),
+    LfsObject(B),
     LockLfs {
         path: Box<str>,
         refspec: Option<RefName>,
@@ -218,6 +221,54 @@ pub enum IssueOp {
         id: LockId,
         force: bool,
     },
+}
+
+impl<B> IssueOp<B> {
+    /// The blob the command names, if any.
+    pub fn blob(&self) -> Option<&B> {
+        match self {
+            IssueOp::PutAsset { blob, .. } | IssueOp::LfsObject(blob) => Some(blob),
+            _ => None,
+        }
+    }
+
+    /// The same command over another blob type: `f` runs on its blob, if it names one.
+    pub fn map_blob<C, E>(self, f: impl FnOnce(B) -> Result<C, E>) -> Result<IssueOp<C>, E> {
+        use IssueOp as O;
+        Ok(match self {
+            O::PutAsset { release, name, label, content_type, blob } => {
+                O::PutAsset { release, name, label, content_type, blob: f(blob)? }
+            }
+            O::LfsObject(b) => O::LfsObject(f(b)?),
+            O::OpenIssue { title, body, labels, assignees } => O::OpenIssue { title, body, labels, assignees },
+            O::OpenPr { head, base, title, body, draft, head_sha, base_sha } => {
+                O::OpenPr { head, base, title, body, draft, head_sha, base_sha }
+            }
+            O::Close { n } => O::Close { n },
+            O::Change { n, change } => O::Change { n, change },
+            O::Comment { on, body, reply_to } => O::Comment { on, body, reply_to },
+            O::EditComment { id, body } => O::EditComment { id, body },
+            O::DeleteComment { id } => O::DeleteComment { id },
+            O::Resolve { thread, resolved } => O::Resolve { thread, resolved },
+            O::Review { n, state, commit, body } => O::Review { n, state, commit, body },
+            O::Dismiss { review, message } => O::Dismiss { review, message },
+            O::RequestReviews { n, reviewers, removed } => O::RequestReviews { n, reviewers, removed },
+            O::DefineLabel { id, name, color, description } => O::DefineLabel { id, name, color, description },
+            O::DeleteLabel { id } => O::DeleteLabel { id },
+            O::ApplyLabels { n, add, remove } => O::ApplyLabels { n, add, remove },
+            O::SetRule { id, pattern, protection } => O::SetRule { id, pattern, protection },
+            O::Settings(s) => O::Settings(s),
+            O::RecordCheck(c) => O::RecordCheck(c),
+            O::RecordStatus(s) => O::RecordStatus(s),
+            O::PutRelease { id, tag, target, name, body, draft, prerelease, latest } => {
+                O::PutRelease { id, tag, target, name, body, draft, prerelease, latest }
+            }
+            O::DeleteRelease { id } => O::DeleteRelease { id },
+            O::DeleteAsset { id } => O::DeleteAsset { id },
+            O::LockLfs { path, refspec } => O::LockLfs { path, refspec },
+            O::UnlockLfs { id, force } => O::UnlockLfs { id, force },
+        })
+    }
 }
 
 /// A command on the repository chain. `request` is the edge's id for the client request.
@@ -256,6 +307,9 @@ pub enum IssueErr {
     OwnApproval,
     /// `owner` and `enterprise` change only by a transfer or an enterprise change.
     OwnerChange,
+    /// The member's metadata tier is still loading (`RepoScratch::view`), or the blob the command names is not in two
+    /// buckets: the client retries.
+    Unavailable,
 }
 
 fn actor_id(p: &Principal) -> Option<AccountId> {

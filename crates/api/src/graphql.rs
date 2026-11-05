@@ -278,8 +278,12 @@ fn ids(input: &Map<String, Value>, key: &str, ty: NodeType, r: &Repo<'_>) -> Res
 
 /// The GraphQL reply to a committed command's refusal, with GitHub's text where the design gives one.
 pub fn refused(p: &Planned, e: &graftyard_git::issue_ops::IssueErr) -> Value {
+    refused_field(&p.field, e)
+}
+
+/// `refused` from the mutation's root field alone, as the member that refused the command renders it.
+pub fn refused_field(f: &str, e: &graftyard_git::issue_ops::IssueErr) -> Value {
     use graftyard_git::issue_ops::IssueErr as E;
-    let f = &p.field;
     match e {
         E::Unauthorized(_) => json!({ "message": "Bad credentials", "status": "401" }),
         E::Forbidden => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
@@ -295,7 +299,7 @@ pub fn refused(p: &Planned, e: &graftyard_git::issue_ops::IssueErr) -> Value {
         E::OwnApproval => unprocessable(f, "Can not approve your own pull request"),
         E::OwnerChange => unprocessable(f, "owner"),
         // The host leases a block and re-sends; a client never sees this.
-        E::NeedIdBlock => json!({ "message": "Service Unavailable", "status": "503" }),
+        E::NeedIdBlock | E::Unavailable => json!({ "message": "Service Unavailable", "status": "503" }),
     }
 }
 
@@ -306,11 +310,29 @@ pub fn render(
     acked: &Acked<graftyard_git::issue_ops::IssueOut>,
     after: &Repo<'_>,
 ) -> Value {
-    req.run(&MutationRoot { p, out: &acked.out, r: after })
+    render_payload(req, &p.field, p.subject, acked, after)
+}
+
+/// `render` from what the payload reads of the plan: its root field and its issue. The leader that committed the
+/// command renders with this, since only it holds the `&Acked`.
+pub fn render_payload(
+    req: &Request<'_>,
+    field: &str,
+    subject: Option<IssueNumber>,
+    acked: &Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+) -> Value {
+    req.run(&MutationRoot { p: &Shown { field: field.to_owned(), subject }, out: &acked.out, r: after })
+}
+
+/// The part of a `Planned` its payload reads.
+struct Shown {
+    field: String,
+    subject: Option<IssueNumber>,
 }
 
 struct MutationRoot<'a> {
-    p: &'a Planned,
+    p: &'a Shown,
     out: &'a graftyard_git::issue_ops::IssueOut,
     r: &'a Repo<'a>,
 }
