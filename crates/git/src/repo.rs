@@ -20,13 +20,16 @@ use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
 use crate::blob::BlobRef;
+use crate::issues::MergeMethod;
 use crate::issues::{
     AssetId, AssetRecord, BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
     HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, PrCapture, ReleaseRecord,
     RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
 };
 use crate::key::R2Key;
+use crate::merge::{EngineVersion, TreeDiffDigest};
 use crate::pack::{Archived, PackId, PackRef, Promoted};
+use crate::queue::QueueEvent;
 use crate::refs::{Atomicity, ObjectId, RefName, RefUpdate};
 use crate::tiers::{RepoTiers, get_rec, ref_key, tier_of};
 
@@ -196,15 +199,35 @@ pub enum RepoEvent {
     /// Metadata [inference: SHARED's `RepoEvent` lists `LfsLock` but its `tier_of` names no tier; a lock gates no git
     /// operation here, since the server does not refuse a push to a locked path, so Core does not need it].
     LfsLock(LfsLockEvent),
+    /// Both tiers. SHARED's `Merged`: pull request `n` merged at `head`, `base` moving the base branch from the
+    /// pre-merge tip to the merge commit, `also` the head branch's deletion. `by` is who merged, which `PrState::Merged`
+    /// records [inference: SHARED's `Merged` has no actor field, but its `PrState::Merged` names one] (M2-WP3,
+    /// `crate::merge`).
+    Merged {
+        n: IssueNumber,
+        base: RefUpdate,
+        head: ObjectId,
+        method: MergeMethod,
+        also: Vec<RefUpdate>,
+        pack: Option<PackRef>,
+        verified: TreeDiffDigest,
+        engine: EngineVersion,
+        by: UserId,
+    },
+    /// Core. SHARED's `Queue`: the merge queue's events (`crate::queue`).
+    Queue(QueueEvent),
 }
 
 impl RepoEvent {
-    /// The ref updates the event applies: a `Refs`'s, a `Release`'s tag, and none for a `Refused`.
-    pub fn updates(&self) -> &[RefUpdate] {
+    /// The ref updates the event applies, in order: a `Refs`'s, a `Release`'s tag, a `Merged`'s base and then `also`,
+    /// a `Queue` event's queue refs, and none for a `Refused`.
+    pub fn updates(&self) -> Vec<&RefUpdate> {
         match self {
-            RepoEvent::Refs { updates, .. } => updates,
-            RepoEvent::Release { tag: Some(t), .. } => std::slice::from_ref(t),
-            _ => &[],
+            RepoEvent::Refs { updates, .. } => updates.iter().collect(),
+            RepoEvent::Release { tag: Some(t), .. } => vec![t],
+            RepoEvent::Merged { base, also, .. } => std::iter::once(base).chain(also).collect(),
+            RepoEvent::Queue(q) => q.refs().iter().collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -377,6 +400,11 @@ pub struct RepoScratch<'a> {
 }
 
 impl RepoScratch<'_> {
+    /// The core tier with the entry's earlier events on top.
+    pub fn core(&self) -> &dyn Read {
+        &self.core
+    }
+
     pub fn get(&self, name: &RefName) -> Option<ObjectId> {
         get_rec(&self.core, "ref", &[ref_key(name)])
     }
@@ -477,7 +505,7 @@ impl Scratch for RepoScratch<'_> {
         }
         let promoted: Option<Promoted> = get_rec(&self.core, "promoted", &[]);
         let updates = match ev {
-            RepoEvent::Refs { updates, .. } => updates,
+            RepoEvent::Refs { .. } | RepoEvent::Merged { .. } | RepoEvent::Queue(_) => ev.updates(),
             RepoEvent::Promoted(p) => return check_promoted(promoted.as_ref(), p),
             RepoEvent::Archived(a) => {
                 let prev: Option<Archived> = get_rec(&self.core, "archived", &[]);
@@ -925,6 +953,11 @@ impl Record for RepoEvent {
             }
             RepoEvent::LfsObject { blob, actor } => return tagged(out, 19, &(blob, actor)),
             RepoEvent::LfsLock(l) => return tagged(out, 20, l),
+            // Tags 21 and 22 are M2-WP5's `TestMerged` and `ConsumerCursor`.
+            RepoEvent::Merged { n, base, head, method, also, pack, verified, engine, by } => {
+                return tagged(out, 23, &(n, base, head, method, also, pack, verified, engine, by));
+            }
+            RepoEvent::Queue(q) => return tagged(out, 24, q),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1030,7 +1063,8 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            RepoEvent::Refs { pack, .. } => pack.clone(),
+            RepoEvent::Refs { pack, .. } | RepoEvent::Merged { pack, .. } => pack.clone(),
+            RepoEvent::Queue(QueueEvent::GroupBuilt { pack, .. }) => pack.clone(),
             _ => None,
         })
         .collect()

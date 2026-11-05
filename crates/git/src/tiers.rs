@@ -69,6 +69,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Release { tag: Some(_), .. } => both,
         RepoEvent::Release { tag: None, .. } => TierSet::METADATA,
         RepoEvent::ReleaseAsset { .. } | RepoEvent::LfsObject { .. } | RepoEvent::LfsLock(_) => TierSet::METADATA,
+        RepoEvent::Merged { .. } => both,
+        RepoEvent::Queue(_) => TierSet::CORE,
     }
 }
 
@@ -97,6 +99,9 @@ pub const CORE: Schema = Schema {
         t("promoted", &[]),
         t("archived", &[]),
         t("snapshot", &["tier", "to"]),
+        // Each base branch's merge queue in order, and each queued pull request's place in it (`crate::queue`).
+        t("queue", &["base", "seq"]),
+        t("queue_pr", &["n"]),
     ],
 };
 
@@ -167,7 +172,7 @@ pub fn get_rec<T: DeserializeOwned>(r: &(impl Read + ?Sized), table: &str, key: 
     }
 }
 
-fn put_rec<T: Serialize>(w: &mut dyn Rows, table: &str, key: Vec<Val>, rec: &T) {
+pub(crate) fn put_rec<T: Serialize>(w: &mut dyn Rows, table: &str, key: Vec<Val>, rec: &T) {
     let b = postcard::to_allocvec(rec).expect("a fold row encodes");
     w.put(table, key, vec![Val::Blob(b.into())]);
 }
@@ -517,22 +522,46 @@ fn pull_ref(name: &RefName) -> Option<IssueNumber> {
 }
 
 impl RepoTiers {
+    /// One ref update, and every open pull request whose head is that ref follows it.
+    fn write_ref(&self, w: &mut dyn Rows, u: &crate::refs::RefUpdate) {
+        match u.new {
+            Some(o) => put_rec(w, "ref", vec![ref_key(&u.name)], &o),
+            None => w.delete("ref", &[ref_key(&u.name)]),
+        }
+        let Some(new) = u.new else { return };
+        if let Some(n) = pull_ref(&u.name) {
+            move_head(w, n, new);
+        }
+        for n in pulls_from(w, self.repo, &u.name) {
+            move_head(w, n, new);
+        }
+    }
+
     fn write_core(&self, ev: &RepoEvent, at: Timestamp, w: &mut dyn Rows) {
         match ev {
             RepoEvent::Refs { updates, .. } => {
                 for u in updates {
-                    match u.new {
-                        Some(o) => put_rec(w, "ref", vec![ref_key(&u.name)], &o),
-                        None => w.delete("ref", &[ref_key(&u.name)]),
-                    }
-                    let Some(new) = u.new else { continue };
-                    if let Some(n) = pull_ref(&u.name) {
-                        move_head(w, n, new);
-                    }
-                    for n in pulls_from(w, self.repo, &u.name) {
-                        move_head(w, n, new);
+                    self.write_ref(w, u);
+                }
+            }
+            RepoEvent::Merged { n, head, base, by, .. } => {
+                for u in ev.updates() {
+                    self.write_ref(w, u);
+                }
+                let merge_commit = base.new.expect("a merge moves its base");
+                close_core(w, *n, PrState::Merged { at, by: *by, merge_commit, final_head: *head });
+            }
+            RepoEvent::Queue(q) => {
+                for u in q.refs() {
+                    self.write_ref(w, u);
+                    // A deleted queue ref's required checks go with it, so the core tier stays small.
+                    if u.new.is_none()
+                        && let Some(old) = u.expect
+                    {
+                        prune_required(w, &old);
                     }
                 }
+                crate::queue::write(w, q, at);
             }
             RepoEvent::Refused { .. } => {}
             RepoEvent::Promoted(p) => put_rec(w, "promoted", Vec::new(), p),
@@ -725,7 +754,7 @@ impl RepoTiers {
                     );
                 }
             }
-            RepoEvent::PrClosed { n, .. } => touch(w, *n, &|r| {
+            RepoEvent::PrClosed { n, .. } | RepoEvent::Merged { n, .. } => touch(w, *n, &|r| {
                 r.open = false;
                 r.closed = Some(at);
             }),

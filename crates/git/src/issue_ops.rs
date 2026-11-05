@@ -60,6 +60,11 @@ impl<'a> RepoView<'a> {
         &self.core
     }
 
+    /// The chain's own repository.
+    pub fn repo(&self) -> graftyard_types::RepoId {
+        self.tiers.repo
+    }
+
     pub fn meta(&self) -> &dyn Read {
         &self.meta
     }
@@ -756,7 +761,7 @@ fn text_ok(title: &str, body: &str) -> Result<(), IssueErr> {
 
 /// The actor's permission on the repository: `Admin` for an owner admin, its grant otherwise, and `Read` for anyone
 /// signed in on a public repository.
-fn permission(actor: &Principal, v: &RepoView<'_>, authz: Option<&dyn AuthzRead>) -> Option<RepoPermission> {
+pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, authz: Option<&dyn AuthzRead>) -> Option<RepoPermission> {
     let Actor::User(user) = actor.actor else { return None };
     let authz = authz.filter(|a| a.owner() == Some(v.owner()))?;
     if authz.is_admin(user) {
