@@ -522,6 +522,30 @@ impl ShardHost<'_> {
         r.json().await.map_err(worker_err)
     }
 
+    /// `GitCacheShard::merge` for a real merge or a merge-queue group: each head in turn on the previous result, from
+    /// `base`, by `method` (the container's `/merge` with `method`; `crate::merge_cache`).
+    pub async fn merge_chain(
+        &self,
+        network: NetworkId,
+        base: crate::refs::ObjectId,
+        heads: &[(crate::issues::IssueNumber, crate::refs::ObjectId)],
+        method: crate::issues::MergeMethod,
+    ) -> Result<crate::merge_cache::ChainAnswer, StoreError> {
+        let q = crate::merge_cache::chain_query(base, heads, method);
+        let mut r = self.ok(Method::Post, &format!("/merge?net={}&{q}", network.0.0), None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
+    /// `GitCacheShard::merge` as SHARED names it: the `MergePlan` of one pull request onto its base's tip.
+    pub async fn merge_plan(
+        &self,
+        network: NetworkId,
+        req: &crate::merge::MergeRequest,
+    ) -> Result<Result<crate::merge::MergePlan, crate::merge_cache::CacheError>, StoreError> {
+        let a = self.merge_chain(network, req.base_old, &[(req.n, req.head)], req.method).await?;
+        Ok(a.merge_plan(req))
+    }
+
     /// `GitCacheShard::upload_pack`, as smart HTTP: `info_refs` for the advertisement, else one stateless-rpc round.
     /// The caller passes the client's `Git-Protocol` header through.
     pub async fn upload_pack(

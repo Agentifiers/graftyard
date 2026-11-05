@@ -178,6 +178,8 @@ pub enum What {
     LfsUnlocked {
         lock: Value,
     },
+    /// `PUT /repos/{o}/{r}/pulls/{n}/merge`.
+    RestMerge,
 }
 
 /// The render request an issue command carries to its leader.
@@ -251,6 +253,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::LfsVerified => WireReply::of(&crate::lfs::verified(acked)),
         What::LfsLocked => WireReply::of(&crate::lfs::locked(acked, &r)),
         What::LfsUnlocked { lock } => WireReply::of(&crate::lfs::unlocked(acked, lock.clone())),
+        What::RestMerge => WireReply::of(&Reply::error(500, "a merge rendered as an issue command", "rest")),
     }
 }
 
@@ -261,5 +264,54 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::ReleaseCreated | What::ReleaseUpdated | What::Deleted => WireReply::of(&crate::release::refused(e)),
         What::LfsVerified => WireReply::of(&crate::lfs::not_verified()),
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
+        What::RestMerge => WireReply::of(&Reply::error(422, "Validation Failed", "rest")),
+    }
+}
+
+// ---- merges ----
+
+/// The reply to a committed merge command, from its `&Acked` and the leader's core tier after the entry applied: the
+/// GraphQL payload, or REST's `pull-request-merge-result`.
+pub fn render_merge_ok(
+    render: &Render,
+    acked: &Acked<graftyard_git::merge::MergeCmdOut>,
+    core: &dyn Read,
+) -> WireReply {
+    use graftyard_git::merge::{MergeCmdOut, MergeOut};
+    let Some(at) = render.dir.home.clone() else { return WireReply::of(&Reply::error(500, "no repository", "rest")) };
+    let Ok(host) = Host::new(&render.host, render.isolation) else {
+        return WireReply::of(&Reply::error(500, "bad host", "rest"));
+    };
+    let meta = MemStore::default();
+    let r = Repo { host: &host, at, core, meta: &meta, dir: &render.dir };
+    match (&render.what, &acked.out) {
+        (What::RestMerge, MergeCmdOut::Merged(o)) => WireReply::of(&Reply::json(
+            200,
+            json!({ "sha": o.merge_commit.hex(), "merged": true, "message": "Pull Request successfully merged" }),
+        )),
+        (What::Graphql { query, variables, field, subject }, out) => {
+            match Request::parse(query, variables.as_object().cloned(), None) {
+                Ok(req) => graphql(match out {
+                    MergeCmdOut::Merged(o) => crate::graphql::render_merge(&req, &acked.map(|_| MergeOut { ..*o })),
+                    _ => crate::graphql::render_queued(
+                        &req,
+                        field,
+                        IssueNumber(subject.unwrap_or(0)),
+                        &acked.map(|_| ()),
+                        &r,
+                    ),
+                }),
+                Err(e) => graphql(json!({ "errors": [e.json()] })),
+            }
+        }
+        _ => WireReply::of(&Reply::error(500, "a merge reply of another kind", "rest")),
+    }
+}
+
+/// The reply to a refused merge command: GraphQL's error with GitHub's text, or REST's 405, 409, 403, or 404.
+pub fn render_merge_err(render: &Render, e: &graftyard_git::merge::MergeError) -> WireReply {
+    match &render.what {
+        What::Graphql { field, .. } => graphql(crate::graphql::refused_merge_field(field, e)),
+        _ => WireReply::of(&crate::rest::refused_merge(e)),
     }
 }

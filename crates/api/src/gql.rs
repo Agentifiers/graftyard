@@ -415,7 +415,7 @@ impl<'r> Node<'r> {
             },
             "maintainerCanModify" => leaf(false),
             "autoMergeRequest" => Out::Null,
-            "isInMergeQueue" => leaf(false),
+            "isInMergeQueue" => leaf(graftyard_git::queue::queued(r.core, n).is_some()),
             "isMergeQueueEnabled" => leaf(r.protections(&pull.base).iter().any(|p| p.merge_queue.is_some())),
             "mergeable" => leaf(self.mergeable()),
             "mergeStateStatus" => leaf(self.merge_state()),

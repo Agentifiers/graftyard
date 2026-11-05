@@ -423,6 +423,19 @@ impl Family for Repo {
                 };
                 json!({ "issue": { "out": format!("{:?}", o.out), "reply": reply } })
             }
+            git::repo::RepoOut::Merge(o) => {
+                let reply = (!o.render.is_null()).then(|| {
+                    match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
+                        Ok(r) => graftyard_api::hosted::render_merge_ok(&r, &a.map(|_| o.out.clone()), &fold.core),
+                        Err(e) => graftyard_api::hosted::WireReply {
+                            status: 500,
+                            headers: Vec::new(),
+                            body: Some(json!({ "message": e.to_string() })),
+                        },
+                    }
+                });
+                json!({ "merge": { "out": o.out, "reply": reply } })
+            }
         }
     }
     fn err_json(e: &Err<Self>) -> Value {
@@ -437,6 +450,15 @@ impl Family for Repo {
                     .map(|r| graftyard_api::hosted::render_err(&r, err))
                     .ok();
                 json!({ "err": format!("{err:?}"), "status": reply.as_ref().map_or(422, |r| r.status), "issue": reply })
+            }
+            // `refusal` is what the `MergeQueue` consumer reads back for `on_refused`.
+            RepoErr::Merge { n, err, render } => {
+                let reply = serde_json::from_value::<graftyard_api::hosted::Render>(render.clone())
+                    .map(|r| graftyard_api::hosted::render_merge_err(&r, err))
+                    .ok();
+                let refusal = git::merge_call::MergeRefusal { n: *n, err: err.clone() };
+                json!({ "err": format!("{err:?}"), "status": reply.as_ref().map_or(422, |r| r.status),
+                    "merge": { "refusal": refusal, "reply": reply } })
             }
         }
     }

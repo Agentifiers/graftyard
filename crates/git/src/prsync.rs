@@ -52,10 +52,10 @@ pub const WAIT_MS: i64 = 5_000;
 /// One Queue message: the pull requests the entries `(from, through]` touched. `from` is the committed cursor when
 /// the leader sent it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SyncBatch {
+pub struct SyncBatch<T = IssueNumber> {
     pub from: Index,
     pub through: Index,
-    pub prs: Vec<IssueNumber>,
+    pub prs: Vec<T>,
 }
 
 /// The pull requests an entry asks `PrSync` to look at: a push to an open pull request's head branch, an open, or a
@@ -88,20 +88,26 @@ pub enum Delivery {
     Again,
 }
 
-/// The leader's half of the cursor, in memory only: `scanned` is the last entry read, `pending` the pull requests
-/// each unhandled entry touched, `sent` the last batch's `through`, `sent_at` when the work the cursor has not passed
+/// The leader's half of the cursor, in memory only: `scanned` is the last entry read, `pending` what each unhandled
+/// entry touched (pull requests for `PrSync`, base branches for `MergeQueue`), `sent` the last batch's `through`, `sent_at` when the work the cursor has not passed
 /// was first handed out, or last sent again, and `running` when the first attempt in flight started. Nothing here
 /// outlives the leadership; the committed cursor is where a new one starts.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Dispatcher {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Dispatcher<T = IssueNumber> {
     scanned: Index,
-    pending: BTreeMap<Index, Vec<IssueNumber>>,
+    pending: BTreeMap<Index, Vec<T>>,
     sent: Index,
     sent_at: u64,
     running: Option<u64>,
 }
 
-impl Dispatcher {
+impl<T> Default for Dispatcher<T> {
+    fn default() -> Dispatcher<T> {
+        Dispatcher { scanned: Index(0), pending: BTreeMap::new(), sent: Index(0), sent_at: 0, running: None }
+    }
+}
+
+impl<T: Ord + Clone> Dispatcher<T> {
     /// The entries to read before `batch`: `(scanned, applied]`. A dispatcher behind the committed cursor, a new
     /// leader's, starts at the cursor; entries the cursor passed are dropped.
     pub fn to_read(&mut self, cursor: Index, applied: Index) -> Option<(Index, Index)> {
@@ -111,7 +117,7 @@ impl Dispatcher {
     }
 
     /// Records what entry `index` touched. Entries come in order, right after `to_read`.
-    pub fn read(&mut self, index: Index, prs: Vec<IssueNumber>) {
+    pub fn read(&mut self, index: Index, prs: Vec<T>) {
         debug_assert_eq!(index.0, self.scanned.0 + 1, "entries are read in order");
         self.scanned = index;
         if !prs.is_empty() {
@@ -127,7 +133,7 @@ impl Dispatcher {
     /// counts as lost, so it no longer holds the work behind it. A batch always starts at the
     /// committed cursor and names every pull request after it, so no entry between the cursor and `through` goes
     /// unhandled, whoever led before.
-    pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<(SyncBatch, Delivery)> {
+    pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<(SyncBatch<T>, Delivery)> {
         if self.scanned <= cursor {
             return None;
         }
@@ -154,7 +160,7 @@ impl Dispatcher {
             self.sent_at = now.0;
         }
         self.sent = self.scanned;
-        let prs: BTreeSet<IssueNumber> = self.pending.values().flatten().copied().collect();
+        let prs: BTreeSet<T> = self.pending.values().flatten().cloned().collect();
         Some((SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() }, how))
     }
 

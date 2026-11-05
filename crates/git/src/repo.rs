@@ -1096,13 +1096,15 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
 /// What a repository member commits: a client's `Push`, a consumer's `PrSync` (`crate::prsync`), or an issue, pull
 /// request, release, or LFS command from the edge (`crate::issue_ops::call`). A push keeps its wire form, the base64
 /// of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is `{"prSync": ..}`, which only a member
-/// whose release reads `REPO_FORMAT_V3` decodes, and an issue command `{"issue": ..}`, which names its format first.
+/// whose release reads `REPO_FORMAT_V3` decodes, and an issue command `{"issue": ..}`, which names its format first, as does a merge command `{"merge": ..}` (32.4).
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RepoCmd {
     Push(Push),
     Sync(crate::prsync::PrSync),
     Issue(Box<crate::issue_ops::call::IssueCall>),
+    /// A merge or merge-queue command (`crate::merge_call`), `{"merge": ..}`, format 32.4.
+    Merge(Box<crate::merge_call::MergeCall>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1110,6 +1112,7 @@ pub enum RepoOut {
     Push(PushOut),
     Sync(crate::prsync::SyncOut),
     Issue(crate::issue_ops::call::IssueCallOut),
+    Merge(crate::merge_call::MergeCallOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -1117,13 +1120,14 @@ pub enum RepoOut {
 pub enum RepoErr {
     Push(PushErr),
     Issue { err: crate::issue_ops::IssueErr, render: serde_json::Value },
+    Merge { n: crate::issues::IssueNumber, err: crate::merge::MergeError, render: serde_json::Value },
 }
 
 impl crate::smart::PushOutOf for RepoOut {
     fn push_out(&self) -> Option<&PushOut> {
         match self {
             RepoOut::Push(p) => Some(p),
-            RepoOut::Sync(_) | RepoOut::Issue(_) => None,
+            RepoOut::Sync(_) | RepoOut::Issue(_) | RepoOut::Merge(_) => None,
         }
     }
 }
@@ -1135,11 +1139,13 @@ impl Serialize for RepoCmd {
         enum Tagged<'a> {
             PrSync(&'a crate::prsync::PrSync),
             Issue(&'a crate::issue_ops::call::IssueCall),
+            Merge(&'a crate::merge_call::MergeCall),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
             RepoCmd::Sync(c) => Tagged::PrSync(c).serialize(s),
             RepoCmd::Issue(c) => Tagged::Issue(c).serialize(s),
+            RepoCmd::Merge(c) => Tagged::Merge(c).serialize(s),
         }
     }
 }
@@ -1156,6 +1162,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(RepoCmd::Sync).map_err(D::Error::custom)
         } else if let Some(c) = one("issue") {
             serde_json::from_value(c).map(|c| RepoCmd::Issue(Box::new(c))).map_err(D::Error::custom)
+        } else if let Some(c) = one("merge") {
+            serde_json::from_value(c).map(|c| RepoCmd::Merge(Box::new(c))).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -1168,6 +1176,7 @@ impl Record for RepoCmd {
             RepoCmd::Push(p) => p.encode(out),
             RepoCmd::Sync(c) => c.encode(out),
             RepoCmd::Issue(c) => out.extend(serde_json::to_vec(c).expect("an issue command encodes")),
+            RepoCmd::Merge(c) => c.cmd.encode(out),
         }
     }
 }
@@ -1183,12 +1192,14 @@ impl Command for RepoCmd {
             RepoCmd::Push(p) => p.format(),
             RepoCmd::Sync(c) => c.format(),
             RepoCmd::Issue(_) => crate::issue_ops::call::REPO_FORMAT_ISSUES,
+            RepoCmd::Merge(c) => c.cmd.format(),
         }
     }
     fn tiers(&self) -> TierSet {
         match self {
             RepoCmd::Push(_) | RepoCmd::Sync(_) => TierSet::CORE,
             RepoCmd::Issue(c) => c.tiers(),
+            RepoCmd::Merge(c) => c.cmd.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -1196,6 +1207,7 @@ impl Command for RepoCmd {
             RepoCmd::Push(p) => p.deps(fold),
             RepoCmd::Sync(_) => SmallVec::new(),
             RepoCmd::Issue(c) => c.deps(fold),
+            RepoCmd::Merge(c) => c.cmd.deps(fold),
         }
     }
     fn decide(
@@ -1213,6 +1225,11 @@ impl Command for RepoCmd {
                 .decide(s, deps)
                 .map(|(e, o)| (e, RepoOut::Issue(o)))
                 .map_err(|err| RepoErr::Issue { err, render: c.render.clone() }),
+            RepoCmd::Merge(c) => c
+                .cmd
+                .decide(s, deps)
+                .map(|(e, out)| (e, RepoOut::Merge(crate::merge_call::MergeCallOut { out, render: c.render.clone() })))
+                .map_err(|(n, err)| RepoErr::Merge { n, err, render: c.render.clone() }),
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -1220,6 +1237,9 @@ impl Command for RepoCmd {
             RepoCmd::Push(p) => RepoOut::Push(p.replay(events)),
             RepoCmd::Sync(c) => RepoOut::Sync(Command::replay(c, events)),
             RepoCmd::Issue(c) => RepoOut::Issue(c.replay(events)),
+            RepoCmd::Merge(c) => {
+                RepoOut::Merge(crate::merge_call::MergeCallOut { out: c.cmd.replay(events), render: c.render.clone() })
+            }
         }
     }
 }

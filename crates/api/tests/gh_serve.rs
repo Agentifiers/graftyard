@@ -174,6 +174,9 @@ fn serve() {
                                 }
                             }
                         }
+                        Plan::Enqueue { .. } | Plan::Dequeue { .. } => {
+                            json!({ "errors": [{ "message": "no queue here" }] })
+                        }
                         Plan::Issue(op) => {
                             drop(r);
                             match c.commit(WRITER, *op) {

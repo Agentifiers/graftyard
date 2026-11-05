@@ -82,6 +82,12 @@ impl DurablePack {
         &self.pack
     }
 
+    /// A pack named by a merge command crossing a binding (`crate::merge_call`). The member trusts the sender's pack
+    /// as it trusts a `Push`'s: the edge or the consumer placed it, and an inline pack is in the entry itself.
+    pub fn trusted(pack: PackRef) -> DurablePack {
+        DurablePack { pack, _sealed: () }
+    }
+
     pub fn into_pack(self) -> PackRef {
         self.pack
     }
@@ -209,6 +215,25 @@ pub mod b64 {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let s = String::deserialize(d)?;
         decode(&s).ok_or_else(|| serde::de::Error::custom("bad base64"))
+    }
+}
+
+/// `b64` for a field Go writes as `null` when its byte slice is nil.
+pub mod b64_opt {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(b: &Option<Vec<u8>>, s: S) -> Result<S::Ok, S::Error> {
+        match b {
+            Some(b) => s.serialize_some(&super::b64::encode(b)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            Some(s) => super::b64::decode(&s).map(Some).ok_or_else(|| serde::de::Error::custom("bad base64")),
+            None => Ok(None),
+        }
     }
 }
 

@@ -16,6 +16,8 @@ pub mod issues;
 pub mod key;
 pub mod mem;
 pub mod merge;
+pub mod merge_cache;
+pub mod merge_call;
 pub mod pack;
 pub mod pkt;
 pub mod prsync;

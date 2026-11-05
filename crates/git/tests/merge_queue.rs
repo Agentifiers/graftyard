@@ -1252,3 +1252,36 @@ fn touched_names_the_base_of_every_entry_the_consumer_must_see() {
     // fold no longer names its base. The consumer reads entries right after they commit, when it does.
     assert!(asked.iter().any(|(k, _)| *k == "check"), "{asked:?}");
 }
+
+// ---- the hosted consumer's cursor ----
+
+/// The leader's `MergeQueue` dispatcher reads the log from the committed cursor and names the bases the entries
+/// touched; the batch's `Cursor` command moves the cursor only forward, so a redelivered batch moves nothing and a
+/// new leader's dispatcher starts where the last batch ended.
+#[test]
+fn the_merge_queue_cursor_names_touched_bases_and_moves_only_forward() {
+    use graftyard_git::prsync::{Delivery, Dispatcher};
+    use graftyard_git::queue_consumer::{QueueRead, scan};
+    let mut g = queued_group(Grouping::AllGreen, 2);
+    let mut d: Dispatcher<RefName> = Dispatcher::default();
+    let read = |g: &G| QueueRead::of(&g.fold().core, &main_ref());
+    let (cursor, applied) = (read(&g).cursor, g.m(g.leader()).state().applied);
+    assert_eq!(cursor, Index(0));
+    let m = g.m(g.leader());
+    scan(&mut d, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
+    let (b, how) = d.batch(cursor, g.now).expect("the enqueues touched main");
+    assert_eq!((b.prs.as_slice(), how), (&[main_ref()][..], Delivery::First));
+    assert_eq!(g.commit(MergeCmd::Cursor(b.through)).unwrap(), MergeCmdOut::Cursor(b.through));
+    assert_eq!(read(&g).cursor, b.through);
+    // The same batch again, and an older one: nothing moves back.
+    assert_eq!(g.commit(MergeCmd::Cursor(b.through)).unwrap(), MergeCmdOut::Cursor(b.through));
+    assert_eq!(g.commit(MergeCmd::Cursor(Index(1))).unwrap(), MergeCmdOut::Cursor(b.through));
+    assert_eq!(read(&g).cursor, b.through);
+    // A fresh dispatcher (a new leader) starts at the committed cursor: the cursor entries touched no base.
+    let mut fresh: Dispatcher<RefName> = Dispatcher::default();
+    let (cursor, applied) = (read(&g).cursor, g.m(g.leader()).state().applied);
+    let m = g.m(g.leader());
+    scan(&mut fresh, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
+    assert!(fresh.batch(cursor, g.now).is_none_or(|(b, _)| b.prs.is_empty()));
+    g.assert_agree();
+}

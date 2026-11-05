@@ -149,3 +149,53 @@ pub fn plan_delete_ref(r: &Repo<'_>, reference: &str) -> Result<graftyard_git::r
         None => Err(Reply::error(422, "Reference does not exist", "rest/git/refs#delete-a-reference")),
     }
 }
+
+/// `PUT /repos/{o}/{r}/pulls/{n}/merge`'s body: the method (default `merge`) and `sha`, the head it must be at.
+pub fn plan_rest_merge(
+    r: &Repo<'_>,
+    n: &str,
+    body: &Value,
+) -> Result<(graftyard_git::issues::IssueNumber, graftyard_git::merge::MergeRequest, Option<ObjectId>), Reply> {
+    use graftyard_git::issues::{IssueNumber, MergeMethod};
+    let n = IssueNumber(n.parse().map_err(|_| Reply::not_found())?);
+    let method = match body.get("merge_method").and_then(Value::as_str).unwrap_or("merge") {
+        "merge" => MergeMethod::Merge,
+        "squash" => MergeMethod::Squash,
+        "rebase" => MergeMethod::Rebase,
+        _ => return Err(Reply::error(422, "Validation Failed", "rest/pulls/pulls#merge-a-pull-request")),
+    };
+    if r.item(n).is_none_or(|it| !it.is_pull()) {
+        return Err(Reply::not_found());
+    }
+    if r.settings().is_some_and(|s| !s.merge_methods.contains(&method)) {
+        return Err(refused_merge(&graftyard_git::merge::MergeError::MethodNotAllowed));
+    }
+    let sha = match body.get("sha").and_then(Value::as_str) {
+        Some(h) => Some(
+            ObjectId::parse_hex(h.as_bytes())
+                .ok_or_else(|| Reply::error(422, "Validation Failed", "rest/pulls/pulls#merge-a-pull-request"))?,
+        ),
+        None => None,
+    };
+    let req = graftyard_git::merge::merge_request(r.core, n, method).map_err(|e| refused_merge(&e))?;
+    if sha.is_some_and(|s| s != req.head) {
+        return Err(refused_merge(&graftyard_git::merge::MergeError::HeadModified));
+    }
+    Ok((n, req, sha))
+}
+
+/// GHES's REST reply to a refused merge: 409 for a moved head or base, 403 and 404 as their names say, and 405
+/// "Pull Request is not mergeable" with the rule's text for the rest [unverified: GitHub's 405 bodies for each rule].
+pub fn refused_merge(e: &graftyard_git::merge::MergeError) -> Reply {
+    use graftyard_git::merge::MergeError as E;
+    let doc = "rest/pulls/pulls#merge-a-pull-request";
+    match e {
+        E::HeadModified | E::BaseModified => Reply::error(409, &e.message(), doc),
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
+        E::Forbidden => Reply::error(403, "Resource not accessible by integration", doc),
+        E::NotFound => Reply::not_found(),
+        E::Store(_) => Reply::error(503, "Service Unavailable", "rest").with("retry-after", "5"),
+        E::Protection(_) | E::MethodNotAllowed | E::NotOpen | E::Draft => Reply::error(405, &e.message(), doc),
+        _ => Reply::error(405, "Pull Request is not mergeable", doc),
+    }
+}

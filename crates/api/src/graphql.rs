@@ -132,6 +132,11 @@ pub enum Plan {
     /// `mergePullRequest`. The edge asks the git cache for the `MergePlan` of `merge_request(n, method)`, then builds
     /// the `Merge` command with `merge_command` and commits it.
     Merge { n: IssueNumber, method: MergeMethod, expected_head: Option<ObjectId> },
+    /// `enqueuePullRequest`, and `enablePullRequestAutoMerge` on a base with a merge queue, which is how gh adds a
+    /// pull request to the queue (`gh pr merge` on such a base): a `QueueOp::Enqueue` at the head the edge read.
+    Enqueue { n: IssueNumber, head: ObjectId },
+    /// `dequeuePullRequest`.
+    Dequeue { n: IssueNumber },
 }
 
 /// A planned mutation: its root field, the command, and the issue it is about, for the payload.
@@ -259,6 +264,31 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 None => None,
             };
             planned(Plan::Merge { n, method, expected_head }, Some(n))
+        }
+        "enqueuePullRequest" | "enablePullRequestAutoMerge" | "dequeuePullRequest" => {
+            let n = s("pullRequestId")
+                .filter(|id| id.starts_with("PR_"))
+                .and_then(|id| item_of(r, id))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let it = r.item(n).ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let (pull, head) = it.pull.as_ref().ok_or_else(|| not_found(field, "Not a pull request"))?;
+            if field == "dequeuePullRequest" {
+                return planned(Plan::Dequeue { n }, Some(n));
+            }
+            // Auto-merge without a queue is not built: GHES's `allow_auto_merge` setting is off unless enabled.
+            if !r.protections(&pull.base).iter().any(|p| p.merge_queue.is_some()) {
+                return Err(unprocessable(field, "Auto merge is not allowed for this repository"));
+            }
+            let expected = match s("expectedHeadOid") {
+                Some(h) => {
+                    Some(ObjectId::parse_hex(h.as_bytes()).ok_or_else(|| unprocessable(field, "expectedHeadOid"))?)
+                }
+                None => None,
+            };
+            if expected.is_some_and(|h| h != head.head_sha) {
+                return Err(unprocessable(field, MergeError::HeadModified.message()));
+            }
+            planned(Plan::Enqueue { n, head: head.head_sha }, Some(n))
         }
         f => Err(json!({ "errors": [{ "type": "undefinedField", "path": [f],
             "message": format!("Field '{f}' doesn't exist on type 'Mutation'") }] })),
@@ -412,7 +442,11 @@ pub fn merge_command(p: &Planned, plan: MergePlan, actor: Principal) -> Merge {
 
 /// The GraphQL reply to a refused merge, with GitHub's text. A 409 is never retried into success.
 pub fn refused_merge(p: &Planned, e: &MergeError) -> Value {
-    let f = &p.field;
+    refused_merge_field(&p.field, e)
+}
+
+/// `refused_merge` from the mutation's root field alone, as the member that refused the command renders it.
+pub fn refused_merge_field(f: &str, e: &MergeError) -> Value {
     match e {
         MergeError::Unauthorized(_) => json!({ "message": "Bad credentials", "status": "401" }),
         MergeError::Forbidden => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
@@ -426,27 +460,64 @@ pub fn refused_merge(p: &Planned, e: &MergeError) -> Value {
 /// The payload of a committed `mergePullRequest`, from the `Merge` command's `&Acked`. gh selects only
 /// `clientMutationId`.
 pub fn render_merge(req: &Request<'_>, _acked: &Acked<MergeOut>) -> Value {
-    req.run(&Merged)
+    req.run(&Merged { field: "mergePullRequest", r: None, n: None })
 }
 
-struct Merged;
+/// The payload of a committed merge-queue mutation (`Plan::Enqueue` or `Plan::Dequeue`), from its `&Acked` and
+/// `after`, the leader's tiers once the entry applied: `clientMutationId`, the pull request, and the queue entry.
+pub fn render_queued(req: &Request<'_>, field: &str, n: IssueNumber, _acked: &Acked<()>, after: &Repo<'_>) -> Value {
+    req.run(&Merged { field: payload_field(field), r: Some(after), n: Some(n) })
+}
 
-impl Obj for Merged {
+fn payload_field(f: &str) -> &'static str {
+    match f {
+        "enqueuePullRequest" => "enqueuePullRequest",
+        "enablePullRequestAutoMerge" => "enablePullRequestAutoMerge",
+        "dequeuePullRequest" => "dequeuePullRequest",
+        _ => "mergePullRequest",
+    }
+}
+
+struct Merged<'a> {
+    field: &'static str,
+    r: Option<&'a Repo<'a>>,
+    n: Option<IssueNumber>,
+}
+
+impl Obj for Merged<'_> {
     fn type_name(&self) -> &'static str {
         "Mutation"
     }
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
-        (f == "mergePullRequest").then(|| obj(MergedPayload))
+        (f == self.field).then(|| obj(MergedPayload { p: self }))
     }
 }
 
-struct MergedPayload;
+struct MergedPayload<'a> {
+    p: &'a Merged<'a>,
+}
 
-impl Obj for MergedPayload {
+impl Obj for MergedPayload<'_> {
     fn type_name(&self) -> &'static str {
-        "MergePullRequestPayload"
+        match self.p.field {
+            "enqueuePullRequest" => "EnqueuePullRequestPayload",
+            "enablePullRequestAutoMerge" => "EnablePullRequestAutoMergePayload",
+            "dequeuePullRequest" => "DequeuePullRequestPayload",
+            _ => "MergePullRequestPayload",
+        }
     }
-    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
-        (f == "clientMutationId").then(|| leaf(Value::Null))
+    fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
+        let _ = a;
+        let pr = || match (self.p.r, self.p.n) {
+            (Some(r), Some(n)) => r.item(n).map(|it| obj(Node { r, it })),
+            _ => None,
+        };
+        match f {
+            "clientMutationId" => Some(leaf(Value::Null)),
+            "pullRequest" => Some(pr().unwrap_or(Out::Null)),
+            // The entry is not rendered: no GHES `MergeQueueEntry` node type is served yet.
+            "mergeQueueEntry" | "actor" => Some(Out::Null),
+            _ => None,
+        }
     }
 }
