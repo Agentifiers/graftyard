@@ -16,6 +16,8 @@ test-faults = []
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+graftyard-api = { path = "../../crates/api" }
+graftyard-fold = { path = "../../crates/fold" }
 graftyard-git = { path = "../../crates/git", features = ["worker"] }
 graftyard-identity = { path = "../../crates/identity" }
 graftyard-lookup = { path = "../../crates/lookup" }
@@ -24,6 +26,7 @@ graftyard-release = { path = "../../crates/release" }
 graftyard-types.workspace = true
 graftyard-wire = { path = "../../crates/wire" }
 js-sys = "0.3"
+postcard.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
