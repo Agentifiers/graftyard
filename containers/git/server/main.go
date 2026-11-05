@@ -27,6 +27,9 @@
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
 //	POST /upload-pack?net=N          upload-pack --stateless-rpc, streamed
 //	POST /fsck?net=N                 git fsck --strict, refs, and object counts
+//	POST /merge?net=N&base=B&head=H  the test merge of a pull request, in a quarantine: {"conflict": [paths]}, or
+//	                                 {"merge": oid, "pack": base64} once the tree-diff check passed, the pack holding
+//	                                 only the merge's new objects. The repository is not changed
 //	GET  /repos                      the LRU's view of the disk: {"disk": bytes the filesystem holds (or
 //	                                 GRAFT_DISK_BYTES), "repos": [{"network","bytes","used"}]}, where used is the
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
@@ -691,6 +694,147 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	}
 }
 
+// changes is `git diff-tree -r` from a to b: each changed path and its entry in b ("mode oid", all zeros if deleted).
+func changes(rp string, env []string, a, b string) (map[string]string, error) {
+	out, err := git(rp, env, nil, "diff-tree", "-r", "-z", "--no-renames", "--raw", a, b)
+	if err != nil {
+		return nil, err
+	}
+	m := map[string]string{}
+	f := strings.Split(string(out), "\x00")
+	for i := 0; i+1 < len(f); i += 2 {
+		// ":<old mode> <new mode> <old oid> <new oid> <status>", then the path.
+		h := strings.Fields(strings.TrimPrefix(f[i], ":"))
+		if len(h) != 5 {
+			return nil, fmt.Errorf("diff-tree printed %q", f[i])
+		}
+		m[f[i+1]] = h[1] + " " + h[3]
+	}
+	return m, nil
+}
+
+// treeDiffCheck is the merge engine's invariant (research/uptime.md, finding 19): what the merge changes against each
+// parent is exactly what the other side changed since the merge base. A path the merge changes against base must be
+// one head changed, with head's entry unless base changed it too, and the same the other way round.
+func treeDiffCheck(rp string, env []string, base, head, merge string) error {
+	mb, err := git(rp, env, nil, "merge-base", base, head)
+	if err != nil {
+		return err
+	}
+	o := strings.TrimSpace(string(mb))
+	for _, side := range [][2]string{{base, head}, {head, base}} {
+		mine, other := side[0], side[1]
+		got, err := changes(rp, env, mine, merge)
+		if err != nil {
+			return err
+		}
+		theirs, err := changes(rp, env, o, other)
+		if err != nil {
+			return err
+		}
+		ours, err := changes(rp, env, o, mine)
+		if err != nil {
+			return err
+		}
+		for p, e := range got {
+			t, ok := theirs[p]
+			if !ok {
+				return fmt.Errorf("the merge changes %s against %s, which %s did not change", p, mine, other)
+			}
+			if _, both := ours[p]; !both && e != t {
+				return fmt.Errorf("the merge's %s is not %s's", p, other)
+			}
+		}
+	}
+	return nil
+}
+
+// handleMerge is the test merge of GitCacheShard::merge: base and head of a pull request, merged with merge-tree into a
+// quarantine. A conflict answers its paths. A clean merge is committed with commit-tree, deterministically (head's
+// committer time, the shard's identity), passes the tree-diff check, and answers the merge commit and a pack of only
+// its new objects, which the PrSync consumer commits in TestMerged. Nothing joins the repository here: the pack comes
+// back to every shard through the chain's log.
+func handleMerge(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	base, head := r.URL.Query().Get("base"), r.URL.Query().Get("head")
+	if !hexRe.MatchString(base) || !hexRe.MatchString(head) {
+		fail(w, 400, "bad base or head")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	os.MkdirAll(filepath.Join(rp, "graft"), 0o755)
+	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "merge-")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.RemoveAll(q)
+	env := []string{"GIT_OBJECT_DIRECTORY=" + q, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
+	for _, c := range []string{base, head} {
+		if _, err := git(rp, env, nil, "cat-file", "-e", c+"^{commit}"); err != nil {
+			fail(w, 409, "commit %s is not here", c)
+			return
+		}
+	}
+	// merge-tree exits 1 on a conflict, with the tree and then the conflicted paths; `git` keeps no exit code.
+	cmd := exec.Command("git", "merge-tree", "--write-tree", "--name-only", "-z", "--no-messages", base, head)
+	cmd.Dir = rp
+	cmd.Env = append(append(os.Environ(), ident...), env...)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	out, err := cmd.Output()
+	f := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	if err != nil {
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 1 && len(f) > 1 {
+			jsonOut(w, map[string]any{"conflict": f[1:]})
+			return
+		}
+		fail(w, 422, "merge-tree: %v: %s", err, strings.TrimSpace(errb.String()))
+		return
+	}
+	tree := f[0]
+	ct, err := git(rp, env, nil, "log", "-1", "--format=%ct", head)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	date := "@" + strings.TrimSpace(string(ct)) + " +0000"
+	cenv := append(env, "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
+	msg := fmt.Sprintf("Merge %s into %s\n", head, base)
+	mc, err := git(rp, cenv, strings.NewReader(msg), "commit-tree", tree, "-p", base, "-p", head)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	merge := strings.TrimSpace(string(mc))
+	if err := treeDiffCheck(rp, env, base, head, merge); err != nil {
+		fail(w, 422, "tree-diff check: %v", err)
+		return
+	}
+	objs, err := git(rp, env, nil, "rev-list", "--objects", merge, "--not", base, head)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	var ids bytes.Buffer
+	for _, l := range strings.Split(strings.TrimSpace(string(objs)), "\n") {
+		if f := strings.Fields(l); len(f) > 0 {
+			ids.WriteString(f[0] + "\n")
+		}
+	}
+	pack, err := git(rp, env, &ids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"merge": merge, "pack": pack})
+}
+
 func handleFsck(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
@@ -732,6 +876,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/info-refs", func(w http.ResponseWriter, r *http.Request) { upload(w, r, true) })
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
 	m.HandleFunc("/fsck", handleFsck)
+	m.HandleFunc("/merge", handleMerge)
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	return m

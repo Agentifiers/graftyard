@@ -22,8 +22,8 @@ use smallvec::SmallVec;
 use crate::blob::BlobRef;
 use crate::issues::{
     AssetId, AssetRecord, BranchRule, CheckConclusion, CheckRunUpdate, CheckSource, CheckSuiteUpdate, CommentEvent,
-    HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, PrCapture, ReleaseRecord,
-    RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
+    Consumer, HeadSpec, IssueCapture, IssueChange, IssueNumber, LabelEvent, LfsLockEvent, MergeabilityResult,
+    PrCapture, ReleaseRecord, RepoReleaseId, RepoSettings, ReviewEvent, StatusUpdate,
 };
 use crate::key::R2Key;
 use crate::pack::{Archived, PackId, PackRef, Promoted};
@@ -196,6 +196,23 @@ pub enum RepoEvent {
     /// Metadata [inference: SHARED's `RepoEvent` lists `LfsLock` but its `tier_of` names no tier; a lock gates no git
     /// operation here, since the server does not refuse a push to a locked path, so Core does not need it].
     LfsLock(LfsLockEvent),
+    /// Core. One lazy test merge of pull request `n` (SHARED, "Event types"): `apply` records the `Mergeability` and
+    /// moves `refs/pull/N/merge` to the merge commit, or deletes it on a conflict. `pack` holds the merge commit's
+    /// objects, so every shard can serve the ref.
+    TestMerged {
+        n: IssueNumber,
+        base: ObjectId,
+        head: ObjectId,
+        result: MergeabilityResult,
+        pack: Option<PackRef>,
+    },
+    /// Core. A consumer's cursor on this chain: every event at or below `through` is handled. It commits in the same
+    /// entry as the work it covers (`crate::prsync`), so the position is the group's and survives a leader change.
+    /// Not in SHARED's event list, which names cursors but no event that moves one [inference].
+    ConsumerCursor {
+        consumer: Consumer,
+        through: Index,
+    },
 }
 
 impl RepoEvent {
@@ -377,6 +394,11 @@ pub struct RepoScratch<'a> {
 }
 
 impl RepoScratch<'_> {
+    /// The core tier with the entry's earlier events on top.
+    pub fn core(&self) -> &dyn Read {
+        &self.core
+    }
+
     pub fn get(&self, name: &RefName) -> Option<ObjectId> {
         get_rec(&self.core, "ref", &[ref_key(name)])
     }
@@ -925,6 +947,10 @@ impl Record for RepoEvent {
             }
             RepoEvent::LfsObject { blob, actor } => return tagged(out, 19, &(blob, actor)),
             RepoEvent::LfsLock(l) => return tagged(out, 20, l),
+            RepoEvent::TestMerged { n, base, head, result, pack } => {
+                return tagged(out, 21, &(n, base, head, result, pack));
+            }
+            RepoEvent::ConsumerCursor { consumer, through } => return tagged(out, 22, &(consumer, through)),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1030,8 +1056,117 @@ pub fn packs_of(events: &[Ev<Push>]) -> Vec<PackRef> {
     events
         .iter()
         .filter_map(|ev| match ev {
-            RepoEvent::Refs { pack, .. } => pack.clone(),
+            RepoEvent::Refs { pack, .. } | RepoEvent::TestMerged { pack, .. } => pack.clone(),
             _ => None,
         })
         .collect()
+}
+
+/// What a repository member commits: a client's `Push`, or a consumer's `PrSync` (`crate::prsync`). A push keeps its
+/// wire form, the base64 of `Push::to_wire`, so an edge that sends only pushes is unchanged; a sync is
+/// `{"prSync": ..}`, which only a member whose release reads `REPO_FORMAT_V3` decodes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RepoCmd {
+    Push(Push),
+    Sync(crate::prsync::PrSync),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepoOut {
+    Push(PushOut),
+    Sync(crate::prsync::SyncOut),
+}
+
+impl crate::smart::PushOutOf for RepoOut {
+    fn push_out(&self) -> Option<&PushOut> {
+        match self {
+            RepoOut::Push(p) => Some(p),
+            RepoOut::Sync(_) => None,
+        }
+    }
+}
+
+impl Serialize for RepoCmd {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        enum Tagged<'a> {
+            PrSync(&'a crate::prsync::PrSync),
+        }
+        match self {
+            RepoCmd::Push(p) => p.serialize(s),
+            RepoCmd::Sync(c) => Tagged::PrSync(c).serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for RepoCmd {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<RepoCmd, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        enum Tagged {
+            PrSync(crate::prsync::PrSync),
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Push(Push),
+            Tagged(Tagged),
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Push(p) => RepoCmd::Push(p),
+            Either::Tagged(Tagged::PrSync(c)) => RepoCmd::Sync(c),
+        })
+    }
+}
+
+impl Record for RepoCmd {
+    fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            RepoCmd::Push(p) => p.encode(out),
+            RepoCmd::Sync(c) => c.encode(out),
+        }
+    }
+}
+
+impl Command for RepoCmd {
+    type Fold = RepoFold;
+    type Dep = IdentityDep;
+    type Out = RepoOut;
+    type Err = PushErr;
+
+    fn format(&self) -> Format {
+        match self {
+            RepoCmd::Push(p) => p.format(),
+            RepoCmd::Sync(c) => c.format(),
+        }
+    }
+    fn tiers(&self) -> TierSet {
+        TierSet::CORE
+    }
+    fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
+        match self {
+            RepoCmd::Push(p) => p.deps(fold),
+            RepoCmd::Sync(_) => SmallVec::new(),
+        }
+    }
+    fn decide(
+        &self,
+        s: &RepoScratch<'_>,
+        deps: &[(ChainId, IdentityDep)],
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, RepoOut), PushErr> {
+        match self {
+            RepoCmd::Push(p) => p.decide(s, deps).map(|(e, o)| (e, RepoOut::Push(o))),
+            RepoCmd::Sync(c) => {
+                let (e, o) = c.decide_sync(s);
+                Ok((e, RepoOut::Sync(o)))
+            }
+        }
+    }
+    fn replay(&self, events: &[RepoEvent]) -> RepoOut {
+        match self {
+            RepoCmd::Push(p) => RepoOut::Push(p.replay(events)),
+            RepoCmd::Sync(c) => RepoOut::Sync(Command::replay(c, events)),
+        }
+    }
 }

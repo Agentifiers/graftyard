@@ -5,7 +5,8 @@
 //!
 //! Routes, each with `?repo=<id>` (a root repository's id is its network's): `POST /validate` (the tips, then the
 //! pack), `GET /info-refs`, `POST /upload-pack`, `POST /catchup`, `GET /fsck`, `GET /status`, `POST /teardown`, and
-//! `POST /promote` (a JSON list of ingested packs' SHA-256 hex: the home shard's half of `Promoted`).
+//! `POST /promote` (a JSON list of ingested packs' SHA-256 hex: the home shard's half of `Promoted`), and
+//! `POST /merge?base=<oid>&head=<oid>` (the `PrSync` consumer's test merge, `graftyard_git::prsync::MergeAnswer`).
 
 use std::collections::BTreeSet;
 
@@ -177,6 +178,17 @@ impl DurableObject for GitShard {
                 Response::from_bytes(host.promote(net, &sums).await.map_err(se)?)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
+            // The `PrSync` consumer's test merge, after catching up so both commits are here.
+            "/merge" => {
+                let oid = |k: &str| {
+                    q(&url, k)
+                        .and_then(|v| graftyard_git::refs::ObjectId::parse_hex(v.as_bytes()))
+                        .ok_or_else(|| Error::RustError(k.to_owned()))
+                };
+                let (base, head) = (oid("base")?, oid("head")?);
+                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                Response::from_json(&host.merge(net, base, head).await.map_err(se)?)
+            }
             _ => Response::error("not found", 404),
         }
     }

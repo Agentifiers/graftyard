@@ -136,6 +136,13 @@ pub fn reshape(sql: &SqlStorage, schema: &Schema) -> worker::Result<Vec<String>>
         if have == columns(n) {
             continue;
         }
+        // A table this release adds, or a member's first restore: nothing to keep. Reading it would fail with "no
+        // such table" and refuse the restore of every member of the family (M2-WP5's first deploy did that).
+        if have.is_empty() {
+            sql.exec(&create(&t, n), None)?;
+            made.push(t);
+            continue;
+        }
         let rows: Vec<_> = sql.exec(&format!("SELECT 1 FROM \"{t}\" LIMIT 1"), None)?.raw().collect();
         if !rows.is_empty() {
             return Err(worker::Error::RustError(format!("fold table {t} holds rows keyed {have:?}, not {n} columns")));

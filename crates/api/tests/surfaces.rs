@@ -581,3 +581,35 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
         assert_eq!(fold_digest(store(0), tier), fold_digest(store(1), tier), "{tier:?}");
     }
 }
+
+#[test]
+fn mergeable_reads_the_test_merge_of_the_current_head_and_base_tip() {
+    use graftyard_git::issues::MergeabilityResult;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let d = doc("PullRequestByNumber-2");
+    let state = doc("PullRequestByNumber-4");
+    let ask_pr = |c: &Chain| {
+        let r = c.repo(0, &h, &dir);
+        let m = ask(&r, &d, with_ids(&d, &r))["data"]["repository"]["pullRequest"]["mergeable"].clone();
+        let s = ask(&r, &state, with_ids(&state, &r))["data"]["repository"]["pullRequest"]["mergeStateStatus"].clone();
+        (m, s)
+    };
+    assert_eq!(ask_pr(&c), (json!("UNKNOWN"), json!("UNKNOWN")), "no test merge yet");
+    let merged = |c: &mut Chain, base, head, result| {
+        let ev = graftyard_git::repo::RepoEvent::TestMerged { n: IssueNumber(2), base, head, result, pack: None };
+        c.entry(EntryBody::Events(vec![ev]), TierSet::CORE);
+    };
+    merged(&mut c, oid(1), oid(2), MergeabilityResult::Clean { merge: oid(9) });
+    assert_eq!(ask_pr(&c), (json!("MERGEABLE"), json!("CLEAN")));
+    merged(&mut c, oid(1), oid(2), MergeabilityResult::Conflict { paths: smallvec!["f".into()] });
+    assert_eq!(ask_pr(&c), (json!("CONFLICTING"), json!("DIRTY")));
+    // The base moves: the recorded pair is stale, so `mergeable` is unknown until the next test merge.
+    c.push("refs/heads/main", oid(5));
+    assert_eq!(ask_pr(&c), (json!("UNKNOWN"), json!("UNKNOWN")));
+    merged(&mut c, oid(5), oid(2), MergeabilityResult::Clean { merge: oid(8) });
+    assert_eq!(ask_pr(&c).0, json!("MERGEABLE"));
+    // A head push makes it stale again.
+    c.push("refs/heads/f", oid(6));
+    assert_eq!(ask_pr(&c).0, json!("UNKNOWN"));
+}
