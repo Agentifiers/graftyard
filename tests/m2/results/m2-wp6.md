@@ -307,3 +307,37 @@ each `Authz` read waited on a `fresh` read of the owner's `Placement` row on `Na
    the leadership), so the first merge plan finds both commits already there.
 3. The edge reads a merge's logins while the git cache plans it, and `repo_name` reads the owner's login and `Authz` at
    once.
+
+### After cuts 1 to 3 (`c1`, 30 samples)
+
+Sites `044d6889`/`9d7d77a2`/`b1a4fc1d`, edge `aeaf9288`. n = 30, all passed, p50 2,165 ms, max 2,876 ms. No shard caught
+up on the merge path (0 of 30, against 29 of 29 before).
+
+| New leader | n | p50 ms | max | auth + resolve | tiers + `Authz` | merge plan (shard) | commit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 10 | 1,475 | 1,754 | 216 | 414 | 309 (233) | 344 |
+| 1, weur | 10 | 2,294 | 2,642 | 359 | 627 | 680 (507) | 534 |
+| 2, apac | 10 | 2,432 | 2,876 | 359 | 820 | 433 (234) | 713 |
+
+The step that still grew with distance was "tiers + `Authz`": 400 to 1,180 ms on apac. The edge read both whole tiers
+for a merge: 571 KB of JSON for `wp6p`'s 1,200 rows (`ref` 715, `pull_head` 238, `mergeability` 238, ...). From the orb,
+the same read of the weur leader took 750 to 1,165 ms, against 235 to 400 ms for a 200-byte read of the same member.
+
+### Cut 4, commit `c0a393b`: a merge reads only its rows
+
+`mergePullRequest` reads `{"rows": {"merge": id}}`: the pull request's `issue_by_id`, `issue`, `pull`, and `pull_head`
+rows, its base's `ref`, and `settings`, at most six rows. `graphql::plan` and `merge_request` read only these, and the
+leader renders the reply from its own tiers. Test `a_merge_plans_from_its_rows_as_from_both_tiers` compares the plan,
+the `MergeRequest`, and the refusals with both whole tiers. It fails with the base `ref` row left out.
+
+### After cut 4 (`c2`, 30 samples)
+
+Sites `91490a96`/`e8931593`/`b06ae6e3`, edge `289e6d4e`. n = 30, all passed, p50 1,804 ms, p90 2,131 ms, max 2,331 ms.
+
+| New leader | n | p50 ms | max | auth + resolve | tiers + `Authz` | merge plan (shard) | commit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 10 | 1,255 | 1,592 | 233 | 242 | 381 (319) | 322 |
+| 1, weur | 10 | 1,867 | 2,331 | 249 | 226 | 746 (488) | 506 |
+| 2, apac | 10 | 2,037 | 2,206 | 367 | 343 | 460 (263) | 756 |
+
+Six of 30 were over 2 s (three weur, three apac). The 300-sample run follows on this build.
