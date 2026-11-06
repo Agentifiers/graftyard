@@ -368,7 +368,14 @@ async fn merge_plan(
     let q = graftyard_git::merge_cache::chain_query(req.base_old, &[(req.n, req.head)], req.method);
     let record = js_sys::encode_uri_component(&serde_json::to_string(&repo.record).map_err(|e| e.to_string())?);
     let url = format!("https://shard/merge?repo={}&{q}&record={record}", repo.id.0.0);
-    let stub = crate::shard(c, repo).map_err(|e| e.to_string())?;
+    // The shard on the leader's site, which the read just before named, as `PrSync` and the `MergeQueue` consumer
+    // merge "where the leader is" (`workers/site/src/prsync.rs`): it is the shard `PrSync`'s test merge caught up, and
+    // its catch-up reads are local to the leader. The home site's shard, when the leader is elsewhere, caught up
+    // across regions first, 280 to 610 ms (`tests/m2/results/m2-wp6.md`, "Merge latency").
+    let leader = graftyard_lookup::cached_leader(ChainId::Repo(repo.id)).map(|t| t.site);
+    #[cfg(feature = "test-faults")]
+    let leader = c.shard.or(leader);
+    let stub = crate::shard_at(c, repo, leader).map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     let mut r = stub

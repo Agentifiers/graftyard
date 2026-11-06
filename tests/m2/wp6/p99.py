@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """BM-2's merge p99 on a freshly elected leader, on the graft-m1 test install through graft-m1-edge.
 
-p99.py RUN SAMPLES [--gh-every K]
+p99.py RUN SAMPLES [--gh-every K] [--now]
 
-Each sample opens a pull request (a new branch pushed with real git, `gh pr create`), then moves the repository
+Each sample opens a pull request (a new branch pushed with real git, `gh pr create`), waits until GraphQL shows it
+MERGEABLE (its `PrSync` test merge ran; `--now` skips this, the stress figure), then moves the repository
 group's leadership to the next site with the leader's member `/transfer`, waits until that site's member reports
 `leader` at a higher term, and at once sends gh's own `PullRequestMerge` mutation (`mergePullRequest` with
 `clientMutationId`, as `gh pr merge` sends it) through the edge. The sample is that request's time at the client.
@@ -42,9 +43,23 @@ def elect(nxt):
     raise RuntimeError(f"site {to} did not lead after transfer from {s}: {r}")
 
 
+def wait_mergeable(pr):
+    """Seconds until the pull request's `mergeable` is computed; raises after 60 s."""
+    t0 = time.time()
+    q = ("query($o: String!, $r: String!, $n: Int!) { repository(owner: $o, name: $r) { pullRequest(number: $n)"
+         " { mergeable } } }")
+    while time.time() - t0 < 60:
+        _, v = h.gql(q, {"o": h.OWNER_LOGIN, "r": h.REPO, "n": pr})
+        if (((v.get("data") or {}).get("repository") or {}).get("pullRequest") or {}).get("mergeable") == "MERGEABLE":
+            return round(time.time() - t0, 2)
+        time.sleep(0.5)
+    raise RuntimeError(f"#{pr} not MERGEABLE in 60 s")
+
+
 def main():
     run, n = sys.argv[1], int(sys.argv[2])
     a = sys.argv[3:]
+    now = "--now" in a
     gh_every = int(a[a.index("--gh-every") + 1]) if "--gh-every" in a else 25
     h.REPO = os.environ.get("WP3_REPO", "wp6p")
     out, done = h.resume(run)
@@ -58,6 +73,9 @@ def main():
         d = f"{h.RAW}/{run}-gh" if use_gh else f"/tmp/wp6-{run}"
         pr = h.create_pr(w, d, f"{i:04}0-create", b)
         node = h.pr_node(pr)
+        # A pull request is merged once its test merge ran (`PrSync`), as gh shows MERGEABLE; `--now` skips the wait
+        # and merges a head pushed a second ago, so the shard must catch up first (the stress figure).
+        waited = 0.0 if now else wait_mergeable(pr)
         e = elect(lambda s: (s + 1) % sites)
         t0 = time.time()
         if use_gh:
@@ -75,7 +93,7 @@ def main():
             timing, reply = hd.get("server-timing") or hd.get("Server-Timing"), v
             trace = [hd.get("x-graft-trace") or hd.get("X-Graft-Trace"), hd.get("x-graft-shard-timing") or hd.get("X-Graft-Shard-Timing")]
         state = h.pr_state(pr)
-        rec = {"i": i, "pr": pr, "gh": bool(use_gh), "ms": ms, "pass": ok_reply and state == "MERGED", "state": state,
+        rec = {"i": i, "pr": pr, "gh": bool(use_gh), "ms": ms, "waited_s": waited, "pass": ok_reply and state == "MERGED", "state": state,
                "timing": timing, "trace": trace, "reply": reply, "at": time.time(), **e}
         h.append(out, rec)
         h.log(f"{i}: {ms} ms {'pass' if rec['pass'] else 'FAIL'} leader {e['from']}->{e['to']} term {e['term']} "
