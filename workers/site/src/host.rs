@@ -140,7 +140,22 @@ pub struct Stats {
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
+    /// Every member-to-member call this member sent, by message kind: send to answer, in ms (B0-18's trace).
+    pub calls: BTreeMap<&'static str, CallTimes>,
 }
+
+/// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
+#[derive(Default, serde::Serialize)]
+pub struct CallTimes {
+    pub ok: u32,
+    pub failed: u32,
+    pub ms: Vec<u32>,
+    /// Calls over `SLOW_CALL_MS`, each `{at, to, ms, end}`.
+    pub slow: VecDeque<Value>,
+}
+
+/// A call this slow is kept in `CallTimes::slow` [guess]: past the learner read gate's 1 s p99 less a round trip.
+const SLOW_CALL_MS: u32 = 500;
 
 /// Why a member-to-member call failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1663,6 +1678,27 @@ impl<F: Family> Host<F> {
             let v = s.append_ms.entry(c.to).or_default();
             if v.len() < SAMPLES_MAX {
                 v.push(ms);
+            }
+        }
+        let ct = s.calls.entry(c.msg).or_default();
+        let ok = matches!(end, End::Ok | End::Late);
+        if ok {
+            ct.ok += 1
+        } else {
+            ct.failed += 1
+        }
+        if ct.ms.len() < SAMPLES_MAX {
+            ct.ms.push(ms);
+        }
+        if ms >= SLOW_CALL_MS || !ok {
+            let why = match &end {
+                End::Failed(e) | End::LateFailed(e) => format!("{}: {}", e.kind.name(), e.msg),
+                End::Late => "late".into(),
+                End::Ok => "ok".into(),
+            };
+            ct.slow.push_back(json!({ "at": c.at, "to": c.to, "ms": ms, "end": why }));
+            if ct.slow.len() > PEER_APPENDS {
+                ct.slow.pop_front();
             }
         }
         let p = s.peers.entry(c.to).or_default();

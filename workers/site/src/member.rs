@@ -870,6 +870,7 @@ impl<F: Family> Routes<F> {
             "prsyncSent": s.prsync_sent,
             "prsyncFirst": s.prsync_first,
             "peers": s.peers,
+            "calls": s.calls,
         });
         if reset {
             s.commit_ms.clear();
@@ -882,6 +883,8 @@ impl<F: Family> Routes<F> {
             s.commands = 0;
             s.failed_calls = 0;
             s.peers.clear();
+            s.calls.clear();
+            s.apply_ms.clear();
             s.inbound.clear();
             s.inbound_since = now_ms();
         }
@@ -1355,8 +1358,13 @@ impl<F: Family> Routes<F> {
                     let rx = self.host.wait_read(id, json!({ "ranges": true }));
                     let (tx, done) = futures_channel::oneshot::channel();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let ok = matches!(within(Duration::from_secs(10), rx).await, Some(Ok(Ok(_))));
-                        let _ = tx.send((ok, now_ms().saturating_sub(at)));
+                        let end = match within(Duration::from_secs(10), rx).await {
+                            Some(Ok(Ok(_))) => "ok",
+                            Some(Ok(Err(_))) => "notLeader",
+                            Some(Err(_)) => "dropped",
+                            None => "timeout",
+                        };
+                        let _ = tx.send((end, at, now_ms().saturating_sub(at)));
                     });
                     waits.push(done);
                 }
@@ -1365,10 +1373,20 @@ impl<F: Family> Routes<F> {
             self.host.dispatch(out, None);
         }
         let (mut lat, mut failed) = (Vec::with_capacity(waits.len()), 0u64);
+        // Failures by kind, and per second of the run: reads answered, failed, and the slowest answer.
+        let mut ends: std::collections::BTreeMap<&'static str, u64> = std::collections::BTreeMap::new();
+        let mut per_s: std::collections::BTreeMap<u64, (u32, u32, u64)> = std::collections::BTreeMap::new();
         for done in waits {
-            match done.await {
-                Ok((true, ms)) => lat.push(ms),
-                _ => failed += 1,
+            let (end, at, ms) = done.await.unwrap_or(("dropped", t0, 0));
+            *ends.entry(end).or_insert(0) += 1;
+            let sec = per_s.entry(at.saturating_sub(t0) / 1000).or_default();
+            if end == "ok" {
+                lat.push(ms);
+                sec.0 += 1;
+                sec.2 = sec.2.max(ms);
+            } else {
+                failed += 1;
+                sec.1 += 1;
             }
         }
         lat.sort_unstable();
@@ -1376,7 +1394,8 @@ impl<F: Family> Routes<F> {
         let site = SiteEnv::read(&self.host.env)?.id.0;
         Response::from_json(&json!({
             "site": site, "n": n, "ok": lat.len(), "refused": refused, "failed": failed, "ms": now_ms() - t0,
-            "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(),
+            "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(), "t0": t0, "ends": ends,
+            "perSecond": per_s.iter().map(|(k, (ok, f, max))| json!([k, ok, f, max])).collect::<Vec<_>>(),
         }))
     }
 

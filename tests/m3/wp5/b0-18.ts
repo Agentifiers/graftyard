@@ -75,7 +75,9 @@ for (let k = 0; k < 30; k++) {
     body: JSON.stringify({ ref: `refs/heads/b018/warm/${k}`, expect: null, new: randomBytes(20).toString("hex") }) }).catch(() => {});
   await new Promise((r) => setTimeout(r, 1000));
 }
-await member(lead, "/stats?reset=1");
+// Every member's counters start at the run, so each one's `/stats` afterwards (calls by peer, with their failures'
+// error text) covers the run alone.
+await Promise.all([...cfg.voters, ...learners].map((m: any) => member(m.site, "/stats?reset=1", undefined, m.do_name)));
 const t0 = Date.now();
 let pushes = 0, pushOk = 0;
 const writes = (async () => {
@@ -92,6 +94,10 @@ const runs = await Promise.all(learners.map((l) =>
   member(l.site, "/read_bench", { rate, secs: seconds }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
 await writes;
 const stats = (await member(lead, "/stats")).v;
+const all = await Promise.all([...cfg.voters, ...learners].map(async (m: any) =>
+  ({ site: m.site, do_name: m.do_name, stats: (await member(m.site, "/stats", undefined, m.do_name)).v })));
+mkdirSync(opt.out!, { recursive: true });
+writeFileSync(`${opt.out}/b0-18-${t0}-stats.json`, JSON.stringify({ stats: all, reads: runs.map((x) => ({ slot: x.l.slot, site: x.l.site, r: x.r?.v ?? x.r })) }));
 const inbound: Record<string, number> = stats.inbound ?? {};
 const leaderReqs = Object.values(inbound).reduce((a, b) => a + b, 0);
 const ok = runs.filter((x) => x.r?.v?.ok);
