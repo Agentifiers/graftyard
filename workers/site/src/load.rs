@@ -783,7 +783,18 @@ pub async fn set_source(h: &Rc<Host<Repo>>, to: Index) {
 
 fn source(h: &Rc<Host<Repo>>, through: Index) -> std::result::Result<InstallSource, String> {
     let sql = h.state.storage().sql();
-    let e: Entry = crate::host::stored_entry::<Repo>(&sql, through).ok_or("no stored entry at through")?;
+    // Entry `through`'s term, digest, and time: from its stored row, or, on a member that installed at `through`, from
+    // `log_base` and the archive that ends there.
+    let (term, digest, at) = match crate::host::stored_entry::<Repo>(&sql, through) {
+        Some(e) => (e.term, raft::digest(&e), e.at.0),
+        None => {
+            let q = "SELECT b.term, b.digest, a.to_at FROM log_base b JOIN archive_keys a ON a.to_idx = b.idx WHERE b.idx = ?";
+            let r = rows(&sql, q, vec![i(through.0)]).map_err(|e| e.to_string())?;
+            let r = r.first().ok_or("no stored entry and no installed base at through")?;
+            let d: [u8; 32] = blob(&r[1]).map_err(|e| e.to_string())?.try_into().map_err(|_| "log_base digest")?;
+            (raft::Term(int(&r[0]).map_err(|e| e.to_string())? as u64), raft::Digest(d), int(&r[2]).unwrap_or(0) as u64)
+        }
+    };
     let core = h.core.borrow();
     let c = core.as_ref().ok_or("not joined")?;
     let gf = c.m.group_fold();
@@ -791,7 +802,7 @@ fn source(h: &Rc<Host<Repo>>, through: Index) -> std::result::Result<InstallSour
     let cs = snap(Tier::Core).ok_or("no core snapshot at or below through")?;
     let ms = snap(Tier::Metadata);
     let low = cs.0.0.min(ms.as_ref().map_or(cs.0.0, |m| m.0.0));
-    let cut = e.at.0.saturating_sub(gf.retention().as_millis() as u64);
+    let cut = at.saturating_sub(gf.retention().as_millis() as u64);
     let q = "SELECT from_idx, to_idx, to_at, key FROM archive_keys WHERE to_idx <= ? ORDER BY from_idx";
     let mut archives: Vec<(u64, u64, String)> = Vec::new();
     for r in rows(&sql, q, vec![i(through.0)]).map_err(|e| e.to_string())? {
@@ -821,8 +832,8 @@ fn source(h: &Rc<Host<Repo>>, through: Index) -> std::result::Result<InstallSour
         metadata: ms.map(|m| m.2.key.to_string().into()),
         archives: archives.into_iter().map(|a| a.2.into()).collect::<SmallVec<_>>(),
         through,
-        through_term: e.term,
-        through_digest: raft::digest(&e),
+        through_term: term,
+        through_digest: digest,
         config,
         id_block: gf.id_block(),
     })
