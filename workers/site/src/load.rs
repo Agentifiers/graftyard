@@ -187,6 +187,7 @@ pub fn install_stmts(stmts: &mut Vec<Stmt>) {
         "DELETE FROM snap_run",
         "DELETE FROM snap_buf",
         "DELETE FROM load_job",
+        "DELETE FROM load_want",
     ] {
         stmts.push((q, vec![]));
     }
@@ -247,10 +248,17 @@ async fn read_whole(env: &Env, site: u8, key: &str, offset: u64, size: u64, star
 pub fn want(h: &Rc<Host<Repo>>, w: InstallWanted) {
     let sql = h.state.storage().sql();
     let same = load_job(&sql).ok().flatten().is_some_and(|j| match &j.kind {
-        Kind::Install { install, .. } => install.term == w.install.term && install.source == w.install.source,
+        Kind::Install { install, .. } => install.source == w.install.source,
         Kind::Audit { .. } => false,
     });
-    let r = if same { Ok(()) } else { install_job(h, w).and_then(|j| save_job(h, &j)) };
+    // The newest request for the same source, from any term, is the one the finished load answers (`finish_install`).
+    let newest = || -> Result<()> {
+        let row = serde_json::to_string(&(w.from, &w.install))?;
+        sql.exec("INSERT OR REPLACE INTO load_want (id, row) VALUES (1, ?)", vec![row.into()])?;
+        Ok(())
+    };
+    let r =
+        if same { newest() } else { install_job(h, w.clone()).and_then(|j| save_job(h, &j)).and_then(|()| newest()) };
     match r {
         Ok(()) => h.arm_in(BUSY_MS),
         Err(e) => note(h, format!("install not started: {e}")),
@@ -383,7 +391,10 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         Err(e) => return note(h, format!("load job unreadable: {e}")),
     };
     let install = job.install();
+    let loaded = job.tiers.iter().all(|t| t.restored) && job.next > job.through;
     match batch(h, &sql, job).await {
+        // A load that only waits for the leader's next request tries again at its pace.
+        Ok(true) if loaded => h.arm_in(raft::CALL_DEADLINE.as_millis() as i64),
         Ok(true) => h.arm_in(BUSY_MS),
         Ok(false) => {}
         Err(e) => {
@@ -423,6 +434,8 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
         while !job.tiers[t].restored && more(bytes) {
             let store = if t == 0 { &mut core } else { &mut meta };
             bytes += restore_some(h, &mut job, t, store).await?;
+            // The member's Raft inputs run between reads, as between a snapshot writer's (`crate::snap`).
+            Delay::from(std::time::Duration::ZERO).await;
         }
     }
     if job.tiers.iter().all(|t| t.restored) {
@@ -432,6 +445,7 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
             for e in es {
                 apply_one(&tiers, &mut job, &mut core, &mut meta, &e, &mut stmts)?;
             }
+            Delay::from(std::time::Duration::ZERO).await;
         }
     }
     core.seal(&mut stmts);
@@ -450,10 +464,9 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
         return Ok(true);
     }
     match job.kind.clone() {
-        Kind::Audit { deep } => finish_audit(h, sql, &job, &core, &meta, deep),
+        Kind::Audit { deep } => finish_audit(h, sql, &job, &core, &meta, deep).map(|()| false),
         Kind::Install { from, install } => finish_install(h, sql, &job, &core, &meta, from, *install),
-    }?;
-    Ok(false)
+    }
 }
 
 /// One range of tier `t`'s snapshot into its scratch tables. The bytes read.
@@ -661,7 +674,7 @@ fn finish_install(
     meta: &TierSql,
     from: SiteId,
     install: InstallSnapshot,
-) -> Result<()> {
+) -> Result<bool> {
     let s = &install.source;
     for (t, store) in [(Tier::Core, core), (Tier::Metadata, meta)] {
         let m = fold::meta(store);
@@ -690,9 +703,22 @@ fn finish_install(
     v["requestRows"] = json!(kept);
     v["core"] = json!(fold_digest(core, Tier::Core).hex());
     v["metadata"] = json!(fold_digest(meta, Tier::Metadata).hex());
+    let through = s.through;
+    // The leader's newest `InstallSnapshot` for this source, whose term and round the member answers.
+    let (from, install) = match rows(sql, "SELECT row FROM load_want WHERE id = 1", vec![])?.first() {
+        Some(r) => serde_json::from_str::<(SiteId, InstallSnapshot)>(text(&r[0])?)?,
+        None => (from, install),
+    };
     let w = InstallWanted { from, install };
     match h.input(|m, t| m.install(t, w, gf))? {
         Ok(()) => v["installed"] = json!(true),
+        // Not the term or leader of the request it answers (a restart, an election): the loaded tables stay, and the
+        // install is tried again once the leader's next `InstallSnapshot` updated `load_want`.
+        Err(raft::InstallError::NotNeeded)
+            if h.core.borrow().as_ref().is_some_and(|c| c.m.state().commit < through) =>
+        {
+            return Ok(true);
+        }
         Err(raft::InstallError::NotNeeded) => {
             v["installed"] = json!("notNeeded");
             sql.exec("DELETE FROM load_job", None)?;
@@ -704,7 +730,7 @@ fn finish_install(
     report(h, &v)?;
     h.stats.borrow_mut().installs += 1;
     console_log!("install {v}");
-    Ok(())
+    Ok(false)
 }
 
 // ---- the leader's side ----

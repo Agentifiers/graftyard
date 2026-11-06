@@ -62,6 +62,7 @@ pub const SCHEMA: &[&str] = &[
     // leader names after its log was truncated.
     "CREATE TABLE IF NOT EXISTS load_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS load_report (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, row TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS load_want (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
 ];
 
