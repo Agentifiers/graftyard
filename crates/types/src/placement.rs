@@ -8,7 +8,7 @@ use smallvec::SmallVec;
 
 use crate::chain::ChainId;
 use crate::ids::Timestamp;
-use crate::site::{SiteId, SiteTable};
+use crate::site::{Region, SiteId, SiteTable};
 
 /// [guess]: intra-region round trips are a few ms, enam to weur about 80 ms.
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);
@@ -45,11 +45,78 @@ pub struct Member {
     pub do_name: Box<str>,
 }
 
+/// The first raft address of a learner: learner slot `k` is addressed as `SiteId(LEARNER_ADDR + k)`, above every
+/// site id (sites are below 64), so a learner beside a voter on one site, or two learners on one site, never share an
+/// address in a group's messages, its leader's progress, or its quorum counts. Not in the design, whose messages name
+/// sites only.
+pub const LEARNER_ADDR: u8 = 192;
+
 impl Member {
     pub fn new(chain: ChainId, site: SiteId, kind: MemberKind, slot: u8, generation: u32) -> Member {
         let do_name = format!("{chain}#{generation}#{}{slot}", kind.letter()).into_boxed_str();
         Member { site, kind, slot, generation, do_name }
     }
+
+    /// Where the group's messages to this member go: its site for a voter, `learner_addr(slot)` for a learner.
+    pub fn addr(&self) -> SiteId {
+        match self.kind {
+            MemberKind::Learner => learner_addr(self.slot),
+            MemberKind::Full | MemberKind::Witness => self.site,
+        }
+    }
+}
+
+pub fn learner_addr(slot: u8) -> SiteId {
+    assert!(usize::from(slot) < MAX_LEARNERS, "learner slot {slot} is not below MAX_LEARNERS");
+    SiteId(LEARNER_ADDR + slot)
+}
+
+/// The learner slot an address names, or `None` for a voter's site.
+pub fn learner_slot(addr: SiteId) -> Option<u8> {
+    addr.0.checked_sub(LEARNER_ADDR).filter(|s| usize::from(*s) < MAX_LEARNERS)
+}
+
+/// A group's read rate (req/s) that adds learners.
+pub const LEARNER_AT: u32 = 500;
+pub const MAX_LEARNERS: usize = 16;
+/// Reads a second one learner takes [inference: `design/DESIGN.md`, Scale, "1,000 req/s per learner"].
+pub const LEARNER_READS: u32 = 1_000;
+
+/// One group's reads, as `graft-ops` sums them from Analytics Engine counters: per region the edges' read rate
+/// (req/s) at the day's peak. The design names `GroupLoad` without defining it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupLoad {
+    pub reads: SmallVec<[(Region, u32); 6]>,
+}
+
+/// The regions to place learners in for one group: none while the group's reads stay under `LEARNER_AT`; above it,
+/// `ceil(rate / LEARNER_READS)` per region with reads, handed out one at a time to the busiest region still owed one,
+/// up to `MAX_LEARNERS`. A region may appear more than once, so two learners can share a site. Pure: `graft-ops`'s
+/// daily cron reads the counters and applies the answer with a config change.
+pub fn place_learners(load: &GroupLoad) -> ArrayVec<Region, MAX_LEARNERS> {
+    let mut out = ArrayVec::new();
+    let total: u64 = load.reads.iter().map(|(_, r)| u64::from(*r)).sum();
+    if total < u64::from(LEARNER_AT) {
+        return out;
+    }
+    let mut owed: Vec<(Region, u32, u32)> =
+        load.reads.iter().filter(|(_, r)| *r > 0).map(|&(g, r)| (g, r, r.div_ceil(LEARNER_READS))).collect();
+    // Busiest first; ties by region order, so every run answers the same.
+    owed.sort_by_key(|&(g, r, _)| (std::cmp::Reverse(r), g as u8));
+    while !out.is_full() {
+        let mut gave = false;
+        for (g, _, n) in owed.iter_mut() {
+            if *n > 0 && !out.is_full() {
+                out.push(*g);
+                *n -= 1;
+                gave = true;
+            }
+        }
+        if !gave {
+            break;
+        }
+    }
+    out
 }
 
 /// One row per other voter in each member's own SQLite, outside `GroupConfig` and the log.
@@ -149,6 +216,10 @@ pub enum PlacementError {
     UnknownSite(SiteId),
     #[error("a learner is not a voter kind, and a voter cannot be a learner")]
     WrongKind,
+    #[error("two learners hold slot {0}, or it is not below MAX_LEARNERS")]
+    SameSlot(u8),
+    #[error("two members on site {0:?} would share the object {1}")]
+    SameObject(SiteId, Box<str>),
 }
 
 /// What `Placement::new` checks a placement against: the install's sites, whether it separates accounts, and the
@@ -219,8 +290,18 @@ impl Placement {
                 }
             }
         }
-        for l in &learners {
+        for (i, l) in learners.iter().enumerate() {
             checks.sites.get(l.site).ok_or(PlacementError::UnknownSite(l.site))?;
+            if usize::from(l.slot) >= MAX_LEARNERS || learners[..i].iter().any(|o| o.slot == l.slot) {
+                return Err(PlacementError::SameSlot(l.slot));
+            }
+        }
+        // Members on one site share its member class, so two of them with one name would be one object.
+        let all: Vec<&Member> = voters.iter().chain(&learners).collect();
+        for (i, a) in all.iter().enumerate() {
+            if all[..i].iter().any(|b| b.site == a.site && b.do_name == a.do_name) {
+                return Err(PlacementError::SameObject(a.site, a.do_name.clone()));
+            }
         }
         Self::with_home(voters, learners, home)
     }
@@ -415,6 +496,58 @@ mod tests {
             Err(PlacementError::BadHome(SiteId(0)))
         );
         assert!(Placement::from_record(REPO, &record(PlacementName::Solo, &[0], 0, 1)).is_ok());
+    }
+
+    fn learners(at: &[(u8, u8)]) -> ArrayVec<Member, 16> {
+        at.iter().map(|&(s, slot)| Member::new(REPO, SiteId(s), MemberKind::Learner, slot, 1)).collect()
+    }
+
+    /// BF-28's naming half: a learner on its voter's site and two learners on one site are distinct objects with
+    /// distinct addresses, and a placement that would name one object twice is refused.
+    #[test]
+    fn learners_beside_a_voter_and_on_one_site_are_distinct_objects() {
+        let t = table();
+        let r = rtt(&[(0, 1, 80), (0, 2, 180), (1, 2, 200)]);
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+        let v = voters(&[(0, Full), (1, Full), (2, Full)]);
+        let p = Placement::new(v.clone(), learners(&[(0, 0), (1, 1), (1, 2)]), SiteId(0), &checks).unwrap();
+        let all: Vec<&Member> = p.voters().iter().chain(p.learners()).collect();
+        let names: std::collections::BTreeSet<(SiteId, &str)> = all.iter().map(|m| (m.site, &*m.do_name)).collect();
+        let addrs: std::collections::BTreeSet<SiteId> = all.iter().map(|m| m.addr()).collect();
+        assert_eq!((names.len(), addrs.len()), (6, 6), "{all:?}");
+        assert_eq!(&*p.learners()[0].do_name, "repo:42#1#l0");
+        assert_eq!(p.learners()[0].addr(), learner_addr(0));
+        assert_eq!(learner_slot(p.learners()[2].addr()), Some(2));
+        assert_eq!(learner_slot(SiteId(2)), None);
+        assert_eq!(
+            Placement::new(v.clone(), learners(&[(1, 1), (2, 1)]), SiteId(0), &checks),
+            Err(PlacementError::SameSlot(1))
+        );
+        assert_eq!(
+            Placement::new(v, learners(&[(1, MAX_LEARNERS as u8)]), SiteId(0), &checks),
+            Err(PlacementError::SameSlot(MAX_LEARNERS as u8))
+        );
+    }
+
+    fn load(r: &[(Region, u32)]) -> GroupLoad {
+        GroupLoad { reads: r.iter().copied().collect() }
+    }
+
+    #[test]
+    fn place_learners_adds_none_below_learner_at_and_spreads_by_rate_up_to_max() {
+        assert!(place_learners(&load(&[(Region::Enam, 300), (Region::Weur, 199)])).is_empty());
+        assert_eq!(
+            place_learners(&load(&[(Region::Enam, 300), (Region::Weur, 200)])).as_slice(),
+            [Region::Enam, Region::Weur]
+        );
+        // 2,500/s in apac needs three, 1,200/s in weur two, 100/s in enam one: busiest first, one round at a time.
+        let got = place_learners(&load(&[(Region::Enam, 100), (Region::Weur, 1_200), (Region::Apac, 2_500)]));
+        use Region::{Apac, Enam, Weur};
+        assert_eq!(got.as_slice(), [Apac, Weur, Enam, Apac, Weur, Apac]);
+        // B0-18's 16,000 reads/s: capped at MAX_LEARNERS.
+        let got = place_learners(&load(&[(Enam, 6_000), (Weur, 5_000), (Apac, 9_000)]));
+        assert_eq!(got.len(), MAX_LEARNERS);
+        assert_eq!(got.iter().filter(|r| **r == Apac).count(), 6);
     }
 
     #[test]
