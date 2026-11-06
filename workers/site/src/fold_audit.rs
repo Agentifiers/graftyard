@@ -1,10 +1,11 @@
 //! The site script's fold audit on its Cron Trigger (`design/SHARED.md`, "Folds", `fold_audit`; `design/DESIGN.md`,
-//! Stack, Cron Triggers). Each run takes `SAMPLE` repository chains this site homes, from this site's
-//! `MemberRegistry` shards, starting after the last run's cursor. For each chain:
+//! Stack, Cron Triggers; `decisions/DECISIONS.md`, "F48"). Each run takes `SAMPLE` repository chains this site homes,
+//! from this site's `MemberRegistry` shards, starting after the last run's cursor. For each chain:
 //!
-//! - its leader replays its stored log from genesis into a fold in memory (`/fold {"replay"}`, `crate::snap::replay`),
-//!   which gives each tier's refolded digest at an index;
-//! - every voter reports its own `fold_digest` of each tier at that index from its digest ring
+//! - its leader refolds the chain into scratch tables from each tier's newest committed snapshot plus the log tail
+//!   (`crate::load`), in alarm-driven batches, so the refold holds one batch in memory whatever the log's size. A run
+//!   starts the job (`/fold {"audit": {"start": true}}`) when the last one is a day old, and reads the last report;
+//! - every voter reports its own `fold_digest` of each tier at the report's index from its digest ring
 //!   (`/fold {"at": index}`), whatever batches it applied in;
 //! - `fold_audit_compare` compares them, and any mismatch alarms. A member that cannot answer for the index (behind
 //!   it, or its metadata tier still loading) is listed, not compared.
@@ -20,7 +21,7 @@ use worker::*;
 
 use crate::SiteEnv;
 
-/// Chains audited per run [guess]: each costs one replay of up to `DIGESTS_KEEP` entries and one call per voter.
+/// Chains audited per run [guess]: each costs one call to its leader and one per voter; the refold runs on the leader.
 const SAMPLE: usize = 4;
 /// The `Registry` object that holds this site's audit cursor.
 const CURSOR: &str = "fold_audit";
@@ -57,8 +58,9 @@ async fn cursor(env: &Env, site: &SiteEnv, put: Option<(&str, &Value)>) -> Resul
     Ok(v["next"].as_str().map(str::to_owned))
 }
 
-/// One chain: the leader's replay, then each voter's digests at the replay's index, compared per tier.
-async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow) -> Value {
+/// One chain: the leader's last refold report (and a new refold started if it is due, or with `force`), then each
+/// voter's digests at the report's index, compared per tier.
+async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow, force: bool) -> Value {
     let b = Bindings { env, sites: &site.sites };
     let record = PlacementRecord {
         name: if row.sites.len() == 1 {
@@ -72,13 +74,16 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow) -> Value {
         moving_from: None,
         at: graftyard_types::Timestamp(0),
     };
-    let replay = match graftyard_lookup::call(&b, row.chain, &record, "/fold", &json!({ "replay": true })).await {
+    let body = json!({ "audit": { "start": true, "force": force } });
+    let led = match graftyard_lookup::call(&b, row.chain, &record, "/fold", &body).await {
         Ok((v, _)) => v,
         Err(e) => return json!({ "chain": row.chain.to_string(), "error": e }),
     };
+    let replay = led["last"].clone();
     let index = Index(replay["index"].as_u64().unwrap_or(0));
-    if replay.get("skip").is_some() || index == Index(0) {
-        return json!({ "chain": row.chain.to_string(), "replay": replay });
+    let running = &led["running"];
+    if replay.get("error").is_some() || index == Index(0) {
+        return json!({ "chain": row.chain.to_string(), "refold": replay, "running": running });
     }
     let mut members: [Vec<(graftyard_types::SiteId, Digest)>; 2] = [Vec::new(), Vec::new()];
     let mut missing = Vec::new();
@@ -117,7 +122,12 @@ async fn audit_chain(env: &Env, site: &SiteEnv, row: &RegistryRow) -> Value {
     if alarm {
         console_error!("fold audit mismatch on {} at {}: {tiers:?}", row.chain, index.0);
     }
-    json!({ "chain": row.chain.to_string(), "index": index.0, "alarm": alarm, "tiers": tiers, "missing": missing })
+    json!({
+        "chain": row.chain.to_string(), "index": index.0, "alarm": alarm, "tiers": tiers, "missing": missing,
+        "refold": { "batches": replay["batches"], "entries": replay["entries"], "rows": replay["rows"], "bytes": replay["bytes"],
+                    "ms": replay["ms"], "memMaxMb": replay["memMaxMb"], "from": replay["tiers"], "segments": replay["segments"] },
+        "running": running,
+    })
 }
 
 /// The name of `chain`'s member on site `at`, from that site's registry row.
@@ -132,7 +142,7 @@ async fn member_name(env: &Env, site: &SiteEnv, at: graftyard_types::SiteId, cha
 
 /// One cron run: `SAMPLE` chains after the cursor, wrapping to the first. With `only`, that chain alone, if this site
 /// homes it (test installs).
-pub async fn run(env: &Env, only: Option<ChainId>) -> Result<Value> {
+pub async fn run(env: &Env, only: Option<ChainId>, force: bool) -> Result<Value> {
     let site = SiteEnv::read(env)?;
     let mut all = homed(env, &site).await?;
     if let Some(c) = only {
@@ -143,7 +153,7 @@ pub async fn run(env: &Env, only: Option<ChainId>) -> Result<Value> {
     let picked: Vec<&RegistryRow> = all.iter().cycle().skip(start).take(SAMPLE.min(all.len())).collect();
     let mut chains = Vec::new();
     for r in &picked {
-        chains.push(audit_chain(env, &site, r).await);
+        chains.push(audit_chain(env, &site, r, force).await);
     }
     let next = picked.last().map(|r| r.chain.to_string()).unwrap_or_default();
     let report = json!({

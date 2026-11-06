@@ -862,27 +862,31 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
     };
     let pi = record(json!([{ "Promoted": p }])).await?;
     let marker_failures = graftyard_git::mark_committed(&refs, net, &pack, chain, graftyard_types::Index(pi)).await;
-    // The archive object: the range's entries as the leader serves them, keyed by range and digest, in two buckets.
-    let bytes = serde_json::to_vec(&entries)?;
-    let digest = Digest(sha2::Sha256::digest(&bytes).into());
-    let key = graftyard_git::R2Key::Archive {
+    // The archive object: the leader puts the range's stored log rows, in the raft codec, in two buckets, keyed by
+    // range and digest (`workers/site/src/load.rs`, `archive_put`), so a member that installs a snapshot applies the
+    // entries as they were committed.
+    let (v, _) = graftyard_lookup::call(
+        &c.bindings(),
         chain,
-        from: graftyard_types::Index(from),
-        to: graftyard_types::Index(to),
-        digest,
-    };
-    let mut put = Vec::new();
-    for (s, b) in refs.iter().take(2) {
-        graftyard_git::Bucket::put_new(*b, &key.to_string(), &bytes, digest, &[]).await.map_err(|e| fail(e.0))?;
-        put.push(s.0);
-    }
-    let at_of = |i: usize| Timestamp(entries[i]["at"].as_u64().unwrap_or(0));
+        &repo.record,
+        "/bench_seed",
+        &json!({ "archive": { "from": from, "to": to } }),
+    )
+    .await
+    .map_err(fail)?;
+    let key: graftyard_git::R2Key = v["key"]
+        .as_str()
+        .ok_or_else(|| fail(format!("archive put: {v}")))?
+        .parse()
+        .map_err(|e| fail(format!("{e}")))?;
+    let graftyard_git::R2Key::Archive { digest, .. } = key else { return Err(fail(format!("archive put: {v}"))) };
+    let put = v["sites"].clone();
     let a = graftyard_git::Archived {
         key: key.clone(),
         from: graftyard_types::Index(from),
         to: graftyard_types::Index(to),
-        from_at: at_of(0),
-        to_at: at_of(entries.len() - 1),
+        from_at: Timestamp(v["fromAt"].as_u64().unwrap_or(0)),
+        to_at: Timestamp(v["toAt"].as_u64().unwrap_or(0)),
         digest,
     };
     let ai = record(json!([{ "Archived": a }])).await?;

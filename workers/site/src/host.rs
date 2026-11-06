@@ -81,6 +81,10 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS request (rid TEXT PRIMARY KEY, idx INTEGER NOT NULL, at INTEGER NOT NULL, events BLOB NOT NULL)",
     // Every apply deletes the rows past retention by `at`.
     "CREATE INDEX IF NOT EXISTS request_at ON request (at)",
+    // The base an installed snapshot left (`Write::Install`): the log holds no row at or below it.
+    "CREATE TABLE IF NOT EXISTS log_base (id INTEGER PRIMARY KEY CHECK (id = 1), idx INTEGER NOT NULL, term INTEGER NOT NULL, digest BLOB NOT NULL)",
+    // Every archive an applied `Archived` named, for the leader's `InstallSnapshot` source (`crate::load`).
+    "CREATE TABLE IF NOT EXISTS archive_keys (from_idx INTEGER PRIMARY KEY, to_idx INTEGER NOT NULL, to_at INTEGER NOT NULL, key TEXT NOT NULL)",
 ];
 
 #[cfg(feature = "test-faults")]
@@ -107,6 +111,11 @@ pub struct Stats {
     pub entries: u32,
     pub commands: u32,
     pub restores: u32,
+    /// Snapshots this member installed (`crate::load`).
+    pub installs: u32,
+    /// Requests this member received, by route, since `inbound_since` (B0-18's leader load).
+    pub inbound: BTreeMap<String, u32>,
+    pub inbound_since: u64,
     pub failed_calls: u32,
     pub dep_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
@@ -397,7 +406,8 @@ pub const RELEASE: ReleaseTag = ReleaseTag { id: ReleaseId([1; 32]), seq: 1 };
 pub fn member_config<F: Family>(site: &SiteEnv, join: &Join) -> MemberConfig {
     MemberConfig {
         chain: join.chain,
-        me: join.me.site,
+        // A learner's address is its slot's, not its site's (`graftyard_types::learner_addr`).
+        me: join.me.addr(),
         record: join.record.clone(),
         regions: site.sites.0.iter().map(|s| (s.id, s.region)).collect(),
         release: RELEASE,
@@ -445,6 +455,8 @@ struct SqlStore<'a, F: Family> {
     stmts: Vec<Stmt>,
     /// Archives the applied entries committed (`Family::archived`), for `truncate`.
     archived: Vec<(String, u64)>,
+    /// A snapshot install's base (`Write::Install`), for `step`.
+    installed: Option<raft::LogBase>,
 }
 
 impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
@@ -458,9 +470,33 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                 vec![i(e.index.0), i(e.term.0), raft::digest(e).0.to_vec().into(), codec::to_bytes(e).into()],
             )),
             Write::Truncate(x) => self.stmts.push(("DELETE FROM log WHERE idx >= ?", vec![i(x.0)])),
-            // Only `Member::install` writes it, and this host neither calls it nor sets an install source: hosting
-            // `InstallSnapshot` is M3-WP5's hosted half.
-            Write::Install(_) => unreachable!("the site host does not install snapshots"),
+            // `Member::install` took the fold `crate::load` built in its scratch tables: the log goes, the base is kept
+            // beside it, the config and id block are the install's, and the family swaps the scratch tables in. The
+            // host then restores the member from these rows (`crate::load::finish`).
+            Write::Install(b) => {
+                self.stmts.push(("DELETE FROM log", vec![]));
+                self.stmts.push((
+                    "INSERT OR REPLACE INTO log_base (id, idx, term, digest) VALUES (1, ?, ?, ?)",
+                    vec![i(b.index.0), i(b.term.0), b.digest.0.to_vec().into()],
+                ));
+                let gf = self.m.group_fold();
+                if let Some((idx, c)) = gf.config() {
+                    self.stmts.push((
+                        "INSERT OR REPLACE INTO group_config (id, idx, row) VALUES (1, ?, ?)",
+                        vec![i(idx.0), codec::to_bytes(c).into()],
+                    ));
+                }
+                match gf.id_block() {
+                    Some(blk) => self.stmts.push((
+                        "INSERT OR REPLACE INTO id_block (id, row) VALUES (1, ?)",
+                        vec![codec::to_bytes(&blk).into()],
+                    )),
+                    None => self.stmts.push(("DELETE FROM id_block", vec![])),
+                }
+                F::install_stmts(&mut self.stmts);
+                self.applied = b.index;
+                self.installed = Some(*b);
+            }
             Write::Apply(to) => {
                 let mut applied = Vec::new();
                 let mut last_at = None;
@@ -487,7 +523,13 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                             vec![codec::to_bytes(b).into()],
                         ));
                     }
-                    self.archived.extend(F::archived(e));
+                    if let Some(a) = F::archived(e) {
+                        self.stmts.push((
+                            "INSERT OR REPLACE INTO archive_keys (from_idx, to_idx, to_at, key) VALUES (?, ?, ?, ?)",
+                            vec![i(a.from), i(a.to), i(a.to_at), a.key.clone().into()],
+                        ));
+                        self.archived.push((a.key, a.to));
+                    }
                     applied.push(e);
                     let EntryBody::Events(evs) = &e.body else { continue };
                     for (rid, r) in &e.requests {
@@ -716,12 +758,24 @@ fn load<F: Family>(storage: &worker::Storage, join: &Join, retention: Duration) 
         }
         Ok(e)
     };
-    // A truncated log (`Host::truncate`) starts at its base row; restore starts there at the earliest.
+    // A truncated log (`Host::truncate`) starts at its base row; restore starts there at the earliest. An installed
+    // snapshot's base (`Write::Install`) has no row: `log_base` holds its term and digest.
+    let installed = match rows(sql, "SELECT idx, term, digest FROM log_base WHERE id = 1", vec![])?.first() {
+        Some(r) => Some(raft::LogBase {
+            index: Index(int(&r[0])? as u64),
+            term: raft::Term(int(&r[1])? as u64),
+            digest: raft::Digest(blob(&r[2])?.try_into().map_err(|_| err("log_base digest"))?),
+        }),
+        None => None,
+    };
     let first_row = rows(sql, "SELECT min(idx) FROM log", vec![])?.first().and_then(|r| int(&r[0]).ok()).unwrap_or(1);
-    let truncated = first_row > 1;
-    let base_index = load_base(sql, applied, if truncated { first_row as u64 } else { 0 })?;
+    let floor = (first_row as u64).max(installed.map_or(0, |b| b.index.0));
+    let truncated = floor > 1;
+    let base_index = load_base(sql, applied, if truncated { floor } else { 0 })?;
     let mut base = raft::LogBase::default();
-    if base_index > 0 {
+    if let Some(b) = installed.filter(|b| b.index.0 == base_index) {
+        base = b;
+    } else if base_index > 0 {
         let r = rows(sql, "SELECT idx, digest, row FROM log WHERE idx = ?", vec![i(base_index)])?;
         let e = decode(r.first().ok_or_else(|| err(format!("no log row at the base {base_index}")))?)?;
         base = raft::LogBase { index: e.index, term: e.term, digest: raft::digest(&e) };
@@ -907,8 +961,14 @@ impl<F: Family> Host<F> {
                 .map_err(|e| err(e.to_string()))?;
         m.set_request_retention(retention);
         m.set_log_window_bytes(raft::LOG_WINDOW, raft::LOG_BYTES);
-        let mut store =
-            SqlStore::<F> { m: &m, fold: &m.group_fold().fold, applied, stmts: Vec::new(), archived: Vec::new() };
+        let mut store = SqlStore::<F> {
+            m: &m,
+            fold: &m.group_fold().fold,
+            applied,
+            stmts: Vec::new(),
+            archived: Vec::new(),
+            installed: None,
+        };
         let ((), _out) = ready.persist(&mut store);
         let (applied, stmts) = (store.applied, store.stmts);
         self.queue.borrow_mut().extend(stmts);
@@ -931,6 +991,7 @@ impl<F: Family> Host<F> {
             hold_deps_until: 0,
         });
         self.stats.borrow_mut().restores += 1;
+        F::restored(self);
         Ok(())
     }
 
@@ -1020,9 +1081,14 @@ impl<F: Family> Host<F> {
             applied: core.applied,
             stmts: vec![],
             archived: vec![],
+            installed: None,
         };
         let (r, mut out) = ready.persist(&mut store);
         let (applied, stmts, archived) = (store.applied, store.stmts, store.archived);
+        if let Some(b) = store.installed {
+            self.queued_last.set(Some(b.index.0));
+            *self.synced.borrow_mut() = VecDeque::new();
+        }
         // A fold read storage refused during `decide` or `apply`: nothing this input computed may leave.
         if let Some(why) = F::lost(&core.m.group_fold().fold) {
             drop(guard);
@@ -1094,7 +1160,7 @@ impl<F: Family> Host<F> {
     /// can HEAD in two buckets"). The row at `to` stays as the stored log's base: its term and digest anchor the next
     /// entry, and restore starts above it. Entries through `to` are archived either way (`RepoFold::first_index`).
     /// A key in fewer than two buckets truncates nothing and raises an alarm; re-putting the copy is not built.
-    async fn truncate(&self, key: &str, to: u64) {
+    async fn truncate(self: &Rc<Self>, key: &str, to: u64) {
         self.settled().await;
         let Ok(site) = SiteEnv::read(&self.env) else { return };
         let mut held = 0;
@@ -1112,8 +1178,9 @@ impl<F: Family> Host<F> {
         }
         match self.state.storage().sql().exec("DELETE FROM log WHERE idx < ?", vec![i(to)]) {
             Ok(_) => self.stats.borrow_mut().truncated_to = to,
-            Err(e) => console_error!("truncate below {to}: {e}"),
+            Err(e) => return console_error!("truncate below {to}: {e}"),
         }
+        F::truncated(self, Index(to)).await;
     }
 
     /// A command marked `before_commit*` whose entry this input appends.
@@ -1313,6 +1380,7 @@ impl<F: Family> Host<F> {
         let mut marks = Vec::new();
         let deps = out.deps;
         let catchup = out.catchup;
+        let installs = out.install;
         let mut lost = None;
         {
             let Ok(mut guard) = self.core.try_borrow_mut() else { return back };
@@ -1446,6 +1514,9 @@ impl<F: Family> Host<F> {
         for want in deps {
             self.read_deps(want);
         }
+        for w in installs {
+            F::install_wanted(self, w);
+        }
         if !marks.is_empty()
             && let Some(chain) = self.core.borrow().as_ref().map(|c| c.join.chain)
         {
@@ -1464,6 +1535,11 @@ impl<F: Family> Host<F> {
         back
     }
 
+    /// The member's `request` table handle, for a fold built over its tables (`crate::load`).
+    pub fn request_store(&self) -> Option<RequestSql<F::Ev>> {
+        self.requests.borrow().clone()
+    }
+
     /// Steps and releases, for inputs whose reply needs nothing registered first.
     pub fn input<R>(
         self: &Rc<Self>,
@@ -1474,7 +1550,8 @@ impl<F: Family> Host<F> {
         Ok(r)
     }
 
-    fn peer_name(&self, to: SiteId) -> Option<String> {
+    /// The site and object name of the member at raft address `to`: a voter's site, or a learner's slot address.
+    fn peer_name(&self, to: SiteId) -> Option<(SiteId, String)> {
         let core = self.core.borrow();
         let join = &core.as_ref()?.join;
         // The latest config in the log names the members, as it counts their acks; until the group has one, the
@@ -1486,12 +1563,16 @@ impl<F: Family> Host<F> {
                 raft::GroupConfig::Joint { old, new } => vec![new, old],
             };
             for p in names {
-                if let Some(m) = p.voters().iter().chain(p.learners()).find(|m| m.site == to) {
-                    return Some(m.do_name.to_string());
+                if let Some(m) = p.voters().iter().chain(p.learners()).find(|m| m.addr() == to) {
+                    return Some((m.site, m.do_name.to_string()));
                 }
             }
         }
-        join.record.bootstrap_members(join.chain).into_iter().find(|m| m.site == to).map(|m| m.do_name.into())
+        join.record
+            .bootstrap_members(join.chain)
+            .into_iter()
+            .find(|m| m.addr() == to)
+            .map(|m| (m.site, m.do_name.into()))
     }
 
     fn send(self: &Rc<Self>, e: Envelope<F>) {
@@ -1621,10 +1702,10 @@ impl<F: Family> Host<F> {
 
     /// One member-to-member call, with no deadline (`answer` adds it), and the cause of its failure.
     async fn call_peer(&self, to: SiteId, body: Vec<u8>) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
-        let name =
-            self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member on site {}", to.0)))?;
+        let (at, name) =
+            self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member at address {}", to.0)))?;
         let site = SiteEnv::read(&self.env).map_err(|x| PeerErr::new(CallFail::SiteEnv, x))?;
-        let stub = site.member(&self.env, to, &name).map_err(|x| PeerErr::new(CallFail::Stub, x))?;
+        let stub = site.member(&self.env, at, &name).map_err(|x| PeerErr::new(CallFail::Stub, x))?;
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(JsValue::from(js_sys::Uint8Array::from(body.as_slice()))));
         drop(body);
