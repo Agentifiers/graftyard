@@ -15,7 +15,7 @@ import { parseArgs } from "node:util";
 const { values: opt } = parseArgs({ options: {
   repo: { type: "string" }, rate: { type: "string", default: "1000" }, seconds: { type: "string", default: "30" },
   load: { type: "string", default: "enam:6000,weur:5000,apac:5000" }, place: { type: "boolean", default: false },
-  out: { type: "string", default: "/tmp/m3h/b0-18" },
+  out: { type: "string", default: "/tmp/m3h/b0-18" }, pushes: { type: "string", default: "10" },
 } });
 const TOOLS = process.env.GRAFT_TOOLS_EDGE!, EDGE = process.env.GRAFT_EDGE!;
 const TOK = readFileSync(new URL("../../m0/.m0-token", import.meta.url), "utf8").trim();
@@ -81,8 +81,9 @@ await Promise.all([...cfg.voters, ...learners].map((m: any) => member(m.site, "/
 const t0 = Date.now();
 let pushes = 0, pushOk = 0;
 const writes = (async () => {
-  while (Date.now() - t0 < seconds * 1000) {
-    const due = t0 + pushes * 100;
+  const every = 1000 / Number(opt.pushes);
+  while (Number(opt.pushes) > 0 && Date.now() - t0 < seconds * 1000) {
+    const due = t0 + pushes * every;
     if (due > Date.now()) await new Promise((r) => setTimeout(r, due - Date.now()));
     const k = pushes++;
     fetch(`${EDGE}/_bed/push?repo=${opt.repo}`, { method: "POST", headers: { "x-bed-token": BED, authorization: `token ${WRITER}` },
