@@ -620,3 +620,111 @@ fn milestone_1_commands_keep_format_1_and_a_format_1_member_refuses_format_2() {
     assert!(matches!(g.commit(A, 1, m3), Err(graftyard_raft::CallError::Unsupported(_))));
     assert!(g.commit(A, 2, m1).is_ok());
 }
+
+/// Kills the leader of `g`, elects another once its promises lapse, and restarts the old one as a follower.
+fn kill_leader<C: graftyard_raft::Command>(g: &mut Group<C>) {
+    let old = g.leader().expect("a leader");
+    g.crash(old);
+    g.elect_after_promises(SITES[(old.0 as usize + 1) % 3]);
+    g.restart(old);
+}
+
+/// BF-33: `gh auth login`'s device flow, 100 runs, with the code shard's leader killed at a different point of the
+/// exchange: before the entry reached anyone, after the followers stored it but before the leader heard, and with the
+/// edge dying between `CodeUsed` and the token's `Stored`; every fourth run has no kill. Each login completes, or its
+/// code is spent with no token and the client starts again with a new code, which completes. No code yields two
+/// tokens. A replay of each used code and a code used after 900 s are refused, 100 of 100.
+#[test]
+fn bf33_device_flow_under_a_leader_kill_completes_or_restarts_cleanly() {
+    let mut w = World::default();
+    let user = acct(0, 2, 5);
+    let client = ClientId::parse("178c6fc778ccc68e1d6a").unwrap();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut rand = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    // A new device code and user code on one shard, put and approved.
+    let start = |w: &mut World, rand: &mut dyn FnMut() -> u64| -> [u8; 32] {
+        let user_code = format!("U{:08X}", rand() as u32);
+        let (device, _) = draw_device_code(&mut *rand, user_code.as_bytes(), 1_000_000).expect("lands");
+        let (dh, uh) = (code_hash(&device), code_hash(user_code.as_bytes()));
+        let put = TokensOp::PutDeviceCode { device: dh, user: uh, client, scopes: ScopeSet(1), interval: 5 };
+        w.tokens_cmd(TokensCmd { cred: OPS, op: put }).unwrap();
+        let poll = TokensCmd { cred: OPS, op: TokensOp::UseCode { hash: dh, client: Some(client) } };
+        assert_eq!(refused(w.tokens_cmd(poll)), TokensErr::Pending);
+        w.tokens_cmd(TokensCmd { cred: OPS, op: TokensOp::ApproveCode { user: uh, account: user } }).unwrap();
+        dh
+    };
+    let use_code = |dh: [u8; 32]| TokensCmd { cred: OPS, op: TokensOp::UseCode { hash: dh, client: Some(client) } };
+    let (mut completed, mut restarted, mut replays, mut expired) = (0, 0, 0, 0);
+    let mut issued: Vec<[u8; 32]> = Vec::new();
+    for run in 0..100u32 {
+        let mut dh = start(&mut w, &mut rand);
+        let kill = run % 4;
+        let shard = shard_of_hash(&dh);
+        let id = w.id();
+        let spent = {
+            let g = w.tokens.get_mut(&shard.0).unwrap();
+            let l = g.leader().unwrap();
+            g.commit(l, id, use_code(dh)).unwrap();
+            match kill {
+                // Lost before any follower stored it.
+                0 => {
+                    g.deliver(|_| false);
+                    kill_leader(g);
+                }
+                // Stored on the followers; their acks never reach the leader.
+                1 => {
+                    g.deliver(|e| e.to != l);
+                    kill_leader(g);
+                }
+                _ => {}
+            }
+            // The edge re-sends under the same request id until it has an outcome.
+            g.submit(id, use_code(dh), &mut |c| panic!("{c}")).is_ok()
+        };
+        assert!(spent, "run {run}: the exchange spends the approved code once");
+        // The edge dies between the two commits: a spent code and no token, and the client starts again.
+        if kill == 2 {
+            kill_leader(w.tokens.get_mut(&shard.0).unwrap());
+            assert_eq!(refused(w.tokens_cmd(use_code(dh))), TokensErr::CodeUsed, "the next poll is refused");
+            restarted += 1;
+            dh = start(&mut w, &mut rand);
+            w.tokens_cmd(use_code(dh)).unwrap();
+        }
+        let mut token = [0u8; 32];
+        token[..8].copy_from_slice(&rand().to_be_bytes());
+        token[8..12].copy_from_slice(&run.to_be_bytes());
+        let fields = TokenFields { client: Some(client), ..TokenFields::default() };
+        let store = TokensOp::StoreWith {
+            hash: token,
+            kind: TokenKind::OAuth,
+            account: user,
+            scopes: ScopeSet(1),
+            expires: None,
+            fields,
+        };
+        w.tokens_cmd(TokensCmd { cred: OPS, op: store }).unwrap();
+        issued.push(token);
+        completed += 1;
+        // A replay of the used code under a new request id gets nothing.
+        if refused(w.tokens_cmd(use_code(dh))) == TokensErr::CodeUsed {
+            replays += 1;
+        }
+        // A fresh approved code used after 900 s has lapsed.
+        let late = start(&mut w, &mut rand);
+        w.tokens.get_mut(&shard_of_hash(&late).0).unwrap().advance(DEVICE_CODE_TTL.as_millis() as u64 + 1);
+        if refused(w.tokens_cmd(use_code(late))) == TokensErr::NoCode {
+            expired += 1;
+        }
+    }
+    assert_eq!((completed, restarted, replays, expired), (100, 25, 100, 100));
+    for t in &issued {
+        let f: TokensFold = w.tokens(shard_of_hash(t)).fresh_leader();
+        assert_eq!(f.token(t).map(|r| r.account), Some(user));
+    }
+    assert_eq!(issued.len(), 100, "one token per login");
+}
