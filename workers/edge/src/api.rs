@@ -191,11 +191,12 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
-    read_repo(c, repo, owner, name, viewer, None).await
+    read_repo(c, repo, owner, name, viewer, None, true).await
 }
 
 /// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
 /// `known` is the owner's `Authz` this request already read through `fresh` to resolve the repository, if it did.
+/// With `logins_now` false, `dir.logins` is left empty for the caller to fill from `read_logins` alongside other work.
 async fn read_repo(
     c: &Ctx<'_>,
     repo: Repo,
@@ -203,6 +204,7 @@ async fn read_repo(
     name: &str,
     viewer: Option<&Principal>,
     known: Option<AuthzFold>,
+    logins_now: bool,
 ) -> Result<std::result::Result<Read, Reply>> {
     timing::mark("resolve");
     let read_authz = async {
@@ -234,15 +236,24 @@ async fn read_repo(
         Actor::Anonymous => None,
     });
     let (core, meta) = (TierRows::store(&rows.core), TierRows::store(meta));
-    let mut named = graftyard_api::hosted::accounts(&core, &meta);
-    named.extend(dir.viewer);
-    named.remove(&repo.owner);
-    dir.logins = account_logins(c, &named).await;
-    dir.logins.insert(repo.owner.0.0, owner.to_owned());
-    for (id, l) in logins(c) {
-        dir.logins.entry(id).or_insert(l);
+    let mut rd = Read { repo, at, core, meta, dir };
+    if logins_now {
+        rd.dir.logins = read_logins(c, &rd).await;
     }
-    Ok(Ok(Read { repo, at, core, meta, dir }))
+    Ok(Ok(rd))
+}
+
+/// The logins of every account `rd`'s tiers name, the viewer's, and the owner's from the request path (F50).
+async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, String> {
+    let mut named = graftyard_api::hosted::accounts(&rd.core, &rd.meta);
+    named.extend(rd.dir.viewer);
+    named.remove(&rd.repo.owner);
+    let mut out = account_logins(c, &named).await;
+    out.insert(rd.repo.owner.0.0, rd.at.owner.clone());
+    for (id, l) in logins(c) {
+        out.entry(id).or_insert(l);
+    }
+    out
 }
 
 /// The repository's `{"rows": true}` read on its leader, creating its group on first use.
@@ -507,13 +518,16 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             })),
         }
     };
+    // A merge reads its logins while the git cache plans it: neither needs the other, and only the leader's render
+    // reads them (the `Plan::Merge` arm). Every other request reads them with its tiers.
+    let merging = matches!(gq.roots().as_deref(), Ok([(f, _)]) if f == "mergePullRequest");
     let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
     timing::mark("auth_resolve");
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd) = match found? {
         None => return Ok(Reply::json(200, graphql::query(&gq, None))),
         Some(Ok((owner, name, repo, a))) => {
-            let rd = read_repo(c, repo, &owner, &name, Some(&who), a).await?;
+            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, !merging).await?;
             (owner, name, rd)
         }
         Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
@@ -527,7 +541,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             }
         },
     };
-    let rd = match rd {
+    let mut rd = match rd {
         Ok(r) => r,
         Err(r) if r.status == 404 => {
             let m = format!("Could not resolve to a Repository with the name '{owner}/{name}'.");
@@ -564,14 +578,17 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
                 Ok(req) => req,
                 Err(e) => return Ok(Reply::json(200, e)),
             };
-            let plan = match merge_plan(c, &rd.repo, &req).await {
+            let (plan, logins) = futures_util::future::join(merge_plan(c, &rd.repo, &req), read_logins(c, &rd)).await;
+            let plan = match plan {
                 Ok(Ok(plan)) => plan,
                 Ok(Err(CacheError::Conflict(_))) => {
                     return Ok(Reply::json(200, graphql::refused_merge(&p, &MergeError::Protection(conflict()))));
                 }
                 Ok(Err(CacheError::Bad(e))) | Err(e) => return Ok(unavailable(&format!("the git cache: {e}"))),
             };
-            commit_merge(c, &rd, MergeCmd::Merge(graphql::merge_command(&p, plan, who.clone())), what).await
+            let cmd = MergeCmd::Merge(graphql::merge_command(&p, plan, who.clone()));
+            rd.dir.logins = logins;
+            commit_merge(c, &rd, cmd, what).await
         }
         graphql::Plan::Enqueue { n, head } => commit_merge(c, &rd, queue(QueueAction::Enqueue { n, head }), what).await,
         graphql::Plan::Dequeue { n } => commit_merge(c, &rd, queue(QueueAction::Dequeue { n }), what).await,
@@ -582,9 +599,11 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
 /// and the owner's login from its `AccountLogin` row (F50), else from `logins`.
 async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzFold)> {
     let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
-    let mut known = account_logins(c, &std::iter::once(repo.owner).collect()).await;
+    // The owner's login and `Authz` at once: each needs only the owner and its record.
+    let owner = std::iter::once(repo.owner).collect();
+    let (mut known, a) = futures_util::future::join(account_logins(c, &owner), authz(c, &repo)).await;
     let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
-    let a = authz(c, &repo).await?;
+    let a = a?;
     let name = a.names.iter().find_map(|(k, e)| match e {
         graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
         _ => None,
@@ -645,7 +664,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let rd = match at {
         graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
-            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a)).await?,
+            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), true).await?,
             None => return Ok(Reply::not_found()),
         },
     };

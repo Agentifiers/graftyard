@@ -96,10 +96,13 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         })
     };
     let Some((key, term, repo, cursor, applied, record)) = leading else { return };
-    let mut d = DISPATCHERS.with(|m| match m.borrow().get(&key) {
-        Some((t, d)) if *t == term => d.clone(),
-        _ => Dispatcher::default(),
+    let (mut d, new) = DISPATCHERS.with(|m| match m.borrow().get(&key) {
+        Some((t, d)) if *t == term => (d.clone(), false),
+        _ => (Dispatcher::default(), true),
     });
+    if new {
+        warm(h, repo, &record);
+    }
     if let Err(e) = scan(h, &mut d, repo, cursor, applied) {
         note(h, format!("prsync scan: {e}"));
     }
@@ -161,6 +164,44 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     if waiting {
         h.arm_in(WAIT_MS);
     }
+}
+
+/// A new leadership catches up this site's shard of the network at once. Merges and test merges run on the leader's
+/// site's shard (`merge`), and one that last served under another leader is behind every push validated and merged
+/// elsewhere since, so without this the first merge after an election caught up first: 270 to 540 ms of every merge on
+/// a freshly elected leader, in 91 of 91 and 29 of 29 samples (`tests/m2/results/m2-wp6.md`, BM-2). Best effort: a
+/// failed catch-up leaves the merge's own catch-up to run.
+fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRecord) {
+    let env = h.env.clone();
+    let Ok(rec) = serde_json::to_string(record) else { return };
+    spawn_local(async move {
+        let t0 = now_ms();
+        let r = async {
+            let site = SiteEnv::read(&env).map_err(|e| e.to_string())?;
+            let me = site.id;
+            let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+            let stub = env
+                .durable_object(&format!("SHARD_{}", me.0))
+                .and_then(|ns| {
+                    ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint())
+                })
+                .map_err(|e| e.to_string())?;
+            let url = format!("https://shard/catchup?repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
+            let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
+            match r.status_code() {
+                200 => Ok(()),
+                s => Err(format!("{s} {}", r.text().await.unwrap_or_default())),
+            }
+        };
+        match crate::host::within(FIRST_FOR, r).await {
+            Some(Ok(())) => console_log!("shard warm {} {}ms", repo.0.0, now_ms() - t0),
+            Some(Err(e)) => console_error!("shard warm {}: {e}", repo.0.0),
+            None => console_error!("shard warm {}: no answer in {} s", repo.0.0, FIRST_FOR.as_secs()),
+        }
+    });
 }
 
 /// The re-send path: one message on this site's queue.

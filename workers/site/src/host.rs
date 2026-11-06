@@ -1777,15 +1777,29 @@ impl<F: Family> Host<F> {
             }
             // Each chain at once, as "The write path" reads them: one after another cost the sum of three reads,
             // about 1.3 s of every merge (`tests/m2/results/m2-wp6.md`, "Merge latency").
+            let joined = h.core.borrow().as_ref().map(|c| c.join.clone());
             let one = |chain: graftyard_types::ChainId| {
                 let env = &h.env;
+                let known = joined.as_ref().and_then(|j| owner_chain_record(j, chain));
                 async move {
-                    let record = match crate::release::record_for(env, chain).await {
-                        Ok(r) => r,
-                        Err(e) => return (None, json!({ "chain": chain, "error": format!("no record: {e}") })),
-                    };
                     let t0 = now_ms();
-                    match crate::lookup::call(env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await {
+                    let q = &json!({ "q": { "dep": true } });
+                    let read = |record: graftyard_types::PlacementRecord| async move {
+                        crate::lookup::call(env, chain, &record, "/read", q).await
+                    };
+                    // The joined record finds the group with no `Names` read first; a record the owner has since
+                    // moved from may not, and then the owner's current record is read and tried.
+                    let mut got = match known {
+                        Some(r) => read(r).await,
+                        None => Err(String::new()),
+                    };
+                    if got.is_err() {
+                        got = match crate::release::record_for(env, chain).await {
+                            Ok(r) => read(r).await,
+                            Err(e) => return (None, json!({ "chain": chain, "error": format!("no record: {e}") })),
+                        };
+                    }
+                    match got {
                         Ok((v, _)) => {
                             let bytes = v.get("value").and_then(Value::as_str).and_then(unhex);
                             match bytes.map(|b| F::dep(chain, &b)) {
@@ -2291,6 +2305,18 @@ pub fn digest_hex(d: &raft::Digest) -> String {
     d.hex()
 }
 
+/// The record a repository member already holds for one of its dependency chains: its owner's `Authz` is under the
+/// owner's record, the one the member joined with, so the leader reads it with no `Placement` read on `Names` first
+/// (one cross-region round trip of every merge on a weur or apac leader, `tests/m2/results/m2-wp6.md`).
+fn owner_chain_record(join: &Join, chain: graftyard_types::ChainId) -> Option<graftyard_types::PlacementRecord> {
+    match (join.chain, chain) {
+        (graftyard_types::ChainId::Repo(_), graftyard_types::ChainId::Authz(o)) if join.owner == Some(o) => {
+            Some(join.record.clone())
+        }
+        _ => None,
+    }
+}
+
 /// `read` of every chain, all started at once and awaited together, in `chains` order (`design/DESIGN.md`, "The write
 /// path": "the leader reads each distinct dependency ... once through `fresh`, in parallel").
 async fn each_at_once<T, Fut: std::future::Future<Output = T>>(
@@ -2371,6 +2397,36 @@ mod tests {
         }
         let want: Vec<ChainId> = (1..=3).map(|n| ChainId::Authz(AccountId(DbId(n)))).collect();
         assert_eq!(done, Some(want));
+    }
+
+    /// A repository leader reads its owner's `Authz` under the record it joined with, so a merge's dependency reads
+    /// start with no `Placement` read on `Names`; any other chain, or another owner's `Authz`, is looked up.
+    #[test]
+    fn the_owners_authz_is_read_under_the_joined_record() {
+        use graftyard_types::{AccountId, ChainId, DbId, MemberKind, PlacementName, PlacementRecord, RepoId, SiteId};
+        let record = PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [0, 1, 2].into_iter().map(SiteId).collect(),
+            home: SiteId(0),
+            generation: 4,
+            moving_from: None,
+            at: graftyard_types::Timestamp(1),
+        };
+        let (owner, other) = (AccountId(DbId(7)), AccountId(DbId(8)));
+        let chain = ChainId::Repo(RepoId(DbId(9)));
+        let join = super::Join {
+            chain,
+            me: graftyard_types::Member::new(chain, SiteId(1), MemberKind::Full, 0, 4),
+            record: record.clone(),
+            peers: Vec::new(),
+            owner: Some(owner),
+            genesis: None,
+            #[cfg(feature = "test-faults")]
+            no_claim: false,
+        };
+        assert_eq!(super::owner_chain_record(&join, ChainId::Authz(owner)), Some(record));
+        assert_eq!(super::owner_chain_record(&join, ChainId::Authz(other)), None);
+        assert_eq!(super::owner_chain_record(&join, ChainId::Tokens(graftyard_types::TokenShard(3))), None);
     }
 
     #[test]
