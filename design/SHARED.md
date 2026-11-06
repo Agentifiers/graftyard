@@ -190,7 +190,9 @@ pub enum RepoEvent {
     /// `conclusion: None` is a queued or in-progress run or a pending status, so a re-run blocks a merge again.
     /// For one (sha, name), the higher run id wins, then the higher version, and a status's version is its `StatusId`
     /// [inference]. Runs come from Actions shards, so id order holds only within the group that assigned them. Hosted
-    /// `POST /statuses/{sha}` mints a `StatusId` from the edge's clock, so a slower edge can order a re-request wrong (F51).
+    /// `POST /statuses/{sha}` mints a `StatusId` from the edge's clock, and `decide` takes the smallest free id at or
+    /// above it, so two statuses minted in one millisecond keep both rows [measured, `tests/m2/results/m2-wp6.md`,
+    /// BF-22], but a slower edge can still order a re-request wrong (F51).
     RequiredCheck { sha: ObjectId, name: Box<str>, source: CheckSource, version: u64, conclusion: Option<CheckConclusion> },
     /// Metadata tier. Every check run, check suite, and commit status is an entry, required or not. `apply` deletes a
     /// row once an entry's `at` passes the row's time (the `at` of the entry that last wrote the row) plus
@@ -370,10 +372,11 @@ pub struct Principal { pub actor: Actor, pub scopes: ScopeSet, pub credential: C
 /// Install scope only, chosen at launch as GHES offers: built-in accounts, SAML, or OIDC, and LDAP at T1. An
 /// `AuthzEvent::InstanceAuth` entry on the install's own `Authz` chain; secrets inside the configs are ciphertext.
 pub enum InstanceAuth { Builtin, Saml(SamlConfig), Oidc(OidcConfig), Ldap(LdapConfig) }
-/// An OAuth client id, 20 characters as GitHub's. GitHub Apps have one too.
+/// An OAuth client id, 20 characters as GitHub's: 20 hex digits for an OAuth app, and for a GitHub App `Iv1.` and its
+/// App id in 16 hex digits, unique with no claim of its own [inference: GitHub's are `Iv1.` and 16 random hex digits].
 pub struct ClientId(ArrayString<20>);
 /// SHA-256 of a client secret. The secret is shown once and never stored. Two allow a rotation [guess].
-pub struct SecretHash([u8; 32]);
+pub struct SecretHash([u8; 32]);   pub const CLIENT_SECRETS_MAX: usize = 2;
 /// Core tier of the owner's `Authz` chain. The edge reaches it through the `Names` route from the App id, slug, or
 /// client id to the owner (`design/DESIGN.md`, Shape, Identity). The edge verifies an App JWT against `keys` before it
 /// mints, and an installation's permissions never exceed `permissions`. The `Webhooks` consumer delivers `events` to
@@ -444,7 +447,7 @@ pub enum Decision { Allow, Forbidden, Hidden }
 
 **Instance sign-in in installs.** An install chooses built-in accounts, SAML, or OIDC at launch, with LDAP at T1 (`InstanceAuth`). The choice is an `AuthzEvent::InstanceAuth` entry on the install's own `Authz` chain, the account that `Genesis` names, and only a `SiteAdmin` writes it. A `SiteAdmin` actor bypasses org and repository permissions, and every bypass is audited in the same entry as the action. `graftyard admin bootstrap` creates the first site admin with a one-time sign-in link that lives 15 minutes [guess]. The link is a `SignInLink` code row on a `Tokens` shard. `design/DESIGN.md`, "Install operations", says who mints it.
 
-**OAuth.** Authorization code and device flow run on the bare host at `/login/oauth/*` and `/login/device/code`. First-party apps are seeded once with GHES-era callbacks: `http://localhost/` for gh and GCM, `http://127.0.0.1/` also accepted, and `x-github-desktop-auth://` for Desktop [unverified exact path]. They are public clients, so their embedded secrets are accepted and ignored (`research/clients.md#44`-`#47`). Every other client is an `OAuthAppRecord` or an `AppRecord`, found through its client id's `Names` route, and its secret is checked against `client_secrets`. Device codes, user codes, and authorization codes are TTL rows on `Tokens` shards keyed by the code's hash (`design/DESIGN.md`, "Shape", Identity). A device code expires after 900 s and an authorization code after 10 minutes, as on GitHub [unverified for GHES 3.22]. An exchange marks the code used before it stores the new token's hash, so one code never yields two tokens.
+**OAuth.** Authorization code and device flow run on the bare host at `/login/oauth/*` and `/login/device/code`. First-party apps are seeded once with GHES-era callbacks: `http://localhost/` for gh and GCM, `http://127.0.0.1/` also accepted, and `x-github-desktop-auth://` for Desktop [unverified exact path]. They are public clients, so their embedded secrets are accepted and ignored (`research/clients.md#44`-`#47`). Every other client is an `OAuthAppRecord` or an `AppRecord`, found through its client id's `Names` route, and its secret is checked against `client_secrets`. Device codes, user codes, and authorization codes are TTL rows on `Tokens` shards keyed by the code's hash (`design/DESIGN.md`, "Shape", Identity). A device code expires after 900 s and an authorization code after 10 minutes, as on GitHub [unverified for GHES 3.22]. An exchange marks the code used before it stores the new token's hash, so one code never yields two tokens. An edge that dies between the two commits leaves a spent code and no token, which is the failed second commit `design/DESIGN.md` describes: nothing is stored, so `Audit` has nothing to finish, and the client's next poll or exchange is refused and it starts again [inference: `crates/identity`, `TokensOp::UseCode`; BF-33 kills the code shard's leader mid-flow].
 
 ## Issues and pull requests
 
@@ -661,9 +664,12 @@ pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
 /// scratch tables, then applies the stored log tail with the same `apply`, one entry at a time (`refold_segment`), so
 /// memory is one frame and one entry. A refold from one snapshot to the next must reach the next trailer's digest, so
 /// archived ranges are audited segment by segment; the first snapshot is trusted as written [measured in memory,
-/// `tests/m3/results/m3-wp5.md`, F48]. Until the site's cron runs it (M2-WP1), a chain whose log is over
-/// `REPLAY_BYTES` (16 MB [guess]) is reported as skipped, because the old refold from genesis is held in one isolate's
-/// memory and a 102.6 MB log took one past 128 MB [measured, `tests/m2/results/f47.md`].
+/// `tests/m3/results/m3-wp5.md`, F48]. The site's cron runs it in alarm batches of at most 1 MB, 20,000 rows, or 2 s,
+/// and skips nothing for log size; a deep audit refolds the core tier from its oldest snapshot through the whole stored
+/// log, checking each later trailer on the way. On hosted `repo:65536`, 107.7 MB of log refolded in 213 batches at a
+/// peak of 64.9 MB of wasm memory, equal to all three voters [measured, `tests/m3/results/m3-wp5.md`, "2026-11-06",
+/// F48]. A tier whose snapshot is over `AUDIT_SNAPSHOT_MAX` (256 MB [guess]) is skipped, because its scratch copy would
+/// not fit beside it in the member's storage.
 pub async fn fold_audit(sample: &[ChainId]) -> Result<AuditReport, FoldError>;
 ```
 

@@ -162,8 +162,7 @@ pub enum MemberKind {
 pub struct Member { pub site: SiteId, pub kind: MemberKind, pub slot: u8, pub generation: u32, pub do_name: Box<str> }
 /// One row per other voter in each member's own SQLite, outside `GroupConfig` and the log, so a check writes no entry.
 /// A member measures when it joins. After that it measures again only after it serves a request on a day it has not
-/// measured yet, inside that request's work, so the check never wakes an idle group. `Placement::new` reads the joining
-/// members' rows.
+/// measured yet, inside that request's work, so it never wakes an idle group. `Placement::new` reads joiners' rows.
 pub struct Rtt { pub peer: SiteId, pub median_ms: u16 /* of 20 binding round trips */, pub at: Timestamp }
 /// Built only by `Placement::new`, which refuses two voters in one region or one site, a voter pair under MIN_PAIR_RTT,
 /// fewer than two Full voters, and, when the install separates accounts, two voters in one account. `Placement::solo`
@@ -218,7 +217,8 @@ pub enum PlacementName {
 pub const LEARNER_AT: u32 = 500;                                  // group read rate (req/s) that adds learners
 pub const MAX_LEARNERS: usize = 16;
 pub struct GroupLoad { pub reads: SmallVec<[(Region, u32); 6]> }   // peak req/s per region from Analytics Engine
-/// Daily `graft-ops` cron: none under LEARNER_AT, else ceil(rate / 1,000) per region, busiest first, up to 16 [inference].
+/// Daily `graft-ops` cron (until it exists, the leader's `/learners` route): none under LEARNER_AT, else ceil(rate /
+/// 1,000) per region, busiest first, up to 16 [inference]. Learners write no `MemberRegistry` row.
 pub fn place_learners(load: &GroupLoad) -> ArrayVec<Region, 16>;
 
 // ---- Chains: the reference design's chain model, with groups in place of a table ----
@@ -231,9 +231,7 @@ pub enum ChainId { Repo(RepoId), Network(NetworkId), Authz(AccountId), Identity(
 /// [inference]. Gaps happen, reuse never. Issue numbers stay per-repository fold counters. The managed front routes
 /// `/repositories/{id}`, `/user/{id}`, node ids, and installation ids to a cell by the cell bits.
 pub struct DbId(i64);
-pub struct Term(u64);
-pub struct Index(u64);
-pub struct Digest([u8; 32]);
+pub struct Term(u64);   pub struct Index(u64);   pub struct Digest([u8; 32]);
 /// Row in each member's `log` table, keyed by index. `prev` chains digests, so a gap or a changed entry is refused.
 /// `requests` maps each request id to the range of its events in `body`, so a duplicate is answered from them.
 pub struct LogEntry { pub term: Term, pub index: Index, pub prev: Digest, pub format: Format, pub tiers: TierSet,
@@ -605,31 +603,31 @@ pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: Mer
 /// report-status `ng <ref> agent admission full, retry after <n>s` and a `remote:` line, and REST gets 429 with
 /// `retry-after` and a "secondary rate limit" message. Under pressure, which is more agent bytes queued than one entry
 /// holds or more agent commands queued than the agent bucket admits in 1 s [inference, the M0-WP9 prototype's rule],
-/// only `PackRef::Stored` pushes queue. AGENT_QUEUE_MAX caps queued agent commands, and the edge refuses at the cap at
-/// once, before staging. At 150 admitted agent commands/s the 1,000-command cap is about 7 s of queue and binds long
+/// only `PackRef::Stored` pushes queue. At AGENT_QUEUE_MAX the leader refuses agent commands at once, before staging,
+/// and the edge renders it. At 150 admitted agent commands/s the 1,000-command cap is about 7 s of queue and binds long
 /// before the byte cap [measured, `tests/m0/results/m0-wp9.md`, B0-33]. Task API commands (create, cancel, and `PATCH`
-/// of an `AgentTask`) do not count toward DEMOTE_PER_MIN, because a human creating tasks quickly is still a human. The
-/// DEMOTE_PER_MIN count per actor lives in the group's fold, so a leader change does not reset it (in leader memory,
-/// M0-WP9 classed 108 of 399 writes of a fast user token Human for a minute after a leader change).
+/// of an `AgentTask`) do not count toward DEMOTE_PER_MIN, because a human creating tasks quickly is still a human. It
+/// counts an actor's last minute of committed writes in the group's fold, which a leader change keeps (M0-WP9's leader
+/// memory classed 108 of 399 writes Human after one), plus the leader's unresolved and refused ones [inference, AM1-WP1].
 pub enum AdmitClass { Human, MergeQueue, Bot, Agent }
 pub const AGENT_SHARE: f32 = 0.5;                                // [guess]
 pub const AGENT_FLOOR: f32 = 0.2;                                // of capacity, which Bot cannot take [guess]
 pub const DEMOTE_PER_MIN: u32 = 60;                              // GitHub's content limit is 80 a minute
 pub const AGENT_WAIT: Duration = Duration::from_secs(30);
 pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent commands and bytes per group [guess]
-/// A group above HOT_PUSHES pushes/s inlines only up to INLINE_MAX_HOT while `PackStore::place` succeeds; a new leader
-/// takes `hot` from the push count of its last committed entries, not its own pushes since. Every group, hot or not,
-/// also caps each entry at AGENT_INLINE_ENTRY of Agent-class inline pack bytes, and an agent pack that would pass it is
-/// staged as `PackRef::Stored` (while placement fails, refused at once); Human and MergeQueue packs do not count, so it
-/// needs no hot test. It is the rule for a group not yet hot: without it, fresh groups and new leaders put 1.05 to 1.33
-/// MB of agent packs in their first entries, which caused B0-33's sixth-pass leader change [measured,
-/// `tests/m0/results/m0-wp9.md`, fifth to seventh passes], and entries of 84 to 96 agent commands and 450 KB inline kept
-/// Human and MergeQueue p99 at 1.15 to 1.49 s [measured, fourth pass]. While placement fails or a bucket's probe is red,
-/// Human and MergeQueue pushes keep INLINE_MAX (LOG_MAX_BYTES archives extra), and an agent push over INLINE_MAX_HOT is
-/// refused at once, never queued: from apac 1 MiB packs commit at 1.3 to 2.0 MB/s against journey 9's 4.37 MB/s, and
-/// this rule refused 2,500 of 2,500 at once and 0 of 287 Human and MergeQueue pushes [measured, B0-31, third, eighth
-/// passes]. On a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms,
-/// at 256 KiB up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
+/// A group above HOT_PUSHES pushes/s over its last 5 s of committed entries, read from the log so a new leader agrees,
+/// inlines any class's push only up to INLINE_MAX_HOT while `PackStore::place` succeeds. Every group also caps each
+/// entry at AGENT_INLINE_ENTRY of Agent-class inline pack bytes, and an agent pack that would pass it is staged as
+/// `PackRef::Stored` (while placement fails, refused at once); Human and MergeQueue packs do not count. It is the rule
+/// for a group not yet hot: without it, fresh groups and new leaders put 1.05 to 1.33 MB of agent packs in their first
+/// entries, which caused B0-33's sixth-pass leader change [measured, `tests/m0/results/m0-wp9.md`, fifth to seventh
+/// passes], and entries of 84 to 96 agent commands and 450 KB inline kept Human and MergeQueue p99 at 1.15 to 1.49 s
+/// [measured, fourth pass]. While placement fails or a bucket's probe is red, Human and MergeQueue pushes keep
+/// INLINE_MAX (LOG_MAX_BYTES archives extra), and an agent pack over INLINE_MAX_HOT, hot group or not, is refused at
+/// once, never queued: from apac 1 MiB packs commit at 1.3 to 2.0 MB/s against journey 9's 4.37 MB/s, and this rule
+/// refused 2,500 of 2,500 at once and 0 of 287 Human and MergeQueue pushes [measured, B0-31, third, eighth passes]. On
+/// a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms, at 256 KiB
+/// up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
 pub const INLINE_MAX_HOT: usize = 64 << 10;                      // [measured, B0-32]; INLINE_MAX stays 1 MiB
 pub const AGENT_INLINE_ENTRY: usize = 128 << 10;                 // [guess]
 pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
@@ -639,20 +637,20 @@ pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
 pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 /// Hot networks spread over k shards per warm site (`shards_for`). Each warm site's first shard of the network reports
 /// `NetworkLoad` each minute, and the network group's leader commits one k for both warm sites from the larger load,
-/// with hysteresis and no API call or cron, so the second warm site holds k shards when the first is lost; it raises
-/// its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte
-/// p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third
-/// pass]. A step up in k takes an idle pool shard that keeps the network warm (`HOT_POOL`), with no rehydrate.
+/// with no API call or cron, so the second warm site holds k shards when the first is lost; it raises its own k for the
+/// predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte p99 at 0.71 to
+/// 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass]. A step up
+/// takes an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`: k and since when.
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
-pub fn fanout(loads: [&NetworkLoad; 2], k: u8) -> u8;  // up above 0.75 for 3 min, down below 0.4 for 1 h [guess], at most 8
-pub const FANOUT_MAX: u8 = 8;
+pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
+pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
-/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute. A
-/// compiled TEST_MERGE_BUDGET of the k shards' vCPU serves pushes and dispatch first, then GETs. Over it `mergeable` is
-/// null, or GraphQL `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at
-/// most 338 ms at p99 [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU
-/// and the budget binds only on eager recompute.
-pub enum TestMerge { Current { merge: Oid, base: Oid }, Stale { since: Oid } }
+/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute.
+/// `MergeBudget`, per network in shard memory, refills at TEST_MERGE_BUDGET of the k shards' vCPU: pushes and dispatch
+/// may run one merge into deficit, and GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL
+/// `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
+/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU.
+pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
 /// or when an admin flagged it as an `AgentApp` and set `confine`. A flagged App without `confine` is `Bot`, though its
@@ -795,8 +793,7 @@ pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session
 /// Gitignore-style: `*` matches within one path segment and `**` across segments. Unlike gitignore, every glob is
 /// anchored at the root unless it starts with `**/`, and there is no negation. Two globs overlap when some path matches
 /// both, found by walking both segment lists. A `RefPattern` uses the same syntax over full ref names.
-pub struct PathGlob(Box<str>);
-pub struct RefPattern(Box<str>);
+pub struct PathGlob(Box<str>);   pub struct RefPattern(Box<str>);
 pub struct LeaseScope { pub paths: SmallVec<[PathGlob; 8]> /* <= 32 globs */, pub refs: SmallVec<[RefPattern; 2]> }
 /// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block and are
 /// returned as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
@@ -1019,10 +1016,10 @@ pub const STALE_MAX: Duration = Duration::from_secs(24 * 3_600);  // compiled [g
 /// re-signs. 422 returns `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours
 /// apart, so an offline signature rarely meets a 409 [inference]. Reads are `GET /api/graftyard/v1/release/entries`
 /// (`design/AGENT-LAYER.md`, "API reference").
-/// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A member writes its row before it stores
+/// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A voter writes its row before it stores
 /// its first entry, and rewrites it on each config change. `ReplaceMember { lost }` and the owner-placement move find
-/// their groups by reading the surviving or old sites' registries and keeping rows whose `sites` include the site. Every
-/// group except `Solo` has a voter off a lost site, so the survivors' union is complete. The edge may look up a
+/// their groups by reading the surviving or old sites' registries and keeping rows whose `sites` include the site.
+/// Every group except `Solo` has a voter off a lost site, so the survivors' union is complete. The edge may look up a
 /// member's `do_name` here when the names it computes do not answer (Shape, "Sites and placement").
 pub struct MemberRegistry { pub site: SiteId, pub shard: u8 }
 pub struct RegistryRow { pub chain: ChainId, pub do_name: Box<str>, pub generation: u32,
@@ -1041,12 +1038,13 @@ pub const PACK_COMMIT_WINDOW: Duration = Duration::from_secs(3600);   // [guess]
 /// Archives and snapshots are keyed by range and content digest, and each is put in two buckets. The leader commits
 /// `Archived` after both puts, and followers truncate only through a committed range whose key they can HEAD in two
 /// buckets, so a deposed leader's put never stands in for a range nobody holds. A member that HEADs a committed key in
-/// fewer than two buckets and holds the range's entries re-puts the same bytes create-only, checks the digest, and HEADs
-/// again, and an alarm fires while any committed key has one copy; otherwise one lost copy stops truncation for good
-/// [measured, `tests/m0/results/m0-wp8.md`, negative test]. A snapshot's `from` is 0. A `Blob` is
-/// placed like a stored pack: create-only puts in two sites' buckets in two regions before its entry commits
-/// (`DurableBlob`, SHARED "Issues and pull requests"). An `ArchiveCache` object is derived, lives only in the warm
-/// site's bucket beside `CloneCache` entries, is named by no entry, and is rebuilt by `git archive` on a miss.
+/// fewer than two buckets and holds the range's entries re-puts the same bytes create-only, checks the digest, and
+/// HEADs again, and an alarm fires while any committed key has one copy; otherwise one lost copy stops truncation for
+/// good [measured, `tests/m0/results/m0-wp8.md`, negative test]. A snapshot's `from` is 0. An `Archive` is `gyfarch\0`
+/// v1, then each stored row in the raft codec behind a 4-byte length (`crates/fold`). A `Blob` is placed like a stored
+/// pack: create-only puts in two sites' buckets in two regions before its entry commits (`DurableBlob`, SHARED "Issues
+/// and pull requests"). An `ArchiveCache` object is derived, lives only in the warm site's bucket beside `CloneCache`
+/// entries, is named by no entry, and is rebuilt by `git archive` on a miss.
 pub enum R2Key { Pack { network: NetworkId, id: PackId }, Idx { network: NetworkId, id: PackId },
                  InlineIdx { chain: ChainId, index: Index } /* `.idx` of an inline pack on a hot network */,
                  Snapshot { chain: ChainId, tier: Tier, from: Index, to: Index, digest: Digest },
@@ -1151,13 +1149,14 @@ pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
 /// Per site, the expected hot networks [guess 1] times FANOUT_MAX - 1, counted in the site's start cap, so it uses the
-/// tier's instance size: `standard-2` at 50 developers, `standard-3` at 300, and
-/// `standard-4` at 2,000. Each owner may hold at most its plan's share, so one owner's hot networks cannot take another's.
-/// Idle pool shards keep the site's hot networks warm, LRU by `NetworkLoad`, holding the parts up to the tip, so a
-/// step up in k needs no rehydrate and serves within `fanout`'s up window. Cold, with `fanout`'s 3 min up and a 7.3 GB
-/// rehydrate, a saturating step waited about 290 s from saturation to k = 2 serving, with clone time to first byte p99
-/// at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A pool warm only
-/// for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
+/// tier's instance size: `standard-2` at 50 developers, `standard-3` at 300, and `standard-4` at 2,000. `pool_grants`
+/// holds each owner to its share, keeping a network's shards before it grants more, so another owner's step up never
+/// takes them. With no plan field, an owner's share is HOT_POOL - 1, so no owner holds the whole pool [guess, B0-34's
+/// monorepo share]. Idle pool shards keep the site's hot networks warm, LRU by `NetworkLoad`, holding the parts up to
+/// the tip, so a step up in k needs no rehydrate and serves within `fanout`'s up window. Cold, with `fanout`'s 3 min up
+/// and a 7.3 GB rehydrate, a saturating step waited about 290 s from saturation to k = 2 serving, with clone time to
+/// first byte p99 at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A
+/// pool warm only for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
 pub const HOT_POOL: u16 = 7;
 /// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard has read each member
 /// chain's `Refs`, `Merged`, and `Promoted` entries and the network chain's `Compacted` entries. Every `CoreRefs` a
@@ -1173,7 +1172,7 @@ impl GitCacheShard {
     pub async fn validate(&self, staged: StagedPack, refs: &CoreRefs)
         -> Result<(PackIndex, Provenance, SmallVec<[ProtectedHits; 1]>), PackError>;
     pub async fn upload_pack(&self, req: FetchRequest, refs: &CoreRefs) -> Result<PackStream, GitError>;
-    pub async fn merge(&self, req: MergeRequest) -> Result<MergePlan, MergeError>;   // includes the tree-diff check
+    pub async fn merge(&self, req: MergeRequest) -> Result<MergePlan, MergeError>;   // leader site's shard; tree-diff check
 }
 
 // ---- SSH front ----
@@ -1201,8 +1200,7 @@ pub struct SshHostKeys { pub ed25519: Ed25519Public, pub ecdsa: EcdsaP256Public,
 // ---- Identity ----
 /// 1,024 shards per home family (na, eu, apac). A new token's secret is redrawn until its hash lands in the owner's
 /// family, about 3 draws on average, so its group's leader sits near the owner.
-pub struct TokenShard(u16);
-pub fn token_shard(secret: &[u8; 30]) -> TokenShard;
+pub struct TokenShard(u16);   pub fn token_shard(secret: &[u8; 30]) -> TokenShard;
 pub fn fingerprint_shard(key: &Fingerprint) -> TokenShard;   // the uniqueness point for SSH fingerprints
 /// `DELETE /installation/token` commits the stateless token's `jti` and `exp` to the shard of a hash of the `jti`.
 /// Write-class requests check that shard on its leader, reads honor it within READ_CACHE, and the row expires at `exp`.
@@ -1219,10 +1217,11 @@ pub fn jti_shard(jti: &Jti) -> TokenShard;
 /// `Code` rows are keyed by the hash of a device code, user code, authorization code, or `graftyard admin bootstrap`
 /// sign-in link, on the `token_shard` of that hash. A device code is redrawn until its hash lands on its user code's
 /// shard, so both rows commit in one entry. A row lapses at `expires` with no command, as a lease does: 900 s for a
-/// device code, 10 minutes for an authorization code [unverified for GHES 3.22], 15 minutes for a sign-in link [guess]. Approving a
-/// user code commits `CodeApproved`. An exchange commits `CodeUsed` first, then the new token's `Stored`, so a code
-/// never yields two tokens, and a failed second commit sends the client back to the start. The leader enforces a
-/// device code's polling interval from memory, so a leader change can skip one `slow_down`.
+/// device code, 10 minutes for an authorization code [unverified for GHES 3.22], 15 minutes for a sign-in link [guess].
+/// Approving a user code commits `CodeApproved`. An exchange commits `CodeUsed` first, then the new token's `Stored`,
+/// so a code never yields two tokens, and a failed second commit sends the client back to the start. The leader
+/// enforces a device code's polling interval from memory, so a leader change can skip one `slow_down`. `Installation`
+/// tokens are never stored. A `Stored` with fields is encoded `StoredWith` (tag 11) to keep M1's bytes.
 pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: AccountId, scopes: ScopeSet,
                                 expires: Option<Timestamp>, sso_orgs: SmallVec<[OrgId; 2]>, app: Option<AppId>,
                                 client: Option<ClientId>, permissions: Option<PermissionSet>,
@@ -1238,25 +1237,26 @@ pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: Accoun
 pub enum CodeKind { Device { user_code: [u8; 32], interval: u8 }, User { device_code: [u8; 32] },
                     Authorization { redirect: Url, pkce: Option<Digest> }, SignInLink }
 /// 1,024 shards per install or front account, on `Tri`. `account_shard` holds the account's `Account` row.
-pub struct NameShard(u16);
-pub fn name_shard(key: &NameKey) -> NameShard;
+pub struct NameShard(u16);   pub fn name_shard(key: &NameKey) -> NameShard;
 pub fn account_shard(id: AccountId) -> NameShard;
 pub enum NameKey { Login(LoginKey), Email(Digest), Shortcode(Shortcode), App(AppId), AppSlug(Box<str>),
                    Client(ClientId), Installation(InstallationId), Repo(RepoId) }
 /// Names hold only routes to an owner. The App's or OAuth app's record (keys, permissions, events, webhook, callbacks,
 /// and secret hashes) is SHARED's `AppRecord` or `OAuthAppRecord` on the owner's `Authz` chain. Registering an App
 /// claims `AppSlug` first, the commit point, then writes `AppRecord`, `AppRegistered`, and `ClientRegistered`, and
-/// `Audit` finishes a registration nobody finished. `Placement` and `RepoOwner` are "Sites and placement"'s.
+/// `Audit` finishes a registration nobody finished (an OAuth app's commit point is its `Client` route). The edge
+/// renders an account by id from `AccountLogin`, at most 24 shards a request [guess]. `Placement`, `RepoOwner`: Shape.
 pub enum NamesEvent { LoginClaimed { key: LoginKey, account: AccountId, kind: AccountKind },
                       Account { id: AccountId, suspended: bool, sessions_not_before: Timestamp },
                       FormerName { key: LoginKey, account: AccountId }, Retired { owner: LoginKey, repo: RepoNameKey },
                       Shortcode { code: Shortcode, enterprise: AccountId },
                       EmailClaimed { email: Digest, account: Option<AccountId> }, AppRegistered { app: AppId, owner: AccountId },
-                      AppSlug { slug: Box<str>, app: Option<AppId> },
+                      AppSlug { slug: Box<str>, app: Option<AppId>, owner: AccountId },
                       ClientRegistered { client: ClientId, owner: AccountId, app: Option<AppId> },
                       InstallationRegistered { id: InstallationId, app: AppId, owner: AccountId },
                       Placement { owner: AccountId, record: PlacementRecord } /* on account_shard(owner) */,
-                      RepoOwner { repo: RepoId, owner: AccountId } /* on name_shard(NameKey::Repo(repo)) */ }
+                      RepoOwner { repo: RepoId, owner: AccountId } /* on name_shard(NameKey::Repo(repo)) */,
+                      AccountLogin { account: AccountId, login: Login } /* on account_shard(account), tag 12 */ }
 /// SHARED's run, job, runner, and session events on an owner's `Actions` shards. `Job` applies `transition` against the
 /// job's version, and job leases extend only by `ExtendLeases`. The leader sets a DO alarm at the earliest `lease_until`
 /// or queue deadline and commits `LeaseExpired` or `QueueExpired` then. Only `RunOwner` writes `RunStatus`.
@@ -1409,9 +1409,9 @@ Every request enters at the Cloudflare data center nearest the client and runs `
 **Journey 2. Fork pull request merged while a review and a required check land.** The fork lives in the same network, so its packs share the network's prefix. Its refs are on the fork's own group.
 
 1. The merge plan reads the fork head through the fork group's `fresh`, and the base fold through the base group's `fresh`.
-2. The base site's shard runs `merge-tree`, `commit-tree`, and the tree-diff check (`design/SHARED.md`, "Issues and pull requests"). The result pack is placed in two buckets.
+2. The shard on the base leader's site runs `merge-tree`, `commit-tree`, and the tree-diff check (`design/SHARED.md`, "Issues and pull requests"), because `PrSync` and `MergeQueue` keep that shard caught up [inference, `tests/m2/results/m2-wp6.md`]. The pack rides inline in the command (Shape, "Merge queue").
 3. `Merge::decide` runs on the base leader. The review, the `RequiredCheck` from `record_check`, and the merge are all commands on the base group, so they serialize, including within one entry. A review or check committed before the merge's command is in the fold `decide` sees. One committed after it belongs to a merged pull request.
-4. At the 200, the `Merged` entry is on two sites, and the merge pack is in two buckets.
+4. At the 200, the `Merged` entry, with its inline merge pack, is on two sites.
 5. `gh pr view` and `gh pr list` run at once. Both go to the base leader, and both read its fold at or after the merge, so both show it merged.
 
 **Journey 3. Issue labeled `bug`, then two lists.**
