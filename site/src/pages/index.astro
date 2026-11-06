@@ -1,0 +1,257 @@
+---
+import Page from '../layouts/Page.astro';
+import Film from '../components/Film.astro';
+import status from '../data/github-status.json';
+
+// the outage section: GitHub's last 90 days, from The Missing GitHub Status Page (scripts/github-status.mjs)
+const dayLabel = (i: number) => new Date(Date.parse(status.from) + i * 86400000).toISOString().slice(0, 10);
+const fmtDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+const hours = Math.round(status.downtimeMinutes / 60);
+
+const clients = {
+  layout: 'hub',
+  alt: 'Graftyard serves git, the GitHub CLI, VS Code, JetBrains IDEs, Terraform, Jenkins and Argo CD as a GitHub Enterprise Server 3.22 host.',
+  center: { label: 'GHES 3.22', icon: 'ui:server' },
+  spokes: [
+    { label: 'git', icon: 'git' },
+    { label: 'GitHub CLI', icon: 'github' },
+    { label: 'VS Code', icon: 'visual-studio-code' },
+    { label: 'JetBrains', icon: 'jetbrains' },
+    { label: 'Terraform', icon: 'terraform' },
+    { label: 'Jenkins', icon: 'jenkins' },
+    { label: 'Argo CD', icon: 'argo' },
+  ],
+};
+
+const faq = [
+  ['Which GitHub version does it match?', 'GitHub Enterprise Server 3.22. Clients read it from /api/v3/meta and use the GHES paths.'],
+  ['Do I need a new GitHub client or plugin?', 'No. Point gh, git, your IDE or Terraform at the host as you would at GHES.'],
+  ['Where does Graftyard run?', 'Only on Cloudflare: as a managed service, in your own Cloudflare account, or self-hosted.'],
+  ['Why not build it on Cloudflare Artifacts?', 'A new Artifacts repository is capped at 1 GB and lives in one place. The full answer has its own page.'],
+  ['Can AI coding agents use Graftyard?', 'Yes, as GitHub Apps with ordinary tokens. An opt-in agent layer adds task leases and an activity feed.'],
+  ['When can I use Graftyard?', 'It is in build: Milestones 0 and 1 are closed and Milestone 2 is under way.'],
+];
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+---
+<Page title="Graftyard: GHES 3.22-compatible git hosting on Cloudflare"
+  description="Graftyard is git hosting that GitHub clients treat as GitHub Enterprise Server 3.22. Every push is held in two regions before it is acknowledged."
+  extraCss={['/assets/ui/terminal-run/fragment.css']}>
+<style is:global slot="head">
+/* home page only: the hero's terminal, the client diagram */
+.hero__window > .ly-piece { max-width: 760px; }
+.hero__window .ui-term { width: 100%; }
+.hero--centred .hero__lead { color: var(--ink); }
+/* the hero's quote: the display face a step under the usual h1, its marks hung outside the text and in the leaf green */
+.hero h1.hero__quote { font-size: calc(var(--ly-h1) * 0.86); max-width: 20ch; line-height: 1.06; }
+.hero__quote .q { color: var(--accent); }
+.hero__quote .q:first-child { margin-left: -0.42em; }
+.hero__sub { font: var(--display-weight) clamp(20px, 0.8vw + 15px, 28px)/1.25 var(--font-display); letter-spacing: var(--display-tracking); color: var(--accent); }
+html[data-theme="light"] .hero__sub, html[data-theme="light"] .hero__quote .q { color: #4f7a1f; }
+@media (max-width: 639px) { .hero h1.hero__quote { font-size: clamp(30px, 8.6vw, 40px); } .hero__quote .q:first-child { margin-left: 0; } }
+/* GitHub's 90 days: one bar a day, coloured by its worst incident, in the page's own colours */
+.gh-status { display: grid; gap: var(--s-6); }
+.gh-panel { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); padding: clamp(var(--s-5), 2.4vw, var(--s-7)); display: grid; gap: var(--s-5); min-width: 0; }
+.gh-row { display: grid; gap: var(--s-3); min-width: 0; }
+.gh-row__head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-4); }
+.gh-row__head b { font-weight: 500; }
+.gh-row__head span { font-family: var(--font-mono); font-size: var(--t-small); color: var(--muted); white-space: nowrap; }
+.gh-row--big .gh-row__head b { font: var(--display-weight) clamp(22px, 1vw + 16px, 28px)/1.2 var(--font-display); letter-spacing: var(--display-tracking); }
+.gh-row--big .gh-row__head span { font: var(--display-weight) clamp(28px, 1.6vw + 18px, 44px)/1 var(--font-display); letter-spacing: var(--display-tracking); color: var(--ink); }
+.gh-bars { display: grid; grid-template-columns: repeat(90, minmax(0, 1fr)); gap: 2px; height: 40px; }
+.gh-row:not(.gh-row--big) .gh-bars { height: 20px; }
+.gh-bars > i { border-radius: 2px; background: color-mix(in oklab, var(--ink) 14%, transparent); }
+.gh-bars > i.minor { background: #d9a13b; }
+.gh-bars > i.major { background: #e2654a; }
+.gh-bars > i.critical { background: #c23b4b; }
+.gh-bars > i.maintenance { background: #5b8fd9; }
+.gh-axis { display: flex; justify-content: space-between; font-size: var(--t-label); color: var(--muted); }
+.gh-legend { display: flex; flex-wrap: wrap; gap: var(--s-2) var(--s-5); font-size: var(--t-small); color: var(--muted); margin: 0; padding: 0; list-style: none; }
+.gh-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: var(--s-2); vertical-align: -1px; background: color-mix(in oklab, var(--ink) 14%, transparent); }
+.gh-legend i.minor { background: #d9a13b; } .gh-legend i.major { background: #e2654a; } .gh-legend i.critical { background: #c23b4b; }
+.gh-services { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s-5) var(--s-7); }
+.gh-source { font-size: var(--t-small); color: var(--muted); }
+.gh-source a { text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+@media (max-width: 767px) { .gh-services { grid-template-columns: minmax(0, 1fr); } .gh-bars { gap: 1px; height: 32px; } }
+#clients .frame--split { padding: 0; }
+#clients .frame .dg { position: absolute; inset: 0; }
+@media (min-width: 640px) and (max-width: 1023px) { #clients .frame--split { --ratio: 56%; } }
+@media (max-width: 379px) { .hero__window .ui-term .ui-term__key { width: 48px; } .hero__window .ui-term__track { font-size: 11.5px; } .hero__window .ui-term__ln { padding-inline: 12px; } .hero__window .ui-term__log { gap: 8px; } }
+@media (max-width: 639px) { .hero__window .ui-term__cwd { display: none; } #clients .frame--split { --ratio: 70%; } #questions .t-lead { display: none; } }
+/* the hero grows past a short screen (a phone, a laptop at 1280x640) instead of running its terminal
+   under the next section; at 1440x900 and the tablets it stays exactly one screen */
+@media (max-width: 639px), (max-height: 800px) {
+  main > section.hero { height: auto; min-height: 100svh; display: flex; flex-direction: column; }
+  main > section.hero > .wrap { flex: 1 0 auto; height: auto; }
+  main > section.hero > .wrap > .hero-text { height: auto; }
+  .hero--centred .hero__window { flex: 1 0 auto; min-height: 260px; }
+  /* the terminal joins the window's flow, so the window is as tall as it plus room for the
+     kit's bottom fade, and the last lines (Logged in, the prompt) stay above the fade */
+  .hero--centred .hero__window > .ly-piece { position: relative; top: 0; margin-block: var(--s-4) var(--s-8); }
+}
+</style>
+
+  <section class="hero hero--centred bg-topglow" aria-labelledby="hero-h">
+    <div class="wrap"><div class="hero-text">
+      <div class="hero__c">
+        <a class="pill" href="/evidence/"><span>In build</span><span class="muted">Milestone 2 under way</span></a>
+        <h1 id="hero-h" class="hero__quote"><span class="q">“</span>Claude, rebuild GitHub. Make no mistakes. Oh, and do it in&nbsp;Rust.<span class="q">”</span></h1>
+        <p class="hero__sub">Git hosting compatible with GHES&nbsp;3.22</p>
+        <p class="hero__lead">Point gh, git, VS Code and JetBrains at a Graftyard host and they treat it as GitHub Enterprise Server 3.22. Every push is held in two regions before it is acknowledged.</p>
+        <div class="btn-row"><a class="btn btn--primary" href="/evidence/">See the evidence</a><a class="btn btn--secondary" href="/architecture/">How it works</a></div>
+      </div>
+      <div class="hero__window" data-fx="grain-gradient" data-fx-seed="9" role="img" aria-label="gh auth login against a Graftyard host detects GitHub Enterprise Server 3.22 and logs in">
+        <div class="ly-piece" aria-hidden="true" data-ui-loop>
+          <div class="ui ui-panel ui-term" data-ui="terminal-run">
+            <div class="ui-term__head">
+              <span class="ui-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+              <span class="ui-term__title">payments</span>
+              <span class="ui-meta">zsh</span>
+              <span class="ui-spacer"></span>
+              <span class="ui-chip ui-chip--plain ui-term__branch"><svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="3.5" r="1.5"/><circle cx="5" cy="12.5" r="1.5"/><circle cx="11" cy="5.5" r="1.5"/><path d="M5 5v6M11 7c0 2.6-6 1.8-6 4"/></svg>main</span>
+            </div>
+            <div class="ui-term__screen" data-term-screen>
+              <div class="ui-term__track" data-term-track>
+                <div class="ui-term__ln ui-term__cmd"><span class="ui-term__cwd">~/<span class="ui-term__up">src/</span>payments</span><span class="ui-term__sig">$</span><span class="ui-term__typed" data-term-cmd>gh auth login -h git.example</span></div>
+                <div class="ui-term__ln ui-term__meter" data-term-out data-term-meter><span class="ui-term__bar" style="--p:1"><i></i></span><span class="ui-term__count" data-term-count>3 of 3 steps</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">GET /api/v3/meta</span><span class="ui-term__n">GHES 3.22</span><span class="ui-term__t">41ms</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">device code sign-in</span><span class="ui-term__n">approved</span><span class="ui-term__t">6.2s</span></div>
+                <div class="ui-term__ln ui-term__log" data-term-out data-term-step><svg class="ui-term__tick" viewBox="0 0 16 16" aria-hidden="true"><path d="m3.5 8.4 2.8 2.8 6.2-6.4"/></svg><span class="ui-term__path">git protocol</span><span class="ui-term__n">https</span><span class="ui-term__t">12ms</span></div>
+                <div class="ui-term__ln ui-term__gap" data-term-out aria-hidden="true"></div>
+                <div class="ui-term__ln ui-term__sum" data-term-out><span class="ui-term__key">Host</span><span class="ui-term__val">GHES 3.22.0</span></div>
+                <div class="ui-term__ln ui-term__sum" data-term-out><span class="ui-term__key">API</span><span class="ui-term__val">/api/v3 /api/graphql</span></div>
+                <div class="ui-term__ln ui-term__done" data-term-out data-term-done><span class="ui-term__ok"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4.5 8.3 2.4 2.4 4.6-5"/></svg></span><b>Logged in</b><span class="ui-term__dim">as mara</span></div>
+                <div class="ui-term__ln ui-term__cmd" data-term-next><span class="ui-term__cwd">~/<span class="ui-term__up">src/</span>payments</span><span class="ui-term__sig">$</span><span class="ui-term__typed"></span><i class="ui-term__caret" aria-hidden="true"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <section class="section" id="why" aria-labelledby="why-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">Why build it</p>
+          <h2 id="why-h" style="margin-top: var(--s-3)">GitHub was up {status.uptime}% of the last 90&nbsp;days</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">GitHub stopped publishing its own uptime numbers. Rebuilt from its status feed, the last 90 days hold {status.incidents} incidents and about {hours} hours of degraded service. Each one leaves teams unable to push, review or ship.</p>
+          <ul class="facts">
+            <li><b>{status.daysWithIncident} of 90 days</b> had a minor, major or critical incident.</li>
+            <li><b>Git operations {status.services[0].uptime}%</b>, pull requests {status.services[4].uptime}%, Actions {status.services[5].uptime}%.</li>
+            <li><b>Graftyard's answer:</b> three sites on three continents, so losing one region costs seconds, not hours.</li>
+          </ul>
+          <p class="more"><a class="link" href="/architecture/#failures">What happens when something fails<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <div class="gh-status span-7 start-6" data-visual>
+          <div class="gh-panel">
+            <div class="gh-row gh-row--big">
+              <div class="gh-row__head"><b>GitHub, all services</b><span>{status.uptime}%</span></div>
+              <div class="gh-bars" role="img" aria-label={`GitHub's last 90 days: ${status.daysWithIncident} days with an incident, ${status.uptime}% uptime`}>
+                {status.days.map((d, i) => <i class={d} title={`${dayLabel(i)}: ${d === 'none' ? 'no incident' : d}`}></i>)}
+              </div>
+              <div class="gh-axis"><span>{fmtDay(status.from)}</span><span>{fmtDay(status.asOf)}</span></div>
+            </div>
+            <ul class="gh-legend" aria-hidden="true"><li><i></i>No incident</li><li><i class="minor"></i>Minor</li><li><i class="major"></i>Major</li><li><i class="critical"></i>Critical</li></ul>
+          </div>
+          <div class="gh-panel gh-services">
+            {status.services.map((sv) => (
+              <div class="gh-row">
+                <div class="gh-row__head"><b>{sv.name}</b><span>{sv.uptime}%</span></div>
+              </div>
+            ))}
+          </div>
+          <p class="gh-source">Data: <a href={status.source}>The Missing GitHub Status Page</a> by {status.sourceAuthor}, rebuilt from githubstatus.com, as of {fmtDay(status.asOf)}. Uptime counts minor incidents as downtime, as that page does.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="clients" aria-labelledby="clients-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="clients-h">Works with the GitHub clients you run</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Clients detect a GHES 3.22 host from its API and use its paths. Nothing is installed on a laptop or a build agent.</p>
+          <ul class="facts">
+            <li><b>/api/v3/meta</b> answers <code>installed_version</code> 3.22.0, so every client takes its GHES path.</li>
+            <li><b>The GraphQL schema</b> is generated from the GHES 3.22 SDL, all 1,626 types.</li>
+            <li><b>No GHES response changes</b> for a client that does not opt in to the agent layer.</li>
+          </ul>
+        </div>
+        <div class="frame frame--split span-7 start-6" data-visual>
+          <div class="dg" data-dg-still data-icon-base="/assets/icons/" data-diagram><script is:inline type="application/json" set:html={JSON.stringify(clients)}></script></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="ghes" aria-labelledby="ghes-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="ghes-h">Tested with real GitHub clients</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Unmodified gh, git and git-lfs ran against a Graftyard host on Cloudflare. Their replies were checked against the pinned GHES 3.22 schemas.</p>
+          <ul class="facts">
+            <li><b>348 of 348</b> git client checks pass: 29 checks, 12 runs, git 2.39.5, 2.51.0 and 2.56.0, with and without a site failing.</li>
+            <li><b>gh 2.102.1</b> issue, pull request and release commands, and <b>git-lfs 3.8.0</b> push, clone, pull and locks, all pass.</li>
+            <li><b>0 schema failures</b> across 43 live REST, GraphQL and LFS replies, and 93 replayed ones.</li>
+          </ul>
+          <p class="more"><a class="link" href="/evidence/#ghes">Every GHES test<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <Film name="ghes-loop" label="gh and git against a Graftyard host: the host reports GHES 3.22.0 and each client check passes" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="durability" aria-labelledby="durability-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="durability-h">Every git push held in two regions</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Each repository lives on three sites: North America, Europe and Asia-Pacific. A push is acknowledged only after sites in two regions hold it.</p>
+          <ul class="facts">
+            <li><b>107 to 189 ms</b> median for the one cross-region round a write needs, under load.</li>
+            <li><b>172 to 370 ms</b> median commit with one entry in flight; p99 399 to 690 ms.</li>
+            <li><b>11.0 to 12.9 s</b> to recover from losing a region's members, with 0 failed operations.</li>
+          </ul>
+          <p class="more"><a class="link" href="/architecture/">How a push is held<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <Film name="push-loop" label="A git push held on two continents, then acknowledged" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="chaos" aria-labelledby="chaos-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="chaos-h">Faults on, every acknowledged write kept</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">For 104.6 hours on Cloudflare a chaos driver reset members, moved leaders and dropped calls while clients wrote. Afterwards every site's log was read back.</p>
+          <ul class="facts">
+            <li><b>0 of 3,588,424</b> acknowledged writes lost in the audited runs.</li>
+            <li><b>12,304,207 operations</b> checked for linearizability with Porcupine.</li>
+            <li><b>16,258 member resets</b> and 10,680 leadership transfers injected.</li>
+          </ul>
+          <p class="more"><a class="link" href="/evidence/#chaos">The chaos runs<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <Film name="chaos-loop" label="Members reset and leadership moves between three sites while writes keep landing and none is lost" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="questions" aria-labelledby="questions-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5 stack-4">
+          <h2 id="questions-h">Questions</h2>
+          <p class="t-lead">What teams on GitHub Enterprise Server ask first.</p>
+          <p><a class="link" href="/why-not-artifacts/">Why not Artifacts<Fragment set:html={ARROW} /></a></p>
+        </div>
+        <div class="faq span-7 start-6">
+          {faq.map(([q, a]) => <div class="faq__item"><h3>{q}</h3><p>{a}</p></div>)}
+        </div>
+      </div>
+    </div>
+  </section>
+</Page>

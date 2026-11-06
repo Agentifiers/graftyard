@@ -1,0 +1,21 @@
+{
+  // graftyard.com: the static site in dist/, plus POST /_v, which sends page views to Basin.
+  "name": "graftyard-site",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_worker_first": ["/_v"]
+  },
+  // the Basin stream site_pageviews_stream; its pipeline site_pageviews writes the Iceberg table
+  // default.site_pageviews in the R2 bucket graftyard-site-analytics
+  "pipelines": [{ "binding": "PAGEVIEWS", "stream": "e1ed093e45804e4b8de64261bed898f3" }],
+  "routes": [
+    { "pattern": "graftyard.com", "custom_domain": true },
+    { "pattern": "www.graftyard.com", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "observability": { "enabled": true }
+}

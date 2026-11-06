@@ -1,0 +1,134 @@
+---
+// A reader's overview of design/DESIGN.md ("Summary", "Stack", "Commit and read paths", "Downtime") as of
+// 2026-11-05. The design document wins wherever this page is shorter or older.
+import Page from '../layouts/Page.astro';
+import Film from '../components/Film.astro';
+import Table from '../components/Table.astro';
+
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+
+// the request path: the client, the edge, the leader, and its two followers on other continents
+const flow = {
+  layout: 'free',
+  alt: 'A git client reaches the Graftyard edge, which sends the push to the repository leader in North America; the leader replicates to Europe and Asia-Pacific and acknowledges once Europe holds it.',
+  nodes: [
+    { id: 'cli', label: 'git, gh, IDEs', icon: 'github', at: [0.12, 0.5], atCompact: [0.5, 0.1] },
+    { id: 'edge', label: 'Edge', icon: 'cloudflare-workers', meta: 'Workers', at: [0.36, 0.5], atCompact: [0.5, 0.34] },
+    { id: 'enam', label: 'North America', icon: 'ui:server', meta: 'leader', at: [0.64, 0.5], atCompact: [0.5, 0.6] },
+    { id: 'weur', label: 'Europe', icon: 'ui:server', meta: 'holds it', done: true, at: [0.9, 0.24], atCompact: [0.22, 0.88] },
+    { id: 'apac', label: 'Asia-Pacific', icon: 'ui:server', meta: 'catches up', at: [0.9, 0.76], atCompact: [0.78, 0.88] },
+  ],
+  edges: [
+    { from: 'cli', to: 'edge' },
+    { from: 'edge', to: 'enam' },
+    { from: 'enam', to: 'weur', curve: 'elbow' },
+    { from: 'enam', to: 'apac', curve: 'elbow' },
+  ],
+  shots: [['cli>edge', 'edge>enam', ['enam>weur', 'enam>apac'], 'weur>enam', 'enam>edge', 'edge>cli']],
+};
+
+const stack = [
+  ['Workers', 'The front door, the edge (HTTPS git, REST, GraphQL), three site scripts, and <code>graft-ops</code> for signed operations'],
+  ['Durable Objects, SQLite-backed', 'Group members: each holds a Raft log, a lease and the repository\'s folds (issues, pull requests, reviews)'],
+  ['R2', 'Pack files in one bucket per site, the clone cache, snapshots, and the vault\'s locked copy'],
+  ['Containers', 'Upstream git for index-pack, upload-pack, merge-tree and repack, in a git cache per site'],
+  ['Queues, Workflows, Cron Triggers', 'Webhook and search fan-out from the log; member replacement and imports; sweepers'],
+  ['Tunnel, DNS, WAF, Secrets Store', 'Opt-in SSH, the zone, abuse limits, and the keys that sign operations'],
+];
+
+const failures = [
+  ['A data center inside a site', 'Absorbed by Durable Object storage and R2 inside the region', 'No effect'],
+  ['A whole region lost', 'The other two sites still form a quorum; the group elects a leader there', 'Measured 11.0 to 12.9 s, then normal'],
+  ['A region slow or erroring (gray)', 'Sites report a sick member; a busy leader steps down on its own', 'Leaders move off within about 20 s'],
+  ['A site deploy', 'The site is drained first: leaders transfer away before it resets, one site a day', 'Targets zero failed writes'],
+  ['R2 down everywhere', 'Pushes under 1 MiB ride inside the log entry instead of a pack bucket', 'Small pushes still land'],
+  ['Cloudflare down everywhere', 'An optional lifeboat on the customer\'s own hosts serves clones and reads to enrolled developers', 'Read-only until it returns'],
+];
+---
+<Page title="Architecture overview | Graftyard"
+  description="How Graftyard is built on Cloudflare: every repository a three-site Raft group, a push acknowledged once two regions hold it, and a GHES 3.22 edge in front."
+  current="architecture" doc>
+  <section class="section" aria-labelledby="ar-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow">Architecture</p>
+        <h1 id="ar-h">Three sites, one quorum, a GHES&nbsp;3.22 front</h1>
+        <p class="t-lead">No Cloudflare storage product promises zero data loss across regions, so Graftyard builds it. Every repository is a small consensus group with one member on each of three continents. A push counts only once two continents hold it.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="path" aria-labelledby="path-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="path-h">The path of a push</h2>
+          <ol class="prose" style="margin-top: var(--s-6)">
+            <li>The client reaches the nearest Cloudflare data center. The edge authenticates the token and finds the repository's group.</li>
+            <li>The pack is checked by upstream git and written to R2 buckets on two sites.</li>
+            <li>The leader runs the push through <code>decide</code>, which checks every ref's expected value and the rulesets, then sends the entry to both followers.</li>
+            <li>The first follower to store it makes a quorum on two continents. Only then does git hear <code>ok</code>.</li>
+          </ol>
+        </div>
+        <div class="frame frame--split span-7 start-6" data-visual>
+          <div class="dg" data-icon-base="/assets/icons/" data-diagram><script is:inline type="application/json" set:html={JSON.stringify(flow)}></script></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="groups" aria-labelledby="groups-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="groups-h">Every repository is a group</h2>
+          <div class="prose" style="margin-top: var(--s-5)">
+            <p>A site is one Worker script whose Durable Objects, containers and pack bucket are pinned to one region: North America (enam), Europe (weur) or Asia-Pacific (apac). Members reach each other through Durable Object bindings, not public HTTPS.</p>
+            <p>Repositories, fork networks, an owner's permissions, token shards and Actions state are each their own group. A group has one entry in flight, and every command that arrives meanwhile joins the next entry.</p>
+            <p>Issues, pull requests and reviews are commands on the same group as the pushes, so a merge and a review can never disagree about order.</p>
+          </div>
+        </div>
+        <Film name="push-loop" label="A git push held on two continents, then acknowledged" class="span-7 start-6" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="rules" aria-labelledby="rules-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="rules-h">Rules the code is not allowed to break</h2>
+        <p>Each one is enforced in types or checked in tests, and a change that breaks one is wrong even if every other test passes.</p>
+      </div>
+      <ul class="kpis">
+        <li><b>Ack after quorum</b><span>A success reply can only be built from proof that two sites hold the entry.</span></li>
+        <li><b>Events are the log</b><span>An event exists if and only if its change committed. Webhooks read the log through cursors.</span></li>
+        <li><b>One entry in flight</b><span>A follower checks entry k+1 only after it applies k.</span></li>
+        <li><b>Pure decisions</b><span><code>decide</code> sees only the fold and the commands before it in the same entry.</span></li>
+        <li><b>GHES unchanged</b><span>No GHES 3.22 reply changes for a client that does not opt in to the agent layer.</span></li>
+        <li><b>No API on the hot path</b><span>No request calls the Cloudflare API, so an API outage cannot stop pushes.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="failures" aria-labelledby="failures-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="failures-h">When something fails</h2>
+        <p>What a developer notices in normal operation is one intercontinental round trip on each push. Everything else is what happens when parts of Cloudflare fail.</p>
+      </div>
+      <Table head={['Failure', 'What Graftyard does', 'Effect']} rows={failures} />
+      <p class="more"><a class="link" href="/evidence/#chaos">The chaos runs behind these<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+
+  <section class="section" id="stack" aria-labelledby="stack-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="stack-h">Cloudflare products only</h2>
+        <p>One signed artifact runs managed, in your own Cloudflare account, or self-hosted. Workers KV, D1, Artifacts and K2 are deliberately not used.</p>
+      </div>
+      <Table head={['Product', 'Used for']} rows={stack} />
+      <p class="more"><a class="link" href="/why-not-artifacts/">Why not Artifacts<Fragment set:html={ARROW} /></a></p>
+    </div>
+  </section>
+</Page>
