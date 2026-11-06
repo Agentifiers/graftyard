@@ -49,6 +49,19 @@ pub trait ChainLog {
     async fn consumed(&self, network: NetworkId) -> Result<BTreeSet<PackId>, StoreError>;
 }
 
+/// Each chain's first log index and its refs, every read sent to its leader at once and awaited together, in `chains`
+/// order. A catch-up needs both before it can tell whether to rehydrate; read one after another, they cost two leader
+/// round trips per chain, across regions once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency").
+pub async fn heads<L: ChainLog>(
+    log: &L,
+    chains: &[ChainId],
+) -> Vec<(Result<Index, StoreError>, Result<CoreRefs, StoreError>)> {
+    futures_util::future::join_all(
+        chains.iter().map(|c| futures_util::future::join(log.first_index(*c), log.core_refs(*c))),
+    )
+    .await
+}
+
 /// One pack to load. `order` sorts the load: markers by the index that named them, then the log tail in index order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Load {
@@ -152,6 +165,64 @@ mod tests {
 
     fn entry(index: u64, packs: Vec<PackRef>) -> LogPacks {
         LogPacks { index: Index(index), packs, promoted: None, consumed: vec![] }
+    }
+
+    /// A log whose reads end only once every read of one `heads` call has started.
+    struct Gate {
+        started: std::cell::Cell<usize>,
+        want: usize,
+    }
+
+    impl Gate {
+        async fn wait(&self) {
+            self.started.set(self.started.get() + 1);
+            std::future::poll_fn(|_| {
+                if self.started.get() >= self.want { std::task::Poll::Ready(()) } else { std::task::Poll::Pending }
+            })
+            .await
+        }
+    }
+
+    impl ChainLog for Gate {
+        async fn core_refs(&self, chain: ChainId) -> Result<CoreRefs, StoreError> {
+            self.wait().await;
+            Ok(CoreRefs { chain, applied: Index(7), refs: vec![] })
+        }
+        async fn first_index(&self, _: ChainId) -> Result<Index, StoreError> {
+            self.wait().await;
+            Ok(Index(1))
+        }
+        async fn entries(&self, _: ChainId, _: Index, _: Index) -> Result<Vec<LogPacks>, StoreError> {
+            unreachable!()
+        }
+        async fn last_promoted(&self, _: ChainId) -> Result<Option<(Index, Promoted)>, StoreError> {
+            unreachable!()
+        }
+        async fn consumed(&self, _: NetworkId) -> Result<BTreeSet<PackId>, StoreError> {
+            unreachable!()
+        }
+    }
+
+    /// A catch-up's reads of its chains' first index and refs are all in flight together: here no read ends until
+    /// all four started, so reads made one after another never end.
+    #[test]
+    fn a_catch_up_reads_first_index_and_refs_at_once() {
+        let other = ChainId::Repo(RepoId(DbId(2)));
+        let log = Gate { started: std::cell::Cell::new(0), want: 4 };
+        let chains = [CHAIN, other];
+        let mut f = std::pin::pin!(heads(&log, &chains));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut out = None;
+        for _ in 0..4 {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                out = Some(v);
+                break;
+            }
+        }
+        let out = out.expect("all four reads were in flight together");
+        let chains: Vec<ChainId> = out.iter().map(|(_, r)| r.as_ref().map(|r| r.chain).unwrap()).collect();
+        assert_eq!(chains, vec![CHAIN, other]);
+        assert!(out.iter().all(|(f, _)| *f.as_ref().unwrap() == Index(1)));
     }
 
     #[test]

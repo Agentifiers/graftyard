@@ -730,14 +730,16 @@ impl ShardHost<'_> {
         let mut cursor = self.cursor(network, &started.health.disk).await?;
         lap("cursor");
         // A cursor below a chain's first log index needs entries the leader has archived and truncated.
-        if let Some(c) = cursor.clone() {
-            for chain in chains {
-                if c.at(*chain).0 + 1 < log.first_index(*chain).await?.0 {
-                    cursor = None;
-                }
+        let reads = crate::ingest::heads(log, chains).await;
+        let mut core = Vec::with_capacity(chains.len());
+        for (chain, (first, refs)) in chains.iter().zip(reads) {
+            let first = first?;
+            if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < first.0) {
+                cursor = None;
             }
+            core.push(refs);
         }
-        lap("first_index");
+        lap("first_index_core_refs");
         let Some(mut cursor) = cursor else {
             let (cursor, r) = self.rehydrate(network, chains, buckets, log).await?;
             return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new(), ms });
@@ -746,9 +748,8 @@ impl ShardHost<'_> {
         let (mut entries, mut packs) = (0, 0);
         let mut evicted = Vec::new();
         let mut seen = BTreeSet::new();
-        for chain in chains {
-            let refs = log.core_refs(*chain).await?;
-            lap("core_refs");
+        for (chain, refs) in chains.iter().zip(core) {
+            let refs = refs?;
             if let Some(range) = cursor.behind(*chain, refs.applied) {
                 let es = log.entries(*chain, *range.start(), *range.end()).await?;
                 entries += es.len();
