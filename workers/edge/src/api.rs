@@ -99,6 +99,14 @@ mod timing {
     pub fn header() -> String {
         PHASES.with(|p| p.borrow().1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", "))
     }
+    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
+    /// The shard's own timing of its merge plan, sent back as `x-graft-shard-timing`.
+    pub fn note(t: String) {
+        NOTE.with(|n| *n.borrow_mut() = t);
+    }
+    pub fn take_note() -> String {
+        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    }
     pub fn take_trace() -> String {
         TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
     }
@@ -147,7 +155,10 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
         Err(err) => unavailable(&format!("Service Unavailable: {err}")),
     };
     #[cfg(feature = "test-faults")]
-    let r = r.with("server-timing", timing::header()).with("x-graft-trace", timing::take_trace());
+    let r = r
+        .with("server-timing", timing::header())
+        .with("x-graft-trace", timing::take_trace())
+        .with("x-graft-shard-timing", timing::take_note());
     frame(&i, r, s, &m)
 }
 
@@ -370,6 +381,10 @@ async fn merge_plan(
     }
     let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
     timing::mark("merge_plan");
+    #[cfg(feature = "test-faults")]
+    if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
+        timing::note(t);
+    }
     Ok(a.merge_plan(req))
 }
 

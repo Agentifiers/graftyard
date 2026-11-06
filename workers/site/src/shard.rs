@@ -207,11 +207,18 @@ impl DurableObject for GitShard {
                     Some("rebase") => graftyard_git::issues::MergeMethod::Rebase,
                     _ => graftyard_git::issues::MergeMethod::Merge,
                 };
-                host.catch_up(net, &[chain_id], &bs, &log).await.map_err(se)?;
-                match host.merge_chain(net, base, &chain, method).await {
-                    Ok(a) => Response::from_json(&a),
-                    Err(e) => Response::error(e.0, 422),
-                }
+                let t0 = now_ms();
+                let c = host.catch_up(net, &[chain_id], &bs, &log).await.map_err(se)?;
+                let t1 = now_ms();
+                let r = match host.merge_chain(net, base, &chain, method).await {
+                    Ok(a) => Response::from_json(&a)?,
+                    Err(e) => Response::error(e.0, 422)?,
+                };
+                // Where a merge plan's time went: the catch-up's steps, then the container's merge.
+                let timing = format!("catchup;dur={}, merge;dur={}, steps;desc=\"{:?}\"", t1 - t0, now_ms() - t1, c.ms);
+                let h = Headers::new();
+                h.set("x-graft-timing", &timing)?;
+                Ok(r.with_headers(h))
             }
             // The `PrSync` consumer's test merge, after catching up so both commits are here.
             "/merge" => {
