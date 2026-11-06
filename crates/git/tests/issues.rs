@@ -481,6 +481,36 @@ fn a_required_status_maps_its_state_and_a_merge_queue_ref_is_guarded() {
     assert_eq!(c.commit(READER, status(13, StatusState::Success)), Err(IssueErr::Forbidden));
 }
 
+/// The edge mints a status's id from its clock, so two statuses on one commit can arrive with the same id (two in one
+/// millisecond, BF-22's hosted run lost 5 of 500 that way). Each keeps its own row, and the later one is the newer.
+#[test]
+fn two_statuses_minted_in_one_millisecond_keep_both_rows_and_the_later_wins() {
+    let mut c = setup(1, 90);
+    c.commit(OWNER, protect("main", &["ci"])).unwrap();
+    c.push("refs/heads/main", oid(7));
+    let status = |context: &str, state, request: u128| IssueCmd {
+        op: IssueOp::RecordStatus(StatusUpdate {
+            id: StatusId(DbId(1_793_947_000_000)),
+            sha: oid(7),
+            context: context.into(),
+            state,
+            target_url: None,
+            description: None,
+            creator: AccountId(DbId(WRITER)),
+        }),
+        actor: who(WRITER),
+        request: RequestId(Ulid(request)),
+    };
+    let outs = c.commit_all(&[status("a", StatusState::Success, 1), status("b", StatusState::Success, 2)]);
+    assert_eq!(outs.len(), 2);
+    let [Ok(IssueOut::Id(a)), Ok(IssueOut::Id(b))] = [outs[0].clone(), outs[1].clone()] else { panic!("{outs:?}") };
+    assert!(b.0 > a.0, "ids on one commit are unique and increase in commit order: {a:?} {b:?}");
+    c.commit(WRITER, status("ci", StatusState::Pending, 3).op).unwrap();
+    c.commit(WRITER, status("ci", StatusState::Success, 4).op).unwrap();
+    assert_eq!(c.rows(Tier::Metadata, "status"), 4, "no status replaced another");
+    assert_eq!(c.required(oid(7)), vec![("ci".into(), Some(CheckConclusion::Success))], "the later status wins");
+}
+
 #[test]
 fn check_rows_are_pruned_by_entry_time_past_retention_on_every_member_and_required_rows_are_not() {
     let mut c = setup(3, 2);

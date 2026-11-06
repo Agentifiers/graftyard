@@ -234,14 +234,19 @@ pub fn plan_create_status(
     }))
 }
 
-/// The 201 of a committed `RecordStatus`: the status as the leader's tiers hold it after the entry applied.
+/// The 201 of a committed `RecordStatus`: the status as the leader's tiers hold it after the entry applied. `decide`
+/// may raise the edge's `id` above the commit's newest status, so the committed id is `acked.out`'s; `id` is the
+/// edge's, read only from a member that answers `Done`.
 pub fn status_created(
     acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
     after: &Repo<'_>,
     sha: ObjectId,
     id: i64,
 ) -> Reply {
-    let _ = &acked.out;
+    let id = match acked.out {
+        graftyard_git::issue_ops::IssueOut::Id(d) => d.0,
+        _ => id,
+    };
     match after.statuses(&sha, 0, 1000).into_iter().find(|t| t.rec.id.0.0 == id) {
         Some(t) => Reply::json(201, status_json(after, &t)),
         None => Reply::error(500, "Internal Server Error", "rest"),

@@ -8,7 +8,7 @@ Opens a pull request on $WP3_REPO (default wp6j), then posts N non-required stat
 
 - `gh pr checks` lists every one of them, and none is marked required;
 - `GET /repos/o/r/commits/{sha}/statuses`, paged by its `link` header, returns all N;
-- the core tier's `fold_digest` on the leader is the same before and after the statuses (they live in Metadata);
+- the core tier's rows on the leader are the same before and after the statuses (they live in Metadata);
 - every member reports the same core and metadata `fold_digest` at one index (`/fold {"at": i}`).
 
 The prune clause (entry time advanced past `check_retention_days`) needs a clock the install does not let a test move;
@@ -18,6 +18,14 @@ import json, os, sys, threading, time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../wp3"))
 import hosted as h  # noqa: E402
+
+
+def core_rows(site):
+    """The leader's core-tier rows (`{"q": {"rows": true}}`): what "core tier bytes unchanged" compares. The tier's
+    `fold_digest` also hashes `applied`, the term, and the last entry's digest, so it moves on every entry."""
+    v = h.member(site, "/read", {"q": {"rows": True}})["v"]["value"]
+    assert v["complete"], "rows truncated"
+    return json.dumps(v["core"], sort_keys=True)
 
 
 def tiers(site):
@@ -36,7 +44,8 @@ def main():
     head = w.branch(b, {f"bf22/{b}.txt": b})
     pr = h.create_pr(w, d, "00-create", b)
     leader = h.leader_site()
-    core0 = tiers(leader)["core"]["digest"]
+    time.sleep(3)  # the pull request's own `TestMerged` (a core row) lands first
+    core0 = core_rows(leader)
     errs, lock = [], threading.Lock()
 
     def post(lo):
@@ -68,12 +77,12 @@ def main():
         if s != 200:
             raise RuntimeError(f"statuses: {s} {str(v)[:200]}")
         got.extend(v)
+        h.rest_case(d, f"03-statuses-{len(got):04}", "get", "/repos/{owner}/{repo}/commits/{ref}/statuses", s, v)
         link = hd.get("link") or hd.get("Link") or ""
         nxt = [p.split(";")[0].strip("<> ") for p in link.split(",") if 'rel="next"' in p]
         url = nxt[0].split("/api/v3", 1)[1] if nxt else None
     leader = h.leader_site()
-    t = tiers(leader)
-    core1, at = t["core"]["digest"], t["metadata"]["applied"]
+    core1, at = core_rows(leader), tiers(leader)["metadata"]["applied"]
     time.sleep(3)
     by = {s: h.member(s, "/fold", {"at": at})["v"] for s in range(3)}
     meta_at = {s: by[s]["metadata"]["at"] for s in range(3)}
@@ -89,8 +98,8 @@ def main():
         "members agree (core)": len(set(core_at.values())) == 1 and None not in core_at.values(),
     }
     rec = {"run": run, "n": n, "pr": pr, "head": head, "post_s": post_s, "post_errors": errs[:5],
-           "gh_checks": len(names & want), "gh_rc": rc, "rest": len(rest_names & want), "core0": core0,
-           "core1": core1, "at": at, "meta_at": meta_at, "core_at": core_at, "ok": ok, "pass": all(ok.values())}
+           "gh_checks": len(names & want), "gh_rc": rc, "rest": len(rest_names & want),
+           "core_bytes": len(core0), "at": at, "meta_at": meta_at, "core_at": core_at, "ok": ok, "pass": all(ok.values())}
     h.append(f"{h.RAW}/{run}.jsonl", rec)
     h.log(json.dumps(rec)[:1500])
 

@@ -23,8 +23,8 @@ use crate::issues::{AssetId, AssetRecord, LfsLockEvent, LockId, ReleaseRecord, R
 use crate::issues::{
     BODY_MAX, BranchRule, CHECK_RETENTION_MAX, CheckConclusion, CheckRunUpdate, CheckSource, CheckStatus, CommentEvent,
     CommentId, CommentTarget, Grantee, HeadSpec, IssueCapture, IssueChange, IssueNumber, LABEL_MAX, LabelEvent,
-    LabelId, LabelName, PrCapture, PrState, Protection, RepoSettings, ReviewEvent, ReviewId, ReviewState, StatusState,
-    StatusUpdate, TITLE_MAX, Visibility,
+    LabelId, LabelName, PrCapture, PrState, Protection, RepoSettings, ReviewEvent, ReviewId, ReviewState, StatusId,
+    StatusState, StatusUpdate, TITLE_MAX, Visibility,
 };
 use crate::refs::{ObjectId, RefName, RefUpdate};
 use crate::repo::RepoEvent;
@@ -657,6 +657,14 @@ impl IssueCmd {
                 if me != Some(st.creator) {
                     return Err(IssueErr::Invalid("a status's creator is its actor"));
                 }
+                // The edge mints the id from its clock, so two statuses on one commit can share it (two in one
+                // millisecond). `status` is keyed (sha, id), so the second takes the smallest free id above it rather
+                // than replace the first; the id is still the status's version, so an older status still loses.
+                let mut id = st.id.0.0;
+                while v.meta().get("status", &[sha_key(&st.sha), int(-id)]).is_some() {
+                    id += 1;
+                }
+                let st = StatusUpdate { id: StatusId(DbId(id)), ..st.clone() };
                 let mut evs = one(RepoEvent::Status(st.clone()));
                 if required(v, st.sha, &st.context, None) {
                     let conclusion = match st.state {
@@ -672,7 +680,7 @@ impl IssueCmd {
                         conclusion,
                     });
                 }
-                Ok((evs, IssueOut::Done))
+                Ok((evs, IssueOut::Id(st.id.0)))
             }
             IssueOp::PutRelease { id, tag, target, name, body, draft, prerelease, latest } => {
                 need(RepoPermission::Write)?;
@@ -796,6 +804,7 @@ impl IssueCmd {
                 RepoEvent::Release { id, record: Some(_), .. } => return IssueOut::Id(id.0),
                 RepoEvent::ReleaseAsset { id, asset: Some(_), .. } => return IssueOut::Id(id.0),
                 RepoEvent::LfsLock(LfsLockEvent::Created { id, .. }) => return IssueOut::Id(id.0),
+                RepoEvent::Status(st) => return IssueOut::Id(st.id.0),
                 _ => {}
             }
         }
