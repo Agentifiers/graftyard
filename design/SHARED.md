@@ -242,10 +242,23 @@ pub enum AuthzEvent { Opened { kind: AccountKind, enterprise: Option<AccountId> 
     /// Only on the install's own `Authz` chain, the account that `Genesis` names (`design/DESIGN.md`, Shape, "Release
     /// group"). Written by a `SiteAdmin` and read fresh by every sign-in.
     InstanceAuth(InstanceAuth),
-    Deleted { retain_until: Timestamp }, Undeleted }
+    Deleted { retain_until: Timestamp }, Undeleted,
+    /// An org's enterprise change, its commit point ("Multi-chain operations"); tag 13, after 11 and 12 [inference].
+    Enterprise { enterprise: Option<AccountId> } }
 /// Never gates a request. `Record` holds stars, watches, follows, and notification state (`UserRecord`, `design/DESIGN.md`).
+/// `Session` (tag 5) lists web sessions; sign-out everywhere is the `Account` row's `sessions_not_before` [inference].
 pub enum IdentityEvent { Created(AccountCapture), Credential(CredentialEvent), Sso(SsoEvent), Audit(AuditEvent),
-                         Record(UserRecord) }
+                         Record(UserRecord), Session(SessionEvent) }
+pub struct AccountCapture { pub login: Login, pub kind: AccountKind, pub created: Timestamp }
+/// `Added` is refused unless the credential's `Tokens` row is live for the account, and `Removed` while it is. The
+/// password and second factors are hashes and verifiers the edge checks; `decide` sees only that one exists [inference].
+pub enum CredentialEvent { Added { credential: CredentialRef, title: Box<str> }, Removed { credential: CredentialRef },
+                           Password { hash: Box<str> }, SecondFactor { id: u32, verifier: Option<Box<[u8]>> } }
+pub enum CredentialRef { Token { hash: [u8; 32], kind: TokenKind }, SshKey(Fingerprint) }
+pub enum SessionEvent { Started { id: WebSessionId, method: SignInMethod }, Ended { id: WebSessionId } }
+pub enum SignInMethod { Password, Saml, Oidc, Ldap, Link /* `graftyard admin bootstrap`, whatever InstanceAuth says */ }
+pub enum SsoEvent { Linked { org: OrgId, subject: Digest }, Unlinked { org: OrgId } }
+pub struct AuditEvent { pub action: Box<str>, pub at: Timestamp }
 ```
 
 The source design also carried `Sealed` and `Unsealed` events on every chain kind. They fenced moves of chains between cells. `design/DESIGN.md` has no such move, so they are not part of this specification. Its `ChainId` also adds `Tokens`, `Names`, `Actions`, `Ids`, and `Release` chains, whose entries it defines, and `Event` gains `Names`, `Tokens`, and `Actions` variants there.
@@ -304,8 +317,8 @@ Invariants:
 
 Every multi-chain operation names its commit point, its finisher, and its abort path.
 
-- **Transfer.** The commit point is a `Reserved` `RepoName` on the destination owner's `Authz` chain, which `decide` treats as taken. `Settings` on the repository chain, carrying the new `owner` and its `enterprise`, the `Live` name, the old owner's `Alias`, and the repository's `RepoOwner` row on `Names` follow, and none of them can be refused. When the destination owner's placement record differs, the repository's group, and the network's group for a root repository, move to it through `Joint` before `Live` commits, so a route through either owner reaches a member that knows the config. `design/DESIGN.md` runs transfers as Workflows ("Stack").
-- **Enterprise change.** The commit point is the org's `Authz` entry that names its new enterprise. A Workflow then appends `Settings` with that `enterprise` to each of the org's repository chains, and until it lands a repository's `deps` still name the old enterprise.
+- **Transfer.** The commit point is a `Reserved` `RepoName` on the destination owner's `Authz` chain, which `decide` treats as taken. `Settings` on the repository chain, carrying the new `owner` and its `enterprise`, the `Live` name, the old owner's `Alias`, and the repository's `RepoOwner` row on `Names` follow, and none of them can be refused. The repository chain's own `Settings` command refuses any change of `owner` or `enterprise` (`OwnerChange`), so the transfer and the enterprise change need a `Settings` command of their own that only their finisher sends; it is not built (`build/BUILD-PLAN.md`, M3-WP3). When the destination owner's placement record differs, the repository's group, and the network's group for a root repository, move to it through `Joint` before `Live` commits, so a route through either owner reaches a member that knows the config. `design/DESIGN.md` runs transfers as Workflows ("Stack").
+- **Enterprise change.** The commit point is the org's `Authz` `Enterprise` entry that names its new enterprise, which only `graft-ops` writes. A Workflow then appends `Settings` with that `enterprise` to each of the org's repository chains, and until it lands a repository's `deps` still name the old enterprise.
 - **Fork.** The commit point is its `RepoName` on the fork owner's `Authz` chain. Whoever first touches the fork appends `ForkAdded` to the network chain, then `Genesis`, both idempotent by repository id. If `ForkAdded` meets a taken-down network, the finisher tombstones the fork's name instead.
 - **Signup.** The commit point is the login claim, which carries the account record. The owner's two chains begin from it on first touch. `design/DESIGN.md` places login claims on its `Names` groups.
 - **Credentials.** The commit point of a new PAT, OAuth token, or SSH key is its `Tokens` entry, which is also where an SSH fingerprint is unique. The edge appends the `Identity` side right after that commit.
@@ -362,6 +375,8 @@ pub struct InstallationClaims { pub app: AppId, pub installation: InstallationId
     pub kid: Kid }
 /// A web sign-in session on the `Identity` chain. Not the agent layer's `SessionId`.
 pub struct WebSessionId(Ulid);
+/// Built so far: `Stored` and `Session`. `Stateless` arrives with M3-WP4, `Ssh` with M6-WP2, and `RunnerJwt` and
+/// `RuntimeToken` with Actions (`build/BUILD-PLAN.md`).
 pub enum Credential { Stored([u8; 32]), Stateless(InstallationClaims), Ssh(Fingerprint), Session(WebSessionId),
                       RunnerJwt(RunnerId), RuntimeToken(JobId) }
 pub enum Actor { User(UserId), App { app: AppId, installation: InstallationId }, Job { run: RunId, job: JobId },
@@ -414,9 +429,18 @@ pub struct NodeId { pub ty: NodeType, pub ids: SmallVec<[DbId; 3]> }
 /// membership, teams, grants, base permission, SSO enforcement, installations, collaborators, visibility. Denial on a
 /// private resource returns Hidden, rendered as 404 (research/wire-census.md#21). An anonymous git request for a
 /// repository that is not visibly public gets 401 at once.
+/// A user's permission is the highest of owner admin, a direct grant, a team's grant, the org's base permission for a
+/// member, a `Collaborator` row, and `Read` on an internal repository for a member of the org or its enterprise.
 pub fn authorize(p: &Principal, a: ReadAction, authz: &[ReadView], repo: &ReadView) -> Decision;
 pub fn authorize_write(p: &Principal, a: WriteAction, authz: &[Fresh], repo: &Fresh) -> Decision;   // never `Stale`
 pub enum Decision { Allow, Forbidden, Hidden }
+pub enum ReadAction { Metadata, Contents, Issues }   // each needs `Read`
+/// By GitHub's repository roles [inference]: `Participate` (open, comment, react) needs Read, `Triage` (label, assign,
+/// close) Triage, `Push` (push, merge, record a check or status) Write, `Maintain` Maintain, `Administer` (rules,
+/// settings, collaborators, transfer) Admin.
+pub enum WriteAction { Participate, Triage, Push, Maintain, Administer }
+/// The rows `authorize` reads. Rulesets, residency, custom roles, webhooks, and secrets join it in later packages.
+pub struct OrgPolicy { pub base_permission: Option<RepoPermission>, pub sso_enforced: bool }
 ```
 
 `design/DESIGN.md` adds `ActorKind::Agent` and the agent refusals in `decide` ("Shape", agent load and agent safety).
@@ -445,7 +469,7 @@ pub enum Decision { Allow, Forbidden, Hidden }
 
 **SSO** attaches to orgs and enterprises, with SCIM provisioning at T1. The SAML or OIDC endpoint appends an `Sso` entry to the member's `Identity` chain and records the org in the token's or the session's `sso_orgs`. `authorize` checks the principal's `sso_orgs` when the owner's `Authz` policy enforces SSO. Break-glass owners are local accounts with hardware keys and no IdP dependency (`research/uptime.md` implication 25).
 
-**Instance sign-in in installs.** An install chooses built-in accounts, SAML, or OIDC at launch, with LDAP at T1 (`InstanceAuth`). The choice is an `AuthzEvent::InstanceAuth` entry on the install's own `Authz` chain, the account that `Genesis` names, and only a `SiteAdmin` writes it. A `SiteAdmin` actor bypasses org and repository permissions, and every bypass is audited in the same entry as the action. `graftyard admin bootstrap` creates the first site admin with a one-time sign-in link that lives 15 minutes [guess]. The link is a `SignInLink` code row on a `Tokens` shard. `design/DESIGN.md`, "Install operations", says who mints it.
+**Instance sign-in in installs.** An install chooses built-in accounts, SAML, or OIDC at launch, with LDAP at T1 (`InstanceAuth`). The choice is an `AuthzEvent::InstanceAuth` entry on the install's own `Authz` chain, the account that `Genesis` names, and only a `SiteAdmin` writes it. A `SiteAdmin` actor bypasses org and repository permissions, and every bypass is audited in the same entry as the action. So far a site admin is an admin of the install account's org, checked only by `SetInstanceAuth`; the bypass and its audit are not built (`decisions/OPEN-QUESTIONS.md`, F54). `graftyard admin bootstrap` creates the first site admin with a one-time sign-in link that lives 15 minutes [guess]. The link is a `SignInLink` code row on a `Tokens` shard. `design/DESIGN.md`, "Install operations", says who mints it.
 
 **OAuth.** Authorization code and device flow run on the bare host at `/login/oauth/*` and `/login/device/code`. First-party apps are seeded once with GHES-era callbacks: `http://localhost/` for gh and GCM, `http://127.0.0.1/` also accepted, and `x-github-desktop-auth://` for Desktop [unverified exact path]. They are public clients, so their embedded secrets are accepted and ignored (`research/clients.md#44`-`#47`). Every other client is an `OAuthAppRecord` or an `AppRecord`, found through its client id's `Names` route, and its secret is checked against `client_secrets`. Device codes, user codes, and authorization codes are TTL rows on `Tokens` shards keyed by the code's hash (`design/DESIGN.md`, "Shape", Identity). A device code expires after 900 s and an authorization code after 10 minutes, as on GitHub [unverified for GHES 3.22]. An exchange marks the code used before it stores the new token's hash, so one code never yields two tokens. An edge that dies between the two commits leaves a spent code and no token, which is the failed second commit `design/DESIGN.md` describes: nothing is stored, so `Audit` has nothing to finish, and the client's next poll or exchange is refused and it starts again [inference: `crates/identity`, `TokensOp::UseCode`; BF-33 kills the code shard's leader mid-flow].
 

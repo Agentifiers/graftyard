@@ -1625,6 +1625,44 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 
 **Flip.** A `graft-ops` cron deployed, which moves the route's job to it; or a hosted audit whose snapshot-to-snapshot refold disagrees with the trailer on a chain whose members agree (F48's flip).
 
+### BM-2's latency work and M3-WP3's pure half, 2026-11-06
+
+`bm2-latency` cut four round trips from a fresh leader's merge and BM-2 still failed; M3-WP3's pure half passed its six gate rows in memory and settled gaps in identity, sessions, and authorization (`tests/m2/results/m2-wp6.md`, "`bm2-latency`" sections; `tests/m3/results/m3-wp3.md`).
+
+#### BM-2 latency: repack the shards, wait for the warm catch-up, and keep the gate
+
+**Decision.** The lead's, under the operator's delegation. Build a geometric repack of a git cache shard after catch-ups, and have the first merge of a new leadership wait for that leadership's in-flight catch-up of its site's shard; both are being built on branch `bm2-repack`. BM-2's gate text stays until that rerun, and the proposed rewording to a leader on the group's home site with the client in that region is F53. Identity placement does not change: `Names`, `Tokens`, and `Authz` keep leading where they lead. Two ideas stay out because invariants forbid them: reading `deps` by read-index from a same-site learner, and taking the edge's authentication result in place of the leader's `Tokens` read.
+
+**Why.** The tail has two causes no design rule requires. Shards never repack, and grew from about 1,200 to about 1,950 packs over the 288-sample run, with the shard merge p50 rising from 492 to 672 ms; `git merge-tree` on 751 packs took 8.7 ms against 2.0 ms after `git repack --geometric=2`. And the new leadership's catch-up raced the first merge on the slowest shard, so 38 of 105 weur samples caught up on the merge path at 250 to 700 ms each. Moving identity leaders toward a moved repository leader would save 100 to 250 ms a step, which still leaves weur and apac p50 at about 1.7 to 2.0 s, so it does not reach a 2 s p99. A learner's read-index is not `fresh` ("Only the leader builds one", "The read path"), `decide` must see "the `deps` folds the leader read once through `fresh`", and it would still pay a round trip to the enam leader. The leader reads `Tokens`, `Names`, and `Authz` at once, so skipping `Tokens` saves nothing and weakens `decide`.
+
+**Beat.** Rewording the gate now, before the two causes are removed. Placing identity leaders per repository leader. A same-site learner for `deps`. The edge's auth result passed to the leader.
+
+**Evidence.** `tests/m2/results/m2-wp6.md`, "`bm2-latency`": p99 4.10 s, p50 2.11 s at n = 288 (enam 2.40 s, weur 4.15 s, apac 2.89 s), 178 of 288 over 2 s; on fresh shards, n = 109, enam p99 1.68 s, weur 3.18 s, apac 2.82 s; the four cuts took p50 from 2.86 to 1.80 s over 30 samples each [measured]. Commits `1c84ac6`, `c0a393b`, `20155a1`.
+
+**Flip.** `bm2-repack`'s rerun showing enam-led merges over 2 s at p99 on repacked shards with no catch-up on the merge path, which would put the limit elsewhere; or F53 decided, which changes what the gate measures.
+
+#### M3-WP3's identity shapes as the code needs them
+
+**Decision.** From M3-WP3's pure code, in SHARED and DESIGN:
+- `IdentityEvent::Session(SessionEvent)`, tag 5, lists web sessions, with `Record` keeping tag 4. Sign-out everywhere stays the `Account` row's `sessions_not_before`.
+- `CredentialKey::Session { issued }` carries the session's issue time, encoded as 3 so `Jti` and `SshKey` keep 1 and 2. Every write refuses a session issued before `sessions_not_before`.
+- `AuthzEvent::Enterprise { enterprise }`, tag 13, is the enterprise change's commit point, written only by `graft-ops`; 11 and 12 stay for `Deleted` and `Undeleted`.
+- `ReadAction` is `Metadata`, `Contents`, or `Issues`, each needing `Read`. `WriteAction` is `Participate`, `Triage`, `Push`, `Maintain`, or `Administer`, needing GitHub's matching role [inference].
+- `OrgPolicy` holds what `authorize` reads: `base_permission` and `sso_enforced`. Rulesets, residency, custom roles, webhooks, and secrets join it in later packages.
+- `CredentialEvent` is `Added`, `Removed`, `Password`, or `SecondFactor`, holding hashes and verifiers only; `SsoEvent` is `Linked` or `Unlinked` [inference].
+- Of SHARED's `Credential`, only `Stored` and `Session` are built. `Stateless` comes with M3-WP4, `Ssh` with M6-WP2, and `RunnerJwt` and `RuntimeToken` with Milestone 4.
+- The transfer and the enterprise change need their own repository `Settings` command, sent only by their finisher, because the repository chain's `Settings` refuses an owner or enterprise change (`OwnerChange`). It is not built, and the hosted half needs it.
+- The `SiteAdmin` bypass of org and repository permissions is not built; a site admin is so far an admin of the install account's org, checked only by `SetInstanceAuth`. It stays an open question (F54) rather than accepted, because SHARED states it as behavior and BM-3's admin journeys may need it.
+- Formats: Authz 0x12.2, Identity 0x14.1 (a new family), and repository 32.6, beside Names 0x10.2 and Tokens 0x11.2. Each needs a site day onto a release that reads it, then `FormatsEnable`, before the edge sends it.
+
+**Why.** SHARED named `CredentialEvent`, `SsoEvent`, `WriteAction`, `ReadAction`, and `OrgPolicy` without their shapes, and put sessions on the `Identity` chain with no event for them. The enterprise change's commit point is an `Authz` entry SHARED never defined. Without the issue time in the credential, the leader could not check `sessions_not_before` from the `Account` row alone. The missing `Settings` command is a real gap: the finisher's plan has a step no command can carry out.
+
+**Beat.** Letting the ordinary `Settings` command change the owner, which would let any repository admin move a repository's `deps` to another owner. Accepting the missing `SiteAdmin` bypass without a question, which would leave SHARED's statement silently unbuilt.
+
+**Evidence.** `tests/m3/results/m3-wp3.md`: BF-3, BF-30, BF-33, BF-34, BF-35, and BF-36 pass in memory on three real members per chain, and 13 of 13 planted bugs are caught [measured]; `crates/identity/src/access.rs`, `org.rs`, `identity.rs`, `credential.rs`, `authz.rs`; `crates/git/src/issue_ops.rs` (`OwnerChange`).
+
+**Flip.** A GHES role boundary measured differently from `WriteAction`'s mapping; or a hosted transfer that can land `Settings` through an existing command without opening owner changes to admins.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.
