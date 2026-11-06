@@ -355,7 +355,8 @@ async fn merge_plan(
     req: &MergeRequest,
 ) -> std::result::Result<std::result::Result<MergePlan, CacheError>, String> {
     let q = graftyard_git::merge_cache::chain_query(req.base_old, &[(req.n, req.head)], req.method);
-    let url = format!("https://shard/merge?repo={}&{q}", repo.id.0.0);
+    let record = js_sys::encode_uri_component(&serde_json::to_string(&repo.record).map_err(|e| e.to_string())?);
+    let url = format!("https://shard/merge?repo={}&{q}&record={record}", repo.id.0.0);
     let stub = crate::shard(c, repo).map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);

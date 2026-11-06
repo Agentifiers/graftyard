@@ -64,6 +64,7 @@ def main():
             rc, _, err = w.gh(d, f"{i:04}1-merge", "pr", "merge", str(pr), "-R", f"{h.OWNER_LOGIN}/{h.REPO}", "--merge")
             ms = round((time.time() - t0) * 1000)
             ok_reply, timing, reply = rc == 0, None, err.strip().splitlines()[-1:] if rc else []
+            trace = None
         else:
             s, v, hd = h.http("POST", f"{h.EDGE}/api/graphql",
                               {"query": MUTATION, "variables": {"input": {"pullRequestId": node, "mergeMethod": "MERGE"}}},
@@ -72,9 +73,10 @@ def main():
             ok_reply = s == 200 and isinstance(v, dict) and not v.get("errors") and \
                 (v.get("data") or {}).get("mergePullRequest") is not None
             timing, reply = hd.get("server-timing") or hd.get("Server-Timing"), v
+            trace = hd.get("x-graft-trace") or hd.get("X-Graft-Trace")
         state = h.pr_state(pr)
         rec = {"i": i, "pr": pr, "gh": bool(use_gh), "ms": ms, "pass": ok_reply and state == "MERGED", "state": state,
-               "timing": timing, "reply": reply, "at": time.time(), **e}
+               "timing": timing, "trace": trace, "reply": reply, "at": time.time(), **e}
         h.append(out, rec)
         h.log(f"{i}: {ms} ms {'pass' if rec['pass'] else 'FAIL'} leader {e['from']}->{e['to']} term {e['term']} "
               f"elect {e['elect_ms']} ms {timing or ''}")

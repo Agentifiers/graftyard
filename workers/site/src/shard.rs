@@ -138,8 +138,16 @@ impl DurableObject for GitShard {
         let repo = RepoId(DbId(repo));
         let (net, chain) = (NetworkId(repo.0), ChainId::Repo(repo));
         let chain_id = chain;
-        let owner = crate::member::repo_owner(&self.env, repo).await.map_err(Error::RustError)?;
-        let record = crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?;
+        // The caller's copy of the owner's record saves the two `Names` reads, about 400 ms once the shard's isolate
+        // forgot the leaders (`tests/m2/results/m2-wp6.md`, "Merge latency"). A record that no longer finds the
+        // group only slows the lookup: `GroupLog`'s reads go to the leader by the lookup rule either way.
+        let record = match q(&url, "record").and_then(|r| serde_json::from_str::<PlacementRecord>(&r).ok()) {
+            Some(r) => r,
+            None => {
+                let owner = crate::member::repo_owner(&self.env, repo).await.map_err(Error::RustError)?;
+                crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
+            }
+        };
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
