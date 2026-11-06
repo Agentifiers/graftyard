@@ -413,3 +413,121 @@ fn one_ssh_key_added_from_two_edges_at_once_gets_one_owner() {
     }
     assert_eq!(owners, 200);
 }
+
+// ---- BF-30: transfer and enterprise change ----
+
+use graftyard_identity::finish::{Transfer, TransferStep, TransferView};
+use graftyard_identity::{NamesRead, RepoName};
+use graftyard_types::{PlacementName, PlacementRecord, SiteId};
+
+fn placed(w: &mut World, owner: AccountId, sites: [u8; 3]) -> PlacementRecord {
+    let record = PlacementRecord {
+        name: PlacementName::Tri,
+        sites: sites.iter().map(|s| SiteId(*s)).collect(),
+        home: SiteId(sites[0]),
+        generation: 1,
+        moving_from: None,
+        at: Timestamp(1),
+    };
+    let op = NamesOp::InitPlacement { owner, record: record.clone() };
+    w.names_cmd(ChainId::Names(account_shard(owner)), NamesCmd { cred: OPS, op }).unwrap();
+    record
+}
+
+fn placement(w: &mut World, owner: AccountId) -> PlacementRecord {
+    w.names(ChainId::Names(account_shard(owner))).fresh_leader().placement(owner).cloned().expect("a record")
+}
+
+/// BF-30: a repository moves from org `alpha` (enterprise E1) to org `beta` (enterprise E2), on another placement or
+/// the same one, by the finisher's plan with every step submitted twice, as a racing edge and the finisher would.
+/// After every step, every route that resolves (the old name, the new name, and `/repositories/{id}` through
+/// `RepoOwner`) names a record the repository's group is in or was in, whose members answer with the group's config.
+/// The repository chain's `Settings` is modelled here by its owner and enterprise; `crates/git/tests/issues.rs` checks
+/// that its `deps` follow them.
+#[test]
+fn a_transfer_keeps_every_route_on_the_group_and_names_the_new_enterprise() {
+    for other_place in [true, false] {
+        let mut w = World::default();
+        let (alpha, beta, admin) = (acct(0, 9, 1), acct(0, 9, 2), acct(0, 2, 1));
+        let (e1, e2, e3) = (acct(0, 9, 5), acct(0, 9, 6), acct(0, 9, 7));
+        org(&mut w, alpha, admin);
+        org(&mut w, beta, admin);
+        let p_alpha = placed(&mut w, alpha, [0, 1, 2]);
+        let p_beta = placed(&mut w, beta, if other_place { [3, 4, 5] } else { [0, 1, 2] });
+        for (o, e) in [(alpha, e1), (beta, e2)] {
+            w.authz_cmd(o, AuthzCmd { cred: OPS, op: AuthzOp::SetEnterprise { enterprise: Some(e) } }).unwrap();
+        }
+        let name = RepoName::parse("tool").unwrap();
+        let create = AuthzCmd { cred: as_user(admin), op: AuthzOp::CreateRepo { name: name.clone() } };
+        let AuthzOut::Repo { repo, .. } = w.authz_cmd(alpha, create).unwrap().out else { panic!() };
+        w.names_on(NameKey::Repo(repo), NamesOp::RepoOwner { repo, owner: alpha }).unwrap();
+        // The repository chain: its `Settings` owner and enterprise, and the records its group has been in.
+        let (mut owner, mut enterprise) = (alpha, Some(e1));
+        let mut group = vec![p_alpha.clone()];
+        // The commit point. A user who does not administer the source owner is refused.
+        let outsider = acct(0, 2, 9);
+        account(&mut w, outsider);
+        w.authz_cmd(
+            beta,
+            AuthzCmd { cred: OPS, op: AuthzOp::SetMember { user: UserId(outsider), role: Some(OrgRole::Admin) } },
+        )
+        .unwrap();
+        let reserve =
+            |a| AuthzCmd { cred: as_user(a), op: AuthzOp::ReserveTransfer { name: name.clone(), repo, from: alpha } };
+        assert_eq!(refused(w.authz_cmd(beta, reserve(outsider))), AuthzErr::Forbidden);
+        w.authz_cmd(beta, reserve(admin)).unwrap();
+        let t = Transfer { repo, from: alpha, from_key: name.key(), to: beta, to_key: name.key() };
+        let routes = |w: &mut World, group: &[PlacementRecord]| -> usize {
+            let (fa, fb): (AuthzFold, AuthzFold) = (w.authz(alpha).fresh_leader(), w.authz(beta).fresh_leader());
+            let ro = w.names_fold(NameKey::Repo(repo)).repo_owner(repo);
+            let mut n = 0;
+            for (o, f, key) in [(alpha, &fa, &t.from_key), (beta, &fb, &t.to_key)] {
+                if f.resolve(key).map(|(r, _)| r) == Some(repo) {
+                    let rec = placement(w, o);
+                    assert!(group.contains(&rec), "the name on {o:?} routes to {rec:?}, outside {group:?}");
+                    n += 1;
+                }
+            }
+            let rec = placement(w, ro.expect("a RepoOwner row"));
+            assert!(group.contains(&rec), "/repositories/{{id}} routes to {rec:?}, outside {group:?}");
+            n
+        };
+        let mut steps = Vec::new();
+        for _ in 0..12 {
+            assert!(routes(&mut w, &group) >= 1, "some name resolves throughout");
+            let (fa, fb): (AuthzFold, AuthzFold) = (w.authz(alpha).fresh_leader(), w.authz(beta).fresh_leader());
+            let ro = w.names_fold(NameKey::Repo(repo)).repo_owner(repo);
+            let v = TransferView {
+                from_authz: &fa,
+                to_authz: &fb,
+                from_placement: &p_alpha,
+                to_placement: &p_beta,
+                group_at: group.last().unwrap(),
+                settings_owner: owner,
+                repo_owner: ro,
+            };
+            let Some(step) = graftyard_identity::finish::transfer(&t, &v) else { break };
+            steps.push(std::mem::discriminant(&step));
+            match step {
+                TransferStep::Move { to } => group.push(to),
+                TransferStep::Settings { owner: o, enterprise: e } => (owner, enterprise) = (o, e),
+                TransferStep::Step(s) => {
+                    w.step(s.clone());
+                    w.step(s);
+                }
+            }
+        }
+        assert_eq!(steps.len(), if other_place { 5 } else { 4 }, "move, Settings, Live, Alias, RepoOwner");
+        assert_eq!(routes(&mut w, &group), 2, "both names resolve at the end");
+        let (fa, fb): (AuthzFold, AuthzFold) = (w.authz(alpha).fresh_leader(), w.authz(beta).fresh_leader());
+        assert_eq!(fa.resolve(&t.from_key), Some((repo, false)), "the old name redirects");
+        assert_eq!(fb.resolve(&t.to_key), Some((repo, true)));
+        assert_eq!((owner, enterprise), (beta, Some(e2)), "Settings names the new owner and its enterprise");
+        // An org's enterprise change: only the operator submits it; its repositories then get `Settings`.
+        let change = |cred| AuthzCmd { cred, op: AuthzOp::SetEnterprise { enterprise: Some(e3) } };
+        assert_eq!(refused(w.authz_cmd(beta, change(as_user(admin)))), AuthzErr::Forbidden);
+        w.authz_cmd(beta, change(OPS)).unwrap();
+        let fb: AuthzFold = w.authz(beta).fresh_leader();
+        assert_eq!(fb.enterprise(), Some(e3));
+    }
+}
