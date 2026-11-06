@@ -263,6 +263,15 @@ impl<F: Family> Routes<F> {
     async fn fetch(&self, mut req: Request, url: Url) -> Result<Response> {
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
+        #[cfg(feature = "test-faults")]
+        {
+            let mut s = self.host.stats.borrow_mut();
+            for (k, v) in req.headers().entries() {
+                if k.starts_with("cf-") && k != "cf-ray" && s.headers.len() < 400 {
+                    *s.headers.entry(format!("{} {k}={v}", url.path())).or_insert(0) += 1;
+                }
+            }
+        }
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
         #[cfg(feature = "test-faults")]
         {
@@ -871,6 +880,7 @@ impl<F: Family> Routes<F> {
             "prsyncFirst": s.prsync_first,
             "peers": s.peers,
             "calls": s.calls,
+            "headers": s.headers,
         });
         if reset {
             s.commit_ms.clear();
@@ -884,6 +894,7 @@ impl<F: Family> Routes<F> {
             s.failed_calls = 0;
             s.peers.clear();
             s.calls.clear();
+            s.headers.clear();
             s.apply_ms.clear();
             s.inbound.clear();
             s.inbound_since = now_ms();
