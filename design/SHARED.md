@@ -189,7 +189,8 @@ pub enum RepoEvent {
     /// a merge-queue ref, or a protected branch tip. `apply` prunes its row when the pull request closes or its head moves.
     /// `conclusion: None` is a queued or in-progress run or a pending status, so a re-run blocks a merge again.
     /// For one (sha, name), the higher run id wins, then the higher version, and a status's version is its `StatusId`
-    /// [inference]. Runs come from Actions shards, so id order holds only within the group that assigned them.
+    /// [inference]. Runs come from Actions shards, so id order holds only within the group that assigned them. Hosted
+    /// `POST /statuses/{sha}` mints a `StatusId` from the edge's clock, so a slower edge can order a re-request wrong (F51).
     RequiredCheck { sha: ObjectId, name: Box<str>, source: CheckSource, version: u64, conclusion: Option<CheckConclusion> },
     /// Metadata tier. Every check run, check suite, and commit status is an entry, required or not. `apply` deletes a
     /// row once an entry's `at` passes the row's time (the `at` of the entry that last wrote the row) plus
@@ -655,10 +656,14 @@ pub fn apply(fold: &mut Fold, e: &LogEntry) -> Result<(), FoldError>;
 /// A tier's `fold_digest` is SHA-256 of the tier, `applied`, the term and digest of entry `applied`, and the sum mod
 /// 2^256 of SHA-256 over each row's (table, key, writing index, columns) [inference: chosen so members agree whatever
 /// their row order, and `apply` keeps it with one subtract and one add per write; `crates/fold`].
-/// Refolds sampled chains from genesis on each release and daily, compares `fold_digest`, and alarms on any mismatch.
-/// A chain whose stored log through `applied` is over `REPLAY_BYTES` (16 MB [guess]) or `REPLAY_MAX` entries is
-/// reported as skipped, with the reason, and not refolded, because the refold is held in one isolate's memory and a
-/// 102.6 MB log took one past 128 MB [measured, `tests/m2/results/f47.md`]. Large chains are unaudited until F48.
+/// Refolds sampled chains on each release and daily, compares `fold_digest`, and alarms on any mismatch. It refolds
+/// from the tier's newest committed snapshot at or below the audited index, streamed one frame at a time into empty
+/// scratch tables, then applies the stored log tail with the same `apply`, one entry at a time (`refold_segment`), so
+/// memory is one frame and one entry. A refold from one snapshot to the next must reach the next trailer's digest, so
+/// archived ranges are audited segment by segment; the first snapshot is trusted as written [measured in memory,
+/// `tests/m3/results/m3-wp5.md`, F48]. Until the site's cron runs it (M2-WP1), a chain whose log is over
+/// `REPLAY_BYTES` (16 MB [guess]) is reported as skipped, because the old refold from genesis is held in one isolate's
+/// memory and a 102.6 MB log took one past 128 MB [measured, `tests/m2/results/f47.md`].
 pub async fn fold_audit(sample: &[ChainId]) -> Result<AuditReport, FoldError>;
 ```
 
@@ -822,7 +827,7 @@ pub struct VariableRecord { pub value: Box<str>, pub updated: Timestamp }
 
 ## Event fan-out
 
-Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers, except `PrSync`, whose leader runs each batch's first attempt in its own isolate and sends only re-sends through Queues ("Shape", "Dominant access patterns", and "Failure modes", `event pipeline`).
+Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers, except `PrSync` and `MergeQueue`, whose leader runs each batch's first attempt in its own isolate and sends only re-sends through Queues ("Shape", "Dominant access patterns", and "Failure modes", `event pipeline`).
 
 ```rust
 pub enum Consumer { Webhooks, ActionsTrigger, RunOwner, PrSync, MergeQueue, Notify, Search, Audit, Counts, Insights }

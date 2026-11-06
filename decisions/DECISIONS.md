@@ -1418,7 +1418,7 @@ F47's abort was traced and fixed on `graft-m2b`, M2-WP5 ran BF-24 on the hosted 
 
 #### F47 answered: the wasm `unreachable` is an isolate out of memory
 
-**Decision.** F47's abort is an isolate out of memory, not a Rust fault, and four fixes remove its causes. `Member::restore` takes the stored state by value and moves the log window and fold into the member. The audit replay reads the log one row at a time. The audit refolds at most `REPLAY_BYTES` (16 MB [guess]) of stored log in memory and reports a larger chain as skipped. `Host::kick`'s tick loop holds a `Weak<Host>` across each delay. F47 leaves OPEN-QUESTIONS, and auditing the skipped chains is F48.
+**Decision.** F47's abort is an isolate out of memory, not a Rust fault, and four fixes remove its causes. `Member::restore` takes the stored state by value and moves the log window and fold into the member. The audit replay reads the log one row at a time. The audit refolds at most `REPLAY_BYTES` (16 MB [guess]) of stored log in memory and reports a larger chain as skipped. `Host::kick`'s tick loop holds a `Weak<Host>` across each delay. F47 leaves OPEN-QUESTIONS, and auditing the skipped chains was F48 ("F48: the fold audit refolds from the newest snapshot").
 
 **Why.** A probe build caught the trap at 138.1 MB of wasm memory: inside `transactionSync`, `SqlStorage::exec`'s string import failed with `RangeError: Invalid array buffer length`, wasm-bindgen rethrew it as `Critical error` and set the instance's terminated flag, and the next import shim's check executed `unreachable`, with no Rust panic. Four paths held a second large copy of a member's state: restore's clone of the log and fold (up to 118 MB of live heap), the audit replay collecting every log row (up to 131 MB), the in-memory refold even one row at a time (110 MB for `repo:65536`'s 102.6 MB of log), and a reset member's tick loop parked on a timer `ctx.abort()` never fires, whose `Rc<Host>` kept the reset member alive (1, 2, then 3 hosts at 40, 82, then 124 MB). Because workers-rs 0.8.7 rebuilds the wasm instance of every object in the isolate after such an error, each abort reset its neighbours too.
 
@@ -1460,6 +1460,79 @@ F47's abort was traced and fixed on `graft-m2b`, M2-WP5 ran BF-24 on the hosted 
 **Evidence.** `crates/git/src/merge.rs`, `queue.rs`, `queue_consumer.rs`, `tiers.rs`, and `repo.rs`; `crates/git/tests/merge_queue.rs`, 13 tests on three Raft members, pass; `tests/m2/wp3/plant.py` catches 14 of 14 planted bugs, rerun on `c7a3b3b` [measured, in the crate tests].
 
 **Flip.** The hosted BF-21 or BF-23 shows a landing the pure tests allowed; or GHES 3.22 is shown to land a `HeadGreen` group past an earlier entry's pending check.
+
+### M2-WP3 hosted, the site-day fixes, AM1-WP5, and M3-WP5, 2026-11-06
+
+M2-WP3's hosted half passed, the site-day work answered F49, and the pure halves of AM1-WP5 and M3-WP5 settled gaps in the trust view, learners, `InstallSnapshot`, and the fold audit (`tests/m2/results/m2-wp3.md`; `tests/m2/results/site-day-fixes.md`; `tests/am1/results/am1-wp5.md`; `tests/m3/results/m3-wp5.md`).
+
+#### Merge packs ride inline, and `MergeQueue` runs its first attempt in band
+
+**Decision.** A merge's or a queue group's pack rides inline in its `MergeCmd` as `PackRef::Inline`, at most `MERGE_PACK_MAX` (900 KB), and the git cache's answer is refused above it; nothing is placed in the buckets for it. The `MergeQueue` consumer runs each batch's first attempt in the leader's isolate, on `PrSync`'s pattern, with re-sends through the site queue, its cursor moved by `MergeCmd::Cursor`, and a per-base timer from `Step::Idle { at }`.
+
+**Why.** A merge commit's own objects are a few KB [inference], so placing them in two buckets would add a round per landing for nothing an inline pack lacks. The in-band path took `PrSync` from a p99 over 30 s to 6.44 s (BF-24), and the queue drives landings the same way.
+
+**Beat.** Placing every merge pack as a `DurablePack`, which DESIGN's "Merge queue" text described. A queue-only consumer, which BF-24's first run showed can hold a message about 37 s.
+
+**Evidence.** `tests/m2/results/m2-wp3.md`: BF-1 3 of 3, BF-21 100 runs, BF-23 100 of 100, BM-2's stale-`parent_tip` part 100 of 100, the per-base timer 5 of 5, 478 GraphQL and 63 REST replies valid, and 14 of 14 planted bugs [measured]; `crates/git/src/merge_cache.rs`.
+
+**Flip.** A real group whose pack is over 900 KB, such as a squash of a large change, which needs placement; or a `MergeQueue` first attempt measured holding its leader's commits.
+
+#### F49 closed: the 401 window was the driver's empty token
+
+**Decision.** F49 closes with no server change. A credential read that cannot get an answer already renders 503 with `Retry-After: 5` on REST, GraphQL, and LFS, and a 401 means a request with no credential or a token no account holds. The test driver now refuses to run with an empty token. On git smart HTTP the same failed lookup renders 500, and should render 503; that follow-up is in BUILD-PLAN M2-WP4.
+
+**Why.** All 24 requests of the run that got 401 carried an empty `Authorization` header, because `edge-drive.sh` read an empty token line and did not check it; the old driver with a missing line reproduces it. Across seven site days that reset every member, a poll once a second saw 0 of 8,750 valid-token requests get 401 and 439 of 439 unknown tokens get 401. A member answers a read only after its constructor's `restore`, a failed restore answers 500, and the lookup retries that for `LOOKUP_FOR` and returns an error rather than "no row" [inference from `workers/site/src/host.rs` and `crates/lookup/src/lib.rs`, consistent with the probes].
+
+**Beat.** Changing the token read to answer 503 on an empty row, which would weaken the 401 that a revoked or unknown token must get at once.
+
+**Evidence.** `tests/m2/results/site-day-fixes.md`, "The 401 window (F49)" [measured]; `ee08088`.
+
+**Flip.** A server 401 to a valid token during or after a site day, in any later probe.
+
+#### Trust-view details the code needed
+
+**Decision.** From AM1-WP5's pure code, in AGENT-LAYER's trust view block:
+- `Vary: Accept` is added only to opted-in replies of trust resources; a default reply is byte-identical to GHES and carries no new header.
+- `is_agent` is false until AM1-WP2's `AgentApp` rows exist, so AM1-WP5 also depends on AM1-WP2 for that field.
+- A commit's author is never trusted: its name is a claim in the git object, which no account vouches for.
+- Journey A4's list of what `visible` drops now points at the Shape block's full list rather than repeating three items of it.
+- A collapsed `<details>` drops its `</details>` too, which the code always did.
+
+**Why.** `Vary: Accept` on every reply would change every default reply's bytes, which LM-1's byte diff forbids; planted bug 2 is that change, and the byte comparisons catch it. Each other point is how the code and the M0 prototype behave, and the design either said less or said it two ways.
+
+**Beat.** `Vary: Accept` on every reply, the usual HTTP caching advice, which would break the byte diff.
+
+**Evidence.** `tests/am1/results/am1-wp5.md`: LF-4's pure half 128 of 128, 1,209 byte comparisons with 0 differences, 18 of 18 planted bugs [measured]; `crates/api/src/trust.rs`.
+
+**Flip.** A shared cache measured serving an opted-in reply to a default client, which would need `Vary` on more replies, or a different URL for the agent view.
+
+#### Learners, `GroupLoad`, and `InstallSnapshot` as the code needs them
+
+**Decision.** From M3-WP5's pure code:
+- `GroupLoad` is each region's peak read rate (req/s) for the day. `place_learners` returns no region under `LEARNER_AT`; above it each region with reads is owed `ceil(rate / 1,000)` learners, 1,000 being Scale's rate per learner, handed out one at a time to the busiest region still owed one, up to `MAX_LEARNERS` [inference].
+- In a group's messages, learner slot k is addressed as `SiteId(192 + k)`, above every site id, because a learner may share its site with a voter or another learner.
+- `InstallSnapshot` also carries entry `through`'s term and digest, the committed config and id block at `through`, and an AppendEntries round's fields.
+- Its archives reach back to the snapshot or to `REQUEST_RETENTION` before `through`, whichever is earlier, so the member rebuilds the `request` rows inside retention.
+
+**Why.** The design named `GroupLoad` without defining it. Raft's per-peer maps need one id per member, and a site id is not one. No tier snapshot holds the config or the id block, and the next append must chain on `through`'s digest. A member without the `request` rows inside retention would decide a re-sent request whose entry lies below the snapshot a second time, which BF-12 forbids.
+
+**Beat.** Addressing learners by (site, slot) pairs, which would change every message's envelope. Keeping `request` rows in the tier snapshots, which would grow every snapshot by up to `REQUEST_RETENTION` of requests.
+
+**Evidence.** `tests/m3/results/m3-wp5.md`: BF-28 and BF-29 pass in memory on real raft members, 9 of 9 planted bugs, the long sweep and Porcupine Ok [measured]; `crates/types/src/placement.rs`, `crates/raft/src/member/mod.rs`.
+
+**Flip.** B0-18's rerun showing a learner region rule that misses its read target, which changes `place_learners`; or a hosted install that cannot fit `REQUEST_RETENTION` of archives in one install.
+
+#### F48: the fold audit refolds from the newest snapshot
+
+**Decision.** The fold audit refolds a sampled chain from each tier's newest committed snapshot at or below the audited index, not from genesis. A job streams the snapshot's frames into empty scratch tables one frame at a time (`Restore`), applies the stored log tail one entry at a time with the same `apply` (`refold_segment`), and compares the `fold_digest` with every member's. A refold from one snapshot to the next must reach the next trailer's digest, so archived ranges are audited segment by segment. The first snapshot is trusted as written. F48 leaves OPEN-QUESTIONS; the site's alarm-driven cron, shared with the install loader, is M2-WP1 work, and until it runs `replay` keeps skipping chains over `REPLAY_BYTES`.
+
+**Why.** Memory is one frame and one entry, not the fold, and the tail is at most `SNAPSHOT_EVERY` entries or `SNAPSHOT_BYTES` of log, because a snapshot is due by then. The refold from genesis held the fold in one isolate, and a 102.6 MB log took one past 128 MB (F47).
+
+**Beat.** Refolding across several requests from genesis, which reads every archive on every audit. A larger isolate, which Workers does not offer.
+
+**Evidence.** `tests/m3/results/m3-wp5.md`, "F48": for both tiers, a refold from the snapshot at 21 plus the tail matches all three voters, a refold from 21 to the next snapshot reaches its trailer digest, a dropped entry is refused, and a changed entry gives a different digest [measured, in memory].
+
+**Flip.** A hosted audit whose snapshot-to-snapshot refold disagrees with the trailer on a chain whose members agree, which would mean the trailer or `snap_undo` is wrong rather than `apply`.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

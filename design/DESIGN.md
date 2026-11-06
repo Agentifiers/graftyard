@@ -153,7 +153,7 @@ pub enum SiteLink {
 pub enum MemberKind {
     Full,
     Witness,   // stores (term, index, digest), never content: used for residency
-    Learner,   // stores content, never votes, serves read-index reads: hot groups only
+    Learner,   // stores content, never votes, serves read-index reads: hot groups only; slot k is `SiteId(192 + k)`
 }
 /// `do_name` is "{chain}#{generation}#{kind}{slot}": `kind` is `f`, `w`, or `l`, and `slot` is the member's voter or
 /// learner position, so a learner beside its group's voter on one site, or two learners on one site, never share an
@@ -217,7 +217,8 @@ pub enum PlacementName {
 }
 pub const LEARNER_AT: u32 = 500;                                  // group read rate (req/s) that adds learners
 pub const MAX_LEARNERS: usize = 16;
-/// Daily `graft-ops` Cron Trigger plus Analytics Engine counters: regions to add learners in, for one group.
+pub struct GroupLoad { pub reads: SmallVec<[(Region, u32); 6]> }   // peak req/s per region from Analytics Engine
+/// Daily `graft-ops` cron: none under LEARNER_AT, else ceil(rate / 1,000) per region, busiest first, up to 16 [inference].
 pub fn place_learners(load: &GroupLoad) -> ArrayVec<Region, 16>;
 
 // ---- Chains: the reference design's chain model, with groups in place of a table ----
@@ -564,11 +565,10 @@ pub enum QueueEvent {
 pub enum EjectReason { CheckFailed { name: Box<str> }, CheckTimeout { name: Box<str> }, HeadMoved, Conflict,
                        Protection(RuleViolation), Closed, Dequeued }
 /// impl Command for the first three `QueueEvent`s, `tiers() = Core`, MergeQueue lane. The edge submits `Enqueue` and
-/// `Dequeue` for REST and GraphQL callers, `credential()` from `actor`; the `MergeQueue` consumer submits `Build` and
-/// `Eject` with `actor: None`. `decide` refuses `Enqueue` unless the pull request is open, not queued, and passes
-/// `check_protection` with its required checks left out. It refuses `Build` unless every entry's pull request is still
-/// queued at its pinned head and the `parent_tip` chain holds from the base tip or the last built entry, and `Eject` of
-/// a pull request not queued.
+/// `Dequeue`, `credential()` from `actor`; the `MergeQueue` consumer submits `Build` and `Eject` with `actor: None`.
+/// `decide` refuses `Enqueue` unless the pull request is open, not queued, and passes `check_protection` without its
+/// required checks; `Build` unless every entry's pull request is queued at its pinned head and the `parent_tip` chain
+/// holds from the base tip or the last built entry; and `Eject` of a pull request not queued.
 pub struct QueueOp { pub op: QueueAction, pub actor: Option<Principal> }
 pub enum QueueAction { Enqueue { n: IssueNumber, head: Oid }, Dequeue { n: IssueNumber },
                        Build { base: RefName, entries: SmallVec<[MergeQueueEntry; 8]>, pack: DurablePack },
@@ -584,14 +584,14 @@ pub enum QueueAction { Enqueue { n: IssueNumber, head: Oid }, Dequeue { n: Issue
 /// from its current value, and queue tips only fast-forward. Out: each merge commit. Err: `(IssueNumber, MergeError)`.
 pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: MergeQueueEntry }
 /// The `MergeQueue` consumer (SHARED, "Event fan-out") reads the base chain's `Queue`, `Refs`, `RequiredCheck`,
-/// `PrClosed`, `Merged`, and `Rule` events. Per base branch, under the rule's `MergeQueueSettings`, it does four
-/// things. It builds: once `min_merge` PRs wait or `min_wait_minutes` passes, and fewer than `max_build` entries are
-/// built, it asks `GitCacheShard::merge` for each next entry on the previous `group_tip`, places the pack, and submits
-/// `Build`, or `Eject { Conflict }` on a conflict. It ejects on a head push or a close, and the first built entry not
-/// yet passing on a failed required conclusion on its queue ref or none within `check_timeout_minutes`. It lands: when
-/// the oldest built entries, at most `max_merge`, pass their checks, it submits `QueueMerge`, and a refusal ejects the
-/// named PR. It rebuilds: a base move that no `QueueMerge` made submits a `Build` from the new tip. A redelivered event
-/// costs at most a refusal, as `decide` refuses a stale chain.
+/// `PrClosed`, `Merged`, and `Rule` events and, like `PrSync`, runs each batch's first attempt in the leader's isolate.
+/// Per base, under `MergeQueueSettings`: it builds once `min_merge` PRs wait or `min_wait_minutes` passes (a per-base
+/// timer) and fewer than `max_build` are built, asking `GitCacheShard::merge` for each next entry on the previous
+/// `group_tip` and submitting `Build` with the pack inline, at most 900 KB [inference], or `Eject { Conflict }`. It
+/// ejects on a head push or a close, and the first built entry not yet passing on a failed required conclusion on its
+/// queue ref or none within `check_timeout_minutes`. It lands the oldest built entries, at most `max_merge`, that pass,
+/// by `QueueMerge`, and a refusal ejects the named PR. A base move no `QueueMerge` made rebuilds from the new tip. A
+/// redelivery costs at most a refusal.
 
 // ---- Agent load and agent safety (journey 9; the layer is design/AGENT-LAYER.md) ----
 /// Leader admission inside group commit. Lanes in every entry are Human and MergeQueue, then Agent up to AGENT_FLOOR of
@@ -1096,12 +1096,12 @@ pub struct SnapshotTrailer { pub chain: ChainId, pub tier: Tier, pub to: Index, 
                              pub fold_digest: Digest, pub release: ReleaseId, pub format: Format, pub rows: u64 }
 pub const SNAPSHOT_EVERY: u64 = 100_000;                         // entries [guess]
 pub const SNAPSHOT_BYTES: u64 = 256 << 20;                       // [guess]
-/// Leader to a member whose next entry the leader has already archived. It names the newest committed snapshot of each
-/// tier and the archive objects from there to the leader's first log entry. The member loads the core snapshot,
-/// applies the archives, acks no AppendEntries until it has applied `through`, and then follows as usual. Its metadata
-/// tier loads lazily, as on any member. A `ReplaceMember` member and a new learner join the same way.
-pub struct InstallSnapshot { pub term: Term, pub core: R2Key, pub metadata: Option<R2Key>,
-                             pub archives: SmallVec<[R2Key; 8]>, pub through: Index }
+/// Leader to a member whose next entry it has archived, in an AppendEntries round: each tier's newest committed snapshot,
+/// the archives from there (or from REQUEST_RETENTION before `through`, so `request` rows are rebuilt) to its first log
+/// entry, and `through`'s term, digest, config, and id block. The member applies them, acks nothing until it has applied
+/// `through`, and follows; its metadata tier loads lazily. `ReplaceMember` members and new learners join the same way.
+pub struct InstallSnapshot { pub term: Term, pub core: R2Key, pub metadata: Option<R2Key>, pub archives: SmallVec<[R2Key; 8]>,
+                             pub through: (Index, Term, Digest), pub config: (Index, GroupConfig), pub id_block: Option<IdBlock> }
 /// GC roots are each member chain's fold refs plus its `ref_log` fold table, which keeps each ref value until
 /// RESTORE_WINDOW after the entry that replaced it, and records per ref the newest index it has pruned, so `RestoredTo`
 /// refuses rather than read a pruned value as an absent ref [measured, `tests/m0/results/m0-wp8.md`, `wp8-win-r1`]. Cruft expires 14 days after an object leaves that set, and `RestoredTo` reads `ref_log`. Each tier
