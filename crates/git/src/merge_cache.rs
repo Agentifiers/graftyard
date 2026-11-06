@@ -320,7 +320,8 @@ mod tests {
                 },
                 || {
                     catchups.set(catchups.get() + 1);
-                    (running.set(true), caught.set(true));
+                    running.set(true);
+                    caught.set(true);
                     async { Ok(()) }
                 },
             ));
