@@ -7,9 +7,13 @@ publish.workspace = true
 
 [dependencies]
 arrayvec.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+# Signs and verifies installation tokens; no default features, so it builds for wasm32 with no randomness.
+ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-raft = { path = "../raft" }
 graftyard-types.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true

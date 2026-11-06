@@ -600,9 +600,12 @@ name = "graftyard-identity"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "base64",
+ "ed25519-dalek",
  "graftyard-raft",
  "graftyard-types",
  "serde",
+ "serde_json",
  "sha2",
  "smallvec",
  "thiserror 2.0.21",
