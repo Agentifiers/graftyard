@@ -1,6 +1,91 @@
 # M2-WP3 hosted half: merges and the merge queue on `graft-m1-*`
 
-Status: in progress. This file holds progress notes until the gates run.
+These results are from runs on 2026-11-05 and 2026-11-06, against the test install `graft-m1-site-a/b/c` and
+`graft-m1-edge` (test-faults builds), on branch `m2-wp3-hosted` from `main` `5e364cf`.
+
+- The clients were gh 2.102.1 and git, run with the install's writer test token (`wp6-writer`, account 7000002). No
+  GitHub credential was used.
+- Every gh run except the first smoke test used `GH_DEBUG=api`, so its replies were captured for
+  `tests/m2/gh-replies.py` and `crates/api/gh/validate.py`.
+- The raw data is in `raw/m2-wp3/`. It is gitignored and exists on disk only.
+- The driver is `tests/m2/wp3/hosted.py`, and the planted bugs are in `tests/m2/wp3/plant.py`.
+
+## Summary
+
+| Gate | Result |
+| --- | --- |
+| BF-1, one entry holding a 5-PR merge-queue group plus a `PrSync` batch | **Pass, 3 of 3.** The landing (five `Merged`, `Landed`) and a five-head `PrSync` `Refs` commit in one entry under both request ids. Each entry (132, 161, 190) is committed on all three members with the same digest |
+| BF-21, a 5-PR `HeadGreen` group with the 3rd failing, 100 runs, the leader killed mid-landing in 10 | **Pass, 100 runs.** 101 were started; one stopped on a client TLS timeout before any enqueue and was replaced. In every run, `main` moves only by `QueueMerge` entries and only fast-forward. The 3rd is ejected `CheckFailed` and the other four merge. All 10 kills, 6 `after_quorum` and 4 `before_commit`, end whole |
+| BF-23, a required check passes, then is re-requested before the merge | **Pass, 100 of 100.** `gh pr merge` and the edge's own `mergePullRequest` are both refused and `main` never moves. After the new success, 99 merged at once. One merge hit a Cloudflare git-cache reset (503) and merged on a manual retry |
+| BM-2's pure part, hosted: a queue entry with a stale `parent_tip` | **Pass, 100 of 100.** 300 commands sent straight to the leader, all refused `StaleChain`, with the built chain unchanged |
+| The per-base timer from `Step::Idle { at }` | **Pass, 5 of 5.** `GroupBuilt` 63.1 to 63.2 s after the first `Enqueued` under `min_wait_minutes` 1, with no entry between |
+| Planted bugs | **14 of 14 caught** (`tests/m2/wp3/plant.py` at `116e1ce`) |
+| Reply validation | **0 failures.** 478 GraphQL and 63 REST replies |
+| Local checks | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, and `go test` pass (see the log) |
+
+## Real clients
+
+| Command | Where | Result |
+| --- | --- | --- |
+| `gh pr merge N --merge` | `wp3m`, and the second merge of every `--merge` BF-23 trial on `wp3c` | Exit 0. `main` is a merge commit with parents (base, head), and `gh pr view` shows MERGED |
+| `gh pr merge N --squash` | `wp3m`, BF-23 | Exit 0. One parent, the base, with the head's tree |
+| `gh pr merge N --rebase` | `wp3m`, BF-23 | Exit 0. The head's two commits are replayed on the base, with the head's tree |
+| `gh pr merge N --merge|--squash|--rebase` on a BLOCKED pull request | BF-23, 100 trials | Exit 1. "Pull request ... is not mergeable: the base branch policy prohibits the merge." |
+| `gh pr merge N --merge` on a base with a merge queue | `wp3q*`, `wp3f`, `wp3t`, `wp3b`, about 540 enqueues | Exit 0. gh sends `enablePullRequestAutoMerge`, which commits `QueueOp::Enqueue` |
+| `gh pr create`, `gh pr view` | every repository | Exit 0, except one TLS handshake timeout to the edge in BF-21 run 15 |
+| REST `PUT /repos/o/r/pulls/N/merge` | `wp3m` | 200 merge, 409 stale `sha`, 403 reader, 405 second merge |
+| REST `POST /repos/o/r/statuses/{sha}` | every CI step | 201 |
+| GraphQL `dequeuePullRequest(input: {id})` | `wp3b`, edge `6c0196a3` | 200. The entry leaves the queue and the pull request stays OPEN |
+
+## Deployed
+
+| Script | Version | Build |
+| --- | --- | --- |
+| `graft-m1-site-a` | `a75c1f2d-92b8-41f7-884c-f4461bacef0b` | `9aeccf3`, site wasm sha256 `0da70974128e…6c` |
+| `graft-m1-site-b` | `a91669ab-7a7d-456c-9dbb-dbede3dd93a4` | same |
+| `graft-m1-site-c` | `e3d0105d-dc67-46eb-8b6f-fde4a17655bc` | same |
+| `graft-m1-edge` | `6c0196a3-010f-44ae-b5df-1d0b59824121` | `a8a6ea9`, edge wasm sha256 `cfa578ff81e7…`, `FORMATS_ENABLED=32.1,32.4,32.5` |
+| git cache image | `graft-m1-site-gitshard-git@sha256:9bf81a5eb7797d81f4af9598356a967cc83fcea4ee970f879a9b84dbe3ba96c8` | `containers/git` at `ce19408`, unchanged since |
+
+Earlier versions during this run, in order:
+- First site day: sites `95edf2c1`/`c07c49a7`/`7e1cb3c7`, edge `3a048bed`.
+- Second site day: edge `d448f2d6`.
+
+Before this branch, the install ran sites `4079ddd2`/`9a84c900`/`25231068` and edge `06ed3ac3`. Nothing on
+`graft-m2b-*` or `graft-m1-lin-*` was touched.
+
+After each site day, the running shard containers did not pick up the new image by themselves, as noted on m2-edge.
+So they were torn down with `/_bed/kill`:
+- after the first day, `wp6/edge1` and `wp6/bf24` on shards 0, 1, and 2;
+- after the second, all 11 test repositories, 196629 to 196639 (33 of 33 answered `{"torn_down":true}`).
+
+## Design sentences this contradicts or leaves open
+
+From the pure half (recorded in DESIGN and SHARED by the design pass on `main`, listed again here):
+- DESIGN gives `QueueOp` a `Principal` for every action. The consumer's commands have none ("no credential",
+  DESIGN, Shape, `CredentialShard`).
+- Under `HeadGreen`, DESIGN reads only the last entry's checks. `QueueMerge::decide` also refuses on any entry's
+  failed or pending conclusion.
+- Only the first failing built entry is ejected.
+- `Merged.by` and `up_to_date`.
+- Code-owner, last-push, and signature rules refuse every merge, because no data for them exists yet.
+- The admin bypass is an inference.
+
+New in this half:
+- DESIGN, Shape, "Merge queue": "it asks `GitCacheShard::merge` for each next entry on the previous `group_tip`,
+  places the pack, and submits `Build`". This build does not place packs. Every merge and group pack is inline
+  (`PackRef::Inline`, at most `MERGE_PACK_MAX` 900 KB), and a larger one is refused [inference: a merge's own objects
+  are a few KB].
+- SHARED, "Event fan-out": "`design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers,
+  except `PrSync`, whose leader runs each batch's first attempt in its own isolate". `MergeQueue` now runs its
+  first attempt in band too, on PrSync's pattern, as the brief asked. The sentence should name both consumers.
+- No client route sets a branch rule or the repository settings yet. The gates recorded them through the test-only
+  `/bench_seed {"record": ..}`. GHES's branch-protection and rulesets routes are not served.
+- `POST /statuses/{sha}` mints the status id from the edge's clock (`Date::now`). A re-requested status's `version`
+  is that id, so "newer" means a later edge clock [inference]. A newer id from a slower edge would order wrong. DESIGN
+  names no id source for statuses.
+- `mergePullRequest`'s conflict text uses `RuleViolation::NotUpToDate`'s wording [unverified: GitHub's text].
+- The `MergeQueueEntry` node renders as null, because no `MergeQueueEntry` node type is served.
 
 ## Progress log
 
@@ -125,3 +210,16 @@ Status: in progress. This file holds progress notes until the gates run.
   `deploy-edge.mjs` with the same `FORMATS_ENABLED=32.1,32.4,32.5` and `LOGINS` left the edge on `d448f2d6` (edge
   wasm sha256 `0a445ae1…ac`). The shard containers of all 11 test repositories (196629-196639) were torn down on
   shards 0, 1, and 2 with `/_bed/kill`, and all 33 answered `{"torn_down":true}`.
+- BF-1's first try on the second build (`bf1`) committed the held landing alone (entry 83) and the five-head batch
+  in the next (84), because no entry was in flight to group them behind. The pure test holds one in flight. The
+  driver now sends a sixth bystander's batch first, so the landing and the five-head batch are admitted together
+  behind it. BF-1 then passes 3 of 3 (`bf1b`). Entries 132, 161, and 190 each hold five `Merged`, `Landed`, and one
+  `Refs` (15 ref updates in all: five base moves, the five queue refs deleted, and five `refs/pull/N/head`), under
+  both request ids. Each is committed on all three members with the same digest (`1e2feb17…`, `8c9e1a03…`,
+  `737f3eb2…`).
+- `dequeuePullRequest` on the second edge (`d448f2d6`) still failed with `id`. `route` sent it to no repository,
+  because it looked for `pullRequestId` only. `a8a6ea9` routes it by `id`, and the test asserts the route and fails
+  without the fix. The edge was redeployed alone (`6c0196a3`). The edge is a stateless Worker with no members, so
+  that deploy is not a site day. On `wp3b`, `dequeuePullRequest(input: {id})` then answers
+  `{"clientMutationId": null, "mergeQueueEntry": null}`, which validates. The entry leaves the queue and the pull
+  request stays OPEN. gh 2.102.1 never sends this mutation.
