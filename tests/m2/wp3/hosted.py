@@ -628,12 +628,12 @@ def audit_base(entries, base, prs):
 
 
 def bystanders(w, run):
-    """Five open pull requests outside the queue, made once per run, whose heads BF-1's `PrSync` batch moves."""
+    """Six open pull requests outside the queue, made once per run, whose heads BF-1's `PrSync` batches move."""
     path = f"{RAW}/{run}.bystanders.json"
     if os.path.exists(path):
         return json.load(open(path))
     out = []
-    for k in range(1, 6):
+    for k in range(1, 7):
         b = f"{run}-by-{k}"
         w.fetch_main()
         w.branch(b, {f"by/{k}.txt": f"{run} {k} {time.time()}"})
@@ -659,9 +659,15 @@ def bf1_commit(w, held, bys):
         heads.append([n, list(bytes.fromhex(w.git("rev-parse", "HEAD")))])
     w.git("push", "-q", "-f", "origin", *[f"{b}:refs/heads/{b}" for b, _ in bys])
     st = member(s, "/status", None)["v"]
-    sync_rid = rid()
-    sync = {"prSync": {"from": 0, "through": None, "heads": heads, "merges": [], "unmerged": [], "request": sync_rid}}
-    body = {"cmds": [{"rid": held["rid"], "cmd": held["cmd"]}, {"rid": sync_rid, "cmd": sync}], "hold_ms": 20000}
+    sync_rid, lead_rid = rid(), rid()
+    sync = {"prSync": {"from": 0, "through": None, "heads": heads[:5], "merges": [], "unmerged": [],
+                       "request": sync_rid}}
+    # The sixth head's batch goes first and takes the entry in flight, so the landing and the five-head batch, admitted
+    # in the same turn behind it, share the next entry (group commit; the pure test holds an entry in flight too).
+    lead = {"prSync": {"from": 0, "through": None, "heads": heads[5:], "merges": [], "unmerged": [],
+                       "request": lead_rid}}
+    body = {"cmds": [{"rid": lead_rid, "cmd": lead}, {"rid": held["rid"], "cmd": held["cmd"]},
+                     {"rid": sync_rid, "cmd": sync}], "hold_ms": 20000}
     r = member(s, "/commit_many", body, deadline=60000)
     results = (r.get("v") or {}).get("results")
     seed({"mqHold": 0})
