@@ -120,3 +120,8 @@ Status: in progress. This file holds progress notes until the gates run.
 - Second site day, from `9aeccf3`, for BF-1's hold fix (`29b2f16`, `fa13e9f`) and `dequeuePullRequest`'s `id`
   (`915036c`). `containers/` is unchanged since `ce19408`, so the image digest stays `sha256:9bf81a5e…c8`. Before:
   sites `95edf2c1`/`c07c49a7`/`7e1cb3c7`, edge `3a048bed`.
+- Second site day done. `deploy.mjs ... --test-faults --image <same digest>` deployed the build of `9aeccf3` (site
+  wasm sha256 `0da70974…6c`) in two passes, leaving site a on `a75c1f2d`, b on `a91669ab`, and c on `e3d0105d`.
+  `deploy-edge.mjs` with the same `FORMATS_ENABLED=32.1,32.4,32.5` and `LOGINS` left the edge on `d448f2d6` (edge
+  wasm sha256 `0a445ae1…ac`). The shard containers of all 11 test repositories (196629-196639) were torn down on
+  shards 0, 1, and 2 with `/_bed/kill`, and all 33 answered `{"torn_down":true}`.
