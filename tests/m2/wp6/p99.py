@@ -28,19 +28,25 @@ def status(site):
 
 
 def elect(nxt):
-    """Moves leadership to the next site; (from, to, old term, new term, ms until the new leader reported)."""
-    s = h.leader_site()
-    old = status(s).get("term", 0)
-    to = nxt(s)
-    t0 = time.time()
-    r = h.member(s, "/transfer", {"to": to}).get("v")
-    for _ in range(200):
-        v = status(to)
-        if v.get("role") == "leader" and v.get("term", 0) > old:
-            return {"from": s, "to": to, "term0": old, "term": v["term"], "elect_ms": round((time.time() - t0) * 1000),
-                    "transfer": r}
-        time.sleep(0.05)
-    raise RuntimeError(f"site {to} did not lead after transfer from {s}: {r}")
+    """Moves leadership to the next site; (from, to, old term, new term, ms until the new leader reported). A transfer
+    refused because leadership moved meanwhile (`NotLeader`) is tried again from the new leader, up to 5 times."""
+    for attempt in range(5):
+        s = h.leader_site()
+        old = status(s).get("term", 0)
+        to = nxt(s)
+        t0 = time.time()
+        r = h.member(s, "/transfer", {"to": to}).get("v")
+        if "Err" in (r or {}).get("transfer", {}):
+            h.log(f"transfer {s}->{to} refused, retrying: {str(r)[:120]}")
+            continue
+        for _ in range(200):
+            v = status(to)
+            if v.get("role") == "leader" and v.get("term", 0) > old:
+                return {"from": s, "to": to, "term0": old, "term": v["term"],
+                        "elect_ms": round((time.time() - t0) * 1000), "transfer": r, "attempts": attempt + 1}
+            time.sleep(0.05)
+        raise RuntimeError(f"site {to} did not lead after transfer from {s}: {r}")
+    raise RuntimeError("transfer refused 5 times")
 
 
 def wait_mergeable(pr):
