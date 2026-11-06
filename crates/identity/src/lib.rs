@@ -4,7 +4,8 @@
 //! minimal identity"): login claims, `Account` rows, owner placement records and `RepoOwner`, an owner's `Authz`
 //! record with admin grants and `RepoName` entries, and stored-token authentication. Milestone 3 adds App and OAuth app
 //! records and their names (M3-WP1, `apps`), every token kind's routing and the short-lived codes (M3-WP2), each
-//! account's login on its `account_shard` (F50), and the `Audit` finisher's plans (`finish`). Every group is a
+//! account's login on its `account_shard` (F50), the `Audit` finisher's plans (`finish`), and the follow-ups the edge
+//! sends after each commit point (`edge`). Every group is a
 //! `graftyard_raft::Command` with its fold. Pure Rust: no Workers dependency, no clock and no randomness but what the
 //! caller passes in.
 
@@ -14,6 +15,7 @@ mod authz;
 mod cache;
 mod compat;
 mod credential;
+pub mod edge;
 mod enc;
 pub mod finish;
 mod identity;

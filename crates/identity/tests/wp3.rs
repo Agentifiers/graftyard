@@ -531,3 +531,50 @@ fn a_transfer_keeps_every_route_on_the_group_and_names_the_new_enterprise() {
         assert_eq!(fb.enterprise(), Some(e3));
     }
 }
+
+// ---- the edge's writes: signup, sign-in, a new credential, and rename ----
+
+/// What the edge sends, step by step, on real groups: a signup's claim then its `AccountLogin`, `Account`, and
+/// `Created`; a sign-in; a new PAT's `Tokens` row then its `Identity` side; a rename's claim, release, and new
+/// `AccountLogin`. The login the edge renders for the account id is read from `account_shard` alone, at every point
+/// after the signup's steps, with no `LOGINS` table. Each step re-sent is a no-op, as a racing finisher's would be.
+#[test]
+fn the_edges_writes_keep_the_account_login_and_identity_in_step() {
+    use graftyard_identity::{NamesOut, edge};
+    use graftyard_types::Ulid;
+    let mut w = World::default();
+    let install = install_account();
+    let admin = acct(0, 2, 1);
+    org(&mut w, install, admin);
+    let mona = Login::parse("Mona-Lisa").unwrap();
+    let claim = NamesOp::ClaimLogin { login: mona.clone(), kind: AccountKind::User, account: None };
+    let NamesOut::Account(a) = w.names_on(NameKey::Login(mona.key()), claim).unwrap().out else { panic!() };
+    let rendered = |w: &mut World| w.names(ChainId::Names(account_shard(a))).fresh_leader().account_login(a).cloned();
+    assert_eq!(rendered(&mut w), None, "before the edge's follow-ups only the finisher could render it");
+    for s in edge::after_signup(a, &mona, AccountKind::User, Timestamp(1)) {
+        w.step(s.clone());
+        w.step(s);
+    }
+    assert_eq!(rendered(&mut w), Some(mona.clone()));
+    let session = WebSessionId(Ulid::new(Timestamp(9_000), [1; 10]));
+    w.step(edge::sign_in(a, session, SignInMethod::Password, install));
+    let f: IdentityFold = w.identity(a).fresh_leader();
+    assert!(f.sessions.contains_key(&session));
+    // A PAT: the `Tokens` row, then the `Identity` side right after it.
+    let pat = CredentialRef::Token { hash: [0x51; 32], kind: TokenKind::Pat };
+    let store =
+        TokensOp::Store { hash: [0x51; 32], kind: TokenKind::Pat, account: a, scopes: ScopeSet(1), expires: None };
+    w.tokens_cmd(TokensCmd { cred: as_user(a), op: store }).unwrap();
+    w.step(edge::after_credential(a, as_user(a), pat, "laptop"));
+    assert_eq!(listed(&mut w, a), [pat]);
+    // Rename to "mona": every step, then the rendered login follows.
+    let new = Login::parse("mona").unwrap();
+    for s in edge::rename(a, as_user(a), &mona, &new) {
+        w.step(s);
+    }
+    assert_eq!(rendered(&mut w), Some(new.clone()));
+    // The rename's last step replayed late with the old login is refused: the old login is a former name.
+    let late = NamesCmd { cred: as_user(a), op: NamesOp::SetAccountLogin { account: a, login: mona } };
+    assert_eq!(refused(w.names_cmd(ChainId::Names(account_shard(a)), late)), graftyard_identity::NamesErr::NotHolder);
+    assert_eq!(rendered(&mut w), Some(new));
+}
