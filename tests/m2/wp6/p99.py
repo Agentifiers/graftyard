@@ -73,7 +73,7 @@ def main():
             ok_reply = s == 200 and isinstance(v, dict) and not v.get("errors") and \
                 (v.get("data") or {}).get("mergePullRequest") is not None
             timing, reply = hd.get("server-timing") or hd.get("Server-Timing"), v
-            trace = hd.get("x-graft-trace") or hd.get("X-Graft-Trace")
+            trace = [hd.get("x-graft-trace") or hd.get("X-Graft-Trace"), hd.get("x-graft-shard-timing") or hd.get("X-Graft-Shard-Timing")]
         state = h.pr_state(pr)
         rec = {"i": i, "pr": pr, "gh": bool(use_gh), "ms": ms, "pass": ok_reply and state == "MERGED", "state": state,
                "timing": timing, "trace": trace, "reply": reply, "at": time.time(), **e}
@@ -84,7 +84,13 @@ def main():
 
 
 def summary(out):
-    rows = [json.loads(l) for l in open(out)]
+    """The p99 is over the mutation samples only; gh's whole runs (a read and the mutation) are reported apart."""
+    allrows = [json.loads(l) for l in open(out)]
+    ghs = sorted(r["ms"] for r in allrows if r["gh"])
+    if ghs:
+        h.log(f"gh pr merge whole runs: n={len(ghs)} pass={sum(r['pass'] for r in allrows if r['gh'])} "
+              f"p50={ghs[len(ghs) // 2]} max={ghs[-1]} ms")
+    rows = [r for r in allrows if not r["gh"]]
     ms = sorted(r["ms"] for r in rows)
     k = len(ms)
     p = lambda q: ms[min(k - 1, math.ceil(q * k) - 1)]
