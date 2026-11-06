@@ -626,3 +626,6 @@ with `test-faults` for wasm32, and `cargo test --workspace` (453 passed).
 
 Every sample's pull request is MERGEABLE first. Smoke (`smoke`, 3 rounds): home 3 of 3, 1.07 to 1.35 s, client EWR
 and edge EWR on all 3; off 2 of 2 plus 1 gh run.
+
+Progress at 21:16 UTC (`final`, 93 of 600): home n = 46, p99 1.37 s, 0 over 2 s; off n = 46, p99 1.81 s, 0 over 3 s;
+every sample merged; client EWR and edge EWR on every home sample.
