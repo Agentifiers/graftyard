@@ -26,10 +26,10 @@ npm run build     # static output in dist/
 The site runs as the Worker `graftyard-site` (`wrangler.jsonc`, `worker.js`), which serves `dist/` on graftyard.com and www.graftyard.com. With `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` set:
 
 ```
-npm run deploy    # astro build, then wrangler deploy
+npm run deploy    # fetch GitHub's status figures, astro build, then wrangler deploy
 ```
 
-Run `node scripts/github-status.mjs <today>` first so the outage figures are current.
+The workflow `.github/workflows/site-refresh.yml` runs the same deploy every day at 06:17 UTC on the srv runner pool, so the outage section's figures and its "as of" date move forward each day. It deploys with the repository secret `CLOUDFLARE_SITE_DEPLOY_TOKEN`, a Cloudflare token scoped to Workers scripts and routes on graftyard.com. If the status fetch fails, the job stops before it deploys, and the site keeps the previous figures. Run it by hand from the Actions tab (Site refresh, Run workflow).
 
 ## Page views (Cloudflare Basin)
 

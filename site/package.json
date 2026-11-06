@@ -6,7 +6,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "deploy": "astro build && wrangler deploy",
+    "deploy": "node scripts/github-status.mjs && astro build && wrangler deploy",
     "views": "wrangler basin sql query <cf-account-id>_graftyard-site-analytics \"SELECT path, COUNT(*) AS views FROM default.site_pageviews GROUP BY path ORDER BY views DESC\""
   },
   "dependencies": {

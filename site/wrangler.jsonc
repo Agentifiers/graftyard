@@ -1,6 +1,7 @@
 {
   // graftyard.com: the static site in dist/, plus POST /_v, which sends page views to Basin.
   "name": "graftyard-site",
+  "account_id": "<cf-account-id>",
   "main": "worker.js",
   "compatibility_date": "2026-11-01",
   "assets": {
