@@ -14,11 +14,20 @@ pub struct CredentialShard {
     pub key: Option<CredentialKey>,
 }
 
-/// Milestone 1 has stored tokens only. The design's `Jti` and `SshKey` keys come with installation tokens and SSH keys
-/// (Milestone 3).
+/// A stored token's row, or a web session, which names no row of its own and is checked against the `Account` row's
+/// `sessions_not_before` by its issue time. The design's `Jti` key comes with installation tokens (M3-WP4), and
+/// `SshKey` with SSH pushes (M6-WP2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CredentialKey {
-    Token { shard: TokenShard, hash: [u8; 32] },
+    Token {
+        shard: TokenShard,
+        hash: [u8; 32],
+    },
+    /// [inference: DESIGN's `CredentialShard` says web sessions "name only the `Account` row"; the issue time is what
+    /// that row's `sessions_not_before` is compared with, and `decide` has no clock.]
+    Session {
+        issued: crate::ids::Timestamp,
+    },
 }
 
 impl CredentialShard {

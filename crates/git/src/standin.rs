@@ -246,6 +246,32 @@ impl StandIn {
         &self.identity
     }
 
+    /// Suspends an account on the stand-in's `Names` fold, as `PutAccount` would: every command decided after this
+    /// reads the row through `deps`.
+    pub fn suspend(&mut self, account: AccountId) {
+        self.identity.names.apply(&NamesEvent::Account {
+            id: account,
+            suspended: true,
+            sessions_not_before: Timestamp(0),
+        });
+    }
+
+    /// Admits a command on the leader and returns its ticket without settling, so it waits for the next entry.
+    pub fn admit(&mut self, rid: RequestId, push: Push) -> Option<Ticket> {
+        self.ensure_leader();
+        self.on(LEADER, |m, now| m.commit(now, rid, push)).ok().map(|a| a.ticket)
+    }
+
+    /// Delivers every message and answers every dependency read.
+    pub fn run(&mut self) {
+        self.settle();
+    }
+
+    /// A resolved ticket's outcome.
+    pub fn resolved(&self, t: Ticket) -> Option<&PushOutcome> {
+        self.tickets.get(&t)
+    }
+
     /// Every write since the last call, for the host to make durable before it replies.
     pub fn drain_writes(&mut self) -> Vec<(SiteId, Write<RepoEvent>)> {
         std::mem::take(&mut self.writes)

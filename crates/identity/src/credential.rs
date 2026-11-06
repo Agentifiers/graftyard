@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 use crate::authz::AuthzFold;
 use crate::enc;
 use crate::names::{NamesFold, NamesRead, account_shard};
-use crate::tokens::{ScopeSet, TokenRow, TokensFold, TokensRead, shard_of_hash};
+use crate::tokens::{ScopeSet, TokensFold, TokensRead, shard_of_hash};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId(pub AccountId);
@@ -23,12 +23,17 @@ pub struct UserId(pub AccountId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OrgId(pub AccountId);
 
-/// SHARED's `Credential`. Milestone 1 authenticates stored tokens only; `Stateless`, `Ssh`, `Session`, `RunnerJwt`,
-/// and `RuntimeToken` come with Milestones 3 and 4.
+/// SHARED's `Credential`. `Stateless` comes with installation tokens (M3-WP4), `Ssh` with SSH pushes (M6-WP2), and
+/// `RunnerJwt` and `RuntimeToken` with Actions (Milestone 4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Credential {
     Stored([u8; 32]),
+    Session(WebSessionId),
 }
+
+/// A web sign-in session on the `Identity` chain. Its time part is when it was issued.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct WebSessionId(pub graftyard_types::Ulid);
 
 /// SHARED's `Actor`, cut to what Milestone 1 authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +51,24 @@ pub struct Principal {
     pub sso_orgs: SmallVec<[OrgId; 2]>,
 }
 
+impl Credential {
+    /// The stored token's hash and the web session's id, as the repository chain's wire forms carry them: a session
+    /// sends an all-zero hash and its id, so a stored token's form is unchanged.
+    pub fn wire(&self) -> ([u8; 32], Option<graftyard_types::Ulid>) {
+        match self {
+            Credential::Stored(h) => (*h, None),
+            Credential::Session(s) => ([0; 32], Some(s.0)),
+        }
+    }
+
+    pub fn from_wire(token: [u8; 32], session: Option<graftyard_types::Ulid>) -> Credential {
+        match session {
+            Some(s) => Credential::Session(WebSessionId(s)),
+            None => Credential::Stored(token),
+        }
+    }
+}
+
 impl Principal {
     /// What the leader re-reads for this caller's commands: the actor's `Account` row and the token's shard row.
     pub fn credential_shard(&self) -> CredentialShard {
@@ -55,6 +78,7 @@ impl Principal {
         };
         let key = match self.credential {
             Credential::Stored(hash) => Some(CredentialKey::Token { shard: shard_of_hash(&hash), hash }),
+            Credential::Session(s) => Some(CredentialKey::Session { issued: s.0.time() }),
         };
         CredentialShard { account, key }
     }
@@ -73,6 +97,8 @@ pub enum IdentityDep {
 pub enum CredentialRefusal {
     NoAccount(AccountId),
     Suspended(AccountId),
+    /// A web session issued before the account's `sessions_not_before`: signed out everywhere.
+    SignedOut,
     NoToken,
     Revoked,
     /// The token belongs to another account than the command's actor.
@@ -116,8 +142,9 @@ pub fn credential_chains(cred: &CredentialShard, own: Option<ChainId>) -> SmallV
     if let Some(a) = cred.account {
         push(account_chain(a));
     }
-    if let Some(CredentialKey::Token { shard, .. }) = cred.key {
-        push(ChainId::Tokens(shard));
+    match cred.key {
+        Some(CredentialKey::Token { shard, .. }) => push(ChainId::Tokens(shard)),
+        Some(CredentialKey::Session { .. }) | None => {}
     }
     out
 }
@@ -142,17 +169,18 @@ pub(crate) fn account_row(
     }
 }
 
-fn token_row(
+/// A read of the `Tokens` shard `shard`, from the own scratch view or the deps.
+fn on_tokens<T>(
     shard: TokenShard,
-    hash: &[u8; 32],
     own: Own<'_>,
     deps: &[(ChainId, IdentityDep)],
-) -> Result<Option<TokenRow>, CredentialRefusal> {
+    read: impl Fn(&dyn TokensRead) -> T,
+) -> Result<T, CredentialRefusal> {
     let chain = ChainId::Tokens(shard);
     match own {
-        Own::Tokens(s, r) if s == shard => Ok(r.token(hash)),
+        Own::Tokens(s, r) if s == shard => Ok(read(r)),
         _ => match dep(deps, chain) {
-            Some(IdentityDep::Tokens(f)) => Ok(f.token(hash)),
+            Some(IdentityDep::Tokens(f)) => Ok(read(f)),
             _ => Err(CredentialRefusal::NotRead(chain)),
         },
     }
@@ -167,23 +195,33 @@ pub fn check_credential(
     deps: &[(ChainId, IdentityDep)],
 ) -> Result<(), CredentialRefusal> {
     debug_assert!(own.chain().is_none_or(|c| !deps.iter().any(|(d, _)| *d == c)), "own chain passed as a dep");
+    let mut row = None;
     if let Some(a) = cred.account {
         match account_row(a, own, deps)? {
             None => return Err(CredentialRefusal::NoAccount(a)),
             Some(r) if r.suspended => return Err(CredentialRefusal::Suspended(a)),
-            Some(_) => {}
+            Some(r) => row = Some(r),
         }
     }
-    if let Some(CredentialKey::Token { shard, hash }) = cred.key {
-        if shard_of_hash(&hash) != shard {
-            return Err(CredentialRefusal::WrongShard);
+    match cred.key {
+        Some(CredentialKey::Token { shard, hash }) => {
+            if shard_of_hash(&hash) != shard {
+                return Err(CredentialRefusal::WrongShard);
+            }
+            match on_tokens(shard, own, deps, |r| r.token(&hash))? {
+                None => return Err(CredentialRefusal::NoToken),
+                Some(t) if t.revoked => return Err(CredentialRefusal::Revoked),
+                Some(t) if Some(t.account) != cred.account => return Err(CredentialRefusal::WrongAccount),
+                Some(_) => {}
+            }
         }
-        match token_row(shard, &hash, own, deps)? {
+        // A session names its account; without one it is nobody's.
+        Some(CredentialKey::Session { issued }) => match row {
             None => return Err(CredentialRefusal::NoToken),
-            Some(t) if t.revoked => return Err(CredentialRefusal::Revoked),
-            Some(t) if Some(t.account) != cred.account => return Err(CredentialRefusal::WrongAccount),
+            Some(r) if issued < r.sessions_not_before => return Err(CredentialRefusal::SignedOut),
             Some(_) => {}
-        }
+        },
+        None => {}
     }
     Ok(())
 }
@@ -195,6 +233,11 @@ pub(crate) fn encode_cred(e: &mut Enc, c: &CredentialShard) {
             e.u8(0);
             e.u16(shard.0);
             e.0.extend_from_slice(hash);
+        }
+        // `Jti` takes 1 and `SshKey` 2, as DESIGN orders `CredentialKey`.
+        CredentialKey::Session { issued } => {
+            e.u8(3);
+            enc::at(e, *issued);
         }
     });
 }

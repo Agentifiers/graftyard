@@ -988,3 +988,106 @@ fn release_and_blob_commands_write_only_inside_their_declared_tiers() {
         c.commit_all(&[cmd]);
     }
 }
+
+/// BF-34, the repository half (`TestAccGithubRepositoryCollaborator`'s writes): an outside collaborator is invited and
+/// accepts, which grants in the same entry as `Accepted`; a declined invitation grants nothing; a `Collaborator`
+/// invitation for a member of the org owner is refused, since that is a `Grant` on the org's chain; and `authorize`
+/// takes the higher of a former collaborator's row and a later member's grant.
+#[test]
+fn collaborators_and_org_grants_never_overlap_and_acceptance_grants_in_one_entry() {
+    use graftyard_identity::{InvitationEvent, InvitationId, OrgRole};
+    let mut c = setup(2, 90);
+    // The owner is an org: OWNER its admin, WRITER a member with a Write grant; READER and 103 are outsiders.
+    let org = AccountId(DbId(OWNER));
+    let mut authz = AuthzFold::new(org);
+    authz.apply(&AuthzEvent::Opened { kind: AccountKind::Org, enterprise: None });
+    authz.apply(&AuthzEvent::Member { user: UserId(org), role: Some(OrgRole::Admin) });
+    authz.apply(&AuthzEvent::Member { user: UserId(AccountId(DbId(WRITER))), role: Some(OrgRole::Member) });
+    authz.apply(&AuthzEvent::Grant {
+        repo: REPO,
+        grantee: UserId(AccountId(DbId(WRITER))),
+        permission: Some(RepoPermission::Write),
+    });
+    for d in c.deps.iter_mut() {
+        if d.0 == ChainId::Authz(org) {
+            d.1 = IdentityDep::Authz(authz.clone());
+        }
+    }
+    let invite = |user: i64, p| IssueOp::InviteCollaborator { user: AccountId(DbId(user)), permission: p };
+    assert_eq!(
+        c.commit(OWNER, invite(WRITER, RepoPermission::Admin)),
+        Err(IssueErr::OrgMember),
+        "a member's write is refused"
+    );
+    assert_eq!(
+        c.commit(READER, invite(OWNER, RepoPermission::Read)),
+        Err(IssueErr::Forbidden),
+        "only an admin invites"
+    );
+    let IssueOut::Id(id) = c.commit(OWNER, invite(READER, RepoPermission::Maintain)).unwrap() else { panic!() };
+    let id = InvitationId(id);
+    // Only the invitee answers.
+    let answer = |accept| IssueOp::AnswerInvitation { id, accept };
+    assert_eq!(c.commit(WRITER, answer(true)), Err(IssueErr::Forbidden));
+    c.commit(READER, answer(true)).unwrap();
+    let last = c.log.last().unwrap();
+    let EntryBody::Events(evs) = &last.body else { panic!() };
+    assert!(
+        matches!(
+            evs[..],
+            [
+                RepoEvent::Invitation(InvitationEvent::Accepted { .. }),
+                RepoEvent::Collaborator { permission: Some(RepoPermission::Maintain), .. }
+            ]
+        ),
+        "{evs:?}"
+    );
+    assert_eq!(c.commit(READER, answer(true)), Err(IssueErr::NotFound), "answered once");
+    // Declining grants nothing.
+    c.deps.extend(deps_for_account(103));
+    let IssueOut::Id(id2) = c.commit(OWNER, invite(103, RepoPermission::Write)).unwrap() else { panic!() };
+    c.commit(103, IssueOp::AnswerInvitation { id: InvitationId(id2), accept: false }).unwrap();
+    let core = &c.members[0].core;
+    assert_eq!(graftyard_git::issue_ops::collaborator(core, AccountId(DbId(READER))), Some(RepoPermission::Maintain));
+    assert_eq!(graftyard_git::issue_ops::collaborator(core, AccountId(DbId(103))), None, "declined");
+    assert_eq!(c.rows(Tier::Core, "invitation"), 0);
+    c.agree();
+    // READER joins the org with a Read grant: `authorize` keeps the higher, Maintain.
+    authz.apply(&AuthzEvent::Member { user: UserId(AccountId(DbId(READER))), role: Some(OrgRole::Member) });
+    authz.apply(&AuthzEvent::Grant {
+        repo: REPO,
+        grantee: UserId(AccountId(DbId(READER))),
+        permission: Some(RepoPermission::Read),
+    });
+    let access = graftyard_git::issue_ops::Access { repo: REPO, owner: org, core };
+    let p = graftyard_identity::permission(&who(READER), &[&authz], &access);
+    assert_eq!(p, Some(RepoPermission::Maintain));
+}
+
+/// The deps of one more account with its token, as `deps()` builds them.
+fn deps_for_account(a: i64) -> Vec<(ChainId, IdentityDep)> {
+    let id = AccountId(DbId(a));
+    let mut names = NamesFold::new(NameShard(0));
+    names.apply(&NamesEvent::Account { id, suspended: false, sessions_not_before: Timestamp(0) });
+    let hash = [a as u8; 32];
+    let mut out = Vec::new();
+    for c in graftyard_identity::credential_chains(&who(a).credential_shard(), None) {
+        let d = match c {
+            ChainId::Names(_) => IdentityDep::Names(names.clone()),
+            ChainId::Tokens(s) => {
+                let mut t = TokensFold::new(s);
+                t.apply(&TokensEvent::Stored {
+                    hash,
+                    kind: TokenKind::Pat,
+                    account: id,
+                    scopes: ScopeSet(1),
+                    expires: None,
+                });
+                IdentityDep::Tokens(t)
+            }
+            _ => unreachable!(),
+        };
+        out.push((c, d));
+    }
+    out
+}

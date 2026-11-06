@@ -259,6 +259,7 @@ impl Family for Repo {
             git::prsync::REPO_FORMAT_V3,
             git::merge::REPO_FORMAT_V4,
             git::issue_ops::call::REPO_FORMAT_ISSUES,
+            git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

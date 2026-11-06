@@ -2,9 +2,11 @@
 //! `AuthzEvent`, and "Names").
 //!
 //! Milestone 1 builds `Opened`, `Member`, `Grant`, and `RepoName`. Milestone 3 adds the owner's App and OAuth app
-//! registrations, `App` and `OAuthApp` (M3-WP1). Teams, installations, policies, invitations, `InstanceAuth`, and
-//! deletion are M3-WP3's.
+//! registrations, `App` and `OAuthApp` (M3-WP1), and M3-WP3 teams, team grants, the org policy, org invitations,
+//! `InstanceAuth`, an org's enterprise change, and the transfer steps on the two owners' chains. Installations
+//! (M3-WP4) and account deletion are not built.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
@@ -20,6 +22,10 @@ use crate::credential::{
 use crate::enc;
 use crate::ids::{IdBlock, IdCursor};
 use crate::names::{ClientRoute, NameKey, NamesRead, RepoName, RepoNameKey, SlugRow, name_shard};
+use crate::org::{
+    self, INVITATION_TTL, InstanceAuth, InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee,
+    OrgPolicy, TeamEvent, TeamId, TeamRow, is_install_account,
+};
 use crate::overlay::{Overlay, SetOverlay, Table};
 use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2};
 
@@ -90,6 +96,32 @@ pub enum AuthzEvent {
         client: ClientId,
         record: Option<OAuthAppRecord>,
     },
+    // ---- M3-WP3, format 2 ----
+    Team(TeamEvent),
+    /// SHARED's `Grant` with a `Team` grantee: the same tag as `Grant`, grantee tag 1.
+    TeamGrant {
+        repo: RepoId,
+        team: TeamId,
+        permission: Option<RepoPermission>,
+    },
+    Policy(OrgPolicy),
+    /// An invitation to join the org. Accepting it appends `Member`, and `Team` entries for its teams, in the same
+    /// entry.
+    Invitation(InvitationEvent),
+    /// Only on the install's own `Authz` chain. Written by a site admin and read fresh by every sign-in.
+    InstanceAuth(InstanceAuth),
+    /// An org's enterprise change: its commit point (SHARED, "Multi-chain operations", Enterprise change). Not in
+    /// SHARED's `AuthzEvent`, which names the entry but no event for it [inference].
+    Enterprise {
+        enterprise: Option<AccountId>,
+    },
+}
+
+/// One op's events and output, or its refusal.
+type Decided = Result<(SmallVec<[AuthzEvent; 4]>, AuthzOut), AuthzErr>;
+
+fn org_only(s: &AuthzScratch<'_>) -> Result<(), AuthzErr> {
+    if s.opened() == Some(AccountKind::Org) { Ok(()) } else { Err(AuthzErr::NotAnOrg) }
 }
 
 fn perm(p: RepoPermission) -> u8 {
@@ -155,6 +187,34 @@ impl Record for AuthzEvent {
                 apps::client(&mut e, client);
                 e.option(record.as_ref(), apps::oauth_app_record);
             }
+            AuthzEvent::Team(t) => {
+                e.u8(2);
+                org::team_event(&mut e, t);
+            }
+            AuthzEvent::TeamGrant { repo, team, permission } => {
+                e.u8(3);
+                enc::repo(&mut e, *repo);
+                e.u8(1);
+                enc::db(&mut e, team.0);
+                e.option(permission.as_ref(), |e, p| e.u8(perm(*p)));
+            }
+            AuthzEvent::Policy(p) => {
+                e.u8(6);
+                org::policy(&mut e, p);
+            }
+            AuthzEvent::Invitation(i) => {
+                e.u8(7);
+                org::invitation_event(&mut e, i);
+            }
+            // `Deleted` 11 and `Undeleted` 12 stay free; `Installation` is 5.
+            AuthzEvent::InstanceAuth(a) => {
+                e.u8(10);
+                org::instance_auth(&mut e, a);
+            }
+            AuthzEvent::Enterprise { enterprise } => {
+                e.u8(13);
+                e.option(enterprise.as_ref(), |e, a| enc::account(e, *a));
+            }
         }
     }
 }
@@ -166,6 +226,84 @@ pub struct AuthzMore {
     pub apps: BTreeMap<AppId, AppRecord>,
     pub closed: std::collections::BTreeSet<AppId>,
     pub oauth_apps: BTreeMap<ClientId, OAuthAppRecord>,
+    pub org: OrgRows,
+}
+
+/// M3-WP3's rows: teams, team grants, the policy, invitations, `InstanceAuth`, and the enterprise. A scratch view
+/// copies them on its entry's first write to them (`Cow`): they are small next to names and grants.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgRows {
+    pub teams: BTreeMap<TeamId, TeamRow>,
+    pub team_grants: BTreeMap<(RepoId, TeamId), RepoPermission>,
+    pub policy: OrgPolicy,
+    pub invitations: BTreeMap<InvitationId, InvitationRow>,
+    pub instance_auth: Option<InstanceAuth>,
+    pub enterprise: Option<AccountId>,
+}
+
+impl OrgRows {
+    fn write(&mut self, ev: &AuthzEvent) {
+        match ev {
+            AuthzEvent::Opened { enterprise, .. } | AuthzEvent::Enterprise { enterprise } => {
+                self.enterprise = *enterprise
+            }
+            AuthzEvent::Member { user, role: None } => {
+                for t in self.teams.values_mut() {
+                    t.members.remove(user);
+                }
+            }
+            AuthzEvent::Team(TeamEvent::Created { team, name }) => {
+                self.teams.insert(*team, TeamRow { name: name.clone(), members: Default::default() });
+            }
+            AuthzEvent::Team(TeamEvent::Member { team, user, on }) => {
+                if let Some(t) = self.teams.get_mut(team) {
+                    if *on {
+                        t.members.insert(*user);
+                    } else {
+                        t.members.remove(user);
+                    }
+                }
+            }
+            AuthzEvent::Team(TeamEvent::Deleted { team }) => {
+                self.teams.remove(team);
+                self.team_grants.retain(|(_, t), _| t != team);
+            }
+            AuthzEvent::TeamGrant { repo, team, permission: Some(p) } => {
+                self.team_grants.insert((*repo, *team), *p);
+            }
+            AuthzEvent::TeamGrant { repo, team, permission: None } => {
+                self.team_grants.remove(&(*repo, *team));
+            }
+            AuthzEvent::Policy(p) => self.policy = *p,
+            AuthzEvent::Invitation(InvitationEvent::Sent { id, invitee, grant, inviter, expires }) => {
+                let row =
+                    InvitationRow { invitee: *invitee, grant: grant.clone(), inviter: *inviter, expires: *expires };
+                self.invitations.insert(*id, row);
+            }
+            AuthzEvent::Invitation(
+                InvitationEvent::Accepted { id }
+                | InvitationEvent::Declined { id }
+                | InvitationEvent::Cancelled { id, .. },
+            ) => {
+                self.invitations.remove(id);
+            }
+            AuthzEvent::InstanceAuth(a) => self.instance_auth = Some(a.clone()),
+            _ => {}
+        }
+    }
+
+    /// The pending invitation, unless it lapsed by `now`.
+    pub fn invitation(&self, id: InvitationId, now: Timestamp) -> Option<&InvitationRow> {
+        self.invitations.get(&id).filter(|r| r.expires > now)
+    }
+
+    fn team_permission(&self, repo: RepoId, user: UserId) -> Option<RepoPermission> {
+        self.team_grants
+            .iter()
+            .filter(|((r, t), _)| *r == repo && self.teams.get(t).is_some_and(|t| t.members.contains(&user)))
+            .map(|(_, p)| *p)
+            .max()
+    }
 }
 
 /// One owner's `Authz` fold. `owner` is the chain's account, which the host sets when it builds the fold. Its serde
@@ -209,6 +347,28 @@ pub trait AuthzRead {
     /// Whether the App's registration was deleted or aborted here.
     fn app_closed(&self, app: AppId) -> bool;
     fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord>;
+    /// Teams, the policy, invitations, `InstanceAuth`, and the enterprise.
+    fn org(&self) -> &OrgRows;
+    /// The enterprise an org belongs to, whose own `Authz` chain is a third dependency.
+    fn enterprise(&self) -> Option<AccountId> {
+        self.org().enterprise
+    }
+    /// The org policy's base permission for every member.
+    fn base_permission(&self) -> Option<RepoPermission> {
+        self.org().policy.base_permission
+    }
+    /// Whether the org policy enforces SSO: access through membership needs the org in the principal's `sso_orgs`.
+    fn sso_enforced(&self) -> bool {
+        self.org().policy.sso_enforced
+    }
+    /// The highest permission a team the user is in holds on the repository.
+    fn team_permission(&self, repo: RepoId, user: UserId) -> Option<RepoPermission> {
+        self.org().team_permission(repo, user)
+    }
+    /// The install's sign-in choice, on the install's own chain: `Builtin` until a site admin writes another.
+    fn instance_auth(&self) -> InstanceAuth {
+        self.org().instance_auth.clone().unwrap_or_default()
+    }
 
     /// Whether `user` administers the owner: the user itself for a user account, an org `Admin` for an org.
     fn is_admin(&self, user: UserId) -> bool {
@@ -257,6 +417,9 @@ impl AuthzRead for AuthzFold {
     fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord> {
         self.more.oauth_apps.get(client)
     }
+    fn org(&self) -> &OrgRows {
+        &self.more.org
+    }
 }
 
 struct Tables<'t, M, G, N, A, C, O> {
@@ -285,6 +448,21 @@ impl<K: Ord + Clone, V> Remove<K> for Overlay<'_, K, V> {
     fn remove(&mut self, k: &K) {
         self.delete(k.clone());
     }
+}
+
+/// Whether `OrgRows::write` changes anything for the event, so a scratch view copies the rows only then.
+fn touches_org(ev: &AuthzEvent) -> bool {
+    matches!(
+        ev,
+        AuthzEvent::Opened { .. }
+            | AuthzEvent::Member { role: None, .. }
+            | AuthzEvent::Team(_)
+            | AuthzEvent::TeamGrant { .. }
+            | AuthzEvent::Policy(_)
+            | AuthzEvent::Invitation(_)
+            | AuthzEvent::InstanceAuth(_)
+            | AuthzEvent::Enterprise { .. }
+    )
 }
 
 fn write<M, G, N, A, C, O>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O>)
@@ -321,6 +499,15 @@ where
         }
         AuthzEvent::OAuthApp { client, record: Some(r) } => t.oauth_apps.put(*client, r.clone()),
         AuthzEvent::OAuthApp { client, record: None } => t.oauth_apps.del(client),
+        AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
+        AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
+        // `OrgRows::write`'s.
+        AuthzEvent::Team(_)
+        | AuthzEvent::TeamGrant { .. }
+        | AuthzEvent::Policy(_)
+        | AuthzEvent::Invitation(_)
+        | AuthzEvent::InstanceAuth(_)
+        | AuthzEvent::Enterprise { .. } => {}
     }
 }
 
@@ -335,6 +522,15 @@ pub struct AuthzScratch<'a> {
     apps: Overlay<'a, AppId, AppRecord>,
     closed: SetOverlay<'a, AppId>,
     oauth_apps: Overlay<'a, ClientId, OAuthAppRecord>,
+    org: Cow<'a, OrgRows>,
+    /// The entry's time, which an invitation's `expires` is set from and compared with.
+    at: Timestamp,
+}
+
+impl AuthzScratch<'_> {
+    pub fn at(&self) -> Timestamp {
+        self.at
+    }
 }
 
 impl AuthzRead for AuthzScratch<'_> {
@@ -364,6 +560,9 @@ impl AuthzRead for AuthzScratch<'_> {
     }
     fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord> {
         self.oauth_apps.get(client)
+    }
+    fn org(&self) -> &OrgRows {
+        &self.org
     }
 }
 
@@ -395,6 +594,9 @@ impl Scratch for AuthzScratch<'_> {
                 oauth_apps: &mut self.oauth_apps,
             },
         );
+        if touches_org(ev) {
+            self.org.to_mut().write(ev);
+        }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
@@ -419,6 +621,24 @@ impl Scratch for AuthzScratch<'_> {
             AuthzEvent::OAuthApp { client, record: Some(r) } if r.client != *client => {
                 Err(format!("{client:?} holds {:?}", r.client).into())
             }
+            AuthzEvent::Invitation(
+                InvitationEvent::Accepted { id }
+                | InvitationEvent::Declined { id }
+                | InvitationEvent::Cancelled { id, .. },
+            ) if self.org.invitation(*id, self.at).is_none() => {
+                Err(format!("{id:?} is not pending at {:?}", self.at).into())
+            }
+            AuthzEvent::Team(TeamEvent::Member { team, on: true, user }) if self.role(*user).is_none() => {
+                Err(format!("{user:?} joins {team:?} without being a member").into())
+            }
+            AuthzEvent::Team(TeamEvent::Member { team, .. }) | AuthzEvent::TeamGrant { team, .. }
+                if !self.org.teams.contains_key(team) =>
+            {
+                Err(format!("{team:?} does not exist").into())
+            }
+            AuthzEvent::InstanceAuth(_) if !self.fold.owner.is_some_and(is_install_account) => {
+                Err("InstanceAuth off the install's own chain".into())
+            }
             _ => Ok(()),
         }
     }
@@ -428,6 +648,9 @@ impl Fold for AuthzFold {
     type Event = AuthzEvent;
     type Scratch<'a> = AuthzScratch<'a>;
     fn scratch(&self) -> AuthzScratch<'_> {
+        self.scratch_at(Timestamp(0), TierSet::CORE)
+    }
+    fn scratch_at(&self, at: Timestamp, _tiers: TierSet) -> AuthzScratch<'_> {
         AuthzScratch {
             fold: self,
             opened: self.opened,
@@ -439,6 +662,8 @@ impl Fold for AuthzFold {
             apps: Overlay::new(&self.more.apps),
             closed: SetOverlay::new(&self.more.closed),
             oauth_apps: Overlay::new(&self.more.oauth_apps),
+            org: Cow::Borrowed(&self.more.org),
+            at,
         }
     }
     fn apply(&mut self, ev: &AuthzEvent) {
@@ -456,6 +681,7 @@ impl Fold for AuthzFold {
                 oauth_apps: &mut self.more.oauth_apps,
             },
         );
+        self.more.org.write(ev);
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
@@ -518,12 +744,78 @@ pub enum AuthzOp {
     DeleteOAuthApp {
         client: ClientId,
     },
+    // ---- M3-WP3, format 2 ----
+    /// A team takes the next id of the group's block.
+    CreateTeam {
+        name: Box<str>,
+    },
+    /// Only an org member joins a team.
+    SetTeamMember {
+        team: TeamId,
+        user: UserId,
+        on: bool,
+    },
+    DeleteTeam {
+        team: TeamId,
+    },
+    SetTeamGrant {
+        repo: RepoId,
+        team: TeamId,
+        permission: Option<RepoPermission>,
+    },
+    SetPolicy(OrgPolicy),
+    /// An org invitation: the leader sets `expires` from the entry's time. A user already a member is refused.
+    Invite {
+        invitee: Invitee,
+        role: OrgRole,
+        teams: SmallVec<[TeamId; 2]>,
+    },
+    /// The invitee accepts: `Accepted`, `Member`, and each team's `Member` in one entry. An email invitation is
+    /// accepted by the account that holds the email on `Names`, which the leader reads as a dependency.
+    Accept {
+        id: InvitationId,
+    },
+    Decline {
+        id: InvitationId,
+    },
+    /// An org admin withdraws a pending invitation.
+    Cancel {
+        id: InvitationId,
+    },
+    /// The install's sign-in choice. Only on the install's own chain, and only from one of its admins (a site
+    /// admin): never from the operator, a finisher, or another account.
+    SetInstanceAuth(InstanceAuth),
+    /// An org's enterprise change: the commit point. Only the operator submits it; a Workflow then appends
+    /// `Settings` with the new enterprise to each of the org's repositories.
+    SetEnterprise {
+        enterprise: Option<AccountId>,
+    },
+    /// A transfer's commit point on the destination owner's chain: the name is `Reserved` for `repo`, which counts as
+    /// taken. The transferring user administers both owners; the leader reads the source owner's chain.
+    ReserveTransfer {
+        name: RepoName,
+        repo: RepoId,
+        from: AccountId,
+    },
+    /// The destination's `Live` name, at a new epoch, after the repository's `Settings` names the new owner. The
+    /// finisher submits it, and nothing refuses it but a missing reservation.
+    CompleteTransfer {
+        key: RepoNameKey,
+        repo: RepoId,
+    },
+    /// The source owner's old name becomes an `Alias` once the destination's name is `Live`, so old links redirect.
+    LeaveAlias {
+        key: RepoNameKey,
+        repo: RepoId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthzOut {
     Repo { repo: RepoId, epoch: NameEpoch },
     Done,
+    Team(TeamId),
+    Invitation(InvitationId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -551,6 +843,14 @@ pub enum AuthzErr {
     /// owner: claim it first.
     NotClaimed,
     NoApp,
+    NoTeam,
+    /// A team member, or the invitee of an org invitation, must not already be (or must be) a member.
+    NotAMember,
+    AlreadyMember,
+    /// Missing, lapsed, accepted, declined, or cancelled.
+    NoInvitation,
+    /// `InstanceAuth` lives only on the install's own chain.
+    NotInstall,
 }
 
 impl Record for AuthzCmd {
@@ -604,6 +904,68 @@ impl Record for AuthzCmd {
                 e.u8(9);
                 apps::client(&mut e, client);
             }
+            AuthzOp::CreateTeam { name } => {
+                e.u8(10);
+                e.str(name);
+            }
+            AuthzOp::SetTeamMember { team, user, on } => {
+                e.u8(11);
+                enc::db(&mut e, team.0);
+                enc::account(&mut e, user.0);
+                e.u8(u8::from(*on));
+            }
+            AuthzOp::DeleteTeam { team } => {
+                e.u8(12);
+                enc::db(&mut e, team.0);
+            }
+            AuthzOp::SetTeamGrant { repo, team, permission } => {
+                e.u8(13);
+                enc::repo(&mut e, *repo);
+                enc::db(&mut e, team.0);
+                e.option(permission.as_ref(), |e, p| e.u8(perm(*p)));
+            }
+            AuthzOp::SetPolicy(p) => {
+                e.u8(14);
+                org::policy(&mut e, p);
+            }
+            AuthzOp::Invite { invitee, role, teams } => {
+                e.u8(15);
+                let ev = InvitationEvent::Sent {
+                    id: InvitationId(graftyard_types::DbId(0)),
+                    invitee: *invitee,
+                    grant: InvitationGrant::Org { role: *role, teams: teams.clone() },
+                    inviter: None,
+                    expires: Timestamp(0),
+                };
+                org::invitation_event(&mut e, &ev);
+            }
+            AuthzOp::Accept { id } | AuthzOp::Decline { id } | AuthzOp::Cancel { id } => {
+                e.u8(match self.op {
+                    AuthzOp::Accept { .. } => 16,
+                    AuthzOp::Decline { .. } => 17,
+                    _ => 18,
+                });
+                enc::db(&mut e, id.0);
+            }
+            AuthzOp::SetInstanceAuth(a) => {
+                e.u8(19);
+                org::instance_auth(&mut e, a);
+            }
+            AuthzOp::SetEnterprise { enterprise } => {
+                e.u8(20);
+                e.option(enterprise.as_ref(), |e, a| enc::account(e, *a));
+            }
+            AuthzOp::ReserveTransfer { name, repo, from } => {
+                e.u8(21);
+                e.str(name.as_str());
+                enc::repo(&mut e, *repo);
+                enc::account(&mut e, *from);
+            }
+            AuthzOp::CompleteTransfer { key, repo } | AuthzOp::LeaveAlias { key, repo } => {
+                e.u8(if matches!(self.op, AuthzOp::CompleteTransfer { .. }) { 22 } else { 23 });
+                e.str(key.as_str());
+                enc::repo(&mut e, *repo);
+            }
         }
     }
 }
@@ -635,6 +997,84 @@ impl AuthzCmd {
             _ => true,
         };
         if claimed { Ok(()) } else { Err(AuthzErr::NotClaimed) }
+    }
+
+    /// The other chains this op reads beyond the credential: the claim a registration follows, the `Names` shard of an
+    /// email invitation's email (named by the fold's pending row), and a transfer's source owner.
+    fn extra_deps(&self, fold: &AuthzFold) -> SmallVec<[ChainId; 2]> {
+        let mut d = SmallVec::new();
+        d.extend(self.claim_chain());
+        match &self.op {
+            AuthzOp::Accept { id } => {
+                if let Some(InvitationRow { invitee: Invitee::Email(email), .. }) = fold.more.org.invitations.get(id) {
+                    d.push(ChainId::Names(name_shard(&NameKey::Email(*email))));
+                }
+            }
+            AuthzOp::ReserveTransfer { from, .. } if self.cred.account.is_some() => d.push(ChainId::Authz(*from)),
+            _ => {}
+        }
+        d
+    }
+
+    /// Ops a member may submit for itself: answering its own invitation. Everything else needs an admin of the owner,
+    /// or no account (the operator, the CLI, a finisher), and `SetInstanceAuth` needs an admin and refuses the rest.
+    fn decide_m3(&self, s: &AuthzScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> Option<Decided> {
+        let actor = self.cred.account.map(UserId);
+        let one = |ev: AuthzEvent, out: AuthzOut| Ok((smallvec![ev], out));
+        let pending = |id: InvitationId| s.org.invitation(id, s.at).cloned().ok_or(AuthzErr::NoInvitation);
+        let r = match &self.op {
+            AuthzOp::Accept { id } => (|| {
+                let row = pending(*id)?;
+                let user = match row.invitee {
+                    Invitee::User(u) => u,
+                    Invitee::Email(email) => {
+                        let chain = ChainId::Names(name_shard(&NameKey::Email(email)));
+                        let names = match deps.iter().find(|(c, _)| *c == chain) {
+                            Some((_, IdentityDep::Names(f))) => f,
+                            _ => return Err(AuthzErr::Unauthorized(CredentialRefusal::NotRead(chain))),
+                        };
+                        UserId(names.email(&email).ok_or(AuthzErr::Forbidden)?)
+                    }
+                };
+                if actor != Some(user) {
+                    return Err(AuthzErr::Forbidden);
+                }
+                if s.role(user).is_some() {
+                    return Err(AuthzErr::AlreadyMember);
+                }
+                let InvitationGrant::Org { role, teams } = row.grant else { return Err(AuthzErr::NoInvitation) };
+                let mut evs: SmallVec<[AuthzEvent; 4]> = smallvec![
+                    AuthzEvent::Invitation(InvitationEvent::Accepted { id: *id }),
+                    AuthzEvent::Member { user, role: Some(role) },
+                ];
+                for t in teams.iter().filter(|t| s.org.teams.contains_key(t)) {
+                    evs.push(AuthzEvent::Team(TeamEvent::Member { team: *t, user, on: true }));
+                }
+                Ok((evs, AuthzOut::Done))
+            })(),
+            AuthzOp::Decline { id } => (|| {
+                let row = pending(*id)?;
+                match row.invitee {
+                    Invitee::User(u) if actor == Some(u) => {}
+                    // An email invitee declines by the account that holds the email; an admin cancels instead.
+                    _ => return Err(AuthzErr::Forbidden),
+                }
+                one(AuthzEvent::Invitation(InvitationEvent::Declined { id: *id }), AuthzOut::Done)
+            })(),
+            AuthzOp::SetInstanceAuth(a) => (|| {
+                let owner = s.owner().ok_or(AuthzErr::NotOpened)?;
+                if !is_install_account(owner) {
+                    return Err(AuthzErr::NotInstall);
+                }
+                // A site admin: an admin of the install's own org. The operator and finishers name no account.
+                if !actor.is_some_and(|u| s.is_admin(u)) {
+                    return Err(AuthzErr::Forbidden);
+                }
+                one(AuthzEvent::InstanceAuth(a.clone()), AuthzOut::Done)
+            })(),
+            _ => return None,
+        };
+        Some(r)
     }
 
     fn decide_op(&self, s: &AuthzScratch<'_>) -> Result<(SmallVec<[AuthzEvent; 4]>, AuthzOut), AuthzErr> {
@@ -738,6 +1178,112 @@ impl AuthzCmd {
                 }
                 Ok((smallvec![AuthzEvent::OAuthApp { client: *client, record: None }], AuthzOut::Done))
             }
+            AuthzOp::Accept { .. } | AuthzOp::Decline { .. } | AuthzOp::SetInstanceAuth(_) => {
+                unreachable!("decide_m3's")
+            }
+            AuthzOp::CreateTeam { name } => {
+                org_only(s)?;
+                let team = TeamId(s.ids.peek().ok_or(AuthzErr::NeedIdBlock)?);
+                Ok((smallvec![AuthzEvent::Team(TeamEvent::Created { team, name: name.clone() })], AuthzOut::Team(team)))
+            }
+            AuthzOp::SetTeamMember { team, user, on } => {
+                org_only(s)?;
+                if !s.org.teams.contains_key(team) {
+                    return Err(AuthzErr::NoTeam);
+                }
+                if *on && s.role(*user).is_none() {
+                    return Err(AuthzErr::NotAMember);
+                }
+                Ok((
+                    smallvec![AuthzEvent::Team(TeamEvent::Member { team: *team, user: *user, on: *on })],
+                    AuthzOut::Done,
+                ))
+            }
+            AuthzOp::DeleteTeam { team } => {
+                if !s.org.teams.contains_key(team) {
+                    return Err(AuthzErr::NoTeam);
+                }
+                Ok((smallvec![AuthzEvent::Team(TeamEvent::Deleted { team: *team })], AuthzOut::Done))
+            }
+            AuthzOp::SetTeamGrant { repo, team, permission } => {
+                if !s.org.teams.contains_key(team) {
+                    return Err(AuthzErr::NoTeam);
+                }
+                let ev = AuthzEvent::TeamGrant { repo: *repo, team: *team, permission: *permission };
+                Ok((smallvec![ev], AuthzOut::Done))
+            }
+            AuthzOp::SetPolicy(p) => {
+                org_only(s)?;
+                Ok((smallvec![AuthzEvent::Policy(*p)], AuthzOut::Done))
+            }
+            AuthzOp::Invite { invitee, role, teams } => {
+                org_only(s)?;
+                if let Invitee::User(u) = invitee
+                    && s.role(*u).is_some()
+                {
+                    return Err(AuthzErr::AlreadyMember);
+                }
+                if teams.iter().any(|t| !s.org.teams.contains_key(t)) {
+                    return Err(AuthzErr::NoTeam);
+                }
+                let id = InvitationId(s.ids.peek().ok_or(AuthzErr::NeedIdBlock)?);
+                let ev = InvitationEvent::Sent {
+                    id,
+                    invitee: *invitee,
+                    grant: InvitationGrant::Org { role: *role, teams: teams.clone() },
+                    inviter: self.cred.account,
+                    expires: Timestamp(s.at.0.saturating_add(INVITATION_TTL.as_millis() as u64)),
+                };
+                Ok((smallvec![AuthzEvent::Invitation(ev)], AuthzOut::Invitation(id)))
+            }
+            AuthzOp::Cancel { id } => {
+                s.org.invitation(*id, s.at).ok_or(AuthzErr::NoInvitation)?;
+                let ev = InvitationEvent::Cancelled { id: *id, actor: self.cred.account };
+                Ok((smallvec![AuthzEvent::Invitation(ev)], AuthzOut::Done))
+            }
+            AuthzOp::SetEnterprise { enterprise } => {
+                org_only(s)?;
+                if self.cred.account.is_some() {
+                    return Err(AuthzErr::Forbidden);
+                }
+                if s.enterprise() == *enterprise {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::Enterprise { enterprise: *enterprise }], AuthzOut::Done))
+            }
+            AuthzOp::ReserveTransfer { name, repo, from } => {
+                let key = name.key();
+                match s.name(&key) {
+                    Some(RepoEntry::Reserved { repo: r, .. }) if r == *repo => {
+                        return Ok((SmallVec::new(), AuthzOut::Done));
+                    }
+                    e if !free_for(e, *repo) => return Err(AuthzErr::Taken),
+                    _ => {}
+                }
+                let entry = RepoEntry::Reserved { repo: *repo, from: *from };
+                Ok((smallvec![AuthzEvent::RepoName { key, entry: Some(entry) }], AuthzOut::Done))
+            }
+            AuthzOp::CompleteTransfer { key, repo } => match s.name(key) {
+                Some(RepoEntry::Live { repo: r, epoch }) if r == *repo => {
+                    Ok((SmallVec::new(), AuthzOut::Repo { repo: r, epoch }))
+                }
+                Some(RepoEntry::Reserved { repo: r, .. }) if r == *repo => {
+                    let entry = RepoEntry::Live { repo: *repo, epoch: next };
+                    Ok((
+                        smallvec![AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) }],
+                        AuthzOut::Repo { repo: *repo, epoch: next },
+                    ))
+                }
+                _ => Err(AuthzErr::NoRepo),
+            },
+            AuthzOp::LeaveAlias { key, repo } => match s.name(key) {
+                Some(RepoEntry::Alias { repo: r, .. }) if r == *repo => Ok((SmallVec::new(), AuthzOut::Done)),
+                Some(RepoEntry::Live { repo: r, .. }) if r == *repo => {
+                    let entry = RepoEntry::Alias { repo: *repo, epoch: next };
+                    Ok((smallvec![AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) }], AuthzOut::Done))
+                }
+                _ => Err(AuthzErr::NoRepo),
+            },
         }
     }
 }
@@ -755,18 +1301,24 @@ impl Command for AuthzCmd {
             | AuthzOp::CloseApp { .. }
             | AuthzOp::PutOAuthApp { .. }
             | AuthzOp::DeleteOAuthApp { .. } => AUTHZ_FORMAT_V2,
-            _ => AUTHZ_FORMAT,
+            AuthzOp::Open { .. }
+            | AuthzOp::SetMember { .. }
+            | AuthzOp::SetGrant { .. }
+            | AuthzOp::CreateRepo { .. }
+            | AuthzOp::RenameRepo { .. }
+            | AuthzOp::DeleteRepo { .. } => AUTHZ_FORMAT,
+            _ => AUTHZ_FORMAT_V2,
         }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
     }
-    fn deps(&self, _fold: &AuthzFold) -> SmallVec<[ChainId; 3]> {
+    fn deps(&self, fold: &AuthzFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.cred, None);
-        if let Some(c) = self.claim_chain()
-            && !d.contains(&c)
-        {
-            d.push(c);
+        for c in self.extra_deps(fold) {
+            if !d.contains(&c) {
+                d.push(c);
+            }
         }
         d
     }
@@ -777,6 +1329,17 @@ impl Command for AuthzCmd {
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, AuthzOut), AuthzErr> {
         check_credential(&self.cred, Own::Other, deps).map_err(AuthzErr::Unauthorized)?;
         self.check_claim(s, deps)?;
+        if let Some(r) = self.decide_m3(s, deps) {
+            return r;
+        }
+        if let (AuthzOp::ReserveTransfer { from, .. }, Some(a)) = (&self.op, self.cred.account) {
+            let chain = ChainId::Authz(*from);
+            match deps.iter().find(|(c, _)| *c == chain) {
+                Some((_, IdentityDep::Authz(f))) if f.owner() == Some(*from) && f.is_admin(UserId(a)) => {}
+                Some(_) => return Err(AuthzErr::Forbidden),
+                None => return Err(AuthzErr::Unauthorized(CredentialRefusal::NotRead(chain))),
+            }
+        }
         self.decide_op(s)
     }
     fn replay(&self, events: &[AuthzEvent]) -> AuthzOut {
@@ -784,6 +1347,8 @@ impl Command for AuthzCmd {
             Some(AuthzEvent::RepoName { entry: Some(RepoEntry::Live { repo, epoch }), .. }) => {
                 AuthzOut::Repo { repo: *repo, epoch: *epoch }
             }
+            Some(AuthzEvent::Team(TeamEvent::Created { team, .. })) => AuthzOut::Team(*team),
+            Some(AuthzEvent::Invitation(InvitationEvent::Sent { id, .. })) => AuthzOut::Invitation(*id),
             _ => AuthzOut::Done,
         }
     }

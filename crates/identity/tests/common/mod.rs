@@ -8,6 +8,8 @@
 
 #![allow(dead_code)]
 
+pub mod world;
+
 use graftyard_identity::{IdentityDep, Login, LoginKey};
 use graftyard_raft::{
     Acked, Admitted, CallError, Command, CommitError, DepsWanted, Envelope, Ev, Fold, Format, Member, MemberConfig,
