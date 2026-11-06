@@ -633,6 +633,10 @@ mod tests {
             NarrowError::NotGranted("contents".into())
         );
         assert_eq!(e(&[], &[], Some(perms(&[("pages", Access::Read)]))), NarrowError::NotGranted("pages".into()));
+        // The App lowered its permissions after the install: the installation's older, wider row does not grant.
+        let lowered = perms(&[("contents", Access::Read), ("metadata", Access::Read)]);
+        let wide = req(&[], &[], Some(perms(&[("contents", Access::Write)])));
+        assert_eq!(narrow(&sel, &inst, &lowered, &wide, &resolve), Err(NarrowError::NotGranted("contents".into())));
     }
 
     #[test]

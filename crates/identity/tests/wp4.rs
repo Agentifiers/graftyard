@@ -525,6 +525,8 @@ fn an_installation_is_bounded_by_its_app_and_uninstall_fails_its_tokens_at_once(
     let fp = Principal::installation(&fresh_claims);
     let fs: [&dyn AuthzRead; 1] = [&a];
     assert_eq!(graftyard_identity::permission(&fp, &fs, &on(r2, org)), Some(RepoPermission::Write));
+    // Its claims name every repository, but the installation now selects only `two`.
+    assert_eq!(graftyard_identity::permission(&fp, &fs, &on(r1, org)), None, "the claims meet the current row");
     // Uninstall: every token fails, a second uninstall is a no-op, and an unknown id is refused.
     w.authz(org).advance(5_000);
     w.authz_cmd(org, AuthzCmd { cred: OPS, op: AuthzOp::Uninstall { id } }).unwrap();
