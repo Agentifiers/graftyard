@@ -4,12 +4,13 @@
 # Usage: instances.sh <sites.json>
 set -u
 API=https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/containers/applications
-H="Authorization: Bearer $CLOUDFLARE_API_TOKEN"
-apps=$(curl -sf -H "$H" "$API")
+# The API token reaches curl through `-H @<(printf ...)`, never argv, which `ps` shows.
+h() { printf 'Authorization: Bearer %s\n' "$CLOUDFLARE_API_TOKEN"; }
+apps=$(curl -sf -H @<(h) "$API")
 for s in $(python3 -c 'import json,sys; print(" ".join(x["script"] for x in json.load(open(sys.argv[1]))))' "$1"); do
   id=$(echo "$apps" | python3 -c "import json,sys; print(next((a['id'] for a in json.load(sys.stdin)['result'] if a['name'] == '$s-gitshard'), ''))")
   [ -n "$id" ] || continue
-  curl -sf -H "$H" "$API/$id/instances?per_page=1000" | python3 -c "
+  curl -sf -H @<(h) "$API/$id/instances?per_page=1000" | python3 -c "
 import json, sys
 for i in sorted(json.load(sys.stdin)['result']['instances'], key=lambda i: i['name']):
     print('$s', i['name'], i['status']['state'], i['image'][-12:], i['started_at'])"

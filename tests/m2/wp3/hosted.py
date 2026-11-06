@@ -31,6 +31,9 @@ TOKENS = [l.split()[0] for l in open(f"{HOME}/tokens.txt").read().split("\n") if
 OWNER_TOK, WRITER = TOKENS[0], TOKENS[1]
 OWNER_LOGIN, OWNER_ID, WRITER_ID = "wp6", 7000001, 7000002
 AUTH = "Authorization: Basic " + base64.b64encode(f"x:{WRITER}".encode()).decode()
+# git takes the credential from its environment (`GIT_CONFIG_COUNT`), never from its command line: a command line
+# shows in `ps` and in a `TimeoutExpired` traceback, which once wrote the writer's token into a run log.
+GIT_AUTH_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": AUTH}
 M0 = open(f"{MAIN_ROOT}/tests/m0/.m0-token").read().strip()
 WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
 BED = open(os.path.expanduser("~/.graft-wp6/bed.token")).read().strip()
@@ -39,8 +42,24 @@ os.makedirs(RAW, exist_ok=True)
 REPO = None  # set by main: the repository's name in repos.json
 
 
+SECRETS = [t for t in [*TOKENS, M0, BED] if t]
+SECRETS += [base64.b64encode(f"x:{t}".encode()).decode() for t in TOKENS]
+
+
+def redact(m):
+    """m with every token this driver holds, raw or in a Basic header, replaced: every log line, jsonl row and
+    uncaught traceback passes through here."""
+    m = str(m)
+    for t in SECRETS:
+        m = m.replace(t, "[redacted]")
+    return m
+
+
+sys.excepthook = lambda t, v, tb: sys.stderr.write(redact("".join(__import__("traceback").format_exception(t, v, tb))))
+
+
 def log(m):
-    print(f"{time.strftime('%H:%M:%S')} {m}", flush=True)
+    print(redact(f"{time.strftime('%H:%M:%S')} {m}"), flush=True)
 
 
 def chain():
@@ -152,15 +171,14 @@ class Work:
         self.env = dict(os.environ, HOME=self.home, GH_CONFIG_DIR=f"{self.home}/gh", GH_HOST=HOST,
                         GH_ENTERPRISE_TOKEN=WRITER, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1",
                         GIT_TERMINAL_PROMPT="0", GIT_AUTHOR_NAME="wp3", GIT_AUTHOR_EMAIL="wp3@graftyard.invalid",
-                        GIT_COMMITTER_NAME="wp3", GIT_COMMITTER_EMAIL="wp3@graftyard.invalid")
+                        GIT_COMMITTER_NAME="wp3", GIT_COMMITTER_EMAIL="wp3@graftyard.invalid", **GIT_AUTH_ENV)
         if not os.path.isdir(self.dir):
             os.makedirs(self.dir)
             self.git("init", "-q")
             self.git("remote", "add", "origin", url())
 
     def git(self, *a, check=True, timeout=120):
-        r = subprocess.run(["git", "-c", "credential.helper=", "-c", f"http.extraHeader={AUTH}", "-c",
-                            "init.defaultBranch=main", *a], cwd=self.dir, env=self.env, capture_output=True,
+        r = subprocess.run(["git", "-c", "credential.helper=", "-c", "init.defaultBranch=main", *a], cwd=self.dir, env=self.env, capture_output=True,
                            text=True, timeout=timeout)
         if check and r.returncode != 0:
             raise RuntimeError(f"git {a[0]}: {r.returncode} {r.stderr.strip()[:400]}")
@@ -173,8 +191,8 @@ class Work:
         t0 = time.time()
         r = subprocess.run([GH, *a], cwd=self.dir, env=env, capture_output=True, text=True, timeout=timeout)
         open(f"{out_dir}/{tag}.cmd", "w").write("+ gh " + " ".join(a) + "\n")
-        open(f"{out_dir}/{tag}.out", "w").write(r.stdout)
-        open(f"{out_dir}/{tag}.err", "w").write(r.stderr)
+        open(f"{out_dir}/{tag}.out", "w").write(redact(r.stdout))
+        open(f"{out_dir}/{tag}.err", "w").write(redact(r.stderr))
         with open(f"{out_dir}/summary.txt", "a") as f:
             f.write(f"{tag} rc={r.returncode} {time.time() - t0:.1f}s gh {' '.join(a)}\n")
         return r.returncode, r.stdout, r.stderr
@@ -279,7 +297,7 @@ def resume(run):
 
 def append(out, rec):
     with open(out, "a") as f:
-        f.write(json.dumps(rec) + "\n")
+        f.write(redact(json.dumps(rec)) + "\n")
 
 
 # ---- direct merges ----

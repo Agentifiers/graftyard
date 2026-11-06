@@ -42,6 +42,8 @@ WRITER = open(f"{HOME}/tokens.txt").read().split("\n")[1].split()[0]
 URL = f"{EDGE}/{os.environ.get('BF24_OWNER', 'wp6')}/{os.environ.get('BF24_REPO', 'bf24')}.git/"
 # The credential up front, so git skips the 401 round trip on every call.
 AUTH = "Authorization: Basic " + base64.b64encode(f"x:{WRITER}".encode()).decode()
+# In git's environment, never its command line, which shows in `ps` and in a `TimeoutExpired` traceback.
+GIT_AUTH_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.extraHeader", "GIT_CONFIG_VALUE_0": AUTH}
 M0 = open(f"{ROOT}/tests/m0/.m0-token").read().strip()
 WP7 = os.environ.get("GRAFT_TOOLS_EDGE", "https://graft-m1-wp7-edge.<workers-subdomain>.workers.dev")
 CHAIN = f"repo:{REPO_ID}"
@@ -62,14 +64,28 @@ out = f"{RAW}/{run}.jsonl"
 work = f"{RAW}/{run}.work"
 
 
+SECRETS = [WRITER, M0, base64.b64encode(f"x:{WRITER}".encode()).decode()]
+
+
+def redact(m):
+    """m with every token this driver holds replaced: every log line and uncaught traceback passes through here."""
+    m = str(m)
+    for t in SECRETS:
+        m = m.replace(t, "[redacted]")
+    return m
+
+
+sys.excepthook = lambda t, v, tb: sys.stderr.write(redact("".join(__import__("traceback").format_exception(t, v, tb))))
+
+
 def log(m):
-    print(f"{time.strftime('%H:%M:%S')} {m}", flush=True)
+    print(redact(f"{time.strftime('%H:%M:%S')} {m}"), flush=True)
 
 
 def git(*a, cwd=None, check=True, timeout=120):
     env = dict(os.environ, GIT_AUTHOR_NAME="bf24", GIT_AUTHOR_EMAIL="bf24@graftyard.invalid",
-               GIT_COMMITTER_NAME="bf24", GIT_COMMITTER_EMAIL="bf24@graftyard.invalid")
-    r = subprocess.run(["git", "-c", "credential.helper=", "-c", f"http.extraHeader={AUTH}", "-c", "init.defaultBranch=main", *a], cwd=cwd or work,
+               GIT_COMMITTER_NAME="bf24", GIT_COMMITTER_EMAIL="bf24@graftyard.invalid", **GIT_AUTH_ENV)
+    r = subprocess.run(["git", "-c", "credential.helper=", "-c", "init.defaultBranch=main", *a], cwd=cwd or work,
                        env=env, capture_output=True, text=True, timeout=timeout)
     if check and r.returncode != 0:
         raise RuntimeError(f"git {a[0]}: {r.returncode} {r.stderr.strip()[:400]}")
@@ -314,8 +330,8 @@ def server_ms(head, conflict):
 
 def merge_parents(oid):
     """The merge commit's parents, fetched from the remote: refs/pull/N/merge must serve as a real commit."""
-    r = subprocess.run(["git", "-c", "credential.helper=", "-c", f"http.extraHeader={AUTH}", "fetch", "-q", URL,
-                        f"refs/pull/{N}/merge"], cwd=work, capture_output=True, text=True, timeout=60)
+    r = subprocess.run(["git", "-c", "credential.helper=", "fetch", "-q", URL, f"refs/pull/{N}/merge"], cwd=work,
+                       env=dict(os.environ, **GIT_AUTH_ENV), capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         return None
     p = subprocess.run(["git", "show", "-s", "--format=%P", oid], cwd=work, capture_output=True, text=True)
@@ -346,7 +362,7 @@ def main():
                 "refs/heads/pr:refs/remotes/origin/pr", check=False)
             continue
         with open(out, "a") as f:
-            f.write(json.dumps(rec) + "\n")
+            f.write(redact(json.dumps(rec)) + "\n")
         log(f"{i} {'conflict' if rec['conflict'] else 'clean'} {rec['latency_s']} s mergeable={rec['mergeable']}")
         i += 1
 

@@ -435,3 +435,152 @@ Options, in the order I would take them. Each needs an operator decision, becaus
 - **The edge passing its auth result to the leader.** `decide`'s result must depend only on "the `deps` folds the
   leader read once through `fresh`", and the leader's three dependency reads run at once, so skipping `Tokens` saves
   nothing.
+
+## `bm2-repack`: shard repack and the catch-up wait (in progress)
+
+Branch `bm2-repack` from `main` `5868bab`. The operator approved proposal 2 and the catch-up follow-up; proposal 1 is
+held until this rerun, and there is no identity-placement change.
+
+### What changed
+
+- **`ca15db8`, a geometric repack after catch-ups.** `PUT /refs` in `containers/git/server/main.go` is the last step
+  of every catch-up and rehydrate. When the network has more than `repackAt = 50` packs [guess], it starts
+  `git repack -d -q --geometric=2` in the background. A process-wide `TryLock` keeps it to one repack per shard
+  container at a time ("one repack per shard at a time", `design/DESIGN.md`, Failure modes, git caches). The repack
+  holds the network's write lock, so a merge or upload never reads a half-replaced pack set. The reply gains
+  `"repack": true|false`. `TestRefsRepacksPastRepackAt` fails with the trigger removed. In the orb, 2,000 packs
+  repacked in 0.75 s the first time and in about 12 ms after that.
+- **`e8d47ad`, the first merge waits for the in-flight catch-up.** The leader site's shard counts its running
+  catch-ups per network (`CatchUps` in `crates/git/src/merge_cache.rs`). Every `host.catch_up` in
+  `workers/site/src/shard.rs`, including the new leadership's `warm` on `/catchup`, holds a `Running` guard.
+  `merge_then_catch_up` takes an `in_flight` future, and `/merge` awaits `idle()` on it before the first merge plan.
+  `x-graft-timing` gains `waited;dur=`.
+  `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` fails when the await is removed. The
+  "home shard" wording in `workers/edge/src/api.rs` comments now says the leader site's shard of the network.
+- **`4b6631f`, no token on argv or in logs.**
+  - `hosted.py` and `bf24.py` passed `http.extraHeader=Authorization: Basic …` on git's command line. A
+    `TimeoutExpired` traceback printed it into `raw/wp5/base1.log` and `dist.log`.
+  - git now takes the header from `GIT_CONFIG_COUNT` env, and curl in the shell drivers from `-H @<(printf …)`.
+  - Every log line, jsonl row, gh capture, and uncaught traceback in the two Python drivers passes through `redact()`.
+  - The old wp5 logs, and three `smoke*.work/.git/config` files from an older bf24 that held the token in the remote
+    URL, are redacted in place (gitignored).
+
+Checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (439
+passed), `go vet` and `go test` in `containers/git/server`. Image
+`graft-m1-site-gitshard-git@sha256:8fa9abd46a0a848bc5d819fdc8eb09b3eaabda4aaf7ec90ae84c57f7e90c0891`.
+
+### Deploy (site day `bm2-repack`)
+
+- Sites: `graft-m1-site-a`, `b`, and `c` went through two phases each. The final versions are a `bec631b6`, b
+  `06b4db06`, and c `c90060c1`. They carry the image above and are the `test-faults` build of `9301e15`
+  (`raw/bm2-repack/siteday.log`).
+- Edge: `graft-m1-edge` `d0b2bb32`, with `FORMATS_ENABLED=32.1,32.4,32.5` (`raw/bm2-repack/edge.log`).
+- `--roll-shards` rolled 10 instances, then stopped on its own 300 s curl timeout. The timeout was on `main`'s
+  (196608) catch-up, which ended on its own: that instance runs the new image. `raw/bm2-repack/roll2.log` rolled the
+  last 5 running instances with the same `/_bed/kill` and `/_bed/catchup`.
+- The catch-ups of `k0` and `k1` (196611 and 196612) answer 500 on both shards: "git update-ref: … nonexistent object"
+  for `refs/heads/bf12/p1`. The same 500 shows on the m2-wp6 roll (`raw/m2-wp6/sd/deploy-site.log`), before this
+  branch, so it is a pre-existing M1-era state of those two repositories. No gate uses them.
+- Repack, live: every `wp6p` shard went from 1,955 packs to 1 after its first catch-up on the new image
+  (`/_bed/fsck`: `in-pack: 3916, packs: 1`).
+- Each cold rehydrate of 1,955 inline packs took about 100 to 120 s. During that time `git fetch` on `wp6p` timed out
+  at 120 s, and the sanity run's first try stopped on it. A container replaced on the new image fills itself again
+  from R2 and the log, so this is the one-off cost of the roll.
+
+### Sanity run (`sane`, 30 samples)
+
+29 GraphQL mutations and 1 `gh pr merge`, all merged. 30 distinct terms, `from != to` in all 30. p99 1.86 s (p50
+1.56 s, max 1.86 s), per leader: enam n = 5, p99 1.48 s; weur n = 11, 1.84 s; apac n = 13, 1.86 s. The shard merge
+is p50 105 ms (max 530 ms), against 492 to 1,004 ms before the repack. 3 samples waited for an in-flight catch-up,
+and none caught up on the merge path (38 of 105 weur samples did before).
+
+### The 300-sample run on the `bm2-repack` build (`final`)
+
+`p99.py final 300 --gh-every 25` on `wp6p`, edge `d0b2bb32`, sites `bec631b6`/`06b4db06`/`c90060c1`, 17:46 to 19:30
+UTC. That is 288 GraphQL `mergePullRequest` mutations (gh's own `PullRequestMerge` document) and 12 whole
+`gh pr merge --merge` runs. Every sample is on a new term: 300 distinct terms, `from != to` in all 300. Every sample
+merged: 288 of 288, and gh 12 of 12. The driver stopped three times on client-side TLS handshake timeouts and resumed
+from its last line. One of the three was the merge POST of the sample after 4, which the driver never recorded and
+made again as a new sample. The other two were the tools edge's `/status` and a GraphQL read.
+
+**As the gate is written (all leaders, client at LAX): p99 2.42 s at n = 288. BM-2's latency clause still fails.**
+p50 is 1.52 s, p90 1.78 s, and max 2.86 s. 8 of 288 samples are over 2 s; a pass at this n allows at most 2. If the
+true p99 were 2 s, 8 or more over would have probability 0.009.
+
+| New leader | n | p50 | p90 | p99 | max | Over 2 s | auth + resolve | merge plan (shard) | commit | waited | shard catch-ups |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| all | 288 | 1.52 s | 1.78 s | **2.42 s** | 2.86 s | 8 | 540 | 268 (116) | 540 | 21 | 0 |
+| 0, enam | 66 | 1.31 s | 1.49 s | **2.01 s** | 2.01 s | 1 | 532 | 235 (159) | 384 | 15 | 0 |
+| 1, weur | 120 | 1.50 s | 1.69 s | **1.96 s** | 2.08 s | 1 | 540 | 296 (123) | 529 | 6 | 0 |
+| 2, apac | 102 | 1.62 s | 1.85 s | **2.71 s** | 2.86 s | 6 | 548 | 250 (56) | 716 | 0 | 0 |
+
+- Step medians are in ms, from `server-timing`. "Merge plan" is the edge's step, and the parenthesised figure is the
+  shard's own `merge;dur`.
+- "waited" counts samples where the merge waited for the new leadership's catch-up. The waits were 4 to 198 ms.
+- "Shard catch-ups" counts samples that caught up on the merge path.
+- n per site is uneven because the gh samples fall on a fixed step of the leader rotation.
+
+**Home site only (enam) with the client distance:** p99 2.01 s at n = 66, with 1 of 66 over (2,014 ms, sample 212).
+The client is in LAX (`cdn-cgi/trace` `colo=LAX`), and the edge runs in LAX. The client-to-edge leg is client time
+minus the edge's summed `server-timing` steps: 100 ms p50 on enam samples (98 to 100 ms on every site). From the edge
+(minus that leg), the enam p99 is 1.93 s, with 0 of 66 over. The LAX-to-enam distance shows in the leader's steps,
+not the client leg: the edge in LAX makes every identity and leader call to enam. n = 66 is too small to call a
+p99 either way. The 2.01 s point is one sample, and a p99 at n = 66 is the maximum.
+
+**Before and after, the same gate reading:** p99 4.10 s at n = 288 before; 2.42 s at n = 288 now. Over 2 s went from
+178 of 288 to 8. weur went from p99 4.15 s to 1.96 s, apac from 2.89 s to 2.71 s, and enam from 2.40 s to 2.01 s. The
+shard's own merge went from 565, 1,004, and 492 ms p50 (enam, weur, apac) to 159, 123, and 56 ms. Catch-ups on the
+merge path went from 45 of 288 (38 on weur) to 0 of 288.
+
+**What limits it now.**
+
+1. apac commit, 716 ms p50: one replication round from apac plus the leader's three dependency reads to enam, about
+   230 to 265 ms each way.
+2. Edge-to-shard tail on apac. In 2 of the 6 apac samples over 2 s, the edge's merge-plan step was 839 to 889 ms
+   while the shard's own merge took 53 to 64 ms. The time went to the LAX edge's call to the apac site's shard object
+   and container, not to git.
+3. auth + resolve, about 540 ms p50 everywhere: the edge's `Tokens`, `Names`, and `Authz` reads to their enam leaders
+   from LAX. It is the same on every leader site, and it is the largest step for enam and weur.
+
+Removing the client leg would still not pass the gate as written: from the edge, p99 is 2.32 s with 3 of 288 over.
+
+**`gh pr merge` whole runs** (12): p50 3.71 s, max 4.49 s, 12 of 12 merged. A whole run is gh's start-up plus its
+reads before the mutation, so it is not the merge latency. The gate figure is the mutation above, as in every earlier
+run. `final-gh` replies: 93 GraphQL and 12 REST, **0 failed**; `sane-gh` 8 and 1, 0 failed (`gh-replies.py`, then
+`validate.py` against GHES 3.22).
+
+### Rechecks on the final build (19:31 to 19:52 UTC)
+
+| Row | Run | Result | Replies (`gh-replies.py`, then `validate.py`, GHES 3.22) |
+| --- | --- | --- | --- |
+| Journey 2 (`gh pr` review, required check, merge, view, list) | `rj2` | **10 of 10 pass** | 199 GraphQL, 10 REST, 0 failed |
+| Journey 3 (`gh label`, `gh issue create -l`, `gh issue list`, `gh api`) | `rj3` | **10 of 10 pass** | 60 GraphQL, 30 REST, 0 failed |
+| BF-1 (one entry: a 5-PR group's `Landed` plus a `PrSync` batch, on all three members) | `rbf1` | **2 of 2 pass** | 103 GraphQL, 16 REST, 0 failed |
+| BF-21 (`HeadGreen` group of 5, 3rd fails its check; leader killed mid-landing every 2nd trial) | `rbf21` | **10 of 10 pass** | 76 GraphQL, 10 REST, 0 failed |
+| BF-23 (re-requested check refuses the merge until the new run concludes) | `rbf23` | **10 of 10 pass** | 34 GraphQL, 3 REST, 0 failed |
+
+- BF-21 kills fired in all 5 kill trials: `after_quorum` 3 times and `before_commit` 2 times, on sites 0 and 1.
+- Every trial's base audit is clean (`bad` empty). The base moved only by `QueueMerge` entries, and never past the
+  failed check.
+- Trials 7 and 9 landed in two landings each ([278, 280] then [276, 279]; [289, 286, 288] then [290]), because the
+  kill fell between them. Each landing is whole.
+
+### Tokens
+
+- No driver passes a token on a command line. The changes are in `4b6631f` and `9301e15`.
+- Every file under `tests/m2/results/raw/` in main's checkout and every worktree was scanned (38,052 files). The scan
+  looked for every install token, the M0 tools token, both bed tokens, the Cloudflare API token, and the `x:<token>`
+  base64 forms. **0 hits.** The earlier hits (`raw/wp5/base1.log`, `dist.log`, and three `smoke*.work/.git/config`
+  files) were redacted in place before the run.
+
+### Verdict
+
+**BM-2's latency clause fails as written**: p99 2.42 s at n = 288, with every new leader and the client at LAX. 8
+samples are over 2 s; a pass at n = 288 allows at most 2. Every other BM-2 clause holds on this build: journeys 2 and 3
+pass 10 of 10. The stale-`parent_tip` clause was not rerun here; this branch does not touch the queue's
+`decide`, and it was 100 of 100 on main's build (`bm2f`).
+
+By leader site, weur passes at n = 120 (p99 1.96 s). enam is at the line at n = 66 (p99 2.01 s, 1 sample over).
+apac misses (p99 2.71 s, 6 of 102 over). Proposal 1 (measure on a freshly elected leader on the home site) is the
+operator's call, and the enam subset here is too small to settle it. A home-site-only run would need about 300
+enam-led samples, each on a new term with leadership moved back to enam.

@@ -173,32 +173,81 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
     }
 }
 
-/// `GitCacheShard::merge`'s order: merge first, and catch the shard up behind its `IngestCursor` only if the container
-/// answers that a commit is not there (`merge` answers `None`), then merge again. A merge names its commits by id, so
-/// a shard that holds them answers the same before or after a catch-up; `PrSync`'s test merge has usually caught it
-/// up already. Catching up first cost two to three leader reads, 300 to 600 ms of every merge once leadership moved
-/// (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts the container first (`ShardHost::up`): the catch-up
-/// used to, so without it a merge on a stopped container failed "has not been started" and no catch-up followed,
-/// which stalled the `MergeQueue` consumer until another route started the container (same file, BF-21).
-pub async fn merge_then_catch_up<U, Fu, M, Fm, C, Fc>(
+/// `GitCacheShard::merge`'s order: wait for a catch-up already in flight on this shard, merge, and catch the shard up
+/// behind its `IngestCursor` only if the container answers that a commit is not there (`merge` answers `None`), then
+/// merge again. A merge names its commits by id, so a shard that holds them answers the same before or after a
+/// catch-up; `PrSync`'s test merge has usually caught it up already. Catching up first cost two to three leader reads,
+/// 300 to 600 ms of every merge once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts
+/// the container first (`ShardHost::up`): the catch-up used to, so without it a merge on a stopped container failed
+/// "has not been started" and no catch-up followed, which stalled the `MergeQueue` consumer until another route
+/// started the container (same file, BF-21). `in_flight` waits for the catch-up a new leadership starts on its own
+/// site's shard (`workers/site/src/prsync.rs`, `warm`): the first merge after an election used to race it, find a
+/// commit missing, and catch up a second time, 250 to 700 ms on 38 of 105 weur samples (same file, bm2-latency).
+pub async fn merge_then_catch_up<U, Fu, W, Fw, M, Fm, C, Fc>(
     up: U,
+    in_flight: W,
     mut merge: M,
     catch_up: C,
 ) -> Result<ChainAnswer, StoreError>
 where
     U: FnOnce() -> Fu,
     Fu: std::future::Future<Output = Result<(), StoreError>>,
+    W: FnOnce() -> Fw,
+    Fw: std::future::Future<Output = ()>,
     M: FnMut() -> Fm,
     Fm: std::future::Future<Output = Result<Option<ChainAnswer>, StoreError>>,
     C: FnOnce() -> Fc,
     Fc: std::future::Future<Output = Result<(), StoreError>>,
 {
     up().await?;
+    in_flight().await;
     if let Some(a) = merge().await? {
         return Ok(a);
     }
     catch_up().await?;
     merge().await?.ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
+}
+
+/// The catch-ups running on one shard object for one network, so a merge can wait for them (`merge_then_catch_up`'s
+/// `in_flight`). Single-threaded, as a Durable Object is: `start` marks one running until its `Running` drops, and
+/// `idle` ends once none runs.
+#[derive(Clone, Default)]
+pub struct CatchUps(std::rc::Rc<std::cell::RefCell<(u32, Vec<std::task::Waker>)>>);
+
+/// One running catch-up; dropping it ends it, whatever its outcome.
+pub struct Running(CatchUps);
+
+impl CatchUps {
+    pub fn start(&self) -> Running {
+        self.0.borrow_mut().0 += 1;
+        Running(self.clone())
+    }
+
+    /// Ends once no catch-up runs; at once if none does.
+    pub fn idle(&self) -> impl std::future::Future<Output = ()> + use<> {
+        let me = self.clone();
+        std::future::poll_fn(move |cx| {
+            let mut s = me.0.borrow_mut();
+            if s.0 == 0 {
+                return std::task::Poll::Ready(());
+            }
+            s.1.push(cx.waker().clone());
+            std::task::Poll::Pending
+        })
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let wakers = {
+            let mut s = self.0.0.borrow_mut();
+            s.0 -= 1;
+            if s.0 == 0 { std::mem::take(&mut s.1) } else { Vec::new() }
+        };
+        for w in wakers {
+            w.wake();
+        }
+    }
 }
 
 /// Whether the container's answer to a merge says the shard must catch up first: 409, a commit is not in the
@@ -309,6 +358,7 @@ mod tests {
                     running.set(true);
                     async { Ok(()) }
                 },
+                || async {},
                 || {
                     merges.set(merges.get() + 1);
                     let a = if running.get() {
@@ -331,10 +381,90 @@ mod tests {
         assert_eq!(run(false), (Ok(answer()), 2, 1), "a commit missing: one catch-up, then the merge again");
         let still_missing = futures_executor::block_on(merge_then_catch_up(
             || async { Ok(()) },
+            || async {},
             || async { Ok(None) },
             || async { Ok(()) },
         ));
         assert!(still_missing.is_err());
+    }
+
+    /// A merge that arrives while the new leadership's catch-up runs on the shard waits for it, then merges with no
+    /// catch-up of its own: the running catch-up brings the commits. Racing it, the merge finds a commit missing and
+    /// catches up a second time.
+    #[test]
+    fn a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it() {
+        use futures_util::task::LocalSpawnExt;
+        let run = |wait: bool| {
+            let mut pool = futures_executor::LocalPool::new();
+            let sp = pool.spawner();
+            let gate = CatchUps::default();
+            let caught = std::rc::Rc::new(std::cell::Cell::new(false));
+            let (merges, catchups) =
+                (std::rc::Rc::new(std::cell::Cell::new(0)), std::rc::Rc::new(std::cell::Cell::new(0)));
+            // The new leadership's catch-up: running before the merge arrives, done a few polls later.
+            let running = gate.start();
+            let c = caught.clone();
+            sp.spawn_local(async move {
+                for _ in 0..3 {
+                    futures_util::future::ready(()).await;
+                    yield_once().await;
+                }
+                c.set(true);
+                drop(running);
+            })
+            .unwrap();
+            let out = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let (o, g, m, k, c2) = (out.clone(), gate.clone(), merges.clone(), catchups.clone(), caught.clone());
+            sp.spawn_local(async move {
+                let c3 = c2.clone();
+                let r = merge_then_catch_up(
+                    || async { Ok(()) },
+                    || {
+                        let idle = g.idle();
+                        async move {
+                            if wait {
+                                idle.await
+                            }
+                        }
+                    },
+                    || {
+                        m.set(m.get() + 1);
+                        let a = Ok(c2.get().then(answer));
+                        async move { a }
+                    },
+                    || {
+                        k.set(k.get() + 1);
+                        c3.set(true);
+                        async { Ok(()) }
+                    },
+                )
+                .await;
+                *o.borrow_mut() = Some(r);
+            })
+            .unwrap();
+            pool.run();
+            let r = out.borrow_mut().take();
+            (r, merges.get(), catchups.get())
+        };
+        assert_eq!(run(true), (Some(Ok(answer())), 1, 0), "waits, then merges once with no catch-up");
+        assert_eq!(run(false), (Some(Ok(answer())), 2, 1), "racing it: a second catch-up");
+        // No catch-up running: the merge does not wait.
+        let idle = CatchUps::default().idle();
+        assert_eq!(futures_executor::block_on(idle), ());
+    }
+
+    /// Pending once, then ready: lets the other task run.
+    fn yield_once() -> impl std::future::Future<Output = ()> {
+        let mut done = false;
+        std::future::poll_fn(move |cx| {
+            if done {
+                std::task::Poll::Ready(())
+            } else {
+                done = true;
+                cx.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
     }
 
     #[test]

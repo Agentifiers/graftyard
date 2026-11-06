@@ -14,7 +14,8 @@
 //!   rebuilds the `DurableBlob` with `BlobStore::confirm` before it decides (BF-25).
 //! - `DELETE /git/refs/{ref}` is a `Push`, M1's write path.
 //! - A merge (`mergePullRequest`, `PUT /pulls/{n}/merge`) reads `merge_request` from the fresh core tier, asks the
-//!   network's home shard for the `MergePlan` (`GitCacheShard::merge`, the container's `/merge` with `method`), and
+//!   leader site's shard of the network for the `MergePlan` (`GitCacheShard::merge`, the container's `/merge` with
+//!   `method`), and
 //!   commits `Merge` as a `MergeCall`; `enqueuePullRequest`, `enablePullRequestAutoMerge` on a queued base, and
 //!   `dequeuePullRequest` commit a `QueueOp`. All are format 32.4, sent only once `FormatsEnable` enabled it.
 
@@ -396,7 +397,8 @@ fn conflict() -> graftyard_git::merge::RuleViolation {
     graftyard_git::merge::RuleViolation::NotUpToDate
 }
 
-/// `GitCacheShard::merge` on the network's home shard: the `MergePlan` of `req` (`POST /merge_plan` on the shard).
+/// `GitCacheShard::merge` on the leader site's shard of the network: the `MergePlan` of `req` (`POST /merge` with
+/// `method` on the shard).
 async fn merge_plan(
     c: &Ctx<'_>,
     repo: &Repo,
