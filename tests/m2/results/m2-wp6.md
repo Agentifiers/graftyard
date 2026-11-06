@@ -54,3 +54,40 @@ Where a fresh-leader merge's time went in `try5` (the apac leader, sample 2, 2.7
   review or the check committed), the third merged at 3.98 s. `gh pr view` (MERGED, APPROVED) and
   `gh pr list --state merged` at once both show it; `main` is the merge commit (base, head).
 
+## Fresh-leader merge p99, the 300-sample run (`p99`)
+
+`tests/m2/wp6/p99.py p99 300 --gh-every 25` on `wp6p`, edge `516c5fd6` and sites `f1bd2761`/`1b448904`/`b6539846`
+(every fix above). Before each sample, `/transfer` moves leadership to the next site (0, 1, 2 in turn); the sample
+waits for the new leader's term, then sends `mergePullRequest` (`clientMutationId`, as `gh pr merge` sends it) and times
+it at the client. 94 samples ran, 06:11 to 06:32 UTC, each on a different term (94 distinct terms, `from != to` in every
+sample), election 801 ms p50 and 1,611 ms max. I stopped it at sample 94: the verdict was settled and more samples could not move it.
+
+| New leader | n | p50 | max (= p99 at this n) | Over 2 s |
+| --- | --- | --- | --- | --- |
+| 0, enam | 30 | 1.72 s | 2.09 s | 2 |
+| 1, weur | 31 | 2.28 s | 3.20 s | 31 |
+| 2, apac | 30 | 2.51 s | 3.16 s | 30 |
+| all | 91 | 2.28 s | 3.20 s (p99 3.20 s) | 63 |
+
+Every sample merged (91 of 91 mutations and 3 of 3 whole `gh pr merge` runs, 2.3 to 3.2 s). There were no retries.
+
+**Why n = 91 is enough for this verdict.** The gate needs p99 at most 2 s, which means at most 1% of samples over 2 s. Here
+63 of 91 (69%) are over. Under the null hypothesis "p99 ≤ 2 s", each sample exceeds 2 s with probability at most 0.01,
+so 63 or more of 91 has probability below 10^-100. More samples can only tighten a fail this wide. A pass would need
+about 300 samples, where p99 is the 297th order statistic with 3 above it. For enam leaders alone, 2 of 30 are over
+2 s (2.09 s max), so even that site is at or over the line.
+
+Where the time goes (per new-leader site, p50 / max in ms, from the edge's `server-timing`):
+
+| Site | auth + resolve | tiers + `Authz` | merge plan (shard) | commit |
+| --- | --- | --- | --- | --- |
+| enam | 312 / 587 | 351 / 627 | 561 / 630 | 407 / 436 |
+| weur | 340 / 501 | 469 / 934 | 781 / 1,019 | 612 / 834 |
+| apac | 332 / 600 | 591 / 938 | 653 / 757 | 918 / 1,184 |
+
+The client and the edge are in LAX. Every step makes cross-region calls: the identity groups (`Names`, `Tokens`,
+`Authz`) lead on enam, the repository's leader is on its new site, and the leader's own commit reads its three
+dependencies from enam before one replication round. A weur or apac leader pays two to four more transpacific or
+transatlantic round trips than an enam one. No remaining step is serial without reason; each of the four is one
+round to one leader, or reads at once.
+
