@@ -117,3 +117,6 @@ Status: in progress. This file holds progress notes until the gates run.
       events). The next leader's consumer landed the group again.
 
     In all 10, a new term was elected (terms 3 to 8), the landing was whole, and the audit passed.
+- Second site day, from `9aeccf3`, for BF-1's hold fix (`29b2f16`, `fa13e9f`) and `dequeuePullRequest`'s `id`
+  (`915036c`). `containers/` is unchanged since `ce19408`, so the image digest stays `sha256:9bf81a5e…c8`. Before:
+  sites `95edf2c1`/`c07c49a7`/`7e1cb3c7`, edge `3a048bed`.
