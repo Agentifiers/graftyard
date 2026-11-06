@@ -131,6 +131,7 @@ impl Group {
                 }
                 // The fold is rebuilt from the log at restore.
                 Write::Apply(_) => {}
+                Write::Install(_) => unreachable!("the bed never installs a snapshot"),
             }
         }
         Ok(())

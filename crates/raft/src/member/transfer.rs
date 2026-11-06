@@ -89,8 +89,10 @@ impl<C: Command> Member<C> {
 
     /// An ok AppendEntries reply from `from` to round `round`.
     pub(super) fn transfer_ack(&mut self, from: SiteId, round: u64) {
+        // A learner's ack says nothing about the transfer vote: only a voter grants one.
+        let voter = quorum::is_voter(self.log_config(), from);
         let Some(t) = self.lead.as_mut().and_then(|l| l.transfer.as_mut()) else { return };
-        if round > t.first_round {
+        if voter && round > t.first_round {
             if from == t.to {
                 t.to_acked = true;
             } else {
@@ -176,7 +178,12 @@ impl<C: Command> Member<C> {
         let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
         let flapping = inside(self.state.boots[0]) && inside(self.state.boots[1]);
         let stepped = self.state.stepped_down_at.is_some_and(inside);
-        self.fold.config().is_some() && !self.no_lead() && !self.drained.contains(&self.cfg.me) && !flapping && !stepped
+        self.fold.config().is_some()
+            && !self.is_learner()
+            && !self.no_lead()
+            && !self.drained.contains(&self.cfg.me)
+            && !flapping
+            && !stepped
     }
 
     /// `no_lead_until` holds: an older follower refused this member's uncommitted entry under its current release.

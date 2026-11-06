@@ -143,6 +143,34 @@ fn state_and_every_message_round_trip() {
         Message::ProbeRes { term: Term(5), id: 3, target: SiteId(1), failed: 2, of: 20 },
         Message::Ping { probe: 4, n: 1 },
         Message::Pong { probe: 4, n: 1 },
+        Message::Install(graftyard_raft::InstallSnapshot {
+            term: Term(5),
+            boot: 8,
+            round: 6,
+            sent_at: Timestamp(7),
+            lead_seq: 4,
+            source: graftyard_raft::InstallSource {
+                core: "snapshot/core".into(),
+                metadata: None,
+                archives: ["archive/1-9".into()].into_iter().collect(),
+                through: Index(9),
+                through_term: Term(4),
+                through_digest: Digest([3; 32]),
+                config: (
+                    Index(1),
+                    graftyard_raft::bootstrap::<KvEvent>(common::sim::CHAIN, &common::sim::record())
+                        .map(|e| match e.body {
+                            EntryBody::Config(c) => c,
+                            _ => unreachable!(),
+                        })
+                        .unwrap(),
+                ),
+                id_block: graftyard_raft::IdBlock::whole(2, 9),
+            },
+        }),
+        Message::ReadIndex { batch: 3 },
+        Message::ReadIndexRes { batch: 3, index: Some((Index(9), Digest([4; 32]))) },
+        Message::ReadIndexRes { batch: 4, index: None },
     ];
     let envs: Vec<Envelope<KvEvent>> =
         msgs.into_iter().map(|msg| Envelope { from: SiteId(0), to: SiteId(2), msg }).collect();

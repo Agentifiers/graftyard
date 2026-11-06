@@ -140,8 +140,18 @@ impl<C: Command> Lead<C> {
 }
 
 impl<C: Command> Member<C> {
+    /// The other voters: who votes, counts toward a lease or a commit, may take leadership, and whose calls
+    /// `STEP_DOWN` weighs.
     pub(super) fn peers(&self) -> Vec<SiteId> {
         quorum::voters(self.log_config()).into_iter().filter(|s| *s != self.cfg.me).collect()
+    }
+
+    /// Everyone the leader replicates to: the other voters and every learner, by address. Learners never count.
+    pub(super) fn targets(&self) -> Vec<SiteId> {
+        let c = self.log_config();
+        let mut t = quorum::voters(c);
+        t.extend(quorum::learners(c));
+        t.into_iter().filter(|s| *s != self.cfg.me).collect()
     }
 
     fn ticket(&self, seq: u64) -> Ticket {
@@ -156,7 +166,7 @@ impl<C: Command> Member<C> {
         self.state.lead_seq += 1;
         self.dirty = true;
         let next = self.last().next();
-        let peers = self.peers();
+        let peers = self.targets();
         self.early_from = Index(0);
         self.lead = Some(Lead {
             started: self.now,
@@ -256,7 +266,7 @@ impl<C: Command> Member<C> {
             self.out.resolutions.push(Resolution::Ticket { ticket, result: Err(CommitError::NotLeader(nl.clone())) });
         }
         for (id, _, _) in lead.reads {
-            self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });
+            self.read_resolved(id, Err(nl.clone()));
         }
         for block in lead.block_pending.map(|(_, b)| b).into_iter().chain(lead.blocks) {
             self.out.resolutions.push(Resolution::IdBlock { block, result: Err(nl.clone()) });
@@ -726,7 +736,7 @@ impl<C: Command> Member<C> {
 
     /// Sends AppendEntries to every follower. `force` starts a new round even where a call is outstanding.
     fn broadcast(&mut self, force: bool) {
-        for p in self.peers() {
+        for p in self.targets() {
             self.send_append(p, force);
         }
     }
@@ -745,6 +755,9 @@ impl<C: Command> Member<C> {
         let round = lead.round;
         lead.sent.insert(peer, (round, now));
         let prev = Index(next.0 - 1);
+        if self.send_install(peer, prev, round) {
+            return;
+        }
         if prev < self.base.index {
             // Below the in-memory window: the host reads the entries from storage and calls `catchup`.
             let through = Index(self.base.index.0.min(prev.0 + CATCHUP_MAX as u64));
@@ -919,9 +932,10 @@ impl<C: Command> Member<C> {
             return;
         }
         let refusals = std::mem::take(&mut self.lead.as_mut().expect("leading").refusals);
+        // A learner's refusal only alarms: it never votes, so it cannot take the hand-off or prove an own defect.
         let older: Vec<(SiteId, Refusal)> = refusals
             .iter()
-            .filter(|(_, (r, _))| r.index > commit && r.release.seq < mine.seq)
+            .filter(|(s, (r, _))| peers.contains(s) && r.index > commit && r.release.seq < mine.seq)
             .map(|(s, (r, _))| (*s, r.clone()))
             .collect();
         if let Some((site, refusal)) = older.first().cloned() {
@@ -933,8 +947,11 @@ impl<C: Command> Member<C> {
             self.hand_off();
             return;
         }
-        let own: Vec<&Refusal> =
-            refusals.values().map(|(r, _)| r).filter(|r| r.index > commit && r.release == mine).collect();
+        let own: Vec<&Refusal> = refusals
+            .iter()
+            .filter(|(s, (r, _))| peers.contains(s) && r.index > commit && r.release == mine)
+            .map(|(_, (r, _))| r)
+            .collect();
         if own.len() >= 2 && own.len() == peers.len() {
             let index = own.iter().map(|r| r.index).min().expect("two");
             self.truncate_uncommitted();
@@ -1124,7 +1141,7 @@ impl<C: Command> Member<C> {
         self.finish(r)
     }
 
-    fn start_read(&mut self) -> ReadStart {
+    pub(super) fn start_read(&mut self) -> ReadStart {
         self.lead_or_resume()?;
         let id = ReadId(self.next_read);
         self.next_read += 1;
@@ -1162,6 +1179,7 @@ impl<C: Command> Member<C> {
                     step: self.step,
                     index: self.fold.applied(),
                     via_round: needs_round || !lease,
+                    remote: false,
                 })
             } else if now >= after(arrived, CAMPAIGN_DEADLINE) {
                 Err(self.not_leader())
@@ -1169,14 +1187,15 @@ impl<C: Command> Member<C> {
                 keep.push((id, arrived, needs_round));
                 continue;
             };
-            self.out.resolutions.push(Resolution::Read { id, result });
+            self.read_resolved(id, result);
         }
         self.lead.as_mut().expect("leading").reads = keep;
     }
 
-    /// `fresh`, second half: the view a grant allows, only before the member's next input.
+    /// `fresh`, second half: the view a grant allows, only before the member's next input. A grant from
+    /// `read_index` gives a follower's or learner's fold.
     pub fn fresh(&self, grant: &ReadGrant) -> Result<Fresh<'_, C::Fold>, NotLeader> {
-        let ok = self.role == Role::Leader
+        let ok = (self.role == Role::Leader || grant.remote)
             && grant.term == self.state.term
             && grant.boot == self.boot
             && grant.step == self.step
@@ -1197,7 +1216,7 @@ impl<C: Command> Member<C> {
         // A transfer keeps sending rounds that carry its id, so the other follower accepts one.
         let waiting = !lead.ready || !lead.reads.is_empty() || lead.transfer.is_some();
         let due: Vec<SiteId> = self
-            .peers()
+            .targets()
             .into_iter()
             .filter(|p| {
                 let gap = if self.state.cannot_follow.contains(p) { CANNOT_FOLLOW_RETRY } else { CALL_DEADLINE };

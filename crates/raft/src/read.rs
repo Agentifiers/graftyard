@@ -12,6 +12,8 @@ pub struct ReadGrant {
     pub(crate) step: u64,
     pub(crate) index: Index,
     pub(crate) via_round: bool,
+    /// Granted on a follower or learner after the leader's read index (`Member::read_index`).
+    pub(crate) remote: bool,
 }
 
 impl ReadGrant {
@@ -26,7 +28,8 @@ impl ReadGrant {
     }
 }
 
-/// A fold that includes every entry acknowledged before the read arrived. Only the leader builds one.
+/// A fold that includes every entry acknowledged before the read arrived: the leader's, or a follower's or learner's
+/// once it applied the leader's read index.
 pub struct Fresh<'a, F> {
     pub(crate) fold: &'a F,
     pub(crate) index: Index,

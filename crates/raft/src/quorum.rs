@@ -19,6 +19,17 @@ pub fn voters(c: &GroupConfig) -> BTreeSet<SiteId> {
     }
 }
 
+/// Every learner of the config, by address (`Member::addr`): under `Joint`, both halves'. Learners never vote and
+/// never count toward a quorum.
+pub fn learners(c: &GroupConfig) -> BTreeSet<SiteId> {
+    match c {
+        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => {
+            p.learners().iter().map(|m| m.addr()).collect()
+        }
+        GroupConfig::Joint { old, new } => old.learners().iter().chain(new.learners()).map(|m| m.addr()).collect(),
+    }
+}
+
 pub fn is_voter(c: &GroupConfig, site: SiteId) -> bool {
     voters(c).contains(&site)
 }
