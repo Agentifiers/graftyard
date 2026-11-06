@@ -210,6 +210,7 @@ impl DurableObject for GitShard {
                 let t0 = now_ms();
                 let caught = std::cell::RefCell::new(None);
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
+                    || async { host.up().await.map(|_| ()) },
                     || host.merge_chain(net, base, &chain, method),
                     || async {
                         *caught.borrow_mut() = Some(host.catch_up(net, &[chain_id], &bs, &log).await?.ms);
