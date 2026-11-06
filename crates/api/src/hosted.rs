@@ -71,6 +71,32 @@ impl TierRows {
         (out, true)
     }
 
+    /// The rows `mergePullRequest` plans from, for the pull request whose database id is `id`: its `issue_by_id`,
+    /// `issue`, and `pull` rows, its `pull_head`, its base's `ref`, and `settings`, which is all `graphql::plan` and
+    /// `graphql::merge_request` read, and the leader renders the reply from its own tiers. One `fresh` read of these
+    /// instead of both whole tiers: the whole read of a 1,200-row repository was 570 KB and about 800 ms from LAX to a
+    /// weur or apac leader, against 240 ms for a small read (`tests/m2/results/m2-wp6.md`, BM-2). `index` is 0 here;
+    /// the member sets it. With the metadata tier still loading, `meta` is `None`, as `dump`'s caller leaves it.
+    pub fn merge_rows(core: &dyn Read, meta: Option<&dyn Read>, id: DbId) -> TierRows {
+        use graftyard_git::tiers::{get_rec, n_key, pull_head, ref_key};
+        let row = |r: &dyn Read, t: &str, k: Key| r.get(t, &k).map(|cols| (t.to_owned(), k, cols));
+        let mut c: Vec<_> = row(core, "settings", Vec::new()).into_iter().collect();
+        let mut m = Vec::new();
+        if let Some(meta) = meta {
+            let by_id = vec![Val::Int(id.0)];
+            m.extend(row(meta, "issue_by_id", by_id.clone()));
+            if let Some(n) = get_rec::<u32>(meta, "issue_by_id", &by_id).map(IssueNumber) {
+                m.extend(row(meta, "issue", vec![n_key(n)]));
+                m.extend(row(meta, "pull", vec![n_key(n)]));
+                c.extend(row(core, "pull_head", vec![n_key(n)]));
+                if let Some(ph) = pull_head(core, n) {
+                    c.extend(row(core, "ref", vec![ref_key(&ph.base)]));
+                }
+            }
+        }
+        TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true }
+    }
+
     /// The rows as a store `Repo` reads.
     pub fn store(rows: &[(String, Key, Vec<Val>)]) -> MemStore {
         let mut s = MemStore::default();
