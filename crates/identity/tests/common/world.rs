@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 
 use graftyard_identity::finish::Step;
 use graftyard_identity::{
-    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AuthzCmd, AuthzFold, IdBlock, IdentityDep, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey,
-    NamesCmd, NamesFold, NamesOp, TOKENS_FORMAT, TOKENS_FORMAT_V2, TokensCmd, TokensFold, name_shard,
+    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IdBlock, IdentityCmd, IdentityDep,
+    IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey, NamesCmd, NamesFold, NamesOp, TOKENS_FORMAT,
+    TOKENS_FORMAT_V2, TokensCmd, TokensFold, name_shard,
 };
 use graftyard_types::{AccountId, ChainId, CredentialShard, TokenShard};
 
@@ -21,6 +22,7 @@ pub struct World {
     pub names: BTreeMap<u16, Group<NamesCmd>>,
     pub tokens: BTreeMap<u16, Group<TokensCmd>>,
     pub authz: BTreeMap<i64, Group<AuthzCmd>>,
+    pub identity: BTreeMap<i64, Group<IdentityCmd>>,
     next: u128,
 }
 
@@ -60,6 +62,23 @@ impl World {
             g.elect(A);
             g
         })
+    }
+
+    pub fn identity(&mut self, account: AccountId) -> &mut Group<IdentityCmd> {
+        self.identity.entry(account.0.0).or_insert_with(|| {
+            let mut g = Group::reading(ChainId::Identity(account), vec![IDENTITY_FORMAT], IdentityFold::new(account));
+            g.elect(A);
+            g
+        })
+    }
+
+    pub fn identity_cmd(&mut self, account: AccountId, cmd: IdentityCmd) -> super::Outcome<IdentityCmd> {
+        let id = self.id();
+        self.identity(account);
+        let mut g = self.identity.remove(&account.0.0).unwrap();
+        let r = g.submit(id, cmd, &mut |c| self.read(c));
+        self.identity.insert(account.0.0, g);
+        r
     }
 
     /// What a leader's host does for `deps`: each chain read once through `fresh` on its own group.
@@ -120,7 +139,10 @@ impl World {
             Step::Authz(ChainId::Authz(owner), cmd) => {
                 self.authz_cmd(owner, *cmd).expect("finisher step commits");
             }
-            Step::Authz(..) => unreachable!(),
+            Step::Identity(ChainId::Identity(a), cmd) => {
+                self.identity_cmd(a, cmd).expect("finisher step commits");
+            }
+            Step::Authz(..) | Step::Identity(..) => unreachable!(),
         }
     }
 

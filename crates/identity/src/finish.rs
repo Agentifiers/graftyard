@@ -11,18 +11,24 @@
 //!   path is `CloseApp` and `ReleaseSlug`, taken only when the claim has no record to finish from: the edge that
 //!   claimed it died before it wrote the record, and the record's contents were only in that request.
 //! - **Login row (F50).** The commit point is `LoginClaimed`; the account's `AccountLogin` row follows.
+//! - **Credential (M3-WP3).** The commit point is the credential's `Tokens` entry; the edge appends the `Identity`
+//!   side right after it, and the finisher lists a committed credential the `Identity` fold does not, or drops one
+//!   whose row was revoked or removed.
 
 use graftyard_types::{AccountId, ChainId, CredentialShard};
 
 use crate::apps::{AppRecord, ClientId, Slug};
 use crate::authz::{AuthzCmd, AuthzOp, AuthzRead};
+use crate::identity::{CredentialRef, IdentityCmd, IdentityFold, IdentityOp};
 use crate::names::{Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, SlugRow, account_shard, name_shard};
+use crate::tokens::TokensRead;
 
 /// A command for one chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Step {
     Names(ChainId, NamesCmd),
     Authz(ChainId, Box<AuthzCmd>),
+    Identity(ChainId, IdentityCmd),
 }
 
 fn names(key: NameKey, op: NamesOp) -> Step {
@@ -79,4 +85,29 @@ pub fn account_login(
         ChainId::Names(account_shard(account)),
         NamesCmd { cred: CredentialShard::NONE, op: NamesOp::SetAccountLogin { account, login: login.clone() } },
     ))
+}
+
+/// The `Identity` side of a credential the `Tokens` shard holds for `account`: listed when its row is live and the
+/// list lacks it, dropped when the row is revoked or gone and the list has it. `title` is what the edge was given; the
+/// finisher, which has none, passes the credential's kind.
+pub fn credential(
+    account: AccountId,
+    credential: CredentialRef,
+    title: &str,
+    tokens: &dyn TokensRead,
+    identity: &IdentityFold,
+) -> Option<Step> {
+    let live = match &credential {
+        CredentialRef::Token { hash, kind } => {
+            tokens.token(hash).is_some_and(|r| r.account == account && !r.revoked && r.kind == *kind)
+        }
+        CredentialRef::SshKey(f) => tokens.ssh_key(f).is_some_and(|r| r.account == account),
+    };
+    let listed = identity.credentials.contains_key(&credential);
+    let op = match (live, listed) {
+        (true, false) => IdentityOp::AddCredential { credential, title: title.into() },
+        (false, true) => IdentityOp::RemoveCredential { credential },
+        _ => return None,
+    };
+    Some(Step::Identity(ChainId::Identity(account), IdentityCmd { cred: CredentialShard::NONE, op }))
 }

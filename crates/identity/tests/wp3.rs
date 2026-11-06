@@ -218,3 +218,147 @@ fn every_write_reads_the_account_row_for_suspension_and_sign_out_everywhere() {
     let r = refused(w.authz_cmd(owner, team(&session(7_000))));
     assert_eq!(r, AuthzErr::Unauthorized(CredentialRefusal::Suspended(admin)));
 }
+
+// ---- the `Identity` chain ----
+
+use graftyard_identity::finish::{self, Step};
+use graftyard_identity::{
+    AccountCapture, CredentialRef, Fingerprint, IdentityCmd, IdentityErr, IdentityFold, IdentityOp, Login, ScopeSet,
+    TokenKind, TokensCmd, TokensOp, WebSessionId, fingerprint_shard,
+};
+
+fn created(w: &mut World, u: AccountId, l: &str) {
+    let c = AccountCapture { login: Login::parse(l).unwrap(), kind: AccountKind::User, created: Timestamp(1) };
+    w.identity_cmd(u, IdentityCmd { cred: OPS, op: IdentityOp::Create(c) }).unwrap();
+}
+
+/// What the edge does for a new credential: commit it on `Tokens`, the commit point, then append the `Identity` side
+/// right away. `kill` drops the edge after the first commit, as an edge that dies between them.
+fn new_credential(w: &mut World, u: AccountId, c: CredentialRef, kill: bool) {
+    let op = match c {
+        CredentialRef::Token { hash, kind } => {
+            TokensOp::Store { hash, kind, account: u, scopes: ScopeSet(1), expires: None }
+        }
+        CredentialRef::SshKey(fingerprint) => TokensOp::AddSshKey { fingerprint, account: u, repo: None },
+    };
+    w.tokens_cmd(TokensCmd { cred: as_user(u), op }).unwrap();
+    if !kill {
+        let add = IdentityOp::AddCredential { credential: c, title: "laptop".into() };
+        w.identity_cmd(u, IdentityCmd { cred: as_user(u), op: add }).unwrap();
+    }
+}
+
+fn listed(w: &mut World, u: AccountId) -> Vec<CredentialRef> {
+    let f: IdentityFold = w.identity(u).fresh_leader();
+    f.credentials.keys().copied().collect()
+}
+
+/// BF-35: a new SSH key and PAT are listed at once, with no `Audit` consumer, 100 of 100. The listing reads the
+/// `Identity` fold through `fresh`, right after the edge's two commits.
+#[test]
+fn a_new_ssh_key_and_pat_are_listed_at_once_without_the_audit_consumer() {
+    let mut w = World::default();
+    let u = acct(0, 2, 1);
+    account(&mut w, u);
+    created(&mut w, u, "alice");
+    let mut seen = 0;
+    for i in 0..100u32 {
+        let mut h = [0u8; 32];
+        h[..4].copy_from_slice(&i.to_be_bytes());
+        h[4] = 0xaa;
+        let pat = CredentialRef::Token { hash: h, kind: TokenKind::Pat };
+        let mut f = [0u8; 32];
+        f[..4].copy_from_slice(&i.to_be_bytes());
+        f[4] = 0xbb;
+        let key = CredentialRef::SshKey(Fingerprint(f));
+        new_credential(&mut w, u, key, false);
+        new_credential(&mut w, u, pat, false);
+        let l = listed(&mut w, u);
+        if l.contains(&key) && l.contains(&pat) {
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 100, "listed at once");
+}
+
+/// The `Identity` side is refused for a credential that did not commit on `Tokens`, or belongs to someone else; an
+/// edge that died between the commits leaves it to the `Audit` finisher, which lists it and later drops it once
+/// revoked. A live credential is never dropped.
+#[test]
+fn audit_finishes_a_credential_nobody_listed_and_only_a_committed_one_is_listed() {
+    let mut w = World::default();
+    let (u, v) = (acct(0, 2, 1), acct(0, 2, 2));
+    for (a, l) in [(u, "alice"), (v, "bob")] {
+        account(&mut w, a);
+        created(&mut w, a, l);
+    }
+    let ghost = CredentialRef::Token { hash: [9; 32], kind: TokenKind::Pat };
+    let add = |c| IdentityCmd { cred: as_user(u), op: IdentityOp::AddCredential { credential: c, title: "x".into() } };
+    assert_eq!(refused(w.identity_cmd(u, add(ghost))), IdentityErr::NotCommitted, "no Tokens row");
+    let bobs = CredentialRef::SshKey(Fingerprint([4; 32]));
+    new_credential(&mut w, v, bobs, false);
+    assert_eq!(refused(w.identity_cmd(u, add(bobs))), IdentityErr::NotCommitted, "another account's key");
+    // The edge dies after the Tokens commit: nothing lists the PAT until the finisher runs.
+    let pat = CredentialRef::Token { hash: [7; 32], kind: TokenKind::Pat };
+    new_credential(&mut w, u, pat, true);
+    assert!(!listed(&mut w, u).contains(&pat));
+    let finish = |w: &mut World| {
+        let tokens = w.tokens(pat.shard()).fresh_leader();
+        let id = w.identity(u).fresh_leader();
+        finish::credential(u, pat, "Pat", &tokens, &id)
+    };
+    let step = finish(&mut w).expect("owed");
+    assert!(matches!(step, Step::Identity(..)));
+    w.step(step);
+    assert!(listed(&mut w, u).contains(&pat));
+    assert_eq!(finish(&mut w), None, "nothing owed twice");
+    // A live credential is never dropped; once revoked, the finisher drops it.
+    let drop = IdentityCmd { cred: OPS, op: IdentityOp::RemoveCredential { credential: pat } };
+    assert_eq!(refused(w.identity_cmd(u, drop.clone())), IdentityErr::Forbidden);
+    w.tokens_cmd(TokensCmd { cred: as_user(u), op: TokensOp::Revoke { hash: [7; 32] } }).unwrap();
+    let step = finish(&mut w).expect("owed");
+    w.step(step);
+    assert!(!listed(&mut w, u).contains(&pat));
+    assert_eq!(fingerprint_shard(&Fingerprint([4; 32])), bobs.shard());
+}
+
+/// BF-36's sign-in half: the next sign-in after the switch uses OIDC, a password sign-in is refused, the bootstrap
+/// link still works, and a suspended account starts no session.
+#[test]
+fn a_sign_in_takes_only_the_method_instance_auth_names() {
+    use graftyard_types::Ulid;
+    let mut w = World::default();
+    let install = install_account();
+    let admin = acct(0, 2, 1);
+    org(&mut w, install, admin);
+    created(&mut w, admin, "admin");
+    let sign_in = |n: u8, method| IdentityCmd {
+        cred: OPS,
+        op: IdentityOp::SignIn { id: WebSessionId(Ulid::new(Timestamp(9_000), [n; 10])), method, install },
+    };
+    w.identity_cmd(admin, sign_in(1, SignInMethod::Password)).unwrap();
+    let oidc = InstanceAuth::Oidc(OidcConfig {
+        issuer: Url("https://idp/".into()),
+        client: "g".into(),
+        secret: vec![1].into(),
+    });
+    w.authz_cmd(install, AuthzCmd { cred: as_user(admin), op: AuthzOp::SetInstanceAuth(oidc) }).unwrap();
+    assert_eq!(refused(w.identity_cmd(admin, sign_in(2, SignInMethod::Password))), IdentityErr::WrongMethod);
+    w.identity_cmd(admin, sign_in(3, SignInMethod::Oidc)).unwrap();
+    w.identity_cmd(admin, sign_in(4, SignInMethod::Link)).unwrap();
+    let f: IdentityFold = w.identity(admin).fresh_leader();
+    assert_eq!(f.sessions.len(), 3);
+    // A sign-in naming another owner's chain as the install's is refused.
+    let other = IdentityCmd {
+        cred: OPS,
+        op: IdentityOp::SignIn {
+            id: WebSessionId(Ulid::new(Timestamp(9_000), [5; 10])),
+            method: SignInMethod::Oidc,
+            install: acct(0, 9, 1),
+        },
+    };
+    assert_eq!(refused(w.identity_cmd(admin, other)), IdentityErr::NotInstall);
+    let put = NamesOp::PutAccount { id: admin, suspended: true, sessions_not_before: Timestamp(0) };
+    w.names_cmd(ChainId::Names(account_shard(admin)), NamesCmd { cred: OPS, op: put }).unwrap();
+    assert_eq!(refused(w.identity_cmd(admin, sign_in(6, SignInMethod::Oidc))), IdentityErr::Suspended);
+}

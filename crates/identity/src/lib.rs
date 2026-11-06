@@ -16,6 +16,7 @@ mod compat;
 mod credential;
 mod enc;
 pub mod finish;
+mod identity;
 mod ids;
 mod names;
 mod org;
@@ -36,6 +37,10 @@ pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, 
 pub use credential::{
     Actor, Credential, CredentialRefusal, IdentityDep, OrgId, Own, Principal, UserId, WebSessionId, check_credential,
     credential_chains,
+};
+pub use identity::{
+    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IdentityCmd, IdentityErr,
+    IdentityEvent, IdentityFold, IdentityOp, IdentityScratch, SessionEvent, SsoEvent,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{
