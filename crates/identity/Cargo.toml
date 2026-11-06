@@ -7,9 +7,16 @@ publish.workspace = true
 
 [dependencies]
 arrayvec.workspace = true
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+# Signs and verifies installation tokens; no default features, so it builds for wasm32 with no randomness.
+ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-raft = { path = "../raft" }
+# Verifies App JWTs (RS256) against `AppRecord.keys`: public-key operations only, so RUSTSEC-2023-0071's decryption
+# timing does not apply. No default features, so it builds for wasm32 with no randomness.
+rsa = { version = "0.9", default-features = false, features = ["sha2"] }
 graftyard-types.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true

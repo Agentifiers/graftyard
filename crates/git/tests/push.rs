@@ -785,3 +785,126 @@ fn after_settings_a_pushs_deps_name_the_new_owner_and_enterprise() {
     let (_, r) = decide(&fold, &one(who(OWNER, 1)));
     assert!(r.is_err(), "the old owner's admin no longer writes: {r:?}");
 }
+
+// ---- M3-WP4: pushes under a stateless installation token ----
+
+fn installation_claims() -> graftyard_identity::stateless::InstallationClaims {
+    use graftyard_identity::{Access, AppId, InstallationId, Jti, Kid, PermissionSet, RepoScope};
+    graftyard_identity::stateless::InstallationClaims {
+        app: AppId(DbId(900)),
+        installation: InstallationId(DbId(901)),
+        repos: RepoScope::Selected(smallvec::smallvec![graftyard_types::RepoId(DbId(7))]),
+        permissions: PermissionSet([(Box::from("contents"), Access::Write)].into_iter().collect()),
+        jti: Jti(Ulid(0x0193_0000_0000_0000_0000_0000_0000_0001)),
+        iat: Timestamp(9_000),
+        exp: Timestamp(9_000 + 3_600_000),
+        kid: Kid(1),
+    }
+}
+
+/// A group whose release reads the stateless push format, as one does after its site day.
+fn stateless_group() -> StandIn {
+    let mut s = seed();
+    let f = graftyard_git::repo::REPO_FORMAT_STATELESS;
+    s.reads.push((f.family, f.version));
+    let mut g = StandIn::restore(&s, Vec::new(), Timestamp(10_000));
+    assert!(g.ensure_leader());
+    g
+}
+
+fn installed_group() -> StandIn {
+    let mut g = stateless_group();
+    let c = installation_claims();
+    g.install(
+        c.installation,
+        graftyard_identity::InstallationRow { app: c.app, repos: c.repos.clone(), permissions: c.permissions.clone() },
+    );
+    g
+}
+
+/// The push format of a stateless principal carries the App and the claims, and round-trips; versions 1 and 2 do
+/// not decode one.
+#[test]
+fn a_push_under_an_installation_token_has_its_own_format_and_round_trips() {
+    let p = push(
+        vec![up("refs/heads/a", None, Some(oid(1)))],
+        Atomicity::PerRef,
+        Principal::installation(&installation_claims()),
+    );
+    assert_eq!(graftyard_raft::Command::format(&p), graftyard_git::repo::REPO_FORMAT_STATELESS);
+    assert_eq!(Push::from_wire(&p.to_wire()), Ok(p.clone()));
+    let mut w = p.to_wire();
+    w[3] = 1;
+    assert!(Push::from_wire(&w).is_err(), "format 1 does not carry an App actor");
+}
+
+/// BF-27 on the repository chain: 1,000 pushes under one installation token are admitted and wait; its `jti` is
+/// revoked on `jti_shard`; every one of them, and every push after, is refused with 401. Before the revocation the
+/// token pushes to a repository its installation selects.
+#[test]
+fn bf27_a_revoked_jti_refuses_all_1000_queued_pushes() {
+    let mut g = installed_group();
+    let c = installation_claims();
+    let who = || Principal::installation(&c);
+    let (_, o) = commit(&mut g, push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, who()));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok], "the token pushes before the revocation");
+    let waiting: Vec<_> = (0..1_000u32)
+        .map(|i| {
+            let r = rid();
+            let mut p = push(vec![up(&format!("refs/heads/q{i}"), None, Some(oid(i + 2)))], Atomicity::PerRef, who());
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.revoke_jti(c.jti, c.exp);
+    g.run();
+    let refused =
+        waiting.iter().filter(|t| matches!(g.resolved(**t), Some(PushOutcome::Refused(r)) if r.status == 401)).count();
+    assert_eq!(refused, 1_000);
+    let (_, o) = commit(&mut g, push(vec![up("refs/heads/late", None, Some(oid(1)))], Atomicity::PerRef, who()));
+    assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 401), "{o:?}");
+    assert_eq!(g.refs().len(), 1, "only the push before the revocation moved a ref: {:?}", g.refs());
+    eprintln!("BF-27 push: {refused}/1000 queued pushes refused 401 after JtiRevoked");
+}
+
+/// An installation token reaches only what its claims and the installation's row both select, and an App actor
+/// with a stored-token credential, or no installation, is refused.
+#[test]
+fn an_installation_token_pushes_only_inside_its_claims_and_installation() {
+    let c = installation_claims();
+    // A release that does not read the format answers `Unsupported`, and nothing is decided.
+    let mut g = group();
+    let p = push(vec![up("refs/heads/a", None, Some(oid(1)))], Atomicity::PerRef, Principal::installation(&c));
+    assert!(matches!(g.commit(rid(), p), CommitReply::Error(CallErrorWire::Unsupported(_))));
+    // Not installed on the owner: 404-class refusal.
+    let mut g = stateless_group();
+    let (_, o) = commit(
+        &mut g,
+        push(vec![up("refs/heads/a", None, Some(oid(1)))], Atomicity::PerRef, Principal::installation(&c)),
+    );
+    assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 403 || r.status == 404), "{o:?}");
+    // Claims that select another repository.
+    let mut g = installed_group();
+    let other = graftyard_identity::stateless::InstallationClaims {
+        repos: graftyard_identity::RepoScope::Selected(smallvec::smallvec![graftyard_types::RepoId(DbId(8))]),
+        ..c.clone()
+    };
+    let (_, o) = commit(
+        &mut g,
+        push(vec![up("refs/heads/a", None, Some(oid(1)))], Atomicity::PerRef, Principal::installation(&other)),
+    );
+    assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 403 || r.status == 404), "{o:?}");
+    // Read-only claims.
+    let ro = graftyard_identity::stateless::InstallationClaims {
+        permissions: graftyard_identity::PermissionSet(
+            [(Box::from("contents"), graftyard_identity::Access::Read)].into_iter().collect(),
+        ),
+        ..c.clone()
+    };
+    let (_, o) = commit(
+        &mut g,
+        push(vec![up("refs/heads/a", None, Some(oid(1)))], Atomicity::PerRef, Principal::installation(&ro)),
+    );
+    assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 403 || r.status == 404), "{o:?}");
+    assert!(g.refs().is_empty());
+}

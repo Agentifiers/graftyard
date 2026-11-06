@@ -10,8 +10,11 @@
 use graftyard_types::{AccountId, RepoId};
 use serde::{Deserialize, Serialize};
 
+use crate::apps::Access;
 use crate::authz::{AccountKind, AuthzRead, RepoPermission};
-use crate::credential::{Actor, OrgId, Principal, UserId};
+use crate::credential::{Actor, Credential, OrgId, Principal, UserId};
+use crate::stateless::InstallationClaims;
+use crate::tokens::RepoScope;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Visibility {
@@ -79,6 +82,9 @@ pub trait RepoAccess {
 /// `Authz`, and the enterprise's when the owner is an enterprise-owned org. A fold for another owner is ignored, so a
 /// stale read never grants.
 pub fn permission(p: &Principal, authz: &[&dyn AuthzRead], repo: &dyn RepoAccess) -> Option<RepoPermission> {
+    if let (Actor::App { .. }, Credential::Stateless(c)) = (p.actor, &p.credential) {
+        return app_permission(c, authz, repo);
+    }
     let Actor::User(user) = p.actor else { return None };
     let owner = repo.owner();
     let collab = repo.collaborator(user);
@@ -99,6 +105,38 @@ pub fn permission(p: &Principal, authz: &[&dyn AuthzRead], repo: &dyn RepoAccess
     let internal = repo.visibility() == Visibility::Internal
         && (member || a.enterprise().is_some_and(|e| enterprise_member(authz, e, user)));
     via_owner.max(collab).max(internal.then_some(RepoPermission::Read))
+}
+
+/// An installation token's permission on the repository: SHARED's "`authorize` intersects the claims with the
+/// installation's current selection in the `Authz` fold". The installation must still be on the repository's owner,
+/// for the token's App, with the repository in both the claims and the current row, and the token minted no earlier
+/// than `not_before`. `contents` gives `Read` or `Write`, and any other permission `Read` [inference: GitHub's
+/// `metadata` read is implied by every installation]. The lower of the claims' and the row's level wins.
+pub fn app_permission(
+    c: &InstallationClaims,
+    authz: &[&dyn AuthzRead],
+    repo: &dyn RepoAccess,
+) -> Option<RepoPermission> {
+    let a = authz.iter().find(|a| a.owner() == Some(repo.owner()))?;
+    let state = a.installation(c.installation)?;
+    let row = state.row.as_ref()?;
+    if row.app != c.app || c.iat < state.not_before {
+        return None;
+    }
+    let reaches = |s: &RepoScope| match s {
+        RepoScope::All => true,
+        RepoScope::Selected(r) => r.contains(&repo.repo()),
+    };
+    if !reaches(&row.repos) || !reaches(&c.repos) {
+        return None;
+    }
+    let level = |p: &crate::apps::PermissionSet| match p.0.get("contents") {
+        Some(Access::Write | Access::Admin) => Some(RepoPermission::Write),
+        Some(Access::Read) => Some(RepoPermission::Read),
+        None if !p.0.is_empty() => Some(RepoPermission::Read),
+        None => None,
+    };
+    level(&c.permissions).min(level(&row.permissions))
 }
 
 fn enterprise_member(authz: &[&dyn AuthzRead], enterprise: AccountId, user: UserId) -> bool {

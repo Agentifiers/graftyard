@@ -108,7 +108,7 @@ impl Serialize for IssueCall {
             op: self.op.clone(),
             account: match self.actor.actor {
                 Actor::User(u) => Some(u.0.0.0),
-                Actor::Anonymous => None,
+                Actor::App { .. } | Actor::Anonymous => None,
             },
             scopes: self.actor.scopes.0,
             token: Digest(token),
