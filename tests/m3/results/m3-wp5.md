@@ -275,3 +275,22 @@ Branch `b0-18`, with `main` (`856fc32`) merged at `9a83fa4`. Notes are added as 
 
 - `91bf03e` adds a read-index trace to `/stats` on test-faults builds. Each member records every `ReadIndex` it sends and that call's end, every `ReadIndexRes` it steps (from its own call's answer, or from a call the leader made), every move of its applied index, and every wake of its 100 ms ticker that is 50 ms or more late. The leader records each `ReadIndex` it takes and each `ReadIndexRes` it sends, inside the asker's answer or as its own call. `read_bench {"samples": true}` returns every read's start, latency, and end for one learner (`b0-18.ts --trace-slot`, default 0).
 - Site day with `--roll-shards`: `graft-m2b-site-a` `6024f7f3`, `-b` `a832c636`, `-c` `828f27f1`, wasm `c99472241ae96804…`. Image `graft-m1-site-gitshard-git@sha256:8fa9abd4…`, main's image since `ca15db8` (geometric repack). The shard roll did not log: the supervised service printed nothing after `wasm-opt`, though all three versions deployed. Two running shards (`git#0#net:65537`, `#65539`) run the new image, and the rest are stopped.
+
+### Trace runs 22:38 to 22:50Z: 12 runs, 12 fail
+
+On `91bf03e`, 16 learners × 1,000 reads/s for 30 s, with 10 pushes/s (raw data in `/tmp/b018/runs`, not committed). Every run failed on the learner p99, at 1,310 to 2,865 ms. Failed reads were 0 to 53,532 per run. Every run also had at least one `STEP_DOWN` `CommitErrors` trip on the leader, with each voter's calls 3 of 8 to 28 failed in the window. Failed reads come in 2 to 3 s blocks that start within a second of a trip.
+
+Learner `l0` (site 0) in the first run (22:38:57, leader site 0, then 1, then 2): 297 batches. **None queued behind the one in flight.** Each was sent 50 ms after the last was answered, never sooner, so the 50 ms floor set the gap (p50 50 ms). The leader answered in its reply to the learner's own call, p50 33 ms and p99 404 ms. No batch was resent. Every read the learner served waited for nothing but its batch's answer. The read index was always at or below the learner's applied index when the answer arrived (wait-to-apply 0 ms for 293 of 297). Its 1,868 failed reads were all `notLeader`, at seconds 8 to 9 and 24 to 25:
+
+| Offset | Event |
+| --- | --- |
+| 8,627 ms | batch 164 leaves for site 0 (the leader) |
+| 8,693 | site 0's `STEP_DOWN` trips (`CommitErrors`, sites 1 and 2 each 3 of 24 failed), and it starts a transfer to site 1 |
+| 8,709 | site 0 takes batch 164 while it transfers. A transferring leader serves no `fresh`, so the read waits |
+| 9,019 | site 0 answers `None` (not leader) in its own call, 310 ms later. The learner's queued reads fail `notLeader` |
+| 9,164 | batch 165 leaves for site 0 again, which still names itself. `None` again |
+| 9,294 | batch 166 leaves for site 1, the new leader. Answered at 9,451 |
+
+The failed calls that tripped `STEP_DOWN` were site 0's AppendEntries to its voters, and to every learner as well. They failed with "Subrequest depth limit exceeded" (`fetch`) at 6.2 to 8.9 s, and then 118 AppendEntries missed their 1 s deadline together at 9.7 s. The same pattern repeats at 24.3 s on site 1 and at 26.8 s on site 2. The slow reads near p99 (2.7 s) sit in the same windows.
+
+So the p99 failure is not read-index queueing or apply wait. It is the leader stepping down, or holding, because its AppendEntries fail "Subrequest depth limit exceeded". Next: where the depth comes from.
