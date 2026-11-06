@@ -600,13 +600,19 @@ fn logins(c: &Ctx<'_>) -> std::collections::BTreeMap<i64, String> {
 // ---- REST ----
 
 async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: &str) -> Result<Reply> {
-    let Some(rest) = p.strip_prefix("/repos/") else { return Ok(Reply::not_found()) };
-    let segs: Vec<&str> = rest.split('/').collect();
-    let [owner, name, tail @ ..] = segs.as_slice() else { return Ok(Reply::not_found()) };
+    let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
+    let tail = segs.as_slice();
     let who = authenticate(c, req).await?;
     timing::mark("auth");
     let method = req.method();
-    let rd = match read(c, owner, name, who.as_ref()).await? {
+    let rd = match at {
+        graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
+        graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
+            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a)).await?,
+            None => return Ok(Reply::not_found()),
+        },
+    };
+    let rd = match rd {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
