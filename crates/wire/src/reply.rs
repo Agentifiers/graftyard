@@ -131,6 +131,17 @@ impl Reply {
         Reply::json(status, basic_error(status, message, doc))
     }
 
+    /// Agent admission is full (`graftyard_raft::admit`): 429 with `retry-after` and GitHub's secondary rate limit
+    /// message (`design/DESIGN.md`, Shape, "Agent load and agent safety").
+    pub fn secondary_rate_limit(retry_after_s: u32) -> Reply {
+        Reply::error(
+            429,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+            "rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+        )
+        .with("retry-after", retry_after_s.to_string())
+    }
+
     pub fn not_found() -> Reply {
         Reply::error(404, "Not Found", "rest")
     }

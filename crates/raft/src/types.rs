@@ -257,11 +257,18 @@ pub enum CommitError<E> {
     /// The leadership that held the ticket ended, or the ticket is from another term or boot. The caller re-sends
     /// with the same request id.
     NotLeader(NotLeader),
+    /// An Agent-class command waited AGENT_WAIT in its lane and never entered an entry (`crate::admit`). Git gets
+    /// `ng <ref> agent admission full, retry after <n>s`, REST 429 with `retry-after`. A re-send under the same request
+    /// id is admitted afresh.
+    Full { retry_after_s: u32 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Admitted {
     pub ticket: Ticket,
+    /// The class the leader queued it under: the edge's, or Agent after DEMOTE_PER_MIN. A command joining a ticket
+    /// already queued reports the class it was first sent with.
+    pub class: crate::admit::AdmitClass,
 }
 
 /// What a held `commit` answers: the outcome when the ticket resolved within COMMIT_HOLD, else the ticket.

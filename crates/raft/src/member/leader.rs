@@ -6,6 +6,10 @@ use std::time::Duration;
 use graftyard_types::{ChainId, IdBlock, SiteId, Timestamp};
 use smallvec::SmallVec;
 
+use crate::admit::{
+    AGENT_FLOOR, AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_SHARE, AGENT_WAIT, ActorKey, Admit, AdmitClass, AdmitError,
+    DEMOTE_PER_MIN, DEMOTE_WINDOW, HOT_PUSHES, HOT_WINDOW, INLINE_MAX_HOT, Lane, PRESSURE_AGE, retry_after_s,
+};
 use crate::fold::{Command, Fold, Scratch};
 use crate::outcome::{self, Acked};
 use crate::quorum::{self, DurableAck, QuorumProof};
@@ -18,8 +22,8 @@ use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
 use super::election::CAMPAIGN_DEADLINE;
 use super::{
-    Alarm, AppendReq, AppendRes, ByRequest, DepsWanted, IdBlockError, Member, Message, ReadId, ReadStart, Ready,
-    ReconfigError, Refusal, Resolution, Role,
+    AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, DepsWanted, IdBlockError, Member, Message, ReadId,
+    ReadStart, Ready, ReconfigError, Refusal, Resolution, Role,
 };
 
 /// Entries per AppendEntries when a follower is behind.
@@ -53,6 +57,127 @@ struct Queued<C> {
     seq: u64,
     id: RequestId,
     cmd: C,
+    /// Its encoded length, and the Agent-class inline pack bytes it carries (0 for every other class).
+    bytes: usize,
+    agent_inline: usize,
+    at: Timestamp,
+}
+
+/// The leader's admission state (`crate::admit`): one lane per class, the agent token bucket, and the capacity
+/// estimate it is sized from. Memory only; a new leader starts with a full bucket and reads `hot` and the
+/// DEMOTE_PER_MIN counts from the fold.
+struct Admission<C> {
+    lanes: [Lane<Queued<C>>; 4],
+    agent_bytes: usize,
+    agent_inline: usize,
+    tokens: f32,
+    tokens_at: Timestamp,
+    /// The commit round of an `Events` entry, and the encoded bytes of an admitted command, as moving averages.
+    round_ms: f32,
+    cmd_bytes: f32,
+    /// When the last `Events` entry was cut.
+    cut_at: Timestamp,
+    /// Commands this leadership admitted with an actor and has not resolved, per actor: they count toward
+    /// DEMOTE_PER_MIN beside the committed ones in the fold.
+    pending_by: BTreeMap<ActorKey, u32>,
+    seq_actor: BTreeMap<u64, ActorKey>,
+    /// Writes this leadership refused as Agent, per actor, by time: they never commit, so the fold cannot count them,
+    /// and without them a demoted actor whose writes are refused falls back under DEMOTE_PER_MIN and is classed Human
+    /// again. Memory only, so a new leader counts only what committed [inference].
+    refused_by: BTreeMap<ActorKey, VecDeque<Timestamp>>,
+}
+
+/// The round a fresh leader assumes before it has measured one [guess: B0-01's commit p50 on `Tri`].
+const ROUND_PRIOR_MS: f32 = 250.0;
+/// No capacity estimate uses a round shorter than this [guess, the M0-WP9 prototype's floor].
+const ROUND_MIN_MS: f32 = 50.0;
+/// Commands are priced at no fewer bytes than this, so a burst of tiny commands does not claim unbounded capacity
+/// [guess, the M0-WP9 prototype's].
+const CMD_BYTES_MIN: f32 = 200.0;
+/// Actors whose refusals the leader keeps before it drops those with none in the last minute.
+const REFUSED_ACTORS_MAX: usize = 20_000;
+
+impl<C> Admission<C> {
+    fn new(now: Timestamp) -> Admission<C> {
+        Admission {
+            lanes: Default::default(),
+            agent_bytes: 0,
+            agent_inline: 0,
+            tokens: f32::MAX,
+            tokens_at: now,
+            round_ms: ROUND_PRIOR_MS,
+            cmd_bytes: 1_000.0,
+            cut_at: now,
+            pending_by: BTreeMap::new(),
+            seq_actor: BTreeMap::new(),
+            refused_by: BTreeMap::new(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.lanes.iter().all(Lane::is_empty)
+    }
+
+    fn agent(&self) -> &Lane<Queued<C>> {
+        &self.lanes[AdmitClass::Agent.lane()]
+    }
+
+    /// Commands a second: entries a second at the measured round, times the commands of the current byte mix one
+    /// entry holds. `fixed` is the host's override (`Member::set_admit_capacity`).
+    fn capacity(&self, fixed: Option<f32>) -> f32 {
+        fixed.unwrap_or_else(|| {
+            let per_entry = ENTRY_MAX as f32 / self.cmd_bytes.max(CMD_BYTES_MIN);
+            per_entry * 1000.0 / self.round_ms.max(ROUND_MIN_MS)
+        })
+    }
+
+    fn refill(&mut self, now: Timestamp, cap: f32) {
+        let rate = AGENT_SHARE * cap;
+        let dt = now.0.saturating_sub(self.tokens_at.0) as f32 / 1000.0;
+        self.tokens = (self.tokens + rate * dt).min(rate.max(1.0));
+        self.tokens_at = now;
+    }
+
+    fn take(&mut self, class: AdmitClass) -> Option<Queued<C>> {
+        let q = self.lanes[class.lane()].pop()?;
+        if class == AdmitClass::Agent {
+            self.agent_bytes -= q.bytes;
+            self.agent_inline -= q.agent_inline;
+        }
+        Some(q)
+    }
+
+    fn resolved(&mut self, seq: u64) {
+        if let Some(a) = self.seq_actor.remove(&seq)
+            && let Some(n) = self.pending_by.get_mut(&a)
+        {
+            *n -= 1;
+            if *n == 0 {
+                self.pending_by.remove(&a);
+            }
+        }
+    }
+
+    fn refused(&mut self, actor: Option<ActorKey>, now: Timestamp) {
+        let Some(a) = actor else { return };
+        let cut = Timestamp(now.0.saturating_sub(DEMOTE_WINDOW.as_millis() as u64));
+        let q = self.refused_by.entry(a).or_default();
+        q.push_back(now);
+        while q.front().is_some_and(|t| *t < cut) {
+            q.pop_front();
+        }
+        if self.refused_by.len() > REFUSED_ACTORS_MAX {
+            self.refused_by.retain(|_, q| q.back().is_some_and(|t| *t >= cut));
+        }
+    }
+
+    fn refused_since(&self, a: ActorKey, from: Timestamp) -> u32 {
+        self.refused_by.get(&a).map_or(0, |q| q.iter().filter(|t| **t >= from).count() as u32)
+    }
+
+    fn drain(self) -> impl Iterator<Item = Queued<C>> {
+        self.lanes.into_iter().flat_map(Lane::drain)
+    }
 }
 
 type Decided<C> = (u64, Result<<C as Command>::Out, <C as Command>::Err>);
@@ -75,7 +200,7 @@ pub(super) struct Lead<C: Command> {
     /// The outstanding call to each follower.
     sent: BTreeMap<SiteId, (u64, Timestamp)>,
     round: u64,
-    queue: VecDeque<Queued<C>>,
+    admission: Admission<C>,
     seq: u64,
     /// No commit below this index: the second `Noop` of a resumed `led_term` (`become_leader`), else 0.
     commit_floor: Index,
@@ -180,7 +305,7 @@ impl<C: Command> Member<C> {
             lease_end: Timestamp(0),
             sent: BTreeMap::new(),
             round: 0,
-            queue: VecDeque::new(),
+            admission: Admission::new(self.now),
             seq: 0,
             commit_floor: Index(0),
             by_request: BTreeMap::new(),
@@ -256,8 +381,8 @@ impl<C: Command> Member<C> {
         }
         let nl = self.not_leader();
         let seqs = lead
-            .queue
-            .iter()
+            .admission
+            .drain()
             .map(|q| q.seq)
             .chain(lead.deciding.iter().flat_map(|(_, b)| b.iter().map(|q| q.seq)))
             .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _)| *s)));
@@ -427,40 +552,166 @@ impl<C: Command> Member<C> {
         Ok(())
     }
 
-    /// Takes a command into the next entry. A restarted leader resumes `led_term` here.
+    /// Takes a command into the next entry as Human, with no actor: it is never demoted, staged, or refused by
+    /// admission, and Human commands keep their order. A restarted leader resumes `led_term` here.
     pub fn commit(&mut self, now: Timestamp, id: RequestId, cmd: C) -> Ready<C, Result<Admitted, CallError>> {
         self.begin(now);
-        let r = self.admit(id, cmd);
+        let r = self.admit(id, cmd, Admit::human()).map_err(|e| match e {
+            AdmitError::Call(e) => e,
+            AdmitError::Full { .. } | AdmitError::Stage => unreachable!("a Human command with no pack is admitted"),
+        });
         self.finish(r)
     }
 
-    fn admit(&mut self, id: RequestId, cmd: C) -> Result<Admitted, CallError> {
+    /// `commit` under admission (`crate::admit`): the edge's class, the actor, and the command's inline pack bytes.
+    /// The leader demotes a Human or Bot actor past DEMOTE_PER_MIN committed and queued writes in the last minute to
+    /// Agent. An Agent command is refused with `Full` at AGENT_QUEUE_MAX, and so is an agent pack over INLINE_MAX_HOT
+    /// or past AGENT_INLINE_ENTRY while placement fails. `Stage` asks the edge to store the pack and send again: a
+    /// pack over INLINE_MAX_HOT on a hot group, an agent pack under pressure, and one past AGENT_INLINE_ENTRY. A
+    /// request id already queued or committed joins its ticket or row whatever it carries.
+    pub fn commit_as(
+        &mut self,
+        now: Timestamp,
+        id: RequestId,
+        cmd: C,
+        a: Admit,
+    ) -> Ready<C, Result<Admitted, AdmitError>> {
+        self.begin(now);
+        let r = self.admit(id, cmd, a);
+        self.finish(r)
+    }
+
+    /// The host's fixed admission capacity in commands a second, or `None` to measure it (the default). The M0-WP9
+    /// prototype's `capN` groups did this to make the agent bucket bind at a known rate.
+    pub fn set_admit_capacity(&mut self, cap: Option<f32>) {
+        self.admit_capacity = cap;
+    }
+
+    /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
+    /// under pressure. `None` on a follower.
+    pub fn admission(&self) -> Option<AdmissionView> {
+        let lead = self.lead.as_ref()?;
+        let ad = &lead.admission;
+        let cap = ad.capacity(self.admit_capacity);
+        Some(AdmissionView {
+            capacity: cap,
+            agent_queued: ad.agent().len(),
+            agent_bytes: ad.agent_bytes,
+            queued: ad.lanes.iter().map(Lane::len).sum(),
+            hot: self.hot(),
+            pressure: self.pressure(cap),
+            retry_after_s: retry_after_s(ad.agent().len(), cap),
+        })
+    }
+
+    /// Pushes a second over the last HOT_WINDOW of committed entries, above HOT_PUSHES.
+    fn hot(&self) -> bool {
+        let w = HOT_WINDOW.as_millis() as u64;
+        let n = self.fold.pushes(Timestamp(self.now.0.saturating_sub(w)), Timestamp(self.now.0 + 1));
+        n as f32 / HOT_WINDOW.as_secs_f32() > HOT_PUSHES
+    }
+
+    fn pressure(&self, cap: f32) -> bool {
+        let Some(lead) = &self.lead else { return false };
+        let ad = &lead.admission;
+        ad.agent_bytes > ENTRY_MAX || ad.agent().len() as f32 > AGENT_SHARE * cap * PRESSURE_AGE.as_secs_f32()
+    }
+
+    /// DEMOTE_PER_MIN: the actor's committed writes in the last minute, plus those this leader holds unresolved.
+    fn demoted(&self, a: &Admit) -> AdmitClass {
+        let (Some(actor), AdmitClass::Human | AdmitClass::Bot) = (a.actor, a.class) else { return a.class };
+        let from = Timestamp(self.now.0.saturating_sub(DEMOTE_WINDOW.as_millis() as u64));
+        let committed = self.fold.actor_writes(actor, from, Timestamp(self.now.0 + 1));
+        let ad = self.lead.as_ref().map(|l| &l.admission);
+        let held = ad.and_then(|ad| ad.pending_by.get(&actor)).copied().unwrap_or(0);
+        let refused = ad.map_or(0, |ad| ad.refused_since(actor, from));
+        if committed + held + refused >= DEMOTE_PER_MIN { AdmitClass::Agent } else { a.class }
+    }
+
+    /// The admission rules for a new request id, in the design's order: the outage refusal, AGENT_QUEUE_MAX before
+    /// any staging, then staging. Returns the class it queues under.
+    fn admission_check(&self, a: &Admit, bytes: usize) -> Result<AdmitClass, AdmitError> {
+        let lead = self.lead.as_ref().expect("leading");
+        let ad = &lead.admission;
+        let class = self.demoted(a);
+        let agent = class == AdmitClass::Agent;
+        let cap = ad.capacity(self.admit_capacity);
+        let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), cap) };
+        if agent && !a.placement_ok && a.inline > INLINE_MAX_HOT {
+            return Err(full());
+        }
+        let hot_stage = a.push && a.placement_ok && a.inline > INLINE_MAX_HOT && self.hot();
+        let agent_stage =
+            agent && a.inline > 0 && (self.pressure(cap) || ad.agent_inline + a.inline > AGENT_INLINE_ENTRY);
+        let staged = if hot_stage || agent_stage { bytes - a.inline } else { bytes };
+        if agent && (ad.agent().len() >= AGENT_QUEUE_MAX.0 as usize || ad.agent_bytes + staged > AGENT_QUEUE_MAX.1) {
+            return Err(full());
+        }
+        if agent_stage && !a.placement_ok {
+            return Err(full());
+        }
+        if hot_stage || agent_stage {
+            return Err(AdmitError::Stage);
+        }
+        Ok(class)
+    }
+
+    fn admit(&mut self, id: RequestId, cmd: C, a: Admit) -> Result<Admitted, AdmitError> {
+        let call = AdmitError::Call;
         let len = cmd.encoded_len();
         if len > COMMAND_MAX {
-            return Err(CallError::TooLarge { len, max: COMMAND_MAX });
+            return Err(call(CallError::TooLarge { len, max: COMMAND_MAX }));
         }
         let format = cmd.format();
         if !self.cfg.reads.contains(&format) {
-            return Err(CallError::Unsupported(crate::Unsupported { release: self.cfg.release.id, format }));
+            return Err(call(CallError::Unsupported(crate::Unsupported { release: self.cfg.release.id, format })));
         }
-        self.lead_or_resume().map_err(CallError::NotLeader)?;
+        self.lead_or_resume().map_err(|nl| call(CallError::NotLeader(nl)))?;
         if self.no_lead() {
-            return Err(CallError::NotLeader(self.not_leader()));
+            return Err(call(CallError::NotLeader(self.not_leader())));
         }
-        let lead = self.lead.as_mut().expect("leading");
-        let seq = match lead.by_request.get(&id) {
-            Some(seq) => *seq,
+        self.expire_agents();
+        let joins = self.lead.as_ref().expect("leading").by_request.get(&id).copied();
+        let mut admitted = a.class;
+        let seq = match joins {
+            Some(seq) => seq,
             None => {
+                // A command that already committed is answered from its row in the next entry cut, whatever class.
+                let class = if self.fold.request(id).is_some() {
+                    a.class
+                } else {
+                    let r = self.admission_check(&a, len);
+                    if matches!(r, Err(AdmitError::Full { .. })) {
+                        let now = self.now;
+                        self.lead.as_mut().expect("leading").admission.refused(a.actor, now);
+                    }
+                    r?
+                };
+                admitted = class;
+                let now = self.now;
+                let lead = self.lead.as_mut().expect("leading");
                 lead.seq += 1;
                 let seq = lead.seq;
                 lead.by_request.insert(id, seq);
-                lead.queue.push_back(Queued { seq, id, cmd });
+                let ad = &mut lead.admission;
+                ad.cmd_bytes = 0.98 * ad.cmd_bytes + 0.02 * len as f32;
+                let agent_inline = if class == AdmitClass::Agent { a.inline } else { 0 };
+                if class == AdmitClass::Agent {
+                    ad.agent_bytes += len;
+                    ad.agent_inline += agent_inline;
+                }
+                if let Some(actor) = a.actor {
+                    *ad.pending_by.entry(actor).or_insert(0) += 1;
+                    ad.seq_actor.insert(seq, actor);
+                }
+                let q = Queued { seq, id, cmd, bytes: len, agent_inline, at: now };
+                ad.lanes[class.lane()].push(a.actor, q);
                 seq
             }
         };
         let ticket = self.ticket(seq);
         self.pump();
-        Ok(Admitted { ticket })
+        Ok(Admitted { ticket, class: admitted })
     }
 
     fn lead_or_resume(&mut self) -> Result<(), NotLeader> {
@@ -519,7 +770,7 @@ impl<C: Command> Member<C> {
             if !lead.ready
                 || lead.pending.is_some()
                 || lead.deciding.is_some()
-                || (lead.queue.is_empty() && lead.blocks.is_empty() && lead.records.is_empty())
+                || (lead.admission.is_empty() && lead.blocks.is_empty() && lead.records.is_empty())
                 || lead.transfer.is_some()
                 || no_lead
             {
@@ -539,15 +790,10 @@ impl<C: Command> Member<C> {
                 self.append_record(id, format, events);
                 return;
             }
-            let mut batch = Vec::new();
-            let mut bytes = 0;
-            while let Some(q) = lead.queue.front() {
-                let n = q.cmd.encoded_len();
-                if !batch.is_empty() && bytes + n > ENTRY_MAX {
-                    break;
-                }
-                bytes += n;
-                batch.push(lead.queue.pop_front().expect("front"));
+            let batch = Self::cut(lead, self.now, self.admit_capacity);
+            if batch.is_empty() {
+                // Only agent commands wait, and the bucket is empty: `tick` cuts again once it refills.
+                return;
             }
             // A command whose id has a row is not decided again: answer it from the stored events.
             let proof = lead.proof.clone().expect("ready implies a commit proof");
@@ -582,6 +828,80 @@ impl<C: Command> Member<C> {
                 self.out.deps.push(DepsWanted { id, chains });
             }
             return;
+        }
+    }
+
+    /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
+    /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within
+    /// ENTRY_MAX bytes, and the Agent commands within AGENT_INLINE_ENTRY of inline pack bytes; the first command of an
+    /// entry always goes.
+    fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>) -> Vec<Queued<C>> {
+        let ad = &mut lead.admission;
+        let cap = ad.capacity(fixed);
+        ad.refill(now, cap);
+        let mut batch: Vec<Queued<C>> = Vec::new();
+        let mut bytes = 0;
+        let mut agent_inline = 0;
+        let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize| {
+            q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= ENTRY_MAX)
+        };
+        let fits_agent = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize, inl: usize| {
+            fits(q, batch, bytes) && q.is_some_and(|q| inl == 0 || inl + q.agent_inline <= AGENT_INLINE_ENTRY)
+        };
+        for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
+            while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
+                let q = ad.take(class).expect("front");
+                bytes += q.bytes;
+                batch.push(q);
+            }
+        }
+        let since = (now.0.saturating_sub(ad.cut_at.0) as f32).max(ad.round_ms);
+        let floor = (AGENT_FLOOR * cap * since / 1000.0).floor() as usize;
+        let mut n = 0;
+        while n < floor && ad.tokens >= 1.0 && fits_agent(ad.agent().front(), &batch, bytes, agent_inline) {
+            let q = ad.take(AdmitClass::Agent).expect("front");
+            (bytes, agent_inline, n, ad.tokens) =
+                (bytes + q.bytes, agent_inline + q.agent_inline, n + 1, ad.tokens - 1.0);
+            batch.push(q);
+        }
+        while fits(ad.lanes[AdmitClass::Bot.lane()].front(), &batch, bytes) {
+            let q = ad.take(AdmitClass::Bot).expect("front");
+            bytes += q.bytes;
+            batch.push(q);
+        }
+        while ad.tokens >= 1.0 && fits_agent(ad.agent().front(), &batch, bytes, agent_inline) {
+            let q = ad.take(AdmitClass::Agent).expect("front");
+            (bytes, agent_inline, ad.tokens) = (bytes + q.bytes, agent_inline + q.agent_inline, ad.tokens - 1.0);
+            batch.push(q);
+        }
+        if !batch.is_empty() {
+            ad.cut_at = now;
+        }
+        batch
+    }
+
+    /// AGENT_WAIT: an agent command still queued that long is answered `Full` and never enters an entry.
+    fn expire_agents(&mut self) {
+        let Some(lead) = self.lead.as_mut() else { return };
+        let cut = Timestamp(self.now.0.saturating_sub(AGENT_WAIT.as_millis() as u64));
+        let ad = &mut lead.admission;
+        let old = ad.lanes[AdmitClass::Agent.lane()].take_old(|q| q.at < cut);
+        if old.is_empty() {
+            return;
+        }
+        for q in &old {
+            ad.agent_bytes -= q.bytes;
+            ad.agent_inline -= q.agent_inline;
+        }
+        let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity));
+        let now = self.now;
+        for q in &old {
+            if let Some(a) = ad.seq_actor.get(&q.seq).copied() {
+                ad.refused(Some(a), now);
+            }
+        }
+        for q in old {
+            self.resolve(q.seq, Some(q.id), Err(CommitError::Full { retry_after_s }));
         }
     }
 
@@ -694,6 +1014,7 @@ impl<C: Command> Member<C> {
     fn resolve(&mut self, seq: u64, id: Option<RequestId>, result: Outcome<C>) {
         let ticket = self.ticket(seq);
         let lead = self.lead.as_mut().expect("leading");
+        lead.admission.resolved(seq);
         match id {
             Some(id) => {
                 lead.by_request.remove(&id);
@@ -1069,6 +1390,13 @@ impl<C: Command> Member<C> {
                     && *index <= n
                 {
                     let (index, decided) = lead.pending.take().expect("pending");
+                    if !decided.is_empty()
+                        && let Some(at) = self.entry_at(index).map(|e| e.at)
+                    {
+                        let ad = &mut self.lead.as_mut().expect("leading").admission;
+                        ad.round_ms = 0.9 * ad.round_ms + 0.1 * self.now.0.saturating_sub(at.0) as f32;
+                    }
+                    let lead = self.lead.as_mut().expect("leading");
                     if let Some((_, block)) = lead.block_pending.take() {
                         self.out.resolutions.push(Resolution::IdBlock { block, result: Ok(index) });
                     }
@@ -1229,5 +1557,7 @@ impl<C: Command> Member<C> {
             self.send_append(p, true);
         }
         self.check_reads();
+        self.expire_agents();
+        self.pump();
     }
 }

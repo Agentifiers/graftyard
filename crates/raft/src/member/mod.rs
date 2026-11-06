@@ -353,6 +353,20 @@ impl<F: Fold> Storage<F::Event> for Stored<F> {
     }
 }
 
+/// What the leader's admission sees (`Member::admission`): the hints the edge reads to stage packs, and the queue.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AdmissionView {
+    /// Commands a second, measured or fixed.
+    pub capacity: f32,
+    pub agent_queued: usize,
+    pub agent_bytes: usize,
+    /// Every class.
+    pub queued: usize,
+    pub hot: bool,
+    pub pressure: bool,
+    pub retry_after_s: u32,
+}
+
 /// A read the host started with `Member::read`; its `Resolution::Read` carries the same id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReadId(pub u64);
@@ -671,6 +685,8 @@ pub struct Member<C: Command> {
     install: Option<InstallSource>,
     /// Reads waiting on a read index from the leader, as a follower or learner.
     remote: install::RemoteReads,
+    /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
+    admit_capacity: Option<f32>,
 }
 
 impl<C: Command> Member<C> {
@@ -693,6 +709,13 @@ impl<C: Command> Member<C> {
     ) -> Result<(Member<C>, Ready<C, ()>), PlacementError> {
         let Stored { state, base, log, fold } = stored;
         assert!(base.index <= fold.applied(), "stored log base above the applied fold");
+        let mut fold = fold;
+        // The admission window is not in the host's tables: rebuild it from the applied entries the stored window
+        // holds (`GroupFold::note_writes`; an entry already noted is skipped).
+        let applied = fold.applied();
+        for e in log.iter().filter(|e| e.index <= applied) {
+            fold.note_writes(e);
+        }
         let mut m = Self::build(cfg, state.unwrap_or_else(MemberState::fresh), base, log, fold, seed)?;
         m.begin(now);
         m.own_durable_at = now;
@@ -777,6 +800,7 @@ impl<C: Command> Member<C> {
             early_from: Index(0),
             install: None,
             remote: install::RemoteReads::default(),
+            admit_capacity: None,
         })
     }
 

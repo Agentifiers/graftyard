@@ -408,6 +408,18 @@ impl Refusal {
     pub fn refused(why: &str) -> Refusal {
         Refusal { unpack: "ok".into(), reason: one_line(why), remote: vec![] }
     }
+
+    /// Agent admission is full (`graftyard_raft::admit`): HTTP 200 with `ng <ref> agent admission full, retry after
+    /// <n>s` on every ref and a `remote:` line (`design/DESIGN.md`, Shape, "Agent load and agent safety").
+    pub fn agent_full(retry_after_s: u32) -> Refusal {
+        Refusal {
+            unpack: "ok".into(),
+            reason: format!("agent admission full, retry after {retry_after_s}s"),
+            remote: vec![format!(
+                "This repository is admitting agent writes at its agent share. Retry this push in {retry_after_s} seconds."
+            )],
+        }
+    }
 }
 
 fn one_line(s: &str) -> String {
