@@ -22,10 +22,12 @@ import hosted as h  # noqa: E402
 
 def core_rows(site):
     """The leader's core-tier rows (`{"q": {"rows": true}}`): what "core tier bytes unchanged" compares. The tier's
-    `fold_digest` also hashes `applied`, the term, and the last entry's digest, so it moves on every entry."""
+    `fold_digest` also hashes `applied`, the term, and the last entry's digest, so it moves on every entry. The
+    consumers' `consumer_cursor` rows are left out: `PrSync` moves its cursor every `CURSOR_STRIDE` (1,000) entries
+    whatever they hold, so 500 entries of statuses can cross a stride; the record keeps which rows changed."""
     v = h.member(site, "/read", {"q": {"rows": True}})["v"]["value"]
     assert v["complete"], "rows truncated"
-    return json.dumps(v["core"], sort_keys=True)
+    return {json.dumps(r[:2]): json.dumps(r[2]) for r in v["core"]}
 
 
 def tiers(site):
@@ -93,13 +95,15 @@ def main():
         "gh pr checks lists all": want <= names,
         "none required": not (want & {c["name"] for c in required}),
         "REST lists all": want <= rest_names and len([x for x in got if x["context"] in want]) == n,
-        "core unchanged": core0 == core1,
+        "core unchanged": {k: v for k, v in core0.items() if "consumer_cursor" not in k}
+                          == {k: v for k, v in core1.items() if "consumer_cursor" not in k},
         "members agree (metadata)": len(set(meta_at.values())) == 1 and None not in meta_at.values(),
         "members agree (core)": len(set(core_at.values())) == 1 and None not in core_at.values(),
     }
     rec = {"run": run, "n": n, "pr": pr, "head": head, "post_s": post_s, "post_errors": errs[:5],
            "gh_checks": len(names & want), "gh_rc": rc, "rest": len(rest_names & want),
-           "core_bytes": len(core0), "at": at, "meta_at": meta_at, "core_at": core_at, "ok": ok, "pass": all(ok.values())}
+           "core_rows": len(core0), "core_changed": sorted(k for k in core0.keys() | core1.keys()
+                                                            if core0.get(k) != core1.get(k)), "at": at, "meta_at": meta_at, "core_at": core_at, "ok": ok, "pass": all(ok.values())}
     h.append(f"{h.RAW}/{run}.jsonl", rec)
     h.log(json.dumps(rec)[:1500])
 
