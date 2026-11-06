@@ -18,8 +18,9 @@ check these tokens:
   repository's own README.md and AGENTS.md, so a bare mention there names another project's README or a customer
   repository's AGENTS.md.
 
-The script does not read history/, whose paths are relative to the old workspace. A citation of a history/ path from
-outside history/ is checked like any other. Exit code 1 lists each missing path as file:line: path.
+The script does not read history/, whose paths are relative to the old workspace, or site/, the teaser website, whose
+vendored kits cite their own scripts/ folders. A citation of a history/ path from outside history/ is checked like any
+other. Exit code 1 lists each missing path as file:line: path.
 """
 
 import re
@@ -35,6 +36,7 @@ CITE = re.compile(r"(?<![\w./-])((?:" + "|".join(ROOTS) + r")/[^\s`'\"()\[\]|,;]
 PATTERN_CHARS = set("*<>{}$")
 FOREIGN_ROOT_FILES = {"README.md", "AGENTS.md"}
 SKIPPED = {"history", "__pycache__", ".git", "node_modules", ".wrangler"}
+SKIPPED_ROOTS = {"site"}
 
 
 def predates_root_files(rel):
@@ -60,7 +62,7 @@ def files():
 		rel = path.relative_to(ROOT)
 		if any(rel.as_posix() == p or rel.as_posix().startswith(p + "/") for p in skip):
 			continue
-		if path.is_file() and not SKIPPED & set(rel.parts):
+		if path.is_file() and not SKIPPED & set(rel.parts) and rel.parts[0] not in SKIPPED_ROOTS:
 			try:
 				yield rel.as_posix(), path.read_text()
 			except UnicodeDecodeError:

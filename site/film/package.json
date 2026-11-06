@@ -1,0 +1,48 @@
+{
+  "name": "graftyard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A film built from code: one beat-locked timeline drives picture and sound.",
+  "scripts": {
+    "studio": "remotion studio",
+    "stills": "remotion still Mark16 out/stills/mark-16.png --log=error && remotion still MarkSizes out/stills/mark-sizes.png --log=error && remotion still MarkLarge out/stills/mark-large.png --log=error",
+    "check": "tsc --noEmit && node scripts/lint-film.mjs src && tsx scripts/grid-check.ts src/timeline.ts && tsx scripts/grid-check.ts src/ghes/timeline.ts && tsx scripts/grid-check.ts src/chaos/timeline.ts",
+    "sound": "node scripts/sound.mjs",
+    "cues": "tsx scripts/export-cues.ts",
+    "music": "node scripts/py.mjs scripts/audio/track.py music",
+    "kit": "node scripts/py.mjs scripts/audio/kit.py render",
+    "plan": "node scripts/py.mjs scripts/audio/plan.py",
+    "audio": "node scripts/py.mjs scripts/audio/plan.py --quiet && node scripts/py.mjs scripts/audio/score.py --cues out/cues.json --score audio/score.json --out public/audio/soundtrack.wav --stems out/stems --json out/qa/score.json",
+    "credits": "node scripts/py.mjs scripts/audio/credits.py",
+    "listen": "node scripts/py.mjs scripts/audio/listen.py",
+    "render": "bash scripts/render.sh Film out/film.mp4 --blur --audio public/audio/soundtrack.wav",
+    "render:preview": "bash scripts/render.sh Film out/preview.mp4 --preview --audio public/audio/soundtrack.wav",
+    "render:draft": "bash scripts/render.sh Film out/draft.mp4 --draft --max-min 9",
+    "gates": "node scripts/py.mjs scripts/forensics.py out/draft.mp4 --cues out/cues.json --grammar-only --json out/qa/forensics-draft.json; node scripts/py.mjs scripts/copy-check.py --ui src; node scripts/logos.mjs check",
+    "qa": "mkdir -p out/qa && node scripts/py.mjs scripts/probe.py out/film.mp4 --spec 1350x1080@30 && node scripts/py.mjs scripts/forensics.py out/film.mp4 --cues out/cues.json --json out/qa/forensics.json && node scripts/py.mjs scripts/av-audit.py out/film.mp4 --cues out/cues.json --stems out/stems --json out/qa/av.json && node scripts/py.mjs scripts/sheet.py out/film.mp4 --out out/qa/sheet.png",
+    "loop": "bash scripts/render.sh Film out/loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Film out/loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/loop.mp4 -c copy -an -movflags +faststart ../public/film/push-loop.mp4 && ffmpeg -v error -y -i out/loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/push-loop.webm && node scripts/frames.mjs still 195 --scale 1 && ffmpeg -v error -y -i out/stills/f0195.png -q:v 3 ../public/film/push-loop.jpg",
+    "loop:ghes": "bash scripts/render.sh Ghes out/ghes-loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Ghes out/ghes-loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/ghes-loop.mp4 -c copy -an -movflags +faststart ../public/film/ghes-loop.mp4 && ffmpeg -v error -y -i out/ghes-loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/ghes-loop.webm && node scripts/frames.mjs still 255 --comp Ghes --scale 1 && ffmpeg -v error -y -i out/stills/Ghes-f0255.png -q:v 3 ../public/film/ghes-loop.jpg",
+    "loop:chaos": "bash scripts/render.sh Chaos out/chaos-loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Chaos out/chaos-loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/chaos-loop.mp4 -c copy -an -movflags +faststart ../public/film/chaos-loop.mp4 && ffmpeg -v error -y -i out/chaos-loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/chaos-loop.webm && node scripts/frames.mjs still 225 --comp Chaos --scale 1 && ffmpeg -v error -y -i out/stills/Chaos-f0225.png -q:v 3 ../public/film/chaos-loop.jpg",
+    "cues:ghes": "tsx scripts/export-cues.ts --sync src/ghes/sync.ts --timeline src/ghes/timeline.ts --out out/cues-ghes.json",
+    "cues:chaos": "tsx scripts/export-cues.ts --sync src/chaos/sync.ts --timeline src/chaos/timeline.ts --out out/cues-chaos.json"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.529",
+    "@remotion/layout-utils": "4.0.529",
+    "@remotion/noise": "4.0.529",
+    "@remotion/paths": "4.0.529",
+    "@remotion/shapes": "4.0.529",
+    "@remotion/three": "4.0.529",
+    "@react-three/fiber": "9.8.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "remotion": "4.0.529",
+    "three": "0.186.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/three": "0.186.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0 || ^7.0.0"
+  }
+}

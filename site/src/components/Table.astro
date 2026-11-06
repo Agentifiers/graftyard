@@ -1,0 +1,13 @@
+---
+// A results table. Cells are trusted HTML written on these pages (for <code>, and .ok / .no marks). On a phone
+// each row becomes a block of labelled lines (the head's words as labels), so nothing scrolls sideways.
+interface Props { head: string[]; rows: string[][]; caption?: string }
+const { head, rows, caption } = Astro.props;
+---
+<table class="dt">
+  {caption && <caption class="sr-only">{caption}</caption>}
+  <thead><tr>{head.map((h) => <th scope="col">{h}</th>)}</tr></thead>
+  <tbody>
+    {rows.map((r) => <tr>{r.map((c, i) => <td data-label={head[i]}><span set:html={c} /></td>)}</tr>)}
+  </tbody>
+</table>

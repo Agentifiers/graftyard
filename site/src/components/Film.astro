@@ -1,0 +1,14 @@
+---
+// One silent cinetic loop from public/film/<name>.{webm,mp4,jpg}, rendered by site/film.
+interface Props { name: string; label: string; class?: string }
+const { name, label, class: cls = '' } = Astro.props;
+---
+<div class:list={['frame frame--film', cls]} data-visual>
+  <video muted loop playsinline preload="none" poster={`/film/${name}.jpg`} aria-label={label}>
+    <source src={`/film/${name}.webm`} type="video/webm">
+    <source src={`/film/${name}.mp4`} type="video/mp4">
+  </video>
+  <button class="loop-pause" type="button" aria-label="Pause the film" data-film-pause>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 3h3v10H4zM9 3h3v10H9z"/></svg>
+  </button>
+</div>

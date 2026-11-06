@@ -1,0 +1,219 @@
+{
+ "fps": 30,
+ "bpm": 120,
+ "total": 360,
+ "width": 1350,
+ "height": 1080,
+ "pace": "calm",
+ "acts": {
+  "push": {
+   "from": 0,
+   "dur": 60
+  },
+  "hold": {
+   "from": 60,
+   "dur": 120
+  },
+  "ack": {
+   "from": 180,
+   "dur": 120
+  },
+  "reset": {
+   "from": 300,
+   "dur": 60
+  }
+ },
+ "cue": {
+  "type": 4,
+  "enter": 30,
+  "split": 90,
+  "heldWeur": 120,
+  "heldEnam": 135,
+  "lineIn": 143,
+  "lineOut": 210,
+  "ackGo": 218,
+  "ack": 240,
+  "prompt": 255,
+  "heldApac": 270,
+  "scroll": 300,
+  "clear": 315
+ },
+ "copy": [
+  {
+   "id": "held",
+   "text": "Held on two continents",
+   "in": 143,
+   "resolved": 174,
+   "out": 210,
+   "words": 4,
+   "kind": "copy",
+   "read": [
+    [
+     174,
+     210
+    ]
+   ]
+  }
+ ],
+ "events": [
+  {
+   "f": 30,
+   "kind": "pop",
+   "weight": 0.7,
+   "pan": 0,
+   "id": "push:entry"
+  },
+  {
+   "f": 90,
+   "kind": "tick",
+   "weight": 0.6,
+   "pan": 0,
+   "id": "hold:split"
+  },
+  {
+   "f": 120,
+   "kind": "tock",
+   "weight": 0.7,
+   "pan": 0,
+   "id": "hold:held-weur"
+  },
+  {
+   "f": 135,
+   "kind": "tock",
+   "weight": 0.7,
+   "pan": 0,
+   "id": "hold:held-enam"
+  },
+  {
+   "f": 240,
+   "kind": "click",
+   "weight": 0.9,
+   "pan": 0,
+   "variant": "confirm",
+   "id": "ack:ack"
+  },
+  {
+   "f": 270,
+   "kind": "tock",
+   "weight": 0.5,
+   "pan": 0,
+   "id": "ack:held-apac"
+  }
+ ],
+ "look": {
+  "blur": "crisp",
+  "texture": "clean",
+  "filmType": "social",
+  "oneTake": true,
+  "whiteWorld": false
+ },
+ "declared": {
+  "seams": [
+   {
+    "at": 30,
+    "kind": "morph",
+    "carry": "shape",
+    "id": "command-becomes-entry"
+   },
+   {
+    "at": 90,
+    "kind": "morph",
+    "carry": "shape",
+    "id": "entry-becomes-three"
+   },
+   {
+    "at": 143,
+    "kind": "light",
+    "id": "product-steps-back"
+   },
+   {
+    "at": 218,
+    "kind": "light",
+    "id": "product-relit"
+   },
+   {
+    "at": 240,
+    "kind": "morph",
+    "carry": "shape",
+    "id": "acks-become-check"
+   },
+   {
+    "at": 300,
+    "kind": "mask",
+    "carry": "y",
+    "dir": -1,
+    "id": "terminal-scrolls"
+   }
+  ],
+  "stepped": [
+   {
+    "from": 4,
+    "to": 30,
+    "id": "cmd-keys"
+   },
+   {
+    "from": 240,
+    "to": 255,
+    "id": "ack-print"
+   }
+  ],
+  "flashes": [],
+  "cameraBlur": [],
+  "colour": [],
+  "shots": [],
+  "stages": [],
+  "end": null,
+  "reveal": null,
+  "springClass": "",
+  "structural": [],
+  "fx": [
+   {
+    "id": "cmd",
+    "seams": [],
+    "stepped": [
+     {
+      "from": 5,
+      "to": 16,
+      "id": "cmd-keys"
+     }
+    ],
+    "flashes": [],
+    "cameraBlur": [],
+    "colour": [],
+    "shots": [],
+    "stages": []
+   },
+   {
+    "id": "ack",
+    "seams": [],
+    "stepped": [
+     {
+      "from": 243,
+      "to": 250,
+      "id": "ack-print"
+     }
+    ],
+    "flashes": [],
+    "cameraBlur": [],
+    "colour": [],
+    "shots": [],
+    "stages": []
+   }
+  ]
+ },
+ "salience": {
+  "type": "move",
+  "enter": "hit",
+  "split": "hit",
+  "heldWeur": "hit",
+  "heldEnam": "hit",
+  "lineIn": "copy",
+  "lineOut": "copy",
+  "ackGo": "move",
+  "ack": "hit",
+  "prompt": "hit",
+  "heldApac": "hit",
+  "scroll": "move",
+  "clear": "move"
+ }
+}

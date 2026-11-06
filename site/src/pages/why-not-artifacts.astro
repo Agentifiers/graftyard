@@ -1,0 +1,89 @@
+---
+// The case in decisions/DECISIONS.md ("Artifacts is not used"), design/DESIGN.md ("Alternatives considered"),
+// design/AGENT-LAYER.md ("Artifacts' role"), research/artifacts-recheck.md (2026-10-26) and
+// tests/m0/results/wp11.md (d). Recheck those before changing a figure here.
+import Page from '../layouts/Page.astro';
+import Table from '../components/Table.astro';
+
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
+
+const compare = [
+  ['Repository size', 'Capped at 1 GB for repositories created since 29 September 2026; no raise path', 'Packs in R2; a 5 GB monorepo is a design journey'],
+  ['Failure domain', 'A repository is "a single logical instance", like one Durable Object', 'Three members on three continents; any two make a quorum'],
+  ['Loss of a region', 'Not stated: no published RPO or RTO', 'Measured 11.0 to 12.9 s to recover, 0 failed operations'],
+  ['Track record', 'Status degraded with Durable Objects twice in October 2026', '0 of 3,588,424 acknowledged writes lost under chaos'],
+  ['Support terms', 'Open beta, which Cloudflare\'s SLA excludes', 'Built on Workers, Durable Objects and R2, all generally available'],
+  ['Push size', 'One push over 64 MiB refused (measured; not in the docs)', 'Up to the zone\'s request body limit, or SSH'],
+  ['Forks', 'Each fork billed and capped at the source\'s full size (measured)', 'Forks in a network share packs'],
+  ['Off-Cloudflare copy', 'No runtime found outside Cloudflare', 'An optional lifeboat serves reads during a Cloudflare-wide outage'],
+  ['Storage at 2,000 developers', '$2,000 a month at $0.50 per GB, plus $965 in operations', '$180 a month for three R2 copies of the same 4 TB'],
+];
+---
+<Page title="Why not Cloudflare Artifacts | Graftyard"
+  description="Why Graftyard stores git in its own three-site quorum on Cloudflare instead of Cloudflare Artifacts: the 1 GB cap, one failure domain, open beta, and measured fork costs."
+  current="artifacts" doc>
+  <section class="section" aria-labelledby="wa-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow">Why not Artifacts</p>
+        <h1 id="wa-h">Cloudflare built git for agents. Why not use it?</h1>
+        <p class="t-lead">Cloudflare Artifacts is git storage with a Workers binding, forks and scoped tokens. We checked it twice, read every docs page and measured it ourselves. It is the wrong store for repositories a company cannot afford to lose, so Graftyard does not use it.</p>
+      </div>
+      <ul class="kpis">
+        <li><b>1 GB</b><span>cap on a new Artifacts repository, against a 5 GB monorepo</span></li>
+        <li><b>1</b><span>logical instance per repository, the failure domain of a single Durable Object</span></li>
+        <li><b>5 copies</b><span>billed for a repository with four forks: forks do not share objects</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="compare" aria-labelledby="compare-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <h2 id="compare-h">Side by side</h2>
+        <p>Artifacts facts are from Cloudflare's docs and status data as read on 26 October 2026, and from our own measurement in Milestone 0.</p>
+      </div>
+      <Table head={['', 'Cloudflare Artifacts', 'Graftyard']} rows={compare} />
+    </div>
+  </section>
+
+  <section class="section" id="reasons" aria-labelledby="reasons-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="reasons-h">The reasons that decide it</h2>
+        </div>
+        <div class="prose span-7 start-6">
+          <h3>One place to fail</h3>
+          <p>Cloudflare describes an Artifacts repository as "a single logical instance" replicated across data centers, with copies to object storage sent later. A whole-region event takes it with the region. In October 2026 its status component degraded twice, both times alongside Durable Objects. A Graftyard repository loses at most one of three members to the same event.</p>
+          <h3>Too small for the repositories that matter</h3>
+          <p>New repositories cap at 1 GB, with no note that the cap can be raised. The busiest repository in most companies is the one over that line.</p>
+          <h3>Beta, with no promise</h3>
+          <p>Artifacts is in open beta. Cloudflare's Enterprise SLA excludes beta services, and no page states how much data a failure may lose or how long recovery takes.</p>
+          <h3>Agents gain nothing from it here</h3>
+          <p>Forks are the agent feature, and we measured them: four forks of a 191 MiB repository each reported the full size, so they bill as five copies. In Graftyard a fork in the same network shares packs and gets its own group. The measured gain of the Artifacts workspace design, five times fewer pushes to the main repository, came from landing work every 10 minutes, which needs no Artifacts.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="fair" aria-labelledby="fair-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="fair-h">What we no longer hold against it</h2>
+        </div>
+        <div class="prose span-7 start-6">
+          <p>An earlier draft named two more reasons. A recheck showed they do not count:</p>
+          <ul>
+            <li><b>Push is protocol v1 only.</b> True, but git has no v2 push command, so no unmodified client ever notices.</li>
+            <li><b>Partial clone is unsupported.</b> Only documented for v1. Cloudflare's own ArtifactFS uses blobless clones against Artifacts.</li>
+          </ul>
+          <h3>What would change our mind</h3>
+          <p>Artifacts would earn one role, a scratch space for agent attempts that never become pull requests, if forks shared objects with their source and Cloudflare raised the per-repository cap above the largest network in writing. Today the measured fork result fails the first condition.</p>
+          <p><a class="link" href="/architecture/">What Graftyard uses instead<Fragment set:html={ARROW} /></a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+</Page>

@@ -1,0 +1,140 @@
+---
+// Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/am1/results/am1-wp5.md and
+// design/DESIGN.md ("Scale"), as of 2026-11-05. Update this page when those files change.
+import Page from '../layouts/Page.astro';
+import Film from '../components/Film.astro';
+import Table from '../components/Table.astro';
+
+const ok = (s: string) => `<span class="ok">${s}</span>`;
+const no = (s: string) => `<span class="no">${s}</span>`;
+
+const clientRows = [
+  ['gh 2.102.1: <code>issue list / create / view / comment</code>', 'Hosted edge on Cloudflare, 2026-11-05', ok('Pass') + ', 5 of 5 exit 0'],
+  ['gh 2.102.1: <code>pr list / create --draft / view</code>', 'Hosted edge', ok('Pass') + ', 3 of 3 exit 0'],
+  ['gh 2.102.1: <code>release create / upload / view / download</code>, <code>--archive=tar.gz</code>', 'Hosted edge', ok('Pass') + ', the asset round-trips byte for byte'],
+  ['git-lfs 3.8.0: push, clone, pull, lock, locks, unlock', 'Hosted edge', ok('Pass') + ', pulled bytes equal pushed bytes'],
+  ['<code>clients.sh</code>, 29 checks per client', 'git 2.39.5, 2.51.0, 2.56.0; 12 runs', ok('348 of 348') + ' rows, with and without a site failing'],
+  ['git\'s own smart-HTTP tests, <code>t/t55xx</code> to <code>t/t58xx</code>', 'git 2.51.0 and 2.56.0, site 0 failing', ok('0') + ' baseline passes lost on 2.51.0; 1 on 2.56.0 (t5549 #2, a server-side <code>receive.hiderefs</code>)'],
+];
+const schemaRows = [
+  ['Live replies on Cloudflare', '26 GraphQL, 12 REST, 5 LFS', ok('0 failures')],
+  ['Replayed client requests', '65 requests from git 2.56.0, git-lfs 3.8.0 and gh 2.102.1; 93 replies', ok('0 failures')],
+  ['Agent layer off by default', '93 replies × 13 <code>Accept</code> values, compared byte for byte with and without the layer', ok('0 of 1,209') + ' differ'],
+];
+const chaosRows = [
+  ['<code>cf-48h</code>', '48 h', '5,742,736', '5,729 resets, 3,607 transfers', ok('Pass') + '. 0 of 1,814,873 acked writes lost'],
+  ['<code>lin24b</code>', '24 h', '2,850,523', '4,176 resets, 2,752 transfers', ok('Pass') + '. 0 of 904,294 acked writes lost; ack check 0 violations'],
+  ['<code>lin24</code>', '24 h', '2,739,691', '5,547 resets, 3,743 transfers', no('Not passed') + '. 0 of 869,257 lost, but an early ack was not ruled out; rerun as <code>lin24b</code>'],
+  ['<code>cf-long-2</code>', '4 h', '475,301', '138 resets, 77 transfers', no('Illegal') + '. A real bug: a reused ticket after a leader reset. Fixed, then <code>cf-48h</code>'],
+  ['<code>cf-long-1</code>', '2 h', '270,040', '243 resets, 186 transfers', ok('Ok')],
+  ['<code>wp4-cf-5</code>', '2 h 5 min', '184,349', '343 resets, 253 transfers', ok('Ok')],
+  ['<code>wp4-cf-1</code>', '31 min', '41,567', '82 resets, 62 transfers', ok('Ok')],
+];
+const gateRows = [
+  ['Leader killed after quorum, before the reply (BF-12)', '12,000 kills landed', ok('12,000 of 12,000') + ' kept their original outcome; 0 applied twice'],
+  ['Receipts that miss their deadline (BF-14)', '2,400 commands', ok('2,400 of 2,400') + ' decided once; 0 forwarded'],
+  ['One site\'s member class failing (B0-03)', '26 runs plus 6 reruns', ok('11.0 to 12.9 s') + ' to recover; 0 failed operations'],
+  ['22% of member calls and storage writes failing (B0-25)', '9 runs, 300 pushes each', ok('92.3% to 98.7%') + ' of pushes land within three attempts'],
+  ['Every member of 4 or 8 groups reset inside 60 s (B0-26)', '4 runs at 100 writes/s', ok('Pass') + '. Every group commits within 1.2 s of its last reset'],
+  ['Simulator, HARSH and GRAY faults', '40,191,804 steps, 2,000 seeds', ok('1,000,856') + ' acked writes, every one with valid ack evidence'],
+];
+const latencyRows = [
+  ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
+  ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
+  ['Commit, one entry in flight, 15 runs', 'p50 172 to 370 ms', 'p99 399 to 690 ms', 'B0-01, Milestone 0'],
+  ['Learner reads, 16 learners at 1,000 reads/s each', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
+  ['CI clones from the R2 clone cache, 33 a second', '100% from R2 with the push hook', 'time to first byte p99 406 ms', 'B0-23'],
+  ['Clients during the 24-hour chaos run <code>lin24b</code>', 'p50 314 ms', 'p99 952 ms', 'BM-1'],
+];
+---
+<Page title="Evidence: GHES 3.22, chaos and latency tests | Graftyard"
+  description="The tests behind Graftyard: real GitHub clients against GHES 3.22 schemas, 104.6 hours of chaos on Cloudflare, and measured commit latency."
+  current="evidence" doc>
+  <section class="section" aria-labelledby="ev-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow">Evidence</p>
+        <h1 id="ev-h">What we tested, and what it showed</h1>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 5 November 2026, failures included.</p>
+      </div>
+      <ul class="kpis">
+        <li><b>348 of 348</b><span>git client checks on three git versions, a site failing in half</span></li>
+        <li><b>0 of 3,588,424</b><span>acknowledged writes lost in audited chaos runs</span></li>
+        <li><b>104.6 h</b><span>of chaos on Cloudflare, 12,304,207 operations checked</span></li>
+        <li><b>172 to 370 ms</b><span>median commit across two continents</span></li>
+        <li><b>84 of 85</b><span>planted bugs caught by the test suites</span></li>
+        <li><b>259</b><span>Rust tests in the workspace, 0 failing</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="ghes" aria-labelledby="ghes-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">GHES 3.22 compatibility</p>
+          <h2 id="ghes-h" style="margin-top: var(--s-3)">Unmodified clients, checked against the GHES schemas</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">No client was patched and no request went to github.com. The host answers <code>/api/v3/meta</code> with <code>installed_version</code> 3.22.0, so gh, git-lfs, VS Code and JetBrains all take their GHES path.</p>
+        </div>
+        <Film name="ghes-loop" label="gh and git against a Graftyard host: the host reports GHES 3.22.0 and each client check passes" class="span-7 start-6" />
+      </div>
+      <h3 style="margin-top: var(--s-9)">Clients</h3>
+      <Table head={['Client and commands', 'Where', 'Result']} rows={clientRows} />
+      <h3 style="margin-top: var(--s-8)">Schemas</h3>
+      <Table head={['Check', 'Scope', 'Result']} rows={schemaRows} />
+      <p class="note">The GraphQL schema is generated from the GHES 3.22 SDL (1,626 types). <code>gh pr checks</code> exits 1 on a pull request with no checks, which is gh's own answer for that case; every request in it returned 200. VS Code, JetBrains, Terraform, Jenkins and Argo CD are covered by reading their source for the GHES paths they call, not yet by a live run.</p>
+    </div>
+  </section>
+
+  <section class="section" id="chaos" aria-labelledby="chaos-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <p class="eyebrow">Chaos and linearizability</p>
+          <h2 id="chaos-h" style="margin-top: var(--s-3)">Seven runs with faults on, 104.6 hours</h2>
+          <p class="t-lead" style="margin-top: var(--s-5)">Every 8 to 16 s the driver reset a member or moved leadership. 5% of calls between sites failed and 5% of replication replies were dropped. Clients in Atlanta, London and Singapore kept writing.</p>
+          <ul class="facts">
+            <li><b>Porcupine</b> checked each history for linearizability, key by key.</li>
+            <li><b>Lost-write audit:</b> after a run, all three sites' stored logs are read back and every acknowledged write is looked up.</li>
+          </ul>
+        </div>
+        <Film name="chaos-loop" label="Members reset and leadership moves between three sites while writes keep landing and none is lost" class="span-7 start-6" />
+      </div>
+      <h3 style="margin-top: var(--s-9)">The runs on Cloudflare</h3>
+      <Table head={['Run', 'Length', 'Operations', 'Faults injected', 'Result']} rows={chaosRows} />
+      <p class="note">Recorded-clock checks flag some cross-site reads as Illegal; with 100 ms of clock allowance, or with the measured bound, every passing run is Ok on all keys. <code>lin24b</code>'s 20 flagged segments trace to 15 lost client log chunks and 2 ties needing 1 and 4 ms of skew, against 63 to 92 ms measured that minute.</p>
+      <h3 style="margin-top: var(--s-8)">Targeted fault gates</h3>
+      <Table head={['Fault', 'Runs', 'Result']} rows={gateRows} />
+    </div>
+  </section>
+
+  <section class="section" id="latency" aria-labelledby="latency-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Latency</p>
+        <h2 id="latency-h">What two continents cost a write</h2>
+        <p>A write waits for one round to the nearest site in another region. That is the price of losing nothing when a region goes down. Reads from the leader's region pay no such round.</p>
+      </div>
+      <Table head={['Measure', 'Median', 'Tail', 'Gate']} rows={latencyRows} />
+      <p class="note">The commit figures are from Milestone 0's prototype. The production Rust host measured p99 414 to 807 ms in its second pass: 2 of 6 runs under the 600 ms line, none over 1 s. Closing that gap is open work.</p>
+    </div>
+  </section>
+
+  <section class="section" id="open" aria-labelledby="open-h">
+    <div class="wrap">
+      <div class="grid">
+        <div class="span-5">
+          <h2 id="open-h">Still open</h2>
+        </div>
+        <div class="prose span-7 start-6">
+          <ul>
+            <li>SSH git sessions held at 99.59% to 99.89% through container kills, between the 99% and 99.9% lines. SSH is opt-in, and its gate is carried to Milestone 6.</li>
+            <li>One planted bug of 85 went uncaught: a resumed leader sending entries before they were durable.</li>
+            <li>Milestone 2 (pull requests, merge queues, folds) is under way; its gate has not run yet.</li>
+          </ul>
+          <p class="muted">Sources: <code>tests/RESULTS.md</code> and the results files it cites, in the Graftyard repository.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</Page>
