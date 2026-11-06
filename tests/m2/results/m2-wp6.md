@@ -361,3 +361,77 @@ the owner's login and `Authz` reads, and "tiers + `Authz`" drops to 0 in `server
 Workspace checks on `20155a1`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
 `cargo test --workspace` (424 passed, 0 failed). `crates/raft` is untouched, so the long sweep and Porcupine were not
 rerun.
+
+### The 300-sample run on the final build (`final`)
+
+`p99.py final 300 --gh-every 25` on `wp6p`, edge `1358b1a7`, sites `91490a96`/`e8931593`/`b06ae6e3`, 14:20 to 16:02 UTC.
+288 mutations and 12 whole `gh pr merge` runs. Each sample is on a new term: 288 distinct terms, `from != to` in all 288.
+Every sample merged (288 of 288, gh 12 of 12). The driver stopped three times on client-side timeouts (a `git push`
+over 120 s, and two TLS handshakes to the tools edge's `/status`), never on a merge reply, and resumed from its last line.
+
+**BM-2's latency clause still fails: p99 4.10 s at n = 288** (p50 2.11 s, p90 2.93 s, 178 of 288 over 2 s).
+
+| New leader | n | p50 | p99 | max | Over 2 s | auth + resolve + rows | merge plan (shard) | commit | shard catch-ups |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 85 | 1.62 s | 2.40 s | 2.40 s | 6 | 523 | 630 (565) | 350 | 3 |
+| 1, weur | 105 | 2.48 s | 4.15 s | 4.19 s | 94 | 535 | 1,183 (1,004) | 600 | 38 |
+| 2, apac | 98 | 2.14 s | 2.89 s | 2.89 s | 78 | 592 | 694 (492) | 715 | 4 |
+
+Step medians are in ms, from `server-timing`. The client-to-edge leg is 88 to 91 ms p50.
+
+**Why n = 288 settles it.** The gate needs at most 1% of samples over 2 s; 178 of 288 (62%) are over. Under "p99 ≤ 2 s"
+that has probability far below 10^-100. A pass at this n would need at most 2 samples over 2 s.
+
+**What the number is limited by.**
+
+1. Cross-region round trips, as before. On the leader, the three dependency reads (`deps_log`) take 21 to 47 ms p50 on
+   an enam leader, 118 to 132 ms on weur, and 226 to 265 ms on apac. Every identity leader (`Names`, `Tokens`, `Authz`)
+   is on enam. Commit is one replication round plus those reads: 350 ms enam, 600 ms weur, 715 ms apac.
+2. The shard's merge gets slower over the run. Its p50 rose from 492 ms (samples 0 to 49) to 672 ms (samples 200 to
+   249), while each shard's pack count grew from about 1,200 to 1,953. The shards never repack (`gc.auto 0`, and
+   nothing else runs `repack`). In the orb, `git merge-tree` on a 751-pack repository took 8.7 ms, against 2.0 ms after
+   `git repack --geometric=2` (and 5.9 ms with a multi-pack index). Each merge runs about six git commands, so this is
+   part of the growth. The rest is the container hop and the weur container itself: weur's shard merge is about
+   twice enam's and apac's at every pack count [inference].
+3. Catch-ups on the merge path came back on weur: 38 of 105 weur samples, against 3 and 4 elsewhere. The new
+   leadership's `warm` catch-up (cut 2) starts on its first alarm, and the client's merge arrives about as fast as
+   the election is seen, so on the slowest shard the two race and the merge catches up itself. A catch-up costs
+   250 to 700 ms.
+
+Fresh-shard runs (`c2`, `c2b`, `c3`, about 1,200 packs) show the same placement limit without the pack growth: n = 109,
+enam p99 1.68 s (0 of 36 over 2 s), weur p99 3.18 s (18 of 37 over), apac p99 2.82 s (21 of 36 over).
+
+`final-gh` replies: 92 GraphQL and 12 REST, **0 failed** (`gh-replies.py`, then `validate.py` against GHES 3.22).
+
+### Proposed design change
+
+2 s is out of reach for a leader elected away from the identity leaders' region with this placement. On enam, where
+`Names`, `Tokens`, and `Authz` lead, the fresh-leader merge passed on fresh shards (p99 1.68 s, n = 36) and missed
+narrowly on shards with about 1,950 packs (p99 2.40 s, 6 of 85 over). On weur and apac, every step pays two to four more
+cross-region rounds, so p50 alone is 2.1 to 2.5 s.
+
+Options, in the order I would take them. Each needs an operator decision, because the gate and placement are design:
+
+1. **Say where the gate measures.** "Fresh reads on a held lease cost one DO call in the leader's region, plus the
+   client's distance to it" and "Preferred-site transfer keeps leaders near owners" assume the leader is near its
+   owner and its dependencies. BM-2 should say "a freshly elected leader on the group's home site, with the client in
+   that region". That is what "Preferred-site transfer" restores within one lease after any election. Off-home leaders
+   would get a separate, looser bound, for example 3.5 s p99, after weur's 3.18 s fresh-shard figure. Evidence: enam-led
+   p99 1.68 s fresh and 2.40 s aged here, with the LAX client about 70 ms from enam.
+2. **Repack the git cache shards** (a code change under the existing design: "one repack per shard at a time",
+   `design/DESIGN.md`, Failure modes, git caches). A geometric repack after each catch-up that leaves more than about 50
+   packs would keep the shard merge near its fresh 230 to 350 ms (enam, apac). The enam-led aged p99 should then fall
+   back toward 1.7 s [inference: from the fresh-shard figures].
+3. **Placement (proposal only).** Putting `Names`, `Tokens`, and `Authz` leaders near each owner's home is already the
+   model: "one read of the entry's `Authz` dependency on a leader in the owner's home region [guess]". It does not help a
+   repository leader that is temporarily off home. The leader's three dependency reads cost 120 to 265 ms from weur and
+   apac, so co-locating them with a moved leader would cut 100 to 250 ms of commit and about as much at the edge. That
+   brings weur and apac p50 to about 1.7 to 2.0 s, still not a 2 s p99. I do not recommend chasing it with placement.
+
+### Not built, and why
+
+- **A same-site learner's read-index for `deps`.** It is not `fresh` ("Only the leader builds one", "The read path"),
+  and it still pays one round trip to the enam leader plus 10 to 50 ms of batching.
+- **The edge passing its auth result to the leader.** `decide`'s result must depend only on "the `deps` folds the
+  leader read once through `fresh`", and the leader's three dependency reads run at once, so skipping `Tokens` saves
+  nothing.
