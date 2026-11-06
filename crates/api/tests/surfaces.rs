@@ -55,17 +55,20 @@ fn every_doc() -> Vec<String> {
     v
 }
 
-/// Writes a reply for `gh/validate.py`.
+/// Writes a reply for `gh/validate.py`, after checking that the trust view leaves its bytes alone.
 fn keep(case: &str, d: &Doc, vars: &Option<Map<String, Value>>, reply: &Value) {
+    let framed = graftyard_api::wire::Reply::json(200, reply.clone());
+    same_bytes_without_opt_in(case, graftyard_wire::Surface::Graphql, None, &framed);
     if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
         let v = json!({ "query": d.query, "variables": vars, "reply": reply, "document": d.name });
         std::fs::write(format!("{dir}/{case}.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     }
 }
 
-fn keep_rest(case: &str, path: &str, status: u16, body: &Value) {
+fn keep_rest(case: &str, path: &str, reply: &graftyard_api::wire::Reply) {
+    same_bytes_without_opt_in(case, graftyard_wire::Surface::Rest, Some(("GET", path)), reply);
     if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
-        let v = json!({ "method": "GET", "path": path, "status": status, "body": body });
+        let v = json!({ "method": "GET", "path": path, "status": reply.status, "body": reply.value() });
         std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
     }
 }
@@ -553,7 +556,7 @@ fn commit_statuses_list_newest_first_and_page() {
     let ids: Vec<i64> = page.value().as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
     assert_eq!(ids, [24, 23, 22]);
     assert!(next(&page).unwrap().contains("page=2"));
-    keep_rest("statuses-page1", "/repos/{owner}/{repo}/commits/{ref}/statuses", 200, page.value());
+    keep_rest("statuses-page1", "/repos/{owner}/{repo}/commits/{ref}/statuses", &page);
     let rest = list_commit_statuses(&r, "f", Page::parse("per_page=3&page=3"));
     let ids: Vec<i64> = rest.value().as_array().unwrap().iter().map(|s| s["id"].as_i64().unwrap()).collect();
     assert_eq!(ids, [12], "by branch name: seven statuses, so page 3 holds the oldest");

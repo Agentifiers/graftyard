@@ -478,3 +478,103 @@ pub fn inline_pack(bytes: &[u8]) -> graftyard_git::DurablePack {
     };
     futures_executor::block_on(store.place(place)).unwrap()
 }
+
+// ---- the trust view's byte identity (AM1-WP5) ----
+
+/// Every `Accept` the captured clients sent (gh's GraphQL and REST, git-lfs, release downloads), the documented
+/// GitHub media types, and none.
+pub const ACCEPTS: &[Option<&str>] = &[
+    None,
+    Some("application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview"),
+    Some(
+        "application/vnd.github.merge-info-preview+json, application/vnd.github.nebula-preview, application/vnd.github.antiope-preview",
+    ),
+    Some("application/vnd.git-lfs+json"),
+    Some("application/octet-stream, application/json"),
+    Some("application/octet-stream"),
+    Some("application/vnd.github+json"),
+    Some("application/vnd.github.v3+json"),
+    Some("application/vnd.github.raw+json"),
+    Some("application/vnd.github.html+json"),
+    Some("application/vnd.github.full+json"),
+    Some("application/json"),
+    Some("*/*"),
+];
+
+/// The bytes the edge puts on the wire for a handler's reply: status, every header in order, and the body as
+/// `serde_json::to_vec` writes it (`workers/edge/src/api.rs`, `frame`).
+pub fn framed(accept: Option<&str>, surface: graftyard_wire::Surface, reply: graftyard_wire::Reply) -> Vec<u8> {
+    use graftyard_wire::{ApiVersion, Body, Incoming, Meta, RateLimits, finish};
+    let i = Incoming { user_agent: Some("GitHub CLI 2.102.1"), accept, ..Incoming::default() };
+    let m =
+        Meta { rid: RequestId(Ulid(0x0123_4567_89ab_cdef)), version: ApiVersion::V2022_11_28, rate: RateLimits::Off };
+    let r = finish(&i, reply, surface, &m);
+    let mut out = format!("{}\n", r.status).into_bytes();
+    for (k, v) in &r.headers {
+        out.extend_from_slice(format!("{k}: {v}\n").as_bytes());
+    }
+    out.push(b'\n');
+    match r.body {
+        Body::Json(v) => out.extend(serde_json::to_vec(&v).unwrap()),
+        Body::Bytes(b) => out.extend(b),
+        Body::Empty => {}
+    }
+    out
+}
+
+/// Checks one handler reply as the edge sends it, for every `Accept` in `ACCEPTS`: the bytes with the trust view in the
+/// edge's path equal the bytes without it. `rest` is a REST reply's method and OpenAPI path template, which the edge
+/// hands to `trust::layer` as a concrete path under `/api/v3`; `None` is a GraphQL or LFS reply, which the edge never
+/// layers, so its frame must not change under the agent media type either.
+///
+/// Without the media type `layer` reads no row, so the repository it gets here is empty. When `$GRAFTYARD_REPLIES` is
+/// set and the route is a trust resource, the opted-in body is written as `<case>.agent.rest.json` for `validate.py`.
+pub fn same_bytes_without_opt_in(
+    case: &str,
+    surface: graftyard_wire::Surface,
+    rest: Option<(&str, &str)>,
+    reply: &graftyard_wire::Reply,
+) {
+    let rest_path = rest.map(|(_, t)| t);
+    let (core, meta, dir, host) =
+        (MemStore::default(), MemStore::default(), Dir::new(WRITER), Host::new("ghes.example.com", false).unwrap());
+    let r = Repo { host: &host, at: dir.home(), core: &core, meta: &meta, dir: &dir };
+    let path = rest_path.map(concrete);
+    for accept in ACCEPTS {
+        let before = framed(*accept, surface, reply.clone());
+        let layered = match &path {
+            Some(p) => graftyard_api::trust::layer(*accept, p, &r, reply.clone()),
+            None => reply.clone(),
+        };
+        let after = framed(*accept, surface, layered);
+        assert!(
+            before == after,
+            "{case}: {path:?} with Accept {accept:?} changed:\n{}\n---\n{}",
+            String::from_utf8_lossy(&before),
+            String::from_utf8_lossy(&after)
+        );
+    }
+    let agent = Some(graftyard_api::trust::AGENT_MEDIA_TYPE);
+    match (&path, rest_path) {
+        (None, _) => assert!(framed(agent, surface, reply.clone()) == framed(None, surface, reply.clone()), "{case}"),
+        (Some(p), Some(template)) => {
+            let on = graftyard_api::trust::layer(agent, p, &r, reply.clone());
+            if on != *reply
+                && let Ok(dir) = std::env::var("GRAFTYARD_REPLIES")
+            {
+                let method = rest.map_or("GET", |(m, _)| m);
+                let v =
+                    serde_json::json!({ "method": method, "path": template, "status": on.status, "body": on.value() });
+                std::fs::write(format!("{dir}/{case}.agent.rest.json"), serde_json::to_vec_pretty(&v).unwrap())
+                    .unwrap();
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// An OpenAPI path template as a concrete request path: `{owner}/{repo}` as `o/r`, and every other parameter as `1`.
+pub fn concrete(template: &str) -> String {
+    let s = template.replace("{owner}", "o").replace("{repo}", "r");
+    s.split('/').map(|seg| if seg.starts_with('{') { "1" } else { seg }).collect::<Vec<_>>().join("/")
+}

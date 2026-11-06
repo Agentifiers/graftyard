@@ -18,5 +18,6 @@ pub mod lfs;
 pub mod release;
 pub mod rest;
 pub mod schema;
+pub mod trust;
 pub mod view;
 pub mod wire;
