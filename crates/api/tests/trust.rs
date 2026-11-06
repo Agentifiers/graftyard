@@ -433,6 +433,10 @@ fn exactly_the_design_s_resources_get_the_field() {
     ] {
         assert_eq!(resource_of(&format!("/repos/o/r/{p}")), None, "{p}");
     }
+    // Nothing outside a repository's routes: the root document, meta, rate limits, and a bare owner.
+    for p in ["", "/", "/meta", "/rate_limit", "/status", "/graphql", "/repos/o"] {
+        assert_eq!(resource_of(p), None, "{p}");
+    }
 }
 
 /// GHES-shaped objects of each kind, as a route renders them, with each author.
