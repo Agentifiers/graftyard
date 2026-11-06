@@ -1560,7 +1560,7 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 
 **Evidence.** `tests/m2/results/m2-wp6.md`: p99 3.20 s, p50 2.28 s, n = 91 on 91 new terms; enam 2.09 s, weur 3.20 s, apac 3.16 s; the per-step split per site [measured].
 
-**Flip.** A rerun on the same placement with p99 at most 2 s; or an operator decision that accepts the measured cross-region merge latency, as "Measured latency is accepted" did for commits.
+**Flip.** A rerun on the same placement with p99 at most 2 s; or an operator decision that accepts the measured cross-region merge latency, as "Measured latency is accepted" did for commits. Met on 2026-11-06: the operator reworded the clause ("BM-2's latency clause measures a home-site leader, with a looser bound off home").
 
 #### AM1-WP1's admission and fan-out shapes as the code needs them
 
@@ -1639,7 +1639,7 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 
 **Evidence.** `tests/m2/results/m2-wp6.md`, "`bm2-latency`": p99 4.10 s, p50 2.11 s at n = 288 (enam 2.40 s, weur 4.15 s, apac 2.89 s), 178 of 288 over 2 s; on fresh shards, n = 109, enam p99 1.68 s, weur 3.18 s, apac 2.82 s; the four cuts took p50 from 2.86 to 1.80 s over 30 samples each [measured]. Commits `1c84ac6`, `c0a393b`, `20155a1`.
 
-**Flip.** `bm2-repack`'s rerun showing enam-led merges over 2 s at p99 on repacked shards with no catch-up on the merge path, which would put the limit elsewhere; or F53 decided, which changes what the gate measures.
+**Flip.** `bm2-repack`'s rerun showing enam-led merges over 2 s at p99 on repacked shards with no catch-up on the merge path, which would put the limit elsewhere; or F53 decided, which changes what the gate measures. F53 was decided on 2026-11-06, and the rerun put enam at p99 2.01 s at n = 66, too few samples to call; the home-site run settles it.
 
 #### M3-WP3's identity shapes as the code needs them
 
@@ -1662,6 +1662,59 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 **Evidence.** `tests/m3/results/m3-wp3.md`: BF-3, BF-30, BF-33, BF-34, BF-35, and BF-36 pass in memory on three real members per chain, and 13 of 13 planted bugs are caught [measured]; `crates/identity/src/access.rs`, `org.rs`, `identity.rs`, `credential.rs`, `authz.rs`; `crates/git/src/issue_ops.rs` (`OwnerChange`).
 
 **Flip.** A GHES role boundary measured differently from `WriteAction`'s mapping; or a hosted transfer that can land `Settings` through an existing command without opening owner changes to admins.
+
+### BM-2 reworded by the operator, `bm2-repack`, and M3-WP4's pure half, 2026-11-06
+
+`bm2-repack` removed the shard causes of BM-2's tail, the operator reworded its latency clause, and M3-WP4's pure half passed BF-27 and BF-32 in memory (`tests/m2/results/m2-wp6.md`, "`bm2-repack`" sections; `tests/m3/results/m3-wp4.md`; `FRAME.md`, "Operator decision, 2026-11-06, BM-2 latency").
+
+#### BM-2's latency clause measures a home-site leader, with a looser bound off home
+
+**Decision.** The operator's (`FRAME.md`, "Operator decision, 2026-11-06, BM-2 latency"). BM-2's latency clause is now: the merge p99 on a freshly elected leader on the group's home site, with the client in that region, is at most 2 s, and on a freshly elected leader off the home site at most 3 s. Journeys 2 and 3 and the stale-`parent_tip` clause are unchanged. BUILD-PLAN M2-WP6 and DESIGN's "Milestones 1 to 7" row 2 carry the same text. BM-2's status is "reworded, pending the home-site run". F53 is closed.
+
+**Why.**
+- Nothing derived the 2 s. It came over from a non-normative arena candidate, and the only other "merge p99 at most 2 s" is B0-29's, measured with an enam leader and no git cache plan or edge identity reads.
+- The design assumes the client is near the leader: "Fresh reads on a held lease cost one DO call in the leader's region, plus the client's distance to it", and "Preferred-site transfer keeps leaders near owners", which moves a leader home within one lease after any election. A freshly elected leader off home is a transient the design already repairs.
+- After `bm2-repack`, the shard is no longer the limit: its merge takes 56 to 159 ms p50 and 0 of 288 merges catch up on the merge path. What remains off home is cross-region identity reads: auth and resolve about 540 ms p50 on every leader site, from the LAX edge to the `Tokens`, `Names`, and `Authz` leaders on enam, and apac's commit at 716 ms p50, one round from apac plus three dependency reads to enam.
+
+**Beat.**
+- Chasing apac with more code: what is left there is round trips to enam, which no serial step removes.
+- Moving identity leaders toward a moved repository leader. It would save 100 to 250 ms a step and still leave weur and apac p50 at about 1.7 to 2.0 s, and it changes placement for every owner to serve a transient.
+- Keeping one 2 s bound for every leader site.
+
+**Evidence.** `tests/m2/results/m2-wp6.md`, "`bm2-repack`": p99 2.42 s at n = 288 under the old wording, down from 4.10 s; weur 1.96 s (n = 120), enam 2.01 s (n = 66, 1 over 2 s, 1.93 s measured from the edge), apac 2.71 s (n = 102); max 2.86 s; shard merge p50 56 to 159 ms; 0 catch-ups on the merge path. Before it: p99 4.10 s at n = 288, and on fresh shards enam-led p99 1.68 s at n = 36 [measured].
+
+**Flip.** The home-site run measuring a p99 over 2 s with the client in the home region, which would put the limit in the design's own path rather than distance; or measured traffic showing most merges land on leaders off home for longer than one lease, which would make the off-home bound the one users see.
+
+#### `bm2-repack`'s shard repack and catch-up wait match the design
+
+**Decision.** The container's `PUT /refs`, the last step of every catch-up and rehydrate, starts `git repack -d -q --geometric=2` in the background once a network holds more than 50 packs [guess], one repack per shard container at a time, under the network's write lock. The leader site's shard counts its running catch-ups per network, and the first merge plan awaits them. Both follow DESIGN as written ("one repack per shard at a time", Failure modes, git caches; merges on the leader site's shard, Shape, `GitCacheShard`), so DESIGN does not change. Test drivers keep tokens off argv and out of logs.
+
+**Why.** Shards had never repacked, and a catch-up raced the first merge on the slowest shard; together they made most of BM-2's tail. A token reached a raw log through a traceback of a git command line that carried it.
+
+**Beat.** Repacking on a timer, which would repack idle shards and leave a busy one long between runs. Letting the first merge catch up for itself, which doubled the work and set weur's tail.
+
+**Evidence.** `tests/m2/results/m2-wp6.md`, "`bm2-repack`": 1,955 packs to 1 on every `wp6p` shard; `TestRefsRepacksPastRepackAt` and `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` fail on the old code; 21 samples waited 4 to 198 ms; journeys 2 and 3, BF-1, BF-21, and BF-23 pass on the final build; a scan of 38,052 raw files found 0 tokens [measured]. Commits `ca15db8`, `e8d47ad`, `4b6631f`, `9301e15`.
+
+**Flip.** A shard whose background repack is measured holding its write lock long enough to show in merge or clone latency, which would need a smaller trigger or a repack outside the lock.
+
+#### M3-WP4's stateless token shapes as the code needs them
+
+**Decision.** From M3-WP4's pure code, in SHARED and BUILD-PLAN:
+- A `ghs_` token is `ghs_`, the App id in decimal, `_`, then a compact EdDSA JWS whose payload is `iss`, `ins`, `repos`, `perms`, `jti`, `iat`, and `exp` in whole seconds, as GitHub's `ghs_APPID_JWT`. Its length varies with the claims; SHARED's "about 400 characters" becomes 338 in the BF-32 gate, and nothing assumes a length.
+- `AuthzEvent::Installation` carries `row: Option<InstallationRow>` (the App, `RepoScope`, and `PermissionSet`) in place of SHARED's undefined `InstallState`; `None` is uninstalled. A narrowing or uninstall moves `not_before` to the entry's `at`, and a follower refuses it moving back.
+- `authorize` for an App takes the lower of the claims' and the installation row's level; `contents` gives `Read` or `Write`, any other permission `Read` [inference].
+- The old verifying key retires at the switch plus `SIGNING_KEY_CACHE`, one token lifetime, and `CLOCK_SKEW` (60 s [guess]), not at "the last token's `exp`" alone, because an isolate that cached it may sign for up to `SIGNING_KEY_CACHE` after the switch.
+- `DELETE /installation/token` is accepted only from the token itself or `graft-ops`; a second delete is 204. A token request names at most 500 repositories [unverified].
+- `CredentialShard::is_operator()` is no account and no key, because an installation token also names no account.
+- Push format 0x20.7 carries the App actor and its claims; issue and merge commands have no stateless wire form yet and fail closed with 401.
+
+**Why.** SHARED did not define `InstallState`, the token's exact form, or how `authorize` combines the claims with the row. Retiring at the last `exp` alone would refuse tokens a cached key still signs. Reading "no account" as the operator would have made every installation token the operator; planted bug 2 is that mistake and BF-27 catches it.
+
+**Beat.** A fixed-length token. An `InstallState` enum beside the row. Retiring the old key one lifetime after the switch.
+
+**Evidence.** `tests/m3/results/m3-wp4.md`: BF-27 1,000 of 1,000 commands and 1,000 of 1,000 pushes refused 401; BF-32's pure half with three `universal-github-app-jwt` 2.2.2 JWTs; rotation kept kid 1 valid for 7,260 s after the switch in the test's clock; 14 of 14 planted bugs [measured]; `crates/identity/src/stateless.rs`, `authz.rs`, `access.rs`, `appauth.rs`, `credential.rs`.
+
+**Flip.** A client measured rejecting the `ghs_APPID_` form or a token of this length; or GitHub's documented installation-token behavior differing from the `contents`-only `Write` mapping.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

@@ -234,7 +234,8 @@ pub enum AuthzEvent { Opened { kind: AccountKind, enterprise: Option<AccountId> 
     /// Org members and teams only. An outside collaborator is a repository `Collaborator` ("Who owns which fact").
     Grant { repo: RepoId, grantee: Grantee, permission: Option<RepoPermission> },
     RepoName { key: RepoNameKey, entry: Option<RepoEntry> },   // Reserved | Live | Alias | Deleted ("Names")
-    Installation { id: InstallationId, state: InstallState, not_before: Timestamp }, Policy(OrgPolicy) /* incl. rulesets */,
+    /// `row: None` once uninstalled; a narrowing or an uninstall moves `not_before` to the entry's `at`, never back.
+    Installation { id: InstallationId, row: Option<InstallationRow>, not_before: Timestamp }, Policy(OrgPolicy) /* incl. rulesets */,
     /// An invitation to join the org. Accepting it appends `Member`, and `Team` entries for its teams, in the same entry.
     Invitation(InvitationEvent),
     /// The Apps and OAuth apps this account owns ("Identity and tokens"). `None` deletes the registration.
@@ -366,16 +367,21 @@ pub struct OpaqueToken { kind: TokenKind, secret: [u8; 30], crc: [u8; 6] }
 pub struct UserId(AccountId); pub struct OrgId(AccountId); pub struct TeamId(DbId);
 pub enum OrgRole { Member, Admin, BillingManager }
 pub enum Grantee { User(UserId), Team(TeamId) }
-/// Installation tokens, including the Actions GITHUB_TOKEN: "ghs_" + compact JWS. `kid` names the signing key epoch.
+/// Installation tokens, including the Actions GITHUB_TOKEN: "ghs_", the App id in decimal, "_", then a compact JWS
+/// (GitHub's `ghs_APPID_JWT`, `research/agents.md`, finding 4.3). `kid` names the signing key epoch. `task` is the agent
+/// layer's; M3-WP4's claims have none.
 /// `task` is set only when the token request's additive `graftyard_task` field named a live Graftyard-run `AgentTask`,
 /// the token's App is the task's App or the install's `graftyard-workspace`, and every repository in `repos` is the
 /// task's repository or its workspace fork (`design/DESIGN.md`, Shape, agent block).
 pub struct InstallationClaims { pub app: AppId, pub installation: InstallationId, pub repos: RepoScope,
     pub permissions: PermissionSet, pub task: Option<SessionId>, pub jti: Ulid, pub iat: Timestamp, pub exp: Timestamp,
     pub kid: Kid }
+/// On the owner's `Authz` chain. `Install` commits only after the id's `Names` route names this App and owner, and its
+/// permissions never exceed the App's record, read on the App owner's chain.
+pub struct InstallationRow { pub app: AppId, pub repos: RepoScope, pub permissions: PermissionSet }
 /// A web sign-in session on the `Identity` chain. Not the agent layer's `SessionId`.
 pub struct WebSessionId(Ulid);
-/// Built so far: `Stored` and `Session`. `Stateless` arrives with M3-WP4, `Ssh` with M6-WP2, and `RunnerJwt` and
+/// Built so far: `Stored`, `Session`, and `Stateless` (M3-WP4). `Ssh` arrives with M6-WP2, and `RunnerJwt` and
 /// `RuntimeToken` with Actions (`build/BUILD-PLAN.md`).
 pub enum Credential { Stored([u8; 32]), Stateless(InstallationClaims), Ssh(Fingerprint), Session(WebSessionId),
                       RunnerJwt(RunnerId), RuntimeToken(JobId) }
@@ -460,11 +466,14 @@ pub struct OrgPolicy { pub base_permission: Option<RepoPermission>, pub sso_enfo
 
 **Installation tokens are stateless**, matching github.com since 2026-10-02 (`research/wire-census.md#30`).
 
-- Each is "ghs_" plus a compact JWS. Signing keys are Ed25519.
-- Tokens are about 400 characters and match `ghs_[A-Za-z0-9\.\-_]{36,}`, which Renovate accepts (`research/clients.md#38`).
-- `authorize` intersects the claims with the installation's current selection in the `Authz` fold.
+- Each is "ghs_", the App id, "_", then a compact JWS: header `{alg: EdDSA, typ: JWT, kid}`, payload `iss`, `ins`, `repos` (absent for all), `perms`, `jti` (ULID text), `iat`, and `exp` in whole seconds. Signing keys are Ed25519.
+- Length varies with the claims, 338 characters for one repository and one permission [measured, `tests/m3/results/m3-wp4.md`, BF-32], so nothing may assume a length. Every token matches `ghs_[A-Za-z0-9\.\-_]{36,}`, which Renovate accepts (`research/clients.md#38`).
+- The edge parses a token offline, then verifies it against its `kid`'s `VerifyingKey` row: a retired key is refused, the lifetime is at most `INSTALLATION_TOKEN_TTL` (1 h), and `iat` may be at most `CLOCK_SKEW` (60 s [guess]) ahead. A token request names at most `TOKEN_REPOS_MAX` repositories (500 [unverified for GHES 3.22]), and a permission the App or the installation lacks is 422.
+- `authorize` intersects the claims with the installation's current selection in the `Authz` fold: the installation must be live on the repository's owner, for the token's App, with `iat` at or after `not_before`, and the repository must be in both the claims and the row. `contents` gives `Read` or `Write`, any other permission `Read` [inference], and the lower of the claims' and the row's level wins.
+- An App JWT is RS256 under any of `AppRecord.keys`, with `iss` the App id (number or string) or its client id, `exp - iat` at most 600 s, and `iat` at most 60 s ahead. A client secret is compared by SHA-256 against every `client_secrets` hash.
+- `DELETE /installation/token` commits `JtiRevoked` under the token itself, and only that token or `graft-ops` may; a second delete answers 204, as GitHub does for a revoked token [inference].
 - Each job's `GITHUB_TOKEN` `jti` is recorded on the job and denied when the job ends.
-- A new verifying key is published at least one token lifetime before it signs, and the old one retires after the last token's `exp`.
+- A new verifying key is published at least one token lifetime before it signs. The old one retires at the switch plus `SIGNING_KEY_CACHE`, one token lifetime, and `CLOCK_SKEW`, because an isolate that cached it may sign with it for up to `SIGNING_KEY_CACHE` after the switch [measured in memory, `tests/m3/results/m3-wp4.md`, rotation].
 - `design/DESIGN.md` signs every installation token in `graft-ops` ("Shape", Identity, and "Install operations").
 
 **SSO** attaches to orgs and enterprises, with SCIM provisioning at T1. The SAML or OIDC endpoint appends an `Sso` entry to the member's `Identity` chain and records the org in the token's or the session's `sso_orgs`. `authorize` checks the principal's `sso_orgs` when the owner's `Authz` policy enforces SSO. Break-glass owners are local accounts with hardware keys and no IdP dependency (`research/uptime.md` implication 25).
