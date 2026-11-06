@@ -872,7 +872,7 @@ fn outcome_index<F: Family>(o: &Outcome<F>) -> Index {
     match o {
         Ok(a) => a.index,
         Err(CommitError::Refused { index, .. }) => *index,
-        Err(CommitError::NotLeader(_)) => Index(0),
+        Err(CommitError::NotLeader(_) | CommitError::Full { .. }) => Index(0),
     }
 }
 
@@ -2210,6 +2210,7 @@ pub fn outcome_json<F: Family>(fold: &F::Fold, o: &Outcome<F>) -> Value {
             json!({ "refused": r })
         }
         Err(CommitError::NotLeader(nl)) => json!({ "notLeader": nl_json(nl) }),
+        Err(CommitError::Full { retry_after_s }) => json!({ "full": { "retry_after_s": retry_after_s } }),
     }
 }
 

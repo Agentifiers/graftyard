@@ -1078,7 +1078,7 @@ impl Sim {
                 }
                 let Some((r, res)) = self.call(to, |m, now| m.commit(now, rid, cmd)) else { return };
                 match r {
-                    Ok(Admitted { ticket }) => {
+                    Ok(Admitted { ticket, .. }) => {
                         let o = self.ops[c].as_mut().expect("op");
                         o.wait = Some(Wait::Ticket(ticket));
                         o.term = o.term.max(ticket.term);
@@ -1261,6 +1261,7 @@ impl Sim {
                 self.write_done(s, op, Err(index), None);
             }
             Err(CommitError::NotLeader(nl)) => self.not_leader(c, &nl),
+            Err(CommitError::Full { .. }) => panic!("seed {}: a Human command was refused by admission", self.seed),
         }
     }
 

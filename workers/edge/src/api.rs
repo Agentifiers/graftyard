@@ -466,6 +466,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
             Reply::error(403, "Resource not accessible by integration", "rest/git/refs")
         }
         Ok(PushOutcome::Refused(r)) => Reply::error(r.status, &r.err, "rest/git/refs"),
+        Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
         Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
     })
 }

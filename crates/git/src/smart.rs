@@ -408,6 +408,18 @@ impl Refusal {
     pub fn refused(why: &str) -> Refusal {
         Refusal { unpack: "ok".into(), reason: one_line(why), remote: vec![] }
     }
+
+    /// Agent admission is full (`graftyard_raft::admit`): HTTP 200 with `ng <ref> agent admission full, retry after
+    /// <n>s` on every ref and a `remote:` line (`design/DESIGN.md`, Shape, "Agent load and agent safety").
+    pub fn agent_full(retry_after_s: u32) -> Refusal {
+        Refusal {
+            unpack: "ok".into(),
+            reason: format!("agent admission full, retry after {retry_after_s}s"),
+            remote: vec![format!(
+                "This repository is admitting agent writes at its agent share. Retry this push in {retry_after_s} seconds."
+            )],
+        }
+    }
 }
 
 fn one_line(s: &str) -> String {
@@ -674,6 +686,25 @@ mod tests {
         }
         let s = String::from_utf8_lossy(&Refusal::too_many_atomic(10_001).render(&req)).into_owned();
         assert!(s.contains("at most 10000 refs"), "the message names the limit: {s}");
+    }
+
+    /// Agent admission's git shape (`design/DESIGN.md`, Shape, "Agent load and agent safety"): report-status `ng <ref>
+    /// agent admission full, retry after <n>s` on every ref, and a `remote:` line on band 2.
+    #[test]
+    fn agent_admission_refuses_in_the_ng_shape_with_a_remote_line() {
+        let body = request(
+            &[cmd(ObjectId::ZERO, oid(1), "refs/heads/agent/a"), cmd(ObjectId::ZERO, oid(2), "refs/heads/agent/b")],
+            "report-status side-band-64k",
+            &[],
+            b"",
+        );
+        let req = parse_receive_pack(&body).unwrap();
+        let s = String::from_utf8_lossy(&Refusal::agent_full(7).render(&req)).into_owned();
+        for r in ["refs/heads/agent/a", "refs/heads/agent/b"] {
+            assert!(s.contains(&format!("ng {r} agent admission full, retry after 7s\n")), "{s}");
+        }
+        assert!(s.contains("\x02This repository is admitting agent writes"), "a remote: line on band 2: {s}");
+        assert!(!s.contains("ok refs/"));
     }
 
     #[test]

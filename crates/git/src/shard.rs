@@ -73,6 +73,90 @@ pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayV
     out
 }
 
+// ---- Fan-out (`design/DESIGN.md`, Shape, "Agent load and agent safety", `NetworkLoad` and `fanout`) ----
+
+/// What each warm site's first shard of a network reports each minute: the CPU of the most loaded of the site's k
+/// shards (0.0 to 1.0 of its vCPU), and their queue depth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NetworkLoad {
+    pub cpu_p99: f32,
+    pub queue_depth: u32,
+}
+
+/// k steps up once the larger load stays above this for `FANOUT_UP_FOR` [guess].
+pub const FANOUT_UP: f32 = 0.75;
+pub const FANOUT_UP_FOR: Duration = Duration::from_secs(180);
+/// k steps down once the larger load stays below this for `FANOUT_DOWN_FOR` [guess].
+pub const FANOUT_DOWN: f32 = 0.4;
+pub const FANOUT_DOWN_FOR: Duration = Duration::from_secs(3600);
+
+/// The hysteresis `fanout` reads: since when the larger load has been above `FANOUT_UP`, or below `FANOUT_DOWN`. The
+/// network group's leader keeps it beside k; it restarts at each step.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fanout {
+    pub k: u8,
+    pub high_since: Option<Timestamp>,
+    pub low_since: Option<Timestamp>,
+}
+
+/// The k both warm sites hold, from the larger of their two loads, so the second warm site holds k shards when the
+/// first is lost (`design/DESIGN.md`, Shape, `fanout`). Up one step past `FANOUT_UP` for `FANOUT_UP_FOR`, or to
+/// `ceil(k x cpu / FANOUT_UP)` when that is more; down one step past `FANOUT_DOWN` for `FANOUT_DOWN_FOR`; at most
+/// FANOUT_MAX and at least 1. Pure: no API call, no clock but `now`.
+pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8 {
+    let k = k.clamp(1, FANOUT_MAX);
+    let cpu = loads[0].cpu_p99.max(loads[1].cpu_p99);
+    f.high_since = if cpu > FANOUT_UP { Some(f.high_since.unwrap_or(now)) } else { None };
+    f.low_since = if cpu < FANOUT_DOWN { Some(f.low_since.unwrap_or(now)) } else { None };
+    let held = |since: Option<Timestamp>, d: Duration| since.is_some_and(|t| now.0 >= t.0 + d.as_millis() as u64);
+    let next = if held(f.high_since, FANOUT_UP_FOR) {
+        let want = (f32::from(k) * cpu / FANOUT_UP).ceil() as u8;
+        want.max(k + 1).min(FANOUT_MAX)
+    } else if held(f.low_since, FANOUT_DOWN_FOR) {
+        (k - 1).max(1)
+    } else {
+        k
+    };
+    if next != k {
+        f.high_since = None;
+        f.low_since = None;
+    }
+    f.k = next;
+    next
+}
+
+/// The pool shards each network of `asks` holds on one site: `(network, owner, held, want)`, where `held` and `want`
+/// are pool shards (k - 1). Each owner is held to `share(owner)`, its plan's share of the pool, and all to HOT_POOL.
+/// Shards a network already holds are kept first, up to its owner's share, so another owner's step up never reduces
+/// it; then the rest is granted in `asks` order. Returns the pool shards each network holds.
+pub fn pool_grants(asks: &[(NetworkId, u64, u8, u8)], share: impl Fn(u64) -> u16) -> Vec<u8> {
+    let mut left = HOT_POOL;
+    let mut by_owner: std::collections::BTreeMap<u64, u16> = Default::default();
+    let mut out: Vec<u8> = asks.iter().map(|a| a.2.min(a.3)).collect();
+    for (i, a) in asks.iter().enumerate() {
+        let used = by_owner.entry(a.1).or_default();
+        let keep = u16::from(out[i]).min(share(a.1).saturating_sub(*used)).min(left);
+        out[i] = keep as u8;
+        *used += keep;
+        left -= keep;
+    }
+    for (i, a) in asks.iter().enumerate() {
+        let used = by_owner.entry(a.1).or_default();
+        let more = u16::from(a.3.saturating_sub(out[i])).min(share(a.1).saturating_sub(*used)).min(left);
+        out[i] += more as u8;
+        *used += more;
+        left -= more;
+    }
+    out
+}
+
+/// A hot network's clone-cache entry goes to both warm sites' buckets: the bucket bindings, `BUCKET_<site>`, in the
+/// network's `warm_sites` order.
+pub fn clone_cache_buckets(network: NetworkId, home: SiteId, sites: &[SiteId], hot: bool) -> Vec<SiteId> {
+    let [a, b] = warm_sites(network, home, sites);
+    if hot && a != b { vec![a, b] } else { vec![home] }
+}
+
 /// The warm sites of a network: its group's home, then the next site by rendezvous among the others.
 pub fn warm_sites(network: NetworkId, home: SiteId, sites: &[SiteId]) -> [SiteId; 2] {
     let key = network_key(network);

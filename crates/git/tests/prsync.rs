@@ -306,6 +306,8 @@ struct Pipe {
     /// How each batch went out, in order: the first attempt in band, or a re-send through the queue.
     sent: Vec<Delivery>,
     cache: Cache,
+    /// TEST_MERGE_BUDGET as the consumer applies it, when set; each merge costs `merge_ms` of vCPU.
+    budget: Option<(graftyard_git::prsync::MergeBudget, f32)>,
 }
 
 impl Pipe {
@@ -316,6 +318,7 @@ impl Pipe {
             queue: Vec::new(),
             sent: Vec::new(),
             cache: Cache { conflicts: BTreeSet::new(), pack_bytes: 200, runs: 0 },
+            budget: None,
         }
     }
 
@@ -345,9 +348,20 @@ impl Pipe {
         // Through the member route's JSON, as the consumer Worker reads it.
         let wire = serde_json::to_value(SyncRead::of(&g.fold().core, REPO, &b.prs)).unwrap();
         let vs = serde_json::from_value::<SyncRead>(wire).unwrap().views;
-        let merges =
-            vs.iter().filter_map(|v| v.needs_merge().map(|(base, head)| self.cache.merge(v.n, base, head))).collect();
-        commands(b, &vs, merges)
+        let (mut merges, mut shed) = (Vec::new(), Vec::new());
+        for v in &vs {
+            let Some((base, head)) = v.needs_merge() else { continue };
+            if let Some((budget, cost)) = &mut self.budget {
+                let est = graftyard_git::prsync::MERGE_EST_MS;
+                if !budget.admit(graftyard_git::prsync::MergeCause::HeadPush, v.n, est, g.now.0) {
+                    shed.push((v.n, head));
+                    continue;
+                }
+                budget.charge(est, *cost);
+            }
+            merges.push(self.cache.merge(v.n, base, head));
+        }
+        commands(b, &vs, merges, shed)
     }
 
     fn consume(&mut self, g: &mut G, b: &SyncBatch) {
@@ -753,4 +767,24 @@ fn a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes() {
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
     assert_once(&g);
+}
+
+/// TEST_MERGE_BUDGET: past the budget a head push's test merge is not computed, its old merge ref is deleted, and
+/// `mergeable` reads null (GraphQL `UNKNOWN`), as for a merge too large to record. Within it the merge runs.
+#[test]
+fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
+    let (mut g, mut p) = setup();
+    // A merge costs 10 s of vCPU against 1 vCPU a second of budget at k = 1: the second within a second is shed.
+    p.budget = Some((graftyard_git::prsync::MergeBudget::new(1, g.now.0), 10_000.0));
+    p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1]);
+    let runs = p.cache.runs;
+    g.push("refs/heads/f", oid(3));
+    p.drain(&mut g);
+    let core = &*g.fold().core;
+    let m = mergeability(core, IssueNumber(1));
+    assert_eq!(graftyard_git::prsync::mergeable(m.as_ref(), oid(3), Some(oid(1))), None, "null past the budget");
+    assert_eq!(g.get(&merge_ref(IssueNumber(1))), None, "the older head's merge ref is gone");
+    assert_eq!(p.cache.runs, runs, "no merge computed past the budget");
+    assert_eq!(g.get(&head_ref(IssueNumber(1))), Some(oid(3)), "the head ref still moves");
 }

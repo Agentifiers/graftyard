@@ -417,7 +417,9 @@ pub fn ack<T: Clone + std::fmt::Debug + PartialEq>(out_value: T) -> Acked<T> {
     deliver(&mut ms, &mut disks, &mut inbox, &mut take);
     match acked.expect("the entry committed") {
         Ok(a) => a,
-        Err(CommitError::Refused { .. } | CommitError::NotLeader(_)) => panic!("not acknowledged"),
+        Err(CommitError::Refused { .. } | CommitError::NotLeader(_) | CommitError::Full { .. }) => {
+            panic!("not acknowledged")
+        }
     }
 }
 

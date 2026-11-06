@@ -67,6 +67,11 @@ pub trait Fold: Clone + fmt::Debug {
     fn row_event(event: &Self::Event) -> Self::Event {
         event.clone()
     }
+    /// The write an event records for admission: whose write it was, for DEMOTE_PER_MIN, and whether it moved a
+    /// ref, for `hot` (`crate::admit`). By default none, so a fold that marks nothing never demotes or turns hot.
+    fn write_mark(_event: &Self::Event) -> Option<crate::admit::WriteMark> {
+        None
+    }
 }
 
 pub trait Scratch {
@@ -196,6 +201,9 @@ pub struct GroupFold<F: Fold> {
     applied: Index,
     /// How long rows are kept: `REQUEST_RETENTION` unless the host set it (`Member::set_request_retention`).
     retention: std::time::Duration,
+    /// The committed writes of the last `DEMOTE_WINDOW`, by entry time, from `Fold::write_mark`: the per-actor counts
+    /// DEMOTE_PER_MIN reads and the push count `hot` reads, so a new leader reads what its predecessor committed.
+    recent: crate::admit::Recent,
 }
 
 impl<F: Fold> Clone for GroupFold<F> {
@@ -207,6 +215,7 @@ impl<F: Fold> Clone for GroupFold<F> {
             id_block: self.id_block,
             applied: self.applied,
             retention: self.retention,
+            recent: self.recent.clone(),
         }
     }
 }
@@ -239,7 +248,43 @@ impl<F: Fold> GroupFold<F> {
         id_block: Option<IdBlock>,
         requests: Box<dyn RequestStore<F::Event>>,
     ) -> GroupFold<F> {
-        GroupFold { fold, requests, config, id_block, applied, retention: REQUEST_RETENTION }
+        GroupFold {
+            fold,
+            requests,
+            config,
+            id_block,
+            applied,
+            retention: REQUEST_RETENTION,
+            recent: crate::admit::Recent::default(),
+        }
+    }
+
+    /// Committed writes by `actor` with entry times in `[from, before)`, as far as this fold has seen them.
+    pub fn actor_writes(&self, actor: crate::admit::ActorKey, from: Timestamp, before: Timestamp) -> u32 {
+        self.recent.actor_writes(actor, from, before)
+    }
+
+    /// Committed pushes with entry times in `[from, before)`.
+    pub fn pushes(&self, from: Timestamp, before: Timestamp) -> u32 {
+        self.recent.pushes(from, before)
+    }
+
+    /// Notes an entry's writes in the admission window without applying it: what `Member::restore` does for the
+    /// applied entries its stored window holds, since the window is not in the host's tables.
+    pub(crate) fn note_writes(&mut self, e: &LogEntry<F::Event>) {
+        if e.index <= self.recent.through {
+            return;
+        }
+        self.recent.through = e.index;
+        let cut = Timestamp(e.at.0.saturating_sub(crate::admit::DEMOTE_WINDOW.as_millis() as u64));
+        self.recent.expire(cut);
+        if let EntryBody::Events(events) = &e.body {
+            for ev in events {
+                if let Some(m) = F::write_mark(ev) {
+                    self.recent.note(e.at, m);
+                }
+            }
+        }
     }
 
     /// How long `request` rows are kept after their entry's `at`.
@@ -280,6 +325,7 @@ impl<F: Fold> GroupFold<F> {
         assert_eq!(e.index, self.applied.next(), "apply out of order");
         self.requests.expire(Timestamp(e.at.0.saturating_sub(self.retention.as_millis() as u64)));
         self.fold.apply_entry(e);
+        self.note_writes(e);
         match &e.body {
             EntryBody::Events(events) => {
                 for (id, range) in &e.requests {

@@ -562,6 +562,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
             403 => text(c.rid, 403, "Permission denied\n"),
             _ => refuse(Refusal::refused(&r.err)),
         },
+        Ok(PushOutcome::Full(f)) => refuse(Refusal::agent_full(f.retry_after_s)),
         Ok(PushOutcome::NotLeader(_)) | Err(CallErrorWire::NotLeader(_)) => {
             text(c.rid, 503, "the repository's group has no leader; retry\n")
         }

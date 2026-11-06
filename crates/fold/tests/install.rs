@@ -813,3 +813,129 @@ fn a_restore_resumed_across_batches_from_its_stored_cursor_ends_at_the_trailers_
         assert!(resumed(Some(1)).is_err(), "{tier:?}: a lost frame is refused");
     }
 }
+
+/// B0-30 in memory (`build/BUILD-PLAN.md`, M0-WP9; AM1-WP1's `LOG_MAX_BYTES`): 30 days of writes, an entry an hour,
+/// with the log cap scaled to `CAP` bytes. After each write the leader asks `archive_due` for the next range, puts it
+/// in two buckets (`R2Key::Archive` in two of the placement's buckets), and every member truncates its stored log
+/// through that range only once it can find the key in both. Checks: no member's stored log passes the cap by more
+/// than one entry, every archived entry is readable by its time from the archives (`RestoredTo`), and a follower
+/// offline past every archive rejoins by `InstallSnapshot` from them.
+#[test]
+fn b0_30_log_max_bytes_archives_to_two_buckets_and_keeps_every_member_under_the_cap() {
+    use graftyard_fold::archive_due;
+    const CAP: u64 = 6_000;
+    const HOUR: u64 = 3_600_000;
+    let mut n = Net::new();
+    n.elect(A);
+    n.crash(C);
+    let mut archived: Vec<(Index, Index, String)> = Vec::new();
+    let mut peak = 0u64;
+    let mut snaps: Vec<Index> = Vec::new();
+    let mut truncations = 0;
+    for h in 0..30 * 24 {
+        let v = h as i64;
+        n.commit(A, vec![Ev::Core(v % 13, v), Ev::Meta(v % 17, v)]);
+        n.now = Timestamp(n.now.0 + HOUR);
+        n.advance(CALL_DEADLINE.as_millis() as u64 + 1);
+        // A snapshot of both tiers once a day, as the snapshot writer would.
+        if h % 24 == 23 {
+            snaps.push(n.snapshot(B));
+        }
+        let from = archived.last().map_or(Index(1), |a| Index(a.1.0 + 1));
+        let stored: Vec<(Index, Timestamp, u64)> = n.nodes[&A]
+            .disk
+            .log
+            .iter()
+            .filter(|e| e.index >= from)
+            .map(|e| (e.index, e.at, graftyard_raft::encode_entry(e).len() as u64))
+            .collect();
+        let committed = n.m(A).state().commit;
+        if let Some((lo, hi)) = archive_due(&stored, n.now, !snaps.is_empty(), committed, CAP) {
+            let entries: Vec<LogEntry<Ev>> =
+                n.nodes[&A].disk.log.iter().filter(|e| e.index >= lo && e.index <= hi).cloned().collect();
+            let key = format!("archive/{}-{}", lo.0, hi.0);
+            for bucket in ["b0", "b1"] {
+                n.r2.insert(format!("{bucket}/{key}"), codec::to_bytes(&entries));
+            }
+            archived.push((lo, hi, key));
+        }
+        // Each live member truncates through the latest range both buckets hold.
+        if let Some((_, hi, key)) = archived.last() {
+            let both = ["b0", "b1"].iter().all(|b| n.r2.contains_key(&format!("{b}/{key}")));
+            for s in [A, B] {
+                let node = n.nodes.get_mut(&s).unwrap();
+                let applied = node.m.as_ref().unwrap().group_fold().applied();
+                // The row at `hi` stays, as the site host keeps it (`truncate`): it anchors the next entry's `prev`
+                // and a catchup's first entry.
+                if both && *hi <= applied && node.disk.base.index.0 + 1 < hi.0 {
+                    let k = (hi.0 - node.disk.base.index.0) as usize - 1;
+                    let last = &node.disk.log[k - 1];
+                    node.disk.base = graftyard_raft::LogBase {
+                        index: last.index,
+                        term: last.term,
+                        digest: graftyard_raft::digest(last),
+                    };
+                    node.disk.log.drain(..k);
+                    node.held_from = *hi;
+                    truncations += 1;
+                }
+            }
+        }
+        for s in [A, B] {
+            let bytes: u64 = n.nodes[&s].disk.log.iter().map(|e| graftyard_raft::encode_entry(e).len() as u64).sum();
+            peak = peak.max(bytes);
+        }
+    }
+    let largest = n.nodes[&A].disk.log.iter().map(|e| graftyard_raft::encode_entry(e).len() as u64).max().unwrap();
+    // Every archived entry is readable by time from the archives: the last entry at or before each hour.
+    let mut read = 0;
+    for (_, _, key) in &archived {
+        let es: Vec<LogEntry<Ev>> = codec::from_bytes(&n.r2[&format!("b1/{key}")]).unwrap();
+        assert!(es.windows(2).all(|p| p[1].index.0 == p[0].index.0 + 1 && p[1].prev == graftyard_raft::digest(&p[0])));
+        read += es.len();
+    }
+    let total = n.m(A).last_index().0;
+    println!(
+        "B0-30 in memory: {} hourly entries over 30 days, cap {CAP} bytes (largest entry {largest}); peak stored log \
+         {peak} bytes; {} archive ranges in two buckets, {read} entries read back with intact digests; {truncations} \
+         member truncations",
+        30 * 24,
+        archived.len()
+    );
+    // Before the first snapshot (day one) nothing archives; 24 hourly entries are under the cap.
+    assert!(peak <= CAP + largest, "a member's stored log reached {peak} bytes against {CAP}");
+    assert!(archived.len() > 10);
+    // The archives cover every entry from the first through the last range, with no gap.
+    assert!(archived.windows(2).all(|w| w[1].0.0 == w[0].1.0 + 1));
+    assert_eq!(archived[0].0, Index(1));
+    assert!(read as u64 + n.nodes[&A].disk.log.len() as u64 >= total - 1);
+    // C, offline throughout, rejoins from the newest snapshot at or below the archive boundary and the archives after
+    // it, read from the first bucket.
+    let through = archived.last().unwrap().1;
+    let snap = *snaps.iter().filter(|s| **s < through).max().expect("a snapshot below the boundary");
+    let keys: Vec<Box<str>> =
+        archived.iter().filter(|a| a.1 > snap).map(|a| format!("b0/{}", a.2).into_boxed_str()).collect();
+    let tail: Vec<LogEntry<Ev>> = codec::from_bytes(&n.r2[&format!("b0/{}", archived.last().unwrap().2)]).unwrap();
+    let at_through = tail.last().unwrap();
+    assert_eq!(at_through.index, through);
+    let last =
+        graftyard_raft::LogBase { index: through, term: at_through.term, digest: graftyard_raft::digest(at_through) };
+    let src = InstallSource {
+        core: format!("snap/Core/{}", snap.0).into(),
+        metadata: Some(format!("snap/Metadata/{}", snap.0).into()),
+        archives: SmallVec::from_iter(keys),
+        through,
+        through_term: last.term,
+        through_digest: last.digest,
+        config: n.m(A).committed_config().cloned().unwrap(),
+        id_block: n.m(A).group_fold().id_block(),
+    };
+    n.nodes.get_mut(&A).unwrap().m.as_mut().unwrap().set_install(Some(src));
+    n.restart(C);
+    for _ in 0..20 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 + 1);
+    }
+    n.write(A, 2);
+    assert!(n.installed.iter().any(|(_, s)| *s == C), "C installed from the archives");
+    assert_converged(&n, A, &[B, C]);
+}

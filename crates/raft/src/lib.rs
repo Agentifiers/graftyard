@@ -11,6 +11,7 @@
 //! input's `SelfAck` to `Member::self_ack` after the write confirms (Raft dissertation 10.2.1). No async, no wall
 //! clock, and no randomness but the seed the host passes to `Member::new`.
 
+pub mod admit;
 pub mod codec;
 mod edge;
 mod encode;
@@ -30,10 +31,11 @@ pub use encode::{Enc, bootstrap, digest, encode_entry};
 pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, RequestStore, Scratch};
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
-    APPEND_BYTES_MAX, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny, DepsWanted,
-    Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource, InstallWanted,
-    LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready, ReconfigError, Refusal,
-    Resolution, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq, VoteRes, Write, verify,
+    APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny,
+    DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource,
+    InstallWanted, LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready,
+    ReconfigError, Refusal, Resolution, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq, VoteRes, Write,
+    verify,
 };
 pub use outcome::Acked;
 pub use quorum::{DurableAck, QuorumProof};

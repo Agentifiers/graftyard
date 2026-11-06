@@ -105,6 +105,13 @@ impl RefusedWire {
     }
 }
 
+/// Agent admission refused the command: the edge renders `smart::Refusal::agent_full` for git and
+/// `Reply::secondary_rate_limit` for REST. `{"full": {"retry_after_s": n}}`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FullWire {
+    pub retry_after_s: u32,
+}
+
 /// A push's outcome, once its entry committed or its leadership ended.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,6 +119,8 @@ pub enum PushOutcome {
     Ok(OkWire),
     Refused(RefusedWire),
     NotLeader(NotLeaderWire),
+    /// It waited AGENT_WAIT in the agent lane.
+    Full(FullWire),
 }
 
 pub fn outcome_wire(o: &Result<Acked<PushOut>, CommitError<PushErr>>) -> PushOutcome {
@@ -123,6 +132,7 @@ pub fn outcome_wire(o: &Result<Acked<PushOut>, CommitError<PushErr>>) -> PushOut
         }),
         Err(CommitError::Refused { index, err }) => PushOutcome::Refused(RefusedWire::of(err, index.0)),
         Err(CommitError::NotLeader(n)) => PushOutcome::NotLeader(n.into()),
+        Err(CommitError::Full { retry_after_s }) => PushOutcome::Full(FullWire { retry_after_s: *retry_after_s }),
     }
 }
 
@@ -224,4 +234,20 @@ pub fn decode_commit(body: &[u8], release: graftyard_types::ReleaseId) -> Result
 /// A record whose format cannot even be read: answered as `Unsupported` of format 0.0, which no release reads.
 fn unsupported_unknown() -> CallErrorWire {
     CallErrorWire::Unsupported(UnsupportedWire { family: 0, version: 0 })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An agent command that waited AGENT_WAIT crosses the member boundary as `{"full": {"retry_after_s": n}}`, which
+    /// the edge renders in the `ng` or 429 shape and never as another refusal.
+    #[test]
+    fn an_admission_refusal_crosses_the_wire_with_its_retry_hint() {
+        let o = outcome_wire(&Err(CommitError::Full { retry_after_s: 9 }));
+        assert_eq!(o, PushOutcome::Full(FullWire { retry_after_s: 9 }));
+        let j = serde_json::to_value(CommitReply::Done(o.clone())).unwrap();
+        assert_eq!(j, serde_json::json!({ "done": { "full": { "retry_after_s": 9 } } }));
+        assert_eq!(serde_json::from_value::<CommitReply>(j).unwrap(), CommitReply::Done(o));
+    }
 }

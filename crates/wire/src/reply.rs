@@ -131,6 +131,17 @@ impl Reply {
         Reply::json(status, basic_error(status, message, doc))
     }
 
+    /// Agent admission is full (`graftyard_raft::admit`): 429 with `retry-after` and GitHub's secondary rate limit
+    /// message (`design/DESIGN.md`, Shape, "Agent load and agent safety").
+    pub fn secondary_rate_limit(retry_after_s: u32) -> Reply {
+        Reply::error(
+            429,
+            "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.",
+            "rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits",
+        )
+        .with("retry-after", retry_after_s.to_string())
+    }
+
     pub fn not_found() -> Reply {
         Reply::error(404, "Not Found", "rest")
     }
@@ -252,6 +263,17 @@ pub fn counts_against_limit(r: &Reply) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Agent admission's REST shape: 429, `retry-after`, and GitHub's secondary rate limit message.
+    #[test]
+    fn secondary_rate_limit_is_a_429_with_retry_after() {
+        let r = super::Reply::secondary_rate_limit(12);
+        assert_eq!(r.status, 429);
+        assert_eq!(r.header("retry-after"), Some("12"));
+        let super::Body::Json(b) = &r.body else { panic!("json") };
+        assert!(b["message"].as_str().unwrap().contains("secondary rate limit"), "{b}");
+        assert_eq!(b["status"], "429");
+    }
+
     use graftyard_types::Ulid;
 
     use super::*;

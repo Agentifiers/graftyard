@@ -275,6 +275,11 @@ async fn record_of(env: &Env, repo: RepoId) -> std::result::Result<graftyard_typ
     Ok(record)
 }
 
+thread_local! {
+    /// Each repository's test-merge budget on this isolate, at k = 1 until `fanout` is wired to the consumer.
+    static BUDGETS: RefCell<HashMap<i64, git::prsync::MergeBudget>> = RefCell::default();
+}
+
 async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
     let chain = ChainId::Repo(repo);
@@ -297,13 +302,25 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
         return Ok(json!({ "skipped": cursor.0 }));
     }
     let mut merges = Vec::new();
+    let mut shed = Vec::new();
     for view in &views {
         let Some((base, head)) = view.needs_merge() else { continue };
+        // TEST_MERGE_BUDGET: a head push's merge is shed only past the budget by more than one merge.
+        let est = git::prsync::MERGE_EST_MS;
+        let ok = BUDGETS.with(|b| {
+            let mut b = b.borrow_mut();
+            let b = b.entry(repo.0.0).or_insert_with(|| git::prsync::MergeBudget::new(1, now_ms()));
+            b.admit(git::prsync::MergeCause::HeadPush, view.n, est, now_ms())
+        });
+        if !ok {
+            shed.push((view.n, head));
+            continue;
+        }
         let answer = merge(env, &site, repo, base, head).await?;
         merges.push(answer.test_merge(view.n, base, head).ok_or("the shard named no object id")?);
     }
     t.push(now_ms());
-    let cmds = git::prsync::commands(&m.batch, &views, merges);
+    let cmds = git::prsync::commands(&m.batch, &views, merges, shed);
     let mut events = 0;
     for c in cmds {
         let rid = c.request;

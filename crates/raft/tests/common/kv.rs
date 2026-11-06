@@ -31,6 +31,15 @@ pub enum KvEvent {
         key: String,
         s: String,
     },
+    /// An admission test's write (`KvCmd::Write`): `actor` and `push` are what admission counts, and `pack` the inline
+    /// pack bytes the entry carries.
+    Write {
+        key: String,
+        value: String,
+        actor: Option<u64>,
+        push: bool,
+        pack: usize,
+    },
 }
 
 fn opt(enc: &mut Enc, v: Option<&String>) {
@@ -52,6 +61,14 @@ impl Record for KvEvent {
                 e.str(key);
                 e.str(s);
             }
+            KvEvent::Write { key, value, actor, push, pack } => {
+                e.u8(2);
+                e.str(key);
+                e.str(value);
+                e.option(actor.as_ref(), |e, a| e.u64(*a));
+                e.u8(u8::from(*push));
+                e.bytes(&vec![0; *pack]);
+            }
         }
     }
 }
@@ -71,12 +88,13 @@ fn apply_to(get: Option<&String>, ev: &KvEvent) -> String {
     match ev {
         KvEvent::Set { value, .. } => value.clone(),
         KvEvent::Push { s, .. } => format!("{}{s}", get.map_or("", |v| v)),
+        KvEvent::Write { value, .. } => value.clone(),
     }
 }
 
 fn key(ev: &KvEvent) -> &str {
     match ev {
-        KvEvent::Set { key, .. } | KvEvent::Push { key, .. } => key,
+        KvEvent::Set { key, .. } | KvEvent::Push { key, .. } | KvEvent::Write { key, .. } => key,
     }
 }
 
@@ -112,6 +130,15 @@ impl Fold for Kv {
     fn apply_id_block(&mut self, b: graftyard_raft::IdBlock) {
         self.0.insert(ID_KEY.to_owned(), b.base().0.to_string());
     }
+    fn write_mark(ev: &KvEvent) -> Option<graftyard_raft::admit::WriteMark> {
+        match ev {
+            KvEvent::Write { actor, push, .. } => Some(graftyard_raft::admit::WriteMark {
+                actor: actor.map(graftyard_raft::admit::ActorKey),
+                push: *push,
+            }),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -136,6 +163,16 @@ pub enum KvCmd {
     },
     /// A command in a format no member reads.
     Future,
+    /// A write as admission sees it: a push is a compare-and-set of `key` from `expect` (refused `Stale` otherwise),
+    /// any other write a put. `pack` bytes ride inline.
+    Write {
+        key: String,
+        expect: Option<String>,
+        value: String,
+        actor: Option<u64>,
+        push: bool,
+        pack: usize,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,6 +205,15 @@ impl Record for KvCmd {
                 e.bytes(&vec![0; *bytes]);
             }
             KvCmd::Future => e.u8(4),
+            KvCmd::Write { key, expect, value, actor, push, pack } => {
+                e.u8(5);
+                e.str(key);
+                opt(&mut e, expect.as_ref());
+                e.str(value);
+                e.option(actor.as_ref(), |e, a| e.u64(*a));
+                e.u8(u8::from(*push));
+                e.bytes(&vec![0; *pack]);
+            }
         }
     }
 }
@@ -199,6 +245,17 @@ impl Command for KvCmd {
             KvCmd::Cas { .. } => Err(KvErr::Stale),
             KvCmd::Append { key, s } => Ok((smallvec![KvEvent::Push { key: key.clone(), s: s.clone() }], true)),
             KvCmd::Big { .. } | KvCmd::Future => Ok((SmallVec::new(), true)),
+            KvCmd::Write { key, expect, push: true, .. } if fold.get(key) != expect.as_ref() => Err(KvErr::Stale),
+            KvCmd::Write { key, value, actor, push, pack, .. } => Ok((
+                smallvec![KvEvent::Write {
+                    key: key.clone(),
+                    value: value.clone(),
+                    actor: *actor,
+                    push: *push,
+                    pack: *pack
+                }],
+                true,
+            )),
         }
     }
     fn replay(&self, _events: &[KvEvent]) -> bool {
