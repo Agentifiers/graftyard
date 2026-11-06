@@ -5,15 +5,19 @@
 //! A tier is tables of rows behind `store::Store`, so the same `apply` and digest run on a Durable Object's SQLite in
 //! a host and on `MemStore` in tests. Pure: no clock, no I/O, no randomness.
 
+mod archive;
 pub mod canon;
 mod snapshot;
 pub mod store;
 mod tier;
 
+pub use archive::{
+    ARCHIVE_HEADER, ArchiveError, archive_header, check_archive_header, decode_archive_some, encode_archive_row,
+};
 pub use snapshot::{
-    FrameCheck, RESTORE_WINDOW, RefoldError, Restore, Row, SNAPSHOT_BYTES, SNAPSHOT_EVERY, SnapshotCursor,
-    SnapshotError, SnapshotFrame, SnapshotJob, SnapshotTrailer, decode_frames, decode_some, encode_frame,
-    encode_frames, end_snapshot, frames_header, refold_segment, restore, snapshot_due, snapshot_writer,
+    FrameCheck, RESTORE_WINDOW, RefoldError, Restore, RestoreCursor, Row, SNAPSHOT_BYTES, SNAPSHOT_EVERY,
+    SnapshotCursor, SnapshotError, SnapshotFrame, SnapshotJob, SnapshotTrailer, decode_frames, decode_some,
+    encode_frame, encode_frames, end_snapshot, frames_header, refold_segment, restore, snapshot_due, snapshot_writer,
     snapshots_to_keep,
 };
 pub use store::{

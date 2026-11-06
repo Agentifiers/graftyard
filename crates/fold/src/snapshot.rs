@@ -475,9 +475,41 @@ impl Restore {
         Ok(())
     }
 
+    /// Where the restore stands, which a host stores with each batch's rows and resumes from (`resume`), so a load
+    /// that spans many requests survives its object's reset.
+    pub fn cursor(&self) -> RestoreCursor {
+        let c = &self.check;
+        RestoreCursor {
+            want: self.want,
+            table: c.table,
+            last: c.last.clone(),
+            sum: c.sum,
+            rows: c.rows,
+            trailer: c.trailer.clone(),
+        }
+    }
+
+    pub fn resume(schema: Schema, c: RestoreCursor) -> Restore {
+        let check = FrameCheck { schema, table: c.table, last: c.last, sum: c.sum, rows: c.rows, trailer: c.trailer };
+        Restore { want: c.want, check }
+    }
+
     /// Checks the trailer, writes the tier's meta row at `to`, and refolds the stored rows against the trailer's
     /// digest, a page at a time.
     pub fn finish(self, store: &mut dyn Store) -> Result<SnapshotTrailer, SnapshotError> {
+        let schema = self.check.schema;
+        let tr = self.finish_rows(store)?;
+        let got = refold_digest(store, &schema);
+        if got != tr.fold_digest {
+            return Err(SnapshotError::Digest { got, want: tr.fold_digest });
+        }
+        Ok(tr)
+    }
+
+    /// `finish` without the refold of the stored rows: the rows the frames carried are checked against the trailer,
+    /// not the rows the store holds. For a host whose tier is too large to refold in one request; it refolds the store
+    /// in pages itself, or trusts its own writes.
+    pub fn finish_rows(self, store: &mut dyn Store) -> Result<SnapshotTrailer, SnapshotError> {
         let schema = self.check.schema;
         let sum = self.check.sum;
         let tr = self.check.finish()?;
@@ -499,12 +531,19 @@ impl Restore {
                 snap_sum: [0; 32],
             },
         );
-        let got = refold_digest(store, &schema);
-        if got != tr.fold_digest {
-            return Err(SnapshotError::Digest { got, want: tr.fold_digest });
-        }
         Ok(tr)
     }
+}
+
+/// A `Restore` between batches: what its `FrameCheck` has seen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestoreCursor {
+    want: (ChainId, Index),
+    table: usize,
+    last: Option<Key>,
+    sum: [u8; 32],
+    rows: u64,
+    trailer: Option<SnapshotTrailer>,
 }
 
 /// Why `refold_segment` gave no digest.
