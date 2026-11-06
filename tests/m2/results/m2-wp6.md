@@ -630,3 +630,4 @@ and edge EWR on all 3; off 2 of 2 plus 1 gh run.
 Progress at 21:16 UTC (`final`, 93 of 600): home n = 46, p99 1.37 s, 0 over 2 s; off n = 46, p99 1.81 s, 0 over 3 s;
 every sample merged; client EWR and edge EWR on every home sample.
 Progress at 21:45 UTC (184 of 600): home n = 92, p99 1.37 s, 0 over; off n = 89, p99 1.81 s, 0 over.
+Progress at 22:13 UTC (267 of 600): home n = 133, p99 1.31 s, 0 over; off n = 129, p99 1.81 s, 0 over.
