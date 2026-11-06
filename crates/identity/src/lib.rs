@@ -18,6 +18,7 @@ mod enc;
 pub mod finish;
 mod ids;
 mod names;
+mod org;
 mod overlay;
 mod placement;
 mod tokens;
@@ -29,7 +30,7 @@ pub use apps::{
 };
 pub use authz::{
     AccountKind, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead, AuthzScratch,
-    NameEpoch, OrgRole, RepoEntry, RepoPermission,
+    NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -41,6 +42,10 @@ pub use names::{
     AccountRow, ClientRoute, Login, LoginKey, LoginRow, NAME_SHARDS, NameError, NameKey, NamesCmd, NamesErr,
     NamesEvent, NamesFold, NamesMore, NamesOp, NamesOut, NamesRead, NamesScratch, RESERVED, RepoName, RepoNameKey,
     Shortcode, SlugRow, account_shard, name_shard,
+};
+pub use org::{
+    INVITATION_TTL, InstanceAuth, InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, LdapConfig,
+    OidcConfig, OrgPolicy, SamlConfig, SignInMethod, TeamEvent, TeamId, TeamRow, is_install_account,
 };
 pub use placement::validate_record;
 pub use tokens::{
