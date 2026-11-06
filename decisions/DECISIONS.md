@@ -1524,7 +1524,7 @@ M2-WP3's hosted half passed, the site-day work answered F49, and the pure halves
 
 #### F48: the fold audit refolds from the newest snapshot
 
-**Decision.** The fold audit refolds a sampled chain from each tier's newest committed snapshot at or below the audited index, not from genesis. A job streams the snapshot's frames into empty scratch tables one frame at a time (`Restore`), applies the stored log tail one entry at a time with the same `apply` (`refold_segment`), and compares the `fold_digest` with every member's. A refold from one snapshot to the next must reach the next trailer's digest, so archived ranges are audited segment by segment. The first snapshot is trusted as written. F48 leaves OPEN-QUESTIONS; the site's alarm-driven cron, shared with the install loader, is M2-WP1 work, and until it runs `replay` keeps skipping chains over `REPLAY_BYTES`.
+**Decision.** The fold audit refolds a sampled chain from each tier's newest committed snapshot at or below the audited index, not from genesis. A job streams the snapshot's frames into empty scratch tables one frame at a time (`Restore`), applies the stored log tail one entry at a time with the same `apply` (`refold_segment`), and compares the `fold_digest` with every member's. A refold from one snapshot to the next must reach the next trailer's digest, so archived ranges are audited segment by segment. The first snapshot is trusted as written. F48 leaves OPEN-QUESTIONS. The site's alarm-driven cron, shared with the install loader, followed in M3-WP5's hosted half and skips nothing for log size ("M3-WP5's hosted shapes, and the fold audit at its size limit").
 
 **Why.** Memory is one frame and one entry, not the fold, and the tail is at most `SNAPSHOT_EVERY` entries or `SNAPSHOT_BYTES` of log, because a snapshot is due by then. The refold from genesis held the fold in one isolate, and a 102.6 MB log took one past 128 MB (F47).
 
@@ -1533,6 +1533,97 @@ M2-WP3's hosted half passed, the site-day work answered F49, and the pure halves
 **Evidence.** `tests/m3/results/m3-wp5.md`, "F48": for both tiers, a refold from the snapshot at 21 plus the tail matches all three voters, a refold from 21 to the next snapshot reaches its trailer digest, a dropped entry is refused, and a changed entry gives a different digest [measured, in memory].
 
 **Flip.** A hosted audit whose snapshot-to-snapshot refold disagrees with the trailer on a chain whose members agree, which would mean the trailer or `snap_undo` is wrong rather than `apply`.
+
+### BM-2, M3-WP5 hosted, AM1-WP1, and M3-WP1 and WP2, 2026-11-06
+
+BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-28 and BF-29 and failed the B0-18 rerun, and the pure halves of AM1-WP1 and of M3-WP1 and WP2 settled gaps in admission, fan-out, names, and tokens (`tests/m2/results/m2-wp6.md`; `tests/m3/results/m3-wp5.md`, "2026-11-06"; `tests/am1/results/am1-wp1.md`; `crates/identity`).
+
+#### A merge plan runs on the leader site's shard
+
+**Decision.** `GitCacheShard::merge` runs on the shard of the base leader's site, as `PrSync` and the `MergeQueue` consumer already did, not on the network's home shard or the base site's shard. `decide` takes the smallest free `StatusId` at or above the one the edge minted, returns it, and the 201 renders it.
+
+**Why.** The leader site's shard is the one `PrSync` and `MergeQueue` keep caught up, so a merge there rarely waits on a catch-up, which cost 290 to 610 ms a plan once leadership moved. The edge mints a `StatusId` from its clock, and the `status` table is keyed (sha, -id), so two statuses posted in one millisecond on one commit replaced each other's row: BF-22 read back 495 of 500.
+
+**Beat.** The network's home shard (DESIGN's `GitCacheShard` text) and the base site's shard (journey 2's), each of which needs a catch-up before most plans after a leader move. For status ids, failing the second post, which GHES does not do.
+
+**Evidence.** `tests/m2/results/m2-wp6.md`, "Merge latency", "BF-22 reduced", and "Design sentences contradicted": the shard's own timing showed catch-up 289 to 613 ms against a 76 to 84 ms merge; `bf22e` read 500 of 500 after the fix, and `two_statuses_minted_in_one_millisecond_keep_both_rows_and_the_later_wins` fails without the free-id loop [measured].
+
+**Flip.** A placement where the leader site's shard is measured further behind than the home shard on most plans; or F51's decision moving `StatusId` to the group's `IdBlock`, which removes the collision.
+
+#### BM-2's fresh-leader merge p99 fails, and the gate stays
+
+**Decision.** BM-2 is recorded as failing: journeys 2 and 3 pass 10 of 10 and the stale-`parent_tip` part 100 of 100, but the merge p99 on a freshly elected leader is 3.20 s against 2 s. The gate text is unchanged, Milestone 2 stays open, and the latency work continues on branch `bm2-latency`. The seven serial steps the run removed match "The write path" and "Commit and read paths", which the code now follows; neither section changes.
+
+**Why.** AGENTS.md keeps a failing gate as written. What remains is cross-region round trips, with identity leaders on enam and the new repository leader on weur or apac, not a step the design orders serially.
+
+**Beat.** Loosening the gate to the measured p99, which needs an operator decision on merge latency, as the 2026-10-28 one was for commit latency. Reading 91 samples as too few: 63 of 91 are over 2 s, which no count can turn into a pass.
+
+**Evidence.** `tests/m2/results/m2-wp6.md`: p99 3.20 s, p50 2.28 s, n = 91 on 91 new terms; enam 2.09 s, weur 3.20 s, apac 3.16 s; the per-step split per site [measured].
+
+**Flip.** A rerun on the same placement with p99 at most 2 s; or an operator decision that accepts the measured cross-region merge latency, as "Measured latency is accepted" did for commits.
+
+#### AM1-WP1's admission and fan-out shapes as the code needs them
+
+**Decision.** From AM1-WP1's pure code, in the agent block of both DESIGN and AGENT-LAYER:
+- `TestMerge` is one computed merge (`n`, `base`, `head`, `result`), recorded as SHARED's `TestMerged`, and `MergeBudget` is the budget: per network in shard memory, refilled at TEST_MERGE_BUDGET of the k shards' vCPU, with pushes and dispatch allowed one merge into deficit and GETs leaving half a second's budget.
+- `fanout` takes `now` and a `Fanout` the network leader keeps, holding k and since when the load has been above or below the lines, so it stays pure.
+- `DEMOTE_PER_MIN` counts the fold's committed writes of the last minute plus the leader's unresolved and refused ones, held in leader memory [inference].
+- The leader refuses at `AGENT_QUEUE_MAX`, before staging, and the edge renders the refusal.
+- A hot group stages every class's push over `INLINE_MAX_HOT`; while placement fails, any group refuses an agent pack over it.
+- An owner's pool share has no plan field, so it is HOT_POOL - 1 [guess].
+- `hot` counts pushes over the last 5 s of committed entries (`HOT_WINDOW`).
+
+**Why.** The design's `TestMerge` enum and the code's recorded merge were two things under one name, and the budget had no type. A `fanout` that takes only loads and k cannot hold a 3 min or 1 h window without a clock. Without refused writes in the count, a demoted token whose writes are refused falls back under 60 committed writes and is classed Human again. The other points are where the design said less than the code needs.
+
+**Beat.** Keeping the `TestMerge` enum, which nothing builds. Counting refused writes in the fold, which would need a command per refusal. A per-plan share field before plans exist.
+
+**Evidence.** `tests/am1/results/am1-wp1.md`: B0-29 to B0-35 pass in memory, 23 of 23 planted bugs caught (including "`DEMOTE_PER_MIN` ignores the fold" and "owner share not enforced"), the long sweep and Porcupine Ok [measured]; `crates/raft/src/admit.rs`, `crates/raft/src/member/leader.rs`, `crates/git/src/shard.rs`, `crates/git/src/prsync.rs`.
+
+**Flip.** LM-1's hosted rerun showing a demoted actor classed Human after a leader change (the refused count is leader memory), or a plan model that needs per-owner shares other than HOT_POOL - 1.
+
+#### F50 closed: an account's login row on `account_shard`
+
+**Decision.** `NamesEvent::AccountLogin { account, login }`, tag 12, on `account_shard(account)`, holds each account's current login. `SetAccountLogin` reads the login's own `Names` shard as a dependency and refuses unless the account holds the login there, so a write a rename overtook is refused. The edge reads logins with one read per distinct `account_shard`, all at once, at most 24 shards a request [guess]; an account past that, or with no row, renders as `ghost`. The `Audit` finisher writes a missing row after `LoginClaimed`, the commit point. F50 leaves OPEN-QUESTIONS.
+
+**Why.** `Names` had `LoginClaimed` (login to account) but no row from an account to its login, so on the hosted edge every login but the owner's rendered from the test-only `LOGINS` variable.
+
+**Beat.** A login field on the `Account` row, which changes Milestone 1's stored bytes. Reading the login from the account's `Identity` chain, which is one more group per account rendered.
+
+**Evidence.** `crates/identity/src/names.rs`, `crates/identity/src/finish.rs`, `workers/edge/src/api.rs` (`LOGIN_SHARDS_MAX`), and `crates/identity/tests/m3.rs`; `tests/m2/results/m2-edge.md` for the gap [measured].
+
+**Flip.** Replies naming more accounts than 24 shards cover in common journeys, which would need a batched login read or a cache.
+
+#### M3-WP1 and WP2's names and token shapes as the code needs them
+
+**Decision.** From the identity crate's pure code:
+- `NamesEvent::AppSlug` carries `owner`, so the `Audit` finisher knows whose `Authz` chain to finish a claim on.
+- `CLIENT_SECRETS_MAX` is 2 [guess].
+- A GitHub App's `ClientId` is `Iv1.` and its App id in 16 hex digits [inference].
+- An OAuth app's commit point is its `Client` route claim, as an App's is its `AppSlug`; `Authz` refuses a record its claim does not name.
+- `TokensEvent::StoredWith` (tag 11) is `Stored` with its optional fields, beside `Stored`, so Milestone 1's rows keep their bytes.
+- `TokenKind::Installation` exists for parsing and is never stored.
+- The crash gap between `CodeUsed` and the new token's `Stored` is the design's "a failed second commit sends the client back to the start": nothing is stored, so `Audit` has nothing to finish.
+- Names, Tokens, and Authz take format v2 for every command that writes an event Milestone 1 did not have; members read them after a site day onto a release that lists them, and the edge sends them only after `FormatsEnable`.
+
+**Why.** Each is where the design said less than the code needs, and none changes a recorded behavior. Deriving the App's client id from its id makes it unique with no claim of its own. Keeping the M1 encodings means no stored entry changes.
+
+**Beat.** Random App client ids, which need their own uniqueness claim. A new `Stored` encoding, which would change Milestone 1's stored bytes.
+
+**Evidence.** `crates/identity/src/apps.rs`, `names.rs`, `tokens.rs`, `authz.rs`, `lib.rs` (`NAMES_FORMAT_V2`, `TOKENS_FORMAT_V2`, `AUTHZ_FORMAT_V2`), and `crates/identity/tests/m3.rs`, which pins Milestone 1's bytes and replays a used code after a leader change [measured, in memory].
+
+**Flip.** GitHub client ids measured with a form an App's derived id collides with, or a client that needs more than two live secrets.
+
+#### M3-WP5's hosted shapes, and the fold audit at its size limit
+
+**Decision.** `place_learners` runs from the leader's `/learners` route until `graft-ops` exists. An `R2Key::Archive` object is `gyfarch\0`, version 1, then each stored log row in the raft codec behind a 4-byte big-endian length, so an install applies entries byte for byte. Learners write no `MemberRegistry` row. The site's fold audit refolds from snapshots, skips nothing for log size, and skips only a tier whose snapshot is over `AUDIT_SNAPSHOT_MAX` (256 MB [guess]); how to audit such a tier is F52. B0-18's rerun failing 2 of 6 is recorded in BUILD-PLAN, M3-WP5, with the investigation on branch `b0-18`.
+
+**Why.** No `graft-ops` is deployed on the test account. The design gave archive objects no format, and JSON would change entries' bytes. A learner never votes and is found through its group's config, so the registry, which `ReplaceMember` and placement moves read for voters, does not need it. A tier's scratch copy must fit beside it in the member's 10 GB.
+
+**Beat.** A JSON archive. Registry rows for learners, which `ReplaceMember` would then have to skip.
+
+**Evidence.** `tests/m3/results/m3-wp5.md`, "2026-11-06": BF-29 and BF-28 pass hosted; the deep audit of `repo:65536` refolded 107.7 MB of log in 213 batches at 64.9 MB peak wasm memory, equal to all three voters; B0-18 passed 2 of 6 runs [measured]; `crates/fold/src/archive.rs`, `workers/site/src/load.rs`.
+
+**Flip.** A `graft-ops` cron deployed, which moves the route's job to it; or a hosted audit whose snapshot-to-snapshot refold disagrees with the trailer on a chain whose members agree (F48's flip).
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

@@ -361,6 +361,7 @@ pub fn refused_field(f: &str, e: &graftyard_git::issue_ops::IssueErr) -> Value {
         E::NotOpen => unprocessable(f, "Pull request is not open"),
         E::OwnApproval => unprocessable(f, "Can not approve your own pull request"),
         E::OwnerChange => unprocessable(f, "owner"),
+        E::OrgMember => unprocessable(f, "User is a member of the organization"),
         // The host leases a block and re-sends; a client never sees this.
         E::NeedIdBlock | E::Unavailable => json!({ "message": "Service Unavailable", "status": "503" }),
     }

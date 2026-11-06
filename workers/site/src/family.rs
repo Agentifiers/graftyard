@@ -259,6 +259,7 @@ impl Family for Repo {
             git::prsync::REPO_FORMAT_V3,
             git::merge::REPO_FORMAT_V4,
             git::issue_ops::call::REPO_FORMAT_ISSUES,
+            git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -559,6 +560,12 @@ impl Family for Repo {
         }
         if let Some(base) = q.get("mergequeue") {
             return crate::merge_queue::read_json(fold, base);
+        }
+        if let Some(id) = q.get("rows").and_then(|r| r.get("merge")).and_then(Value::as_i64) {
+            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
+            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, DbId(id));
+            t.index = graftyard_fold::meta(&*fold.core).applied.0;
+            return serde_json::to_value(t).unwrap_or(Value::Null);
         }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};

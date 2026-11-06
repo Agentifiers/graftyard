@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 
 use graftyard_fold::{MemStore, Overlay, Read, TierStore, Tiered, Val, fold_digest, has};
 use graftyard_identity::{
-    Actor, AuthzRead, Credential, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, ScopeSet, UserId,
-    check_credential, credential_chains,
+    Actor, AuthzRead, Credential, CredentialRefusal, Decision, IdentityDep, Own, Principal, ScopeSet, UserId,
+    WriteAction, check_credential, credential_chains,
 };
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, LogEntry, Record, Scratch, TierSet};
 use graftyard_types::{
@@ -233,6 +233,14 @@ pub enum RepoEvent {
     },
     /// Core. SHARED's `Queue`: the merge queue's events (`crate::queue`).
     Queue(QueueEvent),
+    /// Core. An outside collaborator's permission, or `None` to remove it (M3-WP3). Never written for a current
+    /// member of an org owner: that is a `Grant` on the org's `Authz` chain.
+    Collaborator {
+        who: AccountId,
+        permission: Option<graftyard_identity::RepoPermission>,
+    },
+    /// Core. An invitation to become an outside collaborator. Accepting it appends `Collaborator` in the same entry.
+    Invitation(graftyard_identity::InvitationEvent),
 }
 
 impl RepoEvent {
@@ -333,6 +341,11 @@ impl RepoFold {
     /// The owner whose `Authz` chain gates the repository: `RepoSettings.owner` once a `Settings` entry committed.
     pub fn authz_owner(&self) -> Option<AccountId> {
         get_rec::<RepoSettings>(&*self.core, "settings", &[]).map(|s| s.owner).or(self.owner)
+    }
+
+    /// The enterprise whose `Authz` chain `deps` also reads: `RepoSettings.enterprise`, none before a `Settings`.
+    pub fn authz_enterprise(&self) -> Option<AccountId> {
+        get_rec::<RepoSettings>(&*self.core, "settings", &[]).and_then(|s| s.enterprise)
     }
 
     /// The first index still in the chain's log (`ChainLog::first_index`).
@@ -593,13 +606,29 @@ pub fn hidden(name: &RefName) -> bool {
     name.starts_with("refs/pull/")
 }
 
-fn may_write(actor: &Principal, owner: Option<AccountId>, repo: Option<RepoId>, authz: Option<&dyn AuthzRead>) -> bool {
-    let Actor::User(user) = actor.actor else { return false };
-    let Some(authz) = authz else { return false };
-    if owner.is_none_or(|o| authz.owner() != Some(o)) {
-        return false;
-    }
-    authz.is_admin(user) || repo.and_then(|r| authz.grant(r, user)).is_some_and(|p| p >= RepoPermission::Write)
+/// `authorize_write` for a push, over the owner's and the enterprise's `Authz` folds the leader read and the core
+/// tier's collaborator rows: an admin, a `Write` grant, a team's, the org's base permission, or a `Collaborator` row.
+fn may_write(actor: &Principal, s: &RepoScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> bool {
+    let (Some(repo), Some(owner)) = (s.fold().repo, s.authz_owner()) else { return false };
+    let access = crate::issue_ops::Access { repo, owner, core: s.core() };
+    let folds = authz_folds(deps);
+    graftyard_identity::authorize_write(actor, WriteAction::Push, &folds, &access) == Decision::Allow
+}
+
+/// Every `Authz` fold among the deps: identity's `permission` takes the owner's and the enterprise's by owner id.
+pub(crate) fn authz_folds(deps: &[(ChainId, IdentityDep)]) -> SmallVec<[&dyn AuthzRead; 2]> {
+    deps.iter()
+        .filter_map(|(c, d)| match (c, d) {
+            (ChainId::Authz(o), IdentityDep::Authz(f)) if f.owner() == Some(*o) => Some(f as &dyn AuthzRead),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The `Authz` chains a user command on the repository reads: the owner's, and the enterprise's, both from
+/// `RepoSettings` once a `Settings` entry committed, so a transfer or an enterprise change moves them by entry.
+pub(crate) fn authz_chains(owner: Option<AccountId>, enterprise: Option<AccountId>) -> impl Iterator<Item = ChainId> {
+    owner.into_iter().chain(enterprise).map(ChainId::Authz)
 }
 
 impl Push {
@@ -802,6 +831,10 @@ fn encode_principal(e: &mut Enc, p: &Principal) {
             e.u8(0);
             e.0.extend_from_slice(&h);
         }
+        Credential::Session(s) => {
+            e.u8(1);
+            e.u128(s.0.0);
+        }
     }
     e.count(p.sso_orgs.len());
     for o in &p.sso_orgs {
@@ -884,6 +917,7 @@ fn decode_principal(d: &mut Dec) -> Result<Principal, WireError> {
     let scopes = ScopeSet(d.u64()?);
     let credential = match d.u8()? {
         0 => Credential::Stored(d.take(32)?.try_into().expect("32")),
+        1 => Credential::Session(graftyard_identity::WebSessionId(graftyard_types::Ulid(d.u128()?))),
         _ => return Err(WireError::Malformed("credential tag")),
     };
     let n = d.u32()? as usize;
@@ -979,6 +1013,9 @@ impl Record for RepoEvent {
                 return tagged(out, 23, &(n, base, head, method, also, pack, verified, engine, by));
             }
             RepoEvent::Queue(q) => return tagged(out, 24, q),
+            // M3-WP3: tags 25 and 26.
+            RepoEvent::Collaborator { who, permission } => return tagged(out, 25, &(who, permission)),
+            RepoEvent::Invitation(i) => return tagged(out, 26, i),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1011,12 +1048,11 @@ impl Command for Push {
     fn tiers(&self) -> TierSet {
         TierSet::CORE
     }
-    /// The actor's `Account` and token rows, and the owner's `Authz`, named by the fold's `RepoSettings`.
+    /// The actor's `Account` and token rows, and the owner's and enterprise's `Authz`, named by the fold's
+    /// `RepoSettings`.
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
-        if let Some(o) = fold.authz_owner() {
-            d.push(ChainId::Authz(o));
-        }
+        d.extend(authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         d
     }
     fn decide(
@@ -1030,14 +1066,7 @@ impl Command for Push {
             return Err(PushErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(PushErr::Unauthorized)?;
-        let owner = s.authz_owner();
-        let authz = owner.and_then(|o| {
-            deps.iter().find_map(|(c, d)| match d {
-                IdentityDep::Authz(f) if *c == ChainId::Authz(o) => Some(f as &dyn AuthzRead),
-                _ => None,
-            })
-        });
-        if !may_write(&self.actor, owner, s.fold().repo, authz) {
+        if !may_write(&self.actor, s, deps) {
             return Err(PushErr::Forbidden);
         }
         self.decide_refs(s)
@@ -1191,7 +1220,7 @@ impl Command for RepoCmd {
         match self {
             RepoCmd::Push(p) => p.format(),
             RepoCmd::Sync(c) => c.format(),
-            RepoCmd::Issue(_) => crate::issue_ops::call::REPO_FORMAT_ISSUES,
+            RepoCmd::Issue(c) => c.format(),
             RepoCmd::Merge(c) => c.cmd.format(),
         }
     }

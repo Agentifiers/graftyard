@@ -25,6 +25,9 @@ use crate::repo::{RepoEvent, RepoFold, RepoScratch};
 
 /// The format of an `IssueCall`, and of every entry that carries one.
 pub const REPO_FORMAT_ISSUES: Format = Format { family: 0x20, version: 5 };
+/// M3-WP3's collaborator and repository-invitation commands, whose events (`Collaborator` 25, `Invitation` 26) a
+/// release that reads only 32.5 cannot apply.
+pub const REPO_FORMAT_COLLABORATORS: Format = Format { family: 0x20, version: 6 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -44,6 +47,15 @@ pub struct IssueCallOut {
 }
 
 impl IssueCall {
+    pub fn format(&self) -> Format {
+        match self.op {
+            IssueOp::InviteCollaborator { .. }
+            | IssueOp::AnswerInvitation { .. }
+            | IssueOp::RemoveCollaborator { .. } => REPO_FORMAT_COLLABORATORS,
+            _ => REPO_FORMAT_ISSUES,
+        }
+    }
+
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
         IssueCall { op, actor, request, render, confirmed: None }
     }
@@ -82,13 +94,17 @@ struct Wire {
     sso: Vec<i64>,
     request: RequestId,
     render: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<graftyard_types::Ulid>,
 }
 
 impl Serialize for IssueCall {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let Credential::Stored(token) = self.actor.credential;
+        let (token, session) = self.actor.credential.wire();
+        let f = self.format();
         Wire {
-            format: (REPO_FORMAT_ISSUES.family, REPO_FORMAT_ISSUES.version),
+            session,
+            format: (f.family, f.version),
             op: self.op.clone(),
             account: match self.actor.actor {
                 Actor::User(u) => Some(u.0.0.0),
@@ -108,14 +124,15 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        if f != serde_json::json!([REPO_FORMAT_ISSUES.family, REPO_FORMAT_ISSUES.version]) {
+        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS];
+        if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         let actor = Principal {
             actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
             scopes: ScopeSet(w.scopes),
-            credential: Credential::Stored(w.token.0),
+            credential: Credential::from_wire(w.token.0, w.session),
             sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
         };
         Ok(IssueCall::new(w.op, actor, w.request, w.render))
@@ -127,12 +144,11 @@ impl IssueCall {
         self.cmd().map_or(TierSet::METADATA, |cmd| cmd.tiers())
     }
 
-    /// `IssueCmd::deps`: the actor's credential chains and the owner's `Authz`, named by the fold's `RepoSettings`.
+    /// `IssueCmd::deps`: the actor's credential chains and the owner's and enterprise's `Authz`, named by the fold's
+    /// `RepoSettings`.
     pub fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
-        if let Some(o) = fold.authz_owner() {
-            d.push(ChainId::Authz(o));
-        }
+        d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         d
     }
 
@@ -195,7 +211,7 @@ mod tests {
     #[test]
     fn another_issue_format_is_refused_before_the_rest_is_read() {
         let mut v = serde_json::to_value(RepoCmd::Issue(Box::new(call()))).unwrap();
-        v["issue"]["format"] = serde_json::json!([0x20, 6]);
+        v["issue"]["format"] = serde_json::json!([0x20, 7]);
         v["issue"]["op"] = serde_json::json!("a field a later release added");
         let e = serde_json::from_value::<RepoCmd>(v).unwrap_err().to_string();
         assert!(e.contains("is not one this release reads"), "{e}");

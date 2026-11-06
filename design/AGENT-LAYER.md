@@ -41,31 +41,31 @@ New pieces are one Worker script (`graft-mcp`) in the install account, an insigh
 /// report-status `ng <ref> agent admission full, retry after <n>s` and a `remote:` line, and REST gets 429 with
 /// `retry-after` and a "secondary rate limit" message. Under pressure, which is more agent bytes queued than one entry
 /// holds or more agent commands queued than the agent bucket admits in 1 s [inference, the M0-WP9 prototype's rule],
-/// only `PackRef::Stored` pushes queue. AGENT_QUEUE_MAX caps queued agent commands, and the edge refuses at the cap at
-/// once, before staging. At 150 admitted agent commands/s the 1,000-command cap is about 7 s of queue and binds long
+/// only `PackRef::Stored` pushes queue. At AGENT_QUEUE_MAX the leader refuses agent commands at once, before staging,
+/// and the edge renders it. At 150 admitted agent commands/s the 1,000-command cap is about 7 s of queue and binds long
 /// before the byte cap [measured, `tests/m0/results/m0-wp9.md`, B0-33]. Task API commands (create, cancel, and `PATCH`
-/// of an `AgentTask`) do not count toward DEMOTE_PER_MIN, because a human creating tasks quickly is still a human. The
-/// DEMOTE_PER_MIN count per actor lives in the group's fold, so a leader change does not reset it (in leader memory,
-/// M0-WP9 classed 108 of 399 writes of a fast user token Human for a minute after a leader change).
+/// of an `AgentTask`) do not count toward DEMOTE_PER_MIN, because a human creating tasks quickly is still a human. It
+/// counts an actor's last minute of committed writes in the group's fold, which a leader change keeps (M0-WP9's leader
+/// memory classed 108 of 399 writes Human after one), plus the leader's unresolved and refused ones [inference, AM1-WP1].
 pub enum AdmitClass { Human, MergeQueue, Bot, Agent }
 pub const AGENT_SHARE: f32 = 0.5;                                // [guess]
 pub const AGENT_FLOOR: f32 = 0.2;                                // of capacity, which Bot cannot take [guess]
 pub const DEMOTE_PER_MIN: u32 = 60;                              // GitHub's content limit is 80 a minute
 pub const AGENT_WAIT: Duration = Duration::from_secs(30);
 pub const AGENT_QUEUE_MAX: (u32, usize) = (1_000, 64 << 20);     // queued agent commands and bytes per group [guess]
-/// A group above HOT_PUSHES pushes/s inlines only up to INLINE_MAX_HOT while `PackStore::place` succeeds; a new leader
-/// takes `hot` from the push count of its last committed entries, not its own pushes since. Every group, hot or not,
-/// also caps each entry at AGENT_INLINE_ENTRY of Agent-class inline pack bytes, and an agent pack that would pass it is
-/// staged as `PackRef::Stored` (while placement fails, refused at once); Human and MergeQueue packs do not count, so it
-/// needs no hot test. It is the rule for a group not yet hot: without it, fresh groups and new leaders put 1.05 to 1.33
-/// MB of agent packs in their first entries, which caused B0-33's sixth-pass leader change [measured,
-/// `tests/m0/results/m0-wp9.md`, fifth to seventh passes], and entries of 84 to 96 agent commands and 450 KB inline kept
-/// Human and MergeQueue p99 at 1.15 to 1.49 s [measured, fourth pass]. While placement fails or a bucket's probe is red,
-/// Human and MergeQueue pushes keep INLINE_MAX (LOG_MAX_BYTES archives extra), and an agent push over INLINE_MAX_HOT is
-/// refused at once, never queued: from apac 1 MiB packs commit at 1.3 to 2.0 MB/s against journey 9's 4.37 MB/s, and
-/// this rule refused 2,500 of 2,500 at once and 0 of 287 Human and MergeQueue pushes [measured, B0-31, third, eighth
-/// passes]. On a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms,
-/// at 256 KiB up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
+/// A group above HOT_PUSHES pushes/s over its last 5 s of committed entries, read from the log so a new leader agrees,
+/// inlines any class's push only up to INLINE_MAX_HOT while `PackStore::place` succeeds. Every group also caps each
+/// entry at AGENT_INLINE_ENTRY of Agent-class inline pack bytes, and an agent pack that would pass it is staged as
+/// `PackRef::Stored` (while placement fails, refused at once); Human and MergeQueue packs do not count. It is the rule
+/// for a group not yet hot: without it, fresh groups and new leaders put 1.05 to 1.33 MB of agent packs in their first
+/// entries, which caused B0-33's sixth-pass leader change [measured, `tests/m0/results/m0-wp9.md`, fifth to seventh
+/// passes], and entries of 84 to 96 agent commands and 450 KB inline kept Human and MergeQueue p99 at 1.15 to 1.49 s
+/// [measured, fourth pass]. While placement fails or a bucket's probe is red, Human and MergeQueue pushes keep
+/// INLINE_MAX (LOG_MAX_BYTES archives extra), and an agent pack over INLINE_MAX_HOT, hot group or not, is refused at
+/// once, never queued: from apac 1 MiB packs commit at 1.3 to 2.0 MB/s against journey 9's 4.37 MB/s, and this rule
+/// refused 2,500 of 2,500 at once and 0 of 287 Human and MergeQueue pushes [measured, B0-31, third, eighth passes]. On
+/// a hot group INLINE_MAX_HOT stages a 256 KiB burst before the budget: at 64 KiB merges took 129 to 227 ms, at 256 KiB
+/// up to 2.3 s [measured, B0-32, eighth pass]; `cost.py` prices a Class A write a push [inference].
 pub const INLINE_MAX_HOT: usize = 64 << 10;                      // [measured, B0-32]; INLINE_MAX stays 1 MiB
 pub const AGENT_INLINE_ENTRY: usize = 128 << 10;                 // [guess]
 pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
@@ -75,20 +75,20 @@ pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
 pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 /// Hot networks spread over k shards per warm site (`shards_for`). Each warm site's first shard of the network reports
 /// `NetworkLoad` each minute, and the network group's leader commits one k for both warm sites from the larger load,
-/// with hysteresis and no API call or cron, so the second warm site holds k shards when the first is lost; it raises
-/// its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte
-/// p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third
-/// pass]. A step up in k takes an idle pool shard that keeps the network warm (`HOT_POOL`), with no rehydrate.
+/// with no API call or cron, so the second warm site holds k shards when the first is lost; it raises its own k for the
+/// predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte p99 at 0.71 to
+/// 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass]. A step up
+/// takes an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`: k and since when.
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
-pub fn fanout(loads: [&NetworkLoad; 2], k: u8) -> u8;  // up above 0.75 for 3 min, down below 0.4 for 1 h [guess], at most 8
-pub const FANOUT_MAX: u8 = 8;
+pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
+pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
-/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute. A
-/// compiled TEST_MERGE_BUDGET of the k shards' vCPU serves pushes and dispatch first, then GETs. Over it `mergeable` is
-/// null, or GraphQL `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at
-/// most 338 ms at p99 [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU
-/// and the budget binds only on eager recompute.
-pub enum TestMerge { Current { merge: Oid, base: Oid }, Stale { since: Oid } }
+/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute.
+/// `MergeBudget`, per network in shard memory, refills at TEST_MERGE_BUDGET of the k shards' vCPU: pushes and dispatch
+/// may run one merge into deficit, and GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL
+/// `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
+/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU.
+pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
 /// or when an admin flagged it as an `AgentApp` and set `confine`. A flagged App without `confine` is `Bot`, though its
@@ -231,8 +231,7 @@ pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session
 /// Gitignore-style: `*` matches within one path segment and `**` across segments. Unlike gitignore, every glob is
 /// anchored at the root unless it starts with `**/`, and there is no negation. Two globs overlap when some path matches
 /// both, found by walking both segment lists. A `RefPattern` uses the same syntax over full ref names.
-pub struct PathGlob(Box<str>);
-pub struct RefPattern(Box<str>);
+pub struct PathGlob(Box<str>);   pub struct RefPattern(Box<str>);
 pub struct LeaseScope { pub paths: SmallVec<[PathGlob; 8]> /* <= 32 globs */, pub refs: SmallVec<[RefPattern; 2]> }
 /// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block and are
 /// returned as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per

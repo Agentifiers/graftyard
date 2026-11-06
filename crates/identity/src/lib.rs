@@ -4,41 +4,55 @@
 //! minimal identity"): login claims, `Account` rows, owner placement records and `RepoOwner`, an owner's `Authz`
 //! record with admin grants and `RepoName` entries, and stored-token authentication. Milestone 3 adds App and OAuth app
 //! records and their names (M3-WP1, `apps`), every token kind's routing and the short-lived codes (M3-WP2), each
-//! account's login on its `account_shard` (F50), and the `Audit` finisher's plans (`finish`). Every group is a
+//! account's login on its `account_shard` (F50), the `Audit` finisher's plans (`finish`), and the follow-ups the edge
+//! sends after each commit point (`edge`). Every group is a
 //! `graftyard_raft::Command` with its fold. Pure Rust: no Workers dependency, no clock and no randomness but what the
 //! caller passes in.
 
+mod access;
 mod apps;
 mod authz;
 mod cache;
 mod compat;
 mod credential;
+pub mod edge;
 mod enc;
 pub mod finish;
+mod identity;
 mod ids;
 mod names;
+mod org;
 mod overlay;
 mod placement;
 mod tokens;
 
+pub use access::{Decision, ReadAction, RepoAccess, Visibility, WriteAction, authorize, authorize_write, permission};
 pub use apps::{
     Access, AppId, AppKey, AppRecord, CLIENT_SECRETS_MAX, ClientId, EventKind, InstallationId, OAuthAppRecord,
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
 };
 pub use authz::{
     AccountKind, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead, AuthzScratch,
-    NameEpoch, OrgRole, RepoEntry, RepoPermission,
+    NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
-    Actor, Credential, CredentialRefusal, IdentityDep, OrgId, Own, Principal, UserId, check_credential,
+    Actor, Credential, CredentialRefusal, IdentityDep, OrgId, Own, Principal, UserId, WebSessionId, check_credential,
     credential_chains,
+};
+pub use identity::{
+    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IdentityCmd, IdentityErr,
+    IdentityEvent, IdentityFold, IdentityOp, IdentityScratch, SessionEvent, SsoEvent,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{
     AccountRow, ClientRoute, Login, LoginKey, LoginRow, NAME_SHARDS, NameError, NameKey, NamesCmd, NamesErr,
     NamesEvent, NamesFold, NamesMore, NamesOp, NamesOut, NamesRead, NamesScratch, RESERVED, RepoName, RepoNameKey,
     Shortcode, SlugRow, account_shard, name_shard,
+};
+pub use org::{
+    INVITATION_TTL, InstanceAuth, InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, LdapConfig,
+    OidcConfig, OrgPolicy, SamlConfig, SignInMethod, TeamEvent, TeamId, TeamRow, is_install_account,
 };
 pub use placement::validate_record;
 pub use tokens::{

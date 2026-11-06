@@ -34,6 +34,8 @@ use crate::issues::{
     CommentTarget, Consumer, Grantee, HeadSpec, IssueChange, IssueKind, IssueNumber, LabelEvent, LabelName, LockReason,
     Mergeability, MergeabilityResult, PrState, PullHead, ReviewEvent, ReviewState, StateReason, StatusUpdate,
 };
+use graftyard_identity::{InvitationEvent, InvitationRow};
+
 use crate::refs::{ObjectId, RefName};
 use crate::repo::RepoEvent;
 
@@ -72,6 +74,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::TestMerged { .. } | RepoEvent::ConsumerCursor { .. } => TierSet::CORE,
         RepoEvent::Merged { .. } => both,
         RepoEvent::Queue(_) => TierSet::CORE,
+        RepoEvent::Collaborator { .. } | RepoEvent::Invitation(_) => TierSet::CORE,
     }
 }
 
@@ -92,6 +95,9 @@ pub const CORE: Schema = Schema {
         t("review_thread", &["thread"]),
         t("review_verdict", &["n", "reviewer"]),
         t("rule", &["id"]),
+        // M3-WP3: outside collaborators by account, and pending repository invitations by id.
+        t("collaborator", &["who"]),
+        t("invitation", &["id"]),
         t("settings", &[]),
         t("unresolved", &["n"]),
         t("verdict_by_review", &["review"]),
@@ -665,6 +671,19 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Settings(s) => put_rec(w, "settings", Vec::new(), s),
+            RepoEvent::Collaborator { who, permission: Some(p) } => put_rec(w, "collaborator", vec![int(who.0.0)], p),
+            RepoEvent::Collaborator { who, permission: None } => w.delete("collaborator", &[int(who.0.0)]),
+            RepoEvent::Invitation(InvitationEvent::Sent { id, invitee, grant, inviter, expires }) => {
+                assigned(w, ev, Tier::Core, id.0);
+                let row =
+                    InvitationRow { invitee: *invitee, grant: grant.clone(), inviter: *inviter, expires: *expires };
+                put_rec(w, "invitation", vec![int(id.0.0)], &row);
+            }
+            RepoEvent::Invitation(
+                InvitationEvent::Accepted { id }
+                | InvitationEvent::Declined { id }
+                | InvitationEvent::Cancelled { id, .. },
+            ) => w.delete("invitation", &[int(id.0.0)]),
             RepoEvent::RequiredCheck { sha, name, source, version, conclusion } => {
                 let key = vec![sha_key(sha), text(name), source_key(source)];
                 let row = RequiredRow { source: *source, version: *version, conclusion: *conclusion };

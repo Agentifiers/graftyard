@@ -6,150 +6,21 @@
 
 mod common;
 
-use std::collections::BTreeMap;
-
 use common::{A, B, Group, SITES, acct, key, login};
-use graftyard_identity::finish::{self, Step};
+use graftyard_identity::finish;
 use graftyard_identity::{
-    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AccountKind, AppId, AppKey, AppRecord, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold,
-    AuthzOp, AuthzRead, ClientId, ClientRoute, CodeKind, DEVICE_CODE_TTL, Fingerprint, IdBlock, IdentityDep, Jti,
-    LoginRow, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey, NamesCmd, NamesErr, NamesEvent, NamesFold, NamesOp, NamesOut,
-    NamesRead, OAuthAppRecord, OpaqueToken, PermissionSet, RsaPublic, ScopeSet, SecretHash, Slug, SlugRow,
-    TOKENS_FORMAT, TOKENS_FORMAT_V2, TokenFields, TokenKind, TokensCmd, TokensErr, TokensEvent, TokensFold, TokensOp,
-    TokensRead, UserId, account_shard, code_hash, draw_device_code, draw_secret_on, fingerprint_shard, jti_shard,
-    name_shard, shard_of_hash, token_shard,
+    AccountKind, AppId, AppKey, AppRecord, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzOp, AuthzRead, ClientId,
+    ClientRoute, CodeKind, DEVICE_CODE_TTL, Fingerprint, Jti, LoginRow, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey,
+    NamesCmd, NamesErr, NamesEvent, NamesFold, NamesOp, NamesOut, NamesRead, OAuthAppRecord, OpaqueToken,
+    PermissionSet, RsaPublic, ScopeSet, SecretHash, Slug, SlugRow, TokenFields, TokenKind, TokensCmd, TokensErr,
+    TokensEvent, TokensFold, TokensOp, TokensRead, UserId, account_shard, code_hash, draw_device_code, draw_secret_on,
+    fingerprint_shard, jti_shard, name_shard, shard_of_hash, token_shard,
 };
 use graftyard_raft::{CommitError, Fold, Record, Scratch, codec};
 use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Timestamp, TokenShard, Ulid};
 use smallvec::smallvec;
 
-const OPS: CredentialShard = CredentialShard::NONE;
-
-/// The groups of one install that a test touches, each three real members, and the folds a leader's host reads
-/// through `fresh` for `deps`.
-#[derive(Default)]
-struct World {
-    names: BTreeMap<u16, Group<NamesCmd>>,
-    tokens: BTreeMap<u16, Group<TokensCmd>>,
-    authz: BTreeMap<i64, Group<AuthzCmd>>,
-    next: u128,
-}
-
-fn names_chain(c: ChainId) -> u16 {
-    match c {
-        ChainId::Names(s) => s.0,
-        _ => unreachable!(),
-    }
-}
-
-impl World {
-    fn names(&mut self, chain: ChainId) -> &mut Group<NamesCmd> {
-        let s = names_chain(chain);
-        self.names.entry(s).or_insert_with(|| {
-            let shard = graftyard_types::NameShard(s);
-            let mut g = Group::reading(chain, vec![NAMES_FORMAT, NAMES_FORMAT_V2], NamesFold::new(shard));
-            g.elect(A);
-            g.id_block(A, IdBlock::whole(0, 100 + u32::from(s)).unwrap()).unwrap();
-            g.settle(&mut |c| panic!("no dependency expected, asked for {c}"));
-            g
-        })
-    }
-
-    fn tokens(&mut self, shard: TokenShard) -> &mut Group<TokensCmd> {
-        self.tokens.entry(shard.0).or_insert_with(|| {
-            let mut g =
-                Group::reading(ChainId::Tokens(shard), vec![TOKENS_FORMAT, TOKENS_FORMAT_V2], TokensFold::new(shard));
-            g.elect(A);
-            g
-        })
-    }
-
-    fn authz(&mut self, owner: AccountId) -> &mut Group<AuthzCmd> {
-        self.authz.entry(owner.0.0).or_insert_with(|| {
-            let mut g =
-                Group::reading(ChainId::Authz(owner), vec![AUTHZ_FORMAT, AUTHZ_FORMAT_V2], AuthzFold::new(owner));
-            g.elect(A);
-            g
-        })
-    }
-
-    /// What a leader's host does for `deps`: each chain read once through `fresh` on its own group.
-    fn read(&mut self, c: ChainId) -> IdentityDep {
-        match c {
-            ChainId::Names(_) => IdentityDep::Names(self.names(c).fresh_leader()),
-            ChainId::Tokens(s) => IdentityDep::Tokens(self.tokens(s).fresh_leader()),
-            ChainId::Authz(o) => IdentityDep::Authz(self.authz(o).fresh_leader()),
-            other => panic!("unexpected dep {other}"),
-        }
-    }
-
-    fn id(&mut self) -> u128 {
-        self.next += 1;
-        self.next
-    }
-
-    /// Submits on the group of `chain` and settles, reading every dependency through `fresh` on its group.
-    fn names_cmd(&mut self, chain: ChainId, cmd: NamesCmd) -> common::Outcome<NamesCmd> {
-        let id = self.id();
-        let mut g = self.names.remove(&names_chain(chain)).unwrap_or_else(|| {
-            self.names(chain);
-            self.names.remove(&names_chain(chain)).unwrap()
-        });
-        let r = g.submit(id, cmd, &mut |c| self.read(c));
-        self.names.insert(names_chain(chain), g);
-        r
-    }
-
-    fn names_on(&mut self, key: NameKey, op: NamesOp) -> common::Outcome<NamesCmd> {
-        self.names_cmd(ChainId::Names(name_shard(&key)), NamesCmd { cred: OPS, op })
-    }
-
-    fn authz_cmd(&mut self, owner: AccountId, cmd: AuthzCmd) -> common::Outcome<AuthzCmd> {
-        let id = self.id();
-        self.authz(owner);
-        let mut g = self.authz.remove(&owner.0.0).unwrap();
-        let r = g.submit(id, cmd, &mut |c| self.read(c));
-        self.authz.insert(owner.0.0, g);
-        r
-    }
-
-    fn tokens_cmd(&mut self, cmd: TokensCmd) -> common::Outcome<TokensCmd> {
-        let id = self.id();
-        let shard = cmd.shard();
-        self.tokens(shard);
-        let mut g = self.tokens.remove(&shard.0).unwrap();
-        let r = g.submit(id, cmd, &mut |c| self.read(c));
-        self.tokens.insert(shard.0, g);
-        r
-    }
-
-    fn step(&mut self, s: Step) {
-        match s {
-            Step::Names(chain, cmd) => {
-                self.names_cmd(chain, cmd).expect("finisher step commits");
-            }
-            Step::Authz(ChainId::Authz(owner), cmd) => {
-                self.authz_cmd(owner, *cmd).expect("finisher step commits");
-            }
-            Step::Authz(..) => unreachable!(),
-        }
-    }
-
-    fn names_fold(&mut self, key: NameKey) -> NamesFold {
-        self.names(ChainId::Names(name_shard(&key))).fresh_leader()
-    }
-}
-
-trait FreshLeader<F> {
-    fn fresh_leader(&mut self) -> F;
-}
-
-impl<C: graftyard_raft::Command> FreshLeader<C::Fold> for Group<C> {
-    fn fresh_leader(&mut self) -> C::Fold {
-        let s = self.leader().expect("a leader");
-        self.fresh(s)
-    }
-}
+use common::world::{FreshLeader, OPS, World};
 
 fn refused<O: std::fmt::Debug, E: std::fmt::Debug>(r: Result<graftyard_raft::Acked<O>, CommitError<E>>) -> E {
     match r {
@@ -748,4 +619,112 @@ fn milestone_1_commands_keep_format_1_and_a_format_1_member_refuses_format_2() {
     g.elect(A);
     assert!(matches!(g.commit(A, 1, m3), Err(graftyard_raft::CallError::Unsupported(_))));
     assert!(g.commit(A, 2, m1).is_ok());
+}
+
+/// Kills the leader of `g`, elects another once its promises lapse, and restarts the old one as a follower.
+fn kill_leader<C: graftyard_raft::Command>(g: &mut Group<C>) {
+    let old = g.leader().expect("a leader");
+    g.crash(old);
+    g.elect_after_promises(SITES[(old.0 as usize + 1) % 3]);
+    g.restart(old);
+}
+
+/// BF-33: `gh auth login`'s device flow, 100 runs, with the code shard's leader killed at a different point of the
+/// exchange: before the entry reached anyone, after the followers stored it but before the leader heard, and with the
+/// edge dying between `CodeUsed` and the token's `Stored`; every fourth run has no kill. Each login completes, or its
+/// code is spent with no token and the client starts again with a new code, which completes. No code yields two
+/// tokens. A replay of each used code and a code used after 900 s are refused, 100 of 100.
+#[test]
+fn bf33_device_flow_under_a_leader_kill_completes_or_restarts_cleanly() {
+    let mut w = World::default();
+    let user = acct(0, 2, 5);
+    let client = ClientId::parse("178c6fc778ccc68e1d6a").unwrap();
+    let mut x = 0x2545_f491_4f6c_dd1du64;
+    let mut rand = move || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    // A new device code and user code on one shard, put and approved.
+    let start = |w: &mut World, rand: &mut dyn FnMut() -> u64| -> [u8; 32] {
+        let user_code = format!("U{:08X}", rand() as u32);
+        let (device, _) = draw_device_code(&mut *rand, user_code.as_bytes(), 1_000_000).expect("lands");
+        let (dh, uh) = (code_hash(&device), code_hash(user_code.as_bytes()));
+        let put = TokensOp::PutDeviceCode { device: dh, user: uh, client, scopes: ScopeSet(1), interval: 5 };
+        w.tokens_cmd(TokensCmd { cred: OPS, op: put }).unwrap();
+        let poll = TokensCmd { cred: OPS, op: TokensOp::UseCode { hash: dh, client: Some(client) } };
+        assert_eq!(refused(w.tokens_cmd(poll)), TokensErr::Pending);
+        w.tokens_cmd(TokensCmd { cred: OPS, op: TokensOp::ApproveCode { user: uh, account: user } }).unwrap();
+        dh
+    };
+    let use_code = |dh: [u8; 32]| TokensCmd { cred: OPS, op: TokensOp::UseCode { hash: dh, client: Some(client) } };
+    let (mut completed, mut restarted, mut replays, mut expired) = (0, 0, 0, 0);
+    let mut issued: Vec<[u8; 32]> = Vec::new();
+    for run in 0..100u32 {
+        let mut dh = start(&mut w, &mut rand);
+        let kill = run % 4;
+        let shard = shard_of_hash(&dh);
+        let id = w.id();
+        let spent = {
+            let g = w.tokens.get_mut(&shard.0).unwrap();
+            let l = g.leader().unwrap();
+            g.commit(l, id, use_code(dh)).unwrap();
+            match kill {
+                // Lost before any follower stored it.
+                0 => {
+                    g.deliver(|_| false);
+                    kill_leader(g);
+                }
+                // Stored on the followers; their acks never reach the leader.
+                1 => {
+                    g.deliver(|e| e.to != l);
+                    kill_leader(g);
+                }
+                _ => {}
+            }
+            // The edge re-sends under the same request id until it has an outcome.
+            g.submit(id, use_code(dh), &mut |c| panic!("{c}")).is_ok()
+        };
+        assert!(spent, "run {run}: the exchange spends the approved code once");
+        // The edge dies between the two commits: a spent code and no token, and the client starts again.
+        if kill == 2 {
+            kill_leader(w.tokens.get_mut(&shard.0).unwrap());
+            assert_eq!(refused(w.tokens_cmd(use_code(dh))), TokensErr::CodeUsed, "the next poll is refused");
+            restarted += 1;
+            dh = start(&mut w, &mut rand);
+            w.tokens_cmd(use_code(dh)).unwrap();
+        }
+        let mut token = [0u8; 32];
+        token[..8].copy_from_slice(&rand().to_be_bytes());
+        token[8..12].copy_from_slice(&run.to_be_bytes());
+        let fields = TokenFields { client: Some(client), ..TokenFields::default() };
+        let store = TokensOp::StoreWith {
+            hash: token,
+            kind: TokenKind::OAuth,
+            account: user,
+            scopes: ScopeSet(1),
+            expires: None,
+            fields,
+        };
+        w.tokens_cmd(TokensCmd { cred: OPS, op: store }).unwrap();
+        issued.push(token);
+        completed += 1;
+        // A replay of the used code under a new request id gets nothing.
+        if refused(w.tokens_cmd(use_code(dh))) == TokensErr::CodeUsed {
+            replays += 1;
+        }
+        // A fresh approved code used after 900 s has lapsed.
+        let late = start(&mut w, &mut rand);
+        w.tokens.get_mut(&shard_of_hash(&late).0).unwrap().advance(DEVICE_CODE_TTL.as_millis() as u64 + 1);
+        if refused(w.tokens_cmd(use_code(late))) == TokensErr::NoCode {
+            expired += 1;
+        }
+    }
+    assert_eq!((completed, restarted, replays, expired), (100, 25, 100, 100));
+    for t in &issued {
+        let f: TokensFold = w.tokens(shard_of_hash(t)).fresh_leader();
+        assert_eq!(f.token(t).map(|r| r.account), Some(user));
+    }
+    assert_eq!(issued.len(), 100, "one token per login");
 }

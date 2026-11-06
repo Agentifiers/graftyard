@@ -633,3 +633,155 @@ fn a_snapshot_archived_keeps_one_snapshot_at_or_below_every_index_in_the_window(
     assert_eq!(fold.first_index(), Index(1), "a snapshot does not move the log's archive ranges");
     assert!(fold.archived().is_none());
 }
+
+/// BF-3, push half: a user suspended while their pushes wait for an entry, and every push after, is refused 401.
+/// The `Account` row is a dep every decide reads, so the suspension needs no cache to expire.
+#[test]
+fn a_suspended_users_pushes_are_all_refused_including_those_admitted_before_the_suspension() {
+    let mut g = group();
+    let refused = |o: &PushOutcome| matches!(o, PushOutcome::Refused(r) if r.status == 401);
+    // Admitted, not yet decided: the suspension lands before their deps are read.
+    let waiting: Vec<_> = (0..100u32)
+        .map(|i| {
+            let r = rid();
+            let mut p =
+                push(vec![up(&format!("refs/heads/w{i}"), None, Some(oid(i + 1)))], Atomicity::PerRef, who(WRITER, 2));
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.suspend(AccountId(DbId(WRITER)));
+    g.run();
+    let mut n = 0;
+    for t in &waiting {
+        let o = g.resolved(*t).expect("resolved");
+        assert!(refused(o), "{o:?}");
+        n += 1;
+    }
+    for i in 0..100u32 {
+        let (_, o) = commit(
+            &mut g,
+            push(vec![up(&format!("refs/heads/f{i}"), None, Some(oid(i + 1)))], Atomicity::PerRef, who(WRITER, 2)),
+        );
+        assert!(refused(&o), "{o:?}");
+        n += 1;
+    }
+    assert_eq!(n, 200);
+    assert!(g.refs().is_empty(), "no ref moved: {:?}", g.refs());
+    // The owner is not suspended and still pushes.
+    let (_, o) =
+        commit(&mut g, push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, who(OWNER, 1)));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+}
+
+/// BF-30's repository half: once `Settings` names the new owner and enterprise, a push's `deps` name them and no
+/// longer the old owner, and only the new owner's grants let it write; the old owner's admin is refused.
+#[test]
+fn after_settings_a_pushs_deps_name_the_new_owner_and_enterprise() {
+    use graftyard_git::issues::{MergeMethod, RepoSettings, Visibility};
+    use graftyard_git::repo::{RepoEvent, RepoFold, RepoScratch};
+    use graftyard_identity::{
+        AccountKind, AuthzEvent, AuthzFold, IdentityDep, NamesEvent, NamesFold, OrgRole, RepoPermission, TokenKind,
+        TokensEvent, TokensFold,
+    };
+    use graftyard_raft::{Command, Fold as _};
+    use graftyard_types::{ChainId, Index, NameShard, RepoId};
+    let (alpha, beta, e2) = (AccountId(DbId(OWNER)), AccountId(DbId(200)), AccountId(DbId(300)));
+    let repo = RepoId(DbId(7));
+    let mut fold = RepoFold::new(repo, alpha);
+    let settings = |owner, enterprise| RepoSettings {
+        owner,
+        enterprise,
+        visibility: Visibility::Private,
+        default_branch: name("refs/heads/main"),
+        archived: false,
+        description: None,
+        homepage: None,
+        topics: SmallVec::new(),
+        has_issues: true,
+        has_wiki: false,
+        has_projects: false,
+        merge_methods: smallvec::smallvec![MergeMethod::Merge],
+        delete_branch_on_merge: false,
+        allow_auto_merge: false,
+        allow_update_branch: false,
+        check_retention_days: 90,
+    };
+    let mut index = 0;
+    let mut prev = graftyard_raft::PREV_ZERO;
+    let mut commit = |f: &mut RepoFold, ev: RepoEvent| {
+        index += 1;
+        let e = graftyard_raft::LogEntry {
+            term: graftyard_raft::Term(2),
+            index: Index(index),
+            prev,
+            format: graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES,
+            tiers: graftyard_raft::TierSet::CORE.union(graftyard_raft::TierSet::METADATA),
+            at: Timestamp(index),
+            requests: SmallVec::new(),
+            extend: None,
+            body: graftyard_raft::EntryBody::Events(vec![ev]),
+        };
+        prev = graftyard_raft::digest(&e);
+        f.apply_entry(&e);
+    };
+    // Every user's account and token, and each org's `Authz`: OWNER admins alpha, WRITER has Write on beta through a
+    // team-less grant, and beta belongs to e2.
+    let mut names = NamesFold::new(NameShard(0));
+    let mut tokens = TokensFold::new(graftyard_types::TokenShard(0));
+    for (a, n) in [(OWNER, 1u8), (WRITER, 2)] {
+        let id = AccountId(DbId(a));
+        names.apply(&NamesEvent::Account { id, suspended: false, sessions_not_before: Timestamp(0) });
+        let ev = TokensEvent::Stored {
+            hash: hash(n),
+            kind: TokenKind::Pat,
+            account: id,
+            scopes: ScopeSet(1),
+            expires: None,
+        };
+        tokens.apply(&ev);
+    }
+    let org = |o: AccountId, e: Option<AccountId>| {
+        let mut f = AuthzFold::new(o);
+        f.apply(&AuthzEvent::Opened { kind: AccountKind::Org, enterprise: e });
+        f
+    };
+    let mut fa = org(alpha, None);
+    fa.apply(&AuthzEvent::Member { user: UserId(alpha), role: Some(OrgRole::Admin) });
+    let mut fb = org(beta, Some(e2));
+    fb.apply(&AuthzEvent::Member { user: UserId(AccountId(DbId(WRITER))), role: Some(OrgRole::Member) });
+    let w = UserId(AccountId(DbId(WRITER)));
+    fb.apply(&AuthzEvent::Grant { repo, grantee: w, permission: Some(RepoPermission::Write) });
+    let fe = org(e2, None);
+    let read = |c: ChainId| match c {
+        ChainId::Names(_) => IdentityDep::Names(names.clone()),
+        ChainId::Tokens(s) => {
+            let mut t = tokens.clone();
+            t.shard = Some(s);
+            IdentityDep::Tokens(t)
+        }
+        ChainId::Authz(o) if o == alpha => IdentityDep::Authz(fa.clone()),
+        ChainId::Authz(o) if o == beta => IdentityDep::Authz(fb.clone()),
+        ChainId::Authz(o) if o == e2 => IdentityDep::Authz(fe.clone()),
+        other => panic!("{other}"),
+    };
+    let decide = |f: &RepoFold, p: &Push| {
+        let deps: Vec<_> = p.deps(f).into_iter().map(|c| (c, read(c))).collect();
+        let s: RepoScratch<'_> = f.scratch();
+        (p.deps(f), p.decide(&s, &deps).map(|_| ()))
+    };
+    let one = |who: Principal| push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, who);
+    // Before the transfer: the owner's admin writes; WRITER, granted only on beta, does not.
+    let (d, r) = decide(&fold, &one(who(OWNER, 1)));
+    assert!(d.contains(&ChainId::Authz(alpha)) && r.is_ok(), "{d:?} {r:?}");
+    assert!(decide(&fold, &one(who(WRITER, 2))).1.is_err());
+    // `Settings` names alpha and no enterprise, then the transfer's `Settings` names beta and e2.
+    commit(&mut fold, RepoEvent::Settings(settings(alpha, None)));
+    commit(&mut fold, RepoEvent::Settings(settings(beta, Some(e2))));
+    let (d, r) = decide(&fold, &one(who(WRITER, 2)));
+    assert!(d.contains(&ChainId::Authz(beta)) && d.contains(&ChainId::Authz(e2)), "{d:?}");
+    assert!(!d.contains(&ChainId::Authz(alpha)), "no stale owner: {d:?}");
+    assert!(r.is_ok(), "{r:?}");
+    let (_, r) = decide(&fold, &one(who(OWNER, 1)));
+    assert!(r.is_err(), "the old owner's admin no longer writes: {r:?}");
+}

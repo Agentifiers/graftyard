@@ -9,8 +9,7 @@
 
 use graftyard_fold::{MemStore, Read};
 use graftyard_identity::{
-    Actor, AuthzRead, Credential, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId,
-    check_credential, credential_chains,
+    Actor, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId, check_credential, credential_chains,
 };
 use graftyard_raft::{Command, Format, Record, TierSet};
 use graftyard_types::{AccountId, ChainId, Digest, Index, Timestamp};
@@ -408,20 +407,17 @@ pub(crate) fn authorize(
     }
     check_credential(&cred, Own::Other, deps).map_err(MergeError::Unauthorized)?;
     let Actor::User(user) = actor.actor else { return Err(MergeError::Unauthorized(CredentialRefusal::NoToken)) };
-    let owner = v.owner();
-    let authz = deps.iter().find_map(|(c, d)| match d {
-        IdentityDep::Authz(f) if *c == ChainId::Authz(owner) => Some(f as &dyn AuthzRead),
-        _ => None,
-    });
-    Ok((user, permission(actor, v, authz)))
+    Ok((user, permission(actor, v, &crate::repo::authz_folds(deps))))
 }
 
-/// A user command's deps: the actor's credential chains and the owner's `Authz`.
-pub(crate) fn user_deps(actor: &Principal, owner: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
+/// A user command's deps: the actor's credential chains and the owner's and enterprise's `Authz`.
+pub(crate) fn user_deps(
+    actor: &Principal,
+    owner: Option<AccountId>,
+    enterprise: Option<AccountId>,
+) -> SmallVec<[ChainId; 3]> {
     let mut d = credential_chains(&actor.credential_shard(), None);
-    if let Some(o) = owner {
-        d.push(ChainId::Authz(o));
-    }
+    d.extend(crate::repo::authz_chains(owner, enterprise));
     d
 }
 
@@ -439,8 +435,8 @@ pub(crate) fn head_deletion(v: &RepoView<'_>, ph: &PullHead, head: ObjectId) -> 
 }
 
 impl Merge {
-    pub fn deps(&self, owner: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
-        user_deps(&self.actor, owner)
+    pub fn deps(&self, owner: Option<AccountId>, enterprise: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
+        user_deps(&self.actor, owner, enterprise)
     }
 
     /// Pure: the core tier with the entry's earlier events, and the deps the leader read once per entry. Re-checks
@@ -516,14 +512,29 @@ pub enum MergeCmdOut {
     Cursor(Index),
 }
 
-/// The canonical form of a principal, for `Record::encode`.
-fn principal_key(p: &Principal) -> (Option<i64>, u64, [u8; 32], Vec<i64>) {
+/// The canonical form of a principal, for `Record::encode`: a stored token's is Milestone 2's four fields, and a web
+/// session's adds its id.
+fn principal_key(p: &Principal) -> PrincipalKey {
     let actor = match p.actor {
         Actor::User(u) => Some(u.0.0.0),
         Actor::Anonymous => None,
     };
-    let Credential::Stored(h) = p.credential;
-    (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect())
+    let (h, session) = p.credential.wire();
+    PrincipalKey { base: (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect()), session }
+}
+
+pub(crate) struct PrincipalKey {
+    base: (Option<i64>, u64, [u8; 32], Vec<i64>),
+    session: Option<graftyard_types::Ulid>,
+}
+
+impl serde::Serialize for PrincipalKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.session {
+            None => self.base.serialize(s),
+            Some(id) => (&self.base.0, self.base.1, &self.base.2, &self.base.3, id.0).serialize(s),
+        }
+    }
 }
 
 type PlanKey<'a> = (
@@ -613,8 +624,10 @@ impl Command for MergeCmd {
     /// A user's credential chains and the owner's `Authz`; a consumer's command names neither.
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         match self {
-            MergeCmd::Merge(m) => m.deps(fold.authz_owner()),
-            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) => user_deps(a, fold.authz_owner()),
+            MergeCmd::Merge(m) => m.deps(fold.authz_owner(), fold.authz_enterprise()),
+            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) => {
+                user_deps(a, fold.authz_owner(), fold.authz_enterprise())
+            }
             MergeCmd::Queue(_) | MergeCmd::Land(_) | MergeCmd::Cursor(_) => SmallVec::new(),
         }
     }
