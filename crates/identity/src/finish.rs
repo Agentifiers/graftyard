@@ -14,13 +14,16 @@
 //! - **Credential (M3-WP3).** The commit point is the credential's `Tokens` entry; the edge appends the `Identity`
 //!   side right after it, and the finisher lists a committed credential the `Identity` fold does not, or drops one
 //!   whose row was revoked or removed.
+//! - **Transfer (M3-WP3).** The commit point is the destination's `Reserved` name (`transfer`).
 
-use graftyard_types::{AccountId, ChainId, CredentialShard};
+use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId};
 
 use crate::apps::{AppRecord, ClientId, Slug};
-use crate::authz::{AuthzCmd, AuthzOp, AuthzRead};
+use crate::authz::{AuthzCmd, AuthzOp, AuthzRead, RepoEntry};
 use crate::identity::{CredentialRef, IdentityCmd, IdentityFold, IdentityOp};
-use crate::names::{Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, SlugRow, account_shard, name_shard};
+use crate::names::{
+    Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, RepoNameKey, SlugRow, account_shard, name_shard,
+};
 use crate::tokens::TokensRead;
 
 /// A command for one chain.
@@ -110,4 +113,84 @@ pub fn credential(
         _ => return None,
     };
     Some(Step::Identity(ChainId::Identity(account), IdentityCmd { cred: CredentialShard::NONE, op }))
+}
+
+/// A repository transfer whose commit point, the destination's `Reserved` name, may have committed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Transfer {
+    pub repo: RepoId,
+    pub from: AccountId,
+    pub from_key: RepoNameKey,
+    pub to: AccountId,
+    pub to_key: RepoNameKey,
+}
+
+/// What the folds the finisher read say about a transfer.
+pub struct TransferView<'a> {
+    pub from_authz: &'a dyn AuthzRead,
+    pub to_authz: &'a dyn AuthzRead,
+    pub from_placement: &'a PlacementRecord,
+    pub to_placement: &'a PlacementRecord,
+    /// The record of the repository group's latest committed config.
+    pub group_at: &'a PlacementRecord,
+    /// The owner the repository chain's `RepoSettings` names.
+    pub settings_owner: AccountId,
+    /// The repository's `RepoOwner` row on `Names`.
+    pub repo_owner: Option<AccountId>,
+}
+
+/// A transfer's next step that is not a command on an identity chain.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TransferStep {
+    Step(Step),
+    /// Move the repository's group, and its network's for a root repository, to `to` through `Joint` (M1-WP7's owner
+    /// move, per group).
+    Move {
+        to: PlacementRecord,
+    },
+    /// Record `Settings` on the repository chain with the new owner and its enterprise, the other fields unchanged.
+    Settings {
+        owner: AccountId,
+        enterprise: Option<AccountId>,
+    },
+}
+
+/// Whether two owners' records place groups on the same members.
+fn same_place(a: &PlacementRecord, b: &PlacementRecord) -> bool {
+    (a.name, &a.sites, a.home) == (b.name, &b.sites, b.home)
+}
+
+/// The next step of a transfer whose `Reserved` name committed, in SHARED's order ("Multi-chain operations",
+/// Transfer): the group's move when the placements differ, `Settings`, the destination's `Live` name, the source's
+/// `Alias`, then `RepoOwner`. The move goes first, so a route through the new owner's record (its `Live` name, or
+/// `RepoOwner` for `/repositories/{id}`) never names a placement the group is not in. `None` when nothing is owed, or
+/// when no reservation committed, in which case the transfer never happened.
+pub fn transfer(t: &Transfer, v: &TransferView<'_>) -> Option<TransferStep> {
+    let reserved = match v.to_authz.name(&t.to_key) {
+        Some(RepoEntry::Reserved { repo, .. }) if repo == t.repo => true,
+        Some(RepoEntry::Live { repo, .. } | RepoEntry::Alias { repo, .. }) if repo == t.repo => false,
+        _ => return None,
+    };
+    let on_authz = |owner: AccountId, op| {
+        TransferStep::Step(Step::Authz(ChainId::Authz(owner), Box::new(AuthzCmd { cred: CredentialShard::NONE, op })))
+    };
+    if !same_place(v.from_placement, v.to_placement) && !same_place(v.group_at, v.to_placement) {
+        return Some(TransferStep::Move { to: v.to_placement.clone() });
+    }
+    if v.settings_owner != t.to {
+        return Some(TransferStep::Settings { owner: t.to, enterprise: v.to_authz.enterprise() });
+    }
+    if reserved {
+        return Some(on_authz(t.to, AuthzOp::CompleteTransfer { key: t.to_key.clone(), repo: t.repo }));
+    }
+    if matches!(v.from_authz.name(&t.from_key), Some(RepoEntry::Live { repo, .. }) if repo == t.repo) {
+        return Some(on_authz(t.from, AuthzOp::LeaveAlias { key: t.from_key.clone(), repo: t.repo }));
+    }
+    if v.repo_owner != Some(t.to) {
+        return Some(TransferStep::Step(names(
+            NameKey::Repo(t.repo),
+            NamesOp::RepoOwner { repo: t.repo, owner: t.to },
+        )));
+    }
+    None
 }

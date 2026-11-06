@@ -144,12 +144,11 @@ impl IssueCall {
         self.cmd().map_or(TierSet::METADATA, |cmd| cmd.tiers())
     }
 
-    /// `IssueCmd::deps`: the actor's credential chains and the owner's `Authz`, named by the fold's `RepoSettings`.
+    /// `IssueCmd::deps`: the actor's credential chains and the owner's and enterprise's `Authz`, named by the fold's
+    /// `RepoSettings`.
     pub fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
-        if let Some(o) = fold.authz_owner() {
-            d.push(ChainId::Authz(o));
-        }
+        d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         d
     }
 

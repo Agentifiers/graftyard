@@ -9,8 +9,7 @@
 
 use graftyard_fold::{MemStore, Read};
 use graftyard_identity::{
-    Actor, AuthzRead, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId, check_credential,
-    credential_chains,
+    Actor, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId, check_credential, credential_chains,
 };
 use graftyard_raft::{Command, Format, Record, TierSet};
 use graftyard_types::{AccountId, ChainId, Digest, Index, Timestamp};
@@ -408,20 +407,17 @@ pub(crate) fn authorize(
     }
     check_credential(&cred, Own::Other, deps).map_err(MergeError::Unauthorized)?;
     let Actor::User(user) = actor.actor else { return Err(MergeError::Unauthorized(CredentialRefusal::NoToken)) };
-    let owner = v.owner();
-    let authz = deps.iter().find_map(|(c, d)| match d {
-        IdentityDep::Authz(f) if *c == ChainId::Authz(owner) => Some(f as &dyn AuthzRead),
-        _ => None,
-    });
-    Ok((user, permission(actor, v, authz)))
+    Ok((user, permission(actor, v, &crate::repo::authz_folds(deps))))
 }
 
-/// A user command's deps: the actor's credential chains and the owner's `Authz`.
-pub(crate) fn user_deps(actor: &Principal, owner: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
+/// A user command's deps: the actor's credential chains and the owner's and enterprise's `Authz`.
+pub(crate) fn user_deps(
+    actor: &Principal,
+    owner: Option<AccountId>,
+    enterprise: Option<AccountId>,
+) -> SmallVec<[ChainId; 3]> {
     let mut d = credential_chains(&actor.credential_shard(), None);
-    if let Some(o) = owner {
-        d.push(ChainId::Authz(o));
-    }
+    d.extend(crate::repo::authz_chains(owner, enterprise));
     d
 }
 
@@ -439,8 +435,8 @@ pub(crate) fn head_deletion(v: &RepoView<'_>, ph: &PullHead, head: ObjectId) -> 
 }
 
 impl Merge {
-    pub fn deps(&self, owner: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
-        user_deps(&self.actor, owner)
+    pub fn deps(&self, owner: Option<AccountId>, enterprise: Option<AccountId>) -> SmallVec<[ChainId; 3]> {
+        user_deps(&self.actor, owner, enterprise)
     }
 
     /// Pure: the core tier with the entry's earlier events, and the deps the leader read once per entry. Re-checks
@@ -628,8 +624,10 @@ impl Command for MergeCmd {
     /// A user's credential chains and the owner's `Authz`; a consumer's command names neither.
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         match self {
-            MergeCmd::Merge(m) => m.deps(fold.authz_owner()),
-            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) => user_deps(a, fold.authz_owner()),
+            MergeCmd::Merge(m) => m.deps(fold.authz_owner(), fold.authz_enterprise()),
+            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) => {
+                user_deps(a, fold.authz_owner(), fold.authz_enterprise())
+            }
             MergeCmd::Queue(_) | MergeCmd::Land(_) | MergeCmd::Cursor(_) => SmallVec::new(),
         }
     }

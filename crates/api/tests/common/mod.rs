@@ -188,7 +188,7 @@ impl Chain {
     ) -> Result<graftyard_git::merge::MergeOut, graftyard_git::merge::MergeError> {
         let mem = &self.members[0];
         let view = RepoView::new(tiers(), &mem.core, &mem.meta, self.now);
-        let wanted: Vec<ChainId> = m.deps(Some(view.owner())).into_iter().collect();
+        let wanted: Vec<ChainId> = m.deps(Some(view.owner()), None).into_iter().collect();
         let d: Vec<_> = wanted.iter().map(|c| self.deps.iter().find(|(k, _)| k == c).unwrap().clone()).collect();
         let (events, out) = m.decide(&view, &d)?;
         drop(view);

@@ -373,7 +373,7 @@ impl IssueCmd {
     /// The actor's credential chains and the owner's `Authz`, named by the core `settings` row.
     pub fn deps(&self, view: &RepoView<'_>) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
-        d.push(ChainId::Authz(view.owner()));
+        d.extend(crate::repo::authz_chains(Some(view.owner()), view.settings().and_then(|s| s.enterprise)));
         d
     }
 
@@ -389,11 +389,9 @@ impl IssueCmd {
         }
         check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
         let owner = v.owner();
-        let authz = deps.iter().find_map(|(c, d)| match d {
-            IdentityDep::Authz(f) if *c == ChainId::Authz(owner) => Some(f as &dyn AuthzRead),
-            _ => None,
-        });
-        let perm = permission(&self.actor, v, authz);
+        let folds = crate::repo::authz_folds(deps);
+        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));
+        let perm = permission(&self.actor, v, &folds);
         let me = actor_id(&self.actor);
         let need = |p: RepoPermission| if perm >= Some(p) { Ok(()) } else { Err(IssueErr::Forbidden) };
         let author_or = |author: Option<AccountId>, p: RepoPermission| {
@@ -932,11 +930,10 @@ impl RepoAccess for Access<'_> {
 
 /// The actor's permission on the repository through identity's `permission` over the owner's `Authz` fold and the
 /// core tier's collaborator rows, and `Read` for anyone signed in on a public repository.
-pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, authz: Option<&dyn AuthzRead>) -> Option<RepoPermission> {
+pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, folds: &[&dyn AuthzRead]) -> Option<RepoPermission> {
     let Actor::User(_) = actor.actor else { return None };
     let access = Access { repo: v.tiers.repo, owner: v.owner(), core: v.core() };
-    let folds: SmallVec<[&dyn AuthzRead; 1]> = authz.into_iter().collect();
-    let p = graftyard_identity::permission(actor, &folds, &access);
+    let p = graftyard_identity::permission(actor, folds, &access);
     let public = access.visibility() == Visibility::Public;
     p.max(public.then_some(RepoPermission::Read))
 }
