@@ -210,6 +210,102 @@ pub fn mergeable(m: Option<&Mergeability>, head: ObjectId, base_tip: Option<Obje
     Some(matches!(m.result, MergeabilityResult::Clean { .. }))
 }
 
+// ---- The test-merge budget (`design/DESIGN.md`, Shape, `TestMerge` and `TEST_MERGE_BUDGET`) ----
+
+/// Of the k shards' vCPU, the share test merges may use.
+pub const TEST_MERGE_BUDGET: f32 = 0.25;
+/// A single-PR GET by a writer or CI token computes at most once per PR per this long.
+pub const GET_COALESCE_MS: u64 = 30_000;
+/// A shard's vCPU at the tiers' instance size (`standard-4`) [doc: Containers instance types].
+pub const SHARD_VCPU: f32 = 4.0;
+/// A test merge's estimated vCPU-ms before it runs: `MERGE_VCPU_S` [measured, `tests/m0/results/m0-wp9.md`, B0-34:
+/// torvalds/linux p50 5 to 45 ms; `scripts/cost.py` prices 0.05 s].
+pub const MERGE_EST_MS: f32 = 50.0;
+/// The share of a second's budget a GET may not take, kept for pushes and dispatch [guess].
+pub const GET_RESERVE: f32 = 0.5;
+
+/// Why a test merge would run. Pushes and Actions dispatch are served first, then GETs; list fields never compute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MergeCause {
+    HeadPush,
+    Dispatch,
+    /// A single-PR GET by a writer or CI token.
+    Get,
+    /// A list field (`GET /pulls`, a connection). Never computes.
+    List,
+}
+
+/// The test-merge budget of one network on one site: a bucket of vCPU-milliseconds that refills at TEST_MERGE_BUDGET
+/// of the k shards' vCPU and holds one second of it, or one merge's estimate when that is more. Pushes and dispatch
+/// may take the bucket below zero by one merge, so they are never shed while GETs are; a GET runs only on a positive
+/// balance that covers its estimate. Memory only, per shard object: a restart starts it full [inference].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MergeBudget {
+    k: u8,
+    ms: f32,
+    at: u64,
+    /// The last GET compute per PR, for GET_COALESCE_MS.
+    got: BTreeMap<IssueNumber, u64>,
+    /// vCPU-ms charged, for the gate's "within budget".
+    pub spent_ms: f64,
+}
+
+impl MergeBudget {
+    pub fn new(k: u8, now: u64) -> MergeBudget {
+        MergeBudget { k: k.max(1), ms: Self::rate(k.max(1)), at: now, got: BTreeMap::new(), spent_ms: 0.0 }
+    }
+
+    /// vCPU-ms a second.
+    fn rate(k: u8) -> f32 {
+        TEST_MERGE_BUDGET * SHARD_VCPU * f32::from(k) * 1000.0
+    }
+
+    pub fn set_k(&mut self, k: u8) {
+        self.k = k.max(1);
+    }
+
+    fn refill(&mut self, now: u64, est_ms: f32) {
+        let rate = Self::rate(self.k);
+        let dt = now.saturating_sub(self.at) as f32 / 1000.0;
+        self.ms = (self.ms + rate * dt).min(rate.max(est_ms));
+        self.at = now;
+    }
+
+    /// Whether a test merge for `cause` of pull request `n`, estimated at `est_ms` of vCPU, may run now. A `true`
+    /// charges the estimate; `charge` corrects it once the merge's real cost is known. A `false` leaves `mergeable`
+    /// null (GraphQL `UNKNOWN`) until a later compute.
+    pub fn admit(&mut self, cause: MergeCause, n: IssueNumber, est_ms: f32, now: u64) -> bool {
+        self.refill(now, est_ms);
+        let ok = match cause {
+            MergeCause::List => false,
+            MergeCause::HeadPush | MergeCause::Dispatch => self.ms > -est_ms,
+            // A GET leaves GET_RESERVE of a second's budget for pushes and dispatch, which arrive unannounced.
+            MergeCause::Get => {
+                let fresh = self.got.get(&n).is_none_or(|t| now >= t + GET_COALESCE_MS);
+                fresh && self.ms - est_ms >= GET_RESERVE * Self::rate(self.k)
+            }
+        };
+        if ok {
+            if cause == MergeCause::Get {
+                self.got.insert(n, now);
+            }
+            self.ms -= est_ms;
+        }
+        ok
+    }
+
+    /// A merge admitted at `est_ms` cost `real_ms`.
+    pub fn charge(&mut self, est_ms: f32, real_ms: f32) {
+        self.ms -= real_ms - est_ms;
+        self.spent_ms += f64::from(real_ms);
+    }
+
+    /// The budget, in vCPU, at the current k.
+    pub fn vcpu(&self) -> f32 {
+        Self::rate(self.k) / 1000.0
+    }
+}
+
 /// What the consumer reads of one pull request, through the leader's `fresh`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrView {
@@ -356,15 +452,21 @@ pub fn request_id(c: &PrSync) -> RequestId {
 }
 
 /// The commands for a batch: the head moves and the test merges, at most `MERGE_BYTES_PER_COMMAND` of merge packs
-/// each, the last moving the cursor. A merge whose pack alone is past the bound goes to `unmerged`.
-pub fn commands(batch: &SyncBatch, views: &[PrView], merges: Vec<TestMerge>) -> Vec<PrSync> {
+/// each, the last moving the cursor. A merge whose pack alone is past the bound goes to `unmerged`, and so does each
+/// of `shed`, the merges `MergeBudget` did not admit, so `mergeable` reads null for them.
+pub fn commands(
+    batch: &SyncBatch,
+    views: &[PrView],
+    merges: Vec<TestMerge>,
+    shed: Vec<(IssueNumber, ObjectId)>,
+) -> Vec<PrSync> {
     let heads: Vec<(IssueNumber, ObjectId)> =
         views.iter().filter(|v| v.open && v.same_repo && v.head_ref != Some(v.head)).map(|v| (v.n, v.head)).collect();
     let bytes = |m: &TestMerge| match &m.pack {
         Some(PackRef::Inline(b)) => b.len(),
         _ => 0,
     };
-    let mut unmerged = Vec::new();
+    let mut unmerged = shed;
     let mut chunks: Vec<Vec<TestMerge>> = vec![Vec::new()];
     let mut used = 0;
     for m in merges {

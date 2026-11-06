@@ -88,6 +88,45 @@ pub fn snapshot_due(last: Option<(Index, Timestamp)>, applied: Index, at: Timest
     applied.0 - to.0 >= SNAPSHOT_EVERY || log_bytes_since >= SNAPSHOT_BYTES || at.0 / DAY_MS > to_at.0 / DAY_MS
 }
 
+/// The log a member keeps, beside the 30-day rule (`design/DESIGN.md`, Shape, `LOG_MAX_BYTES`).
+pub const LOG_MAX_BYTES: u64 = 2 << 30;
+/// The age past which the log is archived whatever its size (`design/DESIGN.md`, Shape, Packs: 30 days of log).
+pub const LOG_KEEP: Duration = Duration::from_secs(30 * 86_400);
+
+/// The range the leader archives next, `from..=through`, given the stored log above the last archived range as
+/// `(index, at, encoded bytes)` in index order, the newest entry's time `now`, and whether both tiers have a snapshot
+/// (`snapshotted`): every entry older than LOG_KEEP, and then the oldest entries until the rest fits LOG_MAX_BYTES.
+/// Only committed entries, and only once a snapshot exists, so an install can start from the newest snapshot at or
+/// below the archive boundary and read the archives after it (a range below every snapshot is still archived, and an
+/// install past it starts from the snapshot). `None` when nothing is due. Times are entries' `at`, so every member
+/// answers the same.
+pub fn archive_due(
+    log: &[(Index, Timestamp, u64)],
+    now: Timestamp,
+    snapshotted: bool,
+    committed: Index,
+    max_bytes: u64,
+) -> Option<(Index, Index)> {
+    let first = log.first()?.0;
+    if !snapshotted {
+        return None;
+    }
+    let cut = now.0.saturating_sub(LOG_KEEP.as_millis() as u64);
+    let mut over = log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);
+    let mut through = None;
+    for (i, at, bytes) in log {
+        if at.0 >= cut && over == 0 {
+            break;
+        }
+        if *i > committed {
+            break;
+        }
+        over = over.saturating_sub(*bytes);
+        through = Some(*i);
+    }
+    through.map(|t| (first, t))
+}
+
 /// Of a tier's committed snapshots as `(to, to_at)`, those to keep when the newest entry has time `now`: every
 /// snapshot inside `RESTORE_WINDOW`, and the newest one before it, which is at or below the window's first index.
 pub fn snapshots_to_keep(snaps: &[(Index, Timestamp)], now: Timestamp) -> Vec<Index> {

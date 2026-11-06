@@ -263,6 +263,17 @@ pub fn counts_against_limit(r: &Reply) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Agent admission's REST shape: 429, `retry-after`, and GitHub's secondary rate limit message.
+    #[test]
+    fn secondary_rate_limit_is_a_429_with_retry_after() {
+        let r = super::Reply::secondary_rate_limit(12);
+        assert_eq!(r.status, 429);
+        assert_eq!(r.header("retry-after"), Some("12"));
+        let super::Body::Json(b) = &r.body else { panic!("json") };
+        assert!(b["message"].as_str().unwrap().contains("secondary rate limit"), "{b}");
+        assert_eq!(b["status"], "429");
+    }
+
     use graftyard_types::Ulid;
 
     use super::*;

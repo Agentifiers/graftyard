@@ -235,3 +235,19 @@ pub fn decode_commit(body: &[u8], release: graftyard_types::ReleaseId) -> Result
 fn unsupported_unknown() -> CallErrorWire {
     CallErrorWire::Unsupported(UnsupportedWire { family: 0, version: 0 })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An agent command that waited AGENT_WAIT crosses the member boundary as `{"full": {"retry_after_s": n}}`, which
+    /// the edge renders in the `ng` or 429 shape and never as another refusal.
+    #[test]
+    fn an_admission_refusal_crosses_the_wire_with_its_retry_hint() {
+        let o = outcome_wire(&Err(CommitError::Full { retry_after_s: 9 }));
+        assert_eq!(o, PushOutcome::Full(FullWire { retry_after_s: 9 }));
+        let j = serde_json::to_value(CommitReply::Done(o.clone())).unwrap();
+        assert_eq!(j, serde_json::json!({ "done": { "full": { "retry_after_s": 9 } } }));
+        assert_eq!(serde_json::from_value::<CommitReply>(j).unwrap(), CommitReply::Done(o));
+    }
+}

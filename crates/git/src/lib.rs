@@ -45,8 +45,9 @@ pub use pack::{
     PackIndex, PackRef, Promoted, REQUEST_RETENTION,
 };
 pub use shard::{
-    DISK_USE_PCT, DiskRepo, FANOUT_MAX, GitCacheShard, HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, REGION_RETRIES,
-    RENEW_EVERY, RegionCheck, Renewal, SHARDS, WARM_FOR, container_regions, evict_plan, image_for, may_start,
+    DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP, FANOUT_UP_FOR, Fanout, GitCacheShard,
+    HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, NetworkLoad, REGION_RETRIES, RENEW_EVERY, RegionCheck, Renewal,
+    SHARDS, WARM_FOR, clone_cache_buckets, container_regions, evict_plan, fanout, image_for, may_start, pool_grants,
     region_check, renewal, shards_for, validator, warm_sites,
 };
 pub use store::{

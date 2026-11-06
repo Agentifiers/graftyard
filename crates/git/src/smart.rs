@@ -688,6 +688,25 @@ mod tests {
         assert!(s.contains("at most 10000 refs"), "the message names the limit: {s}");
     }
 
+    /// Agent admission's git shape (`design/DESIGN.md`, Shape, "Agent load and agent safety"): report-status `ng <ref>
+    /// agent admission full, retry after <n>s` on every ref, and a `remote:` line on band 2.
+    #[test]
+    fn agent_admission_refuses_in_the_ng_shape_with_a_remote_line() {
+        let body = request(
+            &[cmd(ObjectId::ZERO, oid(1), "refs/heads/agent/a"), cmd(ObjectId::ZERO, oid(2), "refs/heads/agent/b")],
+            "report-status side-band-64k",
+            &[],
+            b"",
+        );
+        let req = parse_receive_pack(&body).unwrap();
+        let s = String::from_utf8_lossy(&Refusal::agent_full(7).render(&req)).into_owned();
+        for r in ["refs/heads/agent/a", "refs/heads/agent/b"] {
+            assert!(s.contains(&format!("ng {r} agent admission full, retry after 7s\n")), "{s}");
+        }
+        assert!(s.contains("\x02This repository is admitting agent writes"), "a remote: line on band 2: {s}");
+        assert!(!s.contains("ok refs/"));
+    }
+
     #[test]
     fn the_cap_message_names_what_each_plan_offers() {
         let text = |p, o| cap_refusal(p, o, 80_000_000, "git.example.com", "o/r").remote.join(" ");
