@@ -81,6 +81,16 @@ impl Credential {
 }
 
 impl Principal {
+    /// The principal of a verified installation token.
+    pub fn installation(claims: &InstallationClaims) -> Principal {
+        Principal {
+            actor: Actor::App { app: claims.app, installation: claims.installation },
+            scopes: ScopeSet(0),
+            credential: Credential::Stateless(Box::new(claims.clone())),
+            sso_orgs: SmallVec::new(),
+        }
+    }
+
     /// What the leader re-reads for this caller's commands: the actor's `Account` row and the token's shard row.
     pub fn credential_shard(&self) -> CredentialShard {
         let account = match self.actor {

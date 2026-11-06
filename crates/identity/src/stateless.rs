@@ -12,7 +12,8 @@
 //!   signature, the time window, and the row's `retired` time. Revocation by `jti` is read from `jti_shard` by the
 //!   leader once per entry (`crate::credential`).
 //! - **Rotation.** A new key is published at least one token lifetime before it signs, and the old key's `retired`
-//!   is set to the last `exp` it signed, so both verify during the overlap (`rotation_step`).
+//!   is set past the last `exp` any isolate could still sign with it, so both verify during the overlap
+//!   (`rotation_step`).
 //! - **Narrowing** (`narrow`) is `POST /app/installations/{id}/access_tokens`: `repositories`, `repository_ids`, and
 //!   `permissions`, never beyond the installation's or the App's.
 
@@ -337,23 +338,24 @@ pub fn sign_with(secret: &SigningSecret, claims: &InstallationClaims) -> String 
 
 // ---- rotation ----
 
-/// One signing key's life, as `graft-ops` records it: when its `VerifyingKey` row committed, and when the minter
-/// stopped signing with it (`None` while it still signs).
+/// One signing key's life, as `graft-ops` records it: when its `VerifyingKey` row committed, and when the key source
+/// switched to the next key (`None` while it is the source's current key).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyEpoch {
     pub kid: Kid,
     pub published: Timestamp,
-    pub last_signed: Option<Timestamp>,
+    pub switched: Option<Timestamp>,
 }
 
-/// What a rotation does next: sign with the new key once its row has been published for one token lifetime, so every
-/// edge has had time to see it; then retire the old key at the last `exp` it signed, so its tokens verify until they
-/// expire and no longer.
+/// What a rotation does next: switch the key source to the new key once its row has been published for one token
+/// lifetime, so every edge has had time to see it; then retire the old key once no token it signed can still be
+/// live. An isolate may hold the old key for `SIGNING_KEY_CACHE` after the switch, and its last token lives
+/// `INSTALLATION_TOKEN_TTL`, so the old key retires at the switch plus both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RotationStep {
     /// Keep signing with the old key.
     Wait,
-    /// Switch the minter to the new key now.
+    /// Switch the key source to the new key now.
     SignWithNew,
     /// Commit `PutVerifyingKey { kid, retired: Some(at) }` for the old key.
     Retire { kid: Kid, at: Timestamp },
@@ -361,10 +363,13 @@ pub enum RotationStep {
 
 /// The next step from `old` to `new` at `now`.
 pub fn rotation_step(old: &KeyEpoch, new: &KeyEpoch, now: Timestamp) -> RotationStep {
-    match old.last_signed {
+    match old.switched {
         None if now.0 >= new.published.0 + ms(INSTALLATION_TOKEN_TTL) => RotationStep::SignWithNew,
         None => RotationStep::Wait,
-        Some(last) => RotationStep::Retire { kid: old.kid, at: Timestamp(last.0 + ms(INSTALLATION_TOKEN_TTL)) },
+        Some(at) => RotationStep::Retire {
+            kid: old.kid,
+            at: Timestamp(at.0 + ms(SIGNING_KEY_CACHE) + ms(INSTALLATION_TOKEN_TTL) + ms(CLOCK_SKEW)),
+        },
     }
 }
 
@@ -436,6 +441,54 @@ pub fn narrow(
     ids.dedup();
     let repos = if ids.is_empty() { selection.clone() } else { RepoScope::Selected(ids) };
     Ok((repos, permissions))
+}
+
+// ---- the edge's two routes ----
+
+/// Why `POST /app/installations/{id}/access_tokens` refused, before anything was minted.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum TokenRequestError {
+    /// 401: the App JWT did not verify.
+    #[error("{0}")]
+    Jwt(crate::appauth::AppJwtError),
+    /// 404: no live installation with this id belongs to the JWT's App.
+    #[error("no such installation")]
+    NoInstallation,
+    /// 422.
+    #[error("{0}")]
+    Narrow(NarrowError),
+}
+
+/// The edge's half of `POST /app/installations/{id}/access_tokens`, before it asks `graft-ops` to mint. `app` is the
+/// App's record from its owner's `Authz` fold, reached through `NameKey::App`; `installation` the installation's
+/// owner's `Authz` fold, reached through `NameKey::Installation`. Both were read fresh. Returns the grant to sign.
+pub fn access_token_grant(
+    jwt: &str,
+    app: &crate::apps::AppRecord,
+    id: InstallationId,
+    installation: &dyn crate::authz::AuthzRead,
+    req: &AccessTokenRequest,
+    resolve: &dyn Fn(&str) -> Option<RepoId>,
+    now: Timestamp,
+) -> Result<Grant, TokenRequestError> {
+    crate::appauth::verify_app_jwt(jwt, app, now).map_err(TokenRequestError::Jwt)?;
+    let row = installation
+        .installation(id)
+        .and_then(|s| s.row.as_ref())
+        .filter(|r| r.app == app.id)
+        .ok_or(TokenRequestError::NoInstallation)?;
+    let (repos, permissions) =
+        narrow(&row.repos, &row.permissions, &app.permissions, req, resolve).map_err(TokenRequestError::Narrow)?;
+    Ok(Grant { app: app.id, installation: id, repos, permissions })
+}
+
+/// `DELETE /installation/token`: the command the edge commits on `jti_shard` under the token itself. The leader
+/// accepts it only from that token, or from `graft-ops`; it answers 204 for a token already revoked or expired.
+pub fn revoke_command(claims: &InstallationClaims) -> crate::tokens::TokensCmd {
+    crate::tokens::TokensCmd {
+        cred: crate::credential::Principal::installation(claims).credential_shard(),
+        op: crate::tokens::TokensOp::RevokeJti { jti: claims.jti, exp: claims.exp },
+    }
 }
 
 #[cfg(test)]
@@ -583,16 +636,17 @@ mod tests {
     }
 
     #[test]
-    fn rotation_signs_with_the_new_key_after_one_lifetime_and_retires_the_old_at_its_last_exp() {
+    fn rotation_signs_with_the_new_key_after_one_lifetime_and_retires_the_old_after_its_last_exp() {
         let h = ms(INSTALLATION_TOKEN_TTL);
-        let old = KeyEpoch { kid: Kid(1), published: Timestamp(0), last_signed: None };
-        let new = KeyEpoch { kid: Kid(2), published: Timestamp(10 * h), last_signed: None };
+        let old = KeyEpoch { kid: Kid(1), published: Timestamp(0), switched: None };
+        let new = KeyEpoch { kid: Kid(2), published: Timestamp(10 * h), switched: None };
         assert_eq!(rotation_step(&old, &new, Timestamp(10 * h + h - 1)), RotationStep::Wait);
         assert_eq!(rotation_step(&old, &new, Timestamp(11 * h)), RotationStep::SignWithNew);
-        let old = KeyEpoch { last_signed: Some(Timestamp(11 * h)), ..old };
+        let old = KeyEpoch { switched: Some(Timestamp(11 * h)), ..old };
+        // A cached isolate may sign with kid 1 until 12 h, and that token lives until 13 h.
         assert_eq!(
             rotation_step(&old, &new, Timestamp(11 * h)),
-            RotationStep::Retire { kid: Kid(1), at: Timestamp(12 * h) }
+            RotationStep::Retire { kid: Kid(1), at: Timestamp(13 * h + ms(CLOCK_SKEW)) }
         );
     }
 }

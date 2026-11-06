@@ -10,6 +10,7 @@
 //! caller passes in.
 
 mod access;
+pub mod appauth;
 mod apps;
 mod authz;
 mod cache;
@@ -27,14 +28,16 @@ mod placement;
 pub mod stateless;
 mod tokens;
 
-pub use access::{Decision, ReadAction, RepoAccess, Visibility, WriteAction, authorize, authorize_write, permission};
+pub use access::{
+    Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_write, permission,
+};
 pub use apps::{
     Access, AppId, AppKey, AppRecord, CLIENT_SECRETS_MAX, ClientId, EventKind, InstallationId, OAuthAppRecord,
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
 };
 pub use authz::{
     AccountKind, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead, AuthzScratch,
-    NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
+    InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
