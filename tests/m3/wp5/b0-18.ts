@@ -18,6 +18,8 @@ const { values: opt } = parseArgs({ options: {
   out: { type: "string", default: "/tmp/m3h/b0-18" }, pushes: { type: "string", default: "10" },
   // One learner slot that also returns every read's start, latency, and end (`read_bench`'s `samples`).
   "trace-slot": { type: "string", default: "0" },
+  // Only the first N learners read (the rest stay idle followers of the leader); 0 for all.
+  learners: { type: "string", default: "0" },
 } });
 const TOOLS = process.env.GRAFT_TOOLS_EDGE!, EDGE = process.env.GRAFT_EDGE!;
 const TOK = readFileSync(new URL("../../m0/.m0-token", import.meta.url), "utf8").trim();
@@ -93,7 +95,8 @@ const writes = (async () => {
       .then((r) => r.json()).then((v: any) => { if (v.ok || v.outcome || v.done) pushOk++; }).catch(() => {});
   }
 })();
-const runs = await Promise.all(learners.map((l) =>
+const readers = Number(opt.learners) > 0 ? learners.slice(0, Number(opt.learners)) : learners;
+const runs = await Promise.all(readers.map((l) =>
   member(l.site, "/read_bench", { rate, secs: seconds, samples: l.slot === Number(opt["trace-slot"]) }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
 await writes;
 const stats = (await member(lead, "/stats")).v;
@@ -112,7 +115,7 @@ const summary = {
   perLearner: ok.map((x) => ({ slot: x.l.slot, site: x.l.site, n: x.r.v.n, ok: x.r.v.ok, failed: x.r.v.failed, p50: x.r.v.p50, p99: x.r.v.p99, max: x.r.v.max })),
   leader: { site: lead, inbound, reqsPerS: Math.round(leaderReqs / (stats.inboundMs / 1000)), windowMs: stats.inboundMs },
   pushes: { sent: pushes, ok: pushOk },
-  verdict: leaderReqs / (stats.inboundMs / 1000) < 700 && Math.max(...ok.map((x) => x.r.v.p99)) <= 1000 && ok.length === learners.length ? "Pass" : "Fail",
+  verdict: leaderReqs / (stats.inboundMs / 1000) < 700 && Math.max(...ok.map((x) => x.r.v.p99)) <= 1000 && ok.length === readers.length ? "Pass" : "Fail",
 };
 mkdirSync(opt.out!, { recursive: true });
 writeFileSync(`${opt.out}/b0-18-${t0}.json`, JSON.stringify(summary, null, 2));

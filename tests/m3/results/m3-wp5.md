@@ -294,3 +294,24 @@ Learner `l0` (site 0) in the first run (22:38:57, leader site 0, then 1, then 2)
 The failed calls that tripped `STEP_DOWN` were site 0's AppendEntries to its voters, and to every learner as well. They failed with "Subrequest depth limit exceeded" (`fetch`) at 6.2 to 8.9 s, and then 118 AppendEntries missed their 1 s deadline together at 9.7 s. The same pattern repeats at 24.3 s on site 1 and at 26.8 s on site 2. The slow reads near p99 (2.7 s) sit in the same windows.
 
 So the p99 failure is not read-index queueing or apply wait. It is the leader stepping down, or holding, because its AppendEntries fail "Subrequest depth limit exceeded". Next: where the depth comes from.
+
+### Where the depth comes from: a ratchet through leader and learner calls
+
+`29c667a` models each member-to-member call's nesting depth. Every `/raft` call carries `x-graft-hop`, which is its sender's newest incoming hop plus one, and an outside request counts as hop 2. `/stats` counts calls by modelled hop. The site day at 22:58Z (`12c46948`, `3fb07064`, `c23d2b33` then `97a992b1`, `ba2e4cad`, `71fd582b`, wasm `b2afe73e…`) did not move the three voters. They ran the 22:36 build, with isolates from 22:36, until each was sent `/reset` at 23:02. So a site day does not restart a member that keeps receiving calls, and a member can keep running the previous version for minutes.
+
+Three runs on the new build, all voters reset (23:03 to 23:06): all failed, at p99 1,592 to 2,715 ms. In the second run the leader's (site 2) calls by modelled hop went 3, 5, 7, 9 … 21, 23, 25, 26. Every call at hop 25 and 26 failed "Subrequest depth limit exceeded" (72 and 57), and 69 of 105 failed at hop 21. The model is not exact, since the runtime keeps a request current only until it completes, but it climbs by 2 per exchange.
+
+The mechanism:
+
+1. The runtime charges each outgoing call to the object's newest incoming request. The `/depth_left` check above shows this.
+2. The leader's AppendEntries and its delayed `ReadIndexRes` are calls to each learner, so a learner's newest request is the leader's call, at depth d + 1.
+3. `read_bench` generates reads inside one long request, so a learner gets no other request. Its next `ReadIndex` call leaves at d + 2.
+4. 16 learners call the leader about 150 times a second, so the leader's newest request is almost always a learner's `ReadIndex`. Its next AppendEntries leave at d + 3, to the learners and to both voters.
+5. At 16 the leader's calls fail. That includes its AppendEntries to the two voters, so `STEP_DOWN` trips on `CommitErrors` (3 or more of each voter's calls failed in 10 s). The leader transfers or holds. Learner reads fail `notLeader`, or wait for the next leader.
+6. A push's `/commit`, an edge `/read`, or a tools-edge request is a new shallow request on the leader, and so is a driver call on a learner. Each one resets that object's depth. That is why runs pass or fail at random, and why the Workers Logs bursts do not line up with runs.
+
+**The learner read path does not call back through lookup or the edge.** `read_bench` → `Member::read_index` → `ReadIndex` → `Host::send` → `call_peer` → the leader's `/raft`, over the member binding. The leader answers in the response, or later as its own `ReadIndexRes` call. The nesting is not one call chain. It builds up across separate calls, because each one inherits its object's newest incoming request.
+
+**Test of the mechanism (23:31 to 23:33Z).** The same two runs, while `ping.mjs` sent every learner about 22 shallow `/ping`s a second from outside. Both passed: p99 762 ms and 620 ms, 0 failed reads, leader 198 and 199 req/s, no `STEP_DOWN`, no depth failure. The leader's calls stayed at modelled hops 3 to 8. Nothing else changed.
+
+Milestone 0's prototype passed because its learners pulled entries inside their own read-index call. The leader never called a learner (`tests/m0/results/m0-wp2.md`, B0-18). M0-WP9 changed that so the leader feeds learners (`m0-wp9.md`, "Learners fed by the leader"), and that change closed the loop. In production, edge reads arriving at a learner would reset its depth, but a learner whose reads arrive more slowly than the leader's calls would still climb.
