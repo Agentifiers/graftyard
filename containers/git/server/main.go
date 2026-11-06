@@ -30,6 +30,11 @@
 //	POST /merge?net=N&base=B&head=H  the test merge of a pull request, in a quarantine: {"conflict": [paths]}, or
 //	                                 {"merge": oid, "pack": base64} once the tree-diff check passed, the pack holding
 //	                                 only the merge's new objects. The repository is not changed
+//	POST /merge?net=N&base=B&heads=H1,H2..&ns=N1,N2..&method=merge|squash|rebase
+//	                                 GitCacheShard::merge: each head in turn on the previous result, from B, by the
+//	                                 method, each result deterministic and through the tree-diff check, in a
+//	                                 quarantine. {"steps": [{"n","head","commit","pack","upToDate","verified"}],
+//	                                 "conflict": {"index", "paths"} or null, "pack": every step's objects, "engine"}
 //	GET  /archive?net=N&commit=C&prefix=P&format=tar.gz|zip  `git archive` of C
 //	GET  /repos                      the LRU's view of the disk: {"disk": bytes the filesystem holds (or
 //	                                 GRAFT_DISK_BYTES), "repos": [{"network","bytes","used"}]}, where used is the
@@ -756,6 +761,10 @@ func treeDiffCheck(rp string, env []string, base, head, merge string) error {
 // its new objects, which the PrSync consumer commits in TestMerged. Nothing joins the repository here: the pack comes
 // back to every shard through the chain's log.
 func handleMerge(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("method") != "" {
+		handleMergeChain(w, r)
+		return
+	}
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
@@ -908,4 +917,207 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	return m
+}
+
+// chainStep is one pull request merged onto the previous result.
+type chainStep struct {
+	N        string `json:"n"`
+	Head     string `json:"head"`
+	Commit   string `json:"commit"`
+	Pack     []byte `json:"pack"`
+	UpToDate bool   `json:"upToDate"`
+	Verified string `json:"verified"`
+}
+
+// packOf packs the objects reachable from tip and not from any of not, with deltas only within the pack.
+func packOf(rp string, env []string, tip string, not ...string) ([]byte, error) {
+	objs, err := git(rp, env, nil, append([]string{"rev-list", "--objects", tip, "--not"}, not...)...)
+	if err != nil {
+		return nil, err
+	}
+	var ids bytes.Buffer
+	for _, l := range strings.Split(strings.TrimSpace(string(objs)), "\n") {
+		if f := strings.Fields(l); len(f) > 0 {
+			ids.WriteString(f[0] + "\n")
+		}
+	}
+	return git(rp, env, &ids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+}
+
+// mergeTree is merge-tree's tree of ours and theirs (with base as the merge base when given), or the conflicted paths.
+func mergeTree(rp string, env []string, base, ours, theirs string) (string, []string, error) {
+	args := []string{"merge-tree", "--write-tree", "--name-only", "-z", "--no-messages"}
+	if base != "" {
+		args = append(args, "--merge-base="+base)
+	}
+	cmd := exec.Command("git", append(args, ours, theirs)...)
+	cmd.Dir = rp
+	cmd.Env = append(append(os.Environ(), ident...), env...)
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	out, err := cmd.Output()
+	f := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
+	if err != nil {
+		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 1 && len(f) > 1 {
+			return "", f[1:], nil
+		}
+		return "", nil, fmt.Errorf("merge-tree: %v: %s", err, strings.TrimSpace(errb.String()))
+	}
+	return f[0], nil, nil
+}
+
+// mergeOne merges head onto cur by method. Every commit it writes is deterministic: the committer is the shard's
+// identity at head's committer time, so the same inputs give the same commit on every shard and every retry.
+func mergeOne(rp string, env []string, cur, head, n, method string) (string, []string, error) {
+	tree, conflict, err := mergeTree(rp, env, "", cur, head)
+	if err != nil || conflict != nil {
+		return "", conflict, err
+	}
+	ct, err := git(rp, env, nil, "log", "-1", "--format=%ct", head)
+	if err != nil {
+		return "", nil, err
+	}
+	date := "@" + strings.TrimSpace(string(ct)) + " +0000"
+	cenv := append(append([]string{}, env...), "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
+	switch method {
+	case "merge":
+		msg := fmt.Sprintf("Merge pull request #%s\n", n)
+		out, err := git(rp, cenv, strings.NewReader(msg), "commit-tree", tree, "-p", cur, "-p", head)
+		return strings.TrimSpace(string(out)), nil, err
+	case "squash":
+		subj, err := git(rp, env, nil, "log", "-1", "--format=%s", head)
+		if err != nil {
+			return "", nil, err
+		}
+		msg := fmt.Sprintf("%s (#%s)\n", strings.TrimSpace(string(subj)), n)
+		out, err := git(rp, cenv, strings.NewReader(msg), "commit-tree", tree, "-p", cur)
+		return strings.TrimSpace(string(out)), nil, err
+	case "rebase":
+		// Each of head's own commits replayed onto cur with merge-tree against its parent, keeping its author and
+		// message. A merge commit among them is refused, as GitHub refuses to rebase one.
+		list, err := git(rp, env, nil, "rev-list", "--reverse", "--topo-order", "--parents", head, "--not", cur)
+		if err != nil {
+			return "", nil, err
+		}
+		at := cur
+		for _, l := range strings.Split(strings.TrimSpace(string(list)), "\n") {
+			f := strings.Fields(l)
+			if len(f) == 0 {
+				continue
+			}
+			if len(f) != 2 {
+				return "", nil, fmt.Errorf("rebase: %s is a merge commit", f[0])
+			}
+			c, parent := f[0], f[1]
+			t, conflict, err := mergeTree(rp, env, parent, at, c)
+			if err != nil || conflict != nil {
+				return "", conflict, err
+			}
+			who, err := git(rp, env, nil, "log", "-1", "--format=%an%x00%ae%x00%ad", "--date=raw", c)
+			if err != nil {
+				return "", nil, err
+			}
+			a := strings.SplitN(strings.TrimSpace(string(who)), "\x00", 3)
+			if len(a) != 3 {
+				return "", nil, fmt.Errorf("rebase: author of %s", c)
+			}
+			msg, err := git(rp, env, nil, "log", "-1", "--format=%B", c)
+			if err != nil {
+				return "", nil, err
+			}
+			renv := append(append([]string{}, env...), "GIT_AUTHOR_NAME="+a[0], "GIT_AUTHOR_EMAIL="+a[1],
+				"GIT_AUTHOR_DATE="+a[2], "GIT_COMMITTER_DATE="+date)
+			out, err := git(rp, renv, bytes.NewReader(msg), "commit-tree", t, "-p", at)
+			if err != nil {
+				return "", nil, err
+			}
+			at = strings.TrimSpace(string(out))
+		}
+		return at, nil, nil
+	}
+	return "", nil, fmt.Errorf("unknown merge method %q", method)
+}
+
+// handleMergeChain is GitCacheShard::merge for a real merge and a merge-queue group: each head in turn, from base.
+// The tree-diff check runs on every result against its two inputs. Nothing joins the repository: the packs come
+// back to every shard through the chain's log.
+func handleMergeChain(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	base, method := q.Get("base"), q.Get("method")
+	heads, ns := strings.Split(q.Get("heads"), ","), strings.Split(q.Get("ns"), ",")
+	if !hexRe.MatchString(base) || len(heads) != len(ns) || len(heads) > 64 {
+		fail(w, 400, "bad base, heads, or ns")
+		return
+	}
+	for i, h := range heads {
+		if !hexRe.MatchString(h) || ns[i] == "" || strings.Trim(ns[i], "0123456789") != "" {
+			fail(w, 400, "bad head %q or n %q", h, ns[i])
+			return
+		}
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	os.MkdirAll(filepath.Join(rp, "graft"), 0o755)
+	qd, err := os.MkdirTemp(filepath.Join(rp, "graft"), "merge-")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.RemoveAll(qd)
+	env := []string{"GIT_OBJECT_DIRECTORY=" + qd, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
+	for _, c := range append([]string{base}, heads...) {
+		if _, err := git(rp, env, nil, "cat-file", "-e", c+"^{commit}"); err != nil {
+			fail(w, 409, "commit %s is not here", c)
+			return
+		}
+	}
+	steps := []chainStep{}
+	var conflict any
+	cur := base
+	for i, h := range heads {
+		c, paths, err := mergeOne(rp, env, cur, h, ns[i], method)
+		if err != nil {
+			fail(w, 422, "%s #%s: %v", method, ns[i], err)
+			return
+		}
+		if paths != nil {
+			conflict = map[string]any{"index": i, "paths": paths}
+			break
+		}
+		if err := treeDiffCheck(rp, env, cur, h, c); err != nil {
+			fail(w, 422, "tree-diff check of #%s: %v", ns[i], err)
+			return
+		}
+		diff, err := git(rp, env, nil, "diff-tree", "-r", "-z", "--no-renames", "--raw", cur, c)
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		_, ancErr := git(rp, env, nil, "merge-base", "--is-ancestor", cur, h)
+		pack, err := packOf(rp, env, c, cur, h)
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		sum := sha256.Sum256(diff)
+		steps = append(steps, chainStep{N: ns[i], Head: h, Commit: c, Pack: pack, UpToDate: ancErr == nil,
+			Verified: hex.EncodeToString(sum[:])})
+		cur = c
+	}
+	var all []byte
+	if len(steps) > 0 {
+		not := append([]string{base}, heads[:len(steps)]...)
+		if all, err = packOf(rp, env, cur, not...); err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+	}
+	version, _ := git(rp, nil, nil, "version")
+	jsonOut(w, map[string]any{"steps": steps, "conflict": conflict, "pack": all,
+		"engine": strings.TrimSpace(string(version))})
 }

@@ -380,3 +380,41 @@ pub fn on_refused(cmd: &MergeCmd, n: IssueNumber, err: &MergeError) -> Option<Me
     };
     Some(eject(n, reason))
 }
+
+// ---- the host's half: the cursor, the read, and the git cache ----
+
+/// The leader alarm's read for `MergeQueue`, as `crate::prsync::scan` is `PrSync`'s: up to `SCAN_MAX` entries past what
+/// `d` has read, each by `entry`, recording the bases it touched.
+pub fn scan(
+    d: &mut crate::prsync::Dispatcher<RefName>,
+    core: &dyn Read,
+    repo: graftyard_types::RepoId,
+    cursor: graftyard_types::Index,
+    applied: graftyard_types::Index,
+    mut entry: impl FnMut(graftyard_types::Index) -> Option<LogEntry<RepoEvent>>,
+) -> Result<(), graftyard_types::Index> {
+    use graftyard_types::Index;
+    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(()) };
+    for i in from.0 + 1..=to.0.min(from.0 + crate::prsync::SCAN_MAX) {
+        let e = entry(Index(i)).ok_or(Index(i))?;
+        d.read(Index(i), touched(core, repo, &e));
+    }
+    Ok(())
+}
+
+/// The leader's answer to the consumer's read (`{"q": {"mergequeue": base}}`): the committed `MergeQueue` cursor and
+/// the base's `QueueView`, at one index. One type on both sides of the member route.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueRead {
+    pub cursor: graftyard_types::Index,
+    pub view: QueueView,
+}
+
+impl QueueRead {
+    pub fn of(core: &dyn Read, base: &RefName) -> QueueRead {
+        QueueRead {
+            cursor: crate::tiers::consumer_cursor(core, crate::issues::Consumer::MergeQueue),
+            view: QueueView::of(core, base),
+        }
+    }
+}

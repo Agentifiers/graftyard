@@ -13,7 +13,7 @@ use graftyard_identity::{
     check_credential, credential_chains,
 };
 use graftyard_raft::{Command, Format, Record, TierSet};
-use graftyard_types::{AccountId, ChainId, Digest, Timestamp};
+use graftyard_types::{AccountId, ChainId, Digest, Index, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
@@ -146,7 +146,7 @@ impl RuleViolation {
 
 /// SHARED's `MergeError`, with the refusals every user command shares and the queue's own. Every variant but `Store`
 /// renders GitHub's text and is never retried into success.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MergeError {
     HeadModified,
     BaseModified,
@@ -503,6 +503,8 @@ pub enum MergeCmd {
     Merge(Merge),
     Queue(QueueOp),
     Land(QueueMerge),
+    /// The `MergeQueue` consumer's cursor, after the batch it covers was handled: `ConsumerCursor` only forward.
+    Cursor(Index),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -511,6 +513,7 @@ pub enum MergeCmdOut {
     Queue,
     /// Each landed pull request's merge commit.
     Landed(Vec<(IssueNumber, ObjectId)>),
+    Cursor(Index),
 }
 
 /// The canonical form of a principal, for `Record::encode`.
@@ -550,6 +553,7 @@ impl Record for MergeCmd {
                 let plans: Vec<_> = l.plans.iter().map(|(n, p)| (n, plan_key(p))).collect();
                 write(out, &(2u8, plans, &l.entry));
             }
+            MergeCmd::Cursor(through) => write(out, &(3u8, through)),
         }
     }
 }
@@ -564,6 +568,7 @@ impl MergeCmd {
             MergeCmd::Merge(m) => m.n,
             MergeCmd::Queue(q) => q.op.subject(),
             MergeCmd::Land(l) => l.entry.pr,
+            MergeCmd::Cursor(_) => IssueNumber(0),
         }
     }
 
@@ -574,6 +579,14 @@ impl MergeCmd {
             MergeCmd::Merge(m) => m.decide(v, deps).map(|(e, o)| (e, MergeCmdOut::Merged(o))).map_err(|e| (n, e)),
             MergeCmd::Queue(q) => q.decide(v, deps).map(|e| (e, MergeCmdOut::Queue)).map_err(|e| (n, e)),
             MergeCmd::Land(l) => l.decide(v).map(|(e, o)| (e, MergeCmdOut::Landed(o))),
+            MergeCmd::Cursor(through) => {
+                let at = crate::tiers::consumer_cursor(v.core(), crate::issues::Consumer::MergeQueue);
+                if *through <= at {
+                    return Ok((SmallVec::new(), MergeCmdOut::Cursor(at)));
+                }
+                let ev = RepoEvent::ConsumerCursor { consumer: crate::issues::Consumer::MergeQueue, through: *through };
+                Ok((smallvec![ev], MergeCmdOut::Cursor(*through)))
+            }
         }
     }
 }
@@ -592,7 +605,7 @@ impl Command for MergeCmd {
     /// reads only Core.
     fn tiers(&self) -> TierSet {
         match self {
-            MergeCmd::Queue(_) => TierSet::CORE,
+            MergeCmd::Queue(_) | MergeCmd::Cursor(_) => TierSet::CORE,
             MergeCmd::Merge(_) | MergeCmd::Land(_) => TierSet::CORE.union(TierSet::METADATA),
         }
     }
@@ -602,7 +615,7 @@ impl Command for MergeCmd {
         match self {
             MergeCmd::Merge(m) => m.deps(fold.authz_owner()),
             MergeCmd::Queue(QueueOp { actor: Some(a), .. }) => user_deps(a, fold.authz_owner()),
-            MergeCmd::Queue(_) | MergeCmd::Land(_) => SmallVec::new(),
+            MergeCmd::Queue(_) | MergeCmd::Land(_) | MergeCmd::Cursor(_) => SmallVec::new(),
         }
     }
 
@@ -625,6 +638,15 @@ impl Command for MergeCmd {
             }
             MergeCmd::Queue(_) => MergeCmdOut::Queue,
             MergeCmd::Land(_) => MergeCmdOut::Landed(merged().collect()),
+            MergeCmd::Cursor(t) => MergeCmdOut::Cursor(
+                events
+                    .iter()
+                    .find_map(|e| match e {
+                        RepoEvent::ConsumerCursor { through, .. } => Some(*through),
+                        _ => None,
+                    })
+                    .unwrap_or(*t),
+            ),
         }
     }
 }

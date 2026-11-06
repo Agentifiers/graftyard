@@ -31,7 +31,7 @@ pub enum PutNew {
     Exists(Option<Digest>),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[error("bucket: {0}")]
 pub struct StoreError(pub String);
 

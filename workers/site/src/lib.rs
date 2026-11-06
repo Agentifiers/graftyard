@@ -17,6 +17,7 @@ mod fold_audit;
 mod host;
 mod lookup;
 mod member;
+mod merge_queue;
 mod prsync;
 #[cfg(feature = "test-faults")]
 mod register;
@@ -118,9 +119,10 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
     }
 }
 
-/// The site's queue: `PrSync` batches its repository leaders sent (`crate::prsync`).
+/// The site's queue: `PrSync` and `MergeQueue` batches its repository leaders sent again (`crate::prsync`,
+/// `crate::merge_queue`). A `MergeQueue` message carries `mergeQueue`; every other is a `PrSync` batch.
 #[event(queue)]
-async fn queue(batch: MessageBatch<prsync::Message>, env: Env, _ctx: Context) -> Result<()> {
+async fn queue(batch: MessageBatch<serde_json::Value>, env: Env, _ctx: Context) -> Result<()> {
     prsync::consume(batch, env).await
 }
 

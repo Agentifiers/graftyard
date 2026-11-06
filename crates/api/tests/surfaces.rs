@@ -462,6 +462,21 @@ fn merge_commits_the_merge_command_and_renders_its_payload() {
     assert_eq!(e["errors"][0]["message"], "Pull request is not open");
 }
 
+/// The queue mutations name the pull request as GHES 3.22's inputs do: `pullRequestId`, and `id` for a dequeue.
+#[test]
+fn the_queue_mutations_read_the_pull_request_by_their_schema_input_names() {
+    let c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let pr = NodeId::scoped(NodeType::PullRequest, REPO, r.item(IssueNumber(2)).unwrap().row.id.0).encode();
+    let q = "mutation($input: DequeuePullRequestInput!) { dequeuePullRequest(input: $input) { clientMutationId } }";
+    let req = Request::parse(q, json!({ "input": { "id": pr } }).as_object().cloned(), None).unwrap();
+    assert_eq!(route(&req).unwrap(), Some(graftyard_api::graphql::Target::Id(REPO.0.0)));
+    assert_eq!(plan(&req, &r).unwrap().plan, Plan::Dequeue { n: IssueNumber(2) });
+    let req = Request::parse(q, json!({ "input": { "pullRequestId": pr } }).as_object().cloned(), None).unwrap();
+    assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "NOT_FOUND");
+}
+
 #[test]
 fn a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error() {
     let mut c = seeded();

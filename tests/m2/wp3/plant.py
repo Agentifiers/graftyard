@@ -64,8 +64,8 @@ PLANTS = [
     # BF-1
     ("a follower refuses the group's entry: a landing's entry is tagged Core only, though Merged touches Metadata",
      "crates/git/src/merge.rs",
-     "            MergeCmd::Queue(_) => TierSet::CORE,",
-     "            MergeCmd::Queue(_) => TierSet::CORE,\n            MergeCmd::Land(_) => TierSet::CORE,"),
+     "            MergeCmd::Queue(_) | MergeCmd::Cursor(_) => TierSet::CORE,",
+     "            MergeCmd::Queue(_) | MergeCmd::Cursor(_) => TierSet::CORE,\n            MergeCmd::Land(_) => TierSet::CORE,"),
     ("a follower refuses the group's entry: every Merged of a group expects the first base tip",
      "crates/git/src/queue.rs",
      "                base: RefUpdate { name: base.clone(), expect: Some(e.parent_tip), new: Some(e.group_tip) },",

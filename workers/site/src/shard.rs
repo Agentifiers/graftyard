@@ -6,7 +6,9 @@
 //! Routes, each with `?repo=<id>` (a root repository's id is its network's): `POST /validate` (the tips, then the
 //! pack), `GET /info-refs`, `POST /upload-pack`, `POST /catchup`, `GET /fsck`, `GET /status`, `POST /teardown`, and
 //! `POST /promote` (a JSON list of ingested packs' SHA-256 hex: the home shard's half of `Promoted`), and
-//! `POST /merge?base=<oid>&head=<oid>` (the `PrSync` consumer's test merge, `graftyard_git::prsync::MergeAnswer`).
+//! `POST /merge?base=<oid>&head=<oid>` (the `PrSync` consumer's test merge, `graftyard_git::prsync::MergeAnswer`), and
+//! with `method=&heads=&ns=` `GitCacheShard::merge` for a real merge or a queue group
+//! (`graftyard_git::merge_cache::ChainAnswer`).
 
 use std::collections::BTreeSet;
 
@@ -135,6 +137,7 @@ impl DurableObject for GitShard {
         let repo: i64 = q(&url, "repo").and_then(|v| v.parse().ok()).ok_or("repo")?;
         let repo = RepoId(DbId(repo));
         let (net, chain) = (NetworkId(repo.0), ChainId::Repo(repo));
+        let chain_id = chain;
         let owner = crate::member::repo_owner(&self.env, repo).await.map_err(Error::RustError)?;
         let record = crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?;
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
@@ -178,6 +181,30 @@ impl DurableObject for GitShard {
                 Response::from_bytes(host.promote(net, &sums).await.map_err(se)?)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
+            // `GitCacheShard::merge` for a real merge or a merge-queue group (`method`), after catching up.
+            "/merge" if q(&url, "method").is_some() => {
+                let oid = |v: &str| {
+                    graftyard_git::refs::ObjectId::parse_hex(v.as_bytes()).ok_or_else(|| Error::RustError(v.into()))
+                };
+                let base = oid(&q(&url, "base").unwrap_or_default())?;
+                let ns = q(&url, "ns").unwrap_or_default();
+                let heads = q(&url, "heads").unwrap_or_default();
+                let chain: Vec<_> = ns
+                    .split(',')
+                    .zip(heads.split(','))
+                    .map(|(n, h)| Ok((graftyard_git::issues::IssueNumber(n.parse().map_err(|_| "ns")?), oid(h)?)))
+                    .collect::<Result<_>>()?;
+                let method = match q(&url, "method").as_deref() {
+                    Some("squash") => graftyard_git::issues::MergeMethod::Squash,
+                    Some("rebase") => graftyard_git::issues::MergeMethod::Rebase,
+                    _ => graftyard_git::issues::MergeMethod::Merge,
+                };
+                host.catch_up(net, &[chain_id], &bs, &log).await.map_err(se)?;
+                match host.merge_chain(net, base, &chain, method).await {
+                    Ok(a) => Response::from_json(&a),
+                    Err(e) => Response::error(e.0, 422),
+                }
+            }
             // The `PrSync` consumer's test merge, after catching up so both commits are here.
             "/merge" => {
                 let oid = |k: &str| {

@@ -12,6 +12,10 @@
 //!   `BlobStore::read`. LFS `verify` and the asset upload commit an `IssueCall` naming the `BlobRef`; the leader
 //!   rebuilds the `DurableBlob` with `BlobStore::confirm` before it decides (BF-25).
 //! - `DELETE /git/refs/{ref}` is a `Push`, M1's write path.
+//! - A merge (`mergePullRequest`, `PUT /pulls/{n}/merge`) reads `merge_request` from the fresh core tier, asks the
+//!   network's home shard for the `MergePlan` (`GitCacheShard::merge`, the container's `/merge` with `method`), and
+//!   commits `Merge` as a `MergeCall`; `enqueuePullRequest`, `enablePullRequestAutoMerge` on a queued base, and
+//!   `dequeuePullRequest` commit a `QueueOp`. All are format 32.4, sent only once `FormatsEnable` enabled it.
 
 use graftyard_api::exec::Request as Gql;
 use graftyard_api::hosted::{HostedDir, Render, TierRows, What, WireReply};
@@ -23,6 +27,10 @@ use graftyard_git::group::{CommitReq, PushOutcome};
 use graftyard_git::host::R2;
 use graftyard_git::issue_ops::IssueOp;
 use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_ISSUES};
+use graftyard_git::merge::{MergeCmd, MergeError, MergePlan, MergeRequest, REPO_FORMAT_V4};
+use graftyard_git::merge_cache::{CacheError, ChainAnswer};
+use graftyard_git::merge_call::MergeCall;
+use graftyard_git::queue::{QueueAction, QueueOp};
 use graftyard_git::refs::Atomicity;
 use graftyard_git::repo::Push;
 use graftyard_git::{Copies, ObjectMeta};
@@ -264,6 +272,79 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     })
 }
 
+/// A merge's conflict, as `mergePullRequest` reports it [unverified: GitHub's text for a conflicting merge].
+fn conflict() -> graftyard_git::merge::RuleViolation {
+    graftyard_git::merge::RuleViolation::NotUpToDate
+}
+
+/// `GitCacheShard::merge` on the network's home shard: the `MergePlan` of `req` (`POST /merge_plan` on the shard).
+async fn merge_plan(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    req: &MergeRequest,
+) -> std::result::Result<std::result::Result<MergePlan, CacheError>, String> {
+    let q = graftyard_git::merge_cache::chain_query(req.base_old, &[(req.n, req.head)], req.method);
+    let url = format!("https://shard/merge?repo={}&{q}", repo.id.0.0);
+    let stub = crate::shard(c, repo).map_err(|e| e.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post);
+    let mut r = stub
+        .fetch_with_request(Request::new_with_init(&url, &init).map_err(|e| e.to_string())?)
+        .await
+        .map_err(|e| e.to_string())?;
+    let text = r.text().await.map_err(|e| e.to_string())?;
+    if r.status_code() != 200 {
+        return Err(format!("{} {text}", r.status_code()));
+    }
+    let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
+    Ok(a.merge_plan(req))
+}
+
+/// Commits a merge or merge-queue command and returns the reply its leader rendered from the `&Acked`, once
+/// `FormatsEnable` has enabled 32.4; until then 503.
+async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Result<Reply> {
+    if !c.cfg.enabled.contains(&REPO_FORMAT_V4) {
+        return Ok(unavailable(&format!(
+            "merges need record format {}.{}, which FormatsEnable has not enabled on this install",
+            REPO_FORMAT_V4.family, REPO_FORMAT_V4.version
+        )));
+    }
+    let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
+    let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
+    let body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
+    ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
+    let r = graftyard_lookup::commit_hedged(
+        &c.bindings(),
+        ChainId::Repo(rd.repo.id),
+        &rd.repo.record,
+        body.to_string().as_bytes(),
+        c.colo,
+        60_000,
+        graftyard_lookup::Hooks::default(),
+    )
+    .await;
+    Ok(match r {
+        Ok(done) => {
+            if let Some(e) = done.pointer("/refused/err") {
+                worker::console_log!("merge command {} refused: {e}", c.rid);
+            }
+            let wire = done
+                .pointer("/ok/out/merge/reply")
+                .or_else(|| done.pointer("/refused/merge/reply"))
+                .and_then(|v| serde_json::from_value::<WireReply>(v.clone()).ok());
+            match wire {
+                Some(w) => w.reply(),
+                None => unavailable(&format!("the member answered {done}")),
+            }
+        }
+        Err(Ok(e)) => match e.pointer("/unsupported") {
+            Some(u) => unavailable(&format!("the repository's members do not read record format {u}")),
+            None => unavailable(&format!("{e}")),
+        },
+        Err(Err(e)) => unavailable(&e),
+    })
+}
+
 /// A `Push` with one ref update, M1's write path: `DELETE /git/refs/{ref}`.
 async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::refs::RefUpdate) -> Result<Reply> {
     let push = Push {
@@ -338,24 +419,35 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(p) => p,
         Err(e) => return Ok(Reply::json(200, e)),
     };
-    let op = match p.plan.clone() {
-        graphql::Plan::Issue(op) => op.map_blob(|b| Ok::<_, ()>(b.blob())).expect("no blob"),
-        graphql::Plan::Merge { .. } => {
-            return Ok(Reply::json(
-                200,
-                json!({ "data": { "mergePullRequest": null }, "errors": [{
-                "type": "UNPROCESSABLE", "path": ["mergePullRequest"],
-                "message": "Merging is not served yet (M2-WP3)" }] }),
-            ));
-        }
-    };
     let what = What::Graphql {
         query: q.clone(),
         variables: vars.map(Value::Object).unwrap_or(Value::Null),
         field: p.field.clone(),
         subject: p.subject.map(|n| n.0),
     };
-    commit_issue(c, &rd, &who, op, what).await
+    let queue = |op| MergeCmd::Queue(QueueOp { op, actor: Some(who.clone()) });
+    match p.plan.clone() {
+        graphql::Plan::Issue(op) => {
+            let op = op.map_blob(|b| Ok::<_, ()>(b.blob())).expect("no blob");
+            commit_issue(c, &rd, &who, op, what).await
+        }
+        graphql::Plan::Merge { .. } => {
+            let req = match graphql::merge_request(&p, &r) {
+                Ok(req) => req,
+                Err(e) => return Ok(Reply::json(200, e)),
+            };
+            let plan = match merge_plan(c, &rd.repo, &req).await {
+                Ok(Ok(plan)) => plan,
+                Ok(Err(CacheError::Conflict(_))) => {
+                    return Ok(Reply::json(200, graphql::refused_merge(&p, &MergeError::Protection(conflict()))));
+                }
+                Ok(Err(CacheError::Bad(e))) | Err(e) => return Ok(unavailable(&format!("the git cache: {e}"))),
+            };
+            commit_merge(c, &rd, MergeCmd::Merge(graphql::merge_command(&p, plan, who.clone())), what).await
+        }
+        graphql::Plan::Enqueue { n, head } => commit_merge(c, &rd, queue(QueueAction::Enqueue { n, head }), what).await,
+        graphql::Plan::Dequeue { n } => commit_merge(c, &rd, queue(QueueAction::Dequeue { n }), what).await,
+    }
 }
 
 /// A repository's `o/r` from its id: its owner from `RepoOwner` on `Names`, its name from the owner's `Authz` names,
@@ -466,6 +558,42 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             match release::plan_delete(&r, id(n).unwrap_or(0)) {
                 Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::Deleted).await?,
                 Err(x) => x,
+            }
+        }
+        (Method::Post, ["statuses", sha]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let Actor::User(me) = who.actor else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+            let id = graftyard_types::DbId(js_sys::Date::now() as i64);
+            match rest::plan_create_status(sha, &body(req.bytes().await?), me.0, id) {
+                Ok(op) => {
+                    let IssueOp::RecordStatus(st) = &op else { unreachable!("a status") };
+                    let what = What::StatusCreated { sha: st.sha, id: id.0 };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
+        (Method::Put, ["pulls", n, "merge"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let (n, req, sha) = match rest::plan_rest_merge(&r, n, &body(req.bytes().await?)) {
+                Ok(x) => x,
+                Err(x) => return Ok(x),
+            };
+            match merge_plan(c, &rd.repo, &req).await {
+                Ok(Ok(plan)) => {
+                    let m = graftyard_git::merge::Merge { n, plan, expected_head: sha, actor: who.clone() };
+                    commit_merge(c, &rd, MergeCmd::Merge(m), What::RestMerge).await?
+                }
+                Ok(Err(CacheError::Conflict(_))) => {
+                    Reply::error(405, "Pull Request is not mergeable", "rest/pulls/pulls#merge-a-pull-request")
+                }
+                Ok(Err(CacheError::Bad(e))) | Err(e) => unavailable(&format!("the git cache: {e}")),
             }
         }
         (Method::Delete, ["git", "refs", reference @ ..]) => {
