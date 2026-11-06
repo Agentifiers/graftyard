@@ -1058,9 +1058,7 @@ impl<C: Command> Member<C> {
         let Some(lead) = &self.lead else { return };
         let mut n = self.last().min(self.own_durable);
         while n > self.state.commit && n >= lead.commit_floor && self.term_at(n) == Some(self.state.term) {
-            let voters = quorum::voters(self.log_config());
-            let mut acked: BTreeSet<SiteId> =
-                lead.matched.iter().filter(|(s, m)| **m >= n && voters.contains(s)).map(|(s, _)| *s).collect();
+            let mut acked: BTreeSet<SiteId> = lead.matched.iter().filter(|(_, m)| **m >= n).map(|(s, _)| *s).collect();
             acked.insert(self.cfg.me);
             if quorum::commit(self.log_config(), &acked) {
                 let proof = self.proof_for(n, &acked);
@@ -1116,13 +1114,8 @@ impl<C: Command> Member<C> {
             let started = lead.started;
             // A resumed `led_term` may find its whole log committed already, so no commit advance in this boot built a
             // proof. The followers that store `ready_at` with this leader make one.
-            let voters = quorum::voters(self.log_config());
-            let mut stored: BTreeSet<SiteId> = lead
-                .matched
-                .iter()
-                .filter(|(s, m)| **m >= lead.ready_at && voters.contains(s))
-                .map(|(s, _)| *s)
-                .collect();
+            let mut stored: BTreeSet<SiteId> =
+                lead.matched.iter().filter(|(_, m)| **m >= lead.ready_at).map(|(s, _)| *s).collect();
             if lead.ready_at <= self.own_durable {
                 stored.insert(self.cfg.me);
             }

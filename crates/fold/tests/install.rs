@@ -186,8 +186,9 @@ struct Net {
     r2: BTreeMap<String, Vec<u8>>,
     /// Every message sent: (from, to, kind), for the learner read-index rate checks.
     sent: Vec<(Timestamp, SiteId, SiteId, &'static str)>,
-    /// `InstallSnapshot` loads the hosts ran, and the AppendEntries acks each member sent: (time, from, matched).
-    installed: Vec<(Timestamp, SiteId)>,
+    /// `InstallSnapshot` loads the hosts ran, each with how many acks had been sent before it, and the AppendEntries
+    /// acks each member sent, in order: (time, from, matched).
+    installed: Vec<(usize, SiteId)>,
     acks: Vec<(Timestamp, SiteId, Index)>,
     /// Each granted read's value of core key 50, read through `fresh` in the step that granted it, as a host must.
     seen: BTreeMap<(SiteId, graftyard_raft::ReadId), Option<i64>>,
@@ -261,7 +262,7 @@ impl Net {
         if installed {
             // The host stores the fold it loaded with the install's write.
             node.disk.fold = node.m.as_ref().unwrap().group_fold().clone();
-            self.installed.push((now, s));
+            self.installed.push((self.acks.len(), s));
         }
         loop {
             for e in out.early.drain(..).chain(out.messages.drain(..)) {
@@ -552,9 +553,9 @@ fn bf29_a_follower_offline_past_the_archive_boundary_rejoins_by_install_snapshot
     n.advance(CALL_DEADLINE.as_millis() as u64 + 1);
     let installs: Vec<_> = n.installed.iter().filter(|(_, s)| *s == C).collect();
     assert_eq!(installs.len(), 1, "C installed once");
-    let at = installs[0].0;
+    let before = &n.acks[..installs[0].0];
     assert!(
-        n.acks.iter().filter(|(t, s, _)| *s == C && *t < at).all(|(_, _, m)| *m <= c_left),
+        before.iter().filter(|(_, s, _)| *s == C).all(|(_, _, m)| *m <= c_left),
         "C acked nothing past where it left before it installed"
     );
     assert!(n.m(C).log_base().index >= source.through, "C starts above the boundary");
