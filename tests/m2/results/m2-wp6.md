@@ -341,3 +341,23 @@ Sites `91490a96`/`e8931593`/`b06ae6e3`, edge `289e6d4e`. n = 30, all passed, p50
 | 2, apac | 10 | 2,037 | 2,206 | 367 | 343 | 460 (263) | 756 |
 
 Six of 30 were over 2 s (three weur, three apac). The 300-sample run follows on this build.
+
+### Cut 5, commit `20155a1`: a merge by node id reads its rows alongside the owner's name
+
+`mergePullRequest` names its repository by node id. The edge found it with `repo_by_id`, then read the owner's login and
+`Authz` (now at once, cut 3), then the tier read. The merge's tier read needs only the repository, so it now starts with
+the owner's login and `Authz` reads, and "tiers + `Authz`" drops to 0 in `server-timing` (it is inside
+"auth + resolve"). Edge `1358b1a7`; sites unchanged (`91490a96`/`e8931593`/`b06ae6e3`).
+
+### Rechecks after the read- and commit-path changes (edge `1358b1a7`, sites `91490a96`/`e8931593`/`b06ae6e3`)
+
+| Row | Run | Count | Result |
+| --- | --- | --- | --- |
+| BF-23 | `hosted.py bf23 re23 10` on `wp3c` | 10 | **10 of 10 pass**: `gh pr merge` refused (exit 1) after the re-request, merged (exit 0) after the newer success |
+| BF-21 | `hosted.py queue re21 10 --kill-every 2` on `wp3q2` | 10, 5 with a leader kill mid-landing (`after_quorum`) | **10 of 10 pass**: the base moved only by whole `QueueMerge` landings, the failing PR ejected every time |
+| BF-1 | `hosted.py queue re1 2 --kill-every 0 --fail 0 --bf1` on `wp3f` | 2 | **2 of 2 pass**: one entry with a 5-PR `Landed` group and a `PrSync` batch; all three members hold it with the same digest |
+| gh replies | `c2b-gh` (two real `gh pr merge` runs in the p99 driver) | 15 GraphQL, 2 REST | **0 failed** (`gh-replies.py`, then `validate.py` against GHES 3.22) |
+
+Workspace checks on `20155a1`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace` (424 passed, 0 failed). `crates/raft` is untouched, so the long sweep and Porcupine were not
+rerun.
