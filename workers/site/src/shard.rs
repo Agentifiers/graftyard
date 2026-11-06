@@ -208,14 +208,21 @@ impl DurableObject for GitShard {
                     _ => graftyard_git::issues::MergeMethod::Merge,
                 };
                 let t0 = now_ms();
-                let c = host.catch_up(net, &[chain_id], &bs, &log).await.map_err(se)?;
-                let t1 = now_ms();
-                let r = match host.merge_chain(net, base, &chain, method).await {
+                let caught = std::cell::RefCell::new(None);
+                let a = graftyard_git::merge_cache::merge_then_catch_up(
+                    || host.merge_chain(net, base, &chain, method),
+                    || async {
+                        *caught.borrow_mut() = Some(host.catch_up(net, &[chain_id], &bs, &log).await?.ms);
+                        Ok(())
+                    },
+                )
+                .await;
+                let r = match a {
                     Ok(a) => Response::from_json(&a)?,
                     Err(e) => Response::error(e.0, 422)?,
                 };
-                // Where a merge plan's time went: the catch-up's steps, then the container's merge.
-                let timing = format!("catchup;dur={}, merge;dur={}, steps;desc=\"{:?}\"", t1 - t0, now_ms() - t1, c.ms);
+                // Where a merge plan's time went: the whole, and the catch-up's steps if it ran one.
+                let timing = format!("merge;dur={}, catchup;desc=\"{:?}\"", now_ms() - t0, caught.into_inner());
                 let h = Headers::new();
                 h.set("x-graft-timing", &timing)?;
                 Ok(r.with_headers(h))

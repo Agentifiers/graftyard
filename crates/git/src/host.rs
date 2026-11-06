@@ -530,10 +530,16 @@ impl ShardHost<'_> {
         base: crate::refs::ObjectId,
         heads: &[(crate::issues::IssueNumber, crate::refs::ObjectId)],
         method: crate::issues::MergeMethod,
-    ) -> Result<crate::merge_cache::ChainAnswer, StoreError> {
+    ) -> Result<Option<crate::merge_cache::ChainAnswer>, StoreError> {
         let q = crate::merge_cache::chain_query(base, heads, method);
-        let mut r = self.ok(Method::Post, &format!("/merge?net={}&{q}", network.0.0), None).await?;
-        r.json().await.map_err(worker_err)
+        let path = format!("/merge?net={}&{q}", network.0.0);
+        let mut r = self.call(Method::Post, &path, None, &[]).await?;
+        match r.status_code() {
+            // A commit of the chain is not in the repository yet: the caller catches up and asks again.
+            409 => Ok(None),
+            c if c >= 300 => Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
+            _ => r.json().await.map(Some).map_err(worker_err),
+        }
     }
 
     /// `GitCacheShard::merge` as SHARED names it: the `MergePlan` of one pull request onto its base's tip.
@@ -542,7 +548,10 @@ impl ShardHost<'_> {
         network: NetworkId,
         req: &crate::merge::MergeRequest,
     ) -> Result<Result<crate::merge::MergePlan, crate::merge_cache::CacheError>, StoreError> {
-        let a = self.merge_chain(network, req.base_old, &[(req.n, req.head)], req.method).await?;
+        let a = self
+            .merge_chain(network, req.base_old, &[(req.n, req.head)], req.method)
+            .await?
+            .ok_or_else(|| StoreError("a commit of the merge is not in the git cache".into()))?;
         Ok(a.merge_plan(req))
     }
 

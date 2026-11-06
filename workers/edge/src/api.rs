@@ -466,9 +466,6 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 // ---- GraphQL ----
 
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
-    let who = authenticate(c, req).await?;
-    timing::mark("auth");
-    let Some(who) = who else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let body: Value = req.json().await.unwrap_or(Value::Null);
     let q = body["query"].as_str().unwrap_or("").to_owned();
     let vars = body["variables"].as_object().cloned();
@@ -480,19 +477,35 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
-    let (owner, name, rd) = match target {
+    // The caller's token and the repository are read at once: neither read needs the other.
+    let find = async {
+        match &target {
+            None => Ok::<_, Error>(None),
+            Some(graphql::Target::Name { owner, name }) => Ok(Some(match resolve(c, owner, name).await? {
+                Ok(Some(repo)) => Ok((owner.clone(), name.clone(), repo, None)),
+                Ok(None) => Err(None),
+                Err(e) => Err(Some(e)),
+            })),
+            // A node id names the repository by id: it is resolved once, by `repo_name`, not again by its name.
+            Some(graphql::Target::Id(id)) => Ok(Some(match repo_name(c, *id).await {
+                Some((owner, name, repo, a)) => Ok((owner, name, repo, Some(a))),
+                None => Err(None),
+            })),
+        }
+    };
+    let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
+    timing::mark("auth_resolve");
+    let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
+    let (owner, name, rd) = match found? {
         None => return Ok(Reply::json(200, graphql::query(&gq, None))),
-        Some(graphql::Target::Name { owner, name }) => {
-            let rd = read(c, &owner, &name, Some(&who)).await?;
+        Some(Ok((owner, name, repo, a))) => {
+            let rd = read_repo(c, repo, &owner, &name, Some(&who), a).await?;
             (owner, name, rd)
         }
-        // A node id names the repository by id: it is resolved once, by `repo_name`, not again by its name.
-        Some(graphql::Target::Id(id)) => match repo_name(c, id).await {
-            Some((owner, name, repo, a)) => {
-                let rd = read_repo(c, repo, &owner, &name, Some(&who), Some(a)).await?;
-                (owner, name, rd)
-            }
-            None => {
+        Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
+        Some(Err(None)) => match &target {
+            Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found())),
+            _ => {
                 return Ok(Reply::json(
                     200,
                     json!({ "errors": [{ "type": "NOT_FOUND", "message": "Could not resolve to a node with that id." }] }),

@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::bucket::StoreError;
 use crate::issues::{IssueNumber, MergeMethod};
 use crate::merge::{EngineVersion, MergePlan, MergeRequest, TreeDiffDigest};
 use crate::pack::{DurablePack, PackRef};
@@ -172,6 +173,25 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
     }
 }
 
+/// `GitCacheShard::merge`'s order: merge first, and catch the shard up behind its `IngestCursor` only if the container
+/// answers that a commit is not there (`merge` answers `None`), then merge again. A merge names its commits by id, so
+/// a shard that holds them answers the same before or after a catch-up; `PrSync`'s test merge has usually caught it
+/// up already. Catching up first cost two to three leader reads, 300 to 600 ms of every merge once leadership moved
+/// (`tests/m2/results/m2-wp6.md`, "Merge latency").
+pub async fn merge_then_catch_up<M, Fm, C, Fc>(mut merge: M, catch_up: C) -> Result<ChainAnswer, StoreError>
+where
+    M: FnMut() -> Fm,
+    Fm: std::future::Future<Output = Result<Option<ChainAnswer>, StoreError>>,
+    C: FnOnce() -> Fc,
+    Fc: std::future::Future<Output = Result<(), StoreError>>,
+{
+    if let Some(a) = merge().await? {
+        return Ok(a);
+    }
+    catch_up().await?;
+    merge().await?.ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
+}
+
 /// The container's query for a chain: `base=..&heads=..&ns=..&method=..`.
 pub fn chain_query(base: ObjectId, heads: &[(IssueNumber, ObjectId)], method: MergeMethod) -> String {
     let hs: Vec<String> = heads.iter().map(|(_, h)| h.hex()).collect();
@@ -248,6 +268,36 @@ mod tests {
         assert_eq!(plans[1].1.base_old, ObjectId([40; 20]));
         assert_eq!(plans[1].1.commit, ObjectId([50; 20]));
         assert_eq!(plans[1].1.method, MergeMethod::Squash);
+    }
+
+    fn answer() -> ChainAnswer {
+        ChainAnswer { steps: vec![step(4, 5)], conflict: None, pack: None, engine: "git".into() }
+    }
+
+    /// A shard that holds both commits merges with no catch-up; one that lacks one catches up once, then merges.
+    #[test]
+    fn a_merge_catches_up_only_when_a_commit_is_missing() {
+        let run = |held: bool| {
+            let (merges, catchups) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+            let caught = std::cell::Cell::new(held);
+            let r = futures_executor::block_on(merge_then_catch_up(
+                || {
+                    merges.set(merges.get() + 1);
+                    let a = caught.get().then(answer);
+                    async move { Ok(a) }
+                },
+                || {
+                    catchups.set(catchups.get() + 1);
+                    caught.set(true);
+                    async { Ok(()) }
+                },
+            ));
+            (r, merges.get(), catchups.get())
+        };
+        assert_eq!(run(true), (Ok(answer()), 1, 0), "both commits held: no catch-up");
+        assert_eq!(run(false), (Ok(answer()), 2, 1), "a commit missing: one catch-up, then the merge again");
+        let still_missing = futures_executor::block_on(merge_then_catch_up(|| async { Ok(None) }, || async { Ok(()) }));
+        assert!(still_missing.is_err());
     }
 
     #[test]

@@ -439,6 +439,13 @@ pub async fn commit(
 /// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE.
 pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
 
+/// The member the caller last saw lead `chain`, if its config names it.
+pub fn cached_leader(chain: ChainId) -> Option<Target> {
+    let k = KNOWN.with(|k| k.borrow().get(&chain).cloned())?;
+    let leader = k.leader?;
+    k.voters.into_iter().find(|(s, _)| *s == leader).map(|(site, do_name)| Target { site, do_name })
+}
+
 /// The voters the caller knows for `chain`, from the last config it learned.
 pub fn known_voters(chain: ChainId) -> Vec<Target> {
     KNOWN
@@ -506,14 +513,18 @@ pub async fn commit_hedged(
             t.borrow_mut().push(v);
         }
     };
-    // Why the next send goes where it goes: the first lookup's answer (`lookup`), the previous target again (`same`), a
-    // voter that answered a `suspect` as leader (`suspectLed`), a new lookup after `NotLeader` named a leader
-    // (`notLeader`), the next voter after a `NotLeader` naming none (`leaderless`), or a new lookup after one that
-    // found no leader (`relookup`).
-    let mut why = "lookup";
+    // Why the next send goes where it goes: the cached leader (`cached`), the first lookup's answer (`lookup`), the
+    // previous target again (`same`), a voter that answered a `suspect` as leader (`suspectLed`), a new lookup after
+    // `NotLeader` named a leader (`notLeader`), the next voter after a `NotLeader` naming none (`leaderless`), or a new
+    // lookup after one that found no leader (`relookup`).
     let end = now_ms() + for_ms;
     let mut first = first;
-    let mut target: Option<Target> = None;
+    // The leader this isolate's last reply from the group named, if it knows one: the first send goes straight to it,
+    // as "Commit and read paths" finds members "from its cached `GroupConfig`". A member that no longer leads answers
+    // `NotLeader`, which starts the lookup below. Looking it up first cost one more round trip to the leader, up to
+    // 190 ms from another continent (`tests/m2/results/m2-wp6.md`, "Merge latency").
+    let mut target: Option<Target> = cached_leader(chain);
+    let mut why = if target.is_some() { "cached" } else { "lookup" };
     let mut prev: Option<Target> = None;
     let mut tries = 0u32;
     let mut term = 0;
@@ -812,6 +823,21 @@ mod tests {
     /// The rule's order, one stage at a time: the cached config leader first, then the record's bootstrap names; its
     /// registry rows only after them; then the same for `moving_from`. A stage that holds a registry read is never
     /// part of the first stage, so a lookup answered by the cache or the names makes no registry call.
+    /// The first commit send goes to the leader the last reply named, when the cached config holds it; with no
+    /// leader cached, or one the config does not name, the edge looks the leader up first.
+    #[test]
+    fn a_commit_starts_at_the_cached_leader() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(8)));
+        assert_eq!(cached_leader(chain), None);
+        let voters = vec![(SiteId(0), "a".to_string()), (SiteId(2), "c".to_string())];
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { voters, config_index: 1, leader: Some(SiteId(2)) }));
+        assert_eq!(cached_leader(chain), Some(Target { site: SiteId(2), do_name: "c".into() }));
+        forget_leader(chain);
+        assert_eq!(cached_leader(chain), None);
+        KNOWN.with(|k| k.borrow_mut().get_mut(&chain).unwrap().leader = Some(SiteId(1)));
+        assert_eq!(cached_leader(chain), None, "a leader outside the config is not sent to");
+    }
+
     #[test]
     fn a_lookup_reads_registry_rows_only_after_the_names_missed() {
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(7)));
