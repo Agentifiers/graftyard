@@ -535,8 +535,8 @@ impl ShardHost<'_> {
         let path = format!("/merge?net={}&{q}", network.0.0);
         let mut r = self.call(Method::Post, &path, None, &[]).await?;
         match r.status_code() {
-            // A commit of the chain is not in the repository yet: the caller catches up and asks again.
-            409 => Ok(None),
+            // A commit of the chain, or the whole repository, is not here yet: the caller catches up and asks again.
+            c if crate::merge_cache::needs_catch_up(c) => Ok(None),
             c if c >= 300 => Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
             _ => r.json().await.map(Some).map_err(worker_err),
         }

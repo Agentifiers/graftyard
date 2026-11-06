@@ -201,6 +201,13 @@ where
     merge().await?.ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
 }
 
+/// Whether the container's answer to a merge says the shard must catch up first: 409, a commit is not in the
+/// repository, or 404, the container holds no repository for the network (a new container, after its inactivity
+/// timeout or a new image). Catching up rehydrates the repository in that case.
+pub fn needs_catch_up(status: u16) -> bool {
+    matches!(status, 404 | 409)
+}
+
 /// The container's query for a chain: `base=..&heads=..&ns=..&method=..`.
 pub fn chain_query(base: ObjectId, heads: &[(IssueNumber, ObjectId)], method: MergeMethod) -> String {
     let hs: Vec<String> = heads.iter().map(|(_, h)| h.hex()).collect();
@@ -281,6 +288,13 @@ mod tests {
 
     fn answer() -> ChainAnswer {
         ChainAnswer { steps: vec![step(4, 5)], conflict: None, pack: None, engine: "git".into() }
+    }
+
+    #[test]
+    fn a_merge_on_a_container_with_no_repository_catches_up_first() {
+        assert!(needs_catch_up(404), "a new container holds no repository for the network");
+        assert!(needs_catch_up(409), "a commit is not there yet");
+        assert!(!needs_catch_up(200) && !needs_catch_up(400) && !needs_catch_up(500));
     }
 
     /// A shard that holds both commits merges with no catch-up; one that lacks one catches up once, then merges. The
