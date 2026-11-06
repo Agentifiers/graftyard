@@ -89,7 +89,8 @@ pub fn record() -> PlacementRecord {
 /// Three members of one chain on `Tri`, driven by hand.
 pub struct Group<C: Command> {
     pub chain: ChainId,
-    pub format: Format,
+    /// The formats the members' release reads.
+    pub reads: Vec<Format>,
     pub now: Timestamp,
     pub members: Vec<Option<Member<C>>>,
     pub disks: Vec<Stored<C::Fold>>,
@@ -108,15 +109,20 @@ impl<C: Command> Group<C> {
             record: record(),
             regions: vec![(A, Region::Enam), (B, Region::Weur), (C, Region::Apac)],
             release: ReleaseTag { id: ReleaseId([7; 32]), seq: 1 },
-            reads: vec![self.format],
+            reads: self.reads.clone(),
         }
     }
 
     /// Members that have stored nothing, whose fold starts as `fold` (a shard's fold names its shard).
     pub fn new(chain: ChainId, format: Format, fold: C::Fold) -> Group<C> {
+        Self::reading(chain, vec![format], fold)
+    }
+
+    /// Members whose release reads every format in `reads`.
+    pub fn reading(chain: ChainId, reads: Vec<Format>, fold: C::Fold) -> Group<C> {
         let mut g = Group {
             chain,
-            format,
+            reads,
             now: Timestamp(10_000),
             members: Vec::new(),
             disks: SITES.iter().map(|_| Stored::new(fold.clone())).collect(),

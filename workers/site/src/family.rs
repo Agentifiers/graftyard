@@ -734,7 +734,7 @@ impl Family for Names {
     type C = id::NamesCmd;
 
     fn reads() -> Vec<Format> {
-        vec![id::NAMES_FORMAT]
+        vec![id::NAMES_FORMAT, id::NAMES_FORMAT_V2]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::NamesFold {
         match join.chain {
@@ -758,7 +758,8 @@ impl Family for Names {
             _ => refusal(e, 422),
         }
     }
-    /// `{"placement": owner}`, `{"login": key}`, `{"account": id}`, `{"repoOwner": id}`, `{"ids": true}`.
+    /// `{"placement": owner}`, `{"login": key}`, `{"account": id}`, `{"accountLogins": [id, ..]}`, `{"repoOwner": id}`,
+    /// `{"ids": true}`.
     fn read_json(f: &id::NamesFold, q: &Value) -> Value {
         use id::NamesRead;
         let mut out = serde_json::Map::new();
@@ -772,6 +773,15 @@ impl Family for Names {
         }
         if let Some(a) = q_id(q, "account") {
             out.insert("account".into(), json!(f.account(a)));
+        }
+        // The logins of the accounts this shard holds, by id: the edge renders other accounts from them (F50).
+        if let Some(ids) = q.get("accountLogins").and_then(Value::as_array) {
+            let m: serde_json::Map<String, Value> = ids
+                .iter()
+                .filter_map(Value::as_i64)
+                .filter_map(|i| Some((i.to_string(), json!(f.account_login(AccountId(DbId(i)))?.as_str()))))
+                .collect();
+            out.insert("accountLogins".into(), Value::Object(m));
         }
         if let Some(r) = q.get("repoOwner").and_then(Value::as_i64) {
             out.insert("repoOwner".into(), json!(f.repo_owner(graftyard_types::RepoId(DbId(r)))));
@@ -805,7 +815,7 @@ impl Family for Tokens {
     type C = id::TokensCmd;
 
     fn reads() -> Vec<Format> {
-        vec![id::TOKENS_FORMAT]
+        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::TokensFold {
         match join.chain {
@@ -858,7 +868,7 @@ impl Family for Authz {
     type C = id::AuthzCmd;
 
     fn reads() -> Vec<Format> {
-        vec![id::AUTHZ_FORMAT]
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {

@@ -1,8 +1,9 @@
 //! An owner's `Authz` record with admin grants and `RepoName` entries (`design/SHARED.md`, "Event types",
 //! `AuthzEvent`, and "Names").
 //!
-//! Milestone 1 builds `Opened`, `Member`, `Grant`, and `RepoName`. Teams, installations, policies, invitations, Apps,
-//! `InstanceAuth`, and deletion come with Milestones 2 and 3.
+//! Milestone 1 builds `Opened`, `Member`, `Grant`, and `RepoName`. Milestone 3 adds the owner's App and OAuth app
+//! registrations, `App` and `OAuthApp` (M3-WP1). Teams, installations, policies, invitations, `InstanceAuth`, and
+//! deletion are M3-WP3's.
 
 use std::collections::BTreeMap;
 
@@ -11,14 +12,16 @@ use graftyard_types::{AccountId, ChainId, CredentialShard, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
-use crate::AUTHZ_FORMAT;
+use crate::apps::{self, AppId, AppRecord, ClientId, OAuthAppRecord};
+use crate::compat::tail_serde;
 use crate::credential::{
     CredentialRefusal, IdentityDep, Own, UserId, check_credential, credential_chains, encode_cred,
 };
 use crate::enc;
 use crate::ids::{IdBlock, IdCursor};
-use crate::names::{RepoName, RepoNameKey};
-use crate::overlay::{Overlay, Table};
+use crate::names::{ClientRoute, NameKey, NamesRead, RepoName, RepoNameKey, SlugRow, name_shard};
+use crate::overlay::{Overlay, SetOverlay, Table};
+use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -77,6 +80,16 @@ pub enum AuthzEvent {
         key: RepoNameKey,
         entry: Option<RepoEntry>,
     },
+    /// An App this account owns (SHARED, "Identity and tokens"). `None` deletes the registration.
+    App {
+        app: AppId,
+        record: Option<Box<AppRecord>>,
+    },
+    /// An OAuth app this account owns. `None` deletes the registration.
+    OAuthApp {
+        client: ClientId,
+        record: Option<OAuthAppRecord>,
+    },
 }
 
 fn perm(p: RepoPermission) -> u8 {
@@ -130,12 +143,34 @@ impl Record for AuthzEvent {
                     }
                 });
             }
+            // Tags follow SHARED's `AuthzEvent` order: `Team` 2, `Installation` 5, `Policy` 6, `Invitation` 7, then
+            // `App` 8 and `OAuthApp` 9; `InstanceAuth`, `Deleted`, and `Undeleted` keep 10 to 12.
+            AuthzEvent::App { app, record } => {
+                e.u8(8);
+                apps::app_id(&mut e, *app);
+                e.option(record.as_deref(), apps::app_record);
+            }
+            AuthzEvent::OAuthApp { client, record } => {
+                e.u8(9);
+                apps::client(&mut e, client);
+                e.option(record.as_ref(), apps::oauth_app_record);
+            }
         }
     }
 }
 
-/// One owner's `Authz` fold. `owner` is the chain's account, which the host sets when it builds the fold.
+/// Milestone 3's rows of an `Authz` chain: the fold's trailing part (`crate::compat`). `closed` holds the Apps whose
+/// registration was deleted or aborted, so their slug may be released and their id is never registered again.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthzMore {
+    pub apps: BTreeMap<AppId, AppRecord>,
+    pub closed: std::collections::BTreeSet<AppId>,
+    pub oauth_apps: BTreeMap<ClientId, OAuthAppRecord>,
+}
+
+/// One owner's `Authz` fold. `owner` is the chain's account, which the host sets when it builds the fold. Its serde
+/// form is Milestone 1's fields, then `more` only when it holds a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthzFold {
     pub owner: Option<AccountId>,
     pub opened: Option<AccountKind>,
@@ -144,7 +179,18 @@ pub struct AuthzFold {
     pub names: BTreeMap<RepoNameKey, RepoEntry>,
     pub epoch: NameEpoch,
     pub ids: IdCursor,
+    pub more: AuthzMore,
 }
+
+tail_serde!(AuthzFold {
+    owner: Option<AccountId>,
+    opened: Option<AccountKind>,
+    members: BTreeMap<UserId, OrgRole>,
+    grants: BTreeMap<(RepoId, UserId), RepoPermission>,
+    names: BTreeMap<RepoNameKey, RepoEntry>,
+    epoch: NameEpoch,
+    ids: IdCursor,
+} more: AuthzMore);
 
 impl AuthzFold {
     pub fn new(owner: AccountId) -> AuthzFold {
@@ -159,6 +205,10 @@ pub trait AuthzRead {
     fn grant(&self, repo: RepoId, user: UserId) -> Option<RepoPermission>;
     fn name(&self, key: &RepoNameKey) -> Option<RepoEntry>;
     fn epoch(&self) -> NameEpoch;
+    fn app(&self, app: AppId) -> Option<&AppRecord>;
+    /// Whether the App's registration was deleted or aborted here.
+    fn app_closed(&self, app: AppId) -> bool;
+    fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord>;
 
     /// Whether `user` administers the owner: the user itself for a user account, an org `Admin` for an org.
     fn is_admin(&self, user: UserId) -> bool {
@@ -198,15 +248,27 @@ impl AuthzRead for AuthzFold {
     fn epoch(&self) -> NameEpoch {
         self.epoch
     }
+    fn app(&self, app: AppId) -> Option<&AppRecord> {
+        self.more.apps.get(&app)
+    }
+    fn app_closed(&self, app: AppId) -> bool {
+        self.more.closed.contains(&app)
+    }
+    fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord> {
+        self.more.oauth_apps.get(client)
+    }
 }
 
-struct Tables<'t, M, G, N> {
+struct Tables<'t, M, G, N, A, C, O> {
     opened: &'t mut Option<AccountKind>,
     members: &'t mut M,
     grants: &'t mut G,
     names: &'t mut N,
     epoch: &'t mut NameEpoch,
     ids: &'t mut IdCursor,
+    apps: &'t mut A,
+    closed: &'t mut C,
+    oauth_apps: &'t mut O,
 }
 
 trait Remove<K> {
@@ -225,11 +287,14 @@ impl<K: Ord + Clone, V> Remove<K> for Overlay<'_, K, V> {
     }
 }
 
-fn write<M, G, N>(ev: &AuthzEvent, t: Tables<'_, M, G, N>)
+fn write<M, G, N, A, C, O>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O>)
 where
     M: Table<UserId, OrgRole> + Remove<UserId>,
     G: Table<(RepoId, UserId), RepoPermission> + Remove<(RepoId, UserId)>,
     N: Table<RepoNameKey, RepoEntry> + Remove<RepoNameKey>,
+    A: Table<AppId, AppRecord>,
+    C: Table<AppId, ()>,
+    O: Table<ClientId, OAuthAppRecord>,
 {
     match ev {
         AuthzEvent::Opened { kind, .. } => *t.opened = Some(*kind),
@@ -249,6 +314,13 @@ where
                 None => t.names.remove(key),
             }
         }
+        AuthzEvent::App { app, record: Some(r) } => t.apps.put(*app, (**r).clone()),
+        AuthzEvent::App { app, record: None } => {
+            t.apps.del(app);
+            t.closed.put(*app, ());
+        }
+        AuthzEvent::OAuthApp { client, record: Some(r) } => t.oauth_apps.put(*client, r.clone()),
+        AuthzEvent::OAuthApp { client, record: None } => t.oauth_apps.del(client),
     }
 }
 
@@ -260,6 +332,9 @@ pub struct AuthzScratch<'a> {
     names: Overlay<'a, RepoNameKey, RepoEntry>,
     epoch: NameEpoch,
     ids: IdCursor,
+    apps: Overlay<'a, AppId, AppRecord>,
+    closed: SetOverlay<'a, AppId>,
+    oauth_apps: Overlay<'a, ClientId, OAuthAppRecord>,
 }
 
 impl AuthzRead for AuthzScratch<'_> {
@@ -280,6 +355,15 @@ impl AuthzRead for AuthzScratch<'_> {
     }
     fn epoch(&self) -> NameEpoch {
         self.epoch
+    }
+    fn app(&self, app: AppId) -> Option<&AppRecord> {
+        self.apps.get(&app)
+    }
+    fn app_closed(&self, app: AppId) -> bool {
+        self.closed.contains(&app)
+    }
+    fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord> {
+        self.oauth_apps.get(client)
     }
 }
 
@@ -306,14 +390,17 @@ impl Scratch for AuthzScratch<'_> {
                 names: &mut self.names,
                 epoch: &mut self.epoch,
                 ids: &mut self.ids,
+                apps: &mut self.apps,
+                closed: &mut self.closed,
+                oauth_apps: &mut self.oauth_apps,
             },
         );
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
     }
-    /// A follower refuses an entry that opens the chain twice, takes a held name for another repository, or
-    /// resolves a name at an epoch that does not move forward.
+    /// A follower refuses an entry that opens the chain twice, takes a held name for another repository, resolves a
+    /// name at an epoch that does not move forward, files a record under another key, or registers a closed App.
     fn check(&self, ev: &AuthzEvent) -> Result<(), Box<str>> {
         match ev {
             AuthzEvent::Opened { .. } if self.opened.is_some() => Err("opened twice".into()),
@@ -325,6 +412,13 @@ impl Scratch for AuthzScratch<'_> {
                 key,
                 entry: Some(RepoEntry::Live { repo, .. } | RepoEntry::Reserved { repo, .. }),
             } if !free_for(self.name(key), *repo) => Err(format!("{key:?} is held by {:?}", self.name(key)).into()),
+            AuthzEvent::App { app, record: Some(r) } if r.id != *app => Err(format!("{app:?} holds {:?}", r.id).into()),
+            AuthzEvent::App { app, record: Some(_) } if self.closed.contains(app) => {
+                Err(format!("{app:?} was closed and is never registered again").into())
+            }
+            AuthzEvent::OAuthApp { client, record: Some(r) } if r.client != *client => {
+                Err(format!("{client:?} holds {:?}", r.client).into())
+            }
             _ => Ok(()),
         }
     }
@@ -342,6 +436,9 @@ impl Fold for AuthzFold {
             names: Overlay::new(&self.names),
             epoch: self.epoch,
             ids: self.ids,
+            apps: Overlay::new(&self.more.apps),
+            closed: SetOverlay::new(&self.more.closed),
+            oauth_apps: Overlay::new(&self.more.oauth_apps),
         }
     }
     fn apply(&mut self, ev: &AuthzEvent) {
@@ -354,6 +451,9 @@ impl Fold for AuthzFold {
                 names: &mut self.names,
                 epoch: &mut self.epoch,
                 ids: &mut self.ids,
+                apps: &mut self.more.apps,
+                closed: &mut self.more.closed,
+                oauth_apps: &mut self.more.oauth_apps,
             },
         );
     }
@@ -371,17 +471,53 @@ pub struct AuthzCmd {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthzOp {
     /// The chain's first command, from the signup's login claim. Only `graft-ops` or the CLI submits it.
-    Open { kind: AccountKind, enterprise: Option<AccountId> },
+    Open {
+        kind: AccountKind,
+        enterprise: Option<AccountId>,
+    },
     /// Adds, changes, or (with `None`) removes an org member's role. `Admin` is the admin grant.
-    SetMember { user: UserId, role: Option<OrgRole> },
+    SetMember {
+        user: UserId,
+        role: Option<OrgRole>,
+    },
     /// A user's direct permission on one of the owner's repositories.
-    SetGrant { repo: RepoId, user: UserId, permission: Option<RepoPermission> },
+    SetGrant {
+        repo: RepoId,
+        user: UserId,
+        permission: Option<RepoPermission>,
+    },
     /// Creates a repository: its id is the next of this group's id block, and its name goes `Live`.
-    CreateRepo { name: RepoName },
+    CreateRepo {
+        name: RepoName,
+    },
     /// Renames: `Live` at the new key, `Alias` at the old, both at a new epoch.
-    RenameRepo { from: RepoNameKey, to: RepoName },
+    RenameRepo {
+        from: RepoNameKey,
+        to: RepoName,
+    },
     /// Deletes: the name is held as `Deleted` until `retain_until`.
-    DeleteRepo { key: RepoNameKey, retain_until: Timestamp },
+    DeleteRepo {
+        key: RepoNameKey,
+        retain_until: Timestamp,
+    },
+    // ---- Milestone 3, format 2 ----
+    /// Writes an App's record, after its slug's `ClaimSlug` committed on `Names` with this id (the commit point).
+    /// Re-sending the same record is a no-op, so the edge and the `Audit` finisher may both submit it.
+    PutApp {
+        record: Box<AppRecord>,
+    },
+    /// Deletes an App's registration, or aborts one that never wrote its record. Either way the id is closed: its
+    /// slug may then be released (`NamesOp::ReleaseSlug`), and the id is never registered again.
+    CloseApp {
+        app: AppId,
+    },
+    /// Writes an OAuth app's record, after its client id's `RegisterClient` committed on `Names`.
+    PutOAuthApp {
+        record: OAuthAppRecord,
+    },
+    DeleteOAuthApp {
+        client: ClientId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +542,15 @@ pub enum AuthzErr {
     SameName,
     /// The group has no free id: lease a block from `Ids`, commit it here (`Member::id_block`), and re-send.
     NeedIdBlock,
+    /// The record does not fit: a client id that is not the App's, a key or secret over its cap, or an
+    /// installation's permissions over the App's.
+    BadRecord,
+    /// The App's registration was closed, so its id is never registered again.
+    Closed,
+    /// The registration's claim on `Names` (the App's slug, the OAuth app's client id) has not committed for this
+    /// owner: claim it first.
+    NotClaimed,
+    NoApp,
 }
 
 impl Record for AuthzCmd {
@@ -443,11 +588,55 @@ impl Record for AuthzCmd {
                 e.str(key.as_str());
                 enc::at(&mut e, *retain_until);
             }
+            AuthzOp::PutApp { record } => {
+                e.u8(6);
+                apps::app_record(&mut e, record);
+            }
+            AuthzOp::CloseApp { app } => {
+                e.u8(7);
+                apps::app_id(&mut e, *app);
+            }
+            AuthzOp::PutOAuthApp { record } => {
+                e.u8(8);
+                apps::oauth_app_record(&mut e, record);
+            }
+            AuthzOp::DeleteOAuthApp { client } => {
+                e.u8(9);
+                apps::client(&mut e, client);
+            }
         }
     }
 }
 
 impl AuthzCmd {
+    /// The `Names` shard of the claim a registration's record follows: the App's slug, or the OAuth app's client id.
+    fn claim_chain(&self) -> Option<ChainId> {
+        let key = match &self.op {
+            AuthzOp::PutApp { record } => NameKey::AppSlug(record.slug.clone()),
+            AuthzOp::PutOAuthApp { record } => NameKey::Client(record.client),
+            _ => return None,
+        };
+        Some(ChainId::Names(name_shard(&key)))
+    }
+
+    /// A record commits only after its claim: the slug's `AppSlug` names this App id and owner, or the client id's
+    /// route names this owner and no App. Read once per entry through the shard's `fresh`, so the commit point is
+    /// the claim, and a record for a slug someone else claimed is refused.
+    fn check_claim(&self, s: &AuthzScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> Result<(), AuthzErr> {
+        let Some(chain) = self.claim_chain() else { return Ok(()) };
+        let names = match deps.iter().find(|(c, _)| *c == chain) {
+            Some((_, IdentityDep::Names(f))) => f,
+            _ => return Err(AuthzErr::Unauthorized(CredentialRefusal::NotRead(chain))),
+        };
+        let owner = s.owner().ok_or(AuthzErr::NotOpened)?;
+        let claimed = match &self.op {
+            AuthzOp::PutApp { record } => names.slug(&record.slug) == Some(SlugRow { app: record.id, owner }),
+            AuthzOp::PutOAuthApp { record } => names.client(&record.client) == Some(ClientRoute { owner, app: None }),
+            _ => true,
+        };
+        if claimed { Ok(()) } else { Err(AuthzErr::NotClaimed) }
+    }
+
     fn decide_op(&self, s: &AuthzScratch<'_>) -> Result<(SmallVec<[AuthzEvent; 4]>, AuthzOut), AuthzErr> {
         if let AuthzOp::Open { kind, enterprise } = &self.op {
             if self.cred.account.is_some() {
@@ -511,6 +700,44 @@ impl AuthzCmd {
                 let entry = RepoEntry::Deleted { repo, retain_until: *retain_until };
                 Ok((smallvec![AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) }], AuthzOut::Done))
             }
+            AuthzOp::PutApp { record } => {
+                let fits = record.client == ClientId::for_app(record.id)
+                    && record.keys.len() <= 2
+                    && record.client_secrets.len() <= apps::CLIENT_SECRETS_MAX;
+                if !fits {
+                    return Err(AuthzErr::BadRecord);
+                }
+                if s.app_closed(record.id) {
+                    return Err(AuthzErr::Closed);
+                }
+                if s.app(record.id) == Some(&**record) {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                let ev = AuthzEvent::App { app: record.id, record: Some(record.clone()) };
+                Ok((smallvec![ev], AuthzOut::Done))
+            }
+            AuthzOp::CloseApp { app } => {
+                if s.app_closed(*app) {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::App { app: *app, record: None }], AuthzOut::Done))
+            }
+            AuthzOp::PutOAuthApp { record } => {
+                if record.client.is_app_form() || record.client_secrets.len() > apps::CLIENT_SECRETS_MAX {
+                    return Err(AuthzErr::BadRecord);
+                }
+                if s.oauth_app(&record.client) == Some(record) {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                let ev = AuthzEvent::OAuthApp { client: record.client, record: Some(record.clone()) };
+                Ok((smallvec![ev], AuthzOut::Done))
+            }
+            AuthzOp::DeleteOAuthApp { client } => {
+                if s.oauth_app(client).is_none() {
+                    return Err(AuthzErr::NoApp);
+                }
+                Ok((smallvec![AuthzEvent::OAuthApp { client: *client, record: None }], AuthzOut::Done))
+            }
         }
     }
 }
@@ -521,14 +748,27 @@ impl Command for AuthzCmd {
     type Out = AuthzOut;
     type Err = AuthzErr;
 
+    /// Milestone 1's ops keep format 1, so their entries are what an older release reads; the rest are format 2.
     fn format(&self) -> Format {
-        AUTHZ_FORMAT
+        match self.op {
+            AuthzOp::PutApp { .. }
+            | AuthzOp::CloseApp { .. }
+            | AuthzOp::PutOAuthApp { .. }
+            | AuthzOp::DeleteOAuthApp { .. } => AUTHZ_FORMAT_V2,
+            _ => AUTHZ_FORMAT,
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
     }
     fn deps(&self, _fold: &AuthzFold) -> SmallVec<[ChainId; 3]> {
-        credential_chains(&self.cred, None)
+        let mut d = credential_chains(&self.cred, None);
+        if let Some(c) = self.claim_chain()
+            && !d.contains(&c)
+        {
+            d.push(c);
+        }
+        d
     }
     fn decide(
         &self,
@@ -536,6 +776,7 @@ impl Command for AuthzCmd {
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, AuthzOut), AuthzErr> {
         check_credential(&self.cred, Own::Other, deps).map_err(AuthzErr::Unauthorized)?;
+        self.check_claim(s, deps)?;
         self.decide_op(s)
     }
     fn replay(&self, events: &[AuthzEvent]) -> AuthzOut {

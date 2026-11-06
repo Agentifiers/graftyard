@@ -82,8 +82,8 @@ pub enum MergeMethod {
     Rebase,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct AppId(pub DbId);
+/// The identity crate's, where an App's record lives.
+pub use graftyard_identity::{AppId, Url};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TeamId(pub DbId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -98,10 +98,6 @@ pub struct CheckRunId(pub DbId);
 pub struct CheckSuiteId(pub DbId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StatusId(pub DbId);
-
-/// An absolute URL as the client sent it. The edge validates it; the fold stores it.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Url(pub Box<str>);
 
 /// A label name: at most 50 characters [unverified], compared case-insensitively within a repository.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
