@@ -869,3 +869,37 @@ fn add_pull_request_review_commits_a_review_at_the_head() {
     let req = Request::parse(q, vars(None, &r), None).unwrap();
     assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
 }
+
+/// F50: the edge reads the logins of exactly the accounts a repository's tiers name, from their `AccountLogin` rows,
+/// and every reply that names one renders its login, not `ghost`.
+#[test]
+fn hosted_dir_names_every_account_the_tiers_name() {
+    use graftyard_api::hosted::{HostedDir, accounts};
+    let c = seeded();
+    let m = &c.members[0];
+    let named = accounts(&m.core, &m.meta);
+    // The owner only changed settings and closed an issue, which no row names; its login comes from the path.
+    let want: std::collections::BTreeSet<AccountId> =
+        [WRITER, READER].into_iter().map(|a| AccountId(DbId(a))).collect();
+    assert_eq!(named, want, "authors, assignees, commenters, and status creators");
+    let h = host();
+    let dir = Dir::new(WRITER);
+    // With logins only for the owner, as the edge had before F50, the other accounts render as `ghost`.
+    let only_owner =
+        HostedDir { home: Some(dir.home()), logins: [(OWNER, "o".to_owned())].into(), ..Default::default() };
+    let d = doc("IssueByNumber-2");
+    let render = |hd: &HostedDir| {
+        let r = Repo { host: &h, at: dir.home(), core: &m.core, meta: &m.meta, dir: hd };
+        ask(&r, &d, d.variables.clone())["data"]["repository"]["issue"].clone()
+    };
+    let i = render(&only_owner);
+    assert_eq!(i["comments"]["nodes"][0]["author"]["login"], "ghost");
+    // With each named account's login, as `account_logins` reads them, none does, and the reply is the in-process one.
+    let logins =
+        [(OWNER, "o"), (WRITER, "alice"), (READER, "bob")].into_iter().map(|(a, l)| (a, l.to_owned())).collect();
+    let full = HostedDir { home: Some(dir.home()), logins, ..Default::default() };
+    let i = render(&full);
+    assert_eq!(i["comments"]["nodes"][0]["author"]["login"], "bob");
+    assert_eq!(i["assignees"]["nodes"][0]["login"], "alice");
+    assert!(!i.to_string().contains("\"ghost\""), "{i}");
+}

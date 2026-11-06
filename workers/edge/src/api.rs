@@ -4,7 +4,8 @@
 //! - A read is one `{"q": {"rows": true}}` read of the repository's leader: both tiers at one index, loaded into
 //!   `MemStore`s and read through `graftyard_api::view::Repo`. A repository over `hosted::ROWS_MAX` rows answers 503.
 //! - The `Directory` is `hosted::HostedDir`: the owner's `Authz` fold, read as a `dep` through `fresh`, the owner's
-//!   login from the path, and the signed-in account from its token.
+//!   login from the path, every other account's login from its `AccountLogin` row on its `account_shard` (F50), and
+//!   the signed-in account from its token.
 //! - A write is an `IssueCall` committed through `commit_hedged`. Its leader renders the reply from the `&Acked` over
 //!   its own tiers (`hosted::render_ok`), and the edge adds only the cross-cutting headers (`graftyard_wire::finish`).
 //!   The edge sends one only once `FormatsEnable` has enabled `REPO_FORMAT_ISSUES`; until then a write answers 503.
@@ -228,15 +229,20 @@ async fn read_repo(
     timing::mark("rows_authz");
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
-    dir.logins.insert(repo.owner.0.0, owner.to_owned());
     dir.viewer = viewer.and_then(|p| match p.actor {
         Actor::User(u) => Some(u.0),
         Actor::Anonymous => None,
     });
+    let (core, meta) = (TierRows::store(&rows.core), TierRows::store(meta));
+    let mut named = graftyard_api::hosted::accounts(&core, &meta);
+    named.extend(dir.viewer);
+    named.remove(&repo.owner);
+    dir.logins = account_logins(c, &named).await;
+    dir.logins.insert(repo.owner.0.0, owner.to_owned());
     for (id, l) in logins(c) {
         dir.logins.entry(id).or_insert(l);
     }
-    Ok(Ok(Read { repo, at, core: TierRows::store(&rows.core), meta: TierRows::store(meta), dir }))
+    Ok(Ok(Read { repo, at, core, meta, dir }))
 }
 
 /// The repository's `{"rows": true}` read on its leader, creating its group on first use.
@@ -573,10 +579,11 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
 }
 
 /// A repository's `o/r` from its id: its owner from `RepoOwner` on `Names`, its name from the owner's `Authz` names,
-/// and the owner's login from `logins`, since `Names` keys logins by name and holds no reverse row [inference].
+/// and the owner's login from its `AccountLogin` row (F50), else from `logins`.
 async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzFold)> {
     let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
-    let login = logins(c).get(&repo.owner.0.0)?.clone();
+    let mut known = account_logins(c, &std::iter::once(repo.owner).collect()).await;
+    let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
     let a = authz(c, &repo).await?;
     let name = a.names.iter().find_map(|(k, e)| match e {
         graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
@@ -585,8 +592,37 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzF
     Some((login, name, repo, a))
 }
 
-/// Logins by account id. No account-to-login read is built (`Names` keys logins by name), so a product edge knows
-/// only the owner's login from the request path; test installs name more in `LOGINS` (`{"<id>": "<login>"}`).
+/// The most `account_shard` groups one request reads for logins [guess]. An account past it renders as `ghost`, as an
+/// account with no row does.
+const LOGIN_SHARDS_MAX: usize = 24;
+
+/// The logins of `accounts`, from each one's `AccountLogin` row (F50): one read-class `fresh` read per distinct
+/// `account_shard`, all at once. A shard that fails to answer, or whose members predate the row, names none of its
+/// accounts, which then render as `ghost`.
+async fn account_logins(
+    c: &Ctx<'_>,
+    accounts: &std::collections::BTreeSet<graftyard_types::AccountId>,
+) -> std::collections::BTreeMap<i64, String> {
+    let mut by_shard: std::collections::BTreeMap<_, Vec<i64>> = Default::default();
+    for a in accounts {
+        by_shard.entry(graftyard_identity::account_shard(*a)).or_default().push(a.0.0);
+    }
+    let reads = by_shard.into_iter().take(LOGIN_SHARDS_MAX).map(|(shard, ids)| async move {
+        crate::system_read(c, ChainId::Names(shard), json!({ "accountLogins": ids })).await
+    });
+    let mut out = std::collections::BTreeMap::new();
+    for v in futures_util::future::join_all(reads).await.into_iter().flatten() {
+        for (id, l) in v["accountLogins"].as_object().into_iter().flatten() {
+            if let (Ok(id), Some(l)) = (id.parse(), l.as_str()) {
+                out.insert(id, l.to_owned());
+            }
+        }
+    }
+    out
+}
+
+/// Test installs' logins by account id, from `LOGINS` (`{"<id>": "<login>"}`), for accounts whose `AccountLogin` row
+/// was never written: every account an install seeded before F50's row existed. A product edge has none.
 fn logins(c: &Ctx<'_>) -> std::collections::BTreeMap<i64, String> {
     #[cfg(feature = "test-faults")]
     let v: Value = c.env.var("LOGINS").ok().and_then(|v| serde_json::from_str(&v.to_string()).ok()).unwrap_or_default();

@@ -83,9 +83,51 @@ impl TierRows {
 
 // ---- the directory ----
 
+/// Every account a repository's tiers name, so the edge can read their logins before it renders (F50): authors,
+/// assignees, reviewers, mergers, status creators, release authors, asset uploaders, and lock owners. Each comes from
+/// the typed row `Repo` reads, so a reply names no account outside this set.
+pub fn accounts(core: &dyn Read, meta: &dyn Read) -> std::collections::BTreeSet<AccountId> {
+    use graftyard_git::issues::{PrState, PullHead, StatusUpdate};
+    use graftyard_git::tiers::{AssetRow, CommentRow, IssueRow, LockRow, ReleaseRow, ReviewRow, Timed, get_rec};
+    let mut out = std::collections::BTreeSet::new();
+    let keys = |r: &dyn Read, table: &str| r.prefix(table, &[]).into_iter().map(|(k, _)| k).collect::<Vec<_>>();
+    for k in keys(meta, "issue") {
+        out.extend(get_rec::<IssueRow>(meta, "issue", &k).and_then(|i| i.author));
+    }
+    for k in keys(meta, "issue_assignee") {
+        if let Some(Val::Int(a)) = k.get(1) {
+            out.insert(AccountId(DbId(*a)));
+        }
+    }
+    for k in keys(meta, "comment") {
+        out.extend(get_rec::<CommentRow>(meta, "comment", &k).and_then(|c| c.author));
+    }
+    for k in keys(meta, "review") {
+        out.extend(get_rec::<ReviewRow>(meta, "review", &k).and_then(|c| c.reviewer));
+    }
+    for k in keys(meta, "status") {
+        out.extend(get_rec::<Timed<StatusUpdate>>(meta, "status", &k).map(|s| s.rec.creator));
+    }
+    for k in keys(meta, "release") {
+        out.extend(get_rec::<ReleaseRow>(meta, "release", &k).and_then(|x| x.rec.author));
+    }
+    for k in keys(meta, "asset") {
+        out.extend(get_rec::<AssetRow>(meta, "asset", &k).and_then(|a| a.uploader));
+    }
+    for k in keys(meta, "lfs_lock") {
+        out.extend(get_rec::<LockRow>(meta, "lfs_lock", &k).map(|l| l.owner));
+    }
+    for k in keys(core, "pull_head") {
+        if let Some(PrState::Merged { by, .. }) = get_rec::<PullHead>(core, "pull_head", &k).map(|h| h.state) {
+            out.insert(by.0);
+        }
+    }
+    out
+}
+
 /// The accounts a request's replies name, as the edge read them: the owner's `Authz` fold for permissions and the
-/// owner's kind, the logins it knows (the owner's, from the request path, and any the install names), and the
-/// signed-in account.
+/// owner's kind, the logins it knows (the owner's, from the request path, and each account's `AccountLogin` row on
+/// its `account_shard`, F50), and the signed-in account.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostedDir {
     pub home: Option<RepoRef>,

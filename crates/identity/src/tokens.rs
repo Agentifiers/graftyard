@@ -3,20 +3,27 @@
 //! A stored token is a prefix, 30 base62 secret characters, and the CRC32 of those 30 characters in 6 base62
 //! characters. The edge checks the prefix and CRC offline, hashes the secret, and finds the row on
 //! `token_shard(secret)`. A new token's secret is redrawn until its shard lands in the owner's home family.
+//!
+//! Milestone 3 (M3-WP2) adds the rest of the shard's rows: the optional `Stored` fields, a `ghu_` and its `ghr_` on
+//! one shard, SSH keys on `fingerprint_shard`, revoked `jti`s on `jti_shard`, verifying keys on `TokenShard(0)`,
+//! lifeboat token hashes, and the short-lived OAuth and sign-in codes, which lapse at `expires` with no command.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::time::Duration;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Region, Timestamp, TokenShard};
+use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Digest, Region, RepoId, Timestamp, TokenShard, Ulid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smallvec::{SmallVec, smallvec};
 
-use crate::TOKENS_FORMAT;
-use crate::credential::{CredentialRefusal, IdentityDep, Own, check_credential, credential_chains, encode_cred};
+use crate::apps::{self, AppId, ClientId, PermissionSet, Url};
+use crate::compat::tail_serde;
+use crate::credential::{CredentialRefusal, IdentityDep, OrgId, Own, check_credential, credential_chains, encode_cred};
 use crate::enc;
-use crate::overlay::{Overlay, Table};
+use crate::overlay::{Overlay, SetOverlay, Table};
+use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2};
 
 /// 1,024 shards per home family.
 pub const SHARDS_PER_FAMILY: u16 = 1024;
@@ -217,21 +224,143 @@ pub struct RedrawExhausted {
 /// of the 62 is equally likely.
 pub fn draw_secret(mut rand: impl FnMut() -> u64, family: Family) -> Result<([u8; 30], u32), RedrawExhausted> {
     for draw in 1..=MAX_DRAWS {
-        let mut secret = [0u8; 30];
-        let mut i = 0;
-        while i < 30 {
-            for b in rand().to_le_bytes() {
-                if i < 30 && b < 248 {
-                    secret[i] = BASE62[usize::from(b % 62)];
-                    i += 1;
-                }
-            }
-        }
+        let secret = draw_one(&mut rand);
         if Family::of(token_shard(&secret)) == family {
             return Ok((secret, draw));
         }
     }
     Err(RedrawExhausted { family, draws: MAX_DRAWS })
+}
+
+/// One 30-character base62 draw, by rejection from bytes, so each of the 62 characters is equally likely.
+fn draw_one(rand: &mut impl FnMut() -> u64) -> [u8; 30] {
+    let mut secret = [0u8; 30];
+    let mut i = 0;
+    while i < 30 {
+        for b in rand().to_le_bytes() {
+            if i < 30 && b < 248 {
+                secret[i] = BASE62[usize::from(b % 62)];
+                i += 1;
+            }
+        }
+    }
+    secret
+}
+
+// ---- Routing every kind of credential row ----
+
+/// SHA-256 of an SSH public key's wire blob, as `ssh-keygen -l` prints it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Fingerprint(pub [u8; 32]);
+
+/// A stateless installation token's id (SHARED's `InstallationClaims.jti`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Jti(pub Ulid);
+
+/// An installation-token signing key's epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct Kid(pub u32);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Ed25519Public(pub [u8; 32]);
+
+/// The agent layer's grant behind a `ghu_` from `token/scoped` (`design/AGENT-LAYER.md`, "API reference").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GrantId(pub DbId);
+
+/// `design/AGENT-LAYER.md`'s `WriteScope`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum WriteScope {
+    Read,
+    Write,
+    WriteApproveMerge,
+}
+
+/// The repositories a fine-grained PAT reaches [inference: SHARED names `RepoScope` without its shape].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RepoScope {
+    All,
+    Selected(SmallVec<[RepoId; 4]>),
+}
+
+fn shard_of_digest(tag: &[u8], body: &[u8]) -> TokenShard {
+    let h: [u8; 32] = Sha256::new().chain_update(tag).chain_update(body).finalize().into();
+    shard_of_hash(&h)
+}
+
+/// The uniqueness point of an SSH fingerprint: its shard, over all three families.
+pub fn fingerprint_shard(key: &Fingerprint) -> TokenShard {
+    shard_of_digest(b"graftyard/fingerprint/", &key.0)
+}
+
+/// `DELETE /installation/token` commits the `jti` on the shard of a hash of it.
+pub fn jti_shard(jti: &Jti) -> TokenShard {
+    shard_of_digest(b"graftyard/jti/", &jti.0.0.to_be_bytes())
+}
+
+/// The hash a code row is keyed by: SHA-256 of the code's text under its own tag, never the code. Codes are not
+/// tokens, so they hash under another tag than `OpaqueToken::hash`.
+pub fn code_hash(code: &[u8]) -> [u8; 32] {
+    Sha256::new().chain_update(b"graftyard/code/").chain_update(code).finalize().into()
+}
+
+/// Draws a 30-character base62 secret until its hash lands on `shard`, for a `ghr_` beside its `ghu_`: one shard in
+/// 3,072, so about 3,072 draws, each one SHA-256. `None` after `max` draws.
+pub fn draw_secret_on(mut rand: impl FnMut() -> u64, shard: TokenShard, max: u32) -> Option<([u8; 30], u32)> {
+    for draw in 1..=max {
+        let secret = draw_one(&mut rand);
+        if token_shard(&secret) == shard {
+            return Some((secret, draw));
+        }
+    }
+    None
+}
+
+/// Draws a device code of `len` base62 characters until its `code_hash` lands on its user code's shard, so both rows
+/// commit in one entry. `None` after `max` draws.
+pub fn draw_device_code(mut rand: impl FnMut() -> u64, user_code: &[u8], max: u32) -> Option<(Vec<u8>, u32)> {
+    let want = shard_of_hash(&code_hash(user_code));
+    for draw in 1..=max {
+        let s = draw_one(&mut rand).to_vec();
+        if shard_of_hash(&code_hash(&s)) == want {
+            return Some((s, draw));
+        }
+    }
+    None
+}
+
+/// The time-to-live of each code kind. A row lapses at `expires` with no command, as a lease does.
+pub const DEVICE_CODE_TTL: Duration = Duration::from_secs(900);
+/// [unverified for GHES 3.22]
+pub const AUTHORIZATION_CODE_TTL: Duration = Duration::from_secs(600);
+/// [guess]
+pub const SIGN_IN_LINK_TTL: Duration = Duration::from_secs(900);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodeKind {
+    /// A device code's row names the hash of its user code, and the user code's row the hash of its device code.
+    Device {
+        user_code: [u8; 32],
+        interval: u8,
+    },
+    User {
+        device_code: [u8; 32],
+    },
+    Authorization {
+        redirect: Url,
+        pkce: Option<Digest>,
+    },
+    SignInLink,
+}
+
+impl CodeKind {
+    pub fn ttl(&self) -> Duration {
+        match self {
+            CodeKind::Device { .. } | CodeKind::User { .. } => DEVICE_CODE_TTL,
+            CodeKind::Authorization { .. } => AUTHORIZATION_CODE_TTL,
+            CodeKind::SignInLink => SIGN_IN_LINK_TTL,
+        }
+    }
 }
 
 // ---- The `Tokens` group ----
@@ -246,15 +375,178 @@ pub struct TokenRow {
     pub revoked: bool,
 }
 
-/// `Stored` and `Revoked`. The design's `Stored` also carries `sso_orgs`, `app`, `client`, `permissions`,
-/// `resource_owner`, `repos`, `paired`, `grant`, and `write`, which belong to OAuth, Apps, and fine-grained PATs
-/// (Milestone 3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TokensEvent {
-    Stored { hash: [u8; 32], kind: TokenKind, account: AccountId, scopes: ScopeSet, expires: Option<Timestamp> },
-    Revoked { hash: [u8; 32] },
+/// The optional `Stored` fields, which belong to OAuth, Apps, and fine-grained PATs. `paired` is the other token's
+/// hash on a `ghu_` and its `ghr_`: both rows commit in one entry, and revoking either revokes both.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokenFields {
+    pub sso_orgs: SmallVec<[OrgId; 2]>,
+    pub app: Option<AppId>,
+    pub client: Option<ClientId>,
+    pub permissions: Option<PermissionSet>,
+    pub resource_owner: Option<AccountId>,
+    pub repos: Option<RepoScope>,
+    pub paired: Option<[u8; 32]>,
+    pub grant: Option<GrantId>,
+    pub write: Option<WriteScope>,
 }
 
+impl TokenFields {
+    fn is_empty(&self) -> bool {
+        *self == TokenFields::default()
+    }
+
+    /// Which fields a kind may carry (SHARED, "Identity and tokens"; DESIGN, Shape, "Identity", `Stored`):
+    /// `app` on a `ghu_` or `ghr_`, `client` on a `gho_`, `ghu_`, or `ghr_`, `resource_owner` and `repos` on a
+    /// `github_pat_`, `permissions` on a `github_pat_` or `ghu_`, `paired` on a `ghu_` or `ghr_`, and `grant` and
+    /// `write` only on a `ghu_`. A `github_pat_` names its resource owner.
+    fn fits(&self, kind: TokenKind) -> bool {
+        use TokenKind::*;
+        let user = matches!(kind, UserToServer | Refresh);
+        (self.app.is_none() || user)
+            && (self.client.is_none() || matches!(kind, OAuth | UserToServer | Refresh))
+            && (self.resource_owner.is_some() == (kind == FineGrained))
+            && (self.repos.is_none() || kind == FineGrained)
+            && (self.permissions.is_none() || matches!(kind, FineGrained | UserToServer))
+            && (self.paired.is_none() || user)
+            && (self.grant.is_none() && self.write.is_none() || kind == UserToServer)
+            && (self.grant.is_some() == self.write.is_some())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshKeyRow {
+    pub account: AccountId,
+    /// A deploy key's repository.
+    pub repo: Option<RepoId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifyingKeyRow {
+    pub key: Ed25519Public,
+    pub retired: Option<Timestamp>,
+}
+
+/// A code row. `approved` is the account a user code was approved for; `used` is set once an exchange spent it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeRow {
+    pub kind: CodeKind,
+    pub client: Option<ClientId>,
+    pub scopes: ScopeSet,
+    pub account: Option<AccountId>,
+    pub expires: Timestamp,
+    pub approved: Option<AccountId>,
+    pub used: bool,
+}
+
+/// The design's `TokensEvent`. Serde's variant index is the declaration order, so Milestone 1's `Stored` and
+/// `Revoked` stay first and decode from rows stored before Milestone 3.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TokensEvent {
+    /// A stored token with no optional field: Milestone 1's form, encoded as before.
+    Stored {
+        hash: [u8; 32],
+        kind: TokenKind,
+        account: AccountId,
+        scopes: ScopeSet,
+        expires: Option<Timestamp>,
+    },
+    Revoked {
+        hash: [u8; 32],
+    },
+    /// `Stored` with its optional fields, which Milestone 1's `Stored` lacks. The design has one `Stored`; this is
+    /// its encoding with the fields, so a row stored without them keeps its bytes.
+    StoredWith {
+        hash: [u8; 32],
+        kind: TokenKind,
+        account: AccountId,
+        scopes: ScopeSet,
+        expires: Option<Timestamp>,
+        fields: Box<TokenFields>,
+    },
+    SshKeyRemoved {
+        fingerprint: Fingerprint,
+    },
+    SshKey {
+        fingerprint: Fingerprint,
+        account: AccountId,
+        repo: Option<RepoId>,
+    },
+    JtiRevoked {
+        jti: Jti,
+        exp: Timestamp,
+    },
+    LifeboatRead {
+        hash: [u8; 32],
+        account: AccountId,
+    },
+    VerifyingKey {
+        kid: Kid,
+        key: Ed25519Public,
+        retired: Option<Timestamp>,
+    },
+    Code {
+        hash: [u8; 32],
+        kind: CodeKind,
+        client: Option<ClientId>,
+        scopes: ScopeSet,
+        account: Option<AccountId>,
+        expires: Timestamp,
+    },
+    CodeApproved {
+        hash: [u8; 32],
+        account: AccountId,
+    },
+    CodeUsed {
+        hash: [u8; 32],
+    },
+}
+
+fn token_fields(e: &mut Enc, f: &TokenFields) {
+    e.count(f.sso_orgs.len());
+    for o in &f.sso_orgs {
+        enc::account(e, o.0);
+    }
+    e.option(f.app.as_ref(), |e, a| apps::app_id(e, *a));
+    e.option(f.client.as_ref(), apps::client);
+    e.option(f.permissions.as_ref(), apps::permissions);
+    e.option(f.resource_owner.as_ref(), |e, a| enc::account(e, *a));
+    e.option(f.repos.as_ref(), |e, r| match r {
+        RepoScope::All => e.u8(0),
+        RepoScope::Selected(rs) => {
+            e.u8(1);
+            e.count(rs.len());
+            for r in rs {
+                enc::repo(e, *r);
+            }
+        }
+    });
+    e.option(f.paired.as_ref(), |e, h| e.0.extend_from_slice(h));
+    e.option(f.grant.as_ref(), |e, g| enc::db(e, g.0));
+    e.option(f.write.as_ref(), |e, w| e.u8(*w as u8));
+}
+
+fn code_kind(e: &mut Enc, k: &CodeKind) {
+    match k {
+        CodeKind::Device { user_code, interval } => {
+            e.u8(0);
+            e.0.extend_from_slice(user_code);
+            e.u8(*interval);
+        }
+        CodeKind::User { device_code } => {
+            e.u8(1);
+            e.0.extend_from_slice(device_code);
+        }
+        CodeKind::Authorization { redirect, pkce } => {
+            e.u8(2);
+            apps::url(e, redirect);
+            e.option(pkce.as_ref(), |e, d| e.0.extend_from_slice(&d.0));
+        }
+        CodeKind::SignInLink => e.u8(3),
+    }
+}
+
+/// Tags 0 and 1 are Milestone 1's and keep their bytes. The rest follow the design's declaration order from 2, with
+/// `StoredWith`, the design's `Stored` with fields, after them at 11.
 impl Record for TokensEvent {
     fn encode(&self, out: &mut Vec<u8>) {
         let mut e = Enc(out);
@@ -271,16 +563,90 @@ impl Record for TokensEvent {
                 e.u8(1);
                 e.0.extend_from_slice(hash);
             }
+            TokensEvent::SshKeyRemoved { fingerprint } => {
+                e.u8(2);
+                e.0.extend_from_slice(&fingerprint.0);
+            }
+            TokensEvent::SshKey { fingerprint, account, repo } => {
+                e.u8(3);
+                e.0.extend_from_slice(&fingerprint.0);
+                enc::account(&mut e, *account);
+                e.option(repo.as_ref(), |e, r| enc::repo(e, *r));
+            }
+            TokensEvent::JtiRevoked { jti, exp } => {
+                e.u8(4);
+                e.u128(jti.0.0);
+                enc::at(&mut e, *exp);
+            }
+            TokensEvent::LifeboatRead { hash, account } => {
+                e.u8(5);
+                e.0.extend_from_slice(hash);
+                enc::account(&mut e, *account);
+            }
+            TokensEvent::VerifyingKey { kid, key, retired } => {
+                e.u8(6);
+                e.u32(kid.0);
+                e.0.extend_from_slice(&key.0);
+                e.option(retired.as_ref(), |e, t| enc::at(e, *t));
+            }
+            TokensEvent::Code { hash, kind, client, scopes, account, expires } => {
+                e.u8(7);
+                e.0.extend_from_slice(hash);
+                code_kind(&mut e, kind);
+                e.option(client.as_ref(), apps::client);
+                e.u64(scopes.0);
+                e.option(account.as_ref(), |e, a| enc::account(e, *a));
+                enc::at(&mut e, *expires);
+            }
+            TokensEvent::CodeApproved { hash, account } => {
+                e.u8(8);
+                e.0.extend_from_slice(hash);
+                enc::account(&mut e, *account);
+            }
+            TokensEvent::CodeUsed { hash } => {
+                e.u8(9);
+                e.0.extend_from_slice(hash);
+            }
+            TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields } => {
+                e.u8(11);
+                e.0.extend_from_slice(hash);
+                e.u8(*kind as u8);
+                enc::account(&mut e, *account);
+                e.u64(scopes.0);
+                e.option(expires.as_ref(), |e, t| enc::at(e, *t));
+                token_fields(&mut e, fields);
+            }
         }
     }
 }
 
+/// Milestone 3's rows of a `Tokens` shard: the fold's trailing part (`crate::compat`). A `jti` row and a code row are
+/// kept until an entry's time passes their `exp` or `expires`; a lapsed row reads as absent at once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TokensMore {
+    pub fields: BTreeMap<[u8; 32], TokenFields>,
+    pub ssh_keys: BTreeMap<Fingerprint, SshKeyRow>,
+    /// Fingerprints removed: a fingerprint is unique forever on its shard, as a token hash is [inference].
+    pub ssh_removed: BTreeSet<Fingerprint>,
+    pub jtis: BTreeMap<Jti, Timestamp>,
+    pub lifeboat: BTreeMap<[u8; 32], AccountId>,
+    pub verifying: BTreeMap<Kid, VerifyingKeyRow>,
+    pub codes: BTreeMap<[u8; 32], CodeRow>,
+}
+
+/// One `Tokens` shard's fold. Its serde form is Milestone 1's fields, then `more` only when it holds a row.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TokensFold {
     /// The chain's own shard. `None` checks no key placement.
     pub shard: Option<TokenShard>,
     pub tokens: BTreeMap<[u8; 32], TokenRow>,
+    pub more: TokensMore,
 }
+
+tail_serde!(TokensFold {
+    shard: Option<TokenShard>,
+    tokens: BTreeMap<[u8; 32], TokenRow>,
+} more: TokensMore);
 
 impl TokensFold {
     pub fn new(shard: TokenShard) -> TokensFold {
@@ -288,53 +654,242 @@ impl TokensFold {
     }
 }
 
+/// Every read a `Tokens` shard serves. A read that takes `now` treats a row whose `exp` or `expires` is not after
+/// `now` as absent, so a row lapses with no command.
 pub trait TokensRead {
     fn token(&self, hash: &[u8; 32]) -> Option<TokenRow>;
+    fn fields(&self, hash: &[u8; 32]) -> Option<&TokenFields>;
+    fn ssh_key(&self, fingerprint: &Fingerprint) -> Option<SshKeyRow>;
+    fn ssh_removed(&self, fingerprint: &Fingerprint) -> bool;
+    /// Whether the `jti` is revoked at `now`; a row past `exp` is gone, since the token itself has expired.
+    fn jti_revoked(&self, jti: &Jti, now: Timestamp) -> bool;
+    fn lifeboat(&self, hash: &[u8; 32]) -> Option<AccountId>;
+    fn verifying_key(&self, kid: Kid) -> Option<VerifyingKeyRow>;
+    /// The code's row, unless it lapsed by `now`.
+    fn code(&self, hash: &[u8; 32], now: Timestamp) -> Option<&CodeRow>;
 }
 
-impl TokensRead for TokensFold {
-    fn token(&self, hash: &[u8; 32]) -> Option<TokenRow> {
-        self.tokens.get(hash).copied()
+macro_rules! tokens_read {
+    ($t:ty) => {
+        impl TokensRead for $t {
+            fn token(&self, hash: &[u8; 32]) -> Option<TokenRow> {
+                self.tokens.get(hash).copied()
+            }
+            fn fields(&self, hash: &[u8; 32]) -> Option<&TokenFields> {
+                let m = &self.more;
+                m.fields.get(hash)
+            }
+            fn ssh_key(&self, fingerprint: &Fingerprint) -> Option<SshKeyRow> {
+                let m = &self.more;
+                m.ssh_keys.get(fingerprint).copied()
+            }
+            fn ssh_removed(&self, fingerprint: &Fingerprint) -> bool {
+                let m = &self.more;
+                m.ssh_removed.contains(fingerprint)
+            }
+            fn jti_revoked(&self, jti: &Jti, now: Timestamp) -> bool {
+                let m = &self.more;
+                m.jtis.get(jti).is_some_and(|exp| *exp > now)
+            }
+            fn lifeboat(&self, hash: &[u8; 32]) -> Option<AccountId> {
+                let m = &self.more;
+                m.lifeboat.get(hash).copied()
+            }
+            fn verifying_key(&self, kid: Kid) -> Option<VerifyingKeyRow> {
+                let m = &self.more;
+                m.verifying.get(&kid).copied()
+            }
+            fn code(&self, hash: &[u8; 32], now: Timestamp) -> Option<&CodeRow> {
+                let m = &self.more;
+                m.codes.get(hash).filter(|c| c.expires > now)
+            }
+        }
+    };
+}
+
+tokens_read!(TokensFold);
+
+/// The tables of `TokensMore`, as the fold's maps or the scratch view's overlays.
+trait MoreTables {
+    fn fields(&mut self) -> &mut dyn Table<[u8; 32], TokenFields>;
+    fn ssh_keys(&mut self) -> &mut dyn Table<Fingerprint, SshKeyRow>;
+    fn ssh_removed(&mut self) -> &mut dyn Table<Fingerprint, ()>;
+    fn jtis(&mut self) -> &mut dyn Table<Jti, Timestamp>;
+    fn lifeboat(&mut self) -> &mut dyn Table<[u8; 32], AccountId>;
+    fn verifying(&mut self) -> &mut dyn Table<Kid, VerifyingKeyRow>;
+    fn codes(&mut self) -> &mut dyn Table<[u8; 32], CodeRow>;
+}
+
+macro_rules! more_tables {
+    ($t:ty) => {
+        impl MoreTables for $t {
+            fn fields(&mut self) -> &mut dyn Table<[u8; 32], TokenFields> {
+                &mut self.fields
+            }
+            fn ssh_keys(&mut self) -> &mut dyn Table<Fingerprint, SshKeyRow> {
+                &mut self.ssh_keys
+            }
+            fn ssh_removed(&mut self) -> &mut dyn Table<Fingerprint, ()> {
+                &mut self.ssh_removed
+            }
+            fn jtis(&mut self) -> &mut dyn Table<Jti, Timestamp> {
+                &mut self.jtis
+            }
+            fn lifeboat(&mut self) -> &mut dyn Table<[u8; 32], AccountId> {
+                &mut self.lifeboat
+            }
+            fn verifying(&mut self) -> &mut dyn Table<Kid, VerifyingKeyRow> {
+                &mut self.verifying
+            }
+            fn codes(&mut self) -> &mut dyn Table<[u8; 32], CodeRow> {
+                &mut self.codes
+            }
+        }
+    };
+}
+
+more_tables!(TokensMore);
+more_tables!(MoreOverlay<'_>);
+
+fn revoke(t: &mut impl Table<[u8; 32], TokenRow>, hash: &[u8; 32]) {
+    if let Some(r) = t.get(hash).copied() {
+        t.put(*hash, TokenRow { revoked: true, ..r });
     }
 }
 
-fn write(ev: &TokensEvent, t: &mut impl Table<[u8; 32], TokenRow>) {
+/// The writes of one event, shared by `TokensFold::apply` and `TokensScratch::apply` so the two never diverge.
+fn write(ev: &TokensEvent, t: &mut impl Table<[u8; 32], TokenRow>, m: &mut impl MoreTables) {
     match ev {
         TokensEvent::Stored { hash, kind, account, scopes, expires } => t.put(
             *hash,
             TokenRow { kind: *kind, account: *account, scopes: *scopes, expires: *expires, revoked: false },
         ),
+        TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields } => {
+            t.put(
+                *hash,
+                TokenRow { kind: *kind, account: *account, scopes: *scopes, expires: *expires, revoked: false },
+            );
+            m.fields().put(*hash, (**fields).clone());
+        }
         TokensEvent::Revoked { hash } => {
-            if let Some(r) = t.get(hash).copied() {
-                t.put(*hash, TokenRow { revoked: true, ..r });
+            revoke(t, hash);
+            // A paired `ghu_` and `ghr_` share one shard, so the other row is revoked in the same apply.
+            if let Some(other) = m.fields().get(hash).and_then(|f| f.paired) {
+                revoke(t, &other);
+            }
+        }
+        TokensEvent::SshKey { fingerprint, account, repo } => {
+            m.ssh_keys().put(*fingerprint, SshKeyRow { account: *account, repo: *repo })
+        }
+        TokensEvent::SshKeyRemoved { fingerprint } => {
+            m.ssh_keys().del(fingerprint);
+            m.ssh_removed().put(*fingerprint, ());
+        }
+        TokensEvent::JtiRevoked { jti, exp } => m.jtis().put(*jti, *exp),
+        TokensEvent::LifeboatRead { hash, account } => m.lifeboat().put(*hash, *account),
+        TokensEvent::VerifyingKey { kid, key, retired } => {
+            m.verifying().put(*kid, VerifyingKeyRow { key: *key, retired: *retired })
+        }
+        TokensEvent::Code { hash, kind, client, scopes, account, expires } => m.codes().put(
+            *hash,
+            CodeRow {
+                kind: kind.clone(),
+                client: *client,
+                scopes: *scopes,
+                account: *account,
+                expires: *expires,
+                approved: None,
+                used: false,
+            },
+        ),
+        TokensEvent::CodeApproved { hash, account } => {
+            if let Some(c) = m.codes().get(hash).cloned() {
+                m.codes().put(*hash, CodeRow { approved: Some(*account), ..c });
+            }
+        }
+        TokensEvent::CodeUsed { hash } => {
+            if let Some(c) = m.codes().get(hash).cloned() {
+                m.codes().put(*hash, CodeRow { used: true, ..c });
             }
         }
     }
 }
 
-pub struct TokensScratch<'a> {
-    fold: &'a TokensFold,
-    tokens: Overlay<'a, [u8; 32], TokenRow>,
+struct MoreOverlay<'a> {
+    fields: Overlay<'a, [u8; 32], TokenFields>,
+    ssh_keys: Overlay<'a, Fingerprint, SshKeyRow>,
+    ssh_removed: SetOverlay<'a, Fingerprint>,
+    jtis: Overlay<'a, Jti, Timestamp>,
+    lifeboat: Overlay<'a, [u8; 32], AccountId>,
+    verifying: Overlay<'a, Kid, VerifyingKeyRow>,
+    codes: Overlay<'a, [u8; 32], CodeRow>,
 }
 
-impl TokensRead for TokensScratch<'_> {
-    fn token(&self, hash: &[u8; 32]) -> Option<TokenRow> {
-        self.tokens.get(hash).copied()
+pub struct TokensScratch<'a> {
+    fold: &'a TokensFold,
+    /// The entry's time: what `decide` and `verify` compare a code's `expires` and a `jti`'s `exp` with.
+    at: Timestamp,
+    tokens: Overlay<'a, [u8; 32], TokenRow>,
+    more: MoreOverlay<'a>,
+}
+
+impl TokensScratch<'_> {
+    pub fn at(&self) -> Timestamp {
+        self.at
+    }
+}
+
+tokens_read!(TokensScratch<'_>);
+
+/// The shard a key must live on, so a leader or follower refuses a row on another shard.
+fn shard_of_event(ev: &TokensEvent) -> Option<TokenShard> {
+    match ev {
+        TokensEvent::Stored { hash, .. }
+        | TokensEvent::StoredWith { hash, .. }
+        | TokensEvent::LifeboatRead { hash, .. }
+        | TokensEvent::Code { hash, .. } => Some(shard_of_hash(hash)),
+        TokensEvent::SshKey { fingerprint, .. } | TokensEvent::SshKeyRemoved { fingerprint } => {
+            Some(fingerprint_shard(fingerprint))
+        }
+        TokensEvent::JtiRevoked { jti, .. } => Some(jti_shard(jti)),
+        TokensEvent::VerifyingKey { .. } => Some(TokenShard(0)),
+        TokensEvent::Revoked { .. } | TokensEvent::CodeApproved { .. } | TokensEvent::CodeUsed { .. } => None,
     }
 }
 
 impl Scratch for TokensScratch<'_> {
     type Event = TokensEvent;
     fn apply(&mut self, ev: &TokensEvent) {
-        write(ev, &mut self.tokens);
+        write(ev, &mut self.tokens, &mut self.more);
     }
-    /// A hash is stored once, ever, and only on its own shard.
+    /// A hash or fingerprint is stored once, ever, and only on its own shard; an SSH fingerprint has one owner; a
+    /// code is used once, only before it lapses, and a user code is approved once.
     fn check(&self, ev: &TokensEvent) -> Result<(), Box<str>> {
+        if let (Some(want), Some(have)) = (shard_of_event(ev), self.fold.shard)
+            && want != have
+        {
+            return Err(format!("row of shard {want:?} on shard {have:?}").into());
+        }
+        let now = self.at;
         match ev {
-            TokensEvent::Stored { hash, .. } if self.token(hash).is_some() => Err("hash stored twice".into()),
-            TokensEvent::Stored { hash, .. } if self.fold.shard.is_some_and(|s| s != shard_of_hash(hash)) => {
-                Err("hash stored on another shard".into())
+            TokensEvent::Stored { hash, .. } | TokensEvent::StoredWith { hash, .. } if self.token(hash).is_some() => {
+                Err("hash stored twice".into())
             }
+            TokensEvent::SshKey { fingerprint, account, .. } => match self.ssh_key(fingerprint) {
+                Some(r) if r.account != *account => Err(format!("{fingerprint:?} belongs to {:?}", r.account).into()),
+                Some(_) => Err("fingerprint added twice".into()),
+                None if self.ssh_removed(fingerprint) => Err("fingerprint removed before".into()),
+                None => Ok(()),
+            },
+            TokensEvent::Code { hash, .. } if self.more.codes.get(hash).is_some() => Err("code stored twice".into()),
+            TokensEvent::CodeApproved { hash, .. } => match self.code(hash, now) {
+                Some(c) if c.approved.is_none() && !c.used => Ok(()),
+                _ => Err("approval of a missing, lapsed, approved, or used code".into()),
+            },
+            TokensEvent::CodeUsed { hash } => match self.code(hash, now) {
+                Some(c) if !c.used => Ok(()),
+                _ => Err("use of a missing, lapsed, or used code".into()),
+            },
             _ => Ok(()),
         }
     }
@@ -343,11 +898,41 @@ impl Scratch for TokensScratch<'_> {
 impl Fold for TokensFold {
     type Event = TokensEvent;
     type Scratch<'a> = TokensScratch<'a>;
+    /// A scratch with no entry time sees every code as lapsed; the leader and `verify` use `scratch_at`.
     fn scratch(&self) -> TokensScratch<'_> {
-        TokensScratch { fold: self, tokens: Overlay::new(&self.tokens) }
+        self.scratch_at(Timestamp(0), TierSet::CORE)
+    }
+    fn scratch_at(&self, at: Timestamp, _tiers: TierSet) -> TokensScratch<'_> {
+        let m = &self.more;
+        TokensScratch {
+            fold: self,
+            at,
+            tokens: Overlay::new(&self.tokens),
+            more: MoreOverlay {
+                fields: Overlay::new(&m.fields),
+                ssh_keys: Overlay::new(&m.ssh_keys),
+                ssh_removed: SetOverlay::new(&m.ssh_removed),
+                jtis: Overlay::new(&m.jtis),
+                lifeboat: Overlay::new(&m.lifeboat),
+                verifying: Overlay::new(&m.verifying),
+                codes: Overlay::new(&m.codes),
+            },
+        }
     }
     fn apply(&mut self, ev: &TokensEvent) {
-        write(ev, &mut self.tokens);
+        write(ev, &mut self.tokens, &mut self.more);
+    }
+    /// Applies the entry, then drops every `jti` and code row that lapsed by the entry's time, so every member
+    /// prunes the same rows. A lapsed row already read as absent; pruning only bounds the fold.
+    fn apply_entry(&mut self, e: &graftyard_raft::LogEntry<TokensEvent>) {
+        if let graftyard_raft::EntryBody::Events(evs) = &e.body {
+            for ev in evs {
+                self.apply(ev);
+            }
+        }
+        let now = e.at;
+        self.more.jtis.retain(|_, exp| *exp > now);
+        self.more.codes.retain(|_, c| c.expires > now);
     }
 }
 
@@ -370,6 +955,84 @@ pub enum TokensOp {
     Revoke {
         hash: [u8; 32],
     },
+    // ---- Milestone 3, format 2 ----
+    /// A stored token with the optional fields its kind may carry: a `github_pat_`, a `gho_`, or a `ghu_` with no
+    /// refresh token.
+    StoreWith {
+        hash: [u8; 32],
+        kind: TokenKind,
+        account: AccountId,
+        scopes: ScopeSet,
+        expires: Option<Timestamp>,
+        fields: TokenFields,
+    },
+    /// A `ghu_` and its `ghr_`, in one entry: the `ghr_` secret was redrawn onto the `ghu_`'s shard
+    /// (`draw_secret_on`). Each row's `paired` names the other.
+    StorePair {
+        user: [u8; 32],
+        refresh: [u8; 32],
+        account: AccountId,
+        scopes: ScopeSet,
+        user_expires: Option<Timestamp>,
+        refresh_expires: Option<Timestamp>,
+        fields: TokenFields,
+    },
+    /// An SSH key or deploy key: the commit point, and where a fingerprint is unique.
+    AddSshKey {
+        fingerprint: Fingerprint,
+        account: AccountId,
+        repo: Option<RepoId>,
+    },
+    RemoveSshKey {
+        fingerprint: Fingerprint,
+    },
+    /// `DELETE /installation/token`: the stateless token's `jti` until its `exp`. The edge submits it with no account
+    /// once it has verified the token it revokes.
+    RevokeJti {
+        jti: Jti,
+        exp: Timestamp,
+    },
+    /// An installation-token verifying key on `TokenShard(0)`. Only `graft-ops` submits it; a key may later only
+    /// gain its `retired` time.
+    PutVerifyingKey {
+        kid: Kid,
+        key: Ed25519Public,
+        retired: Option<Timestamp>,
+    },
+    /// A `lifeboat:read` token's hash. Only `graftyard lifeboat enroll`, through the operator, submits it.
+    StoreLifeboat {
+        hash: [u8; 32],
+        account: AccountId,
+    },
+    /// An authorization code or a sign-in link. The leader sets `expires` from the entry's time and the kind's TTL.
+    PutCode {
+        hash: [u8; 32],
+        kind: CodeKind,
+        client: Option<ClientId>,
+        scopes: ScopeSet,
+        account: Option<AccountId>,
+    },
+    /// A device flow's device code and user code, in one entry: the device code was redrawn onto the user code's
+    /// shard (`draw_device_code`).
+    PutDeviceCode {
+        device: [u8; 32],
+        user: [u8; 32],
+        client: ClientId,
+        scopes: ScopeSet,
+        interval: u8,
+    },
+    /// The signed-in user approves a user code.
+    ApproveCode {
+        user: [u8; 32],
+        account: AccountId,
+    },
+    /// An exchange's first commit: the code is spent, once. The edge then stores the new token for the account and
+    /// scopes of the row it read, which stays readable until it lapses, and a failed second commit sends the client
+    /// back to the start.
+    UseCode {
+        hash: [u8; 32],
+        client: Option<ClientId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -386,6 +1049,39 @@ pub enum TokensErr {
     NotStored,
     NoToken,
     AlreadyRevoked,
+    /// The optional fields do not fit the token's kind.
+    BadFields,
+    /// The SSH fingerprint belongs to this account already, or to another.
+    KeyTaken {
+        by: AccountId,
+    },
+    NoKey,
+    /// The verifying key differs from the one `kid` already names.
+    KeyChanged,
+    /// The code is missing or lapsed: `expired_token`.
+    NoCode,
+    /// The code was spent: a second exchange gets nothing.
+    CodeUsed,
+    /// The device code's user code is not approved yet: `authorization_pending`.
+    Pending,
+    /// The code belongs to another client, or is the wrong kind for the op.
+    WrongCode,
+    AlreadyApproved,
+}
+
+fn store_cmd(
+    e: &mut Enc,
+    hash: &[u8; 32],
+    kind: TokenKind,
+    account: AccountId,
+    scopes: ScopeSet,
+    x: Option<Timestamp>,
+) {
+    e.0.extend_from_slice(hash);
+    e.u8(kind as u8);
+    enc::account(e, account);
+    e.u64(scopes.0);
+    e.option(x.as_ref(), |e, t| enc::at(e, *t));
 }
 
 impl Record for TokensCmd {
@@ -395,30 +1091,339 @@ impl Record for TokensCmd {
         match &self.op {
             TokensOp::Store { hash, kind, account, scopes, expires } => {
                 e.u8(0);
-                e.0.extend_from_slice(hash);
-                e.u8(*kind as u8);
-                enc::account(&mut e, *account);
-                e.u64(scopes.0);
-                e.option(expires.as_ref(), |e, t| enc::at(e, *t));
+                store_cmd(&mut e, hash, *kind, *account, *scopes, *expires);
             }
             TokensOp::Revoke { hash } => {
                 e.u8(1);
                 e.0.extend_from_slice(hash);
+            }
+            TokensOp::StoreWith { hash, kind, account, scopes, expires, fields } => {
+                e.u8(2);
+                store_cmd(&mut e, hash, *kind, *account, *scopes, *expires);
+                token_fields(&mut e, fields);
+            }
+            TokensOp::StorePair { user, refresh, account, scopes, user_expires, refresh_expires, fields } => {
+                e.u8(3);
+                e.0.extend_from_slice(user);
+                e.0.extend_from_slice(refresh);
+                enc::account(&mut e, *account);
+                e.u64(scopes.0);
+                e.option(user_expires.as_ref(), |e, t| enc::at(e, *t));
+                e.option(refresh_expires.as_ref(), |e, t| enc::at(e, *t));
+                token_fields(&mut e, fields);
+            }
+            TokensOp::AddSshKey { fingerprint, account, repo } => {
+                e.u8(4);
+                e.0.extend_from_slice(&fingerprint.0);
+                enc::account(&mut e, *account);
+                e.option(repo.as_ref(), |e, r| enc::repo(e, *r));
+            }
+            TokensOp::RemoveSshKey { fingerprint } => {
+                e.u8(5);
+                e.0.extend_from_slice(&fingerprint.0);
+            }
+            TokensOp::RevokeJti { jti, exp } => {
+                e.u8(6);
+                e.u128(jti.0.0);
+                enc::at(&mut e, *exp);
+            }
+            TokensOp::PutVerifyingKey { kid, key, retired } => {
+                e.u8(7);
+                e.u32(kid.0);
+                e.0.extend_from_slice(&key.0);
+                e.option(retired.as_ref(), |e, t| enc::at(e, *t));
+            }
+            TokensOp::StoreLifeboat { hash, account } => {
+                e.u8(8);
+                e.0.extend_from_slice(hash);
+                enc::account(&mut e, *account);
+            }
+            TokensOp::PutCode { hash, kind, client, scopes, account } => {
+                e.u8(9);
+                e.0.extend_from_slice(hash);
+                code_kind(&mut e, kind);
+                e.option(client.as_ref(), apps::client);
+                e.u64(scopes.0);
+                e.option(account.as_ref(), |e, a| enc::account(e, *a));
+            }
+            TokensOp::PutDeviceCode { device, user, client, scopes, interval } => {
+                e.u8(10);
+                e.0.extend_from_slice(device);
+                e.0.extend_from_slice(user);
+                apps::client(&mut e, client);
+                e.u64(scopes.0);
+                e.u8(*interval);
+            }
+            TokensOp::ApproveCode { user, account } => {
+                e.u8(11);
+                e.0.extend_from_slice(user);
+                enc::account(&mut e, *account);
+            }
+            TokensOp::UseCode { hash, client } => {
+                e.u8(12);
+                e.0.extend_from_slice(hash);
+                e.option(client.as_ref(), apps::client);
             }
         }
     }
 }
 
 impl TokensCmd {
-    fn hash(&self) -> &[u8; 32] {
+    /// The shard this command's key lives on: a stored hash's, a fingerprint's, a `jti`'s, `TokenShard(0)` for a
+    /// verifying key, and a code hash's.
+    pub fn shard(&self) -> TokenShard {
         match &self.op {
-            TokensOp::Store { hash, .. } | TokensOp::Revoke { hash } => hash,
+            TokensOp::Store { hash, .. }
+            | TokensOp::Revoke { hash }
+            | TokensOp::StoreWith { hash, .. }
+            | TokensOp::StorePair { user: hash, .. }
+            | TokensOp::StoreLifeboat { hash, .. }
+            | TokensOp::PutCode { hash, .. }
+            | TokensOp::PutDeviceCode { user: hash, .. }
+            | TokensOp::ApproveCode { user: hash, .. }
+            | TokensOp::UseCode { hash, .. } => shard_of_hash(hash),
+            TokensOp::AddSshKey { fingerprint, .. } | TokensOp::RemoveSshKey { fingerprint } => {
+                fingerprint_shard(fingerprint)
+            }
+            TokensOp::RevokeJti { jti, .. } => jti_shard(jti),
+            TokensOp::PutVerifyingKey { .. } => TokenShard(0),
         }
     }
 
     /// A user acts only for itself; a command with no account (`graft-ops`, the CLI) acts for any.
     fn acts_for(&self, account: AccountId) -> bool {
         self.cred.account.is_none_or(|a| a == account)
+    }
+
+    fn operator(&self) -> bool {
+        self.cred.account.is_none()
+    }
+
+    fn decide_op(&self, s: &TokensScratch<'_>) -> Result<(SmallVec<[TokensEvent; 4]>, ()), TokensErr> {
+        let done = |evs: SmallVec<[TokensEvent; 4]>| Ok((evs, ()));
+        let now = s.at;
+        let fresh = |hash: &[u8; 32]| {
+            if s.token(hash).is_some() { Err(TokensErr::Exists) } else { Ok(()) }
+        };
+        match &self.op {
+            TokensOp::Store { hash, kind, account, scopes, expires } => {
+                if !self.acts_for(*account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                if *kind == TokenKind::Installation {
+                    return Err(TokensErr::NotStored);
+                }
+                fresh(hash)?;
+                let ev = TokensEvent::Stored {
+                    hash: *hash,
+                    kind: *kind,
+                    account: *account,
+                    scopes: *scopes,
+                    expires: *expires,
+                };
+                done(smallvec![ev])
+            }
+            TokensOp::Revoke { hash } => {
+                let row = s.token(hash).ok_or(TokensErr::NoToken)?;
+                if !self.acts_for(row.account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                if row.revoked {
+                    return Err(TokensErr::AlreadyRevoked);
+                }
+                done(smallvec![TokensEvent::Revoked { hash: *hash }])
+            }
+            TokensOp::StoreWith { hash, kind, account, scopes, expires, fields } => {
+                if !self.acts_for(*account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                if *kind == TokenKind::Installation {
+                    return Err(TokensErr::NotStored);
+                }
+                // A paired row comes only from `StorePair`, and a `ghr_` never stands alone.
+                if !fields.fits(*kind) || fields.paired.is_some() || *kind == TokenKind::Refresh {
+                    return Err(TokensErr::BadFields);
+                }
+                fresh(hash)?;
+                done(smallvec![stored(*hash, *kind, *account, *scopes, *expires, fields.clone())])
+            }
+            TokensOp::StorePair { user, refresh, account, scopes, user_expires, refresh_expires, fields } => {
+                if !self.acts_for(*account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                let want = shard_of_hash(user);
+                if shard_of_hash(refresh) != want {
+                    return Err(TokensErr::WrongShard { want });
+                }
+                if user == refresh || fields.paired.is_some() || !fields.fits(TokenKind::UserToServer) {
+                    return Err(TokensErr::BadFields);
+                }
+                fresh(user)?;
+                fresh(refresh)?;
+                // The `ghr_` carries the App and client, never the `ghu_`'s permissions, grant, or write scope.
+                let r = TokenFields {
+                    sso_orgs: fields.sso_orgs.clone(),
+                    app: fields.app,
+                    client: fields.client,
+                    paired: Some(*user),
+                    ..TokenFields::default()
+                };
+                let u = TokenFields { paired: Some(*refresh), ..fields.clone() };
+                done(smallvec![
+                    stored(*user, TokenKind::UserToServer, *account, *scopes, *user_expires, u),
+                    stored(*refresh, TokenKind::Refresh, *account, *scopes, *refresh_expires, r),
+                ])
+            }
+            TokensOp::AddSshKey { fingerprint, account, repo } => {
+                if !self.acts_for(*account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                if let Some(r) = s.ssh_key(fingerprint) {
+                    return Err(TokensErr::KeyTaken { by: r.account });
+                }
+                done(smallvec![TokensEvent::SshKey { fingerprint: *fingerprint, account: *account, repo: *repo }])
+            }
+            TokensOp::RemoveSshKey { fingerprint } => {
+                let r = s.ssh_key(fingerprint).ok_or(TokensErr::NoKey)?;
+                if !self.acts_for(r.account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                done(smallvec![TokensEvent::SshKeyRemoved { fingerprint: *fingerprint }])
+            }
+            TokensOp::RevokeJti { jti, exp } => {
+                if !self.operator() {
+                    return Err(TokensErr::Forbidden);
+                }
+                // A revoked or already expired token needs no row; `DELETE` answers 204 either way.
+                if s.jti_revoked(jti, now) || *exp <= now {
+                    return done(SmallVec::new());
+                }
+                done(smallvec![TokensEvent::JtiRevoked { jti: *jti, exp: *exp }])
+            }
+            TokensOp::PutVerifyingKey { kid, key, retired } => {
+                if !self.operator() {
+                    return Err(TokensErr::Forbidden);
+                }
+                if s.verifying_key(*kid).is_some_and(|r| r.key != *key) {
+                    return Err(TokensErr::KeyChanged);
+                }
+                done(smallvec![TokensEvent::VerifyingKey { kid: *kid, key: *key, retired: *retired }])
+            }
+            TokensOp::StoreLifeboat { hash, account } => {
+                if !self.operator() {
+                    return Err(TokensErr::Forbidden);
+                }
+                if s.lifeboat(hash).is_some() || s.token(hash).is_some() {
+                    return Err(TokensErr::Exists);
+                }
+                done(smallvec![TokensEvent::LifeboatRead { hash: *hash, account: *account }])
+            }
+            TokensOp::PutCode { hash, kind, client, scopes, account } => {
+                // A device flow's pair comes only from `PutDeviceCode`; a sign-in link names its account.
+                let ok = match kind {
+                    CodeKind::Authorization { .. } => client.is_some() && account.is_some(),
+                    CodeKind::SignInLink => client.is_none() && account.is_some(),
+                    CodeKind::Device { .. } | CodeKind::User { .. } => false,
+                };
+                if !ok {
+                    return Err(TokensErr::WrongCode);
+                }
+                if account.is_some_and(|a| !self.acts_for(a))
+                    || matches!(kind, CodeKind::SignInLink) && !self.operator()
+                {
+                    return Err(TokensErr::Forbidden);
+                }
+                if s.more.codes.get(hash).is_some() {
+                    return Err(TokensErr::Exists);
+                }
+                let expires = later(now, kind.ttl());
+                done(smallvec![TokensEvent::Code {
+                    hash: *hash,
+                    kind: kind.clone(),
+                    client: *client,
+                    scopes: *scopes,
+                    account: *account,
+                    expires,
+                }])
+            }
+            TokensOp::PutDeviceCode { device, user, client, scopes, interval } => {
+                let want = shard_of_hash(user);
+                if shard_of_hash(device) != want {
+                    return Err(TokensErr::WrongShard { want });
+                }
+                if device == user || s.more.codes.get(device).is_some() || s.more.codes.get(user).is_some() {
+                    return Err(TokensErr::Exists);
+                }
+                let expires = later(now, DEVICE_CODE_TTL);
+                let code = |hash: [u8; 32], kind| TokensEvent::Code {
+                    hash,
+                    kind,
+                    client: Some(*client),
+                    scopes: *scopes,
+                    account: None,
+                    expires,
+                };
+                done(smallvec![
+                    code(*device, CodeKind::Device { user_code: *user, interval: *interval }),
+                    code(*user, CodeKind::User { device_code: *device }),
+                ])
+            }
+            TokensOp::ApproveCode { user, account } => {
+                if !self.acts_for(*account) {
+                    return Err(TokensErr::Forbidden);
+                }
+                let c = s.code(user, now).ok_or(TokensErr::NoCode)?;
+                if !matches!(c.kind, CodeKind::User { .. }) {
+                    return Err(TokensErr::WrongCode);
+                }
+                if c.used {
+                    return Err(TokensErr::CodeUsed);
+                }
+                if c.approved.is_some() {
+                    return Err(TokensErr::AlreadyApproved);
+                }
+                done(smallvec![TokensEvent::CodeApproved { hash: *user, account: *account }])
+            }
+            TokensOp::UseCode { hash, client } => {
+                let c = s.code(hash, now).ok_or(TokensErr::NoCode)?;
+                if c.client != *client {
+                    return Err(TokensErr::WrongCode);
+                }
+                if c.used {
+                    return Err(TokensErr::CodeUsed);
+                }
+                match &c.kind {
+                    CodeKind::User { .. } => return Err(TokensErr::WrongCode),
+                    CodeKind::Device { user_code, .. } => {
+                        if s.code(user_code, now).and_then(|u| u.approved).is_none() {
+                            return Err(TokensErr::Pending);
+                        }
+                    }
+                    CodeKind::Authorization { .. } | CodeKind::SignInLink => {}
+                }
+                done(smallvec![TokensEvent::CodeUsed { hash: *hash }])
+            }
+        }
+    }
+}
+
+fn later(t: Timestamp, d: Duration) -> Timestamp {
+    Timestamp(t.0.saturating_add(d.as_millis() as u64))
+}
+
+/// Milestone 1's `Stored` when the fields are empty, so such a row keeps its bytes; `StoredWith` otherwise.
+fn stored(
+    hash: [u8; 32],
+    kind: TokenKind,
+    account: AccountId,
+    scopes: ScopeSet,
+    expires: Option<Timestamp>,
+    fields: TokenFields,
+) -> TokensEvent {
+    if fields.is_empty() {
+        TokensEvent::Stored { hash, kind, account, scopes, expires }
+    } else {
+        TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields: Box::new(fields) }
     }
 }
 
@@ -428,8 +1433,12 @@ impl Command for TokensCmd {
     type Out = ();
     type Err = TokensErr;
 
+    /// Milestone 1's ops keep format 1, so their entries are what an older release reads; the rest are format 2.
     fn format(&self) -> Format {
-        TOKENS_FORMAT
+        match self.op {
+            TokensOp::Store { .. } | TokensOp::Revoke { .. } => TOKENS_FORMAT,
+            _ => TOKENS_FORMAT_V2,
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
@@ -447,41 +1456,11 @@ impl Command for TokensCmd {
             None => Own::Other,
         };
         check_credential(&self.cred, own, deps).map_err(TokensErr::Unauthorized)?;
-        let want = shard_of_hash(self.hash());
+        let want = self.shard();
         if s.fold.shard.is_some_and(|have| have != want) {
             return Err(TokensErr::WrongShard { want });
         }
-        match &self.op {
-            TokensOp::Store { hash, kind, account, scopes, expires } => {
-                if !self.acts_for(*account) {
-                    return Err(TokensErr::Forbidden);
-                }
-                if *kind == TokenKind::Installation {
-                    return Err(TokensErr::NotStored);
-                }
-                if s.token(hash).is_some() {
-                    return Err(TokensErr::Exists);
-                }
-                let ev = TokensEvent::Stored {
-                    hash: *hash,
-                    kind: *kind,
-                    account: *account,
-                    scopes: *scopes,
-                    expires: *expires,
-                };
-                Ok((smallvec![ev], ()))
-            }
-            TokensOp::Revoke { hash } => {
-                let row = s.token(hash).ok_or(TokensErr::NoToken)?;
-                if !self.acts_for(row.account) {
-                    return Err(TokensErr::Forbidden);
-                }
-                if row.revoked {
-                    return Err(TokensErr::AlreadyRevoked);
-                }
-                Ok((smallvec![TokensEvent::Revoked { hash: *hash }], ()))
-            }
-        }
+        self.decide_op(s)
     }
     fn replay(&self, _events: &[TokensEvent]) {}
 }
