@@ -194,26 +194,54 @@ pub async fn registry_record(b: &Bindings<'_>, chain: ChainId) -> Option<Placeme
     None
 }
 
-/// The candidates of one pass, in the rule's order, each with the step that named it.
-async fn candidates(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord) -> Vec<(SiteId, String, Step)> {
-    let mut out: Vec<(SiteId, String, Step)> = Vec::new();
-    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
-    if !known.voters.is_empty() {
+/// One stage of a lookup pass (`design/DESIGN.md`, Shape, `ReplyMeta`): stage 0 is the cached config, leader first,
+/// then the first record's bootstrap names; stage `2i + 1` is record `i`'s registry rows; stage `2i + 2` is record
+/// `i + 1`'s bootstrap names. `None` past the last record. A pass reads a stage only once every earlier candidate
+/// failed to answer, so a lookup that the cache or the bootstrap names answer reads no registry row: each row is a call
+/// to a record site's registry, one per site in turn, and reading all three before calling anyone cost about 400 ms of
+/// every edge read (`tests/m2/results/m2-wp6.md`, "Merge latency").
+enum Stage {
+    Names(Vec<(SiteId, String, Step)>),
+    Registry { depth: usize, sites: Vec<SiteId> },
+}
+
+fn stage(known: &Known, record: &PlacementRecord, chain: ChainId, k: usize) -> Option<Stage> {
+    let depth = k / 2;
+    let r = record.lookup_order().nth(depth)?;
+    if k % 2 == 1 {
+        return Some(Stage::Registry { depth, sites: r.sites.to_vec() });
+    }
+    let mut out = Vec::new();
+    if k == 0 && !known.voters.is_empty() {
         let mut vs = known.voters.clone();
         vs.sort_by_key(|(s, _)| Some(*s) != known.leader);
         out.extend(vs.into_iter().map(|(s, n)| (s, n, Step::Cached)));
     }
-    for (depth, r) in record.lookup_order().enumerate() {
-        for m in r.bootstrap_members(chain) {
-            out.push((m.site, m.do_name.to_string(), Step::Bootstrap { depth }));
+    out.extend(
+        r.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string(), Step::Bootstrap { depth })),
+    );
+    Some(Stage::Names(out))
+}
+
+/// Stage `k`'s candidates, its registry rows read in parallel. `None` past the last stage.
+async fn candidates(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    k: usize,
+) -> Option<Vec<(SiteId, String, Step)>> {
+    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+    Some(match stage(&known, record, chain, k)? {
+        Stage::Names(v) => v,
+        Stage::Registry { depth, sites } => {
+            let rows = futures_util::future::join_all(sites.iter().map(|s| registry_row(b, *s, chain))).await;
+            sites
+                .into_iter()
+                .zip(rows)
+                .filter_map(|(s, row)| Some((s, row?.do_name.to_string(), Step::Registry { depth })))
+                .collect()
         }
-        for s in &r.sites {
-            if let Some(row) = registry_row(b, *s, chain).await {
-                out.push((*s, row.do_name.to_string(), Step::Registry { depth }));
-            }
-        }
-    }
-    out
+    })
 }
 
 /// Calls `path` on the group's leader, found by the rule, with a raw body. Returns the leader's answer, the step
@@ -235,7 +263,8 @@ pub async fn call_opt(
     let mut first_pass = true;
     let mut term = 0;
     while now_ms() < end {
-        let cands = candidates(b, chain, record).await;
+        let mut k = 0;
+        let mut cands = candidates(b, chain, record, k).await.unwrap_or_default();
         let mut unjoined = 0;
         let mut others = 0;
         let mut tried = std::collections::BTreeSet::new();
@@ -246,8 +275,18 @@ pub async fn call_opt(
         // no leader, as `commit_hedged` does, or a group whose members all reset stays leaderless for a caller
         // whose only call is this lookup (a commit's `/outcome_by_request`).
         let mut leaderless: Option<Target> = None;
-        let mut queue: std::collections::VecDeque<(SiteId, String, Step)> = cands.into();
-        while let Some((s, name, step)) = queue.pop_front() {
+        let mut queue: std::collections::VecDeque<(SiteId, String, Step)> = std::mem::take(&mut cands).into();
+        loop {
+            let Some((s, name, step)) = queue.pop_front() else {
+                k += 1;
+                match candidates(b, chain, record, k).await {
+                    Some(next) => {
+                        queue.extend(next);
+                        continue;
+                    }
+                    None => break,
+                }
+            };
             if !tried.insert(name.clone()) {
                 continue;
             }
@@ -400,6 +439,13 @@ pub async fn commit(
 /// The receipt deadline of a commit: COMMIT_HOLD plus CALL_DEADLINE.
 pub const COMMIT_RECEIPT: Duration = Duration::from_millis(2_000);
 
+/// The member the caller last saw lead `chain`, if its config names it.
+pub fn cached_leader(chain: ChainId) -> Option<Target> {
+    let k = KNOWN.with(|k| k.borrow().get(&chain).cloned())?;
+    let leader = k.leader?;
+    k.voters.into_iter().find(|(s, _)| *s == leader).map(|(site, do_name)| Target { site, do_name })
+}
+
 /// The voters the caller knows for `chain`, from the last config it learned.
 pub fn known_voters(chain: ChainId) -> Vec<Target> {
     KNOWN
@@ -460,19 +506,25 @@ pub async fn commit_hedged(
     hooks: Hooks<'_>,
 ) -> std::result::Result<Value, std::result::Result<Value, String>> {
     let Hooks { first, trace } = hooks;
-    let note = |v: Value| {
+    let start = now_ms();
+    let note = |mut v: Value| {
         if let Some(t) = trace {
+            v["ms"] = json!(now_ms() - start);
             t.borrow_mut().push(v);
         }
     };
-    // Why the next send goes where it goes: the first lookup's answer (`lookup`), the previous target again (`same`), a
-    // voter that answered a `suspect` as leader (`suspectLed`), a new lookup after `NotLeader` named a leader
-    // (`notLeader`), the next voter after a `NotLeader` naming none (`leaderless`), or a new lookup after one that
-    // found no leader (`relookup`).
-    let mut why = "lookup";
+    // Why the next send goes where it goes: the cached leader (`cached`), the first lookup's answer (`lookup`), the
+    // previous target again (`same`), a voter that answered a `suspect` as leader (`suspectLed`), a new lookup after
+    // `NotLeader` named a leader (`notLeader`), the next voter after a `NotLeader` naming none (`leaderless`), or a new
+    // lookup after one that found no leader (`relookup`).
     let end = now_ms() + for_ms;
     let mut first = first;
-    let mut target: Option<Target> = None;
+    // The leader this isolate's last reply from the group named, if it knows one: the first send goes straight to it,
+    // as "Commit and read paths" finds members "from its cached `GroupConfig`". A member that no longer leads answers
+    // `NotLeader`, which starts the lookup below. Looking it up first cost one more round trip to the leader, up to
+    // 190 ms from another continent (`tests/m2/results/m2-wp6.md`, "Merge latency").
+    let mut target: Option<Target> = cached_leader(chain);
+    let mut why = if target.is_some() { "cached" } else { "lookup" };
     let mut prev: Option<Target> = None;
     let mut tries = 0u32;
     let mut term = 0;
@@ -755,5 +807,56 @@ mod tests {
             assert!(!readable(&v, &keys), "{v}");
         }
         assert_eq!(unreadable()["unsupported"]["family"], 0);
+    }
+
+    fn rec(generation: u32, moving_from: Option<PlacementRecord>) -> PlacementRecord {
+        PlacementRecord {
+            name: graftyard_types::PlacementName::Tri,
+            home: SiteId(0),
+            sites: [SiteId(0), SiteId(1), SiteId(2)].into_iter().collect(),
+            generation,
+            moving_from: moving_from.map(Box::new),
+            at: Timestamp(0),
+        }
+    }
+
+    /// The rule's order, one stage at a time: the cached config leader first, then the record's bootstrap names; its
+    /// registry rows only after them; then the same for `moving_from`. A stage that holds a registry read is never
+    /// part of the first stage, so a lookup answered by the cache or the names makes no registry call.
+    /// The first commit send goes to the leader the last reply named, when the cached config holds it; with no
+    /// leader cached, or one the config does not name, the edge looks the leader up first.
+    #[test]
+    fn a_commit_starts_at_the_cached_leader() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(8)));
+        assert_eq!(cached_leader(chain), None);
+        let voters = vec![(SiteId(0), "a".to_string()), (SiteId(2), "c".to_string())];
+        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { voters, config_index: 1, leader: Some(SiteId(2)) }));
+        assert_eq!(cached_leader(chain), Some(Target { site: SiteId(2), do_name: "c".into() }));
+        forget_leader(chain);
+        assert_eq!(cached_leader(chain), None);
+        KNOWN.with(|k| k.borrow_mut().get_mut(&chain).unwrap().leader = Some(SiteId(1)));
+        assert_eq!(cached_leader(chain), None, "a leader outside the config is not sent to");
+    }
+
+    #[test]
+    fn a_lookup_reads_registry_rows_only_after_the_names_missed() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(7)));
+        let record = rec(2, Some(rec(1, None)));
+        let known = Known {
+            voters: vec![(SiteId(0), "a".into()), (SiteId(1), "b".into())],
+            config_index: 3,
+            leader: Some(SiteId(1)),
+        };
+        let Some(Stage::Names(first)) = stage(&known, &record, chain, 0) else { panic!("stage 0 reads names") };
+        let order: Vec<(u8, Step)> = first.iter().map(|(s, _, st)| (s.0, *st)).collect();
+        assert_eq!(&order[..2], &[(1, Step::Cached), (0, Step::Cached)]);
+        assert!(order[2..].iter().all(|(_, st)| *st == Step::Bootstrap { depth: 0 }));
+        assert_eq!(first.len(), 5);
+        assert!(matches!(stage(&known, &record, chain, 1), Some(Stage::Registry { depth: 0, .. })));
+        let Some(Stage::Names(moved)) = stage(&known, &record, chain, 2) else { panic!("stage 2 reads names") };
+        assert!(moved.iter().all(|(_, n, st)| *st == Step::Bootstrap { depth: 1 } && n.contains("#1#")));
+        assert!(matches!(stage(&known, &record, chain, 3), Some(Stage::Registry { depth: 1, .. })));
+        assert!(stage(&known, &record, chain, 4).is_none());
+        assert!(matches!(stage(&Known::default(), &record, chain, 0), Some(Stage::Names(v)) if v.len() == 3));
     }
 }

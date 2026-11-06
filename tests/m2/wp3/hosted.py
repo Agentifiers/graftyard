@@ -764,7 +764,8 @@ def bm2_prepare():
     if len([e for e in v["entries"] if e["built"]]) >= 2:
         return v
     for k in range(1, 4):
-        b = f"bm2-{k}"
+        # A fresh branch each time: an earlier run's pull requests stay open after a dequeue.
+        b = f"bm2-{int(time.time()) % 100000:05}-{k}"
         w.fetch_main()
         w.branch(b, {f"bm2/{k}.txt": f"bm2 {k}"})
         n = create_pr(w, f"{RAW}/bm2-setup", f"{k}-create", b)
@@ -851,4 +852,5 @@ def main():
         sys.exit(__doc__)
 
 
-main()
+if __name__ == "__main__":
+    main()

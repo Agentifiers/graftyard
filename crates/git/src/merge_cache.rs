@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::bucket::StoreError;
 use crate::issues::{IssueNumber, MergeMethod};
 use crate::merge::{EngineVersion, MergePlan, MergeRequest, TreeDiffDigest};
 use crate::pack::{DurablePack, PackRef};
@@ -172,6 +173,41 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
     }
 }
 
+/// `GitCacheShard::merge`'s order: merge first, and catch the shard up behind its `IngestCursor` only if the container
+/// answers that a commit is not there (`merge` answers `None`), then merge again. A merge names its commits by id, so
+/// a shard that holds them answers the same before or after a catch-up; `PrSync`'s test merge has usually caught it
+/// up already. Catching up first cost two to three leader reads, 300 to 600 ms of every merge once leadership moved
+/// (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts the container first (`ShardHost::up`): the catch-up
+/// used to, so without it a merge on a stopped container failed "has not been started" and no catch-up followed,
+/// which stalled the `MergeQueue` consumer until another route started the container (same file, BF-21).
+pub async fn merge_then_catch_up<U, Fu, M, Fm, C, Fc>(
+    up: U,
+    mut merge: M,
+    catch_up: C,
+) -> Result<ChainAnswer, StoreError>
+where
+    U: FnOnce() -> Fu,
+    Fu: std::future::Future<Output = Result<(), StoreError>>,
+    M: FnMut() -> Fm,
+    Fm: std::future::Future<Output = Result<Option<ChainAnswer>, StoreError>>,
+    C: FnOnce() -> Fc,
+    Fc: std::future::Future<Output = Result<(), StoreError>>,
+{
+    up().await?;
+    if let Some(a) = merge().await? {
+        return Ok(a);
+    }
+    catch_up().await?;
+    merge().await?.ok_or_else(|| StoreError("a commit of the merge is not in the git cache after catching up".into()))
+}
+
+/// Whether the container's answer to a merge says the shard must catch up first: 409, a commit is not in the
+/// repository, or 404, the container holds no repository for the network (a new container, after its inactivity
+/// timeout or a new image). Catching up rehydrates the repository in that case.
+pub fn needs_catch_up(status: u16) -> bool {
+    matches!(status, 404 | 409)
+}
+
 /// The container's query for a chain: `base=..&heads=..&ns=..&method=..`.
 pub fn chain_query(base: ObjectId, heads: &[(IssueNumber, ObjectId)], method: MergeMethod) -> String {
     let hs: Vec<String> = heads.iter().map(|(_, h)| h.hex()).collect();
@@ -248,6 +284,57 @@ mod tests {
         assert_eq!(plans[1].1.base_old, ObjectId([40; 20]));
         assert_eq!(plans[1].1.commit, ObjectId([50; 20]));
         assert_eq!(plans[1].1.method, MergeMethod::Squash);
+    }
+
+    fn answer() -> ChainAnswer {
+        ChainAnswer { steps: vec![step(4, 5)], conflict: None, pack: None, engine: "git".into() }
+    }
+
+    #[test]
+    fn a_merge_on_a_container_with_no_repository_catches_up_first() {
+        assert!(needs_catch_up(404), "a new container holds no repository for the network");
+        assert!(needs_catch_up(409), "a commit is not there yet");
+        assert!(!needs_catch_up(200) && !needs_catch_up(400) && !needs_catch_up(500));
+    }
+
+    /// A shard that holds both commits merges with no catch-up; one that lacks one catches up once, then merges. The
+    /// container is stopped at first (its inactivity timeout, or a new image), and a merge on it fails.
+    #[test]
+    fn a_merge_catches_up_only_when_a_commit_is_missing() {
+        let run = |held: bool| {
+            let (merges, catchups) = (std::cell::Cell::new(0), std::cell::Cell::new(0));
+            let (caught, running) = (std::cell::Cell::new(held), std::cell::Cell::new(false));
+            let r = futures_executor::block_on(merge_then_catch_up(
+                || {
+                    running.set(true);
+                    async { Ok(()) }
+                },
+                || {
+                    merges.set(merges.get() + 1);
+                    let a = if running.get() {
+                        Ok(caught.get().then(answer))
+                    } else {
+                        Err(StoreError("not started".into()))
+                    };
+                    async move { a }
+                },
+                || {
+                    catchups.set(catchups.get() + 1);
+                    running.set(true);
+                    caught.set(true);
+                    async { Ok(()) }
+                },
+            ));
+            (r, merges.get(), catchups.get())
+        };
+        assert_eq!(run(true), (Ok(answer()), 1, 0), "both commits held: no catch-up");
+        assert_eq!(run(false), (Ok(answer()), 2, 1), "a commit missing: one catch-up, then the merge again");
+        let still_missing = futures_executor::block_on(merge_then_catch_up(
+            || async { Ok(()) },
+            || async { Ok(None) },
+            || async { Ok(()) },
+        ));
+        assert!(still_missing.is_err());
     }
 
     #[test]

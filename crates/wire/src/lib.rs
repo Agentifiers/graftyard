@@ -14,7 +14,7 @@ pub mod time;
 
 pub use host::{Endpoint, Host, HostError};
 pub use ids::{FirstPartyClient, NodeId, NodeType, database_id, full_database_id};
-pub use page::{Page, cursor, link, parse_cursor};
+pub use page::{Page, RepoPath, cursor, link, parse_cursor, repo_path};
 pub use rate::{RateLimits, Window};
 pub use reply::{
     ApiVersion, Body, ENTERPRISE_VERSION, FieldError, Incoming, MediaType, Meta, Reply, Surface, basic_error,

@@ -105,6 +105,9 @@ def deref(node, seen=()):
             return deref(t)
         out = {k: deref(v) for k, v in node.items()}
         if out.pop('nullable', False):
+            # A nullable enum allows null too (GitHub's open issue has `state_reason: null`).
+            if 'enum' in out and None not in out['enum']:
+                out['enum'] = out['enum'] + [None]
             if 'type' in out:
                 out['type'] = [out['type'], 'null']
             else:

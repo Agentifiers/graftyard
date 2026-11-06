@@ -530,10 +530,16 @@ impl ShardHost<'_> {
         base: crate::refs::ObjectId,
         heads: &[(crate::issues::IssueNumber, crate::refs::ObjectId)],
         method: crate::issues::MergeMethod,
-    ) -> Result<crate::merge_cache::ChainAnswer, StoreError> {
+    ) -> Result<Option<crate::merge_cache::ChainAnswer>, StoreError> {
         let q = crate::merge_cache::chain_query(base, heads, method);
-        let mut r = self.ok(Method::Post, &format!("/merge?net={}&{q}", network.0.0), None).await?;
-        r.json().await.map_err(worker_err)
+        let path = format!("/merge?net={}&{q}", network.0.0);
+        let mut r = self.call(Method::Post, &path, None, &[]).await?;
+        match r.status_code() {
+            // A commit of the chain, or the whole repository, is not here yet: the caller catches up and asks again.
+            c if crate::merge_cache::needs_catch_up(c) => Ok(None),
+            c if c >= 300 => Err(StoreError(format!("{path}: {c} {}", r.text().await.unwrap_or_default()))),
+            _ => r.json().await.map(Some).map_err(worker_err),
+        }
     }
 
     /// `GitCacheShard::merge` as SHARED names it: the `MergePlan` of one pull request onto its base's tip.
@@ -542,7 +548,10 @@ impl ShardHost<'_> {
         network: NetworkId,
         req: &crate::merge::MergeRequest,
     ) -> Result<Result<crate::merge::MergePlan, crate::merge_cache::CacheError>, StoreError> {
-        let a = self.merge_chain(network, req.base_old, &[(req.n, req.head)], req.method).await?;
+        let a = self
+            .merge_chain(network, req.base_old, &[(req.n, req.head)], req.method)
+            .await?
+            .ok_or_else(|| StoreError("a commit of the merge is not in the git cache".into()))?;
         Ok(a.merge_plan(req))
     }
 
@@ -720,26 +729,36 @@ impl ShardHost<'_> {
         buckets: &[&B],
         log: &L,
     ) -> Result<CatchUp, StoreError> {
+        let t0 = js_sys::Date::now();
+        let mut ms = Vec::new();
+        let mut lap = |name: &'static str| {
+            ms.push((name, (js_sys::Date::now() - t0) as u64));
+        };
         let started = self.up().await?;
+        lap("up");
         let mut cursor = self.cursor(network, &started.health.disk).await?;
+        lap("cursor");
         // A cursor below a chain's first log index needs entries the leader has archived and truncated.
-        if let Some(c) = cursor.clone() {
-            for chain in chains {
-                if c.at(*chain).0 + 1 < log.first_index(*chain).await?.0 {
-                    cursor = None;
-                }
+        let reads = crate::ingest::heads(log, chains).await;
+        let mut core = Vec::with_capacity(chains.len());
+        for (chain, (first, refs)) in chains.iter().zip(reads) {
+            let first = first?;
+            if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < first.0) {
+                cursor = None;
             }
+            core.push(refs);
         }
+        lap("first_index_core_refs");
         let Some(mut cursor) = cursor else {
             let (cursor, r) = self.rehydrate(network, chains, buckets, log).await?;
-            return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new() });
+            return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new(), ms });
         };
         let mut all_refs = Vec::new();
         let (mut entries, mut packs) = (0, 0);
         let mut evicted = Vec::new();
         let mut seen = BTreeSet::new();
-        for chain in chains {
-            let refs = log.core_refs(*chain).await?;
+        for (chain, refs) in chains.iter().zip(core) {
+            let refs = refs?;
             if let Some(range) = cursor.behind(*chain, refs.applied) {
                 let es = log.entries(*chain, *range.start(), *range.end()).await?;
                 entries += es.len();
@@ -755,12 +774,15 @@ impl ShardHost<'_> {
                 }
                 packs += self.ingest(network, bodies).await?;
             }
+            lap("ingest");
             all_refs.extend(refs.refs);
             cursor.advance(*chain, refs.applied);
         }
         self.set_refs(network, &all_refs).await?;
+        lap("set_refs");
         self.save_cursor(&cursor, &started.health.disk).await?;
-        Ok(CatchUp { rehydrated: None, entries, packs, cursor, evicted })
+        lap("save_cursor");
+        Ok(CatchUp { rehydrated: None, entries, packs, cursor, evicted, ms })
     }
 }
 
@@ -786,6 +808,8 @@ pub struct CatchUp {
     pub cursor: IngestCursor,
     /// Networks the LRU evicted to make room for this catch-up's packs.
     pub evicted: Vec<i64>,
+    /// Each step's end, in ms from the start, for a latency gate to say where a catch-up's time went.
+    pub ms: Vec<(&'static str, u64)>,
 }
 
 async fn wasm_bindgen_futures_await(p: wasm_bindgen::JsValue) -> Result<(), StoreError> {

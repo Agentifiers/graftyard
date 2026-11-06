@@ -185,6 +185,8 @@ pub enum What {
         sha: ObjectId,
         id: i64,
     },
+    /// `POST /repos/{o}/{r}/labels`.
+    LabelCreated,
 }
 
 /// The render request an issue command carries to its leader.
@@ -260,6 +262,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::LfsUnlocked { lock } => WireReply::of(&crate::lfs::unlocked(acked, lock.clone())),
         What::RestMerge => WireReply::of(&Reply::error(500, "a merge rendered as an issue command", "rest")),
         What::StatusCreated { sha, id } => WireReply::of(&crate::rest::status_created(acked, &r, *sha, *id)),
+        What::LabelCreated => WireReply::of(&crate::rest::label_created(acked, &r)),
     }
 }
 
@@ -271,6 +274,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::LfsVerified => WireReply::of(&crate::lfs::not_verified()),
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
         What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
+        What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
     }
 }
 

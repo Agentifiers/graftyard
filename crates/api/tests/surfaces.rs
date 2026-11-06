@@ -73,6 +73,14 @@ fn keep_rest(case: &str, path: &str, reply: &graftyard_api::wire::Reply) {
     }
 }
 
+/// `keep_rest` for a write route.
+fn keep_rest_as(case: &str, method: &str, path: &str, reply: &graftyard_api::wire::Reply) {
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let v = json!({ "method": method, "path": path, "status": reply.status, "body": reply.value() });
+        std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    }
+}
+
 /// The `rel="next"` URL of a reply's `link` header, as `octokit.paginate` follows it.
 fn next(r: &graftyard_api::wire::Reply) -> Option<String> {
     r.header("link")?.split(", ").find(|l| l.ends_with("rel=\"next\"")).map(|l| l.split(';').next().unwrap().to_owned())
@@ -756,4 +764,108 @@ fn mergeable_reads_the_test_merge_of_the_current_head_and_base_tip() {
     // A head push makes it stale again.
     c.push("refs/heads/f", oid(6));
     assert_eq!(ask_pr(&c).0, json!("UNKNOWN"));
+}
+
+/// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
+/// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
+/// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.
+#[test]
+fn journey_3_label_then_issue_then_both_lists() {
+    use graftyard_api::rest::{label_created, label_refused, list_issues, plan_create_label};
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let op = plan_create_label(&json!({ "name": "triage", "color": "c2e0c6", "description": "" })).unwrap();
+    let out = c.commit(WRITER, op).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let created = label_created(&ack(out), &r);
+    assert_eq!(created.status, 201);
+    assert_eq!(created.value()["name"], "triage");
+    assert_eq!(created.value()["color"], "c2e0c6");
+    keep_rest_as("label-created", "POST", "/repos/{owner}/{repo}/labels", &created);
+    drop(r);
+    let again = c.commit(WRITER, plan_create_label(&json!({ "name": "Triage", "color": "000000" })).unwrap());
+    let refused = label_refused(&again.unwrap_err());
+    assert_eq!((refused.status, &refused.value()["errors"][0]["code"]), (422, &json!("already_exists")));
+    assert_eq!(plan_create_label(&json!({ "name": "x", "color": "zz" })).unwrap_err().status, 422);
+
+    // The `bug` label from `seeded` on a new issue, committed after #1 (labelled `bug` too).
+    let bug = {
+        let r = c.repo(0, &h, &dir);
+        r.labels().into_iter().find(|(_, l)| &*l.name.0 == "bug").unwrap().0
+    };
+    let n = match c
+        .commit(
+            READER,
+            IssueOp::OpenIssue {
+                title: "labelled".into(),
+                body: "".into(),
+                labels: smallvec![graftyard_git::issues::LabelId(bug)],
+                assignees: smallvec![],
+            },
+        )
+        .unwrap()
+    {
+        IssueOut::Number(n) => n,
+        o => panic!("{o:?}"),
+    };
+    let r = c.repo(0, &h, &dir);
+    let page = list_issues(&r, "sort=updated&labels=bug");
+    assert_eq!(page.status, 200);
+    let nums: Vec<i64> = page.value().as_array().unwrap().iter().map(|i| i["number"].as_i64().unwrap()).collect();
+    assert_eq!(nums, [n.0 as i64, 1], "both `bug` issues, newest update first; no unlabelled or closed ones");
+    assert_eq!(page.value()[0]["labels"][0]["name"], "bug");
+    keep_rest("issues-bug-updated", "/repos/{owner}/{repo}/issues", &page);
+    // Every open issue and pull request without the filter; a closed one only with `state=closed`.
+    let all = list_issues(&r, "");
+    let nums: Vec<i64> = all.value().as_array().unwrap().iter().map(|i| i["number"].as_i64().unwrap()).collect();
+    assert_eq!(nums, [n.0 as i64, 2, 1]);
+    assert!(all.value()[1].get("pull_request").is_some(), "a pull request carries `pull_request`");
+    keep_rest("issues-all", "/repos/{owner}/{repo}/issues", &all);
+    let closed = list_issues(&r, "state=closed");
+    assert_eq!(closed.value().as_array().unwrap().len(), 1);
+    assert_eq!(list_issues(&r, "sort=nope").status, 422);
+    let paged = list_issues(&r, "per_page=2");
+    assert_eq!(paged.value().as_array().unwrap().len(), 2);
+    assert!(next(&paged).unwrap().contains("page=2"));
+}
+
+/// Journey 2's review: `gh pr review --approve` sends `addPullRequestReview` with `event: APPROVE`, a `Review` at the
+/// pull request's head whose payload names the review the leader holds after the entry. The author's own approval
+/// is refused, and a review with no event (a pending one) is not planned.
+#[test]
+fn add_pull_request_review_commits_a_review_at_the_head() {
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(OWNER));
+    let q = "mutation PullRequestReviewAdd($input:AddPullRequestReviewInput!){addPullRequestReview(input: $input){clientMutationId pullRequestReview{state body author{login}}}}";
+    let vars = |event: Option<&str>, r: &Repo<'_>| {
+        let pr = r.item(IssueNumber(2)).unwrap().row.id.0;
+        let mut input =
+            json!({ "pullRequestId": NodeId::scoped(NodeType::PullRequest, REPO, pr).encode(), "body": "lgtm" });
+        if let Some(e) = event {
+            input["event"] = json!(e);
+        }
+        json!({ "input": input }).as_object().cloned()
+    };
+    let (planned, v) = {
+        let r = c.repo(0, &h, &dir);
+        let v = vars(Some("APPROVE"), &r);
+        let req = Request::parse(q, v.clone(), None).unwrap();
+        (plan(&req, &r).unwrap(), v)
+    };
+    let Plan::Issue(op) = planned.plan.clone() else { panic!() };
+    assert!(matches!(&*op, IssueOp::Review { n, commit, .. } if *n == IssueNumber(2) && *commit == oid(2)), "{op:?}");
+    let out = c.commit(OWNER, *op.clone()).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let req = Request::parse(q, v.clone(), None).unwrap();
+    let reply = render(&req, &planned, &ack(out), &r);
+    assert!(reply.get("errors").is_none(), "{reply}");
+    assert_eq!(reply["data"]["addPullRequestReview"]["pullRequestReview"]["state"], "APPROVED");
+    assert_eq!(reply["data"]["addPullRequestReview"]["pullRequestReview"]["body"], "lgtm");
+    let d = Doc { name: "PullRequestReviewAdd-1".into(), query: q.into(), variables: v };
+    keep("PullRequestReviewAdd-1", &d, &d.variables, &reply);
+    drop(r);
+    assert_eq!(c.commit(WRITER, *op).unwrap_err(), IssueErr::OwnApproval, "#2's author cannot approve it");
+    let r = c.repo(0, &h, &dir);
+    let req = Request::parse(q, vars(None, &r), None).unwrap();
+    assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
 }

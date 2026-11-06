@@ -71,6 +71,53 @@ fn frame(i: &Incoming<'_>, r: Reply, s: Surface, m: &Meta) -> Result<Response> {
     Ok(resp.with_status(r.status).with_headers(h))
 }
 
+/// Test installs: each phase of one request and its time in ms, sent back as `server-timing`, so a latency gate can
+/// say where the time went. A worker isolate runs one request's future at a time per `serve` call chain, and `serve`
+/// clears the list first.
+#[cfg(feature = "test-faults")]
+mod timing {
+    use std::cell::RefCell;
+    thread_local! { static PHASES: RefCell<(f64, Vec<(&'static str, f64)>)> = RefCell::default(); }
+    pub fn start() {
+        PHASES.with(|p| *p.borrow_mut() = (js_sys::Date::now(), Vec::new()));
+    }
+    /// Closes the phase that ends now.
+    pub fn mark(name: &'static str) {
+        PHASES.with(|p| {
+            let mut p = p.borrow_mut();
+            let now = js_sys::Date::now();
+            let last = p.0;
+            p.1.push((name, now - last));
+            p.0 = now;
+        });
+    }
+    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
+    /// The commit's hedge steps, sent back as `x-graft-trace`.
+    pub fn trace(t: Vec<serde_json::Value>) {
+        TRACE.with(|x| *x.borrow_mut() = t);
+    }
+    pub fn header() -> String {
+        PHASES.with(|p| p.borrow().1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", "))
+    }
+    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
+    /// The shard's own timing of its merge plan, sent back as `x-graft-shard-timing`.
+    pub fn note(t: String) {
+        NOTE.with(|n| *n.borrow_mut() = t);
+    }
+    pub fn take_note() -> String {
+        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    }
+    pub fn take_trace() -> String {
+        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
+    }
+}
+#[cfg(not(feature = "test-faults"))]
+mod timing {
+    pub fn start() {}
+    pub fn mark(_: &'static str) {}
+    pub fn trace(_: Vec<serde_json::Value>) {}
+}
+
 fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
@@ -102,10 +149,16 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
         }
     };
     let m = Meta { rid: c.rid, version, rate: RateLimits::Off };
+    timing::start();
     let r = match route(c, req, host, e, &m).await {
         Ok(r) => r,
         Err(err) => unavailable(&format!("Service Unavailable: {err}")),
     };
+    #[cfg(feature = "test-faults")]
+    let r = r
+        .with("server-timing", timing::header())
+        .with("x-graft-trace", timing::take_trace())
+        .with("x-graft-shard-timing", timing::take_note());
     frame(&i, r, s, &m)
 }
 
@@ -137,19 +190,30 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
-    let chain = ChainId::Repo(repo.id);
-    let b = c.bindings();
-    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
-    let q = json!({ "q": { "rows": true, "ranges": true } }).to_string();
-    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
-    if let Ok(None) = v {
-        ensure_group(c, &repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
-    }
-    let v = match v {
-        Ok(Some((v, _, _))) => v,
-        Ok(None) => return Ok(Err(unavailable("the repository's group has no leader; retry"))),
-        Err(e) => return Ok(Err(unavailable(&e))),
+    read_repo(c, repo, owner, name, viewer, None).await
+}
+
+/// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
+/// `known` is the owner's `Authz` this request already read through `fresh` to resolve the repository, if it did.
+async fn read_repo(
+    c: &Ctx<'_>,
+    repo: Repo,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+    known: Option<AuthzFold>,
+) -> Result<std::result::Result<Read, Reply>> {
+    timing::mark("resolve");
+    let read_authz = async {
+        match known {
+            Some(a) => Some(a),
+            None => authz(c, &repo).await,
+        }
+    };
+    let (v, authz) = futures_util::future::join(tier_rows(c, &repo), read_authz).await;
+    let v = match v? {
+        Ok(v) => v,
+        Err(r) => return Ok(Err(r)),
     };
     // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
     let Ok(rows) = serde_json::from_value::<TierRows>(v["value"].clone()) else {
@@ -161,7 +225,7 @@ async fn read(
     let Some(meta) = rows.meta.as_ref() else {
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
-    let authz = authz(c, &repo).await;
+    timing::mark("rows_authz");
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
     dir.logins.insert(repo.owner.0.0, owner.to_owned());
@@ -173,6 +237,24 @@ async fn read(
         dir.logins.entry(id).or_insert(l);
     }
     Ok(Ok(Read { repo, at, core: TierRows::store(&rows.core), meta: TierRows::store(meta), dir }))
+}
+
+/// The repository's `{"rows": true}` read on its leader, creating its group on first use.
+async fn tier_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<Value, Reply>> {
+    let chain = ChainId::Repo(repo.id);
+    let b = c.bindings();
+    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
+    let q = json!({ "q": { "rows": true, "ranges": true } }).to_string();
+    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    if let Ok(None) = v {
+        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    }
+    Ok(match v {
+        Ok(Some((v, _, _))) => Ok(v),
+        Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
+        Err(e) => Err(unavailable(&e)),
+    })
 }
 
 /// The owner's `Authz` fold, read as a `dep` through `fresh`, for permissions and `author_association`.
@@ -238,7 +320,7 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
-    ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
+    // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -284,8 +366,16 @@ async fn merge_plan(
     req: &MergeRequest,
 ) -> std::result::Result<std::result::Result<MergePlan, CacheError>, String> {
     let q = graftyard_git::merge_cache::chain_query(req.base_old, &[(req.n, req.head)], req.method);
-    let url = format!("https://shard/merge?repo={}&{q}", repo.id.0.0);
-    let stub = crate::shard(c, repo).map_err(|e| e.to_string())?;
+    let record = js_sys::encode_uri_component(&serde_json::to_string(&repo.record).map_err(|e| e.to_string())?);
+    let url = format!("https://shard/merge?repo={}&{q}&record={record}", repo.id.0.0);
+    // The shard on the leader's site, which the read just before named, as `PrSync` and the `MergeQueue` consumer
+    // merge "where the leader is" (`workers/site/src/prsync.rs`): it is the shard `PrSync`'s test merge caught up, and
+    // its catch-up reads are local to the leader. The home site's shard, when the leader is elsewhere, caught up
+    // across regions first, 280 to 610 ms (`tests/m2/results/m2-wp6.md`, "Merge latency").
+    let leader = graftyard_lookup::cached_leader(ChainId::Repo(repo.id)).map(|t| t.site);
+    #[cfg(feature = "test-faults")]
+    let leader = c.shard.or(leader);
+    let stub = crate::shard_at(c, repo, leader).map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     let mut r = stub
@@ -297,6 +387,11 @@ async fn merge_plan(
         return Err(format!("{} {text}", r.status_code()));
     }
     let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
+    timing::mark("merge_plan");
+    #[cfg(feature = "test-faults")]
+    if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
+        timing::note(t);
+    }
     Ok(a.merge_plan(req))
 }
 
@@ -312,7 +407,10 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
-    ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
+    timing::mark("plan");
+    // `rd` came from the group's leader, so the group exists: no create probe before the commit.
+    let trace = std::cell::RefCell::new(Vec::new());
+    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -320,9 +418,11 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         body.to_string().as_bytes(),
         c.colo,
         60_000,
-        graftyard_lookup::Hooks::default(),
+        hooks,
     )
     .await;
+    timing::mark("commit");
+    timing::trace(trace.into_inner());
     Ok(match r {
         Ok(done) => {
             if let Some(e) = done.pointer("/refused/err") {
@@ -373,8 +473,6 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 // ---- GraphQL ----
 
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
-    let who = authenticate(c, req).await?;
-    let Some(who) = who else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let body: Value = req.json().await.unwrap_or(Value::Null);
     let q = body["query"].as_str().unwrap_or("").to_owned();
     let vars = body["variables"].as_object().cloned();
@@ -386,12 +484,35 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
-    let (owner, name) = match target {
+    // The caller's token and the repository are read at once: neither read needs the other.
+    let find = async {
+        match &target {
+            None => Ok::<_, Error>(None),
+            Some(graphql::Target::Name { owner, name }) => Ok(Some(match resolve(c, owner, name).await? {
+                Ok(Some(repo)) => Ok((owner.clone(), name.clone(), repo, None)),
+                Ok(None) => Err(None),
+                Err(e) => Err(Some(e)),
+            })),
+            // A node id names the repository by id: it is resolved once, by `repo_name`, not again by its name.
+            Some(graphql::Target::Id(id)) => Ok(Some(match repo_name(c, *id).await {
+                Some((owner, name, repo, a)) => Ok((owner, name, repo, Some(a))),
+                None => Err(None),
+            })),
+        }
+    };
+    let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
+    timing::mark("auth_resolve");
+    let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
+    let (owner, name, rd) = match found? {
         None => return Ok(Reply::json(200, graphql::query(&gq, None))),
-        Some(graphql::Target::Name { owner, name }) => (owner, name),
-        Some(graphql::Target::Id(id)) => match repo_name(c, id).await {
-            Some(n) => n,
-            None => {
+        Some(Ok((owner, name, repo, a))) => {
+            let rd = read_repo(c, repo, &owner, &name, Some(&who), a).await?;
+            (owner, name, rd)
+        }
+        Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
+        Some(Err(None)) => match &target {
+            Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found())),
+            _ => {
                 return Ok(Reply::json(
                     200,
                     json!({ "errors": [{ "type": "NOT_FOUND", "message": "Could not resolve to a node with that id." }] }),
@@ -399,7 +520,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             }
         },
     };
-    let rd = match read(c, &owner, &name, Some(&who)).await? {
+    let rd = match rd {
         Ok(r) => r,
         Err(r) if r.status == 404 => {
             let m = format!("Could not resolve to a Repository with the name '{owner}/{name}'.");
@@ -452,7 +573,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
 
 /// A repository's `o/r` from its id: its owner from `RepoOwner` on `Names`, its name from the owner's `Authz` names,
 /// and the owner's login from `logins`, since `Names` keys logins by name and holds no reverse row [inference].
-async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
+async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzFold)> {
     let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
     let login = logins(c).get(&repo.owner.0.0)?.clone();
     let a = authz(c, &repo).await?;
@@ -460,7 +581,7 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
         graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
         _ => None,
     })?;
-    Some((login, name))
+    Some((login, name, repo, a))
 }
 
 /// Logins by account id. No account-to-login read is built (`Names` keys logins by name), so a product edge knows
@@ -479,12 +600,19 @@ fn logins(c: &Ctx<'_>) -> std::collections::BTreeMap<i64, String> {
 // ---- REST ----
 
 async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: &str) -> Result<Reply> {
-    let Some(rest) = p.strip_prefix("/repos/") else { return Ok(Reply::not_found()) };
-    let segs: Vec<&str> = rest.split('/').collect();
-    let [owner, name, tail @ ..] = segs.as_slice() else { return Ok(Reply::not_found()) };
+    let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
+    let tail = segs.as_slice();
     let who = authenticate(c, req).await?;
+    timing::mark("auth");
     let method = req.method();
-    let rd = match read(c, owner, name, who.as_ref()).await? {
+    let rd = match at {
+        graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
+        graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
+            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a)).await?,
+            None => return Ok(Reply::not_found()),
+        },
+    };
+    let rd = match rd {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
@@ -499,6 +627,17 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let reply = match (method, tail) {
         (Method::Get, ["commits", reference, "statuses"]) => {
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))
+        }
+        (Method::Get, ["issues"]) => rest::list_issues(&r, query),
+        (Method::Post, ["labels"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_label(&body(req.bytes().await?)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::LabelCreated).await?,
+                Err(x) => x,
+            }
         }
         (Method::Get | Method::Head, ["releases", "tags", tag]) => release::get_by_tag(&r, tag),
         (Method::Get, ["releases", n]) if id(n).is_some() => release::get(&r, id(n).unwrap_or(0)),

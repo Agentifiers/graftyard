@@ -138,8 +138,16 @@ impl DurableObject for GitShard {
         let repo = RepoId(DbId(repo));
         let (net, chain) = (NetworkId(repo.0), ChainId::Repo(repo));
         let chain_id = chain;
-        let owner = crate::member::repo_owner(&self.env, repo).await.map_err(Error::RustError)?;
-        let record = crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?;
+        // The caller's copy of the owner's record saves the two `Names` reads, about 400 ms once the shard's isolate
+        // forgot the leaders (`tests/m2/results/m2-wp6.md`, "Merge latency"). A record that no longer finds the
+        // group only slows the lookup: `GroupLog`'s reads go to the leader by the lookup rule either way.
+        let record = match q(&url, "record").and_then(|r| serde_json::from_str::<PlacementRecord>(&r).ok()) {
+            Some(r) => r,
+            None => {
+                let owner = crate::member::repo_owner(&self.env, repo).await.map_err(Error::RustError)?;
+                crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
+            }
+        };
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
@@ -199,11 +207,26 @@ impl DurableObject for GitShard {
                     Some("rebase") => graftyard_git::issues::MergeMethod::Rebase,
                     _ => graftyard_git::issues::MergeMethod::Merge,
                 };
-                host.catch_up(net, &[chain_id], &bs, &log).await.map_err(se)?;
-                match host.merge_chain(net, base, &chain, method).await {
-                    Ok(a) => Response::from_json(&a),
-                    Err(e) => Response::error(e.0, 422),
-                }
+                let t0 = now_ms();
+                let caught = std::cell::RefCell::new(None);
+                let a = graftyard_git::merge_cache::merge_then_catch_up(
+                    || async { host.up().await.map(|_| ()) },
+                    || host.merge_chain(net, base, &chain, method),
+                    || async {
+                        *caught.borrow_mut() = Some(host.catch_up(net, &[chain_id], &bs, &log).await?.ms);
+                        Ok(())
+                    },
+                )
+                .await;
+                let r = match a {
+                    Ok(a) => Response::from_json(&a)?,
+                    Err(e) => Response::error(e.0, 422)?,
+                };
+                // Where a merge plan's time went: the whole, and the catch-up's steps if it ran one.
+                let timing = format!("merge;dur={}, catchup;desc=\"{:?}\"", now_ms() - t0, caught.into_inner());
+                let h = Headers::new();
+                h.set("x-graft-timing", &timing)?;
+                Ok(r.with_headers(h))
             }
             // The `PrSync` consumer's test merge, after catching up so both commits are here.
             "/merge" => {

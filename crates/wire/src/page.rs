@@ -65,6 +65,26 @@ pub fn link(
     (!rels.is_empty()).then(|| rels.join(", "))
 }
 
+/// The repository a REST path names: `/repos/{owner}/{repo}/...` by name, or `/repositories/{id}/...` by id, which
+/// is the form every `link` header above writes, so a client following `rel="next"` reaches the same route.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RepoPath<'a> {
+    Name { owner: &'a str, name: &'a str },
+    Id(i64),
+}
+
+/// A REST path split into the repository it names and the segments after it, or `None` when it names none.
+pub fn repo_path(p: &str) -> Option<(RepoPath<'_>, Vec<&str>)> {
+    if let Some(rest) = p.strip_prefix("/repos/") {
+        let mut segs = rest.split('/');
+        let (owner, name) = (segs.next()?, segs.next()?);
+        return Some((RepoPath::Name { owner, name }, segs.collect()));
+    }
+    let mut segs = p.strip_prefix("/repositories/")?.split('/');
+    let id = segs.next()?.parse().ok()?;
+    Some((RepoPath::Id(id), segs.collect()))
+}
+
 /// An opaque connection cursor for position `n`.
 pub fn cursor(n: i64) -> String {
     b64url(format!("cursor:{n}").as_bytes())
@@ -77,6 +97,19 @@ pub fn parse_cursor(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_link_headers_next_page_names_a_routable_repository_path() {
+        let l =
+            link("https://h/api/v3", 196641, "/commits/ab/statuses", &[], Page::parse("page=1"), true, None).unwrap();
+        let url = l.split('>').next().unwrap().trim_start_matches('<');
+        let path = url.strip_prefix("https://h/api/v3").unwrap().split('?').next().unwrap();
+        assert_eq!(repo_path(path), Some((RepoPath::Id(196641), vec!["commits", "ab", "statuses"])));
+        assert_eq!(repo_path("/repos/o/r/issues"), Some((RepoPath::Name { owner: "o", name: "r" }, vec!["issues"])));
+        assert_eq!(repo_path("/repos/o"), None);
+        assert_eq!(repo_path("/repositories/x/issues"), None);
+        assert_eq!(repo_path("/meta"), None);
+    }
 
     #[test]
     fn per_page_clamps_silently_and_bad_values_take_defaults() {
