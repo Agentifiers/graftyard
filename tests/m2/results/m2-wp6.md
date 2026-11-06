@@ -468,3 +468,28 @@ held until this rerun, and there is no identity-placement change.
 Checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (439
 passed), `go vet` and `go test` in `containers/git/server`. Image
 `graft-m1-site-gitshard-git@sha256:8fa9abd46a0a848bc5d819fdc8eb09b3eaabda4aaf7ec90ae84c57f7e90c0891`.
+
+### Deploy (site day `bm2-repack`)
+
+- Sites: `graft-m1-site-a`, `b`, and `c` went through two phases each. The final versions are a `bec631b6`, b
+  `06b4db06`, and c `c90060c1`. They carry the image above and are the `test-faults` build of `9301e15`
+  (`raw/bm2-repack/siteday.log`).
+- Edge: `graft-m1-edge` `d0b2bb32`, with `FORMATS_ENABLED=32.1,32.4,32.5` (`raw/bm2-repack/edge.log`).
+- `--roll-shards` rolled 10 instances, then stopped on its own 300 s curl timeout. The timeout was on `main`'s
+  (196608) catch-up, which ended on its own: that instance runs the new image. `raw/bm2-repack/roll2.log` rolled the
+  last 5 running instances with the same `/_bed/kill` and `/_bed/catchup`.
+- The catch-ups of `k0` and `k1` (196611 and 196612) answer 500 on both shards: "git update-ref: … nonexistent object"
+  for `refs/heads/bf12/p1`. The same 500 shows on the m2-wp6 roll (`raw/m2-wp6/sd/deploy-site.log`), before this
+  branch, so it is a pre-existing M1-era state of those two repositories. No gate uses them.
+- Repack, live: every `wp6p` shard went from 1,955 packs to 1 after its first catch-up on the new image
+  (`/_bed/fsck`: `in-pack: 3916, packs: 1`).
+- Each cold rehydrate of 1,955 inline packs took about 100 to 120 s. During that time `git fetch` on `wp6p` timed out
+  at 120 s, and the sanity run's first try stopped on it. A container replaced on the new image fills itself again
+  from R2 and the log, so this is the one-off cost of the roll.
+
+### Sanity run (`sane`, 30 samples)
+
+29 GraphQL mutations and 1 `gh pr merge`, all merged. 30 distinct terms, `from != to` in all 30. p99 1.86 s (p50
+1.56 s, max 1.86 s), per leader: enam n = 5, p99 1.48 s; weur n = 11, 1.84 s; apac n = 13, 1.86 s. The shard merge
+is p50 105 ms (max 530 ms), against 492 to 1,004 ms before the repack. 3 samples waited for an in-flight catch-up,
+and none caught up on the merge path (38 of 105 weur samples did before).
