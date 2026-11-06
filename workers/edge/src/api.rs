@@ -191,13 +191,13 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
-    read_repo(c, repo, owner, name, viewer, None, None).await
+    read_repo(c, repo, owner, name, viewer, None, Rows::All).await
 }
 
 /// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
 /// `known` is the owner's `Authz` this request already read through `fresh` to resolve the repository, if it did.
-/// `merge` names the pull request (its database id) of a `mergePullRequest`: then only the rows it plans from are
-/// read (`TierRows::merge_rows`), and `dir.logins` is left for the caller to read alongside the merge plan.
+/// With `Rows::Merge`, only the rows a `mergePullRequest` plans from are read (`TierRows::merge_rows`), or taken as
+/// the caller already read them, and `dir.logins` is left for the caller to read alongside the merge plan.
 async fn read_repo(
     c: &Ctx<'_>,
     repo: Repo,
@@ -205,8 +205,12 @@ async fn read_repo(
     name: &str,
     viewer: Option<&Principal>,
     known: Option<AuthzFold>,
-    merge: Option<i64>,
+    rows: Rows,
 ) -> Result<std::result::Result<Read, Reply>> {
+    let merge = match &rows {
+        Rows::All => None,
+        Rows::Merge(id, _) => Some(*id),
+    };
     timing::mark("resolve");
     let read_authz = async {
         match known {
@@ -214,7 +218,13 @@ async fn read_repo(
             None => authz(c, &repo).await,
         }
     };
-    let (v, authz) = futures_util::future::join(tier_rows(c, &repo, merge), read_authz).await;
+    let read_rows = async {
+        match rows {
+            Rows::Merge(_, Some(v)) => v,
+            _ => tier_rows(c, &repo, merge).await,
+        }
+    };
+    let (v, authz) = futures_util::future::join(read_rows, read_authz).await;
     let v = match v? {
         Ok(v) => v,
         Err(r) => return Ok(Err(r)),
@@ -242,6 +252,13 @@ async fn read_repo(
         rd.dir.logins = read_logins(c, &rd).await;
     }
     Ok(Ok(rd))
+}
+
+/// Which tier rows `read_repo` reads: both whole tiers, or a merge's rows (`TierRows::merge_rows`) for the pull
+/// request with this database id, with the leader's answer if the caller already read it.
+enum Rows {
+    All,
+    Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
 }
 
 /// The logins of every account `rd`'s tiers name, the viewer's, and the owner's from the request path (F50).
@@ -505,33 +522,50 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
+    // A merge reads only the rows it plans from, and its logins while the git cache plans it: neither needs the
+    // other, and only the leader's render reads them (the `Plan::Merge` arm). Every other request reads both tiers
+    // and its logins first.
+    let merging = merge_pull_id(&gq);
     // The caller's token and the repository are read at once: neither read needs the other.
     let find = async {
         match &target {
             None => Ok::<_, Error>(None),
             Some(graphql::Target::Name { owner, name }) => Ok(Some(match resolve(c, owner, name).await? {
-                Ok(Some(repo)) => Ok((owner.clone(), name.clone(), repo, None)),
+                Ok(Some(repo)) => Ok((owner.clone(), name.clone(), repo, None, None)),
                 Ok(None) => Err(None),
                 Err(e) => Err(Some(e)),
             })),
-            // A node id names the repository by id: it is resolved once, by `repo_name`, not again by its name.
-            Some(graphql::Target::Id(id)) => Ok(Some(match repo_name(c, *id).await {
-                Some((owner, name, repo, a)) => Ok((owner, name, repo, Some(a))),
-                None => Err(None),
-            })),
+            // A node id names the repository by id: it is resolved once, by `repo_named`, not again by its name. A
+            // merge's tier read needs only the repository, so it runs alongside the name's reads.
+            Some(graphql::Target::Id(id)) => {
+                let Ok(repo) = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(*id))).await else {
+                    return Ok(Some(Err(None)));
+                };
+                let rows = async {
+                    match merging {
+                        Some(_) => Some(tier_rows(c, &repo, merging).await),
+                        None => None,
+                    }
+                };
+                let (named, rows) = futures_util::future::join(repo_named(c, repo.clone()), rows).await;
+                Ok(Some(match named {
+                    Some((owner, name, repo, a)) => Ok((owner, name, repo, Some(a), rows)),
+                    None => Err(None),
+                }))
+            }
         }
     };
-    // A merge reads only the rows it plans from, and its logins while the git cache plans it: neither needs the
-    // other, and only the leader's render reads them (the `Plan::Merge` arm). Every other request reads both tiers
-    // and its logins first.
-    let merging = merge_pull_id(&gq);
     let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
     timing::mark("auth_resolve");
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd) = match found? {
         None => return Ok(Reply::json(200, graphql::query(&gq, None))),
-        Some(Ok((owner, name, repo, a))) => {
-            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, merging).await?;
+        Some(Ok((owner, name, repo, a, rows))) => {
+            let rows = match merging {
+                Some(id) => Rows::Merge(id, rows),
+                None => Rows::All,
+            };
+            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows).await?;
             (owner, name, rd)
         }
         Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
@@ -612,6 +646,11 @@ fn merge_pull_id(gq: &Gql<'_>) -> Option<i64> {
 /// and the owner's login from its `AccountLogin` row (F50), else from `logins`.
 async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzFold)> {
     let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
+    repo_named(c, repo).await
+}
+
+/// `repo_name` of a repository already found by id.
+async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, AuthzFold)> {
     // The owner's login and `Authz` at once: each needs only the owner and its record.
     let owner = std::iter::once(repo.owner).collect();
     let (mut known, a) = futures_util::future::join(account_logins(c, &owner), authz(c, &repo)).await;
@@ -677,7 +716,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let rd = match at {
         graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
-            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), None).await?,
+            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), Rows::All).await?,
             None => return Ok(Reply::not_found()),
         },
     };
