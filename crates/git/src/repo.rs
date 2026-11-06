@@ -233,6 +233,14 @@ pub enum RepoEvent {
     },
     /// Core. SHARED's `Queue`: the merge queue's events (`crate::queue`).
     Queue(QueueEvent),
+    /// Core. An outside collaborator's permission, or `None` to remove it (M3-WP3). Never written for a current
+    /// member of an org owner: that is a `Grant` on the org's `Authz` chain.
+    Collaborator {
+        who: AccountId,
+        permission: Option<graftyard_identity::RepoPermission>,
+    },
+    /// Core. An invitation to become an outside collaborator. Accepting it appends `Collaborator` in the same entry.
+    Invitation(graftyard_identity::InvitationEvent),
 }
 
 impl RepoEvent {
@@ -984,6 +992,9 @@ impl Record for RepoEvent {
                 return tagged(out, 23, &(n, base, head, method, also, pack, verified, engine, by));
             }
             RepoEvent::Queue(q) => return tagged(out, 24, q),
+            // M3-WP3: tags 25 and 26.
+            RepoEvent::Collaborator { who, permission } => return tagged(out, 25, &(who, permission)),
+            RepoEvent::Invitation(i) => return tagged(out, 26, i),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1196,7 +1207,7 @@ impl Command for RepoCmd {
         match self {
             RepoCmd::Push(p) => p.format(),
             RepoCmd::Sync(c) => c.format(),
-            RepoCmd::Issue(_) => crate::issue_ops::call::REPO_FORMAT_ISSUES,
+            RepoCmd::Issue(c) => c.format(),
             RepoCmd::Merge(c) => c.cmd.format(),
         }
     }

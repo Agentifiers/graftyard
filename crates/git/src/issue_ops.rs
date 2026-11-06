@@ -11,8 +11,8 @@ pub mod call;
 
 use graftyard_fold::{Overlay, Read, Tiered, Val, has};
 use graftyard_identity::{
-    Actor, AuthzRead, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, check_credential,
-    credential_chains,
+    Actor, AuthzRead, CredentialRefusal, INVITATION_TTL, IdentityDep, InvitationEvent, InvitationGrant, InvitationId,
+    InvitationRow, Invitee, Own, Principal, RepoAccess, RepoPermission, UserId, check_credential, credential_chains,
 };
 use graftyard_raft::TierSet;
 use graftyard_types::{AccountId, ChainId, DbId, RequestId, Tier, Timestamp};
@@ -226,6 +226,22 @@ pub enum IssueOp<B = DurableBlob> {
         id: LockId,
         force: bool,
     },
+    // ---- M3-WP3 ----
+    /// `PUT /repos/{o}/{r}/collaborators/{user}` for a user who is not a member of an org owner: a repository
+    /// `Invitation`. A member's permission is a `Grant` on the org's `Authz` chain, so this is refused for one.
+    InviteCollaborator {
+        user: AccountId,
+        permission: graftyard_identity::RepoPermission,
+    },
+    /// The invitee answers. Accepting appends `Collaborator` in the same entry.
+    AnswerInvitation {
+        id: graftyard_identity::InvitationId,
+        accept: bool,
+    },
+    /// `DELETE /repos/{o}/{r}/collaborators/{user}`: removes the outside collaborator's row.
+    RemoveCollaborator {
+        user: AccountId,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -272,6 +288,9 @@ impl<B> IssueOp<B> {
             O::DeleteAsset { id } => O::DeleteAsset { id },
             O::LockLfs { path, refspec } => O::LockLfs { path, refspec },
             O::UnlockLfs { id, force } => O::UnlockLfs { id, force },
+            O::InviteCollaborator { user, permission } => O::InviteCollaborator { user, permission },
+            O::AnswerInvitation { id, accept } => O::AnswerInvitation { id, accept },
+            O::RemoveCollaborator { user } => O::RemoveCollaborator { user },
         })
     }
 }
@@ -312,6 +331,8 @@ pub enum IssueErr {
     OwnApproval,
     /// `owner` and `enterprise` change only by a transfer or an enterprise change.
     OwnerChange,
+    /// The user is a member of the org that owns the repository: their permission is a `Grant` on its `Authz` chain.
+    OrgMember,
     /// The member's metadata tier is still loading (`RepoScratch::view`), or the blob the command names is not in two
     /// buckets: the client retries.
     Unavailable,
@@ -342,6 +363,9 @@ impl IssueCmd {
             // A new review thread, a resolution, or a deletion may change the core unresolved count.
             IssueOp::Comment { on: CommentTarget::Review { .. }, reply_to: None, .. } => both,
             IssueOp::Resolve { .. } | IssueOp::DeleteComment { .. } => both,
+            IssueOp::InviteCollaborator { .. }
+            | IssueOp::AnswerInvitation { .. }
+            | IssueOp::RemoveCollaborator { .. } => TierSet::CORE,
             _ => TierSet::METADATA,
         }
     }
@@ -784,6 +808,54 @@ impl IssueCmd {
                 }
                 Ok((one(RepoEvent::LfsLock(LfsLockEvent::Deleted { id: *id, actor: me })), IssueOut::Done))
             }
+            IssueOp::InviteCollaborator { user, permission } => {
+                need(RepoPermission::Admin)?;
+                if is_org_member(authz, owner, *user) {
+                    return Err(IssueErr::OrgMember);
+                }
+                if collaborator(v.core(), *user).is_some() {
+                    return Err(IssueErr::Exists);
+                }
+                let id = InvitationId(v.next_id(Tier::Core)?);
+                let ev = InvitationEvent::Sent {
+                    id,
+                    invitee: Invitee::User(UserId(*user)),
+                    grant: InvitationGrant::Repo(*permission),
+                    inviter: me,
+                    expires: Timestamp(v.at.0.saturating_add(INVITATION_TTL.as_millis() as u64)),
+                };
+                Ok((one(RepoEvent::Invitation(ev)), IssueOut::Id(id.0)))
+            }
+            IssueOp::AnswerInvitation { id, accept } => {
+                let row = get_rec::<InvitationRow>(v.core(), "invitation", &[int(id.0.0)])
+                    .filter(|r| r.expires > v.at)
+                    .ok_or(IssueErr::NotFound)?;
+                let (Invitee::User(invitee), InvitationGrant::Repo(p)) = (row.invitee, row.grant) else {
+                    return Err(IssueErr::NotFound);
+                };
+                if me != Some(invitee.0) {
+                    return Err(IssueErr::Forbidden);
+                }
+                if !accept {
+                    return Ok((one(RepoEvent::Invitation(InvitationEvent::Declined { id: *id })), IssueOut::Done));
+                }
+                // Joined the org since the invitation: the grant belongs on the org's chain, and nothing is granted.
+                if is_org_member(authz, owner, invitee.0) {
+                    return Err(IssueErr::OrgMember);
+                }
+                let evs = smallvec![
+                    RepoEvent::Invitation(InvitationEvent::Accepted { id: *id }),
+                    RepoEvent::Collaborator { who: invitee.0, permission: Some(p) },
+                ];
+                Ok((evs, IssueOut::Done))
+            }
+            IssueOp::RemoveCollaborator { user } => {
+                need(RepoPermission::Admin)?;
+                if collaborator(v.core(), *user).is_none() {
+                    return Err(IssueErr::NotFound);
+                }
+                Ok((one(RepoEvent::Collaborator { who: *user, permission: None }), IssueOut::Done))
+            }
         }
     }
 
@@ -822,17 +894,51 @@ fn text_ok(title: &str, body: &str) -> Result<(), IssueErr> {
     Ok(())
 }
 
-/// The actor's permission on the repository: `Admin` for an owner admin, its grant otherwise, and `Read` for anyone
-/// signed in on a public repository.
-pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, authz: Option<&dyn AuthzRead>) -> Option<RepoPermission> {
-    let Actor::User(user) = actor.actor else { return None };
-    let authz = authz.filter(|a| a.owner() == Some(v.owner()))?;
-    if authz.is_admin(user) {
-        return Some(RepoPermission::Admin);
+/// An outside collaborator's row in the core tier.
+pub fn collaborator(core: &(impl Read + ?Sized), user: AccountId) -> Option<RepoPermission> {
+    get_rec(core, "collaborator", &[int(user.0.0)])
+}
+
+/// Whether `user` is a member of `owner` when `owner` is an org, by the owner's `Authz` fold the leader read.
+fn is_org_member(authz: Option<&dyn AuthzRead>, owner: AccountId, user: AccountId) -> bool {
+    authz.is_some_and(|a| {
+        a.owner() == Some(owner)
+            && a.opened() == Some(graftyard_identity::AccountKind::Org)
+            && a.role(UserId(user)).is_some()
+    })
+}
+
+/// The repository chain's part of `authorize`: its core tier's settings and collaborator rows.
+pub struct Access<'a> {
+    pub repo: graftyard_types::RepoId,
+    pub owner: AccountId,
+    pub core: &'a dyn Read,
+}
+
+impl RepoAccess for Access<'_> {
+    fn repo(&self) -> graftyard_types::RepoId {
+        self.repo
     }
-    let grant = authz.grant(v.tiers.repo, user);
-    let public = v.settings().is_some_and(|s| s.visibility == Visibility::Public);
-    grant.max(public.then_some(RepoPermission::Read))
+    fn owner(&self) -> AccountId {
+        self.owner
+    }
+    fn visibility(&self) -> Visibility {
+        get_rec::<crate::issues::RepoSettings>(self.core, "settings", &[]).map_or(Visibility::Private, |s| s.visibility)
+    }
+    fn collaborator(&self, user: UserId) -> Option<RepoPermission> {
+        collaborator(self.core, user.0)
+    }
+}
+
+/// The actor's permission on the repository through identity's `permission` over the owner's `Authz` fold and the
+/// core tier's collaborator rows, and `Read` for anyone signed in on a public repository.
+pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, authz: Option<&dyn AuthzRead>) -> Option<RepoPermission> {
+    let Actor::User(_) = actor.actor else { return None };
+    let access = Access { repo: v.tiers.repo, owner: v.owner(), core: v.core() };
+    let folds: SmallVec<[&dyn AuthzRead; 1]> = authz.into_iter().collect();
+    let p = graftyard_identity::permission(actor, &folds, &access);
+    let public = access.visibility() == Visibility::Public;
+    p.max(public.then_some(RepoPermission::Read))
 }
 
 /// Whether a rule requires the check `name` (from `app`, `None` for a status) on `sha`: the SHA is the head of an open
