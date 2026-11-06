@@ -1079,7 +1079,7 @@ impl AuthzCmd {
 
     fn decide_op(&self, s: &AuthzScratch<'_>) -> Result<(SmallVec<[AuthzEvent; 4]>, AuthzOut), AuthzErr> {
         if let AuthzOp::Open { kind, enterprise } = &self.op {
-            if self.cred.account.is_some() {
+            if !self.cred.is_operator() {
                 return Err(AuthzErr::Forbidden);
             }
             if s.opened.is_some() {
@@ -1090,10 +1090,12 @@ impl AuthzCmd {
         if s.opened.is_none() {
             return Err(AuthzErr::NotOpened);
         }
-        // `graft-ops` and the CLI name no account and act as a site admin.
-        if let Some(a) = self.cred.account
-            && !s.is_admin(UserId(a))
-        {
+        // `graft-ops` and the CLI name no account and act as a site admin; an installation token is neither.
+        let admin = match self.cred.account {
+            Some(a) => s.is_admin(UserId(a)),
+            None => self.cred.is_operator(),
+        };
+        if !admin {
             return Err(AuthzErr::Forbidden);
         }
         let next = NameEpoch(s.epoch.0 + 1);
@@ -1243,7 +1245,7 @@ impl AuthzCmd {
             }
             AuthzOp::SetEnterprise { enterprise } => {
                 org_only(s)?;
-                if self.cred.account.is_some() {
+                if !self.cred.is_operator() {
                     return Err(AuthzErr::Forbidden);
                 }
                 if s.enterprise() == *enterprise {

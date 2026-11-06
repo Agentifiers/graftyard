@@ -244,7 +244,7 @@ async fn read_repo(
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
     dir.viewer = viewer.and_then(|p| match p.actor {
         Actor::User(u) => Some(u.0),
-        Actor::Anonymous => None,
+        Actor::App { .. } | Actor::Anonymous => None,
     });
     let (core, meta) = (TierRows::store(&rows.core), TierRows::store(meta));
     let mut rd = Read { repo, at, core, meta, dir };
@@ -921,7 +921,7 @@ async fn lfs_route(
     let write = can_write(&r, Some(&who));
     let me = match who.actor {
         Actor::User(u) => Some(u.0),
-        Actor::Anonymous => None,
+        Actor::App { .. } | Actor::Anonymous => None,
     };
     let auth = req.headers().get("authorization")?.unwrap_or_default();
     let body = serde_json::from_slice::<Value>(&req.bytes().await.unwrap_or_default()).unwrap_or(Value::Null);

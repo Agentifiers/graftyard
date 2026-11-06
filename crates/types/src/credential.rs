@@ -14,9 +14,9 @@ pub struct CredentialShard {
     pub key: Option<CredentialKey>,
 }
 
-/// A stored token's row, or a web session, which names no row of its own and is checked against the `Account` row's
-/// `sessions_not_before` by its issue time. The design's `Jti` key comes with installation tokens (M3-WP4), and
-/// `SshKey` with SSH pushes (M6-WP2).
+/// A stored token's row, a stateless installation token's `jti` row, or a web session, which names no row of its own
+/// and is checked against the `Account` row's `sessions_not_before` by its issue time. The design's `SshKey` comes with
+/// SSH pushes (M6-WP2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CredentialKey {
     Token {
@@ -28,9 +28,21 @@ pub enum CredentialKey {
     Session {
         issued: crate::ids::Timestamp,
     },
+    /// DESIGN's: a stateless installation token, revoked by a `JtiRevoked` row on `jti_shard(jti)`. It names no
+    /// account, so a command under it is never an operator's.
+    Jti {
+        shard: TokenShard,
+        jti: crate::Ulid,
+    },
 }
 
 impl CredentialShard {
     /// Names nothing: a command `graft-ops` or a consumer submits.
     pub const NONE: CredentialShard = CredentialShard { account: None, key: None };
+
+    /// Whether `graft-ops`, the CLI, or a finisher submitted the command: it names neither an account nor a key. An
+    /// installation token names a key and no account, and is not the operator.
+    pub fn is_operator(&self) -> bool {
+        self.account.is_none() && self.key.is_none()
+    }
 }

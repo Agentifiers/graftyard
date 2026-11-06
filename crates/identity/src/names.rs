@@ -1182,7 +1182,7 @@ impl NamesCmd {
     /// (`RepoOwner`, `SetAccountLogin` for an org) are submitted by the finisher with no account, so a credential
     /// revoked in between cannot strand them.
     fn permitted(&self, s: &NamesScratch<'_>, authz: Option<&dyn AuthzRead>) -> bool {
-        let Some(actor) = self.cred.account else { return true };
+        let Some(actor) = self.cred.account else { return self.cred.is_operator() };
         let admin = |owner: AccountId| {
             authz.is_some_and(|a| a.owner() == Some(owner) && a.is_admin(crate::credential::UserId(actor)))
         };

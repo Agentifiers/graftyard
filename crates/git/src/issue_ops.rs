@@ -341,7 +341,7 @@ pub enum IssueErr {
 fn actor_id(p: &Principal) -> Option<AccountId> {
     match p.actor {
         Actor::User(u) => Some(u.0),
-        Actor::Anonymous => None,
+        Actor::App { .. } | Actor::Anonymous => None,
     }
 }
 
