@@ -584,3 +584,45 @@ By leader site, weur passes at n = 120 (p99 1.96 s). enam is at the line at n = 
 apac misses (p99 2.71 s, 6 of 102 over). Proposal 1 (measure on a freshly elected leader on the home site) is the
 operator's call, and the enam subset here is too small to settle it. A home-site-only run would need about 300
 enam-led samples, each on a new term with leadership moved back to enam.
+
+## `bm2-home`, 2026-11-06: BM-2 as reworded (in progress)
+
+The operator took proposal 1. BM-2's latency clause now has two parts: merge p99 on a freshly elected leader on the
+group's home site, with the client in that region, is at most 2 s; and on a freshly elected leader off the home
+site, it is at most 3 s. Branch `bm2-home` is from `main` `b36541c`.
+
+### Build
+
+`main` differs from the deployed `bm2-repack` build on the merge path: M3-WP4 changed `Principal`, `Credential`,
+and `Actor` and the `Tokens`/`Names` operator checks that `decide` and the edge's auth run. So this is a site day
+(test-faults, `--roll-shards`, same image `…57f7e90c0891`). The final versions are a `b6143e89`, b `27bc2768`, and
+c `8ea0c173`. The log has no `roll` lines, because every running shard instance was already on that image.
+
+Edge `graft-m1-edge` `8b0f2e34` is main plus one test-faults header. `x-graft-colo` names the colo the edge ran in
+(`fe6a2fa`). Checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, clippy of the edge
+with `test-faults` for wasm32, and `cargo test --workspace` (453 passed).
+
+### Placing the client in enam
+
+- The Oracle VM `graft-ssh-proxy` (<ssh-proxy-ip>) is in Phoenix, Arizona (ipinfo: AS31898, 33.47,-112.00), which is
+  not enam. Nothing was installed on it.
+- The account has no eastern US machine, so the client is a test-only Worker, `graft-m1-bm2client`
+  (`tests/m2/bm2home/client.ts`, version `86f00dab`). Its single Durable Object is created with
+  `locationHint: "enam"`. The DO sends gh's own `PullRequestMerge` document to `graft-m1-edge` and times the request
+  in its own region.
+- Each sample returns the DO's own colo (`cdn-cgi/trace`, fetched by the DO) and the edge's `x-graft-colo`.
+- Proof before the run: `/where` three times gave `clientColo EWR`, `edgeColo EWR`. The same request from the orb
+  gives `x-graft-colo: LAX`. EWR is Newark, in enam.
+- The orb authenticates to the client with a bearer secret (`TOKEN`, put through stdin). The edge token rides in the
+  POST body, never a URL or argv, and the driver adds the client secret to `redact()`.
+
+### Driver
+
+`tests/m2/bm2home/home.py final 300 --gh-every 25` alternates two samples per round:
+
+- **Off home:** leadership moves from enam to weur, then apac (alternating), on a new term. The LAX orb then sends
+  the mutation, timed at the orb as in `p99.py`. Every 25th off sample is a whole `gh pr merge --merge`.
+- **Home:** leadership moves back to enam on a new term. The EWR client then sends the mutation.
+
+Every sample's pull request is MERGEABLE first. Smoke (`smoke`, 3 rounds): home 3 of 3, 1.07 to 1.35 s, client EWR
+and edge EWR on all 3; off 2 of 2 plus 1 gh run.
