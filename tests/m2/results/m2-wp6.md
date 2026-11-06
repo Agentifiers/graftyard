@@ -435,3 +435,36 @@ Options, in the order I would take them. Each needs an operator decision, becaus
 - **The edge passing its auth result to the leader.** `decide`'s result must depend only on "the `deps` folds the
   leader read once through `fresh`", and the leader's three dependency reads run at once, so skipping `Tokens` saves
   nothing.
+
+## `bm2-repack`: shard repack and the catch-up wait (in progress)
+
+Branch `bm2-repack` from `main` `5868bab`. The operator approved proposal 2 and the catch-up follow-up; proposal 1 is
+held until this rerun, and there is no identity-placement change.
+
+### What changed
+
+- **`ca15db8`, a geometric repack after catch-ups.** `PUT /refs` in `containers/git/server/main.go` is the last step
+  of every catch-up and rehydrate. When the network has more than `repackAt = 50` packs [guess], it starts
+  `git repack -d -q --geometric=2` in the background. A process-wide `TryLock` keeps it to one repack per shard
+  container at a time ("one repack per shard at a time", `design/DESIGN.md`, Failure modes, git caches). The repack
+  holds the network's write lock, so a merge or upload never reads a half-replaced pack set. The reply gains
+  `"repack": true|false`. `TestRefsRepacksPastRepackAt` fails with the trigger removed. In the orb, 2,000 packs
+  repacked in 0.75 s the first time and in about 12 ms after that.
+- **`e8d47ad`, the first merge waits for the in-flight catch-up.** The leader site's shard counts its running
+  catch-ups per network (`CatchUps` in `crates/git/src/merge_cache.rs`). Every `host.catch_up` in
+  `workers/site/src/shard.rs`, including the new leadership's `warm` on `/catchup`, holds a `Running` guard.
+  `merge_then_catch_up` takes an `in_flight` future, and `/merge` awaits `idle()` on it before the first merge plan.
+  `x-graft-timing` gains `waited;dur=`.
+  `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` fails when the await is removed. The
+  "home shard" wording in `workers/edge/src/api.rs` comments now says the leader site's shard of the network.
+- **`4b6631f`, no token on argv or in logs.**
+  - `hosted.py` and `bf24.py` passed `http.extraHeader=Authorization: Basic …` on git's command line. A
+    `TimeoutExpired` traceback printed it into `raw/wp5/base1.log` and `dist.log`.
+  - git now takes the header from `GIT_CONFIG_COUNT` env, and curl in the shell drivers from `-H @<(printf …)`.
+  - Every log line, jsonl row, gh capture, and uncaught traceback in the two Python drivers passes through `redact()`.
+  - The old wp5 logs, and three `smoke*.work/.git/config` files from an older bf24 that held the token in the remote
+    URL, are redacted in place (gitignored).
+
+Checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (439
+passed), `go vet` and `go test` in `containers/git/server`. Image
+`graft-m1-site-gitshard-git@sha256:8fa9abd46a0a848bc5d819fdc8eb09b3eaabda4aaf7ec90ae84c57f7e90c0891`.
