@@ -217,6 +217,26 @@ impl DurableObject for Member {
     }
 }
 
+/// One hop of the depth gauge: call this object's own `/depth_hop` with `k + 1`. The deepest hop reached, and the
+/// refusal that ended the chain.
+#[cfg(feature = "test-faults")]
+async fn depth_hop(env: &Env, me: &MemberRef, k: u64) -> Value {
+    if k >= 40 {
+        return json!({ "hops": k, "end": "cap" });
+    }
+    let call = async {
+        let stub = SiteEnv::read(env)?.member(env, me.site, &me.do_name)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(json!({ "k": k + 1 }).to_string().into()));
+        let mut res = stub.fetch_with_request(Request::new_with_init("https://member/depth_hop", &init)?).await?;
+        res.json::<Value>().await
+    };
+    match call.await {
+        Ok(v) => v,
+        Err(e) => json!({ "hops": k, "end": e.to_string() }),
+    }
+}
+
 fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>) -> Value {
     let r = m.meta();
     json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 })
@@ -441,6 +461,28 @@ impl<F: Family> Routes<F> {
                 self.ready_or(|| self.record(body)).await
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
+            // B0-18's depth gauge: how many nested object calls are left from this member's ambient context. After
+            // `afterMs`, a task (charged, as every send is, to the newest incoming request) starts a chain of calls
+            // to this object's own `/depth_hop`, each made at once inside the previous hop's handler, and answers
+            // the hops it reached before the platform refused one.
+            (Method::Post, "/depth_left") => {
+                let body: Value = req.json().await?;
+                Delay::from(Duration::from_millis(body["afterMs"].as_u64().unwrap_or(20))).await;
+                let (tx, rx) = futures_channel::oneshot::channel();
+                let me =
+                    self.host.core.borrow().as_ref().map(|c| c.join.me.clone()).ok_or_else(|| err("not joined"))?;
+                let h = self.host.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = tx.send(depth_hop(&h.env, &me, 0).await);
+                });
+                Response::from_json(&rx.await.unwrap_or_else(|_| json!({ "error": "dropped" })))
+            }
+            (Method::Post, "/depth_hop") => {
+                let k = req.json::<Value>().await?["k"].as_u64().unwrap_or(0);
+                let me =
+                    self.host.core.borrow().as_ref().map(|c| c.join.me.clone()).ok_or_else(|| err("not joined"))?;
+                Response::from_json(&depth_hop(&self.host.env, &me, k).await)
+            }
             (Method::Post, "/read_bench") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.read_bench(body)).await
