@@ -21,7 +21,7 @@ These results are from runs on 2026-11-05 and 2026-11-06, against the test insta
 | The per-base timer from `Step::Idle { at }` | **Pass, 5 of 5.** `GroupBuilt` 63.1 to 63.2 s after the first `Enqueued` under `min_wait_minutes` 1, with no entry between |
 | Planted bugs | **14 of 14 caught** (`tests/m2/wp3/plant.py` at `116e1ce`) |
 | Reply validation | **0 failures.** 478 GraphQL and 63 REST replies |
-| Local checks | `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, and `go test` pass (see the log) |
+| Local checks at `a8a6ea9` | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test -j 4 --workspace` (42 suites, 355 tests, 0 failed), and `go test ./...` in `containers/git/server`, each exit 0. `crates/raft` is untouched, so the long sweep and Porcupine did not run |
 
 ## Real clients
 
