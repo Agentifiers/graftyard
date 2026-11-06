@@ -471,6 +471,7 @@ fn the_queue_mutations_read_the_pull_request_by_their_schema_input_names() {
     let pr = NodeId::scoped(NodeType::PullRequest, REPO, r.item(IssueNumber(2)).unwrap().row.id.0).encode();
     let q = "mutation($input: DequeuePullRequestInput!) { dequeuePullRequest(input: $input) { clientMutationId } }";
     let req = Request::parse(q, json!({ "input": { "id": pr } }).as_object().cloned(), None).unwrap();
+    assert_eq!(route(&req).unwrap(), Some(graftyard_api::graphql::Target::Id(REPO.0.0)));
     assert_eq!(plan(&req, &r).unwrap().plan, Plan::Dequeue { n: IssueNumber(2) });
     let req = Request::parse(q, json!({ "input": { "pullRequestId": pr } }).as_object().cloned(), None).unwrap();
     assert_eq!(plan(&req, &r).unwrap_err()["errors"][0]["type"], "NOT_FOUND");

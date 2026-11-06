@@ -48,6 +48,8 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
                 Some(Target::Name { owner: o.into(), name: n.into() })
             }),
             "node" => str_arg(&a, "id").and_then(route_id),
+            // GHES names `dequeuePullRequest`'s pull request `id`.
+            "dequeuePullRequest" => a.get("input").and_then(|i| i.get("id")).and_then(Value::as_str).and_then(route_id),
             _ => a.get("input").and_then(|i| {
                 ["repositoryId", "subjectId", "pullRequestId"]
                     .iter()
