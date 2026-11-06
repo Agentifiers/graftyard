@@ -91,3 +91,50 @@ dependencies from enam before one replication round. A weur or apac leader pays 
 transatlantic round trips than an enam one. No remaining step is serial without reason; each of the four is one
 round to one leader, or reads at once.
 
+## Journeys 2 and 3, on the status-id build (sites `ccdfc76e`/`e7c0e891`/`451228ca`, edge `3a2e4f02`)
+
+- Journey 3, `j3b`, **10 of 10 pass**. Each trial: `gh issue create -l bug`, then `gh issue list --label bug` and
+  `gh api repos/o/r/issues?sort=updated&labels=bug` at once. Both include the new issue, and the REST list has it first.
+  `gh label create bug` ran in `j3a`: 201, then 422 `already_exists`.
+- Journey 2, `j2b`, **10 of 10 pass**. Each trial: `gh pr merge` is refused while the PR is unreviewed and unchecked
+  (exit 1). Then the owner's `gh pr review --approve`, CI's `POST /statuses` `ci` success, and the writer's
+  `gh pr merge --merge` (retried) run at once. 1 to 3 merges are refused before both facts commit. The merge lands
+  2.73 to 4.69 s after the three start. `gh pr view` (MERGED) and `gh pr list --state merged` at once both show it.
+  `main` is the merge commit (base, head) in all 10 trials.
+- Validation (`gh-replies.py`, then `validate.py` against GHES 3.22): `j2b` 183 GraphQL and 10 REST replies, `j3b` 60 and
+  30, **0 failed**. Earlier captures: `j2a` 20/1, `j3a` 12/7, `p99-gh` 16/2, `smoke` 29/4, `try1-gh` 8/1,
+  `bf23r` 42/3, `bf22b` 20/6, `bf22d` 20/6, `bf22e` 19/6, all 0 failed.
+
+## BF-22 reduced, and two bugs it found
+
+`tests/m2/wp6/bf22.py RUN 500` on `wp6j`: 500 non-required statuses on an open PR's head, 8 posters at a time. Then
+`gh pr checks`, `GET /commits/{sha}/statuses` paged by its `link` header, the leader's core rows before and after, and
+every member's core and metadata `fold_digest` at one index.
+
+1. `bf22a` (edge `516c5fd6`): page 2 answered 404. `graftyard_wire::link` writes `/repositories/{id}/...`, and the
+   edge's `rest_repo` served only `/repos/o/r/...`. Fixed in `57d1411` (`graftyard_wire::repo_path`, test
+   `a_link_headers_next_page_names_a_routable_repository_path`, which fails with the `/repositories/` arm removed).
+   The edge was deployed as `3a2e4f02`.
+2. `bf22c`: 495 of 500 read back, though the log holds 500 committed `Status` events. The edge mints `StatusId` from
+   `Date::now`, and the `status` table is keyed (sha, -id), so two statuses posted in the same millisecond on one
+   commit share a key, and the second replaced the first. Fixed in `31eeadf`: `decide` takes the smallest free id at
+   or above the edge's (still the status's version, so an older status still loses), returns it as `IssueOut::Id`,
+   and the 201 renders that id. Test `two_statuses_minted_in_one_millisecond_keep_both_rows_and_the_later_wins`
+   fails with the free-id loop disabled. Site day `sd8`.
+3. `bf22e` (sd8 build): **pass**. 500 of 500 statuses through `gh pr checks` and through REST (5 pages), none
+   required. Core rows unchanged other than `consumer_cursor`: `PrSync` moves its cursor every `CURSOR_STRIDE`
+   entries whatever they hold, so the earlier `bf22d` run, which crossed a stride, changed only that row. All three
+   members agree on both tiers' `fold_digest` at index 1,033+. The prune clause (entry time past
+   `check_retention_days`) stays with the pure test, because the install's clock cannot be moved.
+
+## BF-25 and BF-26 smoke
+
+`RUN=wp6b1 tests/m2/edge-drive.sh .../blob1 wp6/wp3m 2 lfs release` on edge `3a2e4f02`: `git lfs push` of a
+300,000-byte object, a fresh clone, and `git lfs pull` (bytes match). Then `gh release create`, `upload`, `view`,
+`download`, and `download --archive=tar.gz`, all exit 0. Through the R2 API, both blobs (`blob/196631/98ea…`, 3 bytes;
+`d9bc…`, 300,000 bytes) are in all three site buckets. BF-26: I deleted all 6 `archive-cache/` objects in
+`graft-m1-packs-a` (the only bucket that held any) and ran `gh release download --archive=tar.gz` again. Exit 0, the
+bytes match the first download (sha256 `18d11688…`), and the object `archive-cache/196631/66e3c899…-986ec71b….tar.gz`
+was rebuilt. Not rerun: BF-25's "one site bucket made unreadable". The install has no hook to make a bucket
+unreadable, so it stays with M2-WP4's run.
+
