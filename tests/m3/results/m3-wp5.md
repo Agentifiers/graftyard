@@ -260,3 +260,13 @@ On `m3-wp5-hosted`, not pushed:
 - `222fee6` site: an installed member names an install source from its `log_base`; the BF-29 hosted driver.
 - `d6e350d` site: the audit reads the stored log in pages read to their end.
 - This section and `tests/m3/wp5/b0-18.ts`.
+
+## 2026-11-06 (evening): B0-18 traced on `graft-m2b`
+
+Branch `b0-18`, with `main` (`856fc32`) merged at `9a83fa4`. Notes are added as the work goes.
+
+### State before this round
+
+- `graft-m2b-site-a`, `-b`, `-c` ran versions `dacc1247`, `f675d657`, `b4ae45f1` (12:10Z). That is the afternoon's `b0-18` build with the `/depth_left` gauge, made before main's 16:16 merge, with git shard image `aa3038ea…`. `graft-m2b-edge` ran `b2309a5a` (11:23Z).
+- The afternoon's 11 runs (`/tmp/m3h/b0-18`, 11:27 to 15:23) all failed. The four with `--pushes 0` failed as well. That rules out the pushes as the cause.
+- The `/depth_left` gauge poisons the object it measures. Learners `l0` and `l2`, the two learners the gauge polled, logged 22 to 30 "Subrequest depth limit exceeded" `readIndex` failures in each gauged run. Every other learner logged 0 to 2. A check at 21:00 on learner `l3` shows why. The gauge alone reached 14 hops. Started 1.2 s after a 14-hop `/depth_hop` chain on the same object, it reached 0. The chain had already ended. So the runtime charges an object's outbound calls to the newest request the object received, even after that request has finished (workerd `IoContext::getCurrentIncomingRequest`, "the newest request that hasn't already completed", which an actor keeps current while any task is pending). The gauge is not run during the runs below.
