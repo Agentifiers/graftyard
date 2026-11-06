@@ -242,3 +242,196 @@ shard lines, because the container image was the same.
   `render_merge`.
 - BF-22's prune clause and BF-25's unreadable bucket have no hosted hook (the install's clock cannot be moved, and a
   bucket cannot be made unreadable), so they stay with the pure tests and M2-WP4's run.
+
+## `bm2-latency`: the 2 s budget, and cutting the fresh leader's round trips (in progress)
+
+Branch `bm2-latency` from `main` `0e79db8`. Progress notes, written as the work runs.
+
+### What the 2 s was budgeted against
+
+Nothing in DESIGN or DECISIONS derives the 2 s, places the client, or says whether the client-to-edge leg counts.
+
+- The sentence appears only in BUILD-PLAN's BM-2 row and DESIGN's Milestones table, row 2. It came over from the
+  arena candidate's design, `history/arena/cloudflare/candidate-3/DESIGN.md`, which is not normative.
+- The only other "merge p99 at most 2 s" is B0-29's pass value ("Commit p99 at most 600 ms, merge p99 at most 2 s"). It
+  was measured "at the leader" and "at the client" by load clients spread over "enam, enam, wnam, weur, apac", with the
+  leader on enam: "Merge p99 367 to 795 ms at the leader, at most 874 ms at the client" (`tests/m0/results/m0-wp9.md`).
+  Those merges had no git cache plan and no edge identity reads.
+- DESIGN, "Commit and read paths": "Every request enters at the Cloudflare data center nearest the client". So the
+  design's request path starts at the client's colo, and the client-to-edge leg is part of what a client sees.
+- DESIGN, Latency: "Fresh reads on a held lease cost one DO call in the leader's region, plus the client's distance to
+  it", and "Preferred-site transfer keeps leaders near owners." DESIGN, "Entries per group": "one read of the entry's
+  `Authz` dependency on a leader in the owner's home region [guess]".
+
+The design's model is a client near the owner's home, with the leader there too. BM-2's "freshly elected" leader,
+though, is on a different site from the last one, so at least two of every three samples lead away from the owner's
+home (enam). I measure as before, at the client, which is the stricter reading. The LAX client-to-edge leg is about 87 ms
+of p50 (client time minus the edge's own time), so measuring from the edge would not change the verdict.
+
+### Read-index from a same-site learner: not `fresh`, and no saving
+
+DESIGN, "The read path": "`fresh` ... A fold that includes every entry acknowledged before `arrived`. Only the leader
+builds one", and "A follower answers reads by batching read-index requests to the leader every 10 ms and waiting until
+applied. A learner does the same with one request in flight and at most one every 50 ms." A learner on the
+repository leader's site would still send one read-index round trip to the dependency group's leader on enam, the
+same cross-region trip the leader pays now, plus up to 10 or 50 ms of batching. It saves nothing. It would also break
+"`decide` sees the `deps` folds the leader read once through `fresh`", because only a leader builds `Fresh`. Not built.
+
+### Edge passes its auth result to the leader: no saving at the leader
+
+The leader must read the `Tokens` shard through `fresh` in `deps` itself (DESIGN Invariants: `decide`'s result depends
+only on "the `deps` folds the leader read once through `fresh`"), and it reads `Tokens`, `Names` (the account chain), and
+`Authz` at once, so the slowest of the three bounds the step. Skipping `Tokens` would not shorten it, and taking the
+edge's word would weaken `decide`. Not built.
+
+### Baseline on main's build (`base`, 30 samples)
+
+Sites `3b620ff6`/`abd0eace`/`ac07bd32`, edge `b8729c3c`. n = 30, all passed, p50 2,862 ms, p90 3,513 ms, max 4,101 ms.
+
+| New leader | n | p50 ms | auth + resolve | tiers + `Authz` + logins | merge plan (shard, its catch-up) | commit |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 10 | 2,157 | 489 | 398 | 788 (542, 307) | 408 |
+| 1, weur | 9 | 2,862 | 437 | 473 | 1,366 (1,028, 539) | 692 |
+| 2, apac | 10 | 3,457 | 564 | 807 | 993 (559, 307) | 983 |
+
+Every one of the 29 shard merges caught up first (`catchup;desc=Some(...)`). The leader's `deps_log` shows the three
+dependency reads themselves at 10 to 40 ms (enam leader), 110 to 260 ms (weur), and 215 to 430 ms (apac). Before them,
+each `Authz` read waited on a `fresh` read of the owner's `Placement` row on `Names`, one more round trip to enam.
+
+### Cuts, commit `1c84ac6`
+
+1. The leader's `Authz` dependency is read under the record its member joined with (`owner_chain_record`). It no longer
+   reads the owner's `Placement` row on `Names` first. If the joined record finds no group (the owner moved), the
+   current record is read and tried. Test `the_owners_authz_is_read_under_the_joined_record`.
+2. A new leadership catches up its own site's shard of the network (`prsync::warm`, on the dispatcher's first alarm of
+   the leadership), so the first merge plan finds both commits already there.
+3. The edge reads a merge's logins while the git cache plans it, and `repo_name` reads the owner's login and `Authz` at
+   once.
+
+### After cuts 1 to 3 (`c1`, 30 samples)
+
+Sites `044d6889`/`9d7d77a2`/`b1a4fc1d`, edge `aeaf9288`. n = 30, all passed, p50 2,165 ms, max 2,876 ms. No shard caught
+up on the merge path (0 of 30, against 29 of 29 before).
+
+| New leader | n | p50 ms | max | auth + resolve | tiers + `Authz` | merge plan (shard) | commit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 10 | 1,475 | 1,754 | 216 | 414 | 309 (233) | 344 |
+| 1, weur | 10 | 2,294 | 2,642 | 359 | 627 | 680 (507) | 534 |
+| 2, apac | 10 | 2,432 | 2,876 | 359 | 820 | 433 (234) | 713 |
+
+The step that still grew with distance was "tiers + `Authz`": 400 to 1,180 ms on apac. The edge read both whole tiers
+for a merge: 571 KB of JSON for `wp6p`'s 1,200 rows (`ref` 715, `pull_head` 238, `mergeability` 238, ...). From the orb,
+the same read of the weur leader took 750 to 1,165 ms, against 235 to 400 ms for a 200-byte read of the same member.
+
+### Cut 4, commit `c0a393b`: a merge reads only its rows
+
+`mergePullRequest` reads `{"rows": {"merge": id}}`: the pull request's `issue_by_id`, `issue`, `pull`, and `pull_head`
+rows, its base's `ref`, and `settings`, at most six rows. `graphql::plan` and `merge_request` read only these, and the
+leader renders the reply from its own tiers. Test `a_merge_plans_from_its_rows_as_from_both_tiers` compares the plan,
+the `MergeRequest`, and the refusals with both whole tiers. It fails with the base `ref` row left out.
+
+### After cut 4 (`c2`, 30 samples)
+
+Sites `91490a96`/`e8931593`/`b06ae6e3`, edge `289e6d4e`. n = 30, all passed, p50 1,804 ms, p90 2,131 ms, max 2,331 ms.
+
+| New leader | n | p50 ms | max | auth + resolve | tiers + `Authz` | merge plan (shard) | commit |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 10 | 1,255 | 1,592 | 233 | 242 | 381 (319) | 322 |
+| 1, weur | 10 | 1,867 | 2,331 | 249 | 226 | 746 (488) | 506 |
+| 2, apac | 10 | 2,037 | 2,206 | 367 | 343 | 460 (263) | 756 |
+
+Six of 30 were over 2 s (three weur, three apac). The 300-sample run follows on this build.
+
+### Cut 5, commit `20155a1`: a merge by node id reads its rows alongside the owner's name
+
+`mergePullRequest` names its repository by node id. The edge found it with `repo_by_id`, then read the owner's login and
+`Authz` (now at once, cut 3), then the tier read. The merge's tier read needs only the repository, so it now starts with
+the owner's login and `Authz` reads, and "tiers + `Authz`" drops to 0 in `server-timing` (it is inside
+"auth + resolve"). Edge `1358b1a7`; sites unchanged (`91490a96`/`e8931593`/`b06ae6e3`).
+
+### Rechecks after the read- and commit-path changes (edge `1358b1a7`, sites `91490a96`/`e8931593`/`b06ae6e3`)
+
+| Row | Run | Count | Result |
+| --- | --- | --- | --- |
+| BF-23 | `hosted.py bf23 re23 10` on `wp3c` | 10 | **10 of 10 pass**: `gh pr merge` refused (exit 1) after the re-request, merged (exit 0) after the newer success |
+| BF-21 | `hosted.py queue re21 10 --kill-every 2` on `wp3q2` | 10, 5 with a leader kill mid-landing (`after_quorum`) | **10 of 10 pass**: the base moved only by whole `QueueMerge` landings, the failing PR ejected every time |
+| BF-1 | `hosted.py queue re1 2 --kill-every 0 --fail 0 --bf1` on `wp3f` | 2 | **2 of 2 pass**: one entry with a 5-PR `Landed` group and a `PrSync` batch; all three members hold it with the same digest |
+| gh replies | `c2b-gh` (two real `gh pr merge` runs in the p99 driver) | 15 GraphQL, 2 REST | **0 failed** (`gh-replies.py`, then `validate.py` against GHES 3.22) |
+
+Workspace checks on `20155a1`: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo test --workspace` (424 passed, 0 failed). `crates/raft` is untouched, so the long sweep and Porcupine were not
+rerun.
+
+### The 300-sample run on the final build (`final`)
+
+`p99.py final 300 --gh-every 25` on `wp6p`, edge `1358b1a7`, sites `91490a96`/`e8931593`/`b06ae6e3`, 14:20 to 16:02 UTC.
+288 mutations and 12 whole `gh pr merge` runs. Each sample is on a new term: 288 distinct terms, `from != to` in all 288.
+Every sample merged (288 of 288, gh 12 of 12). The driver stopped three times on client-side timeouts (a `git push`
+over 120 s, and two TLS handshakes to the tools edge's `/status`), never on a merge reply, and resumed from its last line.
+
+**BM-2's latency clause still fails: p99 4.10 s at n = 288** (p50 2.11 s, p90 2.93 s, 178 of 288 over 2 s).
+
+| New leader | n | p50 | p99 | max | Over 2 s | auth + resolve + rows | merge plan (shard) | commit | shard catch-ups |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0, enam | 85 | 1.62 s | 2.40 s | 2.40 s | 6 | 523 | 630 (565) | 350 | 3 |
+| 1, weur | 105 | 2.48 s | 4.15 s | 4.19 s | 94 | 535 | 1,183 (1,004) | 600 | 38 |
+| 2, apac | 98 | 2.14 s | 2.89 s | 2.89 s | 78 | 592 | 694 (492) | 715 | 4 |
+
+Step medians are in ms, from `server-timing`. The client-to-edge leg is 88 to 91 ms p50.
+
+**Why n = 288 settles it.** The gate needs at most 1% of samples over 2 s; 178 of 288 (62%) are over. Under "p99 ≤ 2 s"
+that has probability far below 10^-100. A pass at this n would need at most 2 samples over 2 s.
+
+**What the number is limited by.**
+
+1. Cross-region round trips, as before. On the leader, the three dependency reads (`deps_log`) take 21 to 47 ms p50 on
+   an enam leader, 118 to 132 ms on weur, and 226 to 265 ms on apac. Every identity leader (`Names`, `Tokens`, `Authz`)
+   is on enam. Commit is one replication round plus those reads: 350 ms enam, 600 ms weur, 715 ms apac.
+2. The shard's merge gets slower over the run. Its p50 rose from 492 ms (samples 0 to 49) to 672 ms (samples 200 to
+   249), while each shard's pack count grew from about 1,200 to 1,953. The shards never repack (`gc.auto 0`, and
+   nothing else runs `repack`). In the orb, `git merge-tree` on a 751-pack repository took 8.7 ms, against 2.0 ms after
+   `git repack --geometric=2` (and 5.9 ms with a multi-pack index). Each merge runs about six git commands, so this is
+   part of the growth. The rest is the container hop and the weur container itself: weur's shard merge is about
+   twice enam's and apac's at every pack count [inference].
+3. Catch-ups on the merge path came back on weur: 38 of 105 weur samples, against 3 and 4 elsewhere. The new
+   leadership's `warm` catch-up (cut 2) starts on its first alarm, and the client's merge arrives about as fast as
+   the election is seen, so on the slowest shard the two race and the merge catches up itself. A catch-up costs
+   250 to 700 ms.
+
+Fresh-shard runs (`c2`, `c2b`, `c3`, about 1,200 packs) show the same placement limit without the pack growth: n = 109,
+enam p99 1.68 s (0 of 36 over 2 s), weur p99 3.18 s (18 of 37 over), apac p99 2.82 s (21 of 36 over).
+
+`final-gh` replies: 92 GraphQL and 12 REST, **0 failed** (`gh-replies.py`, then `validate.py` against GHES 3.22).
+
+### Proposed design change
+
+2 s is out of reach for a leader elected away from the identity leaders' region with this placement. On enam, where
+`Names`, `Tokens`, and `Authz` lead, the fresh-leader merge passed on fresh shards (p99 1.68 s, n = 36) and missed
+narrowly on shards with about 1,950 packs (p99 2.40 s, 6 of 85 over). On weur and apac, every step pays two to four more
+cross-region rounds, so p50 alone is 2.1 to 2.5 s.
+
+Options, in the order I would take them. Each needs an operator decision, because the gate and placement are design:
+
+1. **Say where the gate measures.** "Fresh reads on a held lease cost one DO call in the leader's region, plus the
+   client's distance to it" and "Preferred-site transfer keeps leaders near owners" assume the leader is near its
+   owner and its dependencies. BM-2 should say "a freshly elected leader on the group's home site, with the client in
+   that region". That is what "Preferred-site transfer" restores within one lease after any election. Off-home leaders
+   would get a separate, looser bound, for example 3.5 s p99, after weur's 3.18 s fresh-shard figure. Evidence: enam-led
+   p99 1.68 s fresh and 2.40 s aged here, with the LAX client about 70 ms from enam.
+2. **Repack the git cache shards** (a code change under the existing design: "one repack per shard at a time",
+   `design/DESIGN.md`, Failure modes, git caches). A geometric repack after each catch-up that leaves more than about 50
+   packs would keep the shard merge near its fresh 230 to 350 ms (enam, apac). The enam-led aged p99 should then fall
+   back toward 1.7 s [inference: from the fresh-shard figures].
+3. **Placement (proposal only).** Putting `Names`, `Tokens`, and `Authz` leaders near each owner's home is already the
+   model: "one read of the entry's `Authz` dependency on a leader in the owner's home region [guess]". It does not help a
+   repository leader that is temporarily off home. The leader's three dependency reads cost 120 to 265 ms from weur and
+   apac, so co-locating them with a moved leader would cut 100 to 250 ms of commit and about as much at the edge. That
+   brings weur and apac p50 to about 1.7 to 2.0 s, still not a 2 s p99. I do not recommend chasing it with placement.
+
+### Not built, and why
+
+- **A same-site learner's read-index for `deps`.** It is not `fresh` ("Only the leader builds one", "The read path"),
+  and it still pays one round trip to the enam leader plus 10 to 50 ms of batching.
+- **The edge passing its auth result to the leader.** `decide`'s result must depend only on "the `deps` folds the
+  leader read once through `fresh`", and the leader's three dependency reads run at once, so skipping `Tokens` saves
+  nothing.

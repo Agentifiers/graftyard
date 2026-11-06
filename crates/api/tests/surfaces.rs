@@ -519,6 +519,62 @@ fn a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error() {
     assert_eq!(refused_merge(&p, &e)["errors"][0]["type"], "FORBIDDEN");
 }
 
+/// A merge plans from `TierRows::merge_rows` alone exactly as from both whole tiers: the same `Planned`, the same
+/// `MergeRequest`, and the same refusals (a closed pull request, a method the repository does not allow), so the edge
+/// reads only those rows on a fresh leader. The pull request's id names only its own rows.
+#[test]
+fn a_merge_plans_from_its_rows_as_from_both_tiers() {
+    use graftyard_api::hosted::{HostedDir, TierRows};
+    let mut c = seeded();
+    // A second open pull request, whose rows a merge of #2 must not need.
+    c.push("refs/heads/g", oid(5));
+    c.commit(
+        WRITER,
+        IssueOp::OpenPr {
+            head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name("refs/heads/g") },
+            base: name("refs/heads/main"),
+            title: "other".into(),
+            body: "".into(),
+            draft: false,
+            head_sha: oid(5),
+            base_sha: oid(1),
+        },
+    )
+    .unwrap();
+    let h = host();
+    let dir = Dir::new(WRITER);
+    let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(WRITER))), ..Default::default() };
+    let d = doc("PullRequestMerge-1");
+    let plan_on = |core: &MemStore, meta: &MemStore, vars: &Option<Map<String, Value>>| {
+        let r = Repo { host: &h, at: dir.home(), core, meta, dir: &hosted };
+        let req = Request::parse(&d.query, vars.clone(), None).unwrap();
+        plan(&req, &r).and_then(|p| merge_request(&p, &r).map(|m| (p, m)))
+    };
+    let m = &c.members[0];
+    let (vars, id) = {
+        let r = c.repo(0, &h, &dir);
+        (with_ids(&d, &r), r.item(IssueNumber(2)).unwrap().row.id)
+    };
+    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), id);
+    let crossed: TierRows = serde_json::from_value(serde_json::to_value(&rows).unwrap()).unwrap();
+    let (core, meta) = (TierRows::store(&crossed.core), TierRows::store(crossed.meta.as_ref().unwrap()));
+    let small = plan_on(&core, &meta, &vars).unwrap();
+    assert_eq!(small, plan_on(&m.core, &m.meta, &vars).unwrap());
+    assert_eq!((small.1.n, small.1.base_old, small.1.head), (IssueNumber(2), oid(1), oid(2)));
+    assert!(crossed.core.len() + crossed.meta.as_ref().unwrap().len() <= 6, "{crossed:?}");
+    let mut rebase = vars.clone().unwrap();
+    rebase["input"]["mergeMethod"] = json!("REBASE");
+    assert_eq!(plan_on(&core, &meta, &Some(rebase.clone())), plan_on(&m.core, &m.meta, &Some(rebase)));
+    // Once #2 merged, its rows refuse a second merge as both tiers do.
+    c.commit_merge(merge_command(&small.0, cache_plan(&small.1), who(WRITER))).unwrap();
+    let m = &c.members[0];
+    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), id);
+    let (core, meta) = (TierRows::store(&rows.core), TierRows::store(rows.meta.as_ref().unwrap()));
+    let refused = plan_on(&core, &meta, &vars).unwrap_err();
+    assert_eq!(refused, plan_on(&m.core, &m.meta, &vars).unwrap_err());
+    assert_eq!(refused["errors"][0]["message"], "Pull request is not open");
+}
+
 #[test]
 fn an_unserved_field_is_undefined_field_not_null() {
     let c = seeded();
