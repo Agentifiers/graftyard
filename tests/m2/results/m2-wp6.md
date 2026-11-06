@@ -567,7 +567,7 @@ run. `final-gh` replies: 93 GraphQL and 12 REST, **0 failed**; `sane-gh` 8 and 1
 
 ### Tokens
 
-- `scripts`: no driver passes a token on a command line. The changes are in `4b6631f` and `9301e15`.
+- No driver passes a token on a command line. The changes are in `4b6631f` and `9301e15`.
 - Every file under `tests/m2/results/raw/` in main's checkout and every worktree was scanned (38,052 files). The scan
   looked for every install token, the M0 tools token, both bed tokens, the Cloudflare API token, and the `x:<token>`
   base64 forms. **0 hits.** The earlier hits (`raw/wp5/base1.log`, `dist.log`, and three `smoke*.work/.git/config`
@@ -577,7 +577,8 @@ run. `final-gh` replies: 93 GraphQL and 12 REST, **0 failed**; `sane-gh` 8 and 1
 
 **BM-2's latency clause fails as written**: p99 2.42 s at n = 288, with every new leader and the client at LAX. 8
 samples are over 2 s; a pass at n = 288 allows at most 2. Every other BM-2 clause holds on this build: journeys 2 and 3
-pass 10 of 10, and stale `parent_tip` refusal is unchanged code since its 100 of 100 on main.
+pass 10 of 10. The stale-`parent_tip` clause was not rerun here; this branch does not touch the queue's
+`decide`, and it was 100 of 100 on main's build (`bm2f`).
 
 By leader site, weur passes at n = 120 (p99 1.96 s). enam is at the line at n = 66 (p99 2.01 s, 1 sample over).
 apac misses (p99 2.71 s, 6 of 102 over). Proposal 1 (measure on a freshly elected leader on the home site) is the
