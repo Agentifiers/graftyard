@@ -94,3 +94,26 @@ Status: in progress. This file holds progress notes until the gates run.
 - Validation across every gh capture so far (`d1`, `b0`, `bf23`, `q0`, `qk`, and the four `bf21-*` dirs, merged into
   `raw/m2-wp3/all-replies`): 477 GraphQL and 63 REST replies, 0 failed. That includes 50 `PullRequestAutoMerge`
   (gh's enqueue on a queued base), 10 `PullRequestMerge`, and the 4 REST merge replies (200, 403, 405, 409).
+- BF-21 hosted, 100 runs over `wp3q`, `wp3q2`, `wp3q3`, and `wp3q4`, 25 each (`bf21-*.jsonl`). Each run:
+  - opens 5 pull requests with `gh pr create` and enqueues all five with `gh pr merge --merge`;
+  - plays CI on each queue tip and fails the 3rd pull request's tip and every tip after it.
+
+  Results:
+  - 99 of the 100 scheduled runs pass. Run 15 on `wp3q` stopped before any enqueue: gh's `pr create` hit "net/http:
+    TLS handshake timeout" to the edge. Its four pull requests opened without being queued, and the log shows that
+    run touched no queue entry and moved no base. One replacement run (`wp3q` trial 25) passes, so 100 completed
+    runs pass.
+  - In every completed run, the base audit over the leader's log passes (0 bad):
+    - `main` moves only in entries whose events are `Merged`s followed by `Landed`, each move from the previous tip;
+    - the failing pull request is ejected `CheckFailed { ci }` and stays OPEN and out of the queue;
+    - the other four are MERGED.
+  - 40 runs landed the four in one `QueueMerge` and 59 in two. Group sizes over all landings: 46 of 1, 26 of 2, 46
+    of 3, 40 of 4. A run took 131 to 216 s, median 187 s.
+  - Leader kills at global runs 9, 19, ... 99 (10 runs) alternate `after_quorum` and `before_commit`, down 25 s. Each
+    member's fault table records the kill on a landing:
+    - The 6 `after_quorum` kills fired at the `QueueMerge` entry itself (indexes 485, 174, 528, 307, 146, 470 hold
+      `Merged`... `Landed`). It committed and stayed committed under the next leader.
+    - The 4 `before_commit` kills fired before the landing's entry was written (the index the table records holds no
+      events). The next leader's consumer landed the group again.
+
+    In all 10, a new term was elected (terms 3 to 8), the landing was whole, and the audit passed.
