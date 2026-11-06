@@ -285,7 +285,6 @@ pub struct AuthzMore {
     pub oauth_apps: BTreeMap<ClientId, OAuthAppRecord>,
     pub org: OrgRows,
     /// M3-WP4's: every installation this owner has had, removed ones kept for their `not_before`.
-    #[serde(default)]
     pub installations: BTreeMap<InstallationId, InstallationState>,
 }
 
