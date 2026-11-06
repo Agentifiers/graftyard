@@ -144,6 +144,8 @@ pub struct Stats {
     pub calls: BTreeMap<&'static str, CallTimes>,
     /// Test installs: B0-18's read-index trace, oldest first, each `[at, kind, peer, batch, index, ms]` (`Trace`).
     pub trace: VecDeque<[u64; 6]>,
+    /// Test installs: member-to-member calls by modelled hop (`Host::hop`): `[ok, failed for depth, failed otherwise]`.
+    pub hops: BTreeMap<u64, [u32; 3]>,
 }
 
 /// The kinds in `Stats::trace`. `peer` is the other member's address; `index` is the read index (0 for none), the
@@ -167,6 +169,9 @@ pub enum Trace {
     ResEnded = 7,
     /// The member's 100 ms ticker woke `ms` late.
     Lag = 8,
+    /// A call to `peer` failed "Subrequest depth limit exceeded": `batch` is its message kind's `Call::msg` index,
+    /// `index` its modelled hop (`Host::hop`).
+    DepthFail = 9,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -281,6 +286,8 @@ struct Call {
     at: u64,
     /// A `ReadIndex` or `ReadIndexRes` call's batch.
     batch: Option<u64>,
+    /// The call's modelled hop (`Host::hop`), set when it leaves.
+    hop: Cell<u64>,
 }
 
 impl Call {
@@ -312,7 +319,7 @@ impl Call {
             raft::Message::ReadIndex { batch } | raft::Message::ReadIndexRes { batch, .. } => Some(*batch),
             _ => None,
         };
-        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms(), batch }
+        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms(), batch, hop: Cell::new(0) }
     }
 }
 
@@ -430,6 +437,11 @@ pub struct Host<F: Family> {
     /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
     #[cfg(feature = "test-faults")]
     pub abandon: RefCell<BTreeSet<u64>>,
+    /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
+    /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
+    /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
+    #[cfg(feature = "test-faults")]
+    pub hop: Cell<u64>,
 }
 
 pub fn err(m: impl Into<String>) -> Error {
@@ -958,6 +970,8 @@ impl<F: Family> Host<F> {
             leasing: Cell::new(false),
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
+            #[cfg(feature = "test-faults")]
+            hop: Cell::new(2),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -1682,20 +1696,26 @@ impl<F: Family> Host<F> {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "fail_call")));
                 return h.call_failed(on_error);
             }
+            #[cfg(feature = "test-faults")]
+            call.hop.set(h.hop.get() + 1);
             let missed = || {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "no answer within CALL_DEADLINE")));
                 h.stats.borrow_mut().failed_calls += 1;
                 h.call_failed(on_miss);
             };
             // `answer` starts the limit's timer only once the deadline passed.
-            let (late, r) =
-                match answer(h.call_peer(to, body), Delay::from(raft::CALL_DEADLINE), Delay::from(LATE_LIMIT), missed)
-                    .await
-                {
-                    Answer::InTime(r) => (false, r),
-                    Answer::Late(r) => (true, r),
-                    Answer::Missed => return,
-                };
+            let (late, r) = match answer(
+                h.call_peer(to, body, call.hop.get()),
+                Delay::from(raft::CALL_DEADLINE),
+                Delay::from(LATE_LIMIT),
+                missed,
+            )
+            .await
+            {
+                Answer::InTime(r) => (false, r),
+                Answer::Late(r) => (true, r),
+                Answer::Missed => return,
+            };
             let replies = match r {
                 Ok(replies) => replies,
                 Err(pe) if late => return h.ended(&call, End::LateFailed(pe)),
@@ -1743,6 +1763,22 @@ impl<F: Family> Host<F> {
             if v.len() < SAMPLES_MAX {
                 v.push(ms);
             }
+        }
+        let depth = matches!(&end, End::Failed(e) | End::LateFailed(e) if e.msg.contains("Subrequest depth"));
+        if !matches!(&end, End::Failed(e) if e.kind == CallFail::Deadline) {
+            let k = if matches!(end, End::Ok | End::Late) {
+                0
+            } else if depth {
+                1
+            } else {
+                2
+            };
+            s.hops.entry(c.hop.get()).or_default()[k] += 1;
+        }
+        if depth {
+            drop(s);
+            self.trace(Trace::DepthFail, c.to, 0, c.hop.get(), u64::from(ms));
+            s = self.stats.borrow_mut();
         }
         if let Some(b) = c.batch {
             let kind = if c.msg == "readIndex" { Trace::IndexEnded } else { Trace::ResEnded };
@@ -1813,7 +1849,7 @@ impl<F: Family> Host<F> {
     }
 
     /// One member-to-member call, with no deadline (`answer` adds it), and the cause of its failure.
-    async fn call_peer(&self, to: SiteId, body: Vec<u8>) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
+    async fn call_peer(&self, to: SiteId, body: Vec<u8>, hop: u64) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
         let (at, name) =
             self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member at address {}", to.0)))?;
         let site = SiteEnv::read(&self.env).map_err(|x| PeerErr::new(CallFail::SiteEnv, x))?;
@@ -1821,6 +1857,14 @@ impl<F: Family> Host<F> {
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(JsValue::from(js_sys::Uint8Array::from(body.as_slice()))));
         drop(body);
+        #[cfg(feature = "test-faults")]
+        {
+            let h = Headers::new();
+            let _ = h.set("x-graft-hop", &hop.to_string());
+            init.with_headers(h);
+        }
+        #[cfg(not(feature = "test-faults"))]
+        let _ = hop;
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
