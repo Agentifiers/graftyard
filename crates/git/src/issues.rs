@@ -286,12 +286,8 @@ pub struct BranchRule {
     pub protection: Option<Protection>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Visibility {
-    Public,
-    Private,
-    Internal,
-}
+/// The identity crate's, which `authorize` reads.
+pub use graftyard_identity::Visibility;
 
 pub const CHECK_RETENTION_DEFAULT: u16 = 90;
 pub const CHECK_RETENTION_MAX: u16 = 400;

@@ -209,6 +209,22 @@ pub trait AuthzRead {
     /// Whether the App's registration was deleted or aborted here.
     fn app_closed(&self, app: AppId) -> bool;
     fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord>;
+    /// The enterprise an org belongs to, whose own `Authz` chain is a third dependency.
+    fn enterprise(&self) -> Option<AccountId> {
+        None
+    }
+    /// The org policy's base permission for every member.
+    fn base_permission(&self) -> Option<RepoPermission> {
+        None
+    }
+    /// Whether the org policy enforces SSO: access through membership needs the org in the principal's `sso_orgs`.
+    fn sso_enforced(&self) -> bool {
+        false
+    }
+    /// The highest permission a team the user is in holds on the repository.
+    fn team_permission(&self, _repo: RepoId, _user: UserId) -> Option<RepoPermission> {
+        None
+    }
 
     /// Whether `user` administers the owner: the user itself for a user account, an org `Admin` for an org.
     fn is_admin(&self, user: UserId) -> bool {

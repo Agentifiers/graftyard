@@ -8,6 +8,7 @@
 //! `graftyard_raft::Command` with its fold. Pure Rust: no Workers dependency, no clock and no randomness but what the
 //! caller passes in.
 
+mod access;
 mod apps;
 mod authz;
 mod cache;
@@ -21,6 +22,7 @@ mod overlay;
 mod placement;
 mod tokens;
 
+pub use access::{Decision, ReadAction, RepoAccess, Visibility, WriteAction, authorize, authorize_write, permission};
 pub use apps::{
     Access, AppId, AppKey, AppRecord, CLIENT_SECRETS_MAX, ClientId, EventKind, InstallationId, OAuthAppRecord,
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
