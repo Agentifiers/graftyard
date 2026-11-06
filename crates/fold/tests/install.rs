@@ -565,6 +565,23 @@ fn bf29_a_follower_offline_past_the_archive_boundary_rejoins_by_install_snapshot
         assert!(n.m(C).group_fold().request(*id).is_some(), "C has request {id:?}'s row from the archives");
     }
     assert_converged(&n, A, &[B, C]);
+    let at = VOTERS.iter().map(|s| n.m(*s).group_fold().applied()).min().unwrap();
+    let d = |s: SiteId| {
+        let f = &n.m(s).group_fold().fold;
+        (digest_at(&f.core, at).unwrap(), digest_at(&f.meta, at).unwrap())
+    };
+    println!(
+        "BF-29: C left at {c_left:?}; snapshot at {snap:?}; archive {from:?}..={through:?}; leader base {:?}; C \
+         installed once, after {} acks in the run; C last {:?}; at {at:?} core/meta digests A {:?} B {:?} C {:?}; \
+         request rows of archived entries checked on C: {}",
+        n.m(A).log_base().index,
+        installs[0].0,
+        n.m(C).last_index(),
+        d(A),
+        d(B),
+        d(C),
+        archived.len(),
+    );
     // C still follows: the next write commits on it.
     let id = n.commit(A, vec![Ev::Core(99, 1)]);
     n.write(A, 1);
@@ -661,6 +678,7 @@ fn bf28_learners_beside_a_voter_and_on_one_site_are_distinct_objects_that_never_
     assert!(n.committed(id), "the voters commit it once they hear the leader");
     // A learner never campaigns.
     assert_eq!(n.on(addrs[0], |m, now| m.campaign(now)), graftyard_raft::Verdict::MayNotLead);
+    println!("BF-28: objects {:?}; learner addresses {addrs:?}; installs {:?}", n.objects, n.installed);
 }
 
 /// A learner sends one read-index request at a time and at most one every 50 ms; a follower batches every 10 ms.
@@ -699,6 +717,11 @@ fn learner_read_index_keeps_one_in_flight_and_a_50_ms_floor() {
             n.resolutions.iter().filter(|(s, r)| *s == who && matches!(r, Resolution::Read { .. })).collect();
         let ok = reads.iter().filter(|(_, r)| matches!(r, Resolution::Read { result: Ok(_), .. })).count();
         assert_eq!((reads.len(), ok), (40, 40), "every read of {who:?} was granted: {reads:?}");
+        println!(
+            "read-index from {who:?}: {} batches for 40 reads, gaps {:?} ms",
+            times.len(),
+            times.windows(2).map(|w| w[1].0 - w[0].0).collect::<Vec<_>>()
+        );
         n.resolutions.clear();
     }
 }
