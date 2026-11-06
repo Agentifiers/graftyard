@@ -21,6 +21,18 @@ use worker::*;
 
 use crate::{SiteEnv, now_ms};
 
+thread_local! {
+    /// Per network, the catch-ups running on this isolate's shard objects, so a merge waits for one in flight
+    /// (`merge_then_catch_up`'s `in_flight`). An object's requests share its isolate.
+    static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<i64, graftyard_git::merge_cache::CatchUps>> =
+        Default::default();
+}
+
+/// This isolate's catch-up gate for network `net`.
+fn catch_ups(net: NetworkId) -> graftyard_git::merge_cache::CatchUps {
+    CATCH_UPS.with(|m| m.borrow_mut().entry(net.0.0).or_default().clone())
+}
+
 #[durable_object]
 pub struct GitShard {
     state: State,
@@ -137,7 +149,6 @@ impl DurableObject for GitShard {
         let repo: i64 = q(&url, "repo").and_then(|v| v.parse().ok()).ok_or("repo")?;
         let repo = RepoId(DbId(repo));
         let (net, chain) = (NetworkId(repo.0), ChainId::Repo(repo));
-        let chain_id = chain;
         // The caller's copy of the owner's record saves the two `Names` reads, about 400 ms once the shard's isolate
         // forgot the leaders (`tests/m2/results/m2-wp6.md`, "Merge latency"). A record that no longer finds the
         // group only slows the lookup: `GroupLog`'s reads go to the leader by the lookup rule either way.
@@ -152,9 +163,14 @@ impl DurableObject for GitShard {
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
         host.touch(Timestamp(now_ms())).await.map_err(se)?;
+        // Every catch-up is marked running while it runs, so a merge waits for it rather than racing it.
+        let caught_up = || async {
+            let _running = catch_ups(net).start();
+            host.catch_up(net, &[chain], &bs, &log).await
+        };
         match path.as_str() {
             "/validate" => {
-                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                caught_up().await.map_err(se)?;
                 let body = req.bytes().await?;
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let tips: Vec<String> =
@@ -165,7 +181,7 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
-                let c = host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                let c = caught_up().await.map_err(se)?;
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -178,9 +194,10 @@ impl DurableObject for GitShard {
                 h.set("x-graft-rehydrated", if c.rehydrated.is_some() { "1" } else { "0" })?;
                 Ok(r.with_headers(h))
             }
-            "/catchup" => Response::from_json(&host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?),
+            // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
+            "/catchup" => Response::from_json(&caught_up().await.map_err(se)?),
             "/promote" => {
-                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                caught_up().await.map_err(se)?;
                 let sums: Vec<String> = req.json().await?;
                 let sums: Vec<graftyard_types::Digest> = sums
                     .iter()
@@ -209,11 +226,21 @@ impl DurableObject for GitShard {
                 };
                 let t0 = now_ms();
                 let caught = std::cell::RefCell::new(None);
+                let waited = std::cell::Cell::new(0);
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
                     || async { host.up().await.map(|_| ()) },
+                    || {
+                        let idle = catch_ups(net).idle();
+                        let waited = &waited;
+                        async move {
+                            let w0 = now_ms();
+                            idle.await;
+                            waited.set(now_ms() - w0);
+                        }
+                    },
                     || host.merge_chain(net, base, &chain, method),
                     || async {
-                        *caught.borrow_mut() = Some(host.catch_up(net, &[chain_id], &bs, &log).await?.ms);
+                        *caught.borrow_mut() = Some(caught_up().await?.ms);
                         Ok(())
                     },
                 )
@@ -223,7 +250,12 @@ impl DurableObject for GitShard {
                     Err(e) => Response::error(e.0, 422)?,
                 };
                 // Where a merge plan's time went: the whole, and the catch-up's steps if it ran one.
-                let timing = format!("merge;dur={}, catchup;desc=\"{:?}\"", now_ms() - t0, caught.into_inner());
+                let timing = format!(
+                    "merge;dur={}, waited;dur={}, catchup;desc=\"{:?}\"",
+                    now_ms() - t0,
+                    waited.get(),
+                    caught.into_inner()
+                );
                 let h = Headers::new();
                 h.set("x-graft-timing", &timing)?;
                 Ok(r.with_headers(h))
@@ -236,12 +268,12 @@ impl DurableObject for GitShard {
                         .ok_or_else(|| Error::RustError(k.to_owned()))
                 };
                 let (base, head) = (oid("base")?, oid("head")?);
-                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                caught_up().await.map_err(se)?;
                 Response::from_json(&host.merge(net, base, head).await.map_err(se)?)
             }
             // `git archive` of a commit the cache holds once it caught up (`codeload-archives`).
             "/archive" => {
-                host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
+                caught_up().await.map_err(se)?;
                 let q: String = url
                     .query_pairs()
                     .filter(|(k, _)| k != "repo")
