@@ -802,6 +802,10 @@ fn encode_principal(e: &mut Enc, p: &Principal) {
             e.u8(0);
             e.0.extend_from_slice(&h);
         }
+        Credential::Session(s) => {
+            e.u8(1);
+            e.u128(s.0.0);
+        }
     }
     e.count(p.sso_orgs.len());
     for o in &p.sso_orgs {
@@ -884,6 +888,7 @@ fn decode_principal(d: &mut Dec) -> Result<Principal, WireError> {
     let scopes = ScopeSet(d.u64()?);
     let credential = match d.u8()? {
         0 => Credential::Stored(d.take(32)?.try_into().expect("32")),
+        1 => Credential::Session(graftyard_identity::WebSessionId(graftyard_types::Ulid(d.u128()?))),
         _ => return Err(WireError::Malformed("credential tag")),
     };
     let n = d.u32()? as usize;

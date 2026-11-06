@@ -189,3 +189,32 @@ fn only_a_site_admin_writes_instance_auth_and_the_next_sign_in_follows_it() {
     org(&mut w, other, admin);
     assert_eq!(refused(w.authz_cmd(other, set(as_user(admin)))), AuthzErr::NotInstall);
 }
+
+/// The `Account` row is read on every write: a web session issued before `sessions_not_before` is refused (sign out
+/// everywhere), and a suspended account is refused whatever its credential, on the next entry after the change.
+#[test]
+fn every_write_reads_the_account_row_for_suspension_and_sign_out_everywhere() {
+    use graftyard_identity::{Credential, CredentialRefusal, Principal, ScopeSet, WebSessionId};
+    use graftyard_types::Ulid;
+    let mut w = World::default();
+    let (owner, admin) = (acct(0, 9, 1), acct(0, 2, 1));
+    org(&mut w, owner, admin);
+    let session = |at: u64| Principal {
+        actor: graftyard_identity::Actor::User(UserId(admin)),
+        scopes: ScopeSet(0),
+        credential: Credential::Session(WebSessionId(Ulid::new(Timestamp(at), [3; 10]))),
+        sso_orgs: Default::default(),
+    };
+    let team = |p: &Principal| AuthzCmd { cred: p.credential_shard(), op: AuthzOp::CreateTeam { name: "t".into() } };
+    w.authz_cmd(owner, team(&session(5_000))).unwrap();
+    // Sign out everywhere: every session issued before the new time is refused, a later one passes.
+    let put = |suspended, nb| NamesOp::PutAccount { id: admin, suspended, sessions_not_before: Timestamp(nb) };
+    w.names_cmd(ChainId::Names(account_shard(admin)), NamesCmd { cred: OPS, op: put(false, 6_000) }).unwrap();
+    let r = refused(w.authz_cmd(owner, team(&session(5_000))));
+    assert_eq!(r, AuthzErr::Unauthorized(CredentialRefusal::SignedOut));
+    w.authz_cmd(owner, team(&session(6_000))).unwrap();
+    // Suspension refuses the newer session too.
+    w.names_cmd(ChainId::Names(account_shard(admin)), NamesCmd { cred: OPS, op: put(true, 6_000) }).unwrap();
+    let r = refused(w.authz_cmd(owner, team(&session(7_000))));
+    assert_eq!(r, AuthzErr::Unauthorized(CredentialRefusal::Suspended(admin)));
+}

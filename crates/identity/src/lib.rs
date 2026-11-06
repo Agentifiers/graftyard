@@ -34,7 +34,7 @@ pub use authz::{
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
-    Actor, Credential, CredentialRefusal, IdentityDep, OrgId, Own, Principal, UserId, check_credential,
+    Actor, Credential, CredentialRefusal, IdentityDep, OrgId, Own, Principal, UserId, WebSessionId, check_credential,
     credential_chains,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};

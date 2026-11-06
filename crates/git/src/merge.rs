@@ -9,8 +9,8 @@
 
 use graftyard_fold::{MemStore, Read};
 use graftyard_identity::{
-    Actor, AuthzRead, Credential, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId,
-    check_credential, credential_chains,
+    Actor, AuthzRead, CredentialRefusal, IdentityDep, Own, Principal, RepoPermission, UserId, check_credential,
+    credential_chains,
 };
 use graftyard_raft::{Command, Format, Record, TierSet};
 use graftyard_types::{AccountId, ChainId, Digest, Index, Timestamp};
@@ -516,14 +516,29 @@ pub enum MergeCmdOut {
     Cursor(Index),
 }
 
-/// The canonical form of a principal, for `Record::encode`.
-fn principal_key(p: &Principal) -> (Option<i64>, u64, [u8; 32], Vec<i64>) {
+/// The canonical form of a principal, for `Record::encode`: a stored token's is Milestone 2's four fields, and a web
+/// session's adds its id.
+fn principal_key(p: &Principal) -> PrincipalKey {
     let actor = match p.actor {
         Actor::User(u) => Some(u.0.0.0),
         Actor::Anonymous => None,
     };
-    let Credential::Stored(h) = p.credential;
-    (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect())
+    let (h, session) = p.credential.wire();
+    PrincipalKey { base: (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect()), session }
+}
+
+pub(crate) struct PrincipalKey {
+    base: (Option<i64>, u64, [u8; 32], Vec<i64>),
+    session: Option<graftyard_types::Ulid>,
+}
+
+impl serde::Serialize for PrincipalKey {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self.session {
+            None => self.base.serialize(s),
+            Some(id) => (&self.base.0, self.base.1, &self.base.2, &self.base.3, id.0).serialize(s),
+        }
+    }
 }
 
 type PlanKey<'a> = (

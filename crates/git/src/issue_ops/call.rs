@@ -82,12 +82,15 @@ struct Wire {
     sso: Vec<i64>,
     request: RequestId,
     render: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<graftyard_types::Ulid>,
 }
 
 impl Serialize for IssueCall {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let Credential::Stored(token) = self.actor.credential;
+        let (token, session) = self.actor.credential.wire();
         Wire {
+            session,
             format: (REPO_FORMAT_ISSUES.family, REPO_FORMAT_ISSUES.version),
             op: self.op.clone(),
             account: match self.actor.actor {
@@ -115,7 +118,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         let actor = Principal {
             actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
             scopes: ScopeSet(w.scopes),
-            credential: Credential::Stored(w.token.0),
+            credential: Credential::from_wire(w.token.0, w.session),
             sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
         };
         Ok(IssueCall::new(w.op, actor, w.request, w.render))

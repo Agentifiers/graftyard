@@ -39,12 +39,15 @@ struct PrincipalWire {
     scopes: u64,
     token: Digest,
     sso: Vec<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<graftyard_types::Ulid>,
 }
 
 impl PrincipalWire {
     fn of(p: &Principal) -> PrincipalWire {
-        let Credential::Stored(token) = p.credential;
+        let (token, session) = p.credential.wire();
         PrincipalWire {
+            session,
             account: match p.actor {
                 Actor::User(u) => Some(u.0.0.0),
                 Actor::Anonymous => None,
@@ -59,7 +62,7 @@ impl PrincipalWire {
         Principal {
             actor: self.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
             scopes: ScopeSet(self.scopes),
-            credential: Credential::Stored(self.token.0),
+            credential: Credential::from_wire(self.token.0, self.session),
             sso_orgs: self.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
         }
     }
