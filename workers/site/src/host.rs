@@ -243,6 +243,9 @@ impl Call {
             raft::Message::ProbeRes { .. } => "probeRes",
             raft::Message::Ping { .. } => "ping",
             raft::Message::Pong { .. } => "pong",
+            raft::Message::Install(_) => "install",
+            raft::Message::ReadIndex { .. } => "readIndex",
+            raft::Message::ReadIndexRes { .. } => "readIndexRes",
         };
         let (append, entries) = match &e.msg {
             raft::Message::Append(a) => {
@@ -455,6 +458,9 @@ impl<F: Family> Storage<F::Ev> for SqlStore<'_, F> {
                 vec![i(e.index.0), i(e.term.0), raft::digest(e).0.to_vec().into(), codec::to_bytes(e).into()],
             )),
             Write::Truncate(x) => self.stmts.push(("DELETE FROM log WHERE idx >= ?", vec![i(x.0)])),
+            // Only `Member::install` writes it, and this host neither calls it nor sets an install source: hosting
+            // `InstallSnapshot` is M3-WP5's hosted half.
+            Write::Install(_) => unreachable!("the site host does not install snapshots"),
             Write::Apply(to) => {
                 let mut applied = Vec::new();
                 let mut last_at = None;

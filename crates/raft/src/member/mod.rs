@@ -27,10 +27,12 @@ const KEEP_ALL: u64 = u64::MAX / 4;
 mod election;
 mod follower;
 mod health;
+mod install;
 mod leader;
 mod log;
 mod transfer;
 
+pub use install::LEARNER_READ_EVERY;
 pub use leader::APPEND_BYTES_MAX;
 pub use log::{FoldView, verify};
 
@@ -93,6 +95,62 @@ pub enum Message<E> {
         probe: u64,
         n: u8,
     },
+    /// Leader to a member whose next entry it has archived (`design/DESIGN.md`, Shape, "Packs").
+    Install(InstallSnapshot),
+    /// A follower or learner asks the leader for a read index for the reads in batch `batch`.
+    ReadIndex {
+        batch: u64,
+    },
+    /// The leader's answer: the applied index a read there sees, or `None` when it cannot serve one.
+    ReadIndexRes {
+        batch: u64,
+        index: Option<Index>,
+    },
+}
+
+/// The design's `InstallSnapshot`, with the keys as the strings the host names objects by (`crates/raft` cannot name
+/// `R2Key`), and four additions: the round fields an AppendEntries carries, so the answer is an `AppendRes` to that
+/// round, and the term and digest of entry `through`, so the member checks what it loaded and the next entry chains.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallSnapshot {
+    pub term: Term,
+    pub boot: u64,
+    pub round: u64,
+    pub sent_at: Timestamp,
+    pub lead_seq: u64,
+    pub source: InstallSource,
+}
+
+/// What a leader names in an `InstallSnapshot`, which its host sets with `Member::set_install` once its storage no
+/// longer holds the entries at or below `through`: the newest committed snapshot of each tier, the archive objects
+/// after it through `through`, and entry `through`'s term and digest.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallSource {
+    pub core: Box<str>,
+    pub metadata: Option<Box<str>>,
+    pub archives: SmallVec<[Box<str>; 8]>,
+    pub through: Index,
+    pub through_term: Term,
+    pub through_digest: Digest,
+}
+
+/// An `InstallSnapshot` this member needs: the host loads the snapshot and archives it names and calls
+/// `Member::install`. A host runs one at a time and drops repeats, which the leader sends every CALL_DEADLINE.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallWanted {
+    pub from: SiteId,
+    pub install: InstallSnapshot,
+}
+
+/// Why `Member::install` refused what the host loaded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InstallError {
+    /// The loaded fold, or its base, is not at the install's `through`, or not the entry it names.
+    Mismatch { what: &'static str },
+    /// The loaded fold has no committed config.
+    NoConfig,
+    /// This member has committed `through` already, or leads.
+    NotNeeded,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -212,6 +270,9 @@ pub enum Write<E> {
     Truncate(Index),
     /// Apply stored entries through the index to the fold, the `request` table, and the committed config.
     Apply(Index),
+    /// The member installed a snapshot (`Member::install`): its log is empty above this base, and its fold, request
+    /// rows, config, and id block are the ones the host passed in, which the host stores with this write.
+    Install(LogBase),
 }
 
 /// Where a host makes writes durable. `Ready::persist` is the only way to the reply and the outputs.
@@ -272,6 +333,11 @@ impl<F: Fold> Storage<F::Event> for Stored<F> {
             Write::Truncate(i) => {
                 assert!(*i > self.fold.applied(), "truncate of an applied entry");
                 self.log.truncate((i.0 - self.base.index.0) as usize - 1);
+            }
+            Write::Install(b) => {
+                assert_eq!(self.fold.applied(), b.index, "the host stores the installed fold with the write");
+                self.base = *b;
+                self.log.clear();
             }
             Write::Apply(i) => {
                 while self.fold.applied() < *i {
@@ -464,6 +530,8 @@ pub struct Out<C: Command> {
     /// Followers behind this leader's in-memory window: read the entries from storage and pass them to
     /// `Member::catchup`. Not held for the writes, since the entries are committed.
     pub catchup: Vec<Catchup>,
+    /// Snapshots this member must install before it can follow (`Member::install`).
+    pub install: Vec<InstallWanted>,
 }
 
 impl<C: Command> Default for Out<C> {
@@ -477,6 +545,7 @@ impl<C: Command> Default for Out<C> {
             refused: Vec::new(),
             self_ack: None,
             catchup: Vec::new(),
+            install: Vec::new(),
         }
     }
 }
@@ -594,6 +663,10 @@ pub struct Member<C: Command> {
     /// AppendEntries go out early only once `own_durable` reaches this: a resumed `led_term` sends its `Noop`s only
     /// after they are durable (`leader::become_leader`).
     early_from: Index,
+    /// What this member names, as leader, to a member behind its archive boundary (`set_install`).
+    install: Option<InstallSource>,
+    /// Reads waiting on a read index from the leader, as a follower or learner.
+    remote: install::RemoteReads,
 }
 
 impl<C: Command> Member<C> {
@@ -698,6 +771,8 @@ impl<C: Command> Member<C> {
             epoch: 0,
             own_appended: None,
             early_from: Index(0),
+            install: None,
+            remote: install::RemoteReads::default(),
         })
     }
 
@@ -717,6 +792,9 @@ impl<C: Command> Member<C> {
             Message::ProbeRes { term, id, target, failed, of } => self.on_probe_res(term, id, target, failed, of),
             Message::Ping { probe, n } => self.send(from, Message::Pong { probe, n }),
             Message::Pong { probe, n } => self.on_pong(from, probe, n, true),
+            Message::Install(req) => self.on_install(from, req),
+            Message::ReadIndex { batch } => self.on_read_index(from, batch),
+            Message::ReadIndexRes { batch, index } => self.on_read_index_res(from, batch, index),
         }
         self.finish(())
     }
@@ -731,6 +809,7 @@ impl<C: Command> Member<C> {
         self.tick_leader();
         self.tick_probe();
         self.tick_health();
+        self.tick_remote();
         self.finish(())
     }
 
@@ -841,6 +920,7 @@ impl<C: Command> Member<C> {
     }
 
     fn finish<R>(&mut self, reply: R) -> Ready<C, R> {
+        self.check_remote();
         if self.dirty {
             self.dirty = false;
             self.state.saved_at = self.now;

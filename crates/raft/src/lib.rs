@@ -31,9 +31,9 @@ pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, Re
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
     APPEND_BYTES_MAX, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny, DepsWanted,
-    Envelope, FailedCall, FoldView, IdBlockError, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart,
-    Ready, ReconfigError, Refusal, Resolution, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq, VoteRes,
-    Write, verify,
+    Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource, InstallWanted,
+    LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready, ReconfigError, Refusal,
+    Resolution, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq, VoteRes, Write, verify,
 };
 pub use outcome::Acked;
 pub use quorum::{DurableAck, QuorumProof};
@@ -46,7 +46,7 @@ pub use types::{
 
 /// Quorum rules, exposed for hosts and tests.
 pub mod quorums {
-    pub use crate::quorum::{commit, election, is_voter, voters};
+    pub use crate::quorum::{commit, election, is_voter, learners, voters};
 }
 
 /// Leader serves reads alone while it holds this.

@@ -97,6 +97,10 @@ impl<C: Command> Member<C> {
         if self.campaign.is_some() || self.boot_acks.is_some() {
             return Verdict::Busy;
         }
+        // A learner never votes or leads, and never proposes the bootstrap entry: it joins a group that has one.
+        if self.is_learner() {
+            return Verdict::MayNotLead;
+        }
         if self.fold.config().is_none() {
             return self.propose_bootstrap();
         }

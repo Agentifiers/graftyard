@@ -340,6 +340,7 @@ fn the_group_survives_a_restart_from_its_rows() {
             }
             graftyard_raft::Write::Truncate(i) => r.log.truncate(i.0 as usize - 1),
             graftyard_raft::Write::Apply(_) => {}
+            graftyard_raft::Write::Install(_) => unreachable!("no member installs a snapshot here"),
         }
     }
     let mut g2 = StandIn::restore(&seed(), rows, Timestamp(10_000 + 60_000));
