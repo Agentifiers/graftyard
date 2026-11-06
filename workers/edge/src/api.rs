@@ -179,20 +179,30 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
+    read_repo(c, repo, owner, name, viewer, None).await
+}
+
+/// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
+/// `known` is the owner's `Authz` this request already read through `fresh` to resolve the repository, if it did.
+async fn read_repo(
+    c: &Ctx<'_>,
+    repo: Repo,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+    known: Option<AuthzFold>,
+) -> Result<std::result::Result<Read, Reply>> {
     timing::mark("resolve");
-    let chain = ChainId::Repo(repo.id);
-    let b = c.bindings();
-    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
-    let q = json!({ "q": { "rows": true, "ranges": true } }).to_string();
-    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
-    if let Ok(None) = v {
-        ensure_group(c, &repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
-    }
-    let v = match v {
-        Ok(Some((v, _, _))) => v,
-        Ok(None) => return Ok(Err(unavailable("the repository's group has no leader; retry"))),
-        Err(e) => return Ok(Err(unavailable(&e))),
+    let read_authz = async {
+        match known {
+            Some(a) => Some(a),
+            None => authz(c, &repo).await,
+        }
+    };
+    let (v, authz) = futures_util::future::join(tier_rows(c, &repo), read_authz).await;
+    let v = match v? {
+        Ok(v) => v,
+        Err(r) => return Ok(Err(r)),
     };
     // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
     let Ok(rows) = serde_json::from_value::<TierRows>(v["value"].clone()) else {
@@ -204,9 +214,7 @@ async fn read(
     let Some(meta) = rows.meta.as_ref() else {
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
-    timing::mark("rows");
-    let authz = authz(c, &repo).await;
-    timing::mark("authz");
+    timing::mark("rows_authz");
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
     dir.logins.insert(repo.owner.0.0, owner.to_owned());
@@ -218,6 +226,24 @@ async fn read(
         dir.logins.entry(id).or_insert(l);
     }
     Ok(Ok(Read { repo, at, core: TierRows::store(&rows.core), meta: TierRows::store(meta), dir }))
+}
+
+/// The repository's `{"rows": true}` read on its leader, creating its group on first use.
+async fn tier_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<Value, Reply>> {
+    let chain = ChainId::Repo(repo.id);
+    let b = c.bindings();
+    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
+    let q = json!({ "q": { "rows": true, "ranges": true } }).to_string();
+    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    if let Ok(None) = v {
+        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    }
+    Ok(match v {
+        Ok(Some((v, _, _))) => Ok(v),
+        Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
+        Err(e) => Err(unavailable(&e)),
+    })
 }
 
 /// The owner's `Authz` fold, read as a `dep` through `fresh`, for permissions and `author_association`.
@@ -283,7 +309,7 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
-    ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
+    // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -359,8 +385,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
     timing::mark("plan");
-    ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
-    timing::mark("ensure_group");
+    // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace = std::cell::RefCell::new(Vec::new());
     let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
     let r = graftyard_lookup::commit_hedged(
@@ -439,11 +464,18 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
-    let (owner, name) = match target {
+    let (owner, name, rd) = match target {
         None => return Ok(Reply::json(200, graphql::query(&gq, None))),
-        Some(graphql::Target::Name { owner, name }) => (owner, name),
+        Some(graphql::Target::Name { owner, name }) => {
+            let rd = read(c, &owner, &name, Some(&who)).await?;
+            (owner, name, rd)
+        }
+        // A node id names the repository by id: it is resolved once, by `repo_name`, not again by its name.
         Some(graphql::Target::Id(id)) => match repo_name(c, id).await {
-            Some(n) => n,
+            Some((owner, name, repo, a)) => {
+                let rd = read_repo(c, repo, &owner, &name, Some(&who), Some(a)).await?;
+                (owner, name, rd)
+            }
             None => {
                 return Ok(Reply::json(
                     200,
@@ -452,7 +484,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             }
         },
     };
-    let rd = match read(c, &owner, &name, Some(&who)).await? {
+    let rd = match rd {
         Ok(r) => r,
         Err(r) if r.status == 404 => {
             let m = format!("Could not resolve to a Repository with the name '{owner}/{name}'.");
@@ -505,7 +537,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
 
 /// A repository's `o/r` from its id: its owner from `RepoOwner` on `Names`, its name from the owner's `Authz` names,
 /// and the owner's login from `logins`, since `Names` keys logins by name and holds no reverse row [inference].
-async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
+async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzFold)> {
     let repo = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(id))).await.ok()?;
     let login = logins(c).get(&repo.owner.0.0)?.clone();
     let a = authz(c, &repo).await?;
@@ -513,7 +545,7 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String)> {
         graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
         _ => None,
     })?;
-    Some((login, name))
+    Some((login, name, repo, a))
 }
 
 /// Logins by account id. No account-to-login read is built (`Names` keys logins by name), so a product edge knows
