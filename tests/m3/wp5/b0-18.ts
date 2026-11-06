@@ -16,6 +16,8 @@ const { values: opt } = parseArgs({ options: {
   repo: { type: "string" }, rate: { type: "string", default: "1000" }, seconds: { type: "string", default: "30" },
   load: { type: "string", default: "enam:6000,weur:5000,apac:5000" }, place: { type: "boolean", default: false },
   out: { type: "string", default: "/tmp/m3h/b0-18" }, pushes: { type: "string", default: "10" },
+  // One learner slot that also returns every read's start, latency, and end (`read_bench`'s `samples`).
+  "trace-slot": { type: "string", default: "0" },
 } });
 const TOOLS = process.env.GRAFT_TOOLS_EDGE!, EDGE = process.env.GRAFT_EDGE!;
 const TOK = readFileSync(new URL("../../m0/.m0-token", import.meta.url), "utf8").trim();
@@ -92,7 +94,7 @@ const writes = (async () => {
   }
 })();
 const runs = await Promise.all(learners.map((l) =>
-  member(l.site, "/read_bench", { rate, secs: seconds }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
+  member(l.site, "/read_bench", { rate, secs: seconds, samples: l.slot === Number(opt["trace-slot"]) }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
 await writes;
 const stats = (await member(lead, "/stats")).v;
 const all = await Promise.all([...cfg.voters, ...learners].map(async (m: any) =>

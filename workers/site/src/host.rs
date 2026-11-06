@@ -142,7 +142,36 @@ pub struct Stats {
     pub peers: BTreeMap<u8, PeerCalls>,
     /// Every member-to-member call this member sent, by message kind: send to answer, in ms (B0-18's trace).
     pub calls: BTreeMap<&'static str, CallTimes>,
+    /// Test installs: B0-18's read-index trace, oldest first, each `[at, kind, peer, batch, index, ms]` (`Trace`).
+    pub trace: VecDeque<[u64; 6]>,
 }
+
+/// The kinds in `Stats::trace`. `peer` is the other member's address; `index` is the read index (0 for none), the
+/// applied index, or a call's end (0 ok, 1 late, 2 failed, 3 failed late); `ms` is a call's time or a lag.
+#[derive(Clone, Copy)]
+pub enum Trace {
+    /// A `ReadIndex` left, to the leader.
+    IndexSent = 1,
+    /// That call ended.
+    IndexEnded = 2,
+    /// A `ReadIndexRes` was stepped here: `ms` 0 from the answer to this member's own call, 1 from a call the leader
+    /// made.
+    ResStepped = 3,
+    /// This member's applied index moved to `index`.
+    Applied = 4,
+    /// The leader took a `ReadIndex`.
+    IndexTaken = 5,
+    /// The leader's `ReadIndexRes` left: `ms` 0 in the answer to the asker's call, 1 as its own call.
+    ResSent = 6,
+    /// The leader's own `ReadIndexRes` call ended.
+    ResEnded = 7,
+    /// The member's 100 ms ticker woke `ms` late.
+    Lag = 8,
+}
+
+/// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
+#[cfg(feature = "test-faults")]
+const TRACE_MAX: usize = 60_000;
 
 /// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
 #[derive(Default, serde::Serialize)]
@@ -250,6 +279,8 @@ struct Call {
     entries: usize,
     bytes: usize,
     at: u64,
+    /// A `ReadIndex` or `ReadIndexRes` call's batch.
+    batch: Option<u64>,
 }
 
 impl Call {
@@ -277,7 +308,11 @@ impl Call {
             }
             _ => (None, 0),
         };
-        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms() }
+        let batch = match &e.msg {
+            raft::Message::ReadIndex { batch } | raft::Message::ReadIndexRes { batch, .. } => Some(*batch),
+            _ => None,
+        };
+        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms(), batch }
     }
 }
 
@@ -941,6 +976,26 @@ impl<F: Family> Host<F> {
         h
     }
 
+    /// Test installs: one `Stats::trace` entry, timed now.
+    #[cfg(feature = "test-faults")]
+    pub fn trace(&self, kind: Trace, peer: u8, batch: u64, index: u64, ms: u64) {
+        let mut s = self.stats.borrow_mut();
+        if s.trace.len() >= TRACE_MAX {
+            s.trace.pop_front();
+        }
+        s.trace.push_back([now_ms(), kind as u64, u64::from(peer), batch, index, ms]);
+    }
+
+    #[cfg(not(feature = "test-faults"))]
+    pub fn trace(&self, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+
+    /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
+    pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
+        if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
+            self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own));
+        }
+    }
+
     /// The ticket a re-sent `NeedIdBlock` command now waits on.
     pub fn current(&self, t: Ticket) -> Ticket {
         let core = self.core.borrow();
@@ -1111,6 +1166,7 @@ impl<F: Family> Host<F> {
             return Err(err(format!("fold storage lost: {why}")));
         }
         if applied > applied0 {
+            self.trace(Trace::Applied, 0, 0, applied.0, 0);
             let events: usize = (applied0.0 + 1..=applied.0)
                 .filter_map(|x| core.m.entry_at(Index(x)))
                 .map(|e| match &e.body {
@@ -1603,6 +1659,13 @@ impl<F: Family> Host<F> {
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
             let call = Call::of(&e, body.len());
+            match (&e.msg, call.batch) {
+                (raft::Message::ReadIndex { .. }, Some(b)) => h.trace(Trace::IndexSent, e.to.0, b, 0, 0),
+                (raft::Message::ReadIndexRes { index, .. }, Some(b)) => {
+                    h.trace(Trace::ResSent, e.to.0, b, index.map_or(0, |(i, _)| i.0), 1)
+                }
+                _ => {}
+            }
             // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
             let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
             #[cfg(feature = "test-faults")]
@@ -1655,6 +1718,7 @@ impl<F: Family> Host<F> {
             h.ended(&call, if late { End::Late } else { End::Ok });
             for r in replies {
                 let from = r.from;
+                h.trace_res(&r, true);
                 if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
                     break;
                 }
@@ -1679,6 +1743,18 @@ impl<F: Family> Host<F> {
             if v.len() < SAMPLES_MAX {
                 v.push(ms);
             }
+        }
+        if let Some(b) = c.batch {
+            let kind = if c.msg == "readIndex" { Trace::IndexEnded } else { Trace::ResEnded };
+            let code = match &end {
+                End::Ok => 0,
+                End::Late => 1,
+                End::Failed(_) => 2,
+                End::LateFailed(_) => 3,
+            };
+            drop(s);
+            self.trace(kind, c.to, b, code, u64::from(ms));
+            s = self.stats.borrow_mut();
         }
         let ct = s.calls.entry(c.msg).or_default();
         let ok = matches!(end, End::Ok | End::Late);
@@ -1951,8 +2027,13 @@ impl<F: Family> Host<F> {
         let w = Rc::downgrade(self);
         spawn_local(async move {
             loop {
+                let due = now_ms() + TICK.as_millis() as u64;
                 Delay::from(TICK).await;
                 let Some(h) = w.upgrade() else { return };
+                let lag = now_ms().saturating_sub(due);
+                if lag >= 50 {
+                    h.trace(Trace::Lag, 0, 0, 0, lag);
+                }
                 if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
                     h.ticking.set(false);
                     return;

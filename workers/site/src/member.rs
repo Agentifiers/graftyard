@@ -33,7 +33,7 @@ use worker::*;
 use crate::family::{self, Family, Kind, Source};
 #[cfg(feature = "test-faults")]
 use crate::faults::Kill;
-use crate::host::{self, Host, err, within};
+use crate::host::{self, Host, Trace, err, within};
 use crate::{SiteEnv, lookup, now_ms};
 
 /// Round trips per peer; the row keeps their median.
@@ -663,8 +663,18 @@ impl<F: Family> Routes<F> {
         let mut back = Vec::new();
         for e in envs {
             let from = e.from;
+            if let raft::Message::ReadIndex { batch } = &e.msg {
+                self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
+            }
+            self.host.trace_res(&e, false);
             let (_, out) = self.host.step(|m, t| m.step(t, from, e.msg))?;
-            back.extend(self.host.dispatch(out, Some(from)));
+            let replies = self.host.dispatch(out, Some(from));
+            for r in &replies {
+                if let raft::Message::ReadIndexRes { batch, index } = &r.msg {
+                    self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+                }
+            }
+            back.extend(replies);
         }
         let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
@@ -913,6 +923,7 @@ impl<F: Family> Routes<F> {
             "prsyncFirst": s.prsync_first,
             "peers": s.peers,
             "calls": s.calls,
+            "trace": s.trace,
         });
         if reset {
             s.commit_ms.clear();
@@ -926,6 +937,7 @@ impl<F: Family> Routes<F> {
             s.failed_calls = 0;
             s.peers.clear();
             s.calls.clear();
+            s.trace.clear();
             s.apply_ms.clear();
             s.inbound.clear();
             s.inbound_since = now_ms();
@@ -1381,6 +1393,8 @@ impl<F: Family> Routes<F> {
     #[cfg(feature = "test-faults")]
     async fn read_bench(&self, body: Value) -> Result<Response> {
         let rate = body["rate"].as_u64().unwrap_or(1_000).max(1);
+        // `{"samples": true}`: every read's start offset, latency, and end (0 ok, 1 not leader, 2 dropped, 3 timeout).
+        let samples = body["samples"].as_bool().unwrap_or(false);
         let secs = body["secs"].as_u64().unwrap_or(30);
         let n = rate * secs;
         let t0 = now_ms();
@@ -1418,8 +1432,13 @@ impl<F: Family> Routes<F> {
         // Failures by kind, and per second of the run: reads answered, failed, and the slowest answer.
         let mut ends: std::collections::BTreeMap<&'static str, u64> = std::collections::BTreeMap::new();
         let mut per_s: std::collections::BTreeMap<u64, (u32, u32, u64)> = std::collections::BTreeMap::new();
+        let mut each = Vec::new();
         for done in waits {
             let (end, at, ms) = done.await.unwrap_or(("dropped", t0, 0));
+            if samples {
+                let code = ["ok", "notLeader", "dropped", "timeout"].iter().position(|e| *e == end).unwrap_or(2);
+                each.push([at.saturating_sub(t0), ms, code as u64]);
+            }
             *ends.entry(end).or_insert(0) += 1;
             let sec = per_s.entry(at.saturating_sub(t0) / 1000).or_default();
             if end == "ok" {
@@ -1438,6 +1457,7 @@ impl<F: Family> Routes<F> {
             "site": site, "n": n, "ok": lat.len(), "refused": refused, "failed": failed, "ms": now_ms() - t0,
             "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(), "t0": t0, "ends": ends,
             "perSecond": per_s.iter().map(|(k, (ok, f, max))| json!([k, ok, f, max])).collect::<Vec<_>>(),
+            "samples": samples.then_some(each),
         }))
     }
 
