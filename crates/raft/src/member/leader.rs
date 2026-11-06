@@ -833,20 +833,16 @@ impl<C: Command> Member<C> {
 
     /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
     /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within
-    /// ENTRY_MAX bytes, and the Agent commands within AGENT_INLINE_ENTRY of inline pack bytes; the first command of an
-    /// entry always goes.
+    /// ENTRY_MAX bytes; the first command of an entry always goes. An entry's Agent inline pack bytes stay within
+    /// AGENT_INLINE_ENTRY because admission stages any agent pack that would take the queued ones past it.
     fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>) -> Vec<Queued<C>> {
         let ad = &mut lead.admission;
         let cap = ad.capacity(fixed);
         ad.refill(now, cap);
         let mut batch: Vec<Queued<C>> = Vec::new();
         let mut bytes = 0;
-        let mut agent_inline = 0;
         let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize| {
             q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= ENTRY_MAX)
-        };
-        let fits_agent = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize, inl: usize| {
-            fits(q, batch, bytes) && q.is_some_and(|q| inl == 0 || inl + q.agent_inline <= AGENT_INLINE_ENTRY)
         };
         for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
             while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
@@ -858,10 +854,9 @@ impl<C: Command> Member<C> {
         let since = (now.0.saturating_sub(ad.cut_at.0) as f32).max(ad.round_ms);
         let floor = (AGENT_FLOOR * cap * since / 1000.0).floor() as usize;
         let mut n = 0;
-        while n < floor && ad.tokens >= 1.0 && fits_agent(ad.agent().front(), &batch, bytes, agent_inline) {
+        while n < floor && ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
-            (bytes, agent_inline, n, ad.tokens) =
-                (bytes + q.bytes, agent_inline + q.agent_inline, n + 1, ad.tokens - 1.0);
+            (bytes, n, ad.tokens) = (bytes + q.bytes, n + 1, ad.tokens - 1.0);
             batch.push(q);
         }
         while fits(ad.lanes[AdmitClass::Bot.lane()].front(), &batch, bytes) {
@@ -869,9 +864,9 @@ impl<C: Command> Member<C> {
             bytes += q.bytes;
             batch.push(q);
         }
-        while ad.tokens >= 1.0 && fits_agent(ad.agent().front(), &batch, bytes, agent_inline) {
+        while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
-            (bytes, agent_inline, ad.tokens) = (bytes + q.bytes, agent_inline + q.agent_inline, ad.tokens - 1.0);
+            (bytes, ad.tokens) = (bytes + q.bytes, ad.tokens - 1.0);
             batch.push(q);
         }
         if !batch.is_empty() {

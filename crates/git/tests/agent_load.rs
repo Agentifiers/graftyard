@@ -75,13 +75,12 @@ fn fanout_never_passes_fanout_max() {
 fn an_owner_is_held_to_its_share_and_cannot_reduce_another_owners_network() {
     // Plan shares as M0's B0-34 run set them: the monorepo's owner 6, the others 2.
     let share = |o: u64| if o == 1 { 6 } else { 2 };
-    // The monorepo holds 4 and asks 6; the hostile owner (3) asks 7 on each of three networks, listed first.
-    let asks = [(net(30), 3, 0, 7), (net(31), 3, 0, 7), (net(32), 3, 0, 7), (net(1), 1, 4, 6), (net(2), 2, 0, 1)];
+    // The monorepo holds its share of 6; the hostile owner (3) asks 7 on each of three networks, listed first.
+    let asks = [(net(30), 3, 0, 7), (net(31), 3, 0, 7), (net(32), 3, 0, 7), (net(1), 1, 6, 6), (net(2), 2, 0, 1)];
     let g = pool_grants(&asks, share);
-    // The monorepo keeps its 4 first, though listed after the hostile networks; 3 remain, of which the hostile owner
-    // gets its share of 2.
-    assert!(g[3] >= 4, "the monorepo keeps what it holds: {g:?}");
-    assert_eq!(g[..3].iter().map(|x| u16::from(*x)).sum::<u16>(), 2, "the hostile owner holds its share: {g:?}");
+    // The monorepo keeps its 6 first, though listed after the hostile networks; the 1 left goes to the hostile owner.
+    assert_eq!(g[3], 6, "another owner reduced the monorepo: {g:?}");
+    assert_eq!(g[..3].iter().map(|x| u16::from(*x)).sum::<u16>(), 1, "{g:?}");
     assert!(g.iter().map(|x| u16::from(*x)).sum::<u16>() <= HOT_POOL);
     // With room, the hostile owner gets its share and no more.
     let g = pool_grants(&[(net(30), 3, 0, 7), (net(31), 3, 0, 7), (net(1), 1, 0, 1)], share);

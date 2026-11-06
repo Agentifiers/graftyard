@@ -9,7 +9,7 @@
 mod common;
 
 use common::load::{Done, End, Kind, Load, Op, acked_ms, pct};
-use graftyard_raft::admit::{AGENT_QUEUE_MAX, AdmitClass, INLINE_MAX_HOT};
+use graftyard_raft::admit::{AGENT_INLINE_ENTRY, AGENT_QUEUE_MAX, AGENT_WAIT, AdmitClass, INLINE_MAX_HOT};
 use graftyard_types::SiteId;
 
 const ENAM: SiteId = SiteId(0);
@@ -60,6 +60,7 @@ fn of(done: &[Done], kind: Kind) -> Vec<&Done> {
 fn b0_29_the_journey_9_mix_commits_under_600_ms_with_no_stale_and_merges_in_the_next_entry() {
     let s = secs(60);
     let mut l = Load::new(1, ENAM);
+    l.agent = |a| a.is_some_and(|a| a >= 1_000);
     let t0 = l.now + 100;
     l.offer(journey9(t0, s, false, 29));
     l.drain(s * 1000 + 30_000);
@@ -86,11 +87,15 @@ fn b0_29_the_journey_9_mix_commits_under_600_ms_with_no_stale_and_merges_in_the_
     let big: Vec<&&Done> = pushes.iter().filter(|d| d.op.pack > INLINE_MAX_HOT).collect();
     assert!(!big.is_empty() && big.iter().all(|d| d.staged), "every 1 MiB agent push is staged");
     let small_staged = pushes.iter().filter(|d| d.op.pack <= INLINE_MAX_HOT && d.staged).count();
+    // AGENT_INLINE_ENTRY on every entry: at most 128 KiB of agent inline packs, past one alone.
+    let worst = l.entries.iter().filter(|e| e.1 > 1).map(|e| e.3).max().unwrap_or(0);
     println!(
-        "B0-29: {} 1 MiB pushes staged, {small_staged} of {} 40 KB pushes staged",
+        "B0-29: {} 1 MiB pushes staged, {small_staged} of {} 40 KB pushes staged, largest agent inline bytes in an \
+         entry {worst}",
         big.len(),
         pushes.len() - big.len()
     );
+    assert!(worst <= AGENT_INLINE_ENTRY, "{worst} agent inline bytes in one entry");
 }
 
 #[test]
@@ -121,6 +126,8 @@ fn b0_31_an_apac_leader_stages_1_mib_agent_pushes_and_refuses_them_at_once_while
     let t0 = l.now + 100;
     let mut ops = journey9(t0, s, true, 32);
     for (i, t) in (t0..t0 + s * 1000).step_by(2_000).enumerate() {
+        // An agent push over INLINE_MAX_HOT but under AGENT_INLINE_ENTRY: the outage rule alone refuses it.
+        ops.push(op(t + 500, AdmitClass::Agent, Some(3_000), Kind::Push, format!("refs/heads/mid/{i}"), 100 * KIB));
         ops.push(op(t, AdmitClass::Human, Some(7), Kind::Push, format!("refs/heads/human/{i}"), 1 << 20));
         ops.push(op(t + 1_000, AdmitClass::MergeQueue, None, Kind::Merge, format!("refs/heads/mq/{i}"), 1 << 20));
     }
@@ -326,6 +333,11 @@ fn b0_33_at_a_pinned_300_commands_per_second_agents_get_their_share_and_humans_k
     assert!(m.mq_max <= 2_000);
     assert_eq!(human_refused, 0);
     assert!(m.refused > 0, "252/s against 150/s refuses some");
+    let peak = l.samples.iter().map(|s| s.1).max().unwrap_or(0);
+    let at_once = l.done.iter().filter(|d| matches!(d.end, End::Full { waited: false, .. })).count();
+    println!("B0-33 capacity 300: queued agent commands peak {peak}; {at_once} refused at once at AGENT_QUEUE_MAX");
+    assert!(peak <= AGENT_QUEUE_MAX.0 as usize, "{peak} agent commands queued");
+    assert!(at_once > 0, "the queue cap refuses at once, before AGENT_WAIT");
     assert_eq!(m.refusals_bad, 0, "every refusal is an agent's, with a retry hint");
     assert!(
         m.user_after_60 > 0 && m.user_as_agent * 10 >= m.user_after_60 * 9,
@@ -361,17 +373,29 @@ fn a_bot_flood_cannot_take_the_agent_floor() {
     l.set_capacity(Some(300.0));
     let t0 = l.now + 100;
     let mut ops = Vec::new();
-    // Bot: 60 commands/s of 100 KB, 6 MB/s, which fills every 1.5 MB entry; agents: 100 commands/s.
-    for (i, t) in (t0..t0 + 20_000).step_by(16).enumerate() {
-        ops.push(op(t, AdmitClass::Bot, None, Kind::Side, format!("bot/{i}"), 100 * KIB));
+    // Bot: 200 commands/s of 299,000 bytes, 60 MB/s, so five fill an entry to within a few KB of ENTRY_MAX; agents:
+    // 100 commands/s of 10 KB (a long key, not an inline pack), which fit only ahead of Bot.
+    for (i, t) in (t0..t0 + 20_000).step_by(5).enumerate() {
+        ops.push(op(t, AdmitClass::Bot, None, Kind::Side, format!("bot/{i}"), 299_000));
     }
     for (i, t) in (t0..t0 + 20_000).step_by(10).enumerate() {
-        ops.push(op(t + 1, AdmitClass::Agent, Some(i as u64 % 50), Kind::Side, format!("ag/{i}"), 0));
+        ops.push(op(
+            t + 1,
+            AdmitClass::Agent,
+            Some(i as u64 % 50),
+            Kind::Side,
+            format!("ag/{i}/{}", "k".repeat(10_000)),
+            0,
+        ));
     }
     l.offer(ops);
-    l.drain(60_000);
-    let agent = l.done.iter().filter(|d| d.op.class == AdmitClass::Agent && d.op.at >= t0 + 5_000);
-    let agent_per_s = agent.filter(|d| matches!(d.end, End::Acked { .. })).count() as f64 / 15.0;
+    l.run_for(20_500);
+    // Agent commands acknowledged during the flood, after its first 5 s.
+    let agent = l.done.iter().filter(|d| d.op.class == AdmitClass::Agent);
+    let agent_per_s = agent
+        .filter(|d| matches!(d.end, End::Acked { .. }) && (t0 + 5_000..t0 + 20_000).contains(&(d.op.at + d.ms)))
+        .count() as f64
+        / 15.0;
     println!("AGENT_FLOOR: {agent_per_s:.1} agent commands/s admitted under a Bot flood at capacity 300");
     // AGENT_FLOOR of 300 is 60 a second, which Bot cannot take.
     assert!(agent_per_s >= 50.0, "{agent_per_s:.1}/s");
@@ -402,4 +426,104 @@ fn demotion_counts_live_in_the_fold_so_a_new_leader_demotes_at_once() {
     );
     assert!(!after.is_empty());
     assert_eq!(as_human, 0, "the new leader classed the fast token Human again");
+}
+
+/// Human and MergeQueue go first in every entry: under a flood of 100 KB agent commands, which fill entries to
+/// ENTRY_MAX, every Human and MergeQueue command commits in the entry after the one in flight when it arrived.
+#[test]
+fn humans_and_the_merge_queue_are_never_behind_agent_commands() {
+    let mut l = Load::new(9, ENAM);
+    // A bucket that never binds, so only lane order keeps humans ahead of the flood.
+    l.set_capacity(Some(10_000.0));
+    let t0 = l.now + 100;
+    let mut ops = Vec::new();
+    // 200 agent commands a second of 100 KB (long keys, not inline packs): 20 MB/s against 1.5 MB entries.
+    for (i, t) in (t0..t0 + 20_000).step_by(5).enumerate() {
+        ops.push(op(
+            t,
+            AdmitClass::Agent,
+            Some(i as u64 % 40),
+            Kind::Side,
+            format!("big/{i}/{}", "k".repeat(100_000)),
+            0,
+        ));
+    }
+    for (i, t) in (t0..t0 + 20_000).step_by(250).enumerate() {
+        let class = if i % 2 == 0 { AdmitClass::Human } else { AdmitClass::MergeQueue };
+        // As large as the agent commands, so a cut that took agents first would leave no room for them.
+        ops.push(op(t + 3, class, None, Kind::Side, format!("h/{i}/{}", "k".repeat(100_000)), 0));
+    }
+    l.offer(ops);
+    l.run_for(21_000);
+    let hm: Vec<u64> = l
+        .done
+        .iter()
+        .filter(|d| d.op.class != AdmitClass::Agent && d.op.at >= t0)
+        .map(|d| match d.end {
+            End::Acked { index } => index - d.last_at_admit,
+            _ => u64::MAX,
+        })
+        .collect();
+    let mut ms = acked_ms(&l.done, |d| d.op.class != AdmitClass::Agent && d.op.at >= t0);
+    println!(
+        "first lanes: {} Human and MergeQueue commands, at most {} entries after admission, p99 {} ms",
+        hm.len(),
+        hm.iter().max().unwrap(),
+        pct(&mut ms, 99.0)
+    );
+    assert!(hm.len() >= 75);
+    assert!(hm.iter().all(|n| *n <= 1), "a Human or MergeQueue command waited behind agent commands: {hm:?}");
+}
+
+/// AGENT_WAIT: an agent command still queued 30 s after it arrived is answered `Full` and never commits.
+#[test]
+fn agent_wait_answers_full_after_thirty_seconds() {
+    let mut l = Load::new(10, ENAM);
+    // 10 agent commands a second admitted, 600 offered at once: most wait past AGENT_WAIT.
+    l.set_capacity(Some(20.0));
+    let t0 = l.now + 100;
+    l.offer((0..600).map(|i| op(t0, AdmitClass::Agent, Some(i % 30), Kind::Side, format!("w/{i}"), 0)));
+    l.drain(90_000);
+    let wait = AGENT_WAIT.as_millis() as u64;
+    let acked_late = l.done.iter().filter(|d| matches!(d.end, End::Acked { .. }) && d.ms > wait + 1_000).count();
+    let waited = l.done.iter().filter(|d| matches!(d.end, End::Full { waited: true, .. })).collect::<Vec<_>>();
+    println!(
+        "AGENT_WAIT: {} acked, {} answered Full after waiting ({}..{} ms), {acked_late} acked after 31 s",
+        l.done.iter().filter(|d| matches!(d.end, End::Acked { .. })).count(),
+        waited.len(),
+        waited.iter().map(|d| d.ms).min().unwrap_or(0),
+        waited.iter().map(|d| d.ms).max().unwrap_or(0)
+    );
+    assert_eq!(acked_late, 0, "no agent command commits after AGENT_WAIT");
+    assert!(!waited.is_empty());
+    assert!(waited.iter().all(|d| d.ms >= wait && d.ms <= wait + 1_000), "answered at AGENT_WAIT");
+}
+
+/// `hot` comes from the committed log: on a group past HOT_PUSHES a 200 KiB Human push is staged (INLINE_MAX_HOT),
+/// on a quiet one it stays inline, and a new leader stages it at once from what its predecessor committed.
+#[test]
+fn hot_is_read_from_the_log_so_a_new_leader_stages_at_once() {
+    let mut l = Load::new(11, ENAM);
+    let t0 = l.now + 100;
+    l.offer([op(t0, AdmitClass::Human, Some(5), Kind::Push, "refs/heads/quiet".into(), 200 * KIB)]);
+    l.run_for(2_000);
+    let quiet = l.done.iter().find(|d| d.op.key == "refs/heads/quiet").expect("done");
+    assert!(!quiet.staged, "a quiet group inlines up to INLINE_MAX");
+    // 4 pushes a second for 5 s, then hand leadership to weur and push 200 KiB at once.
+    let t1 = l.now;
+    l.offer((0..20).map(|i| op(t1 + i * 250, AdmitClass::Human, Some(5), Kind::Push, format!("refs/heads/p{i}"), KIB)));
+    l.run_for(5_100);
+    l.transfer(SiteId(1));
+    let mut waited = 0;
+    while l.leader() != Some(SiteId(1)) && waited < 3_000 {
+        l.run_for(5);
+        waited += 5;
+    }
+    assert_eq!(l.leader(), Some(SiteId(1)));
+    let t2 = l.now;
+    l.offer([op(t2, AdmitClass::Human, Some(5), Kind::Push, "refs/heads/hot".into(), 200 * KIB)]);
+    l.drain(5_000);
+    let hot = l.done.iter().find(|d| d.op.key == "refs/heads/hot").expect("done");
+    println!("hot from the log: new leader after {waited} ms; 200 KiB push staged {}", hot.staged);
+    assert!(hot.staged, "the new leader read hot from the log");
 }

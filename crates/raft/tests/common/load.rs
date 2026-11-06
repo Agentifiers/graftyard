@@ -103,8 +103,10 @@ pub struct Load {
     pub leaders: Vec<(u64, SiteId, u64)>,
     /// Every `pressure`/queue sample of the leader, once a second: (time, agent queued, agent bytes).
     pub samples: Vec<(u64, usize, usize)>,
-    /// Entries the leader cut: (index, commands, bytes, inline agent bytes is not visible; inline bytes).
-    pub entries: Vec<(u64, usize, usize)>,
+    /// Entries the leader cut: (index, commands, bytes, inline pack bytes of writes `agent` marks).
+    pub entries: Vec<(u64, usize, usize, usize)>,
+    /// Which writes' actors are agents, for `entries`.
+    pub agent: fn(Option<u64>) -> bool,
     /// Placement fails while this holds; the edge sends `placement_ok: false`.
     pub placement_ok: bool,
     /// Every alarm a member raised: (time, site, alarm).
@@ -161,6 +163,7 @@ impl Load {
             leaders: Vec::new(),
             samples: Vec::new(),
             entries: Vec::new(),
+            agent: |_| false,
             placement_ok: true,
             alarms: Vec::new(),
             fixed_capacity: None,
@@ -233,7 +236,15 @@ impl Load {
                 if let Some(e) = m.log().iter().find(|e| e.index.0 == k)
                     && let EntryBody::Events(evs) = &e.body
                 {
-                    self.entries.push((k, e.requests.len(), evs.iter().map(event_bytes).sum()));
+                    let agent = self.agent;
+                    let inline = evs
+                        .iter()
+                        .map(|ev| match ev {
+                            KvEvent::Write { actor, pack, .. } if agent(*actor) => *pack,
+                            _ => 0,
+                        })
+                        .sum();
+                    self.entries.push((k, e.requests.len(), evs.iter().map(event_bytes).sum(), inline));
                 }
             }
         }
