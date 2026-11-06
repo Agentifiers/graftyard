@@ -41,10 +41,16 @@ use crate::{SiteEnv, now_ms};
 type Entry = raft::LogEntry<git::repo::RepoEvent>;
 
 /// The largest R2 range one read takes [guess]: a snapshot frame holds at most 500 rows of a few KB.
-const CHUNK: u64 = 2 << 20;
-/// A batch stops after this long or this many bytes read [guess], as the snapshot writer's do (`crate::snap`).
+const CHUNK: u64 = 1 << 20;
+/// A batch stops after this long, this many bytes read, or this many tier rows and entries [guess]. Its rows are
+/// buffered as rows and again as statements until its transaction, beside the member's own state: a `repo:65536`
+/// member's isolate stands at 111 MB of wasm memory, and a 4 MB batch of its log took the isolate past 128 MB.
 const BATCH_MS: u64 = 2_000;
-const BATCH_BYTES: u64 = 4 << 20;
+const BATCH_BYTES: u64 = 1 << 20;
+const BATCH_ROWS: u64 = 20_000;
+/// A batch that began this many times without its transaction committing is abandoned: its isolate died under it,
+/// and resuming it again would reset every member in the isolate again (F47).
+const BATCH_TRIES: u32 = 3;
 const BUSY_MS: i64 = 20;
 /// The largest snapshot object an audit restores into scratch tables [guess]. A larger tier is reported, not refolded:
 /// its scratch copy would double the member's storage (the BF-20 metadata tier's snapshot is 2.4 GB, of a 4 GB tier).
@@ -104,6 +110,9 @@ struct Job {
     checks: Vec<(u64, Digest)>,
     segments: Vec<Value>,
     began_ms: u64,
+    /// Batches begun since the last one that committed (`BATCH_TRIES`).
+    #[serde(default)]
+    tries: u32,
     batches: u32,
     batch_max_ms: u64,
     bytes: u64,
@@ -317,6 +326,7 @@ fn new_job(kind: Kind, chain: ChainId, through: u64, tiers: [TierLoad; 2], archi
         checks: Vec::new(),
         segments: Vec::new(),
         began_ms: now_ms(),
+        tries: 0,
         batches: 0,
         batch_max_ms: 0,
         bytes: 0,
@@ -392,6 +402,20 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     };
     let install = job.install();
     let loaded = job.tiers.iter().all(|t| t.restored) && job.next > job.through;
+    if job.tries >= BATCH_TRIES {
+        let e = format!("{} batches began without committing: the isolate died under them", job.tries);
+        note(h, format!("{} abandoned: {e}", if install { "install" } else { "fold audit" }));
+        let _ = report(h, &json!({ "error": e, "job": job_json(&job), "at": now_ms() }));
+        let _ = sql.exec("DELETE FROM load_job", None);
+        let _ = reset_scratch(&sql, false);
+        return;
+    }
+    // Counted before the batch and cleared by its commit, so a batch that kills its isolate is seen by the next.
+    let mut marked = job.clone();
+    marked.tries += 1;
+    if let Err(e) = save_job(h, &marked) {
+        return note(h, format!("load job not saved: {e}"));
+    }
     match batch(h, &sql, job).await {
         // A load that only waits for the leader's next request tries again at its pace.
         Ok(true) if loaded => h.arm_in(raft::CALL_DEADLINE.as_millis() as i64),
@@ -429,9 +453,12 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
     let tiers = h.core.borrow().as_ref().map(|c| c.m.group_fold().fold.tiers()).ok_or_else(|| err("not joined"))?;
     let mut stmts: Vec<Stmt> = Vec::new();
     let mut bytes = 0u64;
-    let more = |bytes: u64| now_ms() - t0 < BATCH_MS && bytes < BATCH_BYTES;
+    let rows0 = job.rows + job.entries;
+    let more = |bytes: u64, job: &Job| {
+        now_ms() - t0 < BATCH_MS && bytes < BATCH_BYTES && job.rows + job.entries - rows0 < BATCH_ROWS
+    };
     for t in 0..2 {
-        while !job.tiers[t].restored && more(bytes) {
+        while !job.tiers[t].restored && more(bytes, &job) {
             let store = if t == 0 { &mut core } else { &mut meta };
             bytes += restore_some(h, &mut job, t, store).await?;
             // The member's Raft inputs run between reads, as between a snapshot writer's (`crate::snap`).
@@ -439,7 +466,7 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
         }
     }
     if job.tiers.iter().all(|t| t.restored) {
-        while job.next <= job.through && more(bytes) {
+        while job.next <= job.through && more(bytes, &job) {
             let (es, n) = next_entries(h, sql, &mut job).await?;
             bytes += n;
             for e in es {
@@ -451,6 +478,7 @@ async fn batch(h: &Rc<Host<Repo>>, sql: &SqlStorage, mut job: Job) -> Result<boo
     core.seal(&mut stmts);
     meta.seal(&mut stmts);
     let ms = now_ms() - t0;
+    job.tries = 0;
     job.batches += 1;
     job.batch_max_ms = job.batch_max_ms.max(ms);
     job.bytes += bytes;
@@ -537,7 +565,7 @@ async fn next_entries(h: &Rc<Host<Repo>>, sql: &SqlStorage, job: &mut Job) -> Re
             let b = blob(&r[1])?;
             bytes += b.len() as u64;
             out.push(codec::from_bytes::<Entry>(b).map_err(|e| err(e.to_string()))?);
-            if bytes >= CHUNK {
+            if bytes >= CHUNK / 4 || out.len() >= 64 {
                 break;
             }
         }
@@ -857,10 +885,6 @@ pub async fn archive_put(h: &Rc<Host<Repo>>, from: u64, to: u64) -> Result<Value
 /// last report is older than `AUDIT_EVERY_MS`, or at once with `force`; `deep` refolds the core tier from its oldest
 /// snapshot.
 pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
-    // The leader refolds, so the lookup follows `notLeader` to it.
-    if let Some(nl) = h.core.borrow().as_ref().filter(|c| c.m.role() != raft::Role::Leader).map(|c| c.m.not_leader()) {
-        return Ok(json!({ "error": { "notLeader": crate::host::nl_json(&nl) } }));
-    }
     let sql = h.state.storage().sql();
     let job = load_job(&sql)?;
     let last = rows(&sql, "SELECT at, row FROM load_report WHERE id = 1", vec![])?;
@@ -869,7 +893,19 @@ pub fn audit_route(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let mut started = false;
     let due = last.as_ref().is_none_or(|(at, _)| now_ms() >= at + AUDIT_EVERY_MS);
     let force = body["force"].as_bool().unwrap_or(false);
-    if body["start"].as_bool().unwrap_or(false) && job.is_none() && (due || force) {
+    if body["cancel"].as_bool().unwrap_or(false) && job.as_ref().is_some_and(|j| !j.install()) {
+        sql.exec("DELETE FROM load_job", None)?;
+        reset_scratch(&sql, false)?;
+    }
+    let job = load_job(&sql)?;
+    // The leader refolds, so the cron's lookup follows `notLeader` to it; any member answers a read or a cancel.
+    let start = body["start"].as_bool().unwrap_or(false);
+    if let Some(nl) = h.core.borrow().as_ref().filter(|c| c.m.role() != raft::Role::Leader).map(|c| c.m.not_leader())
+        && start
+    {
+        return Ok(json!({ "error": { "notLeader": crate::host::nl_json(&nl) } }));
+    }
+    if start && job.is_none() && (due || force) {
         let j = audit_job(h, body["deep"].as_bool().unwrap_or(false))?;
         save_job(h, &j)?;
         h.arm_in(BUSY_MS);
