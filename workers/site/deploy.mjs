@@ -107,28 +107,27 @@ function config(site, targets) {
   };
 }
 
+// A Cloudflare API GET. The token reaches curl on stdin (`-H @-`), never argv, which `ps` shows.
+const cfApi = (path) => execFileSync("curl", ["-sf", "-H", "@-",
+  `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/${path}`],
+  { input: `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}\n` });
+
 // Every site's bucket, in its site's location.
 const buckets = JSON.parse(
-  execFileSync("curl", ["-sf", "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/r2/buckets?per_page=1000`]),
+  cfApi("r2/buckets?per_page=1000"),
 ).result.buckets.map((b) => b.name);
 for (const s of sites.filter((s) => !buckets.includes(s.bucket))) {
   wrangler(["r2", "bucket", "create", s.bucket, "--location", s.region]);
 }
 
 const listed = JSON.parse(
-  execFileSync("curl", [
-    "-sf",
-    "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/workers/scripts`,
-  ]),
+  cfApi("workers/scripts"),
 ).result.map((s) => s.id);
 
 // Each site's queue, created if missing (`graft-m1-site-a` has `graft-m1-prsync-a`).
 const queueOf = (s) => s.script.replace(/-site-/, "-prsync-");
 const queues = JSON.parse(
-  execFileSync("curl", ["-sf", "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/queues?per_page=100`]),
+  cfApi("queues?per_page=100"),
 ).result.map((q) => q.queue_name);
 for (const s of sites.filter((s) => !queues.includes(queueOf(s)))) wrangler(["queues", "create", queueOf(s)]);
 
@@ -154,8 +153,7 @@ if (ri >= 0) {
   const edge = flags[ri + 1];
   if (!flags.includes("--test-faults") || !image) throw new Error("--roll-shards needs --test-faults and --image");
   const bed = readFileSync(process.env.BED_TOKEN_FILE, "utf8").trim();
-  const api = (path) => JSON.parse(execFileSync("curl", ["-sf", "-H", `Authorization: Bearer ${process.env.CLOUDFLARE_API_TOKEN}`,
-    `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/containers/${path}`])).result;
+  const api = (path) => JSON.parse(cfApi(`containers/${path}`)).result;
   const apps = api("applications");
   for (const site of sites) {
     const app = apps.find((a) => a.name === `${site.script}-gitshard`);
@@ -164,8 +162,8 @@ if (ri >= 0) {
       const m = i.name.match(/^git#(\d+)#net:(\d+)$/);
       if (!m || i.status.state !== "running" || i.image === image) continue;
       const q = `repo=${m[2]}&shard=${m[1]}`;
-      const call = (route) => execFileSync("curl", ["-s", "-m", "300", "-X", "POST", "-H", `x-bed-token: ${bed}`,
-        "-o", "/dev/null", "-w", "%{http_code}", `${edge}/_bed/${route}?${q}`]).toString();
+      const call = (route) => execFileSync("curl", ["-s", "-m", "300", "-X", "POST", "-H", "@-",
+        "-o", "/dev/null", "-w", "%{http_code}", `${edge}/_bed/${route}?${q}`], { input: `x-bed-token: ${bed}\n` }).toString();
       console.log(`roll ${i.name} from ${i.image.slice(-12)}: kill ${call("kill")}, catchup ${call("catchup")}`);
     }
   }

@@ -8,9 +8,10 @@
 use std::collections::BTreeMap;
 
 use graftyard_fold::{MemStore, Overlay, Read, TierStore, Tiered, Val, fold_digest, has};
+use graftyard_identity::stateless::InstallationClaims;
 use graftyard_identity::{
-    Actor, AuthzRead, Credential, CredentialRefusal, Decision, IdentityDep, Own, Principal, ScopeSet, UserId,
-    WriteAction, check_credential, credential_chains,
+    Access, Actor, AppId, AuthzRead, Credential, CredentialRefusal, Decision, IdentityDep, InstallationId, Jti, Kid,
+    Own, PermissionSet, Principal, RepoScope, ScopeSet, UserId, WriteAction, check_credential, credential_chains,
 };
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, LogEntry, Record, Scratch, TierSet};
 use graftyard_types::{
@@ -38,6 +39,10 @@ use crate::tiers::{RepoTiers, get_rec, ref_key, tier_of};
 /// crate's choice.
 pub const REPO_FORMAT_V1: Format = Format { family: 0x20, version: 1 };
 pub const REPO_FORMAT_V2: Format = Format { family: 0x20, version: 2 };
+/// Version 7 is version 2 with an installation token's principal: actor tag 2 (`App`) and credential tag 2
+/// (`Stateless`, its claims). Versions 3 to 6 are the other repository commands'. An edge sends it only once
+/// `FormatsEnable` has enabled it; a push under a stored token or a session keeps version 1 or 2.
+pub const REPO_FORMAT_STATELESS: Format = Format { family: 0x20, version: 7 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -703,7 +708,7 @@ impl Push {
         if !applied.is_empty() {
             let account = match self.actor.actor {
                 Actor::User(u) => Some(u.0),
-                Actor::Anonymous => None,
+                Actor::App { .. } | Actor::Anonymous => None,
             };
             // A pack with zero objects names nothing, and a push of deletes alone has none.
             let pack = if applied.iter().all(|u| u.new.is_none()) { None } else { self.pack.clone() };
@@ -745,7 +750,7 @@ impl Push {
         e.count(0);
         e.count(0);
         e.count(0);
-        if self.format() == REPO_FORMAT_V2 {
+        if self.format() != REPO_FORMAT_V1 {
             e.option(self.agent.as_ref(), |e, a| e.str(a));
         }
     }
@@ -764,7 +769,7 @@ impl Push {
     pub fn from_wire(b: &[u8]) -> Result<Push, WireError> {
         let mut d = Dec(b);
         let format = Format { family: d.u16()?, version: d.u16()? };
-        if format != REPO_FORMAT_V1 && format != REPO_FORMAT_V2 {
+        if ![REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS].contains(&format) {
             return Err(WireError::Format(format));
         }
         let atomicity = match d.u8()? {
@@ -781,7 +786,7 @@ impl Push {
             updates.push(RefUpdate { name, expect, new });
         }
         let pack = d.option(decode_pack)?;
-        let actor = decode_principal(&mut d)?;
+        let actor = decode_principal(&mut d, format == REPO_FORMAT_STATELESS)?;
         let n = d.u32()? as usize;
         let mut options = Vec::with_capacity(n.min(1 << 10));
         for _ in 0..n {
@@ -793,11 +798,16 @@ impl Push {
                 return Err(WireError::Malformed("validate output is empty in Milestone 1"));
             }
         }
-        let agent = if format == REPO_FORMAT_V2 { d.option(|d| d.str().map(Into::into))? } else { None };
+        let agent = if format != REPO_FORMAT_V1 { d.option(|d| d.str().map(Into::into))? } else { None };
         if !d.0.is_empty() {
             return Err(WireError::Malformed("trailing bytes"));
         }
-        Ok(Push { updates, atomicity, pack, actor, options, request, agent })
+        let push = Push { updates, atomicity, pack, actor, options, request, agent };
+        // One form per command, so its digest is one: a format that does not match the command is malformed.
+        if push.format() != format {
+            return Err(WireError::Malformed("format does not match the command"));
+        }
+        Ok(push)
     }
 }
 
@@ -824,16 +834,25 @@ fn encode_principal(e: &mut Enc, p: &Principal) {
             e.u64(u.0.0.0 as u64);
         }
         Actor::Anonymous => e.u8(1),
+        Actor::App { app, installation } => {
+            e.u8(2);
+            e.u64(app.0.0 as u64);
+            e.u64(installation.0.0 as u64);
+        }
     }
     e.u64(p.scopes.0);
-    match p.credential {
+    match &p.credential {
         Credential::Stored(h) => {
             e.u8(0);
-            e.0.extend_from_slice(&h);
+            e.0.extend_from_slice(h);
         }
         Credential::Session(s) => {
             e.u8(1);
             e.u128(s.0.0);
+        }
+        Credential::Stateless(c) => {
+            e.u8(2);
+            encode_claims(e, c);
         }
     }
     e.count(p.sso_orgs.len());
@@ -908,16 +927,86 @@ fn decode_pack(d: &mut Dec) -> Result<PackRef, WireError> {
     }
 }
 
-fn decode_principal(d: &mut Dec) -> Result<Principal, WireError> {
+/// An installation token's claims, in `Enc`'s canonical form: the token text is not carried, only what it proved.
+fn encode_claims(e: &mut Enc, c: &InstallationClaims) {
+    e.u64(c.app.0.0 as u64);
+    e.u64(c.installation.0.0 as u64);
+    match &c.repos {
+        RepoScope::All => e.u8(0),
+        RepoScope::Selected(r) => {
+            e.u8(1);
+            e.count(r.len());
+            for r in r {
+                e.u64(r.0.0 as u64);
+            }
+        }
+    }
+    e.count(c.permissions.0.len());
+    for (k, a) in &c.permissions.0 {
+        e.str(k);
+        e.u8(*a as u8);
+    }
+    e.u128(c.jti.0.0);
+    e.u64(c.iat.0);
+    e.u64(c.exp.0);
+    e.u32(c.kid.0);
+}
+
+fn decode_claims(d: &mut Dec) -> Result<InstallationClaims, WireError> {
+    let db = |v: u64| graftyard_types::DbId(v as i64);
+    let app = AppId(db(d.u64()?));
+    let installation = InstallationId(db(d.u64()?));
+    let repos = match d.u8()? {
+        0 => RepoScope::All,
+        1 => {
+            let n = d.u32()? as usize;
+            let mut r = SmallVec::new();
+            for _ in 0..n {
+                r.push(RepoId(db(d.u64()?)));
+            }
+            RepoScope::Selected(r)
+        }
+        _ => return Err(WireError::Malformed("repository scope tag")),
+    };
+    let n = d.u32()? as usize;
+    let mut permissions = BTreeMap::new();
+    for _ in 0..n {
+        let k: Box<str> = d.str()?.into();
+        let a = match d.u8()? {
+            0 => Access::Read,
+            1 => Access::Write,
+            2 => Access::Admin,
+            _ => return Err(WireError::Malformed("access tag")),
+        };
+        permissions.insert(k, a);
+    }
+    Ok(InstallationClaims {
+        app,
+        installation,
+        repos,
+        permissions: PermissionSet(permissions),
+        jti: Jti(Ulid(d.u128()?)),
+        iat: Timestamp(d.u64()?),
+        exp: Timestamp(d.u64()?),
+        kid: Kid(d.u32()?),
+    })
+}
+
+fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError> {
     let actor = match d.u8()? {
         0 => Actor::User(UserId(AccountId(graftyard_types::DbId(d.u64()? as i64)))),
         1 => Actor::Anonymous,
+        2 if stateless => {
+            let app = AppId(graftyard_types::DbId(d.u64()? as i64));
+            Actor::App { app, installation: InstallationId(graftyard_types::DbId(d.u64()? as i64)) }
+        }
         _ => return Err(WireError::Malformed("actor tag")),
     };
     let scopes = ScopeSet(d.u64()?);
     let credential = match d.u8()? {
         0 => Credential::Stored(d.take(32)?.try_into().expect("32")),
         1 => Credential::Session(graftyard_identity::WebSessionId(graftyard_types::Ulid(d.u128()?))),
+        2 if stateless => Credential::Stateless(Box::new(decode_claims(d)?)),
         _ => return Err(WireError::Malformed("credential tag")),
     };
     let n = d.u32()? as usize;
@@ -1043,7 +1132,15 @@ impl Command for Push {
     type Err = PushErr;
 
     fn format(&self) -> Format {
-        if self.agent.is_some() { REPO_FORMAT_V2 } else { REPO_FORMAT_V1 }
+        let stateless =
+            matches!(self.actor.credential, Credential::Stateless(_)) || matches!(self.actor.actor, Actor::App { .. });
+        if stateless {
+            REPO_FORMAT_STATELESS
+        } else if self.agent.is_some() {
+            REPO_FORMAT_V2
+        } else {
+            REPO_FORMAT_V1
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
@@ -1061,8 +1158,8 @@ impl Command for Push {
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, PushOut), PushErr> {
         let cred: CredentialShard = self.actor.credential_shard();
-        // A push names its account and its token, so the leader re-reads both.
-        if cred.account.is_none() || cred.key.is_none() {
+        // A push names its account and its token, so the leader re-reads both; an installation token names its `jti`.
+        if cred.key.is_none() || (cred.account.is_none() && !matches!(self.actor.actor, Actor::App { .. })) {
             return Err(PushErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(PushErr::Unauthorized)?;

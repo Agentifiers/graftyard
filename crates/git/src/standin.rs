@@ -256,6 +256,18 @@ impl StandIn {
         });
     }
 
+    /// Installs an App on the owner with `row`, as an `Install` entry on the owner's `Authz` chain would.
+    pub fn install(&mut self, id: graftyard_identity::InstallationId, row: graftyard_identity::InstallationRow) {
+        let ev = AuthzEvent::Installation { id, row: Some(row), not_before: Timestamp(0) };
+        self.identity.authz.apply(&ev);
+    }
+
+    /// Revokes an installation token's `jti`, as `DELETE /installation/token` commits on its `jti_shard`. The
+    /// stand-in answers every `Tokens` read from one fold.
+    pub fn revoke_jti(&mut self, jti: graftyard_identity::Jti, exp: Timestamp) {
+        self.identity.tokens.apply(&TokensEvent::JtiRevoked { jti, exp });
+    }
+
     /// Admits a command on the leader and returns its ticket without settling, so it waits for the next entry.
     pub fn admit(&mut self, rid: RequestId, push: Push) -> Option<Ticket> {
         self.ensure_leader();

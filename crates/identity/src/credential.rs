@@ -12,10 +12,12 @@ use graftyard_types::{AccountId, ChainId, CredentialKey, CredentialShard, NameSh
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::apps::{AppId, InstallationId};
 use crate::authz::AuthzFold;
 use crate::enc;
 use crate::names::{NamesFold, NamesRead, account_shard};
-use crate::tokens::{ScopeSet, TokensFold, TokensRead, shard_of_hash};
+use crate::stateless::InstallationClaims;
+use crate::tokens::{Jti, ScopeSet, TokensFold, TokensRead, jti_shard, shard_of_hash};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct UserId(pub AccountId);
@@ -23,11 +25,13 @@ pub struct UserId(pub AccountId);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct OrgId(pub AccountId);
 
-/// SHARED's `Credential`. `Stateless` comes with installation tokens (M3-WP4), `Ssh` with SSH pushes (M6-WP2), and
-/// `RunnerJwt` and `RuntimeToken` with Actions (Milestone 4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// SHARED's `Credential`. `Ssh` comes with SSH pushes (M6-WP2), and `RunnerJwt` and `RuntimeToken` with Actions
+/// (Milestone 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Credential {
     Stored([u8; 32]),
+    /// A verified `ghs_` installation token's claims: the edge checked the signature and the window.
+    Stateless(Box<InstallationClaims>),
     Session(WebSessionId),
 }
 
@@ -35,10 +39,15 @@ pub enum Credential {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct WebSessionId(pub graftyard_types::Ulid);
 
-/// SHARED's `Actor`, cut to what Milestone 1 authenticates.
+/// SHARED's `Actor`, cut to what Milestone 3 authenticates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Actor {
     User(UserId),
+    /// An installation token's App, acting through `installation`.
+    App {
+        app: AppId,
+        installation: InstallationId,
+    },
     Anonymous,
 }
 
@@ -52,11 +61,13 @@ pub struct Principal {
 }
 
 impl Credential {
-    /// The stored token's hash and the web session's id, as the repository chain's wire forms carry them: a session
-    /// sends an all-zero hash and its id, so a stored token's form is unchanged.
+    /// The stored token's hash and the web session's id, as the repository chain's JSON wire forms carry them: a
+    /// session sends an all-zero hash and its id, so a stored token's form is unchanged. Those forms do not carry an
+    /// installation token yet: it sends an all-zero hash, which names no row, so its command fails closed with 401.
     pub fn wire(&self) -> ([u8; 32], Option<graftyard_types::Ulid>) {
         match self {
             Credential::Stored(h) => (*h, None),
+            Credential::Stateless(_) => ([0; 32], None),
             Credential::Session(s) => ([0; 32], Some(s.0)),
         }
     }
@@ -70,14 +81,25 @@ impl Credential {
 }
 
 impl Principal {
+    /// The principal of a verified installation token.
+    pub fn installation(claims: &InstallationClaims) -> Principal {
+        Principal {
+            actor: Actor::App { app: claims.app, installation: claims.installation },
+            scopes: ScopeSet(0),
+            credential: Credential::Stateless(Box::new(claims.clone())),
+            sso_orgs: SmallVec::new(),
+        }
+    }
+
     /// What the leader re-reads for this caller's commands: the actor's `Account` row and the token's shard row.
     pub fn credential_shard(&self) -> CredentialShard {
         let account = match self.actor {
             Actor::User(u) => Some(u.0),
-            Actor::Anonymous => None,
+            Actor::App { .. } | Actor::Anonymous => None,
         };
-        let key = match self.credential {
-            Credential::Stored(hash) => Some(CredentialKey::Token { shard: shard_of_hash(&hash), hash }),
+        let key = match &self.credential {
+            Credential::Stored(hash) => Some(CredentialKey::Token { shard: shard_of_hash(hash), hash: *hash }),
+            Credential::Stateless(c) => Some(CredentialKey::Jti { shard: jti_shard(&c.jti), jti: c.jti.0 }),
             Credential::Session(s) => Some(CredentialKey::Session { issued: s.0.time() }),
         };
         CredentialShard { account, key }
@@ -143,7 +165,7 @@ pub fn credential_chains(cred: &CredentialShard, own: Option<ChainId>) -> SmallV
         push(account_chain(a));
     }
     match cred.key {
-        Some(CredentialKey::Token { shard, .. }) => push(ChainId::Tokens(shard)),
+        Some(CredentialKey::Token { shard, .. } | CredentialKey::Jti { shard, .. }) => push(ChainId::Tokens(shard)),
         Some(CredentialKey::Session { .. }) | None => {}
     }
     out
@@ -188,7 +210,9 @@ fn on_tokens<T>(
 
 /// The 401 rule: a missing, revoked, or suspended row refuses the command. A command that names neither row was
 /// submitted by `graft-ops` or a consumer and passes. Expiry is not checked here: `decide` sees no clock, so the
-/// edge checks `expires` when it authenticates (`tests/m1/results/m1-wp7.md`).
+/// edge checks `expires` and a stateless token's `exp` when it authenticates (`tests/m1/results/m1-wp7.md`). A
+/// stateless token is refused while any `JtiRevoked` row for its `jti` is held: a row lapses only at the token's own
+/// `exp`, after which the edge refuses the token anyway.
 pub fn check_credential(
     cred: &CredentialShard,
     own: Own<'_>,
@@ -215,6 +239,15 @@ pub fn check_credential(
                 Some(_) => {}
             }
         }
+        Some(CredentialKey::Jti { shard, jti }) => {
+            let jti = Jti(jti);
+            if jti_shard(&jti) != shard {
+                return Err(CredentialRefusal::WrongShard);
+            }
+            if on_tokens(shard, own, deps, |r| r.jti_revoked(&jti, graftyard_types::Timestamp(0)))? {
+                return Err(CredentialRefusal::Revoked);
+            }
+        }
         // A session names its account; without one it is nobody's.
         Some(CredentialKey::Session { issued }) => match row {
             None => return Err(CredentialRefusal::NoToken),
@@ -234,7 +267,12 @@ pub(crate) fn encode_cred(e: &mut Enc, c: &CredentialShard) {
             e.u16(shard.0);
             e.0.extend_from_slice(hash);
         }
-        // `Jti` takes 1 and `SshKey` 2, as DESIGN orders `CredentialKey`.
+        // `SshKey` takes 2, as DESIGN orders `CredentialKey`.
+        CredentialKey::Jti { shard, jti } => {
+            e.u8(1);
+            e.u16(shard.0);
+            e.u128(jti.0);
+        }
         CredentialKey::Session { issued } => {
             e.u8(3);
             enc::at(e, *issued);

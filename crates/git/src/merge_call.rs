@@ -50,7 +50,7 @@ impl PrincipalWire {
             session,
             account: match p.actor {
                 Actor::User(u) => Some(u.0.0.0),
-                Actor::Anonymous => None,
+                Actor::App { .. } | Actor::Anonymous => None,
             },
             scopes: p.scopes.0,
             token: Digest(token),

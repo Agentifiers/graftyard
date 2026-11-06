@@ -452,15 +452,16 @@ impl Command for IdentityCmd {
         check_credential(&self.cred, Own::Other, deps).map_err(IdentityErr::Unauthorized)?;
         let f = s.fold();
         let account = f.account.ok_or(IdentityErr::NotCreated)?;
-        // The account itself, or the operator and finishers, who name no account.
-        if self.cred.account.is_some_and(|a| a != account) {
+        // The account itself, or the operator and finishers, who name neither an account nor a key.
+        if self.cred.account.is_some_and(|a| a != account) || (self.cred.account.is_none() && !self.cred.is_operator())
+        {
             return Err(IdentityErr::Forbidden);
         }
         let none = || Ok((SmallVec::new(), ()));
         let one = |ev| Ok((smallvec![ev], ()));
         match &self.op {
             IdentityOp::Create(c) => {
-                if self.cred.account.is_some() {
+                if !self.cred.is_operator() {
                     return Err(IdentityErr::Forbidden);
                 }
                 match &f.created {

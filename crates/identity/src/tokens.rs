@@ -13,7 +13,9 @@ use std::fmt;
 use std::time::Duration;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, DbId, Digest, Region, RepoId, Timestamp, TokenShard, Ulid};
+use graftyard_types::{
+    AccountId, ChainId, CredentialKey, CredentialShard, DbId, Digest, Region, RepoId, Timestamp, TokenShard, Ulid,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smallvec::{SmallVec, smallvec};
@@ -1190,13 +1192,16 @@ impl TokensCmd {
         }
     }
 
-    /// A user acts only for itself; a command with no account (`graft-ops`, the CLI) acts for any.
+    /// A user acts only for itself; the operator (`graft-ops`, the CLI) acts for any; an installation token for none.
     fn acts_for(&self, account: AccountId) -> bool {
-        self.cred.account.is_none_or(|a| a == account)
+        match self.cred.account {
+            Some(a) => a == account,
+            None => self.cred.is_operator(),
+        }
     }
 
     fn operator(&self) -> bool {
-        self.cred.account.is_none()
+        self.cred.is_operator()
     }
 
     fn decide_op(&self, s: &TokensScratch<'_>) -> Result<(SmallVec<[TokensEvent; 4]>, ()), TokensErr> {
@@ -1291,7 +1296,9 @@ impl TokensCmd {
                 done(smallvec![TokensEvent::SshKeyRemoved { fingerprint: *fingerprint }])
             }
             TokensOp::RevokeJti { jti, exp } => {
-                if !self.operator() {
+                // `DELETE /installation/token` is sent under the token itself; `graft-ops` may revoke any.
+                let own = self.cred.key == Some(CredentialKey::Jti { shard: jti_shard(jti), jti: jti.0 });
+                if !self.operator() && !own {
                     return Err(TokensErr::Forbidden);
                 }
                 // A revoked or already expired token needs no row; `DELETE` answers 204 either way.

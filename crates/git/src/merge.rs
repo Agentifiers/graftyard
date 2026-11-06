@@ -517,7 +517,7 @@ pub enum MergeCmdOut {
 fn principal_key(p: &Principal) -> PrincipalKey {
     let actor = match p.actor {
         Actor::User(u) => Some(u.0.0.0),
-        Actor::Anonymous => None,
+        Actor::App { .. } | Actor::Anonymous => None,
     };
     let (h, session) = p.credential.wire();
     PrincipalKey { base: (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect()), session }

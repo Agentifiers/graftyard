@@ -14,7 +14,7 @@ use graftyard_types::{AccountId, ChainId, CredentialShard, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
-use crate::apps::{self, AppId, AppRecord, ClientId, OAuthAppRecord};
+use crate::apps::{self, AppId, AppRecord, ClientId, InstallationId, OAuthAppRecord, PermissionSet};
 use crate::compat::tail_serde;
 use crate::credential::{
     CredentialRefusal, IdentityDep, Own, UserId, check_credential, credential_chains, encode_cred,
@@ -27,6 +27,7 @@ use crate::org::{
     OrgPolicy, TeamEvent, TeamId, TeamRow, is_install_account,
 };
 use crate::overlay::{Overlay, SetOverlay, Table};
+use crate::tokens::RepoScope;
 use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -115,6 +116,32 @@ pub enum AuthzEvent {
     Enterprise {
         enterprise: Option<AccountId>,
     },
+    // ---- M3-WP4, format 2 ----
+    /// SHARED's `Installation { id, state: InstallState, not_before }`. SHARED does not define `InstallState`, so the
+    /// state is the row itself: `Some` while installed, `None` once uninstalled [inference]. Either way `not_before`
+    /// is the time before which no stateless token of the installation is honored, so an uninstall or a narrowing
+    /// fails every token minted before it at once.
+    Installation {
+        id: InstallationId,
+        row: Option<InstallationRow>,
+        not_before: Timestamp,
+    },
+}
+
+/// An App's installation on this owner: its App, the repositories it reaches, and its permissions, which never
+/// exceed the App's.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallationRow {
+    pub app: AppId,
+    pub repos: RepoScope,
+    pub permissions: PermissionSet,
+}
+
+/// An installation's current state on its owner's chain, as `authorize` reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallationState {
+    pub row: Option<InstallationRow>,
+    pub not_before: Timestamp,
 }
 
 /// One op's events and output, or its refusal.
@@ -215,8 +242,38 @@ impl Record for AuthzEvent {
                 e.u8(13);
                 e.option(enterprise.as_ref(), |e, a| enc::account(e, *a));
             }
+            AuthzEvent::Installation { id, row, not_before } => {
+                e.u8(5);
+                enc::db(&mut e, id.0);
+                e.option(row.as_ref(), installation_row);
+                enc::at(&mut e, *not_before);
+            }
         }
     }
+}
+
+/// Whether every repository `a` reaches, `b` reaches too.
+fn scope_within(a: &RepoScope, b: &RepoScope) -> bool {
+    match (a, b) {
+        (_, RepoScope::All) => true,
+        (RepoScope::All, RepoScope::Selected(_)) => false,
+        (RepoScope::Selected(a), RepoScope::Selected(b)) => a.iter().all(|r| b.contains(r)),
+    }
+}
+
+fn installation_row(e: &mut Enc, r: &InstallationRow) {
+    apps::app_id(e, r.app);
+    match &r.repos {
+        RepoScope::All => e.u8(0),
+        RepoScope::Selected(rs) => {
+            e.u8(1);
+            e.count(rs.len());
+            for r in rs {
+                enc::repo(e, *r);
+            }
+        }
+    }
+    apps::permissions(e, &r.permissions);
 }
 
 /// Milestone 3's rows of an `Authz` chain: the fold's trailing part (`crate::compat`). `closed` holds the Apps whose
@@ -227,6 +284,8 @@ pub struct AuthzMore {
     pub closed: std::collections::BTreeSet<AppId>,
     pub oauth_apps: BTreeMap<ClientId, OAuthAppRecord>,
     pub org: OrgRows,
+    /// M3-WP4's: every installation this owner has had, removed ones kept for their `not_before`.
+    pub installations: BTreeMap<InstallationId, InstallationState>,
 }
 
 /// M3-WP3's rows: teams, team grants, the policy, invitations, `InstanceAuth`, and the enterprise. A scratch view
@@ -349,6 +408,8 @@ pub trait AuthzRead {
     fn oauth_app(&self, client: &ClientId) -> Option<&OAuthAppRecord>;
     /// Teams, the policy, invitations, `InstanceAuth`, and the enterprise.
     fn org(&self) -> &OrgRows;
+    /// An installation on this owner, live or removed.
+    fn installation(&self, id: InstallationId) -> Option<&InstallationState>;
     /// The enterprise an org belongs to, whose own `Authz` chain is a third dependency.
     fn enterprise(&self) -> Option<AccountId> {
         self.org().enterprise
@@ -420,9 +481,12 @@ impl AuthzRead for AuthzFold {
     fn org(&self) -> &OrgRows {
         &self.more.org
     }
+    fn installation(&self, id: InstallationId) -> Option<&InstallationState> {
+        self.more.installations.get(&id)
+    }
 }
 
-struct Tables<'t, M, G, N, A, C, O> {
+struct Tables<'t, M, G, N, A, C, O, I> {
     opened: &'t mut Option<AccountKind>,
     members: &'t mut M,
     grants: &'t mut G,
@@ -432,6 +496,7 @@ struct Tables<'t, M, G, N, A, C, O> {
     apps: &'t mut A,
     closed: &'t mut C,
     oauth_apps: &'t mut O,
+    installations: &'t mut I,
 }
 
 trait Remove<K> {
@@ -465,8 +530,9 @@ fn touches_org(ev: &AuthzEvent) -> bool {
     )
 }
 
-fn write<M, G, N, A, C, O>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O>)
+fn write<M, G, N, A, C, O, I>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O, I>)
 where
+    I: Table<InstallationId, InstallationState>,
     M: Table<UserId, OrgRole> + Remove<UserId>,
     G: Table<(RepoId, UserId), RepoPermission> + Remove<(RepoId, UserId)>,
     N: Table<RepoNameKey, RepoEntry> + Remove<RepoNameKey>,
@@ -499,6 +565,9 @@ where
         }
         AuthzEvent::OAuthApp { client, record: Some(r) } => t.oauth_apps.put(*client, r.clone()),
         AuthzEvent::OAuthApp { client, record: None } => t.oauth_apps.del(client),
+        AuthzEvent::Installation { id, row, not_before } => {
+            t.installations.put(*id, InstallationState { row: row.clone(), not_before: *not_before })
+        }
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -522,6 +591,7 @@ pub struct AuthzScratch<'a> {
     apps: Overlay<'a, AppId, AppRecord>,
     closed: SetOverlay<'a, AppId>,
     oauth_apps: Overlay<'a, ClientId, OAuthAppRecord>,
+    installations: Overlay<'a, InstallationId, InstallationState>,
     org: Cow<'a, OrgRows>,
     /// The entry's time, which an invitation's `expires` is set from and compared with.
     at: Timestamp,
@@ -564,6 +634,9 @@ impl AuthzRead for AuthzScratch<'_> {
     fn org(&self) -> &OrgRows {
         &self.org
     }
+    fn installation(&self, id: InstallationId) -> Option<&InstallationState> {
+        self.installations.get(&id)
+    }
 }
 
 /// Whether a new `Live` or `Reserved` entry for `repo` may take a key holding `prev`. `Reserved`, `Live`, and
@@ -592,6 +665,7 @@ impl Scratch for AuthzScratch<'_> {
                 apps: &mut self.apps,
                 closed: &mut self.closed,
                 oauth_apps: &mut self.oauth_apps,
+                installations: &mut self.installations,
             },
         );
         if touches_org(ev) {
@@ -639,6 +713,18 @@ impl Scratch for AuthzScratch<'_> {
             AuthzEvent::InstanceAuth(_) if !self.fold.owner.is_some_and(is_install_account) => {
                 Err("InstanceAuth off the install's own chain".into())
             }
+            AuthzEvent::Installation { id, row, not_before } => {
+                let prev = self.installation(*id);
+                if prev.is_some_and(|p| *not_before < p.not_before) {
+                    return Err(format!("{id:?}'s not_before moves back").into());
+                }
+                match row {
+                    Some(r) if prev.and_then(|p| p.row.as_ref()).is_some_and(|p| p.app != r.app) => {
+                        Err(format!("{id:?} changes its App").into())
+                    }
+                    _ => Ok(()),
+                }
+            }
             _ => Ok(()),
         }
     }
@@ -662,6 +748,7 @@ impl Fold for AuthzFold {
             apps: Overlay::new(&self.more.apps),
             closed: SetOverlay::new(&self.more.closed),
             oauth_apps: Overlay::new(&self.more.oauth_apps),
+            installations: Overlay::new(&self.more.installations),
             org: Cow::Borrowed(&self.more.org),
             at,
         }
@@ -679,6 +766,7 @@ impl Fold for AuthzFold {
                 apps: &mut self.more.apps,
                 closed: &mut self.more.closed,
                 oauth_apps: &mut self.more.oauth_apps,
+                installations: &mut self.more.installations,
             },
         );
         self.more.org.write(ev);
@@ -808,6 +896,21 @@ pub enum AuthzOp {
         key: RepoNameKey,
         repo: RepoId,
     },
+    // ---- M3-WP4, format 2 ----
+    /// Installs an App on this owner, or changes an installation's repositories or permissions, after the
+    /// installation id's `RegisterInstallation` committed on `Names` for this App and owner (the commit point). The
+    /// leader reads that route and the App owner's `Authz` chain, `app_owner`, where the App's record must be, and
+    /// refuses permissions beyond the record's. A narrowing (a repository or a permission dropped or lowered) moves
+    /// `not_before` to the entry's time, so tokens minted before it fail at once.
+    Install {
+        id: InstallationId,
+        row: InstallationRow,
+        app_owner: AccountId,
+    },
+    /// Uninstalls: the row goes, and `not_before` moves to the entry's time.
+    Uninstall {
+        id: InstallationId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -851,6 +954,7 @@ pub enum AuthzErr {
     NoInvitation,
     /// `InstanceAuth` lives only on the install's own chain.
     NotInstall,
+    NoInstallation,
 }
 
 impl Record for AuthzCmd {
@@ -966,6 +1070,16 @@ impl Record for AuthzCmd {
                 e.str(key.as_str());
                 enc::repo(&mut e, *repo);
             }
+            AuthzOp::Install { id, row, app_owner } => {
+                e.u8(24);
+                enc::db(&mut e, id.0);
+                installation_row(&mut e, row);
+                enc::account(&mut e, *app_owner);
+            }
+            AuthzOp::Uninstall { id } => {
+                e.u8(25);
+                enc::db(&mut e, id.0);
+            }
         }
     }
 }
@@ -1011,9 +1125,46 @@ impl AuthzCmd {
                 }
             }
             AuthzOp::ReserveTransfer { from, .. } if self.cred.account.is_some() => d.push(ChainId::Authz(*from)),
+            AuthzOp::Install { id, app_owner, .. } => {
+                d.push(ChainId::Names(name_shard(&NameKey::Installation(*id))));
+                if fold.owner != Some(*app_owner) {
+                    d.push(ChainId::Authz(*app_owner));
+                }
+            }
             _ => {}
         }
         d
+    }
+
+    /// An installation follows its commit point: the id's `Names` route names this App and owner. Its permissions
+    /// are within the App's record, on `app_owner`'s chain (this one, or a dependency read once per entry).
+    fn check_install(&self, s: &AuthzScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> Result<(), AuthzErr> {
+        let AuthzOp::Install { id, row, app_owner } = &self.op else { return Ok(()) };
+        let owner = s.owner().ok_or(AuthzErr::NotOpened)?;
+        let read = |chain: ChainId| {
+            deps.iter()
+                .find(|(c, _)| *c == chain)
+                .map(|(_, d)| d)
+                .ok_or(AuthzErr::Unauthorized(CredentialRefusal::NotRead(chain)))
+        };
+        let route = ChainId::Names(name_shard(&NameKey::Installation(*id)));
+        let IdentityDep::Names(names) = read(route)? else { return Err(AuthzErr::NotClaimed) };
+        if names.installation(*id) != Some((row.app, owner)) {
+            return Err(AuthzErr::NotClaimed);
+        }
+        let record = if *app_owner == owner {
+            s.app(row.app).cloned()
+        } else {
+            match read(ChainId::Authz(*app_owner))? {
+                IdentityDep::Authz(f) if f.owner() == Some(*app_owner) => f.app(row.app).cloned(),
+                _ => None,
+            }
+        };
+        let record = record.ok_or(AuthzErr::NoApp)?;
+        if !row.permissions.within(&record.permissions) {
+            return Err(AuthzErr::BadRecord);
+        }
+        Ok(())
     }
 
     /// Ops a member may submit for itself: answering its own invitation. Everything else needs an admin of the owner,
@@ -1079,7 +1230,7 @@ impl AuthzCmd {
 
     fn decide_op(&self, s: &AuthzScratch<'_>) -> Result<(SmallVec<[AuthzEvent; 4]>, AuthzOut), AuthzErr> {
         if let AuthzOp::Open { kind, enterprise } = &self.op {
-            if self.cred.account.is_some() {
+            if !self.cred.is_operator() {
                 return Err(AuthzErr::Forbidden);
             }
             if s.opened.is_some() {
@@ -1090,10 +1241,12 @@ impl AuthzCmd {
         if s.opened.is_none() {
             return Err(AuthzErr::NotOpened);
         }
-        // `graft-ops` and the CLI name no account and act as a site admin.
-        if let Some(a) = self.cred.account
-            && !s.is_admin(UserId(a))
-        {
+        // `graft-ops` and the CLI name no account and act as a site admin; an installation token is neither.
+        let admin = match self.cred.account {
+            Some(a) => s.is_admin(UserId(a)),
+            None => self.cred.is_operator(),
+        };
+        if !admin {
             return Err(AuthzErr::Forbidden);
         }
         let next = NameEpoch(s.epoch.0 + 1);
@@ -1243,7 +1396,7 @@ impl AuthzCmd {
             }
             AuthzOp::SetEnterprise { enterprise } => {
                 org_only(s)?;
-                if self.cred.account.is_some() {
+                if !self.cred.is_operator() {
                     return Err(AuthzErr::Forbidden);
                 }
                 if s.enterprise() == *enterprise {
@@ -1283,6 +1436,28 @@ impl AuthzCmd {
                     Ok((smallvec![AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) }], AuthzOut::Done))
                 }
                 _ => Err(AuthzErr::NoRepo),
+            },
+            AuthzOp::Install { id, row, .. } => {
+                let prev =
+                    s.installation(*id).cloned().unwrap_or(InstallationState { row: None, not_before: Timestamp(0) });
+                if prev.row.as_ref() == Some(row) {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                let narrowed = prev
+                    .row
+                    .as_ref()
+                    .is_some_and(|p| !scope_within(&p.repos, &row.repos) || !p.permissions.within(&row.permissions));
+                let not_before = if narrowed { s.at.max(prev.not_before) } else { prev.not_before };
+                let ev = AuthzEvent::Installation { id: *id, row: Some(row.clone()), not_before };
+                Ok((smallvec![ev], AuthzOut::Done))
+            }
+            AuthzOp::Uninstall { id } => match s.installation(*id) {
+                None => Err(AuthzErr::NoInstallation),
+                Some(InstallationState { row: None, .. }) => Ok((SmallVec::new(), AuthzOut::Done)),
+                Some(prev) => {
+                    let ev = AuthzEvent::Installation { id: *id, row: None, not_before: s.at.max(prev.not_before) };
+                    Ok((smallvec![ev], AuthzOut::Done))
+                }
             },
         }
     }
@@ -1329,6 +1504,7 @@ impl Command for AuthzCmd {
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, AuthzOut), AuthzErr> {
         check_credential(&self.cred, Own::Other, deps).map_err(AuthzErr::Unauthorized)?;
         self.check_claim(s, deps)?;
+        self.check_install(s, deps)?;
         if let Some(r) = self.decide_m3(s, deps) {
             return r;
         }

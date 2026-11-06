@@ -608,7 +608,45 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	if cur, _ := git(rp, nil, nil, "symbolic-ref", "HEAD"); head != "" && strings.TrimSpace(string(cur)) != head {
 		git(rp, nil, nil, "symbolic-ref", "HEAD", head)
 	}
-	jsonOut(w, map[string]any{"refs": len(want)})
+	jsonOut(w, map[string]any{"refs": len(want), "repack": startRepack(net, rp)})
+}
+
+// REPACK_AT: the pack count past which a catch-up starts a geometric repack [guess]. Every ingested pack stays its
+// own pack, and a merge's git commands slowed as packs grew: 2.0 ms for `merge-tree` after a geometric repack against
+// 8.7 ms over 751 packs, and the hosted shard merge from 492 to 672 ms p50 as each shard went from about 1,200 to
+// 1,950 packs (tests/m2/results/m2-wp6.md, bm2-latency).
+const repackAt = 50
+
+// One repack per shard at a time (design/DESIGN.md, Failure modes, git caches): a container is one shard.
+var repacking sync.Mutex
+
+func packCount(rp string) int {
+	p, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.pack"))
+	return len(p)
+}
+
+// startRepack runs `git repack -d --geometric=2` on the repository in the background when it holds more than repackAt
+// packs and no repack runs on this shard, and says whether it started one. /refs is the last step of every catch-up
+// and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls small packs into larger
+// ones and keeps every object, so the objects /promote names stay. It holds the network's lock alone while it runs
+// (0.75 s for 2,000 packs the first time, about 10 ms after), so no merge, upload, or ingest reads a pack it deletes.
+func startRepack(net, rp string) bool {
+	if packCount(rp) <= repackAt || !repacking.TryLock() {
+		return false
+	}
+	go func() {
+		defer repacking.Unlock()
+		l := lock(net)
+		l.Lock()
+		defer l.Unlock()
+		if _, err := os.Stat(rp); err != nil {
+			return
+		}
+		if _, err := git(rp, nil, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
+			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
+		}
+	}()
+	return true
 }
 
 func handlePromote(w http.ResponseWriter, r *http.Request) {

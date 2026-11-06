@@ -503,11 +503,11 @@ pub const REQUEST_RETENTION: Duration = Duration::from_secs(48 * 3600);   // [gu
 pub const COMMAND_MAX: usize = 1_200_000;                        // bytes [guess]
 /// What the leader re-reads for one command once per entry: the actor's `Account` row, and the `Tokens` shard row of
 /// SHARED's `Credential` (a stored token's shard, `jti_shard` of a stateless token, `fingerprint_shard` of an SSH key).
-/// Web sessions, runner JWTs, and job runtime tokens name only the `Account` row. Commands that `graft-ops` or a
-/// consumer submits name neither. A missing, revoked, or suspended row refuses the command with 401.
+/// Web sessions, runner JWTs, and job runtime tokens name only the `Account` row (a session's key adds its issue time).
+/// Commands that `graft-ops` or a consumer submits name neither. A missing, revoked, or suspended row refuses with 401.
 pub struct CredentialShard { pub account: Option<AccountId>, pub key: Option<CredentialKey> }
 pub enum CredentialKey { Token { shard: TokenShard, hash: [u8; 32] }, Jti { shard: TokenShard, jti: Ulid },
-                         SshKey { shard: TokenShard, fingerprint: Fingerprint } }
+                         SshKey { shard: TokenShard, fingerprint: Fingerprint }, Session { issued: Timestamp } }
 pub trait Command { type Out; type Err;
     fn tiers(&self) -> TierSet;
     /// Built from the command's `Principal` (`actor.credential`).
@@ -1119,31 +1119,31 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// passes one. The first of the k is its rendezvous shard among `count`, and the others come from the site's hot pool
 /// by rendezvous, so `count` never changes and no other network moves. Pushes validate on any caught-up shard of the k,
 /// chosen by rendezvous on the push id, and that shard stores an inline pack's `.idx` under `R2Key::InlineIdx`; the
-/// pack is thin, so the others still index it (`rehydrate`, G5). Upload-pack, test merges, and predictions spread over
-/// all k. `AdmitClass` rides into each shard's work queue, so Human and MergeQueue validates and merges run first, and
-/// agent test merges, predictions, and clone misses are shed first. A hot network's clone-cache entries are written to
-/// both warm sites' buckets. A depth-1 fetch that misses the clone cache, for a commit whose tree is close to a cached
-/// tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack of the wanted commit's objects missing
-/// from it, under one pack header and trailer. Each object is whole or a delta inside its own part, so the client's
-/// `index-pack` accepts it as is. For each tip move, the shard that took the merge packs the new tip's objects the base
-/// and earlier parts lack into one part, stored beside the clone cache's tip pack, so each part is built once per
-/// network and other shards and the second warm site fetch it. Every 20 moves it folds base and parts into a new base.
-/// A miss composes base, parts, and a pack of the wanted commit's own new objects, and builds `refs/pull/N/merge` on
-/// the last tip whose part exists, so a miss never packs a tip move. A shard serves a hot network only once it holds
-/// the parts up to the tip. On torvalds/linux a part cost 0.3 to 2 CPU-s, up to 10 CPU-s for a 2,300-object merge, a
-/// fold 1.2 to 1.7 CPU-s, and a miss 0.2 to 0.5 CPU-s; with misses on the current tip, each miss during a big move's
-/// part cost 9 to 19 CPU-s and saturated the shard [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass]. A stock
-/// depth-1 miss of a 6 GB network costs 25 to 46 CPU-s, and a composed miss's time to first byte was 0.35 s [measured,
-/// B0-34]. A shard object starts its container with `ctx.container.start()`, naming its image, the tier's instance
-/// size, and `enableInternet: false`, so the container reaches R2 and members only through its object's bindings. It
-/// starts one only while its index is under `count + HOT_POOL`. The policy has no `max_instances`, so this check, over
-/// a fixed set of shard names, is each site's start cap. At start the object reads `CLOUDFLARE_REGION` inside the
-/// container and replaces a container outside its site's container regions, at most three times, then alarms. A warm
-/// shard holds a 6 h inactivity timeout, the API's maximum, and its alarm renews it every hour until 24 h after the
-/// shard's last request, so a warm shard still carries a day without a new start. Each site-script version's image map
-/// holds its release's git image as `git` and the previous release's as `git_prev`. A new version restarts no running
-/// container [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its site's
-/// `ContainerDay` step covers it, and returns to `git_prev` on that day's committed `Rollback { target:
+/// pack is thin, so the others still index it (`rehydrate`, G5). Upload-pack and predictions spread over all k. Merges
+/// run on the leader site's shard (BM-2). `AdmitClass` rides into each shard's work queue, so Human and MergeQueue
+/// validates and merges run first, and agent test merges, predictions, and clone misses are shed first. A hot network's
+/// clone-cache entries are written to both warm sites' buckets. A depth-1 fetch that misses the clone cache, for a
+/// commit whose tree is close to a cached tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack
+/// of the wanted commit's objects missing from it, under one pack header and trailer. Each object is whole or a delta
+/// inside its own part, so the client's `index-pack` accepts it as is. For each tip move, the shard that took the merge
+/// packs the new tip's objects the base and earlier parts lack into one part, stored beside the clone cache's tip pack,
+/// so each part is built once per network and other shards and the second warm site fetch it. Every 20 moves it folds
+/// base and parts into a new base. A miss composes base, parts, and a pack of the wanted commit's own new objects, and
+/// builds `refs/pull/N/merge` on the last tip whose part exists, so a miss never packs a tip move. A shard serves a hot
+/// network only once it holds the parts up to the tip. On torvalds/linux a part cost 0.3 to 2 CPU-s, up to 10 CPU-s for
+/// a 2,300-object merge, a fold 1.2 to 1.7 CPU-s, and a miss 0.2 to 0.5 CPU-s; with misses on the current tip, each
+/// miss during a big move's part cost 9 to 19 CPU-s and saturated the shard [measured, `tests/m0/results/m0-wp9.md`,
+/// B0-34, third pass]. A stock depth-1 miss of a 6 GB network costs 25 to 46 CPU-s, and a composed miss's time to first
+/// byte was 0.35 s [measured, B0-34]. A shard object starts its container with `ctx.container.start()`, naming its
+/// image, the tier's instance size, and `enableInternet: false`, so the container reaches R2 and members only through
+/// its object. It starts one only while its index is under `count + HOT_POOL`. The policy has no `max_instances`, so
+/// this check, over a fixed set of shard names, is each site's start cap. At start the object reads `CLOUDFLARE_REGION`
+/// inside the container and replaces a container outside its site's container regions, at most three times, then
+/// alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, and its alarm renews it every hour until 24
+/// h after the shard's last request, so a warm shard carries a day without a new start. Each site-script version's
+/// image map holds its release's git image as `git` and the previous release's as `git_prev`. A new version restarts no
+/// running container [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its
+/// site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed `Rollback { target:
 /// Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network with both copies warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;

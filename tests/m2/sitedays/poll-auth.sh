@@ -3,6 +3,7 @@
 # well-formed unknown token, logging one line per request: UTC time, probe, HTTP status, seconds, and the body's first 120 bytes.
 # Usage: poll-auth.sh <edge https url> <owner/repo> <tokens.txt> <token line> <seconds> > log
 set -u
+# Tokens reach curl through `-H @<(printf ...)`, never argv, which `ps` shows.
 E=$1; REPO=$2; TOKENS=$3; LINE=$4; FOR=$5
 TOK=$(sed -n "${LINE}p" "$TOKENS" | cut -d" " -f1)
 # A well-formed token no account holds: a valid checksum, so the edge reads its Tokens shard and finds no row.
@@ -23,9 +24,9 @@ probe() {
 }
 end=$(( $(date +%s) + FOR )); n=0
 while [ "$(date +%s)" -lt "$end" ]; do
-  probe gql-valid -H "Authorization: token $TOK" -d "$Q" "$E/api/graphql" &
-  probe git-valid -u "x:$TOK" "$E/$REPO.git/info/refs?service=git-receive-pack" &
-  [ $((n % 10)) -eq 0 ] && probe gql-unknown -H "Authorization: token $BAD" -d "$Q" "$E/api/graphql" &
+  probe gql-valid -H @<(printf 'Authorization: token %s\n' "$TOK") -d "$Q" "$E/api/graphql" &
+  probe git-valid -H @<(printf 'Authorization: Basic %s\n' "$(printf 'x:%s' "$TOK" | base64 -w0)") "$E/$REPO.git/info/refs?service=git-receive-pack" &
+  [ $((n % 10)) -eq 0 ] && probe gql-unknown -H @<(printf 'Authorization: token %s\n' "$BAD") -d "$Q" "$E/api/graphql" &
   n=$((n + 1)); sleep 1
 done
 wait
