@@ -1,0 +1,10 @@
+{
+  "name": "graft-m1-bm2client",
+  "main": "client.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "vars": { "EDGE": "https://graft-m1-edge.<workers-subdomain>.workers.dev" },
+  "durable_objects": { "bindings": [{ "name": "CLIENT", "class_name": "Client" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Client"] }]
+}

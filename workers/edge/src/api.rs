@@ -151,6 +151,9 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
         }
     };
     let m = Meta { rid: c.rid, version, rate: RateLimits::Off };
+    // The colo this edge ran in, so a latency gate can show where the client entered (BM-2's home-site clause).
+    #[cfg(feature = "test-faults")]
+    let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
     timing::start();
     let r = match route(c, req, host, e, &m).await {
         Ok(r) => r,
@@ -160,7 +163,8 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     let r = r
         .with("server-timing", timing::header())
         .with("x-graft-trace", timing::take_trace())
-        .with("x-graft-shard-timing", timing::take_note());
+        .with("x-graft-shard-timing", timing::take_note())
+        .with("x-graft-colo", colo);
     frame(&i, r, s, &m)
 }
 
