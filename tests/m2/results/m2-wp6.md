@@ -548,3 +548,38 @@ Removing the client leg would still not pass the gate as written: from the edge,
 reads before the mutation, so it is not the merge latency. The gate figure is the mutation above, as in every earlier
 run. `final-gh` replies: 93 GraphQL and 12 REST, **0 failed**; `sane-gh` 8 and 1, 0 failed (`gh-replies.py`, then
 `validate.py` against GHES 3.22).
+
+### Rechecks on the final build (19:31 to 19:52 UTC)
+
+| Row | Run | Result | Replies (`gh-replies.py`, then `validate.py`, GHES 3.22) |
+| --- | --- | --- | --- |
+| Journey 2 (`gh pr` review, required check, merge, view, list) | `rj2` | **10 of 10 pass** | 199 GraphQL, 10 REST, 0 failed |
+| Journey 3 (`gh label`, `gh issue create -l`, `gh issue list`, `gh api`) | `rj3` | **10 of 10 pass** | 60 GraphQL, 30 REST, 0 failed |
+| BF-1 (one entry: a 5-PR group's `Landed` plus a `PrSync` batch, on all three members) | `rbf1` | **2 of 2 pass** | 103 GraphQL, 16 REST, 0 failed |
+| BF-21 (`HeadGreen` group of 5, 3rd fails its check; leader killed mid-landing every 2nd trial) | `rbf21` | **10 of 10 pass** | 76 GraphQL, 10 REST, 0 failed |
+| BF-23 (re-requested check refuses the merge until the new run concludes) | `rbf23` | **10 of 10 pass** | 34 GraphQL, 3 REST, 0 failed |
+
+- BF-21 kills fired in all 5 kill trials: `after_quorum` 3 times and `before_commit` 2 times, on sites 0 and 1.
+- Every trial's base audit is clean (`bad` empty). The base moved only by `QueueMerge` entries, and never past the
+  failed check.
+- Trials 7 and 9 landed in two landings each ([278, 280] then [276, 279]; [289, 286, 288] then [290]), because the
+  kill fell between them. Each landing is whole.
+
+### Tokens
+
+- `scripts`: no driver passes a token on a command line. The changes are in `4b6631f` and `9301e15`.
+- Every file under `tests/m2/results/raw/` in main's checkout and every worktree was scanned (38,052 files). The scan
+  looked for every install token, the M0 tools token, both bed tokens, the Cloudflare API token, and the `x:<token>`
+  base64 forms. **0 hits.** The earlier hits (`raw/wp5/base1.log`, `dist.log`, and three `smoke*.work/.git/config`
+  files) were redacted in place before the run.
+
+### Verdict
+
+**BM-2's latency clause fails as written**: p99 2.42 s at n = 288, with every new leader and the client at LAX. 8
+samples are over 2 s; a pass at n = 288 allows at most 2. Every other BM-2 clause holds on this build: journeys 2 and 3
+pass 10 of 10, and stale `parent_tip` refusal is unchanged code since its 100 of 100 on main.
+
+By leader site, weur passes at n = 120 (p99 1.96 s). enam is at the line at n = 66 (p99 2.01 s, 1 sample over).
+apac misses (p99 2.71 s, 6 of 102 over). Proposal 1 (measure on a freshly elected leader on the home site) is the
+operator's call, and the enam subset here is too small to settle it. A home-site-only run would need about 300
+enam-led samples, each on a new term with leadership moved back to enam.
