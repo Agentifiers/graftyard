@@ -7,7 +7,7 @@
 //! "Invariants").
 
 use graftyard_git::issue_ops::IssueOp;
-use graftyard_git::issues::{CommentTarget, IssueNumber, LabelId, MergeMethod};
+use graftyard_git::issues::{CommentTarget, IssueNumber, LabelId, MergeMethod, ReviewState};
 use graftyard_git::merge::{Merge, MergeError, MergeOut, MergePlan, MergeRequest};
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_identity::Principal;
@@ -243,6 +243,33 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 IssueOp::Comment { on: CommentTarget::Issue(n), body: s("body").unwrap_or("").into(), reply_to: None };
             planned(Plan::Issue(Box::new(op)), Some(n))
         }
+        // `gh pr review`: `PullRequestReviewAdd` with `event` and `body`, a review at the pull request's head.
+        "addPullRequestReview" => {
+            let n = s("pullRequestId")
+                .filter(|id| id.starts_with("PR_"))
+                .and_then(|id| item_of(r, id))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            for k in ["comments", "threads"] {
+                if input.get(k).and_then(Value::as_array).is_some_and(|v| !v.is_empty()) {
+                    return Err(unprocessable(field, format!("{k} is not served")));
+                }
+            }
+            let state = match s("event") {
+                Some("APPROVE") => ReviewState::Approved,
+                Some("REQUEST_CHANGES") => ReviewState::ChangesRequested,
+                Some("COMMENT") => ReviewState::Commented,
+                // GHES leaves a review with no event pending; a pending review is not served.
+                _ => return Err(unprocessable(field, "a pending review is not served")),
+            };
+            let it = r.item(n).ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let (_, head) = it.pull.as_ref().ok_or_else(|| not_found(field, "Not a pull request"))?;
+            let commit = match s("commitOID") {
+                Some(h) => ObjectId::parse_hex(h.as_bytes()).ok_or_else(|| unprocessable(field, "commitOID"))?,
+                None => head.head_sha,
+            };
+            let op = IssueOp::Review { n, state, commit, body: s("body").unwrap_or("").into() };
+            planned(Plan::Issue(Box::new(op)), Some(n))
+        }
         "mergePullRequest" => {
             let n = s("pullRequestId")
                 .filter(|id| id.starts_with("PR_"))
@@ -391,6 +418,7 @@ impl Obj for Payload<'_> {
         match self.root.p.field.as_str() {
             "createIssue" => "CreateIssuePayload",
             "createPullRequest" => "CreatePullRequestPayload",
+            "addPullRequestReview" => "AddPullRequestReviewPayload",
             _ => "AddCommentPayload",
         }
     }
@@ -402,6 +430,7 @@ impl Obj for Payload<'_> {
             ("clientMutationId", _) => leaf(Value::Null),
             ("issue" | "pullRequest", IssueOut::Number(n)) => node(*n),
             ("commentEdge", IssueOut::Id(id)) => obj(Edge { r, n: self.root.p.subject?, id: *id }),
+            ("pullRequestReview", IssueOut::Id(id)) => obj(crate::gql::review(r, self.root.p.subject?, *id)?),
             ("subject", _) => node(self.root.p.subject?),
             _ => return None,
         })

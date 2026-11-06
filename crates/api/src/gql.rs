@@ -570,6 +570,12 @@ struct Review<'r> {
     row: ReviewRow,
 }
 
+/// The `PullRequestReview` with id `id` on pull request `n`, as `addPullRequestReview`'s payload names it.
+pub fn review<'r>(r: &'r Repo<'r>, n: IssueNumber, id: DbId) -> Option<impl Obj + 'r> {
+    let (id, row) = r.reviews_of(n).into_iter().find(|(i, _)| *i == id)?;
+    Some(Review { r, id, row })
+}
+
 impl Obj for Review<'_> {
     fn type_name(&self) -> &'static str {
         "PullRequestReview"

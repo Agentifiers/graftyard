@@ -586,6 +586,17 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         (Method::Get, ["commits", reference, "statuses"]) => {
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))
         }
+        (Method::Get, ["issues"]) => rest::list_issues(&r, query),
+        (Method::Post, ["labels"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_label(&body(req.bytes().await?)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::LabelCreated).await?,
+                Err(x) => x,
+            }
+        }
         (Method::Get | Method::Head, ["releases", "tags", tag]) => release::get_by_tag(&r, tag),
         (Method::Get, ["releases", n]) if id(n).is_some() => release::get(&r, id(n).unwrap_or(0)),
         (Method::Get, ["releases", "assets", n]) => {
