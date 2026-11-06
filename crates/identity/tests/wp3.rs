@@ -362,3 +362,54 @@ fn a_sign_in_takes_only_the_method_instance_auth_names() {
     w.names_cmd(ChainId::Names(account_shard(admin)), NamesCmd { cred: OPS, op: put }).unwrap();
     assert_eq!(refused(w.identity_cmd(admin, sign_in(6, SignInMethod::Oidc))), IdentityErr::Suspended);
 }
+
+/// BF-3's key half: one SSH key added from two edges at once gets one owner, whether both commands land in one entry
+/// or in two, 100 keys each way; a follower's check refuses a second owner's row.
+#[test]
+fn one_ssh_key_added_from_two_edges_at_once_gets_one_owner() {
+    use graftyard_identity::{TokensErr, TokensEvent, TokensRead};
+    use graftyard_raft::{Fold, Scratch};
+    let mut w = World::default();
+    let (u, v) = (acct(0, 2, 1), acct(0, 2, 2));
+    account(&mut w, u);
+    account(&mut w, v);
+    let mut owners = 0;
+    for i in 0..200u32 {
+        let mut f = [0u8; 32];
+        f[..4].copy_from_slice(&i.to_be_bytes());
+        f[4] = 0xcc;
+        let fp = Fingerprint(f);
+        let add =
+            |a| TokensCmd { cred: as_user(a), op: TokensOp::AddSshKey { fingerprint: fp, account: a, repo: None } };
+        let shard = fingerprint_shard(&fp);
+        w.tokens(shard);
+        let mut g = w.tokens.remove(&shard.0).unwrap();
+        let l = g.leader().unwrap();
+        let (x, y) = (w.id(), w.id());
+        let a = g.commit(l, x, add(u)).unwrap();
+        // Odd keys: the first edge's command commits before the second arrives, so they land in two entries.
+        if i % 2 == 1 {
+            g.settle(&mut |c| w.read(c));
+        }
+        let b = g.commit(l, y, add(v)).unwrap();
+        g.settle(&mut |c| w.read(c));
+        let (ra, rb) = (g.result(a.ticket).unwrap().clone(), g.result(b.ticket).unwrap().clone());
+        assert!(ra.is_ok(), "{ra:?}");
+        assert_eq!(refused(rb), TokensErr::KeyTaken { by: u });
+        let fold = g.fresh_leader();
+        assert_eq!(fold.ssh_key(&fp).map(|r| r.account), Some(u));
+        let second = TokensEvent::SshKey { fingerprint: fp, account: v, repo: None };
+        assert!(fold.scratch().check(&second).is_err(), "a follower refuses a second owner");
+        for s in common::SITES {
+            let n = g
+                .committed_events(s)
+                .iter()
+                .filter(|e| matches!(e, TokensEvent::SshKey { fingerprint, .. } if *fingerprint == fp))
+                .count();
+            assert_eq!(n, 1, "one row on {s:?}");
+        }
+        w.tokens.insert(shard.0, g);
+        owners += 1;
+    }
+    assert_eq!(owners, 200);
+}
