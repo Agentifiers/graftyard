@@ -555,9 +555,10 @@ async fn next_entries(h: &Rc<Host<Repo>>, sql: &SqlStorage, job: &mut Job) -> Re
     let mut out = Vec::new();
     let mut bytes = 0u64;
     if !job.install() {
-        let q = "SELECT idx, row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx";
-        for r in sql.exec(q, vec![i(job.next), i(job.through)])?.raw() {
-            let r = r?;
+        // A page read to its end: a cursor left open holds the log table, and the job's last `DROP TABLE` of its
+        // scratch tables then fails with SQLITE_LOCKED.
+        let q = "SELECT idx, row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 8";
+        for r in rows(sql, q, vec![i(job.next), i(job.through)])? {
             let idx = int(&r[0])? as u64;
             if idx != job.next + out.len() as u64 {
                 break;
@@ -565,9 +566,6 @@ async fn next_entries(h: &Rc<Host<Repo>>, sql: &SqlStorage, job: &mut Job) -> Re
             let b = blob(&r[1])?;
             bytes += b.len() as u64;
             out.push(codec::from_bytes::<Entry>(b).map_err(|e| err(e.to_string()))?);
-            if bytes >= CHUNK / 4 || out.len() >= 64 {
-                break;
-            }
         }
         if !out.is_empty() {
             return Ok((out, bytes));
