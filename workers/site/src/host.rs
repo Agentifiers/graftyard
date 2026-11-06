@@ -142,8 +142,6 @@ pub struct Stats {
     pub peers: BTreeMap<u8, PeerCalls>,
     /// Every member-to-member call this member sent, by message kind: send to answer, in ms (B0-18's trace).
     pub calls: BTreeMap<&'static str, CallTimes>,
-    /// Test installs: incoming requests by route and the value of each `cf-*` header, counted (B0-18's depth trace).
-    pub headers: BTreeMap<String, u32>,
 }
 
 /// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
