@@ -89,3 +89,8 @@ Status: in progress. This file holds progress notes until the gates run.
 - The per-base timer (`hosted.py timer` on `wp3t`, 196639, `min_merge` 5, `min_wait_minutes` 1): two pull requests
   enqueued, then no entry until `GroupBuilt` 63.2 s and 63.1 s after the first `Enqueued` in the first two trials,
   and both land.
+- The timer passes 5 of 5: `GroupBuilt` at 63.2, 63.1, 63.2, 63.1, and 63.2 s after the first `Enqueued`, with no
+  queue, ref, or check entry between, and both pull requests merge each time.
+- Validation across every gh capture so far (`d1`, `b0`, `bf23`, `q0`, `qk`, and the four `bf21-*` dirs, merged into
+  `raw/m2-wp3/all-replies`): 477 GraphQL and 63 REST replies, 0 failed. That includes 50 `PullRequestAutoMerge`
+  (gh's enqueue on a queued base), 10 `PullRequestMerge`, and the 4 REST merge replies (200, 403, 405, 409).
