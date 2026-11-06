@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use arrayvec::ArrayVec;
 use graftyard_fold::{
-    MemStore, Read, Rows, Schema, SnapshotFrame, SnapshotJob, TableDef, Tiered, Val, apply, decode_frames, digest_at,
-    encode_frame, fold_digest, frames_header, refold_digest, refold_segment, restore,
+    MemStore, Read, Restore, Rows, Schema, SnapshotFrame, SnapshotJob, TableDef, Tiered, Val, apply, decode_frames,
+    digest_at, encode_frame, fold_digest, frames_header, refold_digest, refold_segment, restore,
 };
 use graftyard_raft::{
     CALL_DEADLINE, Catchup, Command, EntryBody, Envelope, Fold, Format, GroupConfig, GroupFold, Index, InstallSource,
@@ -772,4 +772,44 @@ fn f48_a_refold_from_a_snapshot_plus_the_log_tail_matches_every_member() {
         assert_ne!(bad, tr.fold_digest, "{tier:?}: a changed entry is caught");
     }
     let _ = learner_addr(0);
+}
+
+/// The site host's loader (`workers/site/src/load.rs`) restores a snapshot over many requests: a frame at a time,
+/// with the `Restore` stored between them as JSON, and `finish_rows`. It reaches the trailer's digest as `restore`
+/// does, and a frame lost between two batches is refused at the trailer, not loaded short.
+#[test]
+fn a_restore_resumed_across_batches_from_its_stored_cursor_ends_at_the_trailers_digest() {
+    let mut n = Net::new();
+    n.elect(A);
+    n.write(A, 30);
+    let s = n.snapshot(B);
+    for (schema, tier) in [(CORE, Tier::Core), (META, Tier::Metadata)] {
+        let frames = decode_frames(&n.r2[&format!("snap/{tier:?}/{}", s.0)]).unwrap();
+        assert!(frames.len() >= 3, "{tier:?}: {} frames", frames.len());
+        let Some(SnapshotFrame::End(tr)) = frames.last() else { panic!() };
+        let resumed = |skip: Option<usize>| -> Result<MemStore, graftyard_fold::SnapshotError> {
+            let mut store = MemStore::default();
+            let mut cursor: Option<String> = None;
+            for (k, f) in frames.iter().enumerate() {
+                if Some(k) == skip {
+                    continue;
+                }
+                let mut r = match cursor.take() {
+                    Some(c) => Restore::resume(schema, serde_json::from_str(&c).unwrap()),
+                    None => Restore::begin(&store, schema, (CHAIN, s)).unwrap(),
+                };
+                r.frame(&mut store, f)?;
+                if k + 1 == frames.len() {
+                    r.finish_rows(&mut store)?;
+                    return Ok(store);
+                }
+                cursor = Some(serde_json::to_string(&r.cursor()).unwrap());
+            }
+            unreachable!()
+        };
+        let store = resumed(None).unwrap();
+        assert_eq!(fold_digest(&store, tier), tr.fold_digest, "{tier:?}");
+        assert_eq!(refold_digest(&store, &schema), tr.fold_digest, "{tier:?} refolds");
+        assert!(resumed(Some(1)).is_err(), "{tier:?}: a lost frame is refused");
+    }
 }

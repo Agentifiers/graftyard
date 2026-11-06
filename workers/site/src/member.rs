@@ -261,6 +261,8 @@ struct Routes<F: Family> {
 
 impl<F: Family> Routes<F> {
     async fn fetch(&self, mut req: Request, url: Url) -> Result<Response> {
+        // Every request this object takes, by route: B0-18's leader load.
+        *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
         #[cfg(feature = "test-faults")]
         {
@@ -369,6 +371,10 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.replace(body)).await
             }
+            (Method::Post, "/learners") => {
+                let body: Value = req.json().await?;
+                self.ready_or(|| self.learners(body)).await
+            }
             (Method::Get, "/status") => Response::from_json(&self.status()),
             // The committed entries `from..=to` with the family's fields (a repository's packs): the git cache
             // shard's `ChainLog::entries`.
@@ -426,6 +432,10 @@ impl<F: Family> Routes<F> {
                 self.ready_or(|| self.record(body)).await
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
+            (Method::Post, "/read_bench") => {
+                let body: Value = req.json().await?;
+                self.ready_or(|| self.read_bench(body)).await
+            }
             (Method::Post, "/reset") => {
                 self.host.dying.set(true);
                 host::abort(&self.host.state, "graftyard member reset");
@@ -736,7 +746,9 @@ impl<F: Family> Routes<F> {
                 json!({ "key": body.get("key").and_then(Value::as_str).ok_or_else(|| err("read needs key or q"))? })
             }
         };
-        let (r, out) = self.host.step(|m, t| m.read(t))?;
+        // `{"index": true}`: a follower's or learner's read, by read-index against the leader (`Member::read_index`).
+        let index = body.get("index").and_then(Value::as_bool).unwrap_or(false);
+        let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
         let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q));
         self.host.dispatch(out, None);
         let rx = match (r, rx) {
@@ -841,6 +853,9 @@ impl<F: Family> Routes<F> {
             "entries": s.entries,
             "commands": s.commands,
             "restores": s.restores,
+            "installs": s.installs,
+            "inbound": s.inbound,
+            "inboundMs": now_ms().saturating_sub(s.inbound_since),
             "failedCalls": s.failed_calls,
             "depReads": s.dep_reads,
             "catchups": s.catchups,
@@ -867,6 +882,8 @@ impl<F: Family> Routes<F> {
             s.commands = 0;
             s.failed_calls = 0;
             s.peers.clear();
+            s.inbound.clear();
+            s.inbound_since = now_ms();
         }
         Response::from_json(&v)
     }
@@ -904,6 +921,14 @@ impl<F: Family> Routes<F> {
         {
             return Response::from_json(&json!({ "refused": why })).map(|r| r.with_status(409));
         }
+        // A learner writes no registry row: the row names the chain's voter on this site, which `ReplaceMember` and the
+        // lookup rule read, and a learner holds no vote and is placed again by `place_learners`. It measures nothing:
+        // `Placement::new` checks voter pairs only.
+        let learner = join.me.kind == graftyard_types::MemberKind::Learner;
+        if learner {
+            self.store_join(&join)?;
+            return Response::from_json(&json!([]));
+        }
         let reg = MemberRegistry::for_chain(site.id, join.chain);
         let mut put = RequestInit::new();
         put.with_method(Method::Put).with_body(Some(serde_json::to_string(&row)?.into()));
@@ -927,14 +952,7 @@ impl<F: Family> Routes<F> {
                 }
             }
         }
-        self.host
-            .state
-            .storage()
-            .sql()
-            .exec("INSERT OR REPLACE INTO me (k, v) VALUES ('join', ?)", vec![serde_json::to_string(&join)?.into()])?;
-        if !self.host.joined() {
-            self.host.restore()?;
-        }
+        self.store_join(&join)?;
 
         let now = now_ms();
         let mine = rtt_rows(&self.host.state, env)?;
@@ -955,6 +973,18 @@ impl<F: Family> Routes<F> {
             }
         }
         Response::from_json(&rtt_rows(&self.host.state, env)?)
+    }
+
+    fn store_join(&self, join: &Join) -> Result<()> {
+        self.host
+            .state
+            .storage()
+            .sql()
+            .exec("INSERT OR REPLACE INTO me (k, v) VALUES ('join', ?)", vec![serde_json::to_string(join)?.into()])?;
+        if !self.host.joined() {
+            self.host.restore()?;
+        }
+        Ok(())
     }
 
     /// Median of RTT_SAMPLES sequential binding round trips to the peer's object.
@@ -1228,6 +1258,126 @@ impl<F: Family> Routes<F> {
             Err(e) => return self.reply(json!({ "error": format!("normal: {e}"), "tried": tried })),
         };
         self.reply(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 }))
+    }
+
+    /// The leader's half of learner placement (`design/DESIGN.md`, Shape, `place_learners`): `{"load": GroupLoad}`
+    /// names each region's peak read rate. `place_learners` picks the regions; each learner goes to the first
+    /// non-spare site in its region, in slot order, under the next generation, joins, and one config change replaces
+    /// the group's learners with them (none when the load is under `LEARNER_AT`). The design runs this from a daily
+    /// `graft-ops` cron over Analytics Engine counters; a test install has neither, so its driver posts the load here.
+    async fn learners(&self, body: Value) -> Result<Response> {
+        let load: graftyard_types::GroupLoad = serde_json::from_value(body["load"].clone())?;
+        let regions = graftyard_types::place_learners(&load);
+        let (chain, record, cfg, c_owner, c_genesis) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            if c.m.role() != Role::Leader {
+                return self.reply(json!({ "error": { "notLeader": host::nl_json(&c.m.not_leader()) } }));
+            }
+            (
+                c.join.chain,
+                c.join.record.clone(),
+                c.m.committed_config().map(|c| c.1.clone()),
+                c.join.owner,
+                c.join.genesis.clone(),
+            )
+        };
+        let Some(raft::GroupConfig::Normal(p)) = cfg else {
+            return self.reply(json!({ "error": "the committed config is not Normal" }));
+        };
+        let site = SiteEnv::read(&self.host.env)?;
+        let generation = p.next_generation();
+        let mut learners = arrayvec::ArrayVec::<MemberRef, 16>::new();
+        let mut joined = Vec::new();
+        for (k, region) in regions.iter().enumerate() {
+            let Some(s) = site.sites.0.iter().find(|s| s.region == *region && !s.spare) else { continue };
+            let l = MemberRef::new(chain, s.id, graftyard_types::MemberKind::Learner, k as u8, generation);
+            let join = Join {
+                chain,
+                me: l.clone(),
+                record: record.clone(),
+                peers: p.voters().to_vec(),
+                owner: c_owner,
+                genesis: c_genesis.clone(),
+                #[cfg(feature = "test-faults")]
+                no_claim: false,
+            };
+            let (status, _) = self.post_member(&l, "/join", &serde_json::to_value(&join)?).await?;
+            joined.push(
+                json!({ "site": l.site.0, "slot": l.slot, "addr": l.addr().0, "doName": l.do_name, "join": status }),
+            );
+            if status != 200 {
+                return self.reply(json!({ "error": "a learner did not join", "joined": joined }));
+            }
+            learners.push(l);
+        }
+        // Voter pairs' round trips, from each voter's own rows.
+        let mut rtt = rtt_rows(&self.host.state, &self.host.env)?;
+        for v in p.voters().iter().filter(|v| v.site != site.id) {
+            let stub = site.member(&self.host.env, v.site, &v.do_name)?;
+            let rows: Vec<(SiteId, Rtt)> = stub.fetch_with_str("https://member/rtt").await?.json().await?;
+            rtt.extend(rows);
+        }
+        let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt };
+        let voters: arrayvec::ArrayVec<MemberRef, 3> = p.voters().iter().cloned().collect();
+        let np = match graftyard_types::Placement::new(voters, learners, p.home(), &checks) {
+            Ok(np) => np,
+            Err(e) => return self.reply(json!({ "error": e.to_string(), "joined": joined })),
+        };
+        match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
+            Ok(i) => self.reply(json!({ "regions": regions, "learners": joined, "configIndex": i })),
+            Err(e) => self.reply(json!({ "error": e, "learners": joined })),
+        }
+    }
+
+    /// B0-18's reads, generated inside this member as Milestone 0's learners did (`tests/m0/run/raft-learners.ts`):
+    /// `rate` read-index reads a second for `secs`, each `{"q": {"ranges": true}}`, and each one's latency, start to
+    /// answer. The leader's load is real; this member's own request limit is not exercised.
+    #[cfg(feature = "test-faults")]
+    async fn read_bench(&self, body: Value) -> Result<Response> {
+        let rate = body["rate"].as_u64().unwrap_or(1_000).max(1);
+        let secs = body["secs"].as_u64().unwrap_or(30);
+        let n = rate * secs;
+        let t0 = now_ms();
+        let mut waits = Vec::with_capacity(n as usize);
+        let mut refused = 0u64;
+        for k in 0..n {
+            let due = t0 + k * 1000 / rate;
+            let now = now_ms();
+            if due > now {
+                Delay::from(Duration::from_millis(due - now)).await;
+            }
+            let at = now_ms();
+            let (r, out) = self.host.step(|m, t| m.read_index(t))?;
+            match r {
+                // Each read times itself as it is answered, not when the loop gets to it.
+                Ok(id) => {
+                    let rx = self.host.wait_read(id, json!({ "ranges": true }));
+                    let (tx, done) = futures_channel::oneshot::channel();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let ok = matches!(within(Duration::from_secs(10), rx).await, Some(Ok(Ok(_))));
+                        let _ = tx.send((ok, now_ms().saturating_sub(at)));
+                    });
+                    waits.push(done);
+                }
+                Err(_) => refused += 1,
+            }
+            self.host.dispatch(out, None);
+        }
+        let (mut lat, mut failed) = (Vec::with_capacity(waits.len()), 0u64);
+        for done in waits {
+            match done.await {
+                Ok((true, ms)) => lat.push(ms),
+                _ => failed += 1,
+            }
+        }
+        lat.sort_unstable();
+        let pct = |p: f64| lat.get(((lat.len() as f64 * p) as usize).min(lat.len().saturating_sub(1))).copied();
+        let site = SiteEnv::read(&self.host.env)?.id.0;
+        Response::from_json(&json!({
+            "site": site, "n": n, "ok": lat.len(), "refused": refused, "failed": failed, "ms": now_ms() - t0,
+            "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(),
+        }))
     }
 
     /// Every dependency read this member's leaders made: when, and each chain's read index or error.

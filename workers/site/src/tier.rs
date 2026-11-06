@@ -37,6 +37,8 @@ pub type Fts = fn(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt>;
 struct Inner {
     sql: SqlStorage,
     tier: Tier,
+    /// The tables' name prefix: `""` for the member's fold, `SCRATCH` for a load's tables (`sql_name_in`).
+    prefix: &'static str,
     /// Key arity of every table this tier writes, by fold name.
     arity: HashMap<String, usize>,
     open: Rows,
@@ -73,7 +75,21 @@ fn prefix(t: Tier) -> &'static str {
 
 /// The SQL name of a fold table: `<t>_<name>`, with `~` (the undo suffix) as `__`.
 pub fn sql_name(t: Tier, table: &str) -> String {
-    format!("{}_{}", prefix(t), table.replace('~', "__"))
+    sql_name_in("", t, table)
+}
+
+/// The prefix of the tables a snapshot install or a fold audit loads into (`crate::load`): `i` before the member's
+/// own names, so a load never touches the fold the member serves from until the install swaps them.
+pub const SCRATCH: &str = "i";
+
+/// A fold table's name under a prefix.
+pub fn sql_name_in(pre: &str, t: Tier, table: &str) -> String {
+    format!("{pre}{}_{}", prefix(t), table.replace('~', "__"))
+}
+
+/// The metadata tier's FTS5 tables under a prefix: issues, then comments.
+fn fts_names(pre: &str) -> (String, String) {
+    (format!("{pre}m_issue_fts"), format!("{pre}m_comment_fts"))
 }
 
 /// Statements are `&'static str`; a tier has a fixed set of tables, so each distinct statement is leaked once.
@@ -100,20 +116,54 @@ fn tables(schema: &Schema) -> Vec<(String, usize)> {
 
 /// The DDL of a tier: one table per schema table and per undo table, the meta row, and the digest ring; and for the
 /// metadata tier its FTS5 tables.
-pub fn ddl(schema: &Schema) -> Vec<String> {
+pub fn ddl(schema: &Schema, pre: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (name, n) in tables(schema) {
-        out.push(create(&sql_name(schema.tier, &name), n));
+        out.push(create(&sql_name_in(pre, schema.tier, &name), n));
     }
     if schema.tier == Tier::Metadata {
-        out.push(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS m_issue_fts USING fts5(title, body, content='', contentless_delete=1)"
-                .into(),
-        );
-        out.push(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS m_comment_fts USING fts5(body, content='', contentless_delete=1)"
-                .into(),
-        );
+        let (issue, comment) = fts_names(pre);
+        out.push(format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS {issue} USING fts5(title, body, content='', contentless_delete=1)"
+        ));
+        out.push(format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS {comment} USING fts5(body, content='', contentless_delete=1)"
+        ));
+    }
+    out
+}
+
+/// Drops a load's scratch tables of a tier, one statement each.
+pub fn drop_scratch(schema: &Schema) -> Vec<String> {
+    let mut out: Vec<String> = tables(schema)
+        .into_iter()
+        .map(|(name, _)| format!("DROP TABLE IF EXISTS \"{}\"", sql_name_in(SCRATCH, schema.tier, &name)))
+        .collect();
+    if schema.tier == Tier::Metadata {
+        let (issue, comment) = fts_names(SCRATCH);
+        out.push(format!("DROP TABLE IF EXISTS {issue}"));
+        out.push(format!("DROP TABLE IF EXISTS {comment}"));
+    }
+    out
+}
+
+/// The statements that make a load's scratch tables the member's fold: each of the tier's tables, and the metadata
+/// tier's FTS5 tables, dropped and replaced by its scratch twin. They run inside the install's transaction
+/// (`host::SqlStore`, `Write::Install`).
+pub fn swap_in(schema: &Schema) -> Vec<&'static str> {
+    let mut pairs: Vec<(String, String)> = tables(schema)
+        .into_iter()
+        .map(|(name, _)| (sql_name(schema.tier, &name), sql_name_in(SCRATCH, schema.tier, &name)))
+        .collect();
+    if schema.tier == Tier::Metadata {
+        let (live, scratch) = (fts_names(""), fts_names(SCRATCH));
+        pairs.push((live.0, scratch.0));
+        pairs.push((live.1, scratch.1));
+    }
+    let mut out = Vec::new();
+    for (live, scratch) in pairs {
+        out.push(leak(format!("DROP TABLE IF EXISTS \"{live}\"")));
+        out.push(leak(format!("ALTER TABLE \"{scratch}\" RENAME TO \"{live}\"")));
     }
     out
 }
@@ -207,10 +257,16 @@ fn row_of(written: SqlStorageValue, v: SqlStorageValue) -> Stored {
 impl TierSql {
     /// A handle on `schema`'s tables in `sql`, which `ddl` has created.
     pub fn new(sql: SqlStorage, schema: &Schema, fts: Option<Fts>) -> TierSql {
+        Self::new_in(sql, schema, fts, "")
+    }
+
+    /// A handle on the tables under `pre`.
+    pub fn new_in(sql: SqlStorage, schema: &Schema, fts: Option<Fts>, pre: &'static str) -> TierSql {
         let arity = tables(schema).into_iter().collect();
         TierSql(Rc::new(RefCell::new(Inner {
             sql,
             tier: schema.tier,
+            prefix: pre,
             arity,
             open: BTreeMap::new(),
             loaded: true,
@@ -281,7 +337,7 @@ impl Inner {
     }
 
     fn name(&self, table: &str) -> String {
-        sql_name(self.tier, table)
+        sql_name_in(self.prefix, self.tier, table)
     }
 
     fn write_stmt(&self, table: &str, key: &Key, row: Option<&Stored>) -> Stmt {
@@ -475,7 +531,7 @@ pub fn handle(t: &dyn TierStore) -> &TierSql {
 /// The SQL tables of a repository chain's two tiers, created if missing, and a handle on each.
 pub fn repo_tiers(sql: &SqlStorage) -> (TierSql, TierSql) {
     for schema in [graftyard_git::tiers::CORE, graftyard_git::tiers::METADATA] {
-        for q in ddl(&schema) {
+        for q in ddl(&schema, "") {
             sql.exec(&q, None).expect("fold tier schema");
         }
     }
@@ -484,12 +540,34 @@ pub fn repo_tiers(sql: &SqlStorage) -> (TierSql, TierSql) {
     (core, meta)
 }
 
+/// A load's scratch tiers (`SCRATCH`), created if missing; with `fts`, the metadata tier's search rows go to its
+/// scratch FTS5 tables, as an install needs and an audit does not.
+pub fn scratch_tiers(sql: &SqlStorage, fts: bool) -> worker::Result<(TierSql, TierSql)> {
+    for schema in [graftyard_git::tiers::CORE, graftyard_git::tiers::METADATA] {
+        for q in ddl(&schema, SCRATCH) {
+            sql.exec(&q, None)?;
+        }
+    }
+    let core = TierSql::new_in(sql.clone(), &graftyard_git::tiers::CORE, None, SCRATCH);
+    let meta = TierSql::new_in(sql.clone(), &graftyard_git::tiers::METADATA, fts.then_some(search_scratch), SCRATCH);
+    Ok((core, meta))
+}
+
+fn search(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
+    search_in("", table, key, row)
+}
+
+fn search_scratch(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
+    search_in(SCRATCH, table, key, row)
+}
+
 /// The FTS5 rows for a metadata row: an issue's or pull request's title and body under its number, a comment's body
 /// under its id. A contentless table deletes by rowid, so each write replaces the rowid's entry.
-fn search(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
+fn search_in(pre: &str, table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
+    let (issue, comment) = fts_names(pre);
     let (fts, id) = match (table, key.first()) {
-        ("issue", Some(Val::Int(n))) => ("m_issue_fts", *n),
-        ("comment", Some(Val::Int(n))) => ("m_comment_fts", *n),
+        ("issue", Some(Val::Int(n))) => (issue, *n),
+        ("comment", Some(Val::Int(n))) => (comment, *n),
         _ => return Vec::new(),
     };
     let rec = |r: &Stored| match r.cols.first() {
@@ -499,21 +577,18 @@ fn search(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
     let mut out: Vec<Stmt> =
         vec![(leak(format!("DELETE FROM {fts} WHERE rowid = ?")), vec![SqlStorageValue::Integer(id)])];
     let Some(b) = row.and_then(rec) else { return out };
-    match fts {
-        "m_issue_fts" => {
-            let r: graftyard_git::tiers::IssueRow = postcard::from_bytes(&b).expect("an issue row");
-            out.push((
-                "INSERT INTO m_issue_fts (rowid, title, body) VALUES (?, ?, ?)",
-                vec![SqlStorageValue::Integer(id), r.title.to_string().into(), r.body.to_string().into()],
-            ));
-        }
-        _ => {
-            let r: graftyard_git::tiers::CommentRow = postcard::from_bytes(&b).expect("a comment row");
-            out.push((
-                "INSERT INTO m_comment_fts (rowid, body) VALUES (?, ?)",
-                vec![SqlStorageValue::Integer(id), r.body.to_string().into()],
-            ));
-        }
+    if table == "issue" {
+        let r: graftyard_git::tiers::IssueRow = postcard::from_bytes(&b).expect("an issue row");
+        out.push((
+            leak(format!("INSERT INTO {fts} (rowid, title, body) VALUES (?, ?, ?)")),
+            vec![SqlStorageValue::Integer(id), r.title.to_string().into(), r.body.to_string().into()],
+        ));
+    } else {
+        let r: graftyard_git::tiers::CommentRow = postcard::from_bytes(&b).expect("a comment row");
+        out.push((
+            leak(format!("INSERT INTO {fts} (rowid, body) VALUES (?, ?)")),
+            vec![SqlStorageValue::Integer(id), r.body.to_string().into()],
+        ));
     }
     out
 }

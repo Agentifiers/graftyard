@@ -137,3 +137,126 @@ On branch `m3-wp5` from `main` at `5e364cf`, not pushed:
 - `6d5e866` `install.rs` prints each gate's numbers under `--nocapture`.
 - `9374303` the raft codec test round-trips `Install`, `ReadIndex`, and `ReadIndexRes`.
 - This file.
+
+## 2026-11-06: the hosted half on `graft-m2b`
+
+Branch `m3-wp5-hosted` from `main` at `c583053`. Every gate ran on the `graft-m2b` test install (`tests/m2/results/install-m2b.md`). `crates/raft` is unchanged, so the long sweep and Porcupine were not rerun.
+
+### What was built
+
+- **One loader** (`workers/site/src/load.rs`), shared by `InstallSnapshot` and the fold audit. A job stored in `load_job` runs one batch per alarm. Each batch either restores a tier from its R2 snapshot by range reads (`Restore::resume` from a stored `RestoreCursor`), or applies entries from the stored log (audit) or from archive objects (install). It writes into scratch tables (`tier::SCRATCH`, prefix `i`) beside the member's own. A batch ends after 2 s, 1 MB read, or 20,000 rows and entries. Its rows and the job's cursor commit in one transaction. A batch that began three times without committing is abandoned (`tries`), so a batch that kills its isolate cannot keep resetting the isolate's other members (F47).
+- **Install.** The leader names an install source after it truncates (`Host::truncate` → `load::set_source`). The source holds the newest committed snapshot of each tier at or below the archive's end, the archives back to that or to `REQUEST_RETENTION`, and the config and id block. A member sent `InstallSnapshot` loads them. It rebuilds the `request` rows inside retention and calls `Member::install`. `Write::Install` drops the log, writes `log_base`, and swaps the scratch tables and `i_request` in, all in one transaction. The member then answers the leader's newest `InstallSnapshot` (`load_want`). A member that itself installed at the archive's end names a later source from `log_base` (`222fee6`).
+- **Learner objects.** A learner joins with `/join` like a voter, without a registry row or RTT rows. Its address is `SiteId(192 + slot)`, which the host maps to `(site, do_name)` through the config (`peer_name`). `/read {"index":true}` serves read-index reads.
+- **`place_learners`: the test-install equivalent, not a `graft-ops` cron.** `graft-ops` is not deployed on this account (`wrangler deployments list --name graft-ops` returns 10007). The leader's `/learners {"load": GroupLoad}` route runs `place_learners`. It joins each learner on the first non-spare site in its region under the next generation, and commits one `Normal` config change. The `graft-ops` cron would read Analytics Engine and call this route; that half is not built.
+- **The F48 audit cron.** The site cron's `fold_audit` starts the leader's refold (`/fold {"audit":{"start":true}}`, daily or forced), then compares the last report with every voter's `digest_at`. A plain audit refolds each tier from its newest snapshot. A deep audit refolds the core tier from its oldest snapshot through the whole stored log and checks each later snapshot's trailer digest on the way (`segments`). `snap::replay` and its `REPLAY_BYTES` skip are gone. The report gives, per chain, the index, each tier's digest, batches, the slowest batch, bytes, rows, entries, ms, and `memMaxMb`, the isolate's wasm memory high-water mark.
+- **Test-only routes** (`test-faults`): `/bench_seed {"archive":{from,to}}` has the leader put an archive object of its stored log in the first two record sites' buckets. The edge's `/_bed/archive` calls it, then records `Promoted` and `Archived` as before. `/read_bench` generates read-index reads inside a learner, as Milestone 0's driver did. `/fold {"requestsAt":n}` returns a count and digest of the `request` rows. Drivers: `tests/m3/wp5/bf29.sh` and `tests/m3/wp5/b0-18.ts`.
+
+### BF-29 hosted: Pass
+
+`tests/m3/wp5/bf29.sh 65539 2 30` on `repo:65539` (`m2b/bf29`, seeded for this). The pushes were real `git push`es through `graft-m2b-edge`. An earlier run on `repo:65537` could not archive: that repository's refs came from `/_bed/push`, so they name objects that do not exist, and the home shard's promotion refused them (`git update-ref ... nonexistent object`).
+
+1. Site 2's member was held down by the edge's site fault from index 7.
+2. 30 pushes committed. Site 1 snapshotted both tiers (core at 36, metadata at 37). The edge archived 1..=40: a promoted pack of 104 objects, then the archive object `archive/repo:65539/…01-…40-e0d35b71…` in buckets 0 and 1, then `Archived` at index 42.
+3. The leader and site 1 truncated below 40 (`truncatedTo` 40). The fault was cleared.
+4. Site 2 was sent `InstallSnapshot` and loaded both snapshots and the archive in **1 batch of 2,954 ms**: 20,267 bytes, 3 snapshot rows, 40 entries, 38 `request` rows kept, at 1.8 MB of wasm memory. It installed (`installs` 1, base 40) and caught up in 133 s, most of which was the driver's push loop.
+
+At index 59, all three members' digests were equal:
+
+| Member | Core `fold_digest` | Metadata `fold_digest` | `request` rows ≤ 59 |
+| --- | --- | --- | --- |
+| site 0 (leader) | `053b5f0b…` | `776e3f27…` | 57, `bc6e596d751d` |
+| site 1 | `053b5f0b…` | `776e3f27…` | 57, `bc6e596d751d` |
+| site 2 (installed) | `053b5f0b…` | `776e3f27…` | 57, `bc6e596d751d` |
+
+The run also showed that a member which installed at 40 had no stored row at 40. Its own later truncate then found no install source ("no stored entry at through"). `222fee6` takes `through`'s term, digest, and time from `log_base` and the archive that ends there.
+
+### BF-28 hosted: Pass
+
+`node tests/m3/wp5/b0-18.ts --repo 65539 --place --load enam:6000,weur:5000,apac:5000`. `place_learners` gave 16 regions. The leader joined 16 learners, `repo:65539#2#l0` to `#l15`, at addresses 192 to 207: six on site 0 (the leader's site), and five each on sites 1 and 2, every one beside a voter. Config index 65.
+
+There were 19 members, 19 distinct `(site, do_name)` objects, and 19 distinct boot ids. Each member's `/status` reported its own `doName`, and every learner was a follower. Fifteen learners caught up by `InstallSnapshot` (`installs` 1, base 40), because the leader's log starts at 40. The sixteenth, l0, joined first and reported `installs` 1 with commit 0 at the first read. By the next run it stood at commit 80 with base 41. The verdict held on all five later runs.
+
+### B0-18 rerun: mixed, 2 of 6 runs pass
+
+Each run: 16 learners × 1,000 read-index reads/s for 30 s, generated inside each learner (`/read_bench`), while the group took 10 pushes/s. Pass is leader under 700 req/s and learner p99 at most 1 s.
+
+| Run | Reads/s | Failed reads | Leader req/s | Learner p50 (median) | Worst learner p99 | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| a, 10:19 | 16,000 | 0 | 172 | 162 ms | 2,435 ms | Fail |
+| b, 10:22 | 16,000 | 0 | 184 | 161 ms | 727 ms | **Pass** |
+| c, 10:23 | 14,280 | 51,594 | 195 | 157 ms | 1,312 ms | Fail |
+| r1, 10:25 | 16,000 | 0 | 206 | 158 ms | 716 ms | **Pass** |
+| r2, 10:26 | 16,000 | 0 | 204 | 159 ms | 1,207 ms | Fail |
+| r3, 10:28 | 14,942 | 31,736 | 173 | 163 ms | 1,488 ms | Fail |
+
+- **Leader load passes every time:** 172 to 206 req/s, against a 700 limit. `/raft` was 4,177 to 4,926 leader requests a run, and the rest were the pushes' `/commit`, `/outcome`, and `/read`. Milestone 0 measured 171 to 180.
+- **The learner p99 is what fails.** The passing runs match Milestone 0's 683 to 743 ms. The failing runs are not a slower steady state. In two of them (c, r3), every learner failed 118 to 2,461 reads, about 1 to 3 s of reads each. That looks like a stretch where learners knew no leader, or the leader answered no read-index batch. Between runs c and r1 the leader moved from site 0 to site 1.
+- **"Subrequest depth limit exceeded" does not explain it.** Workers Logs show bursts of this error on `/outcome`, `/outcome_by_request`, `/commit`, `/read`, and `/raft` (Workers and objects may nest 16 calls):
+  - site a: 28 events at 10:19:30–10:19:49, and 100 or more at 10:24:00;
+  - site b: 90 at 10:25:40, and 100 or more at 10:28:00;
+  - site c: 10 at 10:19:40.
+
+  These fall at or just after the ends of runs a, c, r1, and r3 (each summary's `at` is the run's end). But r1 passed with a burst, and r2 failed with none. Milestone 0's prototype saw the same error on `/probe` (`tests/m0/results/m0-wp2.md`). It is a host matter (`workers/site/src/host.rs`, where a `/raft` reply is stepped and new sends leave from inside the incoming call), but this run does not tie it to the p99.
+- **Cause: not found.** The p99 failure needs a trace of one learner's read-index batches against the leader's `ReadIndexRes` times in a failing run, which I did not take. Until then, B0-18 on real members is unmet.
+
+### F48: `repo:65536` refolded, peak wasm memory 64.9 MB
+
+`repo:65536` (`m2b/bf20`) holds 5,790 entries and 107.7 MB of stored log, a 2.4 GB metadata tier, and a 31.6 MB core snapshot at 5,735.
+
+| Run | What it refolded | Batches | Slowest batch | Read | Time | Peak wasm memory | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Plain (09:11, build `aa6397d`…`ca6bd97`) | core from the snapshot at 5,735 (571,877 rows) plus 43 entries, to 5,778; metadata skipped (snapshot 2.4 GB > 256 MB) | 6 | 1,731 ms | 32.7 MB | 15.9 s | 111.3 MB | core `1ed53b29…` equals all 3 voters' |
+| Deep, 4 MB batches (09:13, same build) | core from the snapshot at 2 through the log | — | — | — | — | — | isolate died 3 times ("Critical error … SqlCursorRawIterator … Uint8Array::copy_to", "Reinitializing Wasm application") |
+| Deep, 1 MB batches (10:08, `222fee6`) | the same | 84 at the failure | 405 ms | 106.6 MB | 42 s | 64.9 MB | failed at the end: SQLITE_LOCKED dropping scratch tables |
+| **Deep, 1 MB batches (10:16, `d6e350d`)** | core from the snapshot at 2 plus 5,788 entries, to 5,790 | **213** | **405 ms** | 269.5 MB | 57.7 s | **64.9 MB** | **core `7c66455d…` equals all 3 voters' `digest_at(5790)`. The refold reached the snapshot at 5,735's trailer digest `29483fa7…` on the way (`segments` ok)** |
+
+- Peak wasm memory for the deep audit was **64.9 MB**; the isolate stood at 56.6 MB before it started. Workers Logs show no isolate reset or memory error on any site during the run.
+- The plain run's 111.3 MB is the isolate's high-water mark, which a member restore had already set before the audit began. Linear memory never shrinks, so it is a ceiling for that audit, not its own use.
+- Two fixes came from these runs:
+  - `aa5e0f4`: 4 MB of log in one batch, held as rows and again as statements, took the isolate past 128 MB, so batches are 1 MB and abandoned after three deaths.
+  - `d6e350d`: the audit's log cursor was stopped early, held the log table, and the closing `DROP TABLE` failed with SQLITE_LOCKED, so it now reads pages to the end.
+- The bytes read (269.5 MB) are more than the log (107.7 MB). Each batch rereads its last page, because a page is read whole and only the entries that fit the batch are applied [inference].
+- The metadata tier of `repo:65536` is still not refolded. Its 2.4 GB snapshot would double the member's 4 GB of storage in scratch tables (`AUDIT_SNAPSHOT_MAX`, 256 MB). Auditing a tier that large needs scratch space outside the member, for example a separate audit object.
+
+### Checks
+
+At `d6e350d`:
+
+- `cargo fmt --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- wasm32 clippy for `workers/site` and `workers/edge`, with and without `test-faults`: clean.
+- `cargo test --workspace`: all pass. This includes `a_restore_resumed_across_batches_from_its_stored_cursor_ends_at_the_trailers_digest` (`crates/fold/tests/install.rs`).
+- Product-build greps: site 0 of 50 needles in the release build, edge 0 of 20. With `test-faults`, the edge has 20 of 20. The site has 49 of 50: the release build inlined `fail_next_read`, so its symbol name is gone, but the feature's strings `failRead` and `graftyard_no_such_table` are both present. The new test routes are present (`/read_bench`, `::archive_put`).
+- `crates/raft` is unchanged from `main`, so the long sweep and Porcupine were not rerun.
+
+No planted bugs were added for the hosted gates. The pure half's nine plants (`tests/m3/wp5/plant.sh`) cover the raft and fold logic the hosted gates run.
+
+### What is deployed
+
+All on `graft-m2b`, all `test-faults` builds:
+
+- `graft-m2b-site-a`, `-b`, `-c` at `d6e350d` (versions `dbd0c14a`, `681df06d`, `fc37446a`; wasm `53c14f27…`), with git shard image `graft-m1-site-gitshard-git@sha256:aa3038ea…`.
+- `graft-m2b-edge` at `0de6314` (version `097cf03d`). The edge did not change after that commit.
+- Repository `m2b/bf29` (`repo:65539`) was seeded by `tests/m1/integ/seed.ts`. It holds 16 learners at generation 2.
+- The edge's site fault is off.
+
+### Design sentences this contradicts or extends
+
+- "Daily `graft-ops` cron: none under LEARNER_AT, else ceil(rate / 1,000) per region, busiest first, up to 16" (Shape, "Sites and placement"). There is no `graft-ops` on the test account. The decision runs from the leader's `/learners` route, and the cron's Analytics Engine read is not built.
+- "It names the newest committed snapshot of each tier and the archive objects from there to the leader's first log entry" (Shape, "Packs"). As in the pure half, the archives start at `REQUEST_RETENTION` before `through` when that is earlier. Here the source is also named by a member that installed, from `log_base`.
+- `R2Key::Archive` objects have no stated format in the design. Here an archive object is `gyfarch\0`, version 1, then each stored log row in the raft codec behind a 4-byte big-endian length (`crates/fold/src/archive.rs`). It is not JSON, so an install applies the entries byte for byte as committed. The test route builds the object in memory, which bounds an archive at what one isolate holds. A product archiver needs a multipart put.
+- "Refolds sampled chains from genesis on each release and daily" and "Until the site's cron runs it (M2-WP1), a chain whose log is over `REPLAY_BYTES` … is reported as skipped" (`design/SHARED.md`, "Folds", `fold_audit`). The cron runs it now and nothing is skipped for log size. A tier whose snapshot is over `AUDIT_SNAPSHOT_MAX` (256 MB [guess]) is still skipped, because its scratch copy would not fit beside it.
+- A learner has no registry row. The design's registry rows are per voter, and it says nothing about learners there.
+- B0-18 is restated in BUILD-PLAN as "Leader under 700 req/s, learner read p99 at most 1 s". On real members it passed 2 of 6 runs, for a cause not found, so the M3 gate "Learners rerun the Milestone 0 learner gate" is not met.
+
+### Commits
+
+On `m3-wp5-hosted`, not pushed:
+
+- `aa6397d` fold: a resumable `Restore` cursor, `finish_rows`, and the archive object's row format.
+- `0de6314` site: host `InstallSnapshot` and learners; one batched loader for install and the F48 fold audit.
+- `ca6bd97` site: the loader yields between reads and answers the leader's newest `InstallSnapshot` for its source.
+- `aa5e0f4` site: loader batches bounded by rows and 1 MB, and a batch whose isolate died three times is abandoned.
+- `222fee6` site: an installed member names an install source from its `log_base`; the BF-29 hosted driver.
+- `d6e350d` site: the audit reads the stored log in pages read to their end.
+- This section and `tests/m3/wp5/b0-18.ts`.

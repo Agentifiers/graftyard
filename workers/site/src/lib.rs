@@ -15,6 +15,7 @@ mod family;
 mod faults;
 mod fold_audit;
 mod host;
+mod load;
 mod lookup;
 mod member;
 mod merge_queue;
@@ -113,7 +114,7 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         Ok(r) => console_log!("sweep {r}"),
         Err(e) => console_error!("sweep failed: {e}"),
     }
-    match fold_audit::run(&env, None).await {
+    match fold_audit::run(&env, None, false).await {
         Ok(r) => console_log!("fold audit {r}"),
         Err(e) => console_error!("fold audit failed: {e}"),
     }

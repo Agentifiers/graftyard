@@ -662,6 +662,7 @@ dependencies = [
  "postcard",
  "serde",
  "serde_json",
+ "sha2",
  "smallvec",
  "wasm-bindgen-futures",
  "worker",

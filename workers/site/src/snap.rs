@@ -58,6 +58,12 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS snap_log (tier INTEGER NOT NULL, to_idx INTEGER NOT NULL, row TEXT NOT NULL, PRIMARY KEY (tier, to_idx))",
     // Snapshot objects this writer put, so retention deletes the ones whose rows the fold dropped.
     "CREATE TABLE IF NOT EXISTS snap_put (key TEXT PRIMARY KEY, tier INTEGER NOT NULL, to_idx INTEGER NOT NULL, sites TEXT NOT NULL)",
+    // `crate::load`: the running install or audit job, the last finished one's report, and the install source a
+    // leader names after its log was truncated.
+    "CREATE TABLE IF NOT EXISTS load_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS load_report (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, row TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS load_want (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -377,7 +383,7 @@ fn begin(
     let (chain, me, leader, place) = {
         let core = h.core.borrow();
         let Some(c) = core.as_ref() else { return Ok(false) };
-        (c.join.chain, c.join.me.site, c.m.leader(), placement(c.m.latest_config()).clone())
+        (c.join.chain, c.m.me(), c.m.leader(), placement(c.m.latest_config()).clone())
     };
     let m = meta(&*store);
     let last = last_snapshot(core, t);
@@ -559,66 +565,6 @@ pub fn log_json(sql: &SqlStorage) -> Result<Value> {
         out.push(serde_json::from_str::<Value>(crate::host::text(&r[0])?)?);
     }
     Ok(json!(out))
-}
-
-/// Entries a member replays for the fold audit in one request [guess]: the digests every member keeps
-/// (`graftyard_fold::DIGESTS_KEEP`), so the index the replay reaches is one every caught-up member can answer for.
-const REPLAY_MAX: u64 = graftyard_fold::DIGESTS_KEEP;
-
-/// Stored log bytes a member refolds in memory for the fold audit [guess]. The refold holds every row the log wrote,
-/// beside the member's own state: `repo:65536`'s 2,000 entries, 102.6 MB of log, grew it by 63 MB and took the isolate
-/// past 128 MB (F47, `tests/m2/results/f47.md`). 16 MB of log is about 10 MB of refold at that ratio.
-const REPLAY_BYTES: u64 = 16_000_000;
-
-/// The fold audit's refold (`design/SHARED.md`, "Folds", `fold_audit`): the stored log from genesis through this
-/// member's `applied`, replayed into a fold in memory by the same `apply`, and each tier's `fold_digest` there. A chain
-/// whose log no longer starts at 1, is longer than `REPLAY_MAX`, or holds more than `REPLAY_BYTES` is skipped with the
-/// reason: refolding it needs the archive objects, which hold the entries' JSON, not the entries, or more memory than
-/// an isolate has.
-pub fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
-    let (repo, owner, applied) = {
-        let core = h.core.borrow();
-        let c = core.as_ref().ok_or_else(|| Error::RustError("not joined".into()))?;
-        let f = &c.m.group_fold().fold;
-        (f.repo, c.join.owner, meta(&*f.core).applied)
-    };
-    if applied.0 > REPLAY_MAX {
-        return Ok(json!({ "skip": format!("{} entries, past the {REPLAY_MAX} one request replays", applied.0) }));
-    }
-    let sql = h.state.storage().sql();
-    let r = rows(&sql, "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx <= ?", vec![i(applied.0)])?;
-    let bytes = r.first().map(|r| crate::host::int(&r[0]).unwrap_or(0) as u64).unwrap_or(0);
-    if bytes > REPLAY_BYTES {
-        return Ok(json!({ "skip": format!("{bytes} log bytes, past the {REPLAY_BYTES} one request refolds") }));
-    }
-    let mut fold = git::repo::RepoFold::with_tiers(
-        repo,
-        owner,
-        Box::new(graftyard_fold::MemStore::default()),
-        Box::new(graftyard_fold::MemStore::default()),
-    );
-    let mut next = 1;
-    // One row at a time: collecting the log first held all of it beside the member's own fold, and took the
-    // isolate past 128 MB (F47).
-    for r in sql.exec("SELECT idx, row FROM log WHERE idx <= ? ORDER BY idx", vec![i(applied.0)])?.raw() {
-        let r = r?;
-        let idx = crate::host::int(&r[0])? as u64;
-        if idx != next {
-            return Ok(json!({ "skip": format!("the stored log starts at {idx}, not {next}") }));
-        }
-        let e: raft::LogEntry<git::repo::RepoEvent> =
-            raft::codec::from_bytes(blob(&r[1])?).map_err(|e| Error::RustError(e.to_string()))?;
-        raft::Fold::apply_entry(&mut fold, &e);
-        next += 1;
-    }
-    if next != applied.0 + 1 {
-        return Ok(json!({ "skip": format!("the stored log ends at {}, not {}", next - 1, applied.0) }));
-    }
-    Ok(json!({
-        "index": applied.0,
-        "core": fold_digest(&*fold.core, Tier::Core).hex(),
-        "metadata": fold_digest(&*fold.meta, Tier::Metadata).hex(),
-    }))
 }
 
 /// The fold audit's member half (`design/SHARED.md`, "Folds", `fold_audit`): every row of a tier refolded, and its

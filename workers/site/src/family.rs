@@ -21,6 +21,15 @@ use crate::member::Join;
 use crate::register::{REG_FORMAT, Reg, RegCmd, RegErr, RegEvent};
 
 pub type Stmt = (&'static str, Vec<SqlStorageValue>);
+
+/// A log range an applied `Archived` put in an archive object.
+#[derive(Clone, Debug)]
+pub struct ArchivedRange {
+    pub key: String,
+    pub from: u64,
+    pub to: u64,
+    pub to_at: u64,
+}
 pub type Out<F> = <<F as Family>::C as Command>::Out;
 pub type Err<F> = <<F as Family>::C as Command>::Err;
 pub type Dep<F> = <<F as Family>::C as Command>::Dep;
@@ -143,11 +152,33 @@ pub trait Family: 'static {
     fn row_packs(_events: &[Self::Ev]) -> Value {
         json!([])
     }
-    /// The archive an applied entry commits, `Archived`'s key and `to`: members truncate their stored log through `to`
-    /// once they can HEAD the key in two buckets.
-    fn archived(_e: &raft::LogEntry<Self::Ev>) -> Option<(String, u64)> {
+    /// The archive an applied entry commits: members record its range (`archive_key`) and truncate their stored log
+    /// through `to` once they can HEAD the key in two buckets.
+    fn archived(_e: &raft::LogEntry<Self::Ev>) -> Option<ArchivedRange> {
         None
     }
+    /// After the stored log was truncated below `to`: a family that hosts `InstallSnapshot` names its source
+    /// (`crate::load::set_source`).
+    async fn truncated(_host: &std::rc::Rc<crate::host::Host<Self>>, _to: raft::Index)
+    where
+        Self: Sized,
+    {
+    }
+    /// The member must install a snapshot before it can follow (`Out::install`): a family that hosts it loads one
+    /// (`crate::load::want`). A family that does not never names an install source, so its members are never sent one.
+    fn install_wanted(_host: &std::rc::Rc<crate::host::Host<Self>>, _w: raft::InstallWanted)
+    where
+        Self: Sized,
+    {
+    }
+    /// After restore built the core: the stored install source, and a load job to resume.
+    fn restored(_host: &std::rc::Rc<crate::host::Host<Self>>)
+    where
+        Self: Sized,
+    {
+    }
+    /// `Write::Install`'s statements that make the loaded tables the member's fold.
+    fn install_stmts(_stmts: &mut Vec<Stmt>) {}
     /// Family fields of a log entry on the harness's `/log` and the shard's `/entries`.
     fn entry_json(_e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
         serde_json::Map::new()
@@ -319,6 +350,7 @@ impl Family for Repo {
         true
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::load::on_alarm(host).await;
         crate::prsync::on_alarm(host).await;
         crate::merge_queue::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
@@ -355,9 +387,13 @@ impl Family for Repo {
                 } else {
                     graftyard_types::Tier::Core
                 };
-                if body.get("replay").is_some() {
+                if let Some(a) = body.get("audit") {
                     drop(core);
-                    return crate::snap::replay(host);
+                    return crate::load::audit_route(host, a);
+                }
+                if let Some(at) = body.get("requestsAt").and_then(Value::as_u64) {
+                    drop(core);
+                    return crate::load::requests_json(host, at);
                 }
                 let mut v = match body.get("refold") {
                     Some(st) => crate::snap::refold_page(
@@ -378,7 +414,16 @@ impl Family for Repo {
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("audit").is_some() => {
                 let only = body["audit"].as_str().and_then(|c| c.parse().ok());
-                Some(crate::fold_audit::run(&host.env, only).await)
+                Some(crate::fold_audit::run(&host.env, only, body["force"].as_bool().unwrap_or(false)).await)
+            }
+            // Test installs: the leader's archive object of a stored log range (BF-29); the edge records `Archived`.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("archive").is_some() => {
+                let a = &body["archive"];
+                Some(
+                    crate::load::archive_put(host, a["from"].as_u64().unwrap_or(0), a["to"].as_u64().unwrap_or(0))
+                        .await,
+                )
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
@@ -589,14 +634,26 @@ impl Family for Repo {
     fn row_packs(events: &[git::repo::RepoEvent]) -> Value {
         json!(git::repo::packs_of(events))
     }
-    fn archived(e: &raft::LogEntry<Self::Ev>) -> Option<(String, u64)> {
+    fn archived(e: &raft::LogEntry<Self::Ev>) -> Option<ArchivedRange> {
         let raft::EntryBody::Events(evs) = &e.body else { return None };
         evs.iter().find_map(|ev| match ev {
             git::repo::RepoEvent::Archived(a) if matches!(a.key, git::R2Key::Archive { .. }) => {
-                Some((a.key.to_string(), a.to.0))
+                Some(ArchivedRange { key: a.key.to_string(), from: a.from.0, to: a.to.0, to_at: a.to_at.0 })
             }
             _ => None,
         })
+    }
+    async fn truncated(host: &std::rc::Rc<crate::host::Host<Self>>, to: raft::Index) {
+        crate::load::set_source(host, to).await;
+    }
+    fn install_wanted(host: &std::rc::Rc<crate::host::Host<Self>>, w: raft::InstallWanted) {
+        crate::load::want(host, w);
+    }
+    fn restored(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::load::restored(host);
+    }
+    fn install_stmts(stmts: &mut Vec<Stmt>) {
+        crate::load::install_stmts(stmts);
     }
     /// What the shard's `ChainLog` and the BF-16/17 drivers read: the packs the entry names, its ref updates, and
     /// its canonical length.
