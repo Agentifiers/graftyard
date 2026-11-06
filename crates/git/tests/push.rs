@@ -633,3 +633,43 @@ fn a_snapshot_archived_keeps_one_snapshot_at_or_below_every_index_in_the_window(
     assert_eq!(fold.first_index(), Index(1), "a snapshot does not move the log's archive ranges");
     assert!(fold.archived().is_none());
 }
+
+/// BF-3, push half: a user suspended while their pushes wait for an entry, and every push after, is refused 401.
+/// The `Account` row is a dep every decide reads, so the suspension needs no cache to expire.
+#[test]
+fn a_suspended_users_pushes_are_all_refused_including_those_admitted_before_the_suspension() {
+    let mut g = group();
+    let refused = |o: &PushOutcome| matches!(o, PushOutcome::Refused(r) if r.status == 401);
+    // Admitted, not yet decided: the suspension lands before their deps are read.
+    let waiting: Vec<_> = (0..100u32)
+        .map(|i| {
+            let r = rid();
+            let mut p =
+                push(vec![up(&format!("refs/heads/w{i}"), None, Some(oid(i + 1)))], Atomicity::PerRef, who(WRITER, 2));
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.suspend(AccountId(DbId(WRITER)));
+    g.run();
+    let mut n = 0;
+    for t in &waiting {
+        let o = g.resolved(*t).expect("resolved");
+        assert!(refused(o), "{o:?}");
+        n += 1;
+    }
+    for i in 0..100u32 {
+        let (_, o) = commit(
+            &mut g,
+            push(vec![up(&format!("refs/heads/f{i}"), None, Some(oid(i + 1)))], Atomicity::PerRef, who(WRITER, 2)),
+        );
+        assert!(refused(&o), "{o:?}");
+        n += 1;
+    }
+    assert_eq!(n, 200);
+    assert!(g.refs().is_empty(), "no ref moved: {:?}", g.refs());
+    // The owner is not suspended and still pushes.
+    let (_, o) =
+        commit(&mut g, push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, who(OWNER, 1)));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+}
