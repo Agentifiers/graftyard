@@ -1694,32 +1694,34 @@ impl<F: Family> Host<F> {
                     Delay::from(Duration::from_millis(hold - now_ms())).await;
                 }
             }
-            let mut deps = Vec::new();
-            let mut reads = Vec::new();
-            for chain in want.chains.iter().copied() {
-                let record = match crate::release::record_for(&h.env, chain).await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        reads.push(json!({ "chain": chain, "error": format!("no record: {e}") }));
-                        continue;
-                    }
-                };
-                let t0 = now_ms();
-                match crate::lookup::call(&h.env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await {
-                    Ok((v, _)) => {
-                        let bytes = v.get("value").and_then(Value::as_str).and_then(unhex);
-                        match bytes.map(|b| F::dep(chain, &b)) {
-                            Some(Ok(d)) => {
-                                deps.push((chain, d));
-                                reads.push(json!({ "chain": chain, "index": v["index"], "ms": now_ms() - t0 }));
+            // Each chain at once, as "The write path" reads them: one after another cost the sum of three reads,
+            // about 1.3 s of every merge (`tests/m2/results/m2-wp6.md`, "Merge latency").
+            let one = |chain: graftyard_types::ChainId| {
+                let env = &h.env;
+                async move {
+                    let record = match crate::release::record_for(env, chain).await {
+                        Ok(r) => r,
+                        Err(e) => return (None, json!({ "chain": chain, "error": format!("no record: {e}") })),
+                    };
+                    let t0 = now_ms();
+                    match crate::lookup::call(env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await {
+                        Ok((v, _)) => {
+                            let bytes = v.get("value").and_then(Value::as_str).and_then(unhex);
+                            match bytes.map(|b| F::dep(chain, &b)) {
+                                Some(Ok(d)) => (
+                                    Some((chain, d)),
+                                    json!({ "chain": chain, "index": v["index"], "ms": now_ms() - t0 }),
+                                ),
+                                Some(Err(e)) => (None, json!({ "chain": chain, "error": e })),
+                                None => (None, json!({ "chain": chain, "error": "no fold" })),
                             }
-                            Some(Err(e)) => reads.push(json!({ "chain": chain, "error": e })),
-                            None => reads.push(json!({ "chain": chain, "error": "no fold" })),
                         }
+                        Err(e) => (None, json!({ "chain": chain, "error": e })),
                     }
-                    Err(e) => reads.push(json!({ "chain": chain, "error": e })),
                 }
-            }
+            };
+            let (deps, reads): (Vec<_>, Vec<_>) = each_at_once(&want.chains, one).await.into_iter().unzip();
+            let deps: Vec<_> = deps.into_iter().flatten().collect();
             h.stats.borrow_mut().dep_reads += 1;
             // The entry these reads decide is appended next, at the log's end + 1.
             #[cfg(feature = "test-faults")]
@@ -2207,6 +2209,15 @@ pub fn digest_hex(d: &raft::Digest) -> String {
     d.hex()
 }
 
+/// `read` of every chain, all started at once and awaited together, in `chains` order (`design/DESIGN.md`, "The write
+/// path": "the leader reads each distinct dependency ... once through `fresh`, in parallel").
+async fn each_at_once<T, Fut: std::future::Future<Output = T>>(
+    chains: &[graftyard_types::ChainId],
+    read: impl FnMut(graftyard_types::ChainId) -> Fut,
+) -> Vec<T> {
+    futures_util::future::join_all(chains.iter().copied().map(read)).await
+}
+
 /// A request id in its text form, the ULID's 26 characters.
 pub fn rid_from(s: &str) -> Result<RequestId> {
     s.parse().map_err(|_| err(format!("bad request id {s:?}")))
@@ -2220,7 +2231,7 @@ mod tests {
 
     use futures_channel::oneshot;
 
-    use super::{Answer, answer};
+    use super::{Answer, answer, each_at_once};
 
     /// A future that ends when its sender fires.
     fn gate() -> (oneshot::Sender<()>, impl std::future::Future<Output = ()>) {
@@ -2248,6 +2259,36 @@ mod tests {
         assert!(missed.get(), "the miss is reported at the deadline, before the answer");
         answer_tx.send(235).unwrap();
         assert_eq!(f.as_mut().poll(&mut cx), Poll::Ready(Answer::Late(235)));
+    }
+
+    /// Every dependency read is in flight before any finishes: each read here ends only once all three started, so
+    /// reads made one after another never end (each waited for the one before, about 1.3 s of every merge,
+    /// `tests/m2/results/m2-wp6.md`, "Merge latency").
+    #[test]
+    fn dependency_reads_run_at_once() {
+        use graftyard_types::{AccountId, ChainId, DbId};
+        let started = Cell::new(0);
+        let chains: Vec<ChainId> = (1..=3).map(|n| ChainId::Authz(AccountId(DbId(n)))).collect();
+        let mut f = pin!(each_at_once(&chains, |c| {
+            let started = &started;
+            let mut first = true;
+            std::future::poll_fn(move |_| {
+                if std::mem::take(&mut first) {
+                    started.set(started.get() + 1);
+                }
+                if started.get() == 3 { Poll::Ready(c) } else { Poll::Pending }
+            })
+        }));
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut done = None;
+        for _ in 0..3 {
+            if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                done = Some(v);
+                break;
+            }
+        }
+        let want: Vec<ChainId> = (1..=3).map(|n| ChainId::Authz(AccountId(DbId(n)))).collect();
+        assert_eq!(done, Some(want));
     }
 
     #[test]
