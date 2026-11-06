@@ -71,6 +71,45 @@ fn frame(i: &Incoming<'_>, r: Reply, s: Surface, m: &Meta) -> Result<Response> {
     Ok(resp.with_status(r.status).with_headers(h))
 }
 
+/// Test installs: each phase of one request and its time in ms, sent back as `server-timing`, so a latency gate can
+/// say where the time went. A worker isolate runs one request's future at a time per `serve` call chain, and `serve`
+/// clears the list first.
+#[cfg(feature = "test-faults")]
+mod timing {
+    use std::cell::RefCell;
+    thread_local! { static PHASES: RefCell<(f64, Vec<(&'static str, f64)>)> = RefCell::default(); }
+    pub fn start() {
+        PHASES.with(|p| *p.borrow_mut() = (js_sys::Date::now(), Vec::new()));
+    }
+    /// Closes the phase that ends now.
+    pub fn mark(name: &'static str) {
+        PHASES.with(|p| {
+            let mut p = p.borrow_mut();
+            let now = js_sys::Date::now();
+            let last = p.0;
+            p.1.push((name, now - last));
+            p.0 = now;
+        });
+    }
+    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
+    /// The commit's hedge steps, sent back as `x-graft-trace`.
+    pub fn trace(t: Vec<serde_json::Value>) {
+        TRACE.with(|x| *x.borrow_mut() = t);
+    }
+    pub fn header() -> String {
+        PHASES.with(|p| p.borrow().1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", "))
+    }
+    pub fn take_trace() -> String {
+        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
+    }
+}
+#[cfg(not(feature = "test-faults"))]
+mod timing {
+    pub fn start() {}
+    pub fn mark(_: &'static str) {}
+    pub fn trace(_: Vec<serde_json::Value>) {}
+}
+
 fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
@@ -102,10 +141,13 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
         }
     };
     let m = Meta { rid: c.rid, version, rate: RateLimits::Off };
+    timing::start();
     let r = match route(c, req, host, e, &m).await {
         Ok(r) => r,
         Err(err) => unavailable(&format!("Service Unavailable: {err}")),
     };
+    #[cfg(feature = "test-faults")]
+    let r = r.with("server-timing", timing::header()).with("x-graft-trace", timing::take_trace());
     frame(&i, r, s, &m)
 }
 
@@ -137,6 +179,7 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
+    timing::mark("resolve");
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
@@ -161,7 +204,9 @@ async fn read(
     let Some(meta) = rows.meta.as_ref() else {
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
+    timing::mark("rows");
     let authz = authz(c, &repo).await;
+    timing::mark("authz");
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
     dir.logins.insert(repo.owner.0.0, owner.to_owned());
@@ -297,6 +342,7 @@ async fn merge_plan(
         return Err(format!("{} {text}", r.status_code()));
     }
     let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
+    timing::mark("merge_plan");
     Ok(a.merge_plan(req))
 }
 
@@ -312,7 +358,11 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
+    timing::mark("plan");
     ensure_group(c, &rd.repo).await.map_err(Error::RustError)?;
+    timing::mark("ensure_group");
+    let trace = std::cell::RefCell::new(Vec::new());
+    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -320,9 +370,11 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         body.to_string().as_bytes(),
         c.colo,
         60_000,
-        graftyard_lookup::Hooks::default(),
+        hooks,
     )
     .await;
+    timing::mark("commit");
+    timing::trace(trace.into_inner());
     Ok(match r {
         Ok(done) => {
             if let Some(e) = done.pointer("/refused/err") {
@@ -374,6 +426,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
     let who = authenticate(c, req).await?;
+    timing::mark("auth");
     let Some(who) = who else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let body: Value = req.json().await.unwrap_or(Value::Null);
     let q = body["query"].as_str().unwrap_or("").to_owned();
@@ -483,6 +536,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let segs: Vec<&str> = rest.split('/').collect();
     let [owner, name, tail @ ..] = segs.as_slice() else { return Ok(Reply::not_found()) };
     let who = authenticate(c, req).await?;
+    timing::mark("auth");
     let method = req.method();
     let rd = match read(c, owner, name, who.as_ref()).await? {
         Ok(r) => r,

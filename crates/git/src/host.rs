@@ -720,8 +720,15 @@ impl ShardHost<'_> {
         buckets: &[&B],
         log: &L,
     ) -> Result<CatchUp, StoreError> {
+        let t0 = js_sys::Date::now();
+        let mut ms = Vec::new();
+        let mut lap = |name: &'static str| {
+            ms.push((name, (js_sys::Date::now() - t0) as u64));
+        };
         let started = self.up().await?;
+        lap("up");
         let mut cursor = self.cursor(network, &started.health.disk).await?;
+        lap("cursor");
         // A cursor below a chain's first log index needs entries the leader has archived and truncated.
         if let Some(c) = cursor.clone() {
             for chain in chains {
@@ -730,9 +737,10 @@ impl ShardHost<'_> {
                 }
             }
         }
+        lap("first_index");
         let Some(mut cursor) = cursor else {
             let (cursor, r) = self.rehydrate(network, chains, buckets, log).await?;
-            return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new() });
+            return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new(), ms });
         };
         let mut all_refs = Vec::new();
         let (mut entries, mut packs) = (0, 0);
@@ -740,6 +748,7 @@ impl ShardHost<'_> {
         let mut seen = BTreeSet::new();
         for chain in chains {
             let refs = log.core_refs(*chain).await?;
+            lap("core_refs");
             if let Some(range) = cursor.behind(*chain, refs.applied) {
                 let es = log.entries(*chain, *range.start(), *range.end()).await?;
                 entries += es.len();
@@ -755,12 +764,15 @@ impl ShardHost<'_> {
                 }
                 packs += self.ingest(network, bodies).await?;
             }
+            lap("ingest");
             all_refs.extend(refs.refs);
             cursor.advance(*chain, refs.applied);
         }
         self.set_refs(network, &all_refs).await?;
+        lap("set_refs");
         self.save_cursor(&cursor, &started.health.disk).await?;
-        Ok(CatchUp { rehydrated: None, entries, packs, cursor, evicted })
+        lap("save_cursor");
+        Ok(CatchUp { rehydrated: None, entries, packs, cursor, evicted, ms })
     }
 }
 
@@ -786,6 +798,8 @@ pub struct CatchUp {
     pub cursor: IngestCursor,
     /// Networks the LRU evicted to make room for this catch-up's packs.
     pub evicted: Vec<i64>,
+    /// Each step's end, in ms from the start, for a latency gate to say where a catch-up's time went.
+    pub ms: Vec<(&'static str, u64)>,
 }
 
 async fn wasm_bindgen_futures_await(p: wasm_bindgen::JsValue) -> Result<(), StoreError> {
