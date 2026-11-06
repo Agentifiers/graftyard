@@ -562,6 +562,7 @@ dependencies = [
 name = "graftyard-fold"
 version = "0.1.0"
 dependencies = [
+ "arrayvec",
  "graftyard-raft",
  "graftyard-types",
  "postcard",

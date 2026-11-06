@@ -441,59 +441,101 @@ pub fn restore(
     frames: &[SnapshotFrame],
     want: (ChainId, Index),
 ) -> Result<SnapshotTrailer, SnapshotError> {
-    if store.get(META, &[]).is_some() || schema.tables.iter().any(|t| !store.scan(t.name, &[], 1).is_empty()) {
-        return Err(SnapshotError::NotEmpty);
+    let mut r = Restore::begin(store, *schema, want)?;
+    for f in frames {
+        r.frame(store, f)?;
     }
-    let Some(SnapshotFrame::End(tr)) = frames.last() else {
-        return Err(SnapshotError::Malformed("no trailer".into()));
-    };
-    if (tr.chain, tr.tier, tr.to) != (want.0, schema.tier, want.1) {
-        return Err(SnapshotError::Wrong {
-            got: format!("{} {:?} at {:?}", tr.chain, tr.tier, tr.to),
-            want: format!("{} {:?} at {:?}", want.0, schema.tier, want.1),
-        });
-    }
-    let mut count = 0u64;
-    let mut sum = [0u8; 32];
-    let mut last: Option<(&str, &Key)> = None;
-    for f in &frames[..frames.len() - 1] {
-        let SnapshotFrame::Rows { table, rows } = f else {
-            return Err(SnapshotError::Malformed("a trailer before the end".into()));
-        };
-        let def =
-            schema.tables.iter().find(|t| t.name == &**table).ok_or_else(|| SnapshotError::Table(table.clone()))?;
-        for r in rows {
-            if let Some((t, k)) = last
-                && t == def.name
-                && *k >= r.key
-            {
-                return Err(SnapshotError::Order(table.clone()));
-            }
-            last = Some((def.name, &r.key));
-            let row = Stored { written: r.written, cols: r.cols.clone() };
-            add(&mut sum, &row_hash(def.name, &r.key, &row));
-            store.put(def.name, r.key.clone(), row);
-            count += 1;
+    r.finish(store)
+}
+
+/// `restore` one frame at a time, so a host loads a snapshot of any size into its own tables while it holds one
+/// frame: an `InstallSnapshot` from R2, or a fold audit's refold (`refold_from`).
+pub struct Restore {
+    want: (ChainId, Index),
+    check: FrameCheck,
+}
+
+impl Restore {
+    /// Refuses a store that already holds the tier.
+    pub fn begin(store: &dyn Store, schema: Schema, want: (ChainId, Index)) -> Result<Restore, SnapshotError> {
+        if store.get(META, &[]).is_some() || schema.tables.iter().any(|t| !store.scan(t.name, &[], 1).is_empty()) {
+            return Err(SnapshotError::NotEmpty);
         }
+        Ok(Restore { want, check: FrameCheck::new(schema) })
     }
-    if count != tr.rows {
-        return Err(SnapshotError::Rows { got: count, want: tr.rows });
+
+    pub fn frame(&mut self, store: &mut dyn Store, f: &SnapshotFrame) -> Result<(), SnapshotError> {
+        self.check.frame(f)?;
+        if let SnapshotFrame::Rows { table, rows } = f {
+            let def = self.check.schema.tables.iter().find(|t| t.name == &**table).expect("checked");
+            for r in rows {
+                store.put(def.name, r.key.clone(), Stored { written: r.written, cols: r.cols.clone() });
+            }
+        }
+        Ok(())
     }
-    save_meta(
-        store,
-        &crate::tier::Meta {
-            applied: tr.to,
-            term: tr.term,
-            at: tr.at,
-            last: tr.entry,
-            sum,
-            snap: None,
-            snap_sum: [0; 32],
-        },
-    );
-    let got = refold_digest(store, schema);
-    if got != tr.fold_digest {
-        return Err(SnapshotError::Digest { got, want: tr.fold_digest });
+
+    /// Checks the trailer, writes the tier's meta row at `to`, and refolds the stored rows against the trailer's
+    /// digest, a page at a time.
+    pub fn finish(self, store: &mut dyn Store) -> Result<SnapshotTrailer, SnapshotError> {
+        let schema = self.check.schema;
+        let sum = self.check.sum;
+        let tr = self.check.finish()?;
+        if (tr.chain, tr.to) != self.want {
+            return Err(SnapshotError::Wrong {
+                got: format!("{} {:?} at {:?}", tr.chain, tr.tier, tr.to),
+                want: format!("{} {:?} at {:?}", self.want.0, schema.tier, self.want.1),
+            });
+        }
+        save_meta(
+            store,
+            &crate::tier::Meta {
+                applied: tr.to,
+                term: tr.term,
+                at: tr.at,
+                last: tr.entry,
+                sum,
+                snap: None,
+                snap_sum: [0; 32],
+            },
+        );
+        let got = refold_digest(store, &schema);
+        if got != tr.fold_digest {
+            return Err(SnapshotError::Digest { got, want: tr.fold_digest });
+        }
+        Ok(tr)
     }
-    Ok(tr.clone())
+}
+
+/// Why `refold_segment` gave no digest.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RefoldError {
+    #[error(transparent)]
+    Snapshot(#[from] SnapshotError),
+    #[error(transparent)]
+    Apply(#[from] crate::tier::FoldError),
+}
+
+/// A fold audit's refold of one tier that holds no more than one frame and one entry at a time (F48): the snapshot at
+/// `from` restored into `store`, which must be empty (a host's scratch SQLite tables), then `entries` applied in
+/// order. Returns the tier's `fold_digest` after the last entry, which the audit compares with each member's
+/// `digest_at` of the same index, or with the next snapshot's trailer when the entries end at its `to`. Chaining
+/// segments from one snapshot to the next refolds a chain from its first snapshot whatever its size.
+pub fn refold_segment<T: crate::tier::Tiered>(
+    t: &T,
+    store: &mut dyn Store,
+    schema: Schema,
+    from: (ChainId, Index),
+    frames: impl IntoIterator<Item = SnapshotFrame>,
+    entries: impl IntoIterator<Item = graftyard_raft::LogEntry<T::Event>>,
+) -> Result<Digest, RefoldError> {
+    let mut r = Restore::begin(store, schema, from)?;
+    for f in frames {
+        r.frame(store, &f)?;
+    }
+    r.finish(store)?;
+    for e in entries {
+        crate::tier::apply(t, store, schema.tier, &e)?;
+    }
+    Ok(crate::tier::fold_digest(store, schema.tier))
 }

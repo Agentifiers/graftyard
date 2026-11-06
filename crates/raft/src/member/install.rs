@@ -23,7 +23,7 @@ use super::{
 };
 use crate::fold::{Command, GroupFold};
 use crate::read::ReadGrant;
-use crate::types::{Index, NotLeader};
+use crate::types::{Digest, Index, NotLeader};
 use crate::{CALL_DEADLINE, after};
 
 /// A follower's read-index batches: at most one every 10 ms.
@@ -155,8 +155,8 @@ impl<C: Command> Member<C> {
         if fold.applied() != s.through {
             return Err(InstallError::Mismatch { what: "the loaded fold is not at through" });
         }
-        if fold.config().is_none() {
-            return Err(InstallError::NoConfig);
+        if fold.config() != Some(&s.config) || fold.id_block() != s.id_block {
+            return Err(InstallError::Mismatch { what: "the loaded config or id block is not the install's" });
         }
         // Everything in the log is either at or below `through`, which the fold replaces, or above an entry at
         // `through` that differs from the committed one, which no quorum can have committed.
@@ -231,19 +231,28 @@ impl<C: Command> Member<C> {
     /// A read the leader resolved: its own, as a `Resolution::Read`, or another member's batch, as a message.
     pub(super) fn read_resolved(&mut self, id: ReadId, result: Result<ReadGrant, NotLeader>) {
         match self.remote.serving.remove(&id) {
-            Some((to, batch)) => self.send(to, Message::ReadIndexRes { batch, index: result.ok().map(|g| g.index) }),
+            Some((to, batch)) => {
+                let index = result.ok().and_then(|g| self.digest_at(g.index).map(|d| (g.index, d)));
+                self.send(to, Message::ReadIndexRes { batch, index })
+            }
             None => self.out.resolutions.push(Resolution::Read { id, result }),
         }
     }
 
-    pub(super) fn on_read_index_res(&mut self, from: SiteId, batch: u64, index: Option<Index>) {
-        let r = &mut self.remote;
-        if r.inflight.as_ref().is_none_or(|b| b.0 != batch) {
+    pub(super) fn on_read_index_res(&mut self, from: SiteId, batch: u64, index: Option<(Index, Digest)>) {
+        if self.remote.inflight.as_ref().is_none_or(|b| b.0 != batch) {
             return;
         }
-        let (_, _, reads) = r.inflight.take().expect("checked");
+        let (_, _, reads) = self.remote.inflight.take().expect("checked");
         match index {
-            Some(i) => r.waiting.extend(reads.into_iter().map(|(id, at)| (id, at, i))),
+            Some((i, d)) => {
+                // An idle leader sends no append that would carry its commit. Entry `i` is committed, and digests
+                // chain, so if this member's entry `i` has the same digest, everything through it is committed.
+                if i > self.state.commit && self.digest_at(i) == Some(d) {
+                    self.set_commit(i);
+                }
+                self.remote.waiting.extend(reads.into_iter().map(|(id, at)| (id, at, i)));
+            }
             None => {
                 // That member does not lead: the reads fail, and the caller asks the leader it names.
                 if self.leader == Some(from) {

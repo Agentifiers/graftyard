@@ -101,10 +101,11 @@ pub enum Message<E> {
     ReadIndex {
         batch: u64,
     },
-    /// The leader's answer: the applied index a read there sees, or `None` when it cannot serve one.
+    /// The leader's answer: the applied index a read there sees and that entry's digest, or `None` when it cannot
+    /// serve one. The index is committed, so an asker whose entry there has the same digest commits through it.
     ReadIndexRes {
         batch: u64,
-        index: Option<Index>,
+        index: Option<(Index, Digest)>,
     },
 }
 
@@ -123,7 +124,10 @@ pub struct InstallSnapshot {
 
 /// What a leader names in an `InstallSnapshot`, which its host sets with `Member::set_install` once its storage no
 /// longer holds the entries at or below `through`: the newest committed snapshot of each tier, the archive objects
-/// after it through `through`, and entry `through`'s term and digest.
+/// through `through`, entry `through`'s term and digest, and the group fold's two parts no tier snapshot holds, the
+/// committed config and id block as of `through`. The archives start after the snapshot or `REQUEST_RETENTION` before
+/// `through`, whichever is earlier, because the installing host rebuilds the `request` rows from them: a member
+/// without them would decide a re-sent request again.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallSource {
     pub core: Box<str>,
@@ -132,6 +136,8 @@ pub struct InstallSource {
     pub through: Index,
     pub through_term: Term,
     pub through_digest: Digest,
+    pub config: (Index, GroupConfig),
+    pub id_block: Option<IdBlock>,
 }
 
 /// An `InstallSnapshot` this member needs: the host loads the snapshot and archives it names and calls
@@ -145,10 +151,8 @@ pub struct InstallWanted {
 /// Why `Member::install` refused what the host loaded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InstallError {
-    /// The loaded fold, or its base, is not at the install's `through`, or not the entry it names.
+    /// The loaded fold is not at the install's `through`, or holds another config or id block.
     Mismatch { what: &'static str },
-    /// The loaded fold has no committed config.
-    NoConfig,
     /// This member has committed `through` already, or leads.
     NotNeeded,
 }
@@ -334,8 +338,8 @@ impl<F: Fold> Storage<F::Event> for Stored<F> {
                 assert!(*i > self.fold.applied(), "truncate of an applied entry");
                 self.log.truncate((i.0 - self.base.index.0) as usize - 1);
             }
+            // The installed fold is the host's to store beside this write (the fold `Member::install` took).
             Write::Install(b) => {
-                assert_eq!(self.fold.applied(), b.index, "the host stores the installed fold with the write");
                 self.base = *b;
                 self.log.clear();
             }
