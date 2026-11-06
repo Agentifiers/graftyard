@@ -402,7 +402,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     };
     let body = |b: Vec<u8>| serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null);
     let id = |s: &str| s.parse::<i64>().ok();
-    Ok(match (method, tail) {
+    // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`.
+    let agent_accept = req.headers().get("accept")?;
+    let reply = match (method, tail) {
         (Method::Get, ["commits", reference, "statuses"]) => {
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))
         }
@@ -479,7 +481,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             }
         }
         _ => Reply::not_found(),
-    })
+    };
+    Ok(graftyard_api::trust::layer(agent_accept.as_deref(), p, &r, reply))
 }
 
 /// A command planned over `DurableBlob`s, as it crosses the binding: its blob as the `BlobRef`.

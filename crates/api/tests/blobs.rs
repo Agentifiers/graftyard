@@ -96,6 +96,7 @@ fn keep(file: String, v: Value) {
 /// A REST reply for `validate.py`: the OpenAPI operation, the status, the JSON body (`null` for bytes or none), and a
 /// redirect's `location`.
 fn keep_rest(case: &str, method: &str, path: &str, r: &Reply) {
+    same_bytes_without_opt_in(case, graftyard_wire::Surface::Rest, Some((method, path)), r);
     let body = if let Body::Json(v) = &r.body { v.clone() } else { Value::Null };
     let v =
         json!({ "method": method, "path": path, "status": r.status, "body": body, "location": r.header("location") });
@@ -103,6 +104,7 @@ fn keep_rest(case: &str, method: &str, path: &str, r: &Reply) {
 }
 
 fn keep_lfs(case: &str, schema: &str, r: &Reply) {
+    same_bytes_without_opt_in(case, graftyard_wire::Surface::Lfs, None, r);
     keep(format!("{case}.lfs.json"), json!({ "schema": schema, "body": r.value() }));
 }
 
@@ -260,6 +262,7 @@ fn serve(e: &mut Edge<'_>, case: &str, req: &Value) -> u16 {
             let r = repo(&e.c, &host, &dir);
             let reply = query(&request, route(&request).unwrap().map(|_| &r));
             assert!(reply.get("errors").is_none(), "{case}: {reply}");
+            same_bytes_without_opt_in(case, graftyard_wire::Surface::Graphql, None, &Reply::json(200, reply.clone()));
             keep(format!("{case}.json"), json!({ "query": q, "variables": body["variables"], "reply": reply }));
             200
         }
