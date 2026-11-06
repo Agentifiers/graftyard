@@ -372,19 +372,19 @@ async fn commit(
     let call = MergeCall { cmd: cmd.clone(), render: Value::Null };
     let body = serde_json::to_value(git::repo::RepoCmd::Merge(Box::new(call))).map_err(|e| e.to_string())?;
     #[cfg(feature = "test-faults")]
-    if let (MergeCmd::Land(_), Some(key)) = (cmd, leader) {
-        if let Some((kill, down)) = KILL.with(|m| m.borrow_mut().remove(key)) {
-            console_log!("mergequeue landing sent with kill {kill} (test fault)");
-            let r = graftyard_lookup::call(
-                b,
-                chain,
-                record,
-                "/commit",
-                &json!({ "rid": rid.to_string(), "cmd": body, "kill": kill, "down_ms": down }),
-            )
-            .await;
-            console_log!("mergequeue killed landing answered {r:?}");
-        }
+    if let (MergeCmd::Land(_), Some(key)) = (cmd, leader)
+        && let Some((kill, down)) = KILL.with(|m| m.borrow_mut().remove(key))
+    {
+        console_log!("mergequeue landing sent with kill {kill} (test fault)");
+        let r = graftyard_lookup::call(
+            b,
+            chain,
+            record,
+            "/commit",
+            &json!({ "rid": rid.to_string(), "cmd": body, "kill": kill, "down_ms": down }),
+        )
+        .await;
+        console_log!("mergequeue killed landing answered {r:?}");
     }
     #[cfg(not(feature = "test-faults"))]
     let _ = leader;
