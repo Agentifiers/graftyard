@@ -93,7 +93,7 @@ BF-33's leader-kill case, a leader killed between `CodeUsed` and the token's row
 
 A stock git push to `m3org/j4`, with the token from a credential helper, was accepted. Journey 4 below repeats it 100 times.
 
-### BM-3 clause 1: journey 4 over HTTPS. RESULT_J4
+### BM-3 clause 1: journey 4 over HTTPS. Every revoked token refused, 199 of 199; one `ghs_` revoke got no reply.
 
 `tests/m3/hosted/journey4.sh`, run as the orb service `m3h-j4`, 100 rounds against `m3org/j4` with a stock git client. Each round:
 1. A fresh PAT for `m3-member` pushes, and the push is accepted.
@@ -105,15 +105,21 @@ At the end, `m3-admin` removes `m3-member` from the org, and a push with the mem
 
 | Step | Count |
 | --- | --- |
-| PAT pushes accepted | J4_PAT_OK of 100 |
-| PAT revokes, 204 | J4_REV of 100 |
-| Pushes with the revoked PAT refused, 401, ref not moved | J4_PAT_REF of 100 |
-| `ghs_` pushes accepted | J4_GHS_OK of 100 |
-| `DELETE /installation/token`, 204 | J4_JTI of 100 |
-| Pushes with the revoked `ghs_` refused, 401, ref not moved | J4_GHS_REF of 100 |
-| Push after member removal | J4_MEMBER |
+| PAT pushes accepted | 100 of 100 |
+| PAT revokes, 204 | 100 of 100 |
+| Pushes with the revoked PAT refused, 401, ref not moved | 100 of 100 |
+| `ghs_` pushes accepted | 100 of 100 |
+| `DELETE /installation/token`, 204 | 99 of 100; round 97 got no reply in 120 s |
+| Pushes with a revoked `ghs_` refused, 401, ref not moved | 99 of 99; round 97's token, not revoked, was accepted |
+| Push after member removal, with a live PAT | refused 403, ref not moved (removal 204, re-add 200) |
 
-[measured, `tests/m3/raw/j4-100/journey4.tsv` and `journey4.summary`]. A 2-round trial before the run refused 2 of 2 PATs and 2 of 2 `ghs_` tokens. Removal answered 204, the push after it got 403, and the re-add answered 200 [measured].
+[measured, `tests/m3/raw/j4-100/journey4.tsv`; the run took 05:42Z to 06:47Z, about 39 s a round].
+
+- **Round 97.** curl's `DELETE /installation/token` got no HTTP status within its 120 s limit. Workers Observability logged no request at the edge from 06:42:11Z, the end of round 97's push, to 06:44:09Z, the 120 s the request waited [measured]. So no `JtiRevoked` was committed for that token, and the next push with it was accepted, as it should be for a live token [inference: Observability logs every invocation, including a canceled one]. This is one revoke request lost before it reached the edge, not a revoked token accepted. Its cause is not known.
+- **The tail.** The script's last step, member removal, did not run in this run. I edited `journey4.sh` while bash was still reading it, and the shifted file failed to parse at that line. `bash -n` passes on the file as committed. The tail ran on its own right after (`journey4.sh ... 0`): removal 204, the push after it refused 403 with the ref not moved, re-add 200 [measured, `tests/m3/raw/j4-end/`].
+- **Five more rounds** after the run, with the tail, passed everything: 5 of 5 PAT and 5 of 5 `ghs_` pushes accepted, revoked with 204, and refused 401 with the ref not moved, then removal, refusal 403, and re-add [measured, `tests/m3/raw/j4-extra/journey4.summary`].
+
+Across the three runs, 209 of 209 revoked tokens were refused on the next write: 105 PATs and 104 `ghs_` tokens. The clause's "100 of 100" holds for PATs. For `ghs_` it holds for every token that was revoked, but one of the 100 revoke requests was lost. A 2-round trial before the run refused 2 of 2 PATs and 2 of 2 `ghs_` tokens. Removal answered 204, the push after it got 403, and the re-add answered 200 [measured].
 
 The first 100-round run reached round 44 with every revoked token refused, 88 of 88. The orb restarted at 05:33Z and took the run and its `/tmp` output with it. The run above is the second, started at 05:42Z, with its output under `tests/m3/raw/` (gitignored).
 
@@ -134,11 +140,11 @@ The first 100-round run reached round 44 with every revoked token refused, 88 of
 
 | Client | Version | Flow | Result |
 | --- | --- | --- | --- |
-| gh | the orb's | `auth login` over the device flow, then `api user` and `auth status` | 10 of 10 [measured] |
-| gh | the orb's | `auth login --web` | 1 of 1 [measured] |
+| gh | 2.102.1 | `auth login` over the device flow, then `api user` and `auth status` | 20 of 20, in two sets of 10 [measured] |
+| gh | 2.102.1 | `auth login --web` | 1 of 1 [measured] |
 | `@octokit/app` | 16.1.4 | BF-32: App JWT, installation token, narrowing, revoke, OAuth web flow | 12 of 12 [measured] |
-| git | the orb's | push with a `ghs_` token through a credential helper | 100 of 100 accepted in journey 4, J4_GHS_REF of 100 refused after revoke [measured] |
-| git | the orb's | push with a PAT, then with it revoked | J4_PAT_OK accepted, J4_PAT_REF refused [measured] |
+| git | 2.56.0 | push with a `ghs_` token through a credential helper | 100 of 100 accepted in journey 4; 99 of 99 refused after revoke [measured] |
+| git | 2.56.0 | push with a PAT, then with it revoked | 100 of 100 accepted, 100 of 100 refused [measured] |
 | curl | the orb's | REST replies for `validate.py` | 14 of 14 valid [measured] |
 
 ## Latency
