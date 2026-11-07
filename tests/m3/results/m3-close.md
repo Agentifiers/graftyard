@@ -223,7 +223,7 @@ On the install account's `Authz` chain (`rows.ts`, twice) [measured, `tests/m3/r
 | Run | Keys | One owner | `KeyTaken` for the other |
 | --- | --- | --- | --- |
 | `try-a` | 3 | 3 | 3 |
-| `run-b` | 100 | pending | pending |
+| `run-b` | 100 | 100 | 100 |
 
 [measured]
 
