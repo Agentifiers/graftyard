@@ -584,3 +584,104 @@ By leader site, weur passes at n = 120 (p99 1.96 s). enam is at the line at n = 
 apac misses (p99 2.71 s, 6 of 102 over). Proposal 1 (measure on a freshly elected leader on the home site) is the
 operator's call, and the enam subset here is too small to settle it. A home-site-only run would need about 300
 enam-led samples, each on a new term with leadership moved back to enam.
+
+## `bm2-home`, 2026-11-06: BM-2 as reworded (in progress)
+
+The operator took proposal 1. BM-2's latency clause now has two parts: merge p99 on a freshly elected leader on the
+group's home site, with the client in that region, is at most 2 s; and on a freshly elected leader off the home
+site, it is at most 3 s. Branch `bm2-home` is from `main` `b36541c`.
+
+### Build
+
+`main` differs from the deployed `bm2-repack` build on the merge path: M3-WP4 changed `Principal`, `Credential`,
+and `Actor` and the `Tokens`/`Names` operator checks that `decide` and the edge's auth run. So this is a site day
+(test-faults, `--roll-shards`, same image `…57f7e90c0891`). The final versions are a `b6143e89`, b `27bc2768`, and
+c `8ea0c173`. The log has no `roll` lines, because every running shard instance was already on that image.
+
+Edge `graft-m1-edge` `8b0f2e34` is main plus one test-faults header. `x-graft-colo` names the colo the edge ran in
+(`fe6a2fa`). Checks: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, clippy of the edge
+with `test-faults` for wasm32, and `cargo test --workspace` (453 passed).
+
+### Placing the client in enam
+
+- The Oracle VM `graft-ssh-proxy` (<ssh-proxy-ip>) is in Phoenix, Arizona (ipinfo: AS31898, 33.47,-112.00), which is
+  not enam. Nothing was installed on it.
+- The account has no eastern US machine, so the client is a test-only Worker, `graft-m1-bm2client`
+  (`tests/m2/bm2home/client.ts`, version `86f00dab`). Its single Durable Object is created with
+  `locationHint: "enam"`. The DO sends gh's own `PullRequestMerge` document to `graft-m1-edge` and times the request
+  in its own region.
+- Each sample returns the DO's own colo (`cdn-cgi/trace`, fetched by the DO) and the edge's `x-graft-colo`.
+- Proof before the run: `/where` three times gave `clientColo EWR`, `edgeColo EWR`. The same request from the orb
+  gives `x-graft-colo: LAX`. EWR is Newark, in enam.
+- The orb authenticates to the client with a bearer secret (`TOKEN`, put through stdin). The edge token rides in the
+  POST body, never a URL or argv, and the driver adds the client secret to `redact()`.
+
+### Driver
+
+`tests/m2/bm2home/home.py final 300 --gh-every 25` alternates two samples per round:
+
+- **Off home:** leadership moves from enam to weur, then apac (alternating), on a new term. The LAX orb then sends
+  the mutation, timed at the orb as in `p99.py`. Every 25th off sample is a whole `gh pr merge --merge`.
+- **Home:** leadership moves back to enam on a new term. The EWR client then sends the mutation.
+
+Every sample's pull request is MERGEABLE first. Smoke (`smoke`, 3 rounds): home 3 of 3, 1.07 to 1.35 s, client EWR
+and edge EWR on all 3; off 2 of 2 plus 1 gh run.
+
+Progress at 21:16 UTC (`final`, 93 of 600): home n = 46, p99 1.37 s, 0 over 2 s; off n = 46, p99 1.81 s, 0 over 3 s;
+every sample merged; client EWR and edge EWR on every home sample.
+Progress at 21:45 UTC (184 of 600): home n = 92, p99 1.37 s, 0 over; off n = 89, p99 1.81 s, 0 over.
+Progress at 22:13 UTC (267 of 600): home n = 133, p99 1.31 s, 0 over; off n = 129, p99 1.81 s, 0 over.
+Progress at 22:42 UTC (349 of 600): home n = 174, p99 1358 ms, 0 over; off n = 168, p99 1809 ms, 0 over. One transfer timed out at 22:40 (site 2 did not lead within 10 s), and the driver resumed.
+Progress at 23:11 UTC (434 of 600): home n = 217, p99 1342 ms, 0 over; off n = 209, p99 1783 ms, 0 over.
+Progress at 23:39 UTC (519 of 600): home n = 259, p99 1358 ms, 0 over; off n = 250, p99 1809 ms, 0 over.
+
+### Result (`final`, 300 rounds, 20:46 to 00:06 UTC)
+
+600 samples: 300 home, 288 off-home GraphQL mutations, and 12 off-home whole `gh pr merge` runs. Every sample is on
+its own term: 600 distinct terms, `from != to` in all 600. Every sample merged (600 of 600). The driver stopped once,
+on a transfer that took more than 10 s at 22:40 (site 2 did not report leader in time), and resumed from its last
+line.
+
+"A pass allows" is the most samples over the bound that a p99 at most the bound permits at that n, `floor(0.01 n)`.
+"P" is the probability of at least that many over if the true p99 sat exactly at the bound. With 0 over, the
+one-sided 95% upper bound on the share over the bound is 0.99% at n = 300 and 1.03% at n = 288.
+
+| Clause | New leader | Client | n | p50 | p90 | p99 | max | Over bound | A pass allows | auth + resolve | merge plan (shard) | commit | client leg |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| **Home, ≤ 2 s** | 0, enam | EWR | 300 | 0.94 s | 1.13 s | **1.36 s** | 1.66 s | **0** | 3 | 331 | 218 (182) | 330 | 10 |
+| **Off home, ≤ 3 s** | weur and apac | LAX | 288 | 1.48 s | 1.69 s | **1.83 s** | 1.87 s | **0** | 2 | 515 | 250 (76) | 626 | 89 |
+| off, by site | 1, weur | LAX | 144 | 1.38 s | 1.61 s | 1.73 s | 1.87 s | 0 | 1 | 412 | 282 (114) | 498 | 90 |
+| off, by site | 2, apac | LAX | 144 | 1.55 s | 1.71 s | 1.83 s | 1.84 s | 0 | 1 | 537 | 236 (49) | 658 | 88 |
+
+- Step medians are in ms, from `server-timing`. "Merge plan" is the edge's step, and the shard's own `merge;dur` is
+  in brackets.
+- "Client leg" is the client's time minus the edge's summed steps, as a p50.
+- Home samples were timed by the EWR client DO, with `cdn-cgi/trace` `colo=EWR` and `x-graft-colo: EWR` on all 300.
+  The orb's own time for the same calls (orb to DO in EWR, plus the DO's call) was p99 1.53 s. That figure is not the
+  clause's client.
+- Every home sample's leadership came back from weur (216) or apac (84).
+- Off-home samples were timed at the orb, with `x-graft-colo: LAX` on all 288.
+
+**Both clauses pass at their n.** Home: p99 1.36 s, 0 of 300 over 2 s, where a pass allows 3. Off home: p99 1.83 s,
+0 of 288 over 3 s, where a pass allows 2. Each per-site off-home subset also has 0 over 3 s.
+
+**`gh pr merge` whole runs** (off home, LAX, 12): p50 3.48 s, max 4.23 s, 12 of 12 merged. 10 of the 12 are over 3 s.
+They include gh's start-up and its reads before the mutation, so they are not the merge latency, as in every earlier
+BM-2 run. Their replies: `final-gh` 90 GraphQL and 12 REST, `smoke-gh` 8 and 1, **0 failed** (`gh-replies.py`, then
+`validate.py` against GHES 3.22). Calling the off-home clause on whole gh runs would fail it. The clause measures the
+merge, as before.
+
+**Tokens:** I scanned every file under `tests/m2/results/raw/` in main's checkout and every worktree (45,066 files)
+for 17 secrets and their `x:` base64 forms: every install token, the M0 tools token, both bed tokens, the client
+token, and the Cloudflare API token. **0 hits.**
+
+### Verdict
+
+**BM-2's latency clause, as reworded, passes.**
+
+- Home site: 1.36 s p99 at n = 300, 0 over 2 s.
+- Off home: 1.83 s p99 at n = 288, 0 over 3 s.
+
+Journeys 2 and 3 passed 10 of 10 on the `bm2-repack` build. Stale `parent_tip` passed 100 of 100 on main's build,
+and the queue code is unchanged since. Neither was rerun on this build. This build's merge-path change is M3-WP4's
+credential types, and both of those rows run under stored tokens.
