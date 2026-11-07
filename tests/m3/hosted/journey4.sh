@@ -60,7 +60,9 @@ push_one() { # push_one LABEL: a new commit on main; prints "ok" or "refused <ht
     echo ok
   else
     git reset -q --hard "$before"
-    local why; why=$(grep -oE "(401|403|404|Bad credentials|Permission denied|not found)" "$work/push.err" | head -1)
+    # git prints "Authentication failed" for a 401 it cannot retry with the helper's credential.
+    local why; why=$(grep -oE "(401|403|404|503|Authentication failed|Bad credentials|Permission denied|not found)" "$work/push.err" | head -1)
+    [ "$why" = "Authentication failed" ] && why=401
     echo "refused ${why:-rc$rc} moved=$([ "$after" = "$before" ] && echo no || echo yes)"
   fi
 }
