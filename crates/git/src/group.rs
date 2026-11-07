@@ -100,6 +100,7 @@ impl RefusedWire {
             PushErr::Forbidden => ("forbidden".into(), 403),
             PushErr::TooManyRefs { got } => (format!("too many refs: {got}"), 422),
             PushErr::Duplicate(n) => (format!("duplicate ref {}", n.display()), 422),
+            PushErr::Agent(a) => (a.text.to_string(), 422),
         };
         RefusedWire { err, status, index }
     }

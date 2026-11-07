@@ -480,6 +480,9 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         options: rp.options.iter().map(|s| s.as_str().into()).collect(),
         request: c.rid,
         agent: None,
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
     };
     // Format 2 carries the client's agent. A forced unknown format is sent with format 2's fields and its own tag.
     let format = c.cfg.push_format();
@@ -1148,6 +1151,9 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 options: Vec::new(),
                 request: c.rid,
                 agent: None,
+                provenance: Vec::new(),
+                protected: Vec::new(),
+                changed: Vec::new(),
             };
             let t0 = now().0;
             if let Some(n) = b.get("stored").and_then(serde_json::Value::as_u64) {

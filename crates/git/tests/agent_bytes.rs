@@ -63,6 +63,9 @@ fn push(actor: Principal, agent: Option<&str>) -> Push {
         options: vec!["ci.skip".into()],
         request: RequestId(Ulid(7 << 64)),
         agent: agent.map(Into::into),
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
     }
 }
 
@@ -107,7 +110,12 @@ fn settings() -> RepoSettings {
 
 /// Every default command form, as its stored record (`Record::encode`) and its member wire JSON.
 fn commands() -> Vec<(&'static str, RepoCmd)> {
-    let review = IssueOp::Review { n: IssueNumber(1), state: ReviewState::Approved, commit: ObjectId([2; 20]), body: "ok".into() };
+    let review = IssueOp::Review {
+        n: IssueNumber(1),
+        state: ReviewState::Approved,
+        commit: ObjectId([2; 20]),
+        body: "ok".into(),
+    };
     let comment = IssueOp::Comment { on: CommentTarget::Issue(IssueNumber(1)), body: "hi".into(), reply_to: None };
     let open = IssueOp::OpenPr {
         head: HeadSpec { repo: RepoId(DbId(7)), branch: name("refs/heads/claude/x") },
@@ -224,7 +232,12 @@ fn run() -> Vec<String> {
     out.push(fold_digest(&*fold.core, Tier::Core).hex());
     out.push(fold_digest(&*fold.meta, Tier::Metadata).hex());
     // A view over the result reads the review verdict, as `Merge` does.
-    let v = RepoView::new(fold.tiers(), &fold.core as &dyn graftyard_fold::Read, &fold.meta as &dyn graftyard_fold::Read, Timestamp(0));
+    let v = RepoView::new(
+        fold.tiers(),
+        &fold.core as &dyn graftyard_fold::Read,
+        &fold.meta as &dyn graftyard_fold::Read,
+        Timestamp(0),
+    );
     out.push(format!("{:?}", v.ref_value(&name("refs/heads/main"))));
     out
 }

@@ -20,6 +20,10 @@ use graftyard_types::{
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::agent::{
+    AgentGate, AgentMeta, AgentPolicy, AgentRefusal, AgentRule, ChangedPaths, ProtectedHits, Provenance, SessionId,
+    Source, TrailerKey,
+};
 use crate::blob::BlobRef;
 use crate::issues::MergeMethod;
 use crate::issues::{
@@ -43,6 +47,11 @@ pub const REPO_FORMAT_V2: Format = Format { family: 0x20, version: 2 };
 /// (`Stateless`, its claims). Versions 3 to 6 are the other repository commands'. An edge sends it only once
 /// `FormatsEnable` has enabled it; a push under a stored token or a session keeps version 1 or 2.
 pub const REPO_FORMAT_STATELESS: Format = Format { family: 0x20, version: 7 };
+/// AM1-WP2's agent layer: a push that carries `validate`'s `provenance`, `protected`, and `changed`, any principal, and
+/// the agent events (`Provenance`, `AgentMeta`, `AgentGate`, `AgentPolicy`, tags 27 to 30) and the `Refused` reason
+/// `Agent` (tag 7). An edge sends it only once `FormatsEnable` has enabled it, and a command in an earlier format never
+/// produces one of those encodings (`Push::decide`, `IssueCmd::decide`).
+pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -51,8 +60,8 @@ pub const ATOMIC_REFS_MAX: usize = 10_000;
 pub type PushOptions = Vec<Box<str>>;
 
 /// SHARED's `Push`. `actor` is the authenticated caller; `credential()` comes from it. `request` is the edge's id for
-/// the client request. `provenance`, `protected`, and `changed` come from the git cache's `validate` and are empty in
-/// Milestone 1, which has no agent layer or rules, so they are carried as counts of zero in the encoding.
+/// the client request. `provenance`, `protected`, and `changed` come from the git cache's `validate`. They are empty
+/// in formats 1, 2, and 7, which carry them as counts of zero, and only format 8 (`REPO_FORMAT_AGENT`) carries any.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Push {
     pub updates: Vec<RefUpdate>,
@@ -61,11 +70,14 @@ pub struct Push {
     pub actor: Principal,
     pub options: PushOptions,
     pub request: RequestId,
-    /// The client's `agent=` capability. Format 2 only.
+    /// The client's `agent=` capability. Format 2 and later.
     pub agent: Option<Box<str>>,
+    pub provenance: Vec<Provenance>,
+    pub protected: Vec<ProtectedHits>,
+    pub changed: Vec<ChangedPaths>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RejectReason {
     /// The ref's value is not the push's old value: git prints `fetch first`.
     Stale,
@@ -84,9 +96,12 @@ pub enum RejectReason {
     /// Every ref of an `AllOrNothing` push in which a ref hit a `NameConflict`: upstream receive-pack finds those only
     /// when it commits the transaction, and then reports `atomic transaction failed` on every ref (t5541 #20).
     AtomicTransaction,
+    /// An agent rule (`crate::agent`), with the text that names the allowed prefix or the protected path. Only a
+    /// format-8 push stores one; an earlier format's is refused whole (`PushErr::Agent`).
+    Agent(AgentRefusal),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefOutcome {
     Ok,
     Rejected(RejectReason),
@@ -100,7 +115,7 @@ pub struct PushOut {
 
 impl PushOut {
     pub fn outcomes(&self) -> Vec<RefOutcome> {
-        self.refs.iter().map(|(_, o)| *o).collect()
+        self.refs.iter().map(|(_, o)| o.clone()).collect()
     }
 }
 
@@ -115,6 +130,9 @@ pub enum PushErr {
     TooManyRefs { got: usize },
     /// The same ref twice in one push.
     Duplicate(RefName),
+    /// An agent rule refused a push whose format cannot store a per-ref agent reason, or the push lacks the
+    /// `validate` outputs its class needs (`AgentRule::Reclass`). Nothing is applied.
+    Agent(AgentRefusal),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,6 +264,22 @@ pub enum RepoEvent {
     },
     /// Core. An invitation to become an outside collaborator. Accepting it appends `Collaborator` in the same entry.
     Invitation(graftyard_identity::InvitationEvent),
+    // AM1-WP2, format 32.8: tags 27 to 30.
+    /// Metadata. The provenance of a format-8 push's applied refs, in the push's entry (`crate::agent::link`).
+    Provenance {
+        push: RequestId,
+        list: Vec<Provenance>,
+    },
+    /// Core. Pull request `n` was opened by an `AgentApp`'s credential, in the `PrOpened`'s entry. It keeps
+    /// `AgentMeta.app` (all of it) in the core `agent_meta` row beside `pull_head`, so `Merge` reads it.
+    AgentMeta {
+        n: IssueNumber,
+        meta: AgentMeta,
+    },
+    /// Core, in the APPROVE review's entry.
+    AgentGate(AgentGate),
+    /// Core. The repository's agent policy, whole.
+    AgentPolicy(AgentPolicy),
 }
 
 impl RepoEvent {
@@ -606,9 +640,11 @@ impl Fold for RepoFold {
     }
 }
 
-/// The ref namespaces a push may not write.
+/// The ref namespaces a push may not write: `refs/pull/`, and the host-owned `refs/graftyard/` (`agent::HOST_REFS`),
+/// whose only writer is `graftyard-workspace` appending its live task's session log, and no task exists before
+/// AM1-WP3, so every update there is refused as GitHub refuses a hidden ref.
 pub fn hidden(name: &RefName) -> bool {
-    name.starts_with("refs/pull/")
+    name.starts_with("refs/pull/") || name.starts_with(crate::agent::HOST_REFS)
 }
 
 /// `authorize_write` for a push, over the owner's and the enterprise's `Authz` folds the leader read and the core
@@ -618,6 +654,22 @@ fn may_write(actor: &Principal, s: &RepoScratch<'_>, deps: &[(ChainId, IdentityD
     let access = crate::issue_ops::Access { repo, owner, core: s.core() };
     let folds = authz_folds(deps);
     graftyard_identity::authorize_write(actor, WriteAction::Push, &folds, &access) == Decision::Allow
+}
+
+/// Whether the update would need a branch rule's bypass: a deletion a rule forbids, or a push a rule restricts and
+/// allows only because it lists the App. The fold cannot see a non-fast-forward, which `validate` would report.
+fn needs_bypass(
+    s: &RepoScratch<'_>,
+    name: &RefName,
+    expect: Option<ObjectId>,
+    new: Option<ObjectId>,
+    app: AppId,
+) -> bool {
+    crate::merge::rules_over(s.core(), name).iter().filter_map(|r| r.protection.as_ref()).any(|p| {
+        let deletes = new.is_none() && expect.is_some() && !p.deletions;
+        let listed = p.push.as_ref().is_some_and(|l| l.contains(&crate::issues::Pusher::App(app)));
+        deletes || listed
+    })
 }
 
 /// Every `Authz` fold among the deps: identity's `permission` takes the owner's and the enterprise's by owner id.
@@ -630,6 +682,22 @@ pub(crate) fn authz_folds(deps: &[(ChainId, IdentityDep)]) -> SmallVec<[&dyn Aut
         .collect()
 }
 
+/// An App's command also reads the install's own `Authz(Genesis.account)` chain, which holds the `AgentApp` rows.
+pub(crate) fn with_install(d: &mut SmallVec<[ChainId; 3]>, actor: &Principal) {
+    let install = ChainId::Authz(graftyard_identity::install_account());
+    if matches!(actor.actor, Actor::App { .. }) && !d.contains(&install) {
+        d.push(install);
+    }
+}
+
+/// The install's own `Authz` fold among the deps.
+pub(crate) fn install_authz(deps: &[(ChainId, IdentityDep)]) -> Option<&dyn AuthzRead> {
+    crate::agent::install_fold(deps, |d| match d {
+        IdentityDep::Authz(f) => Some(f as &dyn AuthzRead),
+        _ => None,
+    })
+}
+
 /// The `Authz` chains a user command on the repository reads: the owner's, and the enterprise's, both from
 /// `RepoSettings` once a `Settings` entry committed, so a transfer or an enterprise change moves them by entry.
 pub(crate) fn authz_chains(owner: Option<AccountId>, enterprise: Option<AccountId>) -> impl Iterator<Item = ChainId> {
@@ -637,7 +705,47 @@ pub(crate) fn authz_chains(owner: Option<AccountId>, enterprise: Option<AccountI
 }
 
 impl Push {
-    fn decide_refs(&self, s: &RepoScratch<'_>) -> Result<(SmallVec<[RepoEvent; 4]>, PushOut), PushErr> {
+    /// Whether the push carries any `validate` output, which only format 8 encodes.
+    pub fn validated(&self) -> bool {
+        !(self.provenance.is_empty() && self.protected.is_empty() && self.changed.is_empty())
+    }
+
+    /// The agent rules for an `Agent` pusher, on each update that passed the host-owned and stale checks, in the
+    /// design's order. A format-8 push gets a per-ref `RejectReason::Agent`; an earlier format cannot store one, so
+    /// the whole push is refused. A protected-path check needs `validate`'s output for the ref: without it the push is
+    /// refused `Reclass`, so the edge reads the install's rows again and re-sends with them.
+    fn agent_rules(
+        &self,
+        s: &RepoScratch<'_>,
+        a: &crate::agent::AgentActor,
+        install: Option<&dyn AuthzRead>,
+        refs: &mut [RefOutcome],
+    ) -> Result<(), PushErr> {
+        for (u, r) in self.updates.iter().zip(refs.iter_mut()) {
+            if *r != RefOutcome::Ok {
+                continue;
+            }
+            let bypass = needs_bypass(s, &u.name, u.expect, u.new, a.app);
+            let mut why = crate::agent::refuse_update(install, a, &u.name, u.new, &self.protected, bypass);
+            if why.is_none() && u.new.is_some() && !self.changed.iter().any(|c| c.refname == u.name) {
+                why = Some(AgentRefusal::of(AgentRule::Reclass));
+            }
+            match why {
+                None => {}
+                Some(w) if self.format() == REPO_FORMAT_AGENT && w.rule != AgentRule::Reclass => {
+                    *r = RefOutcome::Rejected(RejectReason::Agent(w))
+                }
+                Some(w) => return Err(PushErr::Agent(w)),
+            }
+        }
+        Ok(())
+    }
+
+    fn decide_refs(
+        &self,
+        s: &RepoScratch<'_>,
+        agent: Option<(&crate::agent::AgentActor, Option<&dyn AuthzRead>)>,
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, PushOut), PushErr> {
         if self.atomicity == Atomicity::AllOrNothing && self.updates.len() > ATOMIC_REFS_MAX {
             return Err(PushErr::TooManyRefs { got: self.updates.len() });
         }
@@ -660,6 +768,9 @@ impl Push {
                 }
             })
             .collect();
+        if let Some((a, install)) = agent {
+            self.agent_rules(s, a, install, &mut refs)?;
+        }
         // A create whose name is a directory or a file of a ref that stays: one of this push's other passing updates,
         // or a fold ref this push does not delete.
         let after = |n: &RefName, refs: &[RefOutcome]| -> bool {
@@ -700,7 +811,7 @@ impl Push {
             .refs
             .iter()
             .filter_map(|(n, o)| match o {
-                RefOutcome::Rejected(r) => Some((n.clone(), *r)),
+                RefOutcome::Rejected(r) => Some((n.clone(), r.clone())),
                 RefOutcome::Ok => None,
             })
             .collect();
@@ -712,7 +823,15 @@ impl Push {
             };
             // A pack with zero objects names nothing, and a push of deletes alone has none.
             let pack = if applied.iter().all(|u| u.new.is_none()) { None } else { self.pack.clone() };
+            // Provenance of the refs the push moved, as `validate` gave it. A `Graftyard-Session` trailer links to a
+            // `Session` only through a task of the pusher's App, and none exists before AM1-WP3, so every trailer
+            // stays `Claimed` (`crate::agent::link`).
+            let list: Vec<Provenance> =
+                self.provenance.iter().filter(|p| applied.iter().any(|u| u.name == p.refname)).cloned().collect();
             events.push(RepoEvent::Refs { push: self.request, actor: account, updates: applied, pack });
+            if !list.is_empty() {
+                events.push(RepoEvent::Provenance { push: self.request, list });
+            }
         }
         if !refused.is_empty() {
             events.push(RepoEvent::Refused { push: self.request, refs: refused });
@@ -746,10 +865,8 @@ impl Push {
             e.str(o);
         }
         e.u128(self.request.0.0);
-        // provenance, protected, changed
-        e.count(0);
-        e.count(0);
-        e.count(0);
+        // provenance, protected, changed: counts of zero below format 8, which `format()` picks when any is not empty.
+        encode_validated(&mut e, self);
         if self.format() != REPO_FORMAT_V1 {
             e.option(self.agent.as_ref(), |e, a| e.str(a));
         }
@@ -769,7 +886,7 @@ impl Push {
     pub fn from_wire(b: &[u8]) -> Result<Push, WireError> {
         let mut d = Dec(b);
         let format = Format { family: d.u16()?, version: d.u16()? };
-        if ![REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS].contains(&format) {
+        if ![REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT].contains(&format) {
             return Err(WireError::Format(format));
         }
         let atomicity = match d.u8()? {
@@ -786,23 +903,28 @@ impl Push {
             updates.push(RefUpdate { name, expect, new });
         }
         let pack = d.option(decode_pack)?;
-        let actor = decode_principal(&mut d, format == REPO_FORMAT_STATELESS)?;
+        let actor = decode_principal(&mut d, format == REPO_FORMAT_STATELESS || format == REPO_FORMAT_AGENT)?;
         let n = d.u32()? as usize;
         let mut options = Vec::with_capacity(n.min(1 << 10));
         for _ in 0..n {
             options.push(d.str()?.into());
         }
         let request = RequestId(Ulid(d.u128()?));
-        for _ in 0..3 {
-            if d.u32()? != 0 {
-                return Err(WireError::Malformed("validate output is empty in Milestone 1"));
+        let (provenance, protected, changed) = if format == REPO_FORMAT_AGENT {
+            decode_validated(&mut d)?
+        } else {
+            for _ in 0..3 {
+                if d.u32()? != 0 {
+                    return Err(WireError::Malformed("validate output is empty below format 8"));
+                }
             }
-        }
+            (Vec::new(), Vec::new(), Vec::new())
+        };
         let agent = if format != REPO_FORMAT_V1 { d.option(|d| d.str().map(Into::into))? } else { None };
         if !d.0.is_empty() {
             return Err(WireError::Malformed("trailing bytes"));
         }
-        let push = Push { updates, atomicity, pack, actor, options, request, agent };
+        let push = Push { updates, atomicity, pack, actor, options, request, agent, provenance, protected, changed };
         // One form per command, so its digest is one: a format that does not match the command is malformed.
         if push.format() != format {
             return Err(WireError::Malformed("format does not match the command"));
@@ -825,6 +947,135 @@ fn encode_pack(e: &mut Enc, p: &PackRef) {
             e.u64(sites.0);
         }
     }
+}
+
+fn encode_ref(e: &mut Enc, r: &RefName) {
+    e.bytes(r.as_bytes());
+}
+
+fn encode_session(e: &mut Enc, s: &SessionId) {
+    match s {
+        SessionId::Run(u) => {
+            e.u8(0);
+            e.u128(*u);
+        }
+        SessionId::External { app, name } => {
+            e.u8(1);
+            e.u64(app.0.0 as u64);
+            e.str(name);
+        }
+    }
+}
+
+/// `validate`'s three outputs: counts of zero unless the push is format 8.
+fn encode_validated(e: &mut Enc, p: &Push) {
+    e.count(p.provenance.len());
+    for v in &p.provenance {
+        e.0.extend_from_slice(&v.commit.0);
+        encode_ref(e, &v.refname);
+        e.count(v.sources.len());
+        for s in &v.sources {
+            match s {
+                Source::Claimed { key, value } => {
+                    e.u8(0);
+                    e.u8(*key as u8);
+                    e.str(value);
+                }
+                Source::AiNote { note } => {
+                    e.u8(1);
+                    e.0.extend_from_slice(&note.0);
+                }
+                Source::Session(id) => {
+                    e.u8(2);
+                    encode_session(e, id);
+                }
+            }
+        }
+    }
+    e.count(p.protected.len());
+    for h in &p.protected {
+        encode_ref(e, &h.refname);
+        e.count(h.paths.len());
+        for x in &h.paths {
+            e.str(x);
+        }
+    }
+    e.count(p.changed.len());
+    for c in &p.changed {
+        encode_ref(e, &c.refname);
+        e.count(c.paths.len());
+        for x in &c.paths {
+            e.str(x);
+        }
+        e.u8(u8::from(c.truncated));
+    }
+}
+
+type Validated = (Vec<Provenance>, Vec<ProtectedHits>, Vec<ChangedPaths>);
+
+fn decode_validated(d: &mut Dec) -> Result<Validated, WireError> {
+    let refname = |d: &mut Dec| RefName::parse(d.bytes()?).map_err(|_| WireError::Malformed("ref name"));
+    let paths = |d: &mut Dec| -> Result<Vec<Box<str>>, WireError> {
+        let n = d.u32()? as usize;
+        let mut out = Vec::with_capacity(n.min(crate::agent::PATHS_MAX));
+        for _ in 0..n {
+            out.push(d.str()?.into());
+        }
+        Ok(out)
+    };
+    let n = d.u32()? as usize;
+    let mut provenance = Vec::with_capacity(n.min(1 << 10));
+    for _ in 0..n {
+        let commit = d.oid()?;
+        let refname = refname(d)?;
+        let k = d.u32()? as usize;
+        let mut sources = SmallVec::new();
+        for _ in 0..k {
+            sources.push(match d.u8()? {
+                0 => {
+                    let key = match d.u8()? {
+                        0 => TrailerKey::GraftyardSession,
+                        1 => TrailerKey::ClaudeSession,
+                        2 => TrailerKey::AmpThreadId,
+                        3 => TrailerKey::CoAuthoredBy,
+                        4 => TrailerKey::AssistedBy,
+                        _ => return Err(WireError::Malformed("trailer key")),
+                    };
+                    Source::Claimed { key, value: d.str()?.into() }
+                }
+                1 => Source::AiNote { note: d.oid()? },
+                2 => Source::Session(match d.u8()? {
+                    0 => SessionId::Run(d.u128()?),
+                    1 => SessionId::External {
+                        app: AppId(graftyard_types::DbId(d.u64()? as i64)),
+                        name: d.str()?.into(),
+                    },
+                    _ => return Err(WireError::Malformed("session tag")),
+                }),
+                _ => return Err(WireError::Malformed("source tag")),
+            });
+        }
+        provenance.push(Provenance { commit, refname, sources });
+    }
+    let n = d.u32()? as usize;
+    let mut protected = Vec::with_capacity(n.min(1 << 10));
+    for _ in 0..n {
+        let refname = refname(d)?;
+        protected.push(ProtectedHits { refname, paths: paths(d)?.into_iter().collect() });
+    }
+    let n = d.u32()? as usize;
+    let mut changed = Vec::with_capacity(n.min(1 << 10));
+    for _ in 0..n {
+        let refname = refname(d)?;
+        let p = paths(d)?;
+        let truncated = match d.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(WireError::Malformed("truncated flag")),
+        };
+        changed.push(ChangedPaths { refname, paths: p, truncated });
+    }
+    Ok((provenance, protected, changed))
 }
 
 fn encode_principal(e: &mut Enc, p: &Principal) {
@@ -1068,7 +1319,10 @@ impl Record for RepoEvent {
                 e.count(refs.len());
                 for (n, r) in refs {
                     e.bytes(n.as_bytes());
-                    e.u8(reason_tag(*r));
+                    e.u8(reason_tag(r));
+                    if let RejectReason::Agent(a) = r {
+                        graftyard_fold::canon::write(e.0, a);
+                    }
                 }
                 return;
             }
@@ -1105,6 +1359,11 @@ impl Record for RepoEvent {
             // M3-WP3: tags 25 and 26.
             RepoEvent::Collaborator { who, permission } => return tagged(out, 25, &(who, permission)),
             RepoEvent::Invitation(i) => return tagged(out, 26, i),
+            // AM1-WP2: tags 27 to 30.
+            RepoEvent::Provenance { push, list } => return tagged(out, 27, &(push, list)),
+            RepoEvent::AgentMeta { n, meta } => return tagged(out, 28, &(n, meta)),
+            RepoEvent::AgentGate(g) => return tagged(out, 29, g),
+            RepoEvent::AgentPolicy(p) => return tagged(out, 30, p),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1134,7 +1393,9 @@ impl Command for Push {
     fn format(&self) -> Format {
         let stateless =
             matches!(self.actor.credential, Credential::Stateless(_)) || matches!(self.actor.actor, Actor::App { .. });
-        if stateless {
+        if self.validated() {
+            REPO_FORMAT_AGENT
+        } else if stateless {
             REPO_FORMAT_STATELESS
         } else if self.agent.is_some() {
             REPO_FORMAT_V2
@@ -1150,6 +1411,7 @@ impl Command for Push {
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(authz_chains(fold.authz_owner(), fold.authz_enterprise()));
+        with_install(&mut d, &self.actor);
         d
     }
     fn decide(
@@ -1166,7 +1428,13 @@ impl Command for Push {
         if !may_write(&self.actor, s, deps) {
             return Err(PushErr::Forbidden);
         }
-        self.decide_refs(s)
+        // The class from the install's rows this entry read, never the edge's: an unflagged App is not an `Agent` in
+        // the first decision after the unflag commits (LF-2).
+        let install = install_authz(deps);
+        match crate::agent::actor_kind(&self.actor, install) {
+            crate::agent::ActorKind::Agent(a) => self.decide_refs(s, Some((&a, install))),
+            _ => self.decide_refs(s, None),
+        }
     }
     /// Each ref as the first decide answered it: `Ok` if a stored `Refs` applied it, else the reason a stored
     /// `Refused` gives. A ref in neither (a row with no `Refused`) is reported `Stale`.
@@ -1175,7 +1443,9 @@ impl Command for Push {
         for ev in events {
             match ev {
                 RepoEvent::Refs { updates, .. } => was.extend(updates.iter().map(|u| (&u.name, RefOutcome::Ok))),
-                RepoEvent::Refused { refs, .. } => was.extend(refs.iter().map(|(n, r)| (n, RefOutcome::Rejected(*r)))),
+                RepoEvent::Refused { refs, .. } => {
+                    was.extend(refs.iter().map(|(n, r)| (n, RefOutcome::Rejected(r.clone()))))
+                }
                 _ => {}
             }
         }
@@ -1184,7 +1454,7 @@ impl Command for Push {
                 .updates
                 .iter()
                 .map(|u| {
-                    (u.name.clone(), was.get(&u.name).copied().unwrap_or(RefOutcome::Rejected(RejectReason::Stale)))
+                    (u.name.clone(), was.get(&u.name).cloned().unwrap_or(RefOutcome::Rejected(RejectReason::Stale)))
                 })
                 .collect(),
         }
@@ -1193,7 +1463,7 @@ impl Command for Push {
 
 /// A reason's byte in `RepoEvent::Refused`'s canonical encoding, fixed per reason so that reordering the enum cannot
 /// change a digest.
-fn reason_tag(r: RejectReason) -> u8 {
+fn reason_tag(r: &RejectReason) -> u8 {
     match r {
         RejectReason::Stale => 0,
         RejectReason::NonFastForward => 1,
@@ -1202,6 +1472,7 @@ fn reason_tag(r: RejectReason) -> u8 {
         RejectReason::Atomic => 4,
         RejectReason::NameConflict => 5,
         RejectReason::AtomicTransaction => 6,
+        RejectReason::Agent(_) => 7,
     }
 }
 
