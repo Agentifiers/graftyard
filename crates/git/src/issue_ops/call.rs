@@ -12,6 +12,7 @@
 //! `BlobStore::confirm` before it admits the command (`IssueCall::confirm`), so `decide` refuses `Unavailable` unless two
 //! buckets hold the bytes (BF-25).
 
+use graftyard_identity::stateless::InstallationClaims;
 use graftyard_identity::{Actor, Credential, IdentityDep, OrgId, Principal, ScopeSet, UserId, credential_chains};
 use graftyard_raft::{Format, TierSet};
 use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId, Timestamp};
@@ -28,6 +29,11 @@ pub const REPO_FORMAT_ISSUES: Format = Format { family: 0x20, version: 5 };
 /// M3-WP3's collaborator and repository-invitation commands, whose events (`Collaborator` 25, `Invitation` 26) a
 /// release that reads only 32.5 cannot apply.
 pub const REPO_FORMAT_COLLABORATORS: Format = Format { family: 0x20, version: 6 };
+/// An issue command under a `ghs_` installation token: the JSON form with an App actor and its claims (`claims`). A
+/// release that reads only 32.5 to 32.7 cannot tell the App from an anonymous caller, so such a command is format
+/// 32.9, and the edge sends one only once `FormatsEnable` has enabled it. Version 7 is the stateless push's, and 8 is
+/// AM1-WP2's agent push (branch `am1-wp2`).
+pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 9 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -51,9 +57,12 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
-        if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) || matches!(self.actor.actor, Actor::App { .. })
-        {
+        // 32.8 first: only it may carry agent events, so an App's 32.8 command carries its claims as 32.9 does.
+        if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) {
             return crate::repo::REPO_FORMAT_AGENT;
+        }
+        if matches!(self.actor.credential, Credential::Stateless(_)) {
+            return REPO_FORMAT_APP_CALLS;
         }
         match self.op {
             IssueOp::InviteCollaborator { .. }
@@ -103,9 +112,9 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
-    /// Format 32.8 only: an App principal, as base64 of `crate::repo::principal_bytes`.
+    /// A `ghs_` token's verified claims, in format 32.9, and in 32.8 for an App's agent command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    app: Option<String>,
+    claims: Option<InstallationClaims>,
 }
 
 impl Serialize for IssueCall {
@@ -114,6 +123,10 @@ impl Serialize for IssueCall {
         let f = self.format();
         Wire {
             session,
+            claims: match &self.actor.credential {
+                Credential::Stateless(c) => Some((**c).clone()),
+                _ => None,
+            },
             format: (f.family, f.version),
             op: self.op.clone(),
             account: match self.actor.actor {
@@ -125,8 +138,6 @@ impl Serialize for IssueCall {
             sso: self.actor.sso_orgs.iter().map(|o| o.0.0.0).collect(),
             request: self.request,
             render: self.render.clone(),
-            app: matches!(self.actor.actor, Actor::App { .. })
-                .then(|| crate::pack::b64::encode(&crate::repo::principal_bytes(&self.actor))),
         }
         .serialize(s)
     }
@@ -136,30 +147,33 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT];
+        let reads =
+            [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT, REPO_FORMAT_APP_CALLS];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
+        let fmt = |x: Format| f == serde_json::json!([x.family, x.version]);
+        let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        let app = match &w.app {
-            Some(b) => {
-                let bytes = crate::pack::b64::decode(b).ok_or_else(|| serde::de::Error::custom("app is not base64"))?;
-                Some(crate::repo::principal_from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+        let actor = match (app || agent, w.claims) {
+            (true, Some(c)) => Principal::installation(&c),
+            (false, Some(_)) | (true, None) if !agent => {
+                return Err(serde::de::Error::custom(
+                    "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
+                ));
             }
-            None => None,
+            _ => Principal {
+                actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
+                scopes: ScopeSet(w.scopes),
+                credential: Credential::from_wire(w.token.0, w.session),
+                sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
+            },
         };
-        let actor = app.unwrap_or_else(|| Principal {
-            actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
-            scopes: ScopeSet(w.scopes),
-            credential: Credential::from_wire(w.token.0, w.session),
-            sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
-        });
-        let agent =
-            (w.format.0, w.format.1) == (crate::repo::REPO_FORMAT_AGENT.family, crate::repo::REPO_FORMAT_AGENT.version);
         let mut c = IssueCall::new(w.op, actor, w.request, w.render);
         c.agent = agent;
-        // One form per command: a format that does not match the command, or an App below 32.8, is malformed.
-        if (c.format().family, c.format().version) != w.format || (w.app.is_some() && !agent) {
+        // One form per command: a format that does not match the command is malformed.
+        let got = c.format();
+        if !fmt(got) {
             return Err(serde::de::Error::custom("issue command format does not match the command"));
         }
         Ok(c)
@@ -172,11 +186,13 @@ impl IssueCall {
     }
 
     /// `IssueCmd::deps`: the actor's credential chains and the owner's and enterprise's `Authz`, named by the fold's
-    /// `RepoSettings`. A 32.8 command also reads the install's `Authz(Genesis.account)` for its `AgentApp` rows: an App's, and a user's
-    /// whose token may be an `AgentApp`'s or whose approval may write `AgentGate`. Every other command reads what it did.
+    /// `RepoSettings`. An App's command, and any 32.8 command, also reads the install's `Authz(Genesis.account)` for its
+    /// `AgentApp` rows: an App's for its class, and a user's whose token may be an `AgentApp`'s or whose approval may
+    /// write `AgentGate`. Every other command reads what it did.
     pub fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
+        crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
         if self.format() == crate::repo::REPO_FORMAT_AGENT && !d.contains(&install) {
             d.push(install);

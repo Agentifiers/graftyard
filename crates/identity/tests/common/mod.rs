@@ -319,17 +319,26 @@ impl<C: Command> Group<C> {
 
     /// The leader's fold through `fresh`: a read grant, then the view it allows.
     pub fn fresh(&mut self, s: SiteId) -> C::Fold {
-        let id = self.on(s, |m, now| m.read(now)).expect("leader reads");
-        self.deliver_all();
-        let grant = self
-            .resolutions
-            .iter()
-            .find_map(|r| match r {
-                Resolution::Read { id: i, result } if *i == id => Some(result.clone().expect("granted")),
-                _ => None,
-            })
-            .expect("read resolved");
-        self.m(s).fresh(&grant).expect("fresh").fold().clone()
+        // A read past the lease needs a round, and the acks after the one that granted it are later inputs, which
+        // void the grant: the round renewed the lease, so a second read is granted at once.
+        for _ in 0..3 {
+            let id = self.on(s, |m, now| m.read(now)).expect("leader reads");
+            self.deliver_all();
+            // The latest: a new leadership numbers its reads from the start again, so an older grant may share the id.
+            let grant = self
+                .resolutions
+                .iter()
+                .rev()
+                .find_map(|r| match r {
+                    Resolution::Read { id: i, result } if *i == id => Some(result.clone().expect("granted")),
+                    _ => None,
+                })
+                .expect("read resolved");
+            if let Ok(f) = self.m(s).fresh(&grant) {
+                return f.fold().clone();
+            }
+        }
+        panic!("no fresh read granted three times");
     }
 
     /// The events of every entry at or below the member's commit index, in log order.

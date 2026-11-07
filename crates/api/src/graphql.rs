@@ -115,6 +115,49 @@ fn item_of(r: &Repo<'_>, id: &str) -> Option<IssueNumber> {
     (it.is_pull() == (id.ty == NodeType::PullRequest)).then_some(it.n)
 }
 
+/// The signed-in user, for `viewer`: gh's `auth login` and `auth status` ask `viewer { login }` and nothing else.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Viewer {
+    pub id: graftyard_types::AccountId,
+    pub login: String,
+}
+
+impl Obj for Viewer {
+    fn type_name(&self) -> &'static str {
+        "User"
+    }
+    fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+        Some(match f {
+            "login" => crate::exec::leaf(self.login.clone()),
+            "id" => crate::exec::leaf(NodeId::top(NodeType::User, self.id.0.0).encode()),
+            "databaseId" => crate::exec::leaf(graftyard_wire::database_id(self.id.0.0)),
+            "name" => Out::Null,
+            _ => return None,
+        })
+    }
+}
+
+/// A query that names no repository, with the caller as `viewer`. Any other root field is `undefinedField`.
+pub fn query_viewer(req: &Request<'_>, viewer: Option<&Viewer>) -> Value {
+    struct Root<'v>(Option<&'v Viewer>);
+    impl Obj for Root<'_> {
+        fn type_name(&self) -> &'static str {
+            "Query"
+        }
+        fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
+            match (f, self.0) {
+                ("viewer", Some(v)) => Some(crate::exec::obj(v)),
+                _ => None,
+            }
+        }
+    }
+    match req.is_mutation() {
+        Ok(false) => req.run(&Root(viewer)),
+        Ok(true) => json!({ "errors": [{ "type": "unsupported", "message": "a mutation runs through plan" }] }),
+        Err(e) => json!({ "errors": [e.json()] }),
+    }
+}
+
 /// Runs a query. `r` is the repository `route` named, read through `fresh`, or `None` when it named none.
 pub fn query(req: &Request<'_>, r: Option<&Repo<'_>>) -> Value {
     match req.is_mutation() {

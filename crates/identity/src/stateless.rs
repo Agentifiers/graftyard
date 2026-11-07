@@ -45,8 +45,9 @@ fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
 }
 
-/// SHARED's `InstallationClaims`, without `task`, which comes with the agent layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// SHARED's `InstallationClaims`, without `task`, which comes with the agent layer. Its serde form is what an issue
+/// or merge command under the token carries across a binding (format 32.9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationClaims {
     pub app: AppId,
     pub installation: InstallationId,
@@ -273,8 +274,9 @@ pub trait KeySource {
     fn current(&self) -> Result<(Kid, SigningSecret), KeyError>;
 }
 
-/// What the token request asks for after `narrow`: the installation, its App, and the token's scope.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the token request asks for after `narrow`: the installation, its App, and the token's scope. The edge sends
+/// it to `graft-ops` over the binding as JSON.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Grant {
     pub app: AppId,
     pub installation: InstallationId,
@@ -291,6 +293,12 @@ pub struct Minter {
 }
 
 impl Minter {
+    /// Whether the next `mint` at `now` asks its `KeySource`: no key is held, or the one held is `SIGNING_KEY_CACHE`
+    /// old. A host whose key read is asynchronous (Secrets Store) reads it only then.
+    pub fn needs_key(&self, now: Timestamp) -> bool {
+        !self.held.as_ref().is_some_and(|(_, _, at)| now.0.saturating_sub(at.0) < ms(SIGNING_KEY_CACHE))
+    }
+
     /// Signs a token for `grant` at `now`. `rand` is the `jti`'s 80 random bits, which the host draws.
     pub fn mint(
         &mut self,
@@ -299,8 +307,7 @@ impl Minter {
         now: Timestamp,
         rand: [u8; 10],
     ) -> Result<(String, InstallationClaims), KeyError> {
-        let fresh = self.held.as_ref().is_some_and(|(_, _, at)| now.0.saturating_sub(at.0) < ms(SIGNING_KEY_CACHE));
-        if !fresh {
+        if self.needs_key(now) {
             self.held = None;
             self.fetches += 1;
             let (kid, secret) = src.current()?;

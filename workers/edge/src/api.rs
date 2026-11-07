@@ -46,7 +46,7 @@ use crate::{Ctx, Repo, authenticate, ensure_group, resolve};
 
 /// Whether `endpoint` is one this module serves; `Repo` and `Web` are git's or nobody's.
 pub fn serves(e: &Endpoint<'_>) -> bool {
-    !matches!(e, Endpoint::Repo { .. } | Endpoint::Web(_) | Endpoint::OAuth(_))
+    !matches!(e, Endpoint::Repo { .. } | Endpoint::Web(_))
 }
 
 fn surface(e: &Endpoint<'_>) -> Surface {
@@ -120,7 +120,7 @@ mod timing {
     pub fn trace(_: Vec<serde_json::Value>) {}
 }
 
-fn unavailable(why: &str) -> Reply {
+pub(crate) fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
 
@@ -338,14 +338,38 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
         Endpoint::Rest("/meta") => Ok(rest::meta()),
         Endpoint::Rest("/status") => Ok(rest::status()),
         Endpoint::Rest("/rate_limit") => Ok(rest::rate_limit(&m.rate, m.version)),
-        Endpoint::Rest(p) => rest_repo(c, req, host, p, &query).await,
+        Endpoint::Rest(p) => match (&method, p.trim_end_matches('/').split('/').skip(1).collect::<Vec<_>>().as_slice())
+        {
+            (Method::Post, ["app", "installations", id, "access_tokens"]) => {
+                crate::ident::access_tokens(c, req, id).await
+            }
+            (Method::Delete, ["installation", "token"]) => crate::ident::delete_installation_token(c, req).await,
+            (Method::Delete, ["applications", client, "token"]) => crate::ident::revoke_app_token(c, req, client).await,
+            (Method::Get, ["user"]) => crate::ident::get_user(c, req).await,
+            (Method::Get, ["users", login]) => crate::ident::get_named_user(c, login).await,
+            (m @ (Method::Get | Method::Put | Method::Delete), ["orgs", org, "memberships", user]) => {
+                crate::ident::membership(c, req, m.clone(), org, user).await
+            }
+            (Method::Delete, ["orgs", org, "members", user]) => {
+                crate::ident::membership(c, req, Method::Delete, org, user).await
+            }
+            _ => rest_repo(c, req, host, p, &query).await,
+        },
         Endpoint::Graphql => graphql_post(c, req, host).await,
         Endpoint::Uploads(p) => upload(c, req, host, p, &query).await,
         Endpoint::Lfs { owner, repo, rest } => lfs_route(c, req, host, owner, repo, rest, &query, method).await,
         Endpoint::Objects(p) => transfer(c, req, host, p, method).await,
         Endpoint::Codeload { owner, repo, rest } => codeload(c, host, owner, repo, rest).await,
         Endpoint::Raw { .. } => Ok(Reply::not_found()),
-        Endpoint::OAuth(_) | Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
+        Endpoint::OAuth(p) => match (method, p) {
+            (Method::Post, "/login/device/code") => crate::ident::device_code(c, req).await,
+            (Method::Post, "/login/oauth/access_token") => crate::ident::access_token(c, req).await,
+            (Method::Get | Method::Post, "/login/oauth/authorize") => crate::ident::authorize(c, req).await,
+            (Method::Post, "/login/oauth/device/approve") => crate::ident::device_approve(c, req).await,
+            (Method::Post, "/login/oauth/link") => crate::ident::sign_in_link(c, req).await,
+            _ => Ok(Reply::not_found()),
+        },
+        Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
     }
 }
 
@@ -362,17 +386,21 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let mut call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
-    // opened with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a pull request
-    // that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes.
+    // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
+    // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
+    // `ghs_` token that is 32.9.
     let agent_event = match &call.op {
-        IssueOp::OpenPr { .. } => c.token_app.get().is_some(),
+        IssueOp::OpenPr { .. } => c.token_app.get().is_some() || matches!(who.actor, Actor::App { .. }),
         IssueOp::Review { n, .. } => graftyard_git::tiers::agent_meta(&rd.core, *n).is_some(),
         _ => false,
     };
-    let enabled = c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
-    call.agent = agent_event && enabled;
-    if call.format() == graftyard_git::repo::REPO_FORMAT_AGENT && !enabled {
-        return Ok(unavailable("agent commands need record format 32.8, which FormatsEnable has not enabled"));
+    call.agent = agent_event && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
+    if !c.cfg.enabled.contains(&call.format()) {
+        let f = call.format();
+        return Ok(unavailable(&format!(
+            "this write needs record format {}.{}, which FormatsEnable has not enabled on this install",
+            f.family, f.version
+        )));
     }
     let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
     if let Some(a) = crate::admission(c, who, &[], false, 0).await {
@@ -495,6 +523,21 @@ async fn merge_plan(
 /// Commits a merge or merge-queue command and returns the reply its leader rendered from the `&Acked`, once
 /// `FormatsEnable` has enabled 32.4; until then 503.
 async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Result<Reply> {
+    // `Merged` and the queue row name the merging user (`UserId`), so a merge has no form for an App yet: an
+    // installation token gets GitHub's 403 for a permission it lacks, not a 401 that says the token is bad.
+    let app = |p: &Principal| matches!(p.actor, Actor::App { .. });
+    let by_app = match &cmd {
+        MergeCmd::Merge(m) => app(&m.actor),
+        MergeCmd::Queue(q) => q.actor.as_ref().is_some_and(app),
+        MergeCmd::Land(_) | MergeCmd::Cursor(_) => false,
+    };
+    if by_app {
+        return Ok(Reply::error(
+            403,
+            "Resource not accessible by integration",
+            "rest/pulls/pulls#merge-a-pull-request",
+        ));
+    }
     if !c.cfg.enabled.contains(&REPO_FORMAT_V4) {
         return Ok(unavailable(&format!(
             "merges need record format {}.{}, which FormatsEnable has not enabled on this install",
@@ -636,7 +679,13 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     timing::mark("auth_resolve");
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd) = match found? {
-        None => return Ok(Reply::json(200, graphql::query(&gq, None))),
+        None => {
+            let viewer = match who.actor {
+                Actor::User(u) => crate::ident::login(c, u.0).await.map(|login| graphql::Viewer { id: u.0, login }),
+                _ => None,
+            };
+            return Ok(Reply::json(200, graphql::query_viewer(&gq, viewer.as_ref())));
+        }
         Some(Ok((owner, name, repo, a, rows))) => {
             let rows = match merging {
                 Some(id) => Rows::Merge(id, rows),

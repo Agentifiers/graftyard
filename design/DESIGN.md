@@ -173,14 +173,14 @@ pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 1
                        generation: u32 /* highest member generation this group has named */, _private: () }
 /// Where one owner's chains, or one system chain, live. An owner's record is the `NamesEvent::Placement` row on
 /// `account_shard(owner)`. It covers the owner's `Authz`, `Identity`, `Actions`, and repository chains, and the network
-/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it, and a new
-/// owner copies the install account's record, which `graftyard placement set default` writes. A system chain's record
-/// is in the signed genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites`
-/// are logical: `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember` named.
-/// Changing an owner's record bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves each
-/// of the owner's groups, child groups included, through `Joint` (`home` alone: one config change and a transfer), from
-/// the old sites' `MemberRegistry` rows after the new record commits, and clears `moving_from` last. A record's `home`
-/// only seeds bootstrap; once a group exists its committed config's wins (BF-11).
+/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it, and
+/// signup's first follow-up copies the install account's record (`placement set default`) as `InitPlacement`. A system
+/// chain's record is in the signed genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes
+/// it. `sites` are logical: `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember`
+/// named. Changing an owner's record bumps `generation` and keeps the old record in `moving_from`. A Workflow then
+/// moves each of the owner's groups, child groups included, through `Joint` (`home` alone: one config change and a
+/// transfer), from the old sites' `MemberRegistry` rows after the new record commits, and clears `moving_from` last. A
+/// record's `home` only seeds bootstrap; once a group exists its committed config's wins (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
@@ -1769,7 +1769,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   | `DeployToken` | Customer | A new account-owned token in the dashboard | The customer's Wrangler login | List the install's scripts with it, then switch |
   | `ReadToken` | Customer | As `DeployToken` | As `DeployToken` | Read one bucket's `location` with it, then switch |
   | `TunnelToken` | Customer | Terraform's new tunnel token [unverified: rotation keeps running connectors] | Terraform | Switch, then ask each site's SSH front objects over bindings to restart their containers, one site at a time |
-  | `MintWrapKey` (holds the wrap key and the wrapped installation-token signing key) | Customer | `graftyard mint-key rotate` on the operator's machine | The customer's Wrangler login | Commit `TokensEvent::VerifyingKey` for the new key, mint with it, and retire the old `kid` after the longest token lifetime |
+  | `MintWrapKey` (holds the wrap key and the wrapped installation-token signing key: a JSON object `{wrap, kid, nonce, wrapped}`, hex fields, with the 32-byte Ed25519 seed sealed under the 32-byte wrap key by AES-256-GCM with the 12-byte nonce, as `graft-ops` reads it and `mint-key rotate` must write it [inference: `workers/ops/src/lib.rs`, `MintWrapKey`]) | Customer | `graftyard mint-key rotate` on the operator's machine | The customer's Wrangler login | Commit `TokensEvent::VerifyingKey` for the new key, mint with it, and retire the old `kid` after the longest token lifetime |
   | `SshHostKeys` | Customer | `graftyard ssh-keys rotate` on the operator's machine | The customer's Wrangler login | Publish both slots at `/api/graftyard/v1/meta/ssh` and have sshd offer both for 30 days [guess], then serve only the new slot |
   | `McpAppKey`, `McpClientSecret`, `InsightsAppKey` | Site admin | `graftyard apps rotate`, which adds a new key or secret to the App | The admin's Wrangler login, install account | Switch, then remove the old key or secret from the App after 24 h |
   | `AgentsAppKey`, `WorkspaceAppKey` | Site admin | `graftyard agents rotate` | The admin's Wrangler login, agents account | The agents account's `graft-ops` switches and removes the old key after 24 h |

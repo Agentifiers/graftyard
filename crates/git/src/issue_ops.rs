@@ -11,8 +11,9 @@ pub mod call;
 
 use graftyard_fold::{Overlay, Read, Tiered, Val, has};
 use graftyard_identity::{
-    Actor, AuthzRead, CredentialRefusal, INVITATION_TTL, IdentityDep, InvitationEvent, InvitationGrant, InvitationId,
-    InvitationRow, Invitee, Own, Principal, RepoAccess, RepoPermission, UserId, check_credential, credential_chains,
+    Access as AppAccess, Actor, AuthzRead, Credential, CredentialRefusal, Decision, INVITATION_TTL, IdentityDep,
+    InvitationEvent, InvitationGrant, InvitationId, InvitationRow, Invitee, Own, Principal, RepoAccess, RepoPermission,
+    UserId, check_credential, credential_chains,
 };
 use graftyard_raft::TierSet;
 use graftyard_types::{AccountId, ChainId, DbId, RequestId, Tier, Timestamp};
@@ -404,16 +405,30 @@ impl IssueCmd {
         agent: bool,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
-        // An App's installation token names no account (format 32.8 carries one; no earlier form can).
-        let app = matches!(self.actor.actor, Actor::App { .. });
-        if cred.key.is_none() || (cred.account.is_none() && !app) {
+        let app = match (&self.actor.actor, &self.actor.credential) {
+            (Actor::App { .. }, Credential::Stateless(c)) => Some(c),
+            _ => None,
+        };
+        if cred.key.is_none() || (cred.account.is_none() && app.is_none()) {
             return Err(IssueErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
         let owner = v.owner();
         let folds = crate::repo::authz_folds(deps);
         let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));
-        let perm = permission(&self.actor, v, &folds);
+        // An installation token is authorized once, by the GitHub App permission the command needs, intersected with
+        // the installation's current row; past that gate it may do what a role check below would ask of a user.
+        let perm = match app {
+            Some(c) => {
+                let access = Access { repo: v.tiers.repo, owner, core: v.core() };
+                match graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access) {
+                    Decision::Allow => Some(RepoPermission::Admin),
+                    Decision::Forbidden => return Err(IssueErr::Forbidden),
+                    Decision::Hidden => return Err(IssueErr::NotFound),
+                }
+            }
+            None => permission(&self.actor, v, &folds),
+        };
         let me = actor_id(&self.actor);
         let need = |p: RepoPermission| if perm >= Some(p) { Ok(()) } else { Err(IssueErr::Forbidden) };
         let author_or = |author: Option<AccountId>, p: RepoPermission| {
@@ -747,13 +762,17 @@ impl IssueCmd {
                 if me != Some(st.creator) {
                     return Err(IssueErr::Invalid("a status's creator is its actor"));
                 }
-                // The edge mints the id from its clock, so two statuses on one commit can share it (two in one
-                // millisecond). `status` is keyed (sha, id), so the second takes the smallest free id above it rather
-                // than replace the first; the id is still the status's version, so an older status still loses.
-                let mut id = st.id.0.0;
-                while v.meta().get("status", &[sha_key(&st.sha), int(-id)]).is_some() {
-                    id += 1;
-                }
+                // A status's id is its version: for one (sha, context), the higher id wins. The edge mints it from
+                // its clock, which another edge's may trail, so `decide` takes it above every status the commit
+                // already holds: ids on one commit then increase in commit order, whatever the edges' clocks say
+                // (F51). `status` is keyed (sha, -id), so the commit's first row holds its highest id.
+                let top = v.meta().scan("status", &[sha_key(&st.sha)], 1).into_iter().find_map(|(k, _)| {
+                    match (k.first(), k.get(1)) {
+                        (Some(sha), Some(Val::Int(neg))) if *sha == sha_key(&st.sha) => Some(-neg),
+                        _ => None,
+                    }
+                });
+                let id = top.map_or(st.id.0.0, |t| st.id.0.0.max(t + 1));
                 let st = StatusUpdate { id: StatusId(DbId(id)), ..st.clone() };
                 let mut evs = one(RepoEvent::Status(st.clone()));
                 if required(v, st.sha, &st.context, None) {
@@ -948,6 +967,51 @@ impl IssueCmd {
             IdentityDep::Tokens(t) => graftyard_identity::TokensRead::fields(t, hash).and_then(|f| f.app),
             _ => None,
         })
+    }
+
+    /// The GitHub App permissions, any one of which lets an installation token run this command, by GitHub's
+    /// documented per-endpoint permissions [inference: the endpoints' "Fine-grained access" sections, mapped onto these
+    /// commands]. A command no App may run (answering a user's invitation, a status, whose creator is an account)
+    /// needs nothing listed and is refused.
+    fn app_needs(&self, v: &RepoView<'_>) -> SmallVec<[(&'static str, AppAccess); 2]> {
+        let w = |p: &'static str| (p, AppAccess::Write);
+        let on = |n: IssueNumber| if pull_head(v.core(), n).is_some() { w("pull_requests") } else { w("issues") };
+        let comment = |id: &CommentId| match get_rec::<CommentRow>(v.meta(), "comment", &[int(id.0.0)]).map(|r| r.on) {
+            Some(CommentTarget::Issue(n)) => smallvec![w("issues"), on(n)],
+            Some(CommentTarget::Review { .. }) => smallvec![w("pull_requests")],
+            Some(CommentTarget::Commit { .. }) => smallvec![w("contents")],
+            None => smallvec![w("issues"), w("pull_requests")],
+        };
+        match &self.op {
+            IssueOp::OpenIssue { .. } => smallvec![w("issues")],
+            IssueOp::OpenPr { .. }
+            | IssueOp::Review { .. }
+            | IssueOp::Dismiss { .. }
+            | IssueOp::RequestReviews { .. }
+            | IssueOp::Resolve { .. } => smallvec![w("pull_requests")],
+            IssueOp::Close { n } | IssueOp::Change { n, .. } => smallvec![on(*n)],
+            IssueOp::Comment { on: CommentTarget::Issue(n), .. } => smallvec![w("issues"), on(*n)],
+            IssueOp::Comment { on: CommentTarget::Review { .. }, .. } => smallvec![w("pull_requests")],
+            IssueOp::Comment { on: CommentTarget::Commit { .. }, .. } => smallvec![w("contents")],
+            IssueOp::EditComment { id, .. } | IssueOp::DeleteComment { id } => comment(id),
+            IssueOp::DefineLabel { .. } | IssueOp::DeleteLabel { .. } | IssueOp::ApplyLabels { .. } => {
+                smallvec![w("issues"), w("pull_requests")]
+            }
+            IssueOp::SetRule { .. }
+            | IssueOp::Settings(_)
+            | IssueOp::InviteCollaborator { .. }
+            | IssueOp::RemoveCollaborator { .. }
+            | IssueOp::SetAgentPolicy(_) => smallvec![w("administration")],
+            IssueOp::RecordCheck(_) => smallvec![w("checks")],
+            IssueOp::PutRelease { .. }
+            | IssueOp::DeleteRelease { .. }
+            | IssueOp::PutAsset { .. }
+            | IssueOp::DeleteAsset { .. }
+            | IssueOp::LfsObject(_)
+            | IssueOp::LockLfs { .. }
+            | IssueOp::UnlockLfs { .. } => smallvec![w("contents")],
+            IssueOp::RecordStatus(_) | IssueOp::AnswerInvitation { .. } => SmallVec::new(),
+        }
     }
 
     /// The issue's author, from the metadata tier.

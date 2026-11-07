@@ -117,6 +117,23 @@ pub fn app_permission(
     authz: &[&dyn AuthzRead],
     repo: &dyn RepoAccess,
 ) -> Option<RepoPermission> {
+    let row = app_row(c, authz, repo)?;
+    let level = |p: &crate::apps::PermissionSet| match p.0.get("contents") {
+        Some(Access::Write | Access::Admin) => Some(RepoPermission::Write),
+        Some(Access::Read) => Some(RepoPermission::Read),
+        None if !p.0.is_empty() => Some(RepoPermission::Read),
+        None => None,
+    };
+    level(&c.permissions).min(level(&row.permissions))
+}
+
+/// The installation's current row when the token reaches the repository: live on the owner, for the token's App,
+/// minted at or after `not_before`, with the repository in both the claims and the row.
+fn app_row<'a>(
+    c: &InstallationClaims,
+    authz: &[&'a dyn AuthzRead],
+    repo: &dyn RepoAccess,
+) -> Option<&'a crate::authz::InstallationRow> {
     let a = authz.iter().find(|a| a.owner() == Some(repo.owner()))?;
     let state = a.installation(c.installation)?;
     let row = state.row.as_ref()?;
@@ -127,16 +144,26 @@ pub fn app_permission(
         RepoScope::All => true,
         RepoScope::Selected(r) => r.contains(&repo.repo()),
     };
-    if !reaches(&row.repos) || !reaches(&c.repos) {
-        return None;
-    }
-    let level = |p: &crate::apps::PermissionSet| match p.0.get("contents") {
-        Some(Access::Write | Access::Admin) => Some(RepoPermission::Write),
-        Some(Access::Read) => Some(RepoPermission::Read),
-        None if !p.0.is_empty() => Some(RepoPermission::Read),
-        None => None,
+    (reaches(&row.repos) && reaches(&c.repos)).then_some(row)
+}
+
+/// An installation token's write by GitHub's per-resource permissions: `Allow` when the token reaches the repository
+/// and, for any one of `needs`, both the claims and the installation's row grant at least that level. A token that
+/// reaches the repository but lacks the permission is `Forbidden`, GitHub's 403 "Resource not accessible by
+/// integration" (`https://docs.github.com/en/enterprise-server@3.22/rest/using-the-rest-api/troubleshooting-the-rest-api`,
+/// "Resource not accessible"). One that does not reach a private repository is `Hidden`, 404. Empty `needs` is never
+/// allowed.
+pub fn authorize_app(
+    c: &InstallationClaims,
+    needs: &[(&str, Access)],
+    authz: &[&dyn AuthzRead],
+    repo: &dyn RepoAccess,
+) -> Decision {
+    let Some(row) = app_row(c, authz, repo) else {
+        return if repo.visibility() == Visibility::Public { Decision::Forbidden } else { Decision::Hidden };
     };
-    level(&c.permissions).min(level(&row.permissions))
+    let granted = |name: &str| c.permissions.0.get(name).min(row.permissions.0.get(name)).copied();
+    if needs.iter().any(|(name, level)| granted(name) >= Some(*level)) { Decision::Allow } else { Decision::Forbidden }
 }
 
 fn enterprise_member(authz: &[&dyn AuthzRead], enterprise: AccountId, user: UserId) -> bool {

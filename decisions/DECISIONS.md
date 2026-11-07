@@ -1710,7 +1710,7 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 - The old verifying key retires at the switch plus `SIGNING_KEY_CACHE`, one token lifetime, and `CLOCK_SKEW` (60 s [guess]), not at "the last token's `exp`" alone, because an isolate that cached it may sign for up to `SIGNING_KEY_CACHE` after the switch.
 - `DELETE /installation/token` is accepted only from the token itself or `graft-ops`; a second delete is 204. A token request names at most 500 repositories [unverified].
 - `CredentialShard::is_operator()` is no account and no key, because an installation token also names no account.
-- Push format 0x20.7 carries the App actor and its claims; issue and merge commands have no stateless wire form yet and fail closed with 401.
+- Push format 0x20.7 carries the App actor and its claims; issue and merge commands have no stateless wire form yet and fail closed: the leader refuses them `Unauthorized(NoToken)`, which hosted rendered 403 on the label route ("M3's hosted half, 2026-11-07").
 
 **Why.** SHARED did not define `InstallState`, the token's exact form, or how `authorize` combines the claims with the row. Retiring at the last `exp` alone would refuse tokens a cached key still signs. Reading "no account" as the operator would have made every installation token the operator; planted bug 2 is that mistake and BF-27 catches it.
 
@@ -1747,6 +1747,25 @@ BM-2 passed as reworded, which closes Milestone 2, and B0-18's hosted rerun pass
 **Evidence.** `build/BUILD-PLAN.md`, "Milestone 2 status"; `tests/m2/results/` [measured].
 
 **Flip.** A later build that changes a Milestone 2 row's code path and fails that row's recheck, which reopens it; or a hosted bucket fault or clock hook, after which BF-25's and BF-22's hosted clauses run in full.
+
+### M3's hosted half, 2026-11-07
+
+M3-WP1 to M3-WP4 ran hosted on `graft-m1-*` with real gh, git, and `@octokit/app`; BF-32 passed and journey 4 refused every revoked token, with one `ghs_` revoke lost before the edge (`tests/m3/results/m3-hosted.md`; `build/BUILD-PLAN.md`, "M3-WP1 to M3-WP4 status").
+
+#### `MintWrapKey`'s layout, signup's placement copy, and a stateless refusal's status
+
+**Decision.**
+- `MintWrapKey` is a JSON object `{wrap, kid, nonce, wrapped}` with hex fields: the 32-byte wrap key, the signing key's `kid`, a 12-byte nonce, and the 32-byte Ed25519 seed sealed under the wrap key with AES-256-GCM. `graft-ops` reads it, and `graftyard mint-key rotate` must write it (DESIGN, "Install operations", the rotation table) [inference: `workers/ops/src/lib.rs`].
+- Signup's first follow-up copies the install account's placement record to the new owner as `NamesOp::InitPlacement` on `account_shard(owner)`, before any of the owner's chains is created (DESIGN, Shape, `PlacementRecord`; SHARED, "Multi-chain operations", Signup). `edge::after_signup` does not yet; the fix is on `m3-close`.
+- Until issue and merge commands carry a stateless principal, one sent under a `ghs_` token names no account and no key, the leader refuses it `Unauthorized(NoToken)`, and the edge renders that refusal by route: 403 "Resource not accessible by integration" on the label route, as BF-32 measured, and 401 "Bad credentials" on the other issue and merge routes (`crates/api/src/rest.rs`, `label_refused`, `refused_merge`; `graphql.rs`). Both fail closed. BUILD-PLAN M3-WP4's "fail closed with 401" now says so.
+
+**Why.** DESIGN named the secret's contents but no layout, and the rotation command and the minting Worker must agree on one. DESIGN said a new owner "copies the install account's record" without saying who writes it or when; an owner chain created before its record exists has no placement, which `setup.ts` covered by hand. The refusal's status differs by route because each route's renderer maps `Unauthorized` on its own.
+
+**Beat.** A binary layout for `MintWrapKey`, which Wrangler's secret text cannot hold without an encoding anyway. Copying the record lazily on an owner chain's first touch, which puts a `Names` write on a request path that may run under the owner's own token. Changing every renderer to 403 now, ahead of the stateless form that removes the refusal.
+
+**Evidence.** `tests/m3/results/m3-hosted.md`, "What was built" and "Design gaps found"; BF-32's issue-write case 403 [measured]; `workers/ops/src/lib.rs`, `crates/identity/src/edge.rs`, `crates/identity/src/names.rs` (`InitPlacement`).
+
+**Flip.** A Secrets Store limit or a rotation tool that cannot write the JSON form; a placement design in which an owner's record is derived rather than stored; or the stateless wire form landing, after which a `ghs_` issue or merge write is decided by `authorize` and refused, if at all, 403 for a missing permission.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

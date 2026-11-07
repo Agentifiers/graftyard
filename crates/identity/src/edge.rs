@@ -4,8 +4,8 @@
 //! (`crate::finish`), whose plans submit the same commands.
 //!
 //! - **Signup.** The commit point is `ClaimLogin` on the login's shard, which assigns the account id. Then the
-//!   account's `AccountLogin` row on its `account_shard` (F50), its `Account` row, and its `Identity` chain's
-//!   `Created`.
+//!   account's `AccountLogin` row on its `account_shard` (F50), its `Account` row, its `Placement` row copied from
+//!   the install account's, and its `Identity` chain's `Created`.
 //! - **Rename.** The commit point is the new login's `ClaimLogin` for the account. Then the old login's
 //!   `ReleaseLogin`, then `AccountLogin` with the new login: the leader reads the login's shard, so it is written only
 //!   while the account holds it, and a delayed write of the old login is refused.
@@ -13,7 +13,7 @@
 //!   which the leader refuses unless that row is live for the account.
 //! - **Sign-in.** One command: `SignIn` on the account's `Identity` chain, after the edge verified the method.
 
-use graftyard_types::{AccountId, ChainId, CredentialShard, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, Timestamp};
 
 use crate::authz::AccountKind;
 use crate::credential::WebSessionId;
@@ -31,13 +31,24 @@ fn on_identity(account: AccountId, cred: CredentialShard, op: IdentityOp) -> Ste
 }
 
 /// After a signup's `ClaimLogin` committed and assigned `account`. The new account holds no credential yet, so the
-/// edge submits these as the finisher would, with no account.
-pub fn after_signup(account: AccountId, login: &Login, kind: AccountKind, created: Timestamp) -> Vec<Step> {
+/// edge submits these as the finisher would, with no account. `default` is the install account's `Placement` record,
+/// which a new owner copies (DESIGN, Shape, `PlacementRecord`: "a new owner copies the install account's record"), so
+/// its `Authz` and `Identity` chains have a record before `Created`. A re-sent `InitPlacement` is refused
+/// `RecordExists`, which a sender counts as done: the record it would write is already there.
+pub fn after_signup(
+    account: AccountId,
+    login: &Login,
+    kind: AccountKind,
+    created: Timestamp,
+    default: &PlacementRecord,
+) -> Vec<Step> {
     let none = CredentialShard::NONE;
     let home = ChainId::Names(account_shard(account));
+    let record = PlacementRecord { moving_from: None, ..default.clone() };
     let mut steps = vec![
         on_names(home, none, NamesOp::SetAccountLogin { account, login: login.clone() }),
         on_names(home, none, NamesOp::PutAccount { id: account, suspended: false, sessions_not_before: Timestamp(0) }),
+        on_names(home, none, NamesOp::InitPlacement { owner: account, record }),
     ];
     if kind == AccountKind::User {
         let capture = AccountCapture { login: login.clone(), kind, created };

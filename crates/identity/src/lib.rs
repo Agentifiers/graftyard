@@ -13,6 +13,7 @@ mod access;
 mod agents;
 pub mod appauth;
 mod apps;
+pub mod audit;
 mod authz;
 mod cache;
 mod compat;
@@ -31,7 +32,8 @@ pub mod stateless;
 mod tokens;
 
 pub use access::{
-    Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_write, permission,
+    Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_app,
+    authorize_write, permission,
 };
 pub use agents::{AgentApp, AgentKind, WorkspaceMode, install_account};
 pub use apps::{
@@ -86,3 +88,7 @@ pub const TOKENS_FORMAT_V2: Format = Format { family: 0x11, version: 2 };
 pub const AUTHZ_FORMAT_V2: Format = Format { family: 0x12, version: 2 };
 /// AM1-WP2's `AgentApp` rows and the org's agent settings. Sent only once `FormatsEnable` enabled it.
 pub const AUTHZ_FORMAT_V3: Format = Format { family: 0x12, version: 3 };
+/// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
+/// same terms as version 2.
+pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
+pub const TOKENS_FORMAT_V3: Format = Format { family: 0x11, version: 3 };

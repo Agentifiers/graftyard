@@ -46,6 +46,7 @@ use worker::*;
 
 mod agents;
 mod api;
+mod ident;
 mod release;
 
 const AGENT: &str = "git/graftyard-m1";
@@ -311,22 +312,26 @@ fn token_of(req: &Request) -> Result<Option<String>> {
 struct TokenRow {
     account: i64,
     revoked: bool,
-    /// The App of a user-to-server token, for the admission class (AM1-WP2).
+    /// The row's optional fields; a user-to-server token's `app` is its App, for the admission class (AM1-WP2).
     #[serde(default)]
-    app: Option<i64>,
+    fields: Option<graftyard_identity::TokenFields>,
 }
 
-/// The caller, or `None` for no credential or a refused one: the token's row read through `fresh` on its `Tokens`
-/// shard, never a cache. The leader re-reads the row at `decide` either way.
+/// The caller, or `None` for no credential or a refused one: a stored token's row read through `fresh` on its
+/// `Tokens` shard, never a cache, or a `ghs_` token verified offline (`ident::stateless`). The leader re-reads the
+/// row, or the `jti` row, at `decide` either way.
 async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     let Some(t) = token_of(req)? else { return Ok(None) };
+    if t.starts_with("ghs_") {
+        return ident::stateless(c, &t).await;
+    }
     let Ok(tok) = OpaqueToken::parse(&t) else { return Ok(None) };
     let hash = tok.hash();
     let chain = ChainId::Tokens(tok.shard());
     let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
     let row: Option<TokenRow> = serde_json::from_value(v["token"].clone())?;
     let row = row.filter(|r| !r.revoked);
-    c.token_app.set(row.as_ref().and_then(|r| r.app).map(|a| graftyard_identity::AppId(DbId(a))));
+    c.token_app.set(row.as_ref().and_then(|r| r.fields.as_ref()?.app));
     Ok(row.map(|r| Principal {
         actor: Actor::User(UserId(AccountId(DbId(r.account)))),
         scopes: ScopeSet(1),
@@ -543,6 +548,11 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         protected: Vec::new(),
         changed: Vec::new(),
     };
+    // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4).
+    let stateless = graftyard_git::repo::REPO_FORMAT_STATELESS;
+    if graftyard_raft::Command::format(&push) == stateless && !c.cfg.enabled.contains(&stateless) {
+        return unsupported(c.rid, stateless.family, stateless.version);
+    }
     // Format 2 carries the client's agent. A forced unknown format is sent with format 2's fields and its own tag.
     let format = c.cfg.push_format();
     if format != REPO_FORMAT_V1 {
@@ -1108,7 +1118,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
         let b: serde_json::Value = if path == "/_bed/identity" { req.json().await? } else { json!({}) };
         let chain_s = b["chain"].as_str().map(str::to_owned).or_else(|| qp("chain")).ok_or("chain")?;
         let chain: ChainId = chain_s.parse().map_err(|_| "chain")?;
-        let record = c.system_record(chain).await.map_err(Error::RustError)?;
+        // An owner chain (`authz:`, `identity:`) under its owner's `Placement` record, created on first use.
+        let record = match chain {
+            ChainId::Authz(o) | ChainId::Identity(o) => {
+                let r = placement(c, o).await.map_err(Error::RustError)?.ok_or("the owner has no Placement row")?;
+                graftyard_lookup::create(&c.bindings(), chain, &r, &json!({})).await.map_err(Error::RustError)?;
+                r
+            }
+            _ => c.system_record(chain).await.map_err(Error::RustError)?,
+        };
         if path == "/_bed/identity_arrivals" {
             let since = qp("since").unwrap_or_else(|| "0".into());
             let mut out = Vec::new();
@@ -1127,12 +1145,24 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             }
             return Response::from_json(&out);
         }
+        // `{"chain", "read": q}`: the chain's fresh read, so a gate can see an `Identity` chain's credential list.
+        if let Some(q) = b.get("read") {
+            let body = json!({ "q": q }).to_string();
+            let v = graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes())
+                .await
+                .map_err(Error::RustError)?;
+            return Response::from_json(&json!({ "value": v.map(|(v, _, _)| v["value"].clone()) }));
+        }
         let body = json!({ "rid": c.rid.to_string(), "cmd": b["cmd"] });
-        let first = b.get("receipt").and_then(serde_json::Value::as_str).map(|k| {
-            let mut f = body.clone();
-            f["receipt"] = json!(k);
-            f
-        });
+        // The first send may carry `receipt` (BF-14) or `kill` with `down_ms` (BF-33 on a code shard's leader).
+        let mut first: Option<serde_json::Value> = None;
+        for k in ["kill", "receipt"] {
+            if let Some(v) = b.get(k).and_then(serde_json::Value::as_str) {
+                let f = first.get_or_insert_with(|| body.clone());
+                f[k] = json!(v);
+                f["down_ms"] = b.get("down_ms").cloned().unwrap_or(json!(0));
+            }
+        }
         let (bytes, first) = (body.to_string().into_bytes(), first.map(|f| f.to_string().into_bytes()));
         let trace = std::cell::RefCell::new(Vec::new());
         let t0 = now().0;

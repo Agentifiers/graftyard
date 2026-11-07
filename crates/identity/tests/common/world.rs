@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use graftyard_identity::finish::Step;
 use graftyard_identity::{
     AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IdBlock, IdentityCmd,
-    IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NameKey, NamesCmd, NamesFold, NamesOp, TOKENS_FORMAT,
-    TOKENS_FORMAT_V2, TokensCmd, TokensFold, name_shard,
+    IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NameKey, NamesCmd, NamesFold, NamesOp,
+    TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
 };
 use graftyard_types::{AccountId, ChainId, CredentialShard, TokenShard};
 
@@ -38,7 +38,8 @@ impl World {
         let s = names_chain(chain);
         self.names.entry(s).or_insert_with(|| {
             let shard = graftyard_types::NameShard(s);
-            let mut g = Group::reading(chain, vec![NAMES_FORMAT, NAMES_FORMAT_V2], NamesFold::new(shard));
+            let mut g =
+                Group::reading(chain, vec![NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3], NamesFold::new(shard));
             g.elect(A);
             g.id_block(A, IdBlock::whole(0, 100 + u32::from(s)).unwrap()).unwrap();
             g.settle(&mut |c| panic!("no dependency expected, asked for {c}"));
@@ -48,8 +49,11 @@ impl World {
 
     pub fn tokens(&mut self, shard: TokenShard) -> &mut Group<TokensCmd> {
         self.tokens.entry(shard.0).or_insert_with(|| {
-            let mut g =
-                Group::reading(ChainId::Tokens(shard), vec![TOKENS_FORMAT, TOKENS_FORMAT_V2], TokensFold::new(shard));
+            let mut g = Group::reading(
+                ChainId::Tokens(shard),
+                vec![TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3],
+                TokensFold::new(shard),
+            );
             g.elect(A);
             g
         })
@@ -144,6 +148,9 @@ impl World {
             }
             Step::Identity(ChainId::Identity(a), cmd) => {
                 self.identity_cmd(a, cmd).expect("finisher step commits");
+            }
+            Step::Tokens(_, cmd) => {
+                self.tokens_cmd(*cmd).expect("finisher step commits");
             }
             Step::Authz(..) | Step::Identity(..) => unreachable!(),
         }
