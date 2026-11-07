@@ -315,3 +315,12 @@ The mechanism:
 **Test of the mechanism (23:31 to 23:33Z).** The same two runs, while `ping.mjs` sent every learner about 22 shallow `/ping`s a second from outside. Both passed: p99 762 ms and 620 ms, 0 failed reads, leader 198 and 199 req/s, no `STEP_DOWN`, no depth failure. The leader's calls stayed at modelled hops 3 to 8. Nothing else changed.
 
 Milestone 0's prototype passed because its learners pulled entries inside their own read-index call. The leader never called a learner (`tests/m0/results/m0-wp2.md`, B0-18). M0-WP9 changed that so the leader feeds learners (`m0-wp9.md`, "Learners fed by the leader"), and that change closed the loop. In production, edge reads arriving at a learner would reset its depth, but a learner whose reads arrive more slowly than the leader's calls would still climb.
+
+### The fix, at the cause: no call cycle between a leader and a learner
+
+Each learner forms a two-way call cycle with the leader: `ReadIndex` calls one way, and AppendEntries plus delayed `ReadIndexRes` calls the other. That cycle is what lets the runtime's depth grow with no bound. The fix makes calls flow one way at a time, in the host's transport. `crates/raft` does not change, and neither do any of its messages.
+
+- **Hold for a calling learner.** While a learner has a call in progress at this member, or called it in the last `CALL_DEADLINE`, every message for that learner is held. The held messages go in the response to the learner's next call, ahead of that call's own replies, so a learner applies the entries before it grants the reads. A learner that stops calling gets its held messages as calls from the 100 ms ticker. An idle learner, one serving only feed polls, is called as before.
+- **Answer a read index in its own call.** A `ReadIndex` the leader cannot answer at once, because it needs a round, holds its response for up to 500 ms for the answer. Before, the answer went back as the leader's own call.
+
+With both rules, the leader calls a learner only while that learner is not calling it. A learner's calls are then charged to its own newest outside request, and the leader's calls sit one hop above those.
