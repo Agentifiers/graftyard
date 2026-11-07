@@ -1767,6 +1767,51 @@ M3-WP1 to M3-WP4 ran hosted on `graft-m1-*` with real gh, git, and `@octokit/app
 
 **Flip.** A Secrets Store limit or a rotation tool that cannot write the JSON form; a placement design in which an owner's record is derived rather than stored; or the stateless wire form landing, after which a `ghs_` issue or merge write is decided by `authorize` and refused, if at all, 403 for a missing permission.
 
+**Flip met, 2026-11-07, for the third bullet.** The stateless form landed in format 32.9 (`65a7b07`, `1815c70`): an App's issue write is authorized by `authorize_app` and refused 403 for a missing permission, 10 of 10 hosted, and an App's merge answers 403 at the edge. The signup bullet's code landed too (`1fce620`) [measured, `tests/m3/results/m3-close.md`].
+
+### BM-3 passes, F51 and R20 closed, and M3's close round, 2026-11-07
+
+BM-3 passed on the `m3-close` build, F51 was settled in code, and the lead decided R20; Milestone 3 stays open for the rows in BUILD-PLAN's "Milestone 3 status" (`tests/m3/results/m3-close.md`; `build/BUILD-PLAN.md`, M3-WP4 "M3 close round" and M3-WP6).
+
+#### F51 closed: a status's id follows its commit's order
+
+**Decision.** The repository group's `decide` gives a commit status the id max(the edge's minted id, the highest `StatusId` on its commit + 1), and the reply renders the id `decide` returned (`IssueOut::Id`). Ids on one commit therefore rise in commit order whatever the edges' clocks say, so for one (sha, context) the later report wins; the edge's clock orders only a commit's first status. SHARED's `RequiredCheck` text says so. F51 leaves OPEN-QUESTIONS.
+
+**Why.** A status's version is its id, and the higher version wins. With ids from the edge's clock, a re-run reported `pending` through an edge whose clock trails got a lower id than the earlier `success`, so the check stayed green and BF-23's "a re-run blocks a merge again" failed through two edges. Taking the id from the commit's own rows is the "commit order" answer F51 named, and needs no id lease.
+
+**Beat.** A `DbId` from the group's `IdBlock`, which orders every status by commit order too but spends ids from the lease and changes the id's meaning for the REST reply. Keeping the edge's id and fixing the collision only (`31eeadf`), which left the skew.
+
+**Evidence.** `212aa36`; `a_later_status_from_an_edge_whose_clock_trails_still_wins` fails on the old rule, with two edges a minute apart, and the planted `status-id-from-edge-clock` bug is caught [measured in memory, `tests/m3/results/m3-close.md`, F51 and "Planted bugs"]. BF-23 passed 100 of 100 hosted through one edge (`tests/m2/results/m2-wp3.md`). The hosted run through two edges with skewed clocks was not made, because an edge cannot fake its clock.
+
+**Flip.** A hosted status whose id falls below one already on its commit; or a client that relies on status ids being increasing timestamps across commits, which this rule no longer gives.
+
+#### Install creates every `Tokens` shard
+
+**Decision.** The lead's. Install creates the group of every `Tokens` shard, all 3,072 (three home families of 1,024), run in parallel; `Names` shards stay created on first use. DESIGN, "Install operations", Genesis step 5, and the chain-groups control-plane row say so. The code comes on `m3-finish`. R20 leaves OPEN-QUESTIONS.
+
+**Why.** A sign-in code lands on a `Tokens` shard by its hash, so almost every device code met a shard with no group, and a person signing in waited for its creation: a device-code request took 13.0 s median wall time against 62 ms of CPU over 65 requests, and a new group 13 to 14 s to create. The extra groups cost little while idle: B0-15 measured 100,000 idle groups at 0 requests and 0 GB-s over 24 h (K6), and `scripts/cost.py` already counts the 3,072 token groups in its group total (`TOKEN_GROUPS`), so no Cost figure moves. `Names` shards are written by signups, renames, and App registrations, which are rarer and not a person waiting at a prompt [inference].
+
+**Beat.** Routing codes to fewer shards, which concentrates sign-in on a few groups and changes `token_shard`'s layout. Creating shards lazily from a cron, which still leaves the first sign-ins slow. Creating every `Names` shard too, which adds 3,072 more creations at install for writes that do not wait on a person.
+
+**Evidence.** `tests/m3/results/m3-hosted.md`, "Latency"; `tests/m3/results/m3-close.md`, "Groups created on first use" [measured]; `scripts/cost.py`, `TOKEN_GROUPS` and `w["groups"]`; K6 in `decisions/OPEN-QUESTIONS.md`.
+
+**Flip.** Idle groups measured billing duration or storage that the cost scripts do not carry; install time with 3,072 parallel creations measured over an hour; or `Names` writes measured on a person's critical path at a rate that makes first-use creation visible.
+
+#### `Audit`'s cursor, the bootstrap link, and BF-33 hosted
+
+**Decision.**
+- A consumer that reads one chain and writes others commits its cursor on the chain it reads, after the work, so a batch lost before its cursor runs again and re-sends only idempotent steps. `Audit` reads `Tokens` and `Names`, writes `Identity`, `Authz`, and `Names`, and keeps `AuditCursor` (formats 0x10.3 and 0x11.3) on each shard it reads, moved last or once `CURSOR_STRIDE` (1,000) entries have passed. SHARED, "Event fan-out", says so beside the [inference] for consumers that commit to the chain they read.
+- `graftyard admin bootstrap` writes the sign-in link's `PutCode { kind: SignInLink }` as the operator's request itself, because `graft-ops` has no operator route (R14); the row is the one `graft-ops` would write. `POST /login/oauth/link` spends it once and answers 201 with the session id and no cookie. What the link opens in a browser is a recorded gap, owned with the other sign-in pages by F55.
+- BF-33's hosted run only ever restarted: 120 of 120 kills on the exchange's `UseCode` ended in a clean restart, and its "completes" branch stands on gh's 20 of 20 hosted logins and the in-memory 100 of 100 until a kill that loses the command before commit runs hosted (BUILD-PLAN, "Milestone 3 status").
+
+**Why.** SHARED's cursor rule assumed the consumer writes the chain it reads; `Audit` cannot commit its cursor with work on other chains. DESIGN said `graft-ops` mints the link, and no operator route to `graft-ops` exists. In every hosted kill mode the edge's re-send under the same request id found the command committed, so the run could not reach the branch where the code is unspent.
+
+**Beat.** A cursor on each chain `Audit` writes, which needs a write to every target per batch. A `graft-ops` operator route built only for the link. Counting BF-33's "completes" branch as passed hosted.
+
+**Evidence.** `tests/m3/results/m3-close.md`, "Audit, hosted", "`graftyard admin bootstrap`" (11 of 11), "BF-33" (120 of 120), and "Design gaps and contradictions found"; the 8 planted bugs, six on the cursor [measured].
+
+**Flip.** A `Finisher` step that is not idempotent, which would need the cursor committed with the work; a `graft-ops` operator route, which takes the link back; or a hosted kill that loses the `UseCode` and still yields one token, which closes BF-33's branch.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.
