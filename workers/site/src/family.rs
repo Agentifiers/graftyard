@@ -255,7 +255,8 @@ impl Family for Repo {
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
     /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
-    /// (collaborators and invitations) and 32.7 (a push under a `ghs_` token) are read on the same terms.
+    /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), and 32.9 (an issue command under one)
+    /// are read on the same terms.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -264,6 +265,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ISSUES,
             git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
             git::repo::REPO_FORMAT_STATELESS,
+            git::issue_ops::call::REPO_FORMAT_APP_CALLS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -875,8 +877,16 @@ impl Family for Names {
     type Fold = id::NamesFold;
     type C = id::NamesCmd;
 
+    /// Format 3 is the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set.
     fn reads() -> Vec<Format> {
-        vec![id::NAMES_FORMAT, id::NAMES_FORMAT_V2]
+        vec![id::NAMES_FORMAT, id::NAMES_FORMAT_V2, id::NAMES_FORMAT_V3]
+    }
+    /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`).
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        leading.then_some(id::audit::FINISH_AFTER.as_millis() as i64 + 1_000)
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::audit::on_alarm(host).await;
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::NamesFold {
         match join.chain {
@@ -970,8 +980,16 @@ impl Family for Tokens {
     type Fold = id::TokensFold;
     type C = id::TokensCmd;
 
+    /// Format 3 is the `Audit` cursor's, as for `Names`.
     fn reads() -> Vec<Format> {
-        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2]
+        vec![id::TOKENS_FORMAT, id::TOKENS_FORMAT_V2, id::TOKENS_FORMAT_V3]
+    }
+    /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`).
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        leading.then_some(id::audit::FINISH_AFTER.as_millis() as i64 + 1_000)
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::audit::on_alarm(host).await;
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::TokensFold {
         match join.chain {

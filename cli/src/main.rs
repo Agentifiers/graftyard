@@ -1,7 +1,9 @@
 //! `graftyard`, the operator CLI (`design/DESIGN.md`, "Usage (caller's view)", the operator block; "Install
 //! operations"). Milestone 1 builds `init`, `sites add`, `sites add-spare`, `placement set`, `genesis`, `sign`, and
-//! `install --genesis`. The deploy token comes from `CLOUDFLARE_API_TOKEN`.
+//! `install --genesis`; Milestone 3 `admin bootstrap` and `mint-key rotate | step`. The deploy token comes from
+//! `CLOUDFLARE_API_TOKEN`.
 
+mod admin;
 mod cf;
 mod config;
 mod genesis;
@@ -75,6 +77,15 @@ enum Cmd {
         #[arg(long)]
         key: PathBuf,
     },
+    Admin {
+        #[command(subcommand)]
+        cmd: AdminCmd,
+    },
+    /// The installation-token signing key in `MintWrapKey`.
+    MintKey {
+        #[command(subcommand)]
+        cmd: MintKeyCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
@@ -119,6 +130,54 @@ enum SitesCmd {
         bundle: PathBuf,
         #[arg(long)]
         image: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdminCmd {
+    /// Draws a one-time sign-in link for the first site admin and writes its `PutCode` request.
+    Bootstrap {
+        /// The admin's account id.
+        #[arg(long)]
+        account: i64,
+        /// A new file (mode 0600) for the link's secret.
+        #[arg(long)]
+        link_out: PathBuf,
+        #[arg(long, default_value = "bootstrap.request.json")]
+        out: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum MintKeyCmd {
+    /// Draws the next signing key: writes its `MintWrapKey` text and its `PutVerifyingKey` request.
+    Rotate {
+        /// The new key's `kid`, one above the current key's.
+        #[arg(long)]
+        kid: u32,
+        /// A new file (mode 0600) for the `MintWrapKey` secret's text.
+        #[arg(long)]
+        secret_out: PathBuf,
+        #[arg(long, default_value = "mint-key.request.json")]
+        out: PathBuf,
+    },
+    /// Says what the rotation does next, and writes the old key's retire request when it is due.
+    Step {
+        #[arg(long)]
+        old_kid: u32,
+        /// The old key's public half: 64 hex characters or a PEM PUBLIC KEY.
+        #[arg(long)]
+        old_public: String,
+        #[arg(long)]
+        new_kid: u32,
+        /// When the new key's `PutVerifyingKey` committed, in ms since the epoch.
+        #[arg(long)]
+        new_published: u64,
+        /// When the secret switched to the new key, in ms since the epoch.
+        #[arg(long)]
+        switched: Option<u64>,
+        #[arg(long, default_value = "mint-key-retire.request.json")]
+        out: PathBuf,
     },
 }
 
@@ -229,6 +288,20 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Sign { input, out, key } => genesis::sign(&input, &out, &key),
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
+        Cmd::Admin { cmd: AdminCmd::Bootstrap { account, link_out, out } } => {
+            admin::bootstrap(account, &link_out, &out)
+        }
+        Cmd::MintKey { cmd: MintKeyCmd::Rotate { kid, secret_out, out } } => admin::rotate(kid, &secret_out, &out),
+        Cmd::MintKey { cmd: MintKeyCmd::Step { old_kid, old_public, new_kid, new_published, switched, out } } => {
+            admin::step(&admin::StepArgs {
+                old_kid,
+                old_public: &old_public,
+                new_kid,
+                new_published,
+                switched,
+                out: &out,
+            })
+        }
     }
 }
 

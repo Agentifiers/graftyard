@@ -366,6 +366,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (Method::Post, "/login/oauth/access_token") => crate::ident::access_token(c, req).await,
             (Method::Get | Method::Post, "/login/oauth/authorize") => crate::ident::authorize(c, req).await,
             (Method::Post, "/login/oauth/device/approve") => crate::ident::device_approve(c, req).await,
+            (Method::Post, "/login/oauth/link") => crate::ident::sign_in_link(c, req).await,
             _ => Ok(Reply::not_found()),
         },
         Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
@@ -384,6 +385,14 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     }
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
+    // Under a `ghs_` token the command is format 32.9, sent only once `FormatsEnable` enabled it.
+    if !c.cfg.enabled.contains(&call.format()) {
+        let f = call.format();
+        return Ok(unavailable(&format!(
+            "this write needs record format {}.{}, which FormatsEnable has not enabled on this install",
+            f.family, f.version
+        )));
+    }
     let body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let r = graftyard_lookup::commit_hedged(
@@ -464,6 +473,21 @@ async fn merge_plan(
 /// Commits a merge or merge-queue command and returns the reply its leader rendered from the `&Acked`, once
 /// `FormatsEnable` has enabled 32.4; until then 503.
 async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Result<Reply> {
+    // `Merged` and the queue row name the merging user (`UserId`), so a merge has no form for an App yet: an
+    // installation token gets GitHub's 403 for a permission it lacks, not a 401 that says the token is bad.
+    let app = |p: &Principal| matches!(p.actor, Actor::App { .. });
+    let by_app = match &cmd {
+        MergeCmd::Merge(m) => app(&m.actor),
+        MergeCmd::Queue(q) => q.actor.as_ref().is_some_and(app),
+        MergeCmd::Land(_) | MergeCmd::Cursor(_) => false,
+    };
+    if by_app {
+        return Ok(Reply::error(
+            403,
+            "Resource not accessible by integration",
+            "rest/pulls/pulls#merge-a-pull-request",
+        ));
+    }
     if !c.cfg.enabled.contains(&REPO_FORMAT_V4) {
         return Ok(unavailable(&format!(
             "merges need record format {}.{}, which FormatsEnable has not enabled on this install",

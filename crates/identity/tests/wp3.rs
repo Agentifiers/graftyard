@@ -551,11 +551,24 @@ fn the_edges_writes_keep_the_account_login_and_identity_in_step() {
     let NamesOut::Account(a) = w.names_on(NameKey::Login(mona.key()), claim).unwrap().out else { panic!() };
     let rendered = |w: &mut World| w.names(ChainId::Names(account_shard(a))).fresh_leader().account_login(a).cloned();
     assert_eq!(rendered(&mut w), None, "before the edge's follow-ups only the finisher could render it");
-    for s in edge::after_signup(a, &mona, AccountKind::User, Timestamp(1)) {
+    let default = common::record();
+    for s in edge::after_signup(a, &mona, AccountKind::User, Timestamp(1), &default) {
         w.step(s.clone());
+        // A re-sent `InitPlacement` is refused `RecordExists`, which is done; every other step is a no-op.
+        if let graftyard_identity::finish::Step::Names(
+            chain,
+            cmd @ NamesCmd { op: NamesOp::InitPlacement { .. }, .. },
+        ) = s
+        {
+            assert_eq!(refused(w.names_cmd(chain, cmd)), graftyard_identity::NamesErr::RecordExists);
+            continue;
+        }
         w.step(s);
     }
     assert_eq!(rendered(&mut w), Some(mona.clone()));
+    // The new owner's chains have a record, the install account's, before anything writes to them.
+    let placed = w.names(ChainId::Names(account_shard(a))).fresh_leader().placement(a).cloned();
+    assert_eq!(placed, Some(default.clone()), "a new owner copies the install account's record");
     let session = WebSessionId(Ulid::new(Timestamp(9_000), [1; 10]));
     w.step(edge::sign_in(a, session, SignInMethod::Password, install));
     let f: IdentityFold = w.identity(a).fresh_leader();

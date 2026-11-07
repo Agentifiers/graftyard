@@ -32,6 +32,8 @@ pub enum Step {
     Names(ChainId, NamesCmd),
     Authz(ChainId, Box<AuthzCmd>),
     Identity(ChainId, IdentityCmd),
+    /// Only the `Audit` consumer's cursor (`crate::audit::cursor`): no finisher plan owes a `Tokens` command.
+    Tokens(ChainId, Box<crate::tokens::TokensCmd>),
 }
 
 fn names(key: NameKey, op: NamesOp) -> Step {

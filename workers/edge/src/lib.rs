@@ -1046,12 +1046,24 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             }
             return Response::from_json(&out);
         }
+        // `{"chain", "read": q}`: the chain's fresh read, so a gate can see an `Identity` chain's credential list.
+        if let Some(q) = b.get("read") {
+            let body = json!({ "q": q }).to_string();
+            let v = graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes())
+                .await
+                .map_err(Error::RustError)?;
+            return Response::from_json(&json!({ "value": v.map(|(v, _, _)| v["value"].clone()) }));
+        }
         let body = json!({ "rid": c.rid.to_string(), "cmd": b["cmd"] });
-        let first = b.get("receipt").and_then(serde_json::Value::as_str).map(|k| {
-            let mut f = body.clone();
-            f["receipt"] = json!(k);
-            f
-        });
+        // The first send may carry `receipt` (BF-14) or `kill` with `down_ms` (BF-33 on a code shard's leader).
+        let mut first: Option<serde_json::Value> = None;
+        for k in ["kill", "receipt"] {
+            if let Some(v) = b.get(k).and_then(serde_json::Value::as_str) {
+                let f = first.get_or_insert_with(|| body.clone());
+                f[k] = json!(v);
+                f["down_ms"] = b.get("down_ms").cloned().unwrap_or(json!(0));
+            }
+        }
         let (bytes, first) = (body.to_string().into_bytes(), first.map(|f| f.to_string().into_bytes()));
         let trace = std::cell::RefCell::new(Vec::new());
         let t0 = now().0;

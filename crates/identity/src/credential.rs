@@ -62,8 +62,9 @@ pub struct Principal {
 
 impl Credential {
     /// The stored token's hash and the web session's id, as the repository chain's JSON wire forms carry them: a
-    /// session sends an all-zero hash and its id, so a stored token's form is unchanged. Those forms do not carry an
-    /// installation token yet: it sends an all-zero hash, which names no row, so its command fails closed with 401.
+    /// session sends an all-zero hash and its id, so a stored token's form is unchanged. An installation token sends an
+    /// all-zero hash too: an issue command carries its claims beside it in format 32.9
+    /// (`graftyard_git::issue_ops::call`), and a merge command, which carries none, fails closed with 401.
     pub fn wire(&self) -> ([u8; 32], Option<graftyard_types::Ulid>) {
         match self {
             Credential::Stored(h) => (*h, None),

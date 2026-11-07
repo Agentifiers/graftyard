@@ -11,8 +11,8 @@ use std::fmt;
 use arrayvec::ArrayString;
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
 use graftyard_types::{
-    AccountId, ChainId, CredentialShard, Digest, NameShard, Placement, PlacementError, PlacementName, PlacementRecord,
-    RepoId, SiteId, Timestamp,
+    AccountId, ChainId, CredentialShard, Digest, Index, NameShard, Placement, PlacementError, PlacementName,
+    PlacementRecord, RepoId, SiteId, Timestamp,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -25,7 +25,7 @@ use crate::credential::{CredentialRefusal, IdentityDep, Own, check_credential, c
 use crate::enc;
 use crate::ids::{IdBlock, IdCursor};
 use crate::overlay::{Overlay, SetOverlay, Table};
-use crate::{NAMES_FORMAT, NAMES_FORMAT_V2};
+use crate::{NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3};
 
 pub const NAME_SHARDS: u16 = 1024;
 
@@ -370,10 +370,16 @@ pub enum NamesEvent {
         account: AccountId,
         login: Login,
     },
+    /// The `Audit` consumer finished, or found nothing owed for, every entry of this shard through `through`
+    /// (`crate::audit`). Not in the design's `NamesEvent`, as `TokensEvent::AuditCursor`.
+    AuditCursor {
+        through: Index,
+    },
 }
 
 /// Tags follow the design's `NamesEvent` declaration order, so tags 0 to 11 are the design's 12 variants. Milestone 1
-/// wrote 0, 1, 2, 10, and 11, and they keep their bytes. `AccountLogin`, which the design does not list, takes 12.
+/// wrote 0, 1, 2, 10, and 11, and they keep their bytes. `AccountLogin`, which the design does not list, takes 12, and
+/// `AuditCursor` 13.
 impl Record for NamesEvent {
     fn encode(&self, out: &mut Vec<u8>) {
         let mut e = Enc(out);
@@ -448,12 +454,16 @@ impl Record for NamesEvent {
                 enc::account(&mut e, *account);
                 e.str(login.as_str());
             }
+            NamesEvent::AuditCursor { through } => {
+                e.u8(13);
+                e.u64(through.0);
+            }
         }
     }
 }
 
 /// Milestone 3's rows of a `Names` shard: the fold's trailing part (`crate::compat`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NamesMore {
     pub account_logins: BTreeMap<AccountId, Login>,
     pub slugs: BTreeMap<Slug, SlugRow>,
@@ -463,7 +473,21 @@ pub struct NamesMore {
     pub shortcodes: BTreeMap<Shortcode, AccountId>,
     pub emails: BTreeMap<Digest, AccountId>,
     pub retired: BTreeSet<(LoginKey, RepoNameKey)>,
+    /// The `Audit` consumer's cursor (`NamesEvent::AuditCursor`), a trailing part of its own, so a fold whose cursor
+    /// never moved keeps the bytes of the release before it.
+    pub more: Index,
 }
+
+tail_serde!(NamesMore {
+    account_logins: BTreeMap<AccountId, Login>,
+    slugs: BTreeMap<Slug, SlugRow>,
+    apps: BTreeMap<AppId, AccountId>,
+    clients: BTreeMap<ClientId, ClientRoute>,
+    installations: BTreeMap<InstallationId, (AppId, AccountId)>,
+    shortcodes: BTreeMap<Shortcode, AccountId>,
+    emails: BTreeMap<Digest, AccountId>,
+    retired: BTreeSet<(LoginKey, RepoNameKey)>,
+} more: Index);
 
 /// One `Names` shard's fold. `shard` is the chain's own shard: a command whose key belongs to another shard is
 /// refused, because the shard is the key's uniqueness point. `None`, the `Default` a member starts from before its
@@ -492,6 +516,11 @@ tail_serde!(NamesFold {
 impl NamesFold {
     pub fn new(shard: NameShard) -> NamesFold {
         NamesFold { shard: Some(shard), ..NamesFold::default() }
+    }
+
+    /// Every entry through this index is one the `Audit` consumer finished or found nothing owed for.
+    pub fn audit_cursor(&self) -> Index {
+        self.more.more
     }
 }
 
@@ -634,6 +663,8 @@ where
         NamesEvent::Placement { owner, record } => t.placements.put(*owner, record.clone()),
         NamesEvent::RepoOwner { repo, owner } => t.repo_owners.put(*repo, *owner),
         NamesEvent::AccountLogin { account, login } => t.more.account_logins().put(*account, login.clone()),
+        // The fold's own field (`NamesFold::apply`); `decide` never reads it from a scratch view.
+        NamesEvent::AuditCursor { .. } => {}
     }
 }
 
@@ -856,6 +887,10 @@ impl Fold for NamesFold {
                 more: &mut self.more,
             },
         );
+        // Never back: two cursor commands in one entry leave the later of the two.
+        if let NamesEvent::AuditCursor { through } = ev {
+            self.more.more = self.more.more.max(*through);
+        }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
@@ -974,6 +1009,13 @@ pub enum NamesOp {
     Retire {
         owner: LoginKey,
         repo: RepoNameKey,
+    },
+    // ---- format 3 ----
+    /// The `Audit` consumer's position on `shard`, which only the consumer, as the operator, submits. A cursor at or
+    /// behind the shard's decides to no events.
+    AuditCursor {
+        shard: NameShard,
+        through: Index,
     },
 }
 
@@ -1125,6 +1167,11 @@ impl Record for NamesCmd {
                 e.str(&owner.0);
                 e.str(repo.as_str());
             }
+            NamesOp::AuditCursor { shard, through } => {
+                e.u8(17);
+                e.u16(shard.0);
+                e.u64(through.0);
+            }
         }
     }
 }
@@ -1148,6 +1195,7 @@ impl NamesCmd {
             NamesOp::ClaimShortcode { code, .. } => NameKey::Shortcode(*code),
             NamesOp::ClaimEmail { email, .. } | NamesOp::ReleaseEmail { email, .. } => NameKey::Email(*email),
             NamesOp::Retire { owner, .. } => NameKey::Login(owner.clone()),
+            NamesOp::AuditCursor { shard, .. } => return Some(*shard),
         };
         Some(name_shard(&key))
     }
@@ -1208,7 +1256,8 @@ impl NamesCmd {
             | NamesOp::FinishMove { .. }
             | NamesOp::RepoOwner { .. }
             | NamesOp::ClaimShortcode { .. }
-            | NamesOp::Retire { .. } => false,
+            | NamesOp::Retire { .. }
+            | NamesOp::AuditCursor { .. } => false,
         }
     }
 
@@ -1371,6 +1420,12 @@ impl NamesCmd {
                 }
                 one(NamesEvent::Retired { owner: owner.clone(), repo: repo.clone() }, NamesOut::Done)
             }
+            NamesOp::AuditCursor { through, .. } => {
+                if *through <= s.fold.audit_cursor() {
+                    return Ok((SmallVec::new(), NamesOut::Done));
+                }
+                one(NamesEvent::AuditCursor { through: *through }, NamesOut::Done)
+            }
         }
     }
 }
@@ -1395,6 +1450,7 @@ impl Command for NamesCmd {
             | NamesOp::MovePlacement { .. }
             | NamesOp::FinishMove { .. }
             | NamesOp::RepoOwner { .. } => NAMES_FORMAT,
+            NamesOp::AuditCursor { .. } => NAMES_FORMAT_V3,
             _ => NAMES_FORMAT_V2,
         }
     }

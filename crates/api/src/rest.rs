@@ -427,6 +427,7 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
                 "status": "422" }),
         ),
         E::Forbidden | E::Unauthorized(_) => Reply::error(403, "Resource not accessible by integration", LABELS_DOC),
+        E::NotFound => Reply::not_found(),
         _ => Reply::error(422, "Validation Failed", LABELS_DOC),
     }
 }

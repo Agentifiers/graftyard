@@ -45,8 +45,9 @@ fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
 }
 
-/// SHARED's `InstallationClaims`, without `task`, which comes with the agent layer.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// SHARED's `InstallationClaims`, without `task`, which comes with the agent layer. Its serde form is what an issue
+/// or merge command under the token carries across a binding (format 32.9).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationClaims {
     pub app: AppId,
     pub installation: InstallationId,
