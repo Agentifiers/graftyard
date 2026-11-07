@@ -625,6 +625,55 @@ pub async fn authorize(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
     Ok(Reply::empty(302).with("location", to.to_string()))
 }
 
+/// `POST /login/oauth/link` with `link`, and `install` naming the install account: spends a `graftyard admin
+/// bootstrap` sign-in link once (`UseCode`, no client) and starts a `SignInMethod::Link` session on the account's
+/// `Identity` chain (`crate::edge::sign_in`), which every `InstanceAuth` admits. Answers the session id; the browser
+/// cookie and the page after it are not built [inference: DESIGN names the link, not what it opens].
+pub async fn sign_in_link(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
+    if let Err(x) = enabled(c, graftyard_identity::IDENTITY_FORMAT) {
+        return Ok(x);
+    }
+    let f = form(req).await?;
+    let link = f.get("link").cloned().unwrap_or_default();
+    let Some(install) = f.get("install").and_then(|i| i.parse::<i64>().ok()).map(|i| AccountId(DbId(i))) else {
+        return Ok(Reply::json(422, json!({ "message": "install names the install account's id" })));
+    };
+    let hash = graftyard_identity::code_hash(link.as_bytes());
+    let chain = code_shard(link.as_bytes());
+    let v = system_read(c, chain, json!({ "code": graftyard_lookup::hex(&hash) })).await.map_err(Error::RustError)?;
+    let row: Option<graftyard_identity::CodeRow> = serde_json::from_value(v["code"].clone())?;
+    let Some((account, graftyard_identity::CodeKind::SignInLink)) =
+        row.filter(|r| r.expires > now()).and_then(|r| Some((r.account?, r.kind)))
+    else {
+        return Ok(bad_credentials());
+    };
+    let spend =
+        json!({ "cred": { "account": null, "key": null }, "op": { "UseCode": { "hash": hash, "client": null } } });
+    let done = match commit_system(c, chain, spend).await {
+        Ok(d) => d,
+        Err(x) => return Ok(x),
+    };
+    match refused(&done).as_deref() {
+        None => {}
+        Some("CodeUsed") | Some("NoCode") | Some("WrongCode") => return Ok(bad_credentials()),
+        Some(_) => return Ok(crate::api::unavailable(&format!("the link did not commit: {done}"))),
+    }
+    let id = graftyard_identity::WebSessionId(graftyard_types::Ulid::new(now(), crate::rand10()));
+    let graftyard_identity::finish::Step::Identity(chain, cmd) =
+        graftyard_identity::edge::sign_in(account, id, graftyard_identity::SignInMethod::Link, install)
+    else {
+        unreachable!("an Identity step")
+    };
+    let done = commit_owner(c, chain, account, serde_json::to_value(&cmd)?).await;
+    Ok(match done {
+        Ok(d) if refused(&d).is_none() => {
+            Reply::json(201, json!({ "account": account.0.0, "session": id.0.to_string(), "method": "Link" }))
+        }
+        Ok(d) => Reply::json(403, json!({ "message": format!("the sign-in was refused: {}", d["refused"]["err"]) })),
+        Err(x) => x,
+    })
+}
+
 /// `DELETE /applications/{client_id}/token`: revokes the stored token in the body, after the client's secret, sent
 /// as Basic auth, checks; a first-party client's embedded secret is ignored, so the holder of a token from `gh` may
 /// revoke it. 204 after the revocation's quorum; a token already revoked is 204 too.

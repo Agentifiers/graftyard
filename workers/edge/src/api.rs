@@ -366,6 +366,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (Method::Post, "/login/oauth/access_token") => crate::ident::access_token(c, req).await,
             (Method::Get | Method::Post, "/login/oauth/authorize") => crate::ident::authorize(c, req).await,
             (Method::Post, "/login/oauth/device/approve") => crate::ident::device_approve(c, req).await,
+            (Method::Post, "/login/oauth/link") => crate::ident::sign_in_link(c, req).await,
             _ => Ok(Reply::not_found()),
         },
         Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
