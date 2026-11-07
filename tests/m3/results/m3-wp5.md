@@ -324,3 +324,10 @@ Each learner forms a two-way call cycle with the leader: `ReadIndex` calls one w
 - **Answer a read index in its own call.** A `ReadIndex` the leader cannot answer at once, because it needs a round, holds its response for up to 500 ms for the answer. Before, the answer went back as the leader's own call.
 
 With both rules, the leader calls a learner only while that learner is not calling it. A learner's calls are then charged to its own newest outside request, and the leader's calls sit one hop above those.
+
+### The fix as built: `06762a2`
+
+- `workers/site/src/callers.rs` holds `Callers`, a per-learner record of calls in progress and the last call's time, with the messages held for each learner. `Host::send` passes every envelope through `Callers::route`. A learner with a call open here, or one that called within `QUIET` (1 s), gets the message held. Anything else leaves as a call (`Host::call`), as before. The 100 ms ticker sends what `Callers::due` returns: the held messages of a learner that has not called for `QUIET`. Voters are never held.
+- `/raft` takes the held messages into the response to a learner's call, ahead of the call's own replies, after the output gate. A learner's `ReadIndex` that the leader could not answer at once waits in the call, up to `READ_INDEX_HOLD` (500 ms), for its `ReadIndexRes` to be held for it.
+- The test `a_learner_that_calls_the_leader_is_never_called_back_so_depth_stays_bounded` models the runtime's rule: each call leaves at its sender's newest incoming depth plus one. It drives one leader and one learner for 30 s with `read_bench`'s pattern and no pushes. The old routing nests past 16, and the test asserts it does. With `Callers`, every call stays at depth 3. A second test covers holding, `QUIET`, and sending again.
+- `crates/raft` is unchanged, so the long sweep and Porcupine do not apply.
