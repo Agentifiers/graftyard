@@ -5,7 +5,7 @@
 // Each reply's status and body go to <out>/bf32/<case>.json; no token is printed. Then the OAuth web flow with the
 // App's client: a wrong client secret, then the right one.
 //
-//   node tests/m3/hosted/bf32.mjs <state dir> <out dir>        (needs @octokit/app in NODE_PATH)
+//   node tests/m3/hosted/bf32.mjs <state dir> <out dir>        (needs @octokit/app in tests/m3/hosted/node_modules)
 
 import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
