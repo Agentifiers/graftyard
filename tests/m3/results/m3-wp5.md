@@ -260,3 +260,178 @@ On `m3-wp5-hosted`, not pushed:
 - `222fee6` site: an installed member names an install source from its `log_base`; the BF-29 hosted driver.
 - `d6e350d` site: the audit reads the stored log in pages read to their end.
 - This section and `tests/m3/wp5/b0-18.ts`.
+
+## 2026-11-06 (evening): B0-18 traced on `graft-m2b`
+
+Branch `b0-18`, with `main` (`856fc32`) merged at `9a83fa4`. Notes are added as the work goes.
+
+### State before this round
+
+- `graft-m2b-site-a`, `-b`, `-c` ran versions `dacc1247`, `f675d657`, `b4ae45f1` (12:10Z). That is the afternoon's `b0-18` build with the `/depth_left` gauge, made before main's 16:16 merge, with git shard image `aa3038ea…`. `graft-m2b-edge` ran `b2309a5a` (11:23Z).
+- The afternoon's 11 runs (`/tmp/m3h/b0-18`, 11:27 to 15:23) all failed. The four with `--pushes 0` failed as well. That rules out the pushes as the cause.
+- The `/depth_left` gauge poisons the object it measures. Learners `l0` and `l2`, the two learners the gauge polled, logged 22 to 30 "Subrequest depth limit exceeded" `readIndex` failures in each gauged run. Every other learner logged 0 to 2. A check at 21:00 on learner `l3` shows why. The gauge alone reached 14 hops. Started 1.2 s after a 14-hop `/depth_hop` chain on the same object, it reached 0. The chain had already ended. So the runtime charges an object's outbound calls to the newest request the object received, even after that request has finished (workerd `IoContext::getCurrentIncomingRequest`, "the newest request that hasn't already completed", which an actor keeps current while any task is pending). The gauge is not run during the runs below.
+
+### Deployed for the trace (22:36Z)
+
+- `91bf03e` adds a read-index trace to `/stats` on test-faults builds. Each member records every `ReadIndex` it sends and that call's end, every `ReadIndexRes` it steps (from its own call's answer, or from a call the leader made), every move of its applied index, and every wake of its 100 ms ticker that is 50 ms or more late. The leader records each `ReadIndex` it takes and each `ReadIndexRes` it sends, inside the asker's answer or as its own call. `read_bench {"samples": true}` returns every read's start, latency, and end for one learner (`b0-18.ts --trace-slot`, default 0).
+- Site day with `--roll-shards`: `graft-m2b-site-a` `6024f7f3`, `-b` `a832c636`, `-c` `828f27f1`, wasm `c99472241ae96804…`. Image `graft-m1-site-gitshard-git@sha256:8fa9abd4…`, main's image since `ca15db8` (geometric repack). The shard roll did not log: the supervised service printed nothing after `wasm-opt`, though all three versions deployed. Two running shards (`git#0#net:65537`, `#65539`) run the new image, and the rest are stopped.
+
+### Trace runs 22:38 to 22:50Z: 12 runs, 12 fail
+
+On `91bf03e`, 16 learners × 1,000 reads/s for 30 s, with 10 pushes/s (raw data in `/tmp/b018/runs`, not committed). Every run failed on the learner p99, at 1,310 to 2,865 ms. Failed reads were 0 to 53,532 per run. Every run also had at least one `STEP_DOWN` `CommitErrors` trip on the leader, with each voter's calls 3 of 8 to 28 failed in the window. Failed reads come in 2 to 3 s blocks that start within a second of a trip.
+
+Learner `l0` (site 0) in the first run (22:38:57, leader site 0, then 1, then 2): 297 batches. **None queued behind the one in flight.** Each was sent 50 ms after the last was answered, never sooner, so the 50 ms floor set the gap (p50 50 ms). The leader answered in its reply to the learner's own call, p50 33 ms and p99 404 ms. No batch was resent. Every read the learner served waited for nothing but its batch's answer. The read index was always at or below the learner's applied index when the answer arrived (wait-to-apply 0 ms for 293 of 297). Its 1,868 failed reads were all `notLeader`, at seconds 8 to 9 and 24 to 25:
+
+| Offset | Event |
+| --- | --- |
+| 8,627 ms | batch 164 leaves for site 0 (the leader) |
+| 8,693 | site 0's `STEP_DOWN` trips (`CommitErrors`, sites 1 and 2 each 3 of 24 failed), and it starts a transfer to site 1 |
+| 8,709 | site 0 takes batch 164 while it transfers. A transferring leader serves no `fresh`, so the read waits |
+| 9,019 | site 0 answers `None` (not leader) in its own call, 310 ms later. The learner's queued reads fail `notLeader` |
+| 9,164 | batch 165 leaves for site 0 again, which still names itself. `None` again |
+| 9,294 | batch 166 leaves for site 1, the new leader. Answered at 9,451 |
+
+The failed calls that tripped `STEP_DOWN` were site 0's AppendEntries to its voters, and to every learner as well. They failed with "Subrequest depth limit exceeded" (`fetch`) at 6.2 to 8.9 s, and then 118 AppendEntries missed their 1 s deadline together at 9.7 s. The same pattern repeats at 24.3 s on site 1 and at 26.8 s on site 2. The slow reads near p99 (2.7 s) sit in the same windows.
+
+So the p99 failure is not read-index queueing or apply wait. It is the leader stepping down, or holding, because its AppendEntries fail "Subrequest depth limit exceeded". Next: where the depth comes from.
+
+### Where the depth comes from: a ratchet through leader and learner calls
+
+`29c667a` models each member-to-member call's nesting depth. Every `/raft` call carries `x-graft-hop`, which is its sender's newest incoming hop plus one, and an outside request counts as hop 2. `/stats` counts calls by modelled hop. The site day at 22:58Z (`12c46948`, `3fb07064`, `c23d2b33` then `97a992b1`, `ba2e4cad`, `71fd582b`, wasm `b2afe73e…`) did not move the three voters. They ran the 22:36 build, with isolates from 22:36, until each was sent `/reset` at 23:02. So a site day does not restart a member that keeps receiving calls, and a member can keep running the previous version for minutes.
+
+Three runs on the new build, all voters reset (23:03 to 23:06): all failed, at p99 1,592 to 2,715 ms. In the second run the leader's (site 2) calls by modelled hop went 3, 5, 7, 9 … 21, 23, 25, 26. Every call at hop 25 and 26 failed "Subrequest depth limit exceeded" (72 and 57), and 69 of 105 failed at hop 21. The model is not exact, since the runtime keeps a request current only until it completes, but it climbs by 2 per exchange.
+
+The mechanism:
+
+1. The runtime charges each outgoing call to the object's newest incoming request. The `/depth_left` check above shows this.
+2. The leader's AppendEntries and its delayed `ReadIndexRes` are calls to each learner, so a learner's newest request is the leader's call, at depth d + 1.
+3. `read_bench` generates reads inside one long request, so a learner gets no other request. Its next `ReadIndex` call leaves at d + 2.
+4. 16 learners call the leader about 150 times a second, so the leader's newest request is almost always a learner's `ReadIndex`. Its next AppendEntries leave at d + 3, to the learners and to both voters.
+5. At 16 the leader's calls fail. That includes its AppendEntries to the two voters, so `STEP_DOWN` trips on `CommitErrors` (3 or more of each voter's calls failed in 10 s). The leader transfers or holds. Learner reads fail `notLeader`, or wait for the next leader.
+6. A push's `/commit`, an edge `/read`, or a tools-edge request is a new shallow request on the leader, and so is a driver call on a learner. Each one resets that object's depth. That is why runs pass or fail at random, and why the Workers Logs bursts do not line up with runs.
+
+**The learner read path does not call back through lookup or the edge.** `read_bench` → `Member::read_index` → `ReadIndex` → `Host::send` → `call_peer` → the leader's `/raft`, over the member binding. The leader answers in the response, or later as its own `ReadIndexRes` call. The nesting is not one call chain. It builds up across separate calls, because each one inherits its object's newest incoming request.
+
+**Test of the mechanism (23:31 to 23:33Z).** The same two runs, while `ping.mjs` sent every learner about 22 shallow `/ping`s a second from outside. Both passed: p99 762 ms and 620 ms, 0 failed reads, leader 198 and 199 req/s, no `STEP_DOWN`, no depth failure. The leader's calls stayed at modelled hops 3 to 8. Nothing else changed.
+
+Milestone 0's prototype passed because its learners pulled entries inside their own read-index call. The leader never called a learner (`tests/m0/results/m0-wp2.md`, B0-18). M0-WP9 changed that so the leader feeds learners (`m0-wp9.md`, "Learners fed by the leader"), and that change closed the loop. In production, edge reads arriving at a learner would reset its depth, but a learner whose reads arrive more slowly than the leader's calls would still climb.
+
+### The fix, at the cause: no call cycle between a leader and a learner
+
+Each learner forms a two-way call cycle with the leader: `ReadIndex` calls one way, and AppendEntries plus delayed `ReadIndexRes` calls the other. That cycle is what lets the runtime's depth grow with no bound. The fix makes calls flow one way at a time, in the host's transport. `crates/raft` does not change, and neither do any of its messages.
+
+- **Hold for a calling learner.** While a learner has a call in progress at this member, or called it in the last `CALL_DEADLINE`, every message for that learner is held. The held messages go in the response to the learner's next call, ahead of that call's own replies, so a learner applies the entries before it grants the reads. A learner that stops calling gets its held messages as calls from the 100 ms ticker. An idle learner, one serving only feed polls, is called as before.
+- **Answer a read index in its own call.** A `ReadIndex` the leader cannot answer at once, because it needs a round, holds its response for up to 500 ms for the answer. Before, the answer went back as the leader's own call.
+
+With both rules, the leader calls a learner only while that learner is not calling it. A learner's calls are then charged to its own newest outside request, and the leader's calls sit one hop above those.
+
+### The fix as built: `06762a2`
+
+- `workers/site/src/callers.rs` holds `Callers`, a per-learner record of calls in progress and the last call's time, with the messages held for each learner. `Host::send` passes every envelope through `Callers::route`. A learner with a call open here, or one that called within `QUIET` (1 s), gets the message held. Anything else leaves as a call (`Host::call`), as before. The 100 ms ticker sends what `Callers::due` returns: the held messages of a learner that has not called for `QUIET`. Voters are never held.
+- `/raft` takes the held messages into the response to a learner's call, ahead of the call's own replies, after the output gate. A learner's `ReadIndex` that the leader could not answer at once waits in the call, up to `READ_INDEX_HOLD` (500 ms), for its `ReadIndexRes` to be held for it.
+- The test `a_learner_that_calls_the_leader_is_never_called_back_so_depth_stays_bounded` models the runtime's rule: each call leaves at its sender's newest incoming depth plus one. It drives one leader and one learner for 30 s with `read_bench`'s pattern and no pushes. The old routing nests past 16, and the test asserts it does. With `Callers`, every call stays at depth 3. A second test covers holding, `QUIET`, and sending again.
+- `crates/raft` is unchanged, so the long sweep and Porcupine do not apply.
+
+### First gate runs on the fix (01:15 to 01:21Z): 4 of 6 pass, and the depth failures are gone
+
+Deployed `06762a2` at 01:13Z: `graft-m2b-site-a` `3bbbc8a9` (first phase `c35e923f`), `-b` `1fc03ca7` (`041b2aae`), `-c` `be45c2d5` (`442d7cfe`), wasm `47c97bc8…`. All 19 members were then sent `/reset` so each one runs it.
+
+| Run | Leader req/s | Worst learner p99 | Failed reads | Depth failures | `STEP_DOWN` | Deepest modelled hop | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 01:15:55 | 244 | 851 ms | 0 | 0 | 0 | 6 | Pass |
+| 01:16:56 | 248 | 564 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:17:58 | 249 | 775 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:19:00 | 251 | 1,097 ms (slot 8) | 0 | 0 | 0 | 4 | Fail |
+| 01:20:03 | 246 | 603 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:21:04 | 247 | 1,729 ms (slot 0) | 0 | 0 | 0 | 6 | Fail |
+
+The leader made 334 calls in the first run, 114 of them to learners, and none failed. In the failing runs, one learner each had one slow second (slot 8 at 13 s, max 1,290 ms; slot 0 at 7 s, max 2,028 ms). Every other learner's p99 was under 900 ms.
+
+Slot 0 in the 01:21 run: batch 142 left at 7,087 ms and reached the leader at 9,058 ms. Its resend after `CALL_DEADLINE`, at 8,139 ms, also reached the leader at 9,059. Meanwhile the leader took 295 batches from other learners on time. Once `QUIET` had passed, the leader called slot 0 twice, at 8,230 and 8,330. Slot 0 applied the first at 8,309, but both answers took 825 and 751 ms. So for about 2 s, nothing left slot 0, and the learner's other work kept running. That matches its storage confirm stalling: the output gate holds every outgoing call and response until the writes are durable. Slot 0 had just applied an entry at 7,087. This is not yet measured, so the next build times every member's storage confirm.
+
+### Second set on the fix, with confirm times (01:29 to 01:35Z): 4 of 6 pass
+
+`1808695` adds each storage confirm's time to the trace. Deployed at 01:28Z (`graft-m2b-site-a` `219251d9`, `-b` `c936463d`, `-c` `9607dd62`; first phases `694a4e5b`, `c65d57dd`, `6f9a1a83`; wasm `16638bcc…`), then all 19 members were reset.
+
+| Run | Leader req/s | Worst learner p99 | Failed reads | Slowest storage confirm | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| 01:30:16 | 240 | 723 ms | 0 | 302 ms | Pass |
+| 01:31:18 | 239 | 749 ms | 0 | 355 ms | Pass |
+| 01:32:20 | 246 | 782 ms | 0 | 407 ms | Pass |
+| 01:33:23 | 244 | 1,382 ms (slot 8, site 2) | 0 | 244 ms | Fail |
+| 01:34:25 | 237 | 1,009 ms (slot 8, site 2) | 0 | 378 ms | Fail |
+| 01:35:28 | 236 | 951 ms | 0 | 522 ms | Pass |
+
+There were no depth failures, no `STEP_DOWN`, and no failed reads in any of the 12 runs on the fix. Storage confirms are not the tail: the slowest was 522 ms, and slot 8's confirms were 31 to 50 ms around its slow second.
+
+What remains is a single `ReadIndex` call, from a learner on site 2 (apac) to the leader on site 0 (enam), whose answer is lost or late. In the 01:33 run, slot 8's batch 42 left at 9,970 ms and never reached the leader. The leader recorded taking batches 41 (9,791) and 43, and nothing for 42 until the resend. `tick_remote` resent it at `CALL_DEADLINE` (1 s), and that resend reached the leader in 71 ms. The 1 s of reads queued behind the one batch in flight therefore waited 1 s more than their round trip, so the worst reads came to 1.4 to 1.6 s. Nothing else on the learner or the leader stalled: the leader took 15 to 20 batches every 100 ms the whole time. In the 01:35 run, 6 learners' calls all took 619 to 694 ms at 10.8 s, with most of the time on the reply's way back. That was one network event on the enam–apac path. Those runs fall inside the gate only because the lost call is rare.
+
+That is the "batches queue behind the single in-flight one" case. Here it is hit by one call lost on the network, where before it was hit by every call being refused. The learner waits `CALL_DEADLINE` before it resends.
+
+### Second change for the tail: `e174090`, a learner hedges a slow call
+
+A learner's call that has no answer after `HEDGE` (500 ms) is sent once more (`Host::hedge`), and the replies of both copies are stepped. The trace shows the leader answering in 9 to 130 ms whenever the call reaches it. The 1 to 2 s calls were network delays on one call between apac and enam, while the next call went through at once. Raft already ignores a second answer to the same batch or round, so the copy changes no state. The copy is a call from the learner to the leader, like the original, so it adds no call into the learner and no depth. `crates/raft` is still unchanged.
+
+This trades one extra call for each learner call slower than 500 ms. In the 01:29 to 01:35 runs that was under 30 calls per run against the leader's 7,000, at most 0.4%.
+
+### B0-18 on `e174090`: 6 of 6 pass
+
+Deployed at 01:48Z: `graft-m2b-site-a` `c111379f` (first phase `380438a5`), `-b` `2baa447f` (`761a0d93`), `-c` `b62b3d2a` (`28177423`), as `wrangler deployments list` shows at 02:10Z. Wasm `2b463b0b…`, image `graft-m1-site-gitshard-git@sha256:8fa9abd4…`. All 19 members were reset at 01:49:52 to 01:49:57. Each run: `node tests/m3/wp5/b0-18.ts --repo 65539`, 16 learners × 1,000 read-index reads/s for 30 s, 10 pushes/s.
+
+| Run (end) | Leader site | Leader req/s | Reads/s | Learner p50 (median) | Worst learner p99 | Failed reads | Pushes ok | Depth failures | `STEP_DOWN` | Hedged calls | Deepest modelled hop | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 01:50:24 | 0 | 243 | 16,000 | 183 ms | 853 ms (slot 2, site 2) | 0 | 300/301 | 0 | 0 | 5 | 6 | **Pass** |
+| 01:51:26 | 0 | 244 | 16,000 | 193 ms | 615 ms (slot 0, site 0) | 0 | 301/301 | 0 | 0 | 2 | 4 | **Pass** |
+| 01:52:28 | 0 | 247 | 16,000 | 189 ms | 589 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:53:31 | 0 | 249 | 16,000 | 190 ms | 565 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:54:34 | 0 | 248 | 16,000 | 191 ms | 560 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:55:36 | 0 | 248 | 16,000 | 191 ms | 644 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+
+- The leader ran at 243 to 249 req/s, against the 700 limit. That is above the 172 to 206 before the fix, because learners no longer fail calls or wait out step-downs. It is still under 36% of the limit.
+- The 7 hedged calls were all from slot 2 (site 2, apac), and every copy was answered in 199 to 243 ms. In 4 of the 6 runs no call was slow enough to hedge. These six runs show that the fix leaves no depth failures and no step-downs. They show the hedge working only on those 7 calls, not across many network events. Over this round's 18 runs on the fix, the share of runs with a slow call was 4 of 18.
+
+### BF-28 and BF-29 rechecks
+
+- **BF-28 hosted: Pass**, in every one of this round's 30 B0-18 runs, including the six above. There are 19 members, 19 distinct `(site, do_name)` objects, and 19 distinct boot ids. 16 learners sit on voter sites, 6 of them on one site, and every learner is a follower answering as itself.
+- **BF-29 on `repo:65539`: not run to the end (01:57Z).** The fault went on site 2 and the first 22 real pushes committed. Then every git read of `m2b/bf29`, and of `m2b/smoke` as well, answered 500 from the shard's `PUT /refs`: `git update-ref … trying to write ref 'refs/heads/b018/1793964461765/249' with nonexistent object a6e19c9c…`. Those refs come from B0-18's own pushes, since `b0-18.ts` pushes made-up ids through `/_bed/push`. They are the same "refs name objects that do not exist" the BF-29 section above found on `repo:65537`. Once `ca15db8`'s shard image runs, the shard rebuilds its refs on catch-up and refuses them. So B0-18's driver has made both repositories unreadable over git. This is not a regression from this round's fix: the member and raft paths are unchanged for voters, and the 500 comes from the git shard container. The fault was cleared (`/_bed/fault?off=1`).
+- **BF-29 on a fresh repository: Pass (02:04 to 02:07Z).** `m2b/bf29r` (`repo:65540`) was seeded by `tests/m1/integ/seed.ts` and added to `~/.graft-m2b/repos.json`. Then `tests/m3/wp5/bf29.sh` ran with site 2 down and 30 pushes. Entries 1 to 40 were archived into buckets 0 and 1 at index 42, and 104 objects were promoted. The leader and site 1 then held `truncatedTo 40`. Site 2 rejoined 12 s after the fault was cleared, with one install: one batch of 1,205 ms (1,249 ms in total), 20,263 bytes, 3 rows, 40 entries, 38 request rows, peak wasm memory 1.8 MB. At index 53 all three members matched: core `5f9ab490…`, metadata `0ab084ce…`, 51 request rows, digest `5700cc5d190a`.
+- `bf29.sh` put the writer token in the git URL and the bed token on curl's argv. `e04e4a2` passes the git credential through `GIT_CONFIG_*` environment variables and the curl header through `-H @<(printf …)`, so neither appears in `ps`. A scan of `/tmp/b018` found no token in any driver output or log.
+- `repo:65537` and `repo:65539` stay unreadable over git until their made-up `b018/*` refs are removed or `b0-18.ts` pushes real objects. That is a driver fault, left open.
+
+### Checks (at `e174090`)
+
+- `cargo fmt --check`: clean.
+- `cargo clippy` for `workers/site` on wasm32, with and without `test-faults`, `-D warnings`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: 455 passed, 0 failed. These include `callers::a_learner_that_calls_the_leader_is_never_called_back_so_depth_stays_bounded`. That test models the runtime's depth rule: the old routing passes 16 and the new routing stays at 3. They also include the `QUIET` and `due` test.
+- `git diff main -- crates/raft` is empty, so the long sim sweep and Porcupine do not apply this round.
+
+### What is deployed (02:10Z)
+
+All on `graft-m2b`, `test-faults` builds of `e174090`, wasm `2b463b0b…`, git shard image `graft-m1-site-gitshard-git@sha256:8fa9abd46a0a…`:
+
+- `graft-m2b-site-a` `c111379f`, `-b` `2baa447f`, `-c` `b62b3d2a` (01:48Z; first phases `380438a5`, `761a0d93`, `28177423`).
+- `graft-m2b-edge` `b2309a5a` (11:23Z on 2026-11-06), unchanged. The edge's site fault is off.
+- All 19 members of `repo:65539` were reset at 01:49:5x and run `e174090`.
+- No orb service is running.
+
+### Design sentences this contradicts or extends
+
+- "Each learner adds at most 20 read-index calls/s (one in flight, 50 ms floor), so 16 add 320/s and serve about 16,000 reads/s [inference]" (`design/DESIGN.md`, "Scale", row "Hot group reads, learners"). The rate holds: the leader measured 243 to 249 req/s. The row leaves out a second limit that a learner adds. When a leader calls learners that also call it, the runtime's subrequest depth (16) grows by 2 for each exchange. The runtime charges an object's outgoing calls to its newest incoming request, even after that request has finished. At 16 learners this ran the leader's own AppendEntries into the limit and tripped `STEP_DOWN`. The design should say that a member never calls a learner while that learner is calling it, and that held messages ride the learner's next call.
+- "Members reach each other through Durable Object bindings" (`design/DESIGN.md`, "Shape"). That still holds, but nothing in the design bounds the nesting of member-to-member calls. Any two members that call each other while both are busy build the same ratchet. Voters do not hit it today, because a follower does not call its leader at a high rate.
+- "A learner does the same with one request in flight and at most one every 50 ms" (`design/DESIGN.md`, "Shape", `fresh`). With one request in flight, one call delayed 1 to 2 s on the network (apac to enam) holds every queued read until `CALL_DEADLINE`. A learner needs to hedge a slow call (`HEDGE`, 500 ms) to keep p99 under 1 s.
+- Milestone 0's "Learners fed by the leader" (`tests/m0/results/m0-wp9.md`) is the change that closed the call cycle. Milestone 0's learners pulled entries inside their own read-index call.
+- "Any new version of a site script resets its members the same way" (`design/DESIGN.md`, "Shape"; also "Install operations", Tools). On this install a site day did not restart busy members: at 22:58Z the three voters kept running the old version until each one was sent `/reset`. Every deploy this round was followed by `/reset` on all 19 members.
+- `QUIET` (1 s), `READ_INDEX_HOLD` (500 ms) and `HEDGE` (500 ms) are [guess]. They held for these runs, and nothing else measured them.
+
+### Commits
+
+On `b0-18`, not pushed. `main` was merged at `9a83fa4`:
+
+- `dd034c4`, `aa503a4`, `91007ea`, `95bad0a`, `07f545d`, `8e285fa`, `eb64e4e`, `9f70438`, `0968532`, `80b0eec`, `2f23a83`, and this one: notes in this section. `95bad0a` also adds `b0-18.ts --learners`.
+- `91bf03e` site: test installs trace each read-index batch, applied moves, and ticker lag in `/stats`; `read_bench` samples one learner's reads.
+- `29c667a` site: test installs model each member call's nesting depth (`x-graft-hop`) and count calls by hop.
+- `06762a2` site: the fix. A member never calls a learner back while it calls; held messages ride the learner's next call; a `ReadIndex` waits in its own call for the answer. Adds `workers/site/src/callers.rs` and its tests.
+- `e04e4a2` tests: `bf29.sh` keeps tokens off argv.
+- `1808695` site: test installs trace each storage confirm's time.
+- `e174090` site: a learner's call unanswered after 500 ms is sent once more.

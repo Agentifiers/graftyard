@@ -15,7 +15,11 @@ import { parseArgs } from "node:util";
 const { values: opt } = parseArgs({ options: {
   repo: { type: "string" }, rate: { type: "string", default: "1000" }, seconds: { type: "string", default: "30" },
   load: { type: "string", default: "enam:6000,weur:5000,apac:5000" }, place: { type: "boolean", default: false },
-  out: { type: "string", default: "/tmp/m3h/b0-18" },
+  out: { type: "string", default: "/tmp/m3h/b0-18" }, pushes: { type: "string", default: "10" },
+  // One learner slot that also returns every read's start, latency, and end (`read_bench`'s `samples`).
+  "trace-slot": { type: "string", default: "0" },
+  // Only the first N learners read (the rest stay idle followers of the leader); 0 for all.
+  learners: { type: "string", default: "0" },
 } });
 const TOOLS = process.env.GRAFT_TOOLS_EDGE!, EDGE = process.env.GRAFT_EDGE!;
 const TOK = readFileSync(new URL("../../m0/.m0-token", import.meta.url), "utf8").trim();
@@ -75,12 +79,15 @@ for (let k = 0; k < 30; k++) {
     body: JSON.stringify({ ref: `refs/heads/b018/warm/${k}`, expect: null, new: randomBytes(20).toString("hex") }) }).catch(() => {});
   await new Promise((r) => setTimeout(r, 1000));
 }
-await member(lead, "/stats?reset=1");
+// Every member's counters start at the run, so each one's `/stats` afterwards (calls by peer, with their failures'
+// error text) covers the run alone.
+await Promise.all([...cfg.voters, ...learners].map((m: any) => member(m.site, "/stats?reset=1", undefined, m.do_name)));
 const t0 = Date.now();
 let pushes = 0, pushOk = 0;
 const writes = (async () => {
-  while (Date.now() - t0 < seconds * 1000) {
-    const due = t0 + pushes * 100;
+  const every = 1000 / Number(opt.pushes);
+  while (Number(opt.pushes) > 0 && Date.now() - t0 < seconds * 1000) {
+    const due = t0 + pushes * every;
     if (due > Date.now()) await new Promise((r) => setTimeout(r, due - Date.now()));
     const k = pushes++;
     fetch(`${EDGE}/_bed/push?repo=${opt.repo}`, { method: "POST", headers: { "x-bed-token": BED, authorization: `token ${WRITER}` },
@@ -88,10 +95,15 @@ const writes = (async () => {
       .then((r) => r.json()).then((v: any) => { if (v.ok || v.outcome || v.done) pushOk++; }).catch(() => {});
   }
 })();
-const runs = await Promise.all(learners.map((l) =>
-  member(l.site, "/read_bench", { rate, secs: seconds }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
+const readers = Number(opt.learners) > 0 ? learners.slice(0, Number(opt.learners)) : learners;
+const runs = await Promise.all(readers.map((l) =>
+  member(l.site, "/read_bench", { rate, secs: seconds, samples: l.slot === Number(opt["trace-slot"]) }, l.do_name, seconds * 1000 + 60_000).then((r) => ({ l, r }))));
 await writes;
 const stats = (await member(lead, "/stats")).v;
+const all = await Promise.all([...cfg.voters, ...learners].map(async (m: any) =>
+  ({ site: m.site, do_name: m.do_name, stats: (await member(m.site, "/stats", undefined, m.do_name)).v })));
+mkdirSync(opt.out!, { recursive: true });
+writeFileSync(`${opt.out}/b0-18-${t0}-stats.json`, JSON.stringify({ stats: all, reads: runs.map((x) => ({ slot: x.l.slot, site: x.l.site, r: x.r?.v ?? x.r })) }));
 const inbound: Record<string, number> = stats.inbound ?? {};
 const leaderReqs = Object.values(inbound).reduce((a, b) => a + b, 0);
 const ok = runs.filter((x) => x.r?.v?.ok);
@@ -103,7 +115,7 @@ const summary = {
   perLearner: ok.map((x) => ({ slot: x.l.slot, site: x.l.site, n: x.r.v.n, ok: x.r.v.ok, failed: x.r.v.failed, p50: x.r.v.p50, p99: x.r.v.p99, max: x.r.v.max })),
   leader: { site: lead, inbound, reqsPerS: Math.round(leaderReqs / (stats.inboundMs / 1000)), windowMs: stats.inboundMs },
   pushes: { sent: pushes, ok: pushOk },
-  verdict: leaderReqs / (stats.inboundMs / 1000) < 700 && Math.max(...ok.map((x) => x.r.v.p99)) <= 1000 && ok.length === learners.length ? "Pass" : "Fail",
+  verdict: leaderReqs / (stats.inboundMs / 1000) < 700 && Math.max(...ok.map((x) => x.r.v.p99)) <= 1000 && ok.length === readers.length ? "Pass" : "Fail",
 };
 mkdirSync(opt.out!, { recursive: true });
 writeFileSync(`${opt.out}/b0-18-${t0}.json`, JSON.stringify(summary, null, 2));

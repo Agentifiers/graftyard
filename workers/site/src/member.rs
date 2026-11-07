@@ -33,8 +33,12 @@ use worker::*;
 use crate::family::{self, Family, Kind, Source};
 #[cfg(feature = "test-faults")]
 use crate::faults::Kill;
-use crate::host::{self, Host, err, within};
+use crate::host::{self, Host, Trace, err, within};
 use crate::{SiteEnv, lookup, now_ms};
+
+/// How long a learner's `ReadIndex` call stays open for the leader's answer when it needs a round [guess]: under
+/// the asker's CALL_DEADLINE, past one round to the far voter (230 ms measured, `tests/m2/results/install-m2b.md`).
+const READ_INDEX_HOLD: Duration = Duration::from_millis(500);
 
 /// Round trips per peer; the row keeps their median.
 const RTT_SAMPLES: usize = 20;
@@ -217,6 +221,26 @@ impl DurableObject for Member {
     }
 }
 
+/// One hop of the depth gauge: call this object's own `/depth_hop` with `k + 1`. The deepest hop reached, and the
+/// refusal that ended the chain.
+#[cfg(feature = "test-faults")]
+async fn depth_hop(env: &Env, me: &MemberRef, k: u64) -> Value {
+    if k >= 40 {
+        return json!({ "hops": k, "end": "cap" });
+    }
+    let call = async {
+        let stub = SiteEnv::read(env)?.member(env, me.site, &me.do_name)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(json!({ "k": k + 1 }).to_string().into()));
+        let mut res = stub.fetch_with_request(Request::new_with_init("https://member/depth_hop", &init)?).await?;
+        res.json::<Value>().await
+    };
+    match call.await {
+        Ok(v) => v,
+        Err(e) => json!({ "hops": k, "end": e.to_string() }),
+    }
+}
+
 fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>) -> Value {
     let r = m.meta();
     json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 })
@@ -263,6 +287,8 @@ impl<F: Family> Routes<F> {
     async fn fetch(&self, mut req: Request, url: Url) -> Result<Response> {
         // Every request this object takes, by route: B0-18's leader load.
         *self.host.stats.borrow_mut().inbound.entry(url.path().to_owned()).or_insert(0) += 1;
+        #[cfg(feature = "test-faults")]
+        self.host.hop.set(req.headers().get("x-graft-hop").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(2));
         // Inside an injected `down_ms` window the member answers no Raft or edge call; the harness reads still work.
         #[cfg(feature = "test-faults")]
         {
@@ -296,9 +322,7 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/rtt") => Response::from_json(&rtt_rows(&self.host.state, &self.host.env)?),
             (Method::Post, "/raft") => {
                 let body = req.bytes().await?;
-                let r = self.raft(&body);
-                self.host.settled().await;
-                r
+                self.raft(&body).await
             }
             (Method::Post, "/commit") => {
                 let body = match self.decode::<CommitReq<F>>(&req.bytes().await?) {
@@ -432,6 +456,28 @@ impl<F: Family> Routes<F> {
                 self.ready_or(|| self.record(body)).await
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
+            // B0-18's depth gauge: how many nested object calls are left from this member's ambient context. After
+            // `afterMs`, a task (charged, as every send is, to the newest incoming request) starts a chain of calls
+            // to this object's own `/depth_hop`, each made at once inside the previous hop's handler, and answers
+            // the hops it reached before the platform refused one.
+            (Method::Post, "/depth_left") => {
+                let body: Value = req.json().await?;
+                Delay::from(Duration::from_millis(body["afterMs"].as_u64().unwrap_or(20))).await;
+                let (tx, rx) = futures_channel::oneshot::channel();
+                let me =
+                    self.host.core.borrow().as_ref().map(|c| c.join.me.clone()).ok_or_else(|| err("not joined"))?;
+                let h = self.host.clone();
+                wasm_bindgen_futures::spawn_local(async move {
+                    let _ = tx.send(depth_hop(&h.env, &me, 0).await);
+                });
+                Response::from_json(&rx.await.unwrap_or_else(|_| json!({ "error": "dropped" })))
+            }
+            (Method::Post, "/depth_hop") => {
+                let k = req.json::<Value>().await?["k"].as_u64().unwrap_or(0);
+                let me =
+                    self.host.core.borrow().as_ref().map(|c| c.join.me.clone()).ok_or_else(|| err("not joined"))?;
+                Response::from_json(&depth_hop(&self.host.env, &me, k).await)
+            }
             (Method::Post, "/read_bench") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.read_bench(body)).await
@@ -612,18 +658,75 @@ impl<F: Family> Routes<F> {
         r
     }
 
-    /// Steps each envelope and answers with the envelopes addressed back to the caller.
-    fn raft(&self, body: &[u8]) -> Result<Response> {
+    /// Steps each envelope and answers with the envelopes addressed back to the caller. A learner's call also takes
+    /// what this member held for it (`crate::callers`), and a `ReadIndex` the leader could not answer at once, because
+    /// it needs a round, keeps the call open up to `READ_INDEX_HOLD` for its answer: this member never calls a learner
+    /// back while it calls.
+    async fn raft(&self, body: &[u8]) -> Result<Response> {
         if !self.host.joined() {
             return Response::error("member not joined", 409);
         }
         let envs: Vec<raft::Envelope<F::Ev>> = raft::codec::from_bytes(body).map_err(|e| err(e.to_string()))?;
+        let Some(from) = envs.first().map(|e| e.from) else { return self.raft_reply(Vec::new()) };
+        self.host.callers.borrow_mut().began(from, now_ms());
+        let r = self.raft_steps(from, envs).await;
+        // The output gate: the reply leaves only after the writes it may rest on.
+        self.host.settled().await;
+        let r = match r {
+            Ok(mut back) => {
+                let mut out = self.host.callers.borrow_mut().take(from);
+                out.append(&mut back);
+                for e in &out {
+                    if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
+                        self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+                    }
+                }
+                self.raft_reply(out)
+            }
+            Err(e) => Err(e),
+        };
+        self.host.callers.borrow_mut().ended(from, now_ms());
+        r
+    }
+
+    async fn raft_steps(&self, from: SiteId, envs: Vec<raft::Envelope<F::Ev>>) -> Result<Vec<raft::Envelope<F::Ev>>> {
         let mut back = Vec::new();
+        let mut asked = Vec::new();
         for e in envs {
-            let from = e.from;
-            let (_, out) = self.host.step(|m, t| m.step(t, from, e.msg))?;
+            if let raft::Message::ReadIndex { batch } = &e.msg {
+                self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
+                asked.push(*batch);
+            }
+            self.host.trace_res(&e, false);
+            let (_, out) = self.host.step(|m, t| m.step(t, e.from, e.msg))?;
             back.extend(self.host.dispatch(out, Some(from)));
         }
+        let answered = |b: &[raft::Envelope<F::Ev>], batch: u64| {
+            b.iter().any(|e| matches!(e.msg, raft::Message::ReadIndexRes { batch: x, .. } if x == batch))
+        };
+        // Only a learner's call waits: a voter's answer leaves as a call, which forms no cycle.
+        if graftyard_types::learner_slot(from).is_none() {
+            return Ok(back);
+        }
+        let end = now_ms() + READ_INDEX_HOLD.as_millis() as u64;
+        for batch in asked {
+            while !answered(&back, batch)
+                && !self.host.callers.borrow().holds(from, |e| answered(std::slice::from_ref(e), batch))
+            {
+                let left = end.saturating_sub(now_ms());
+                if left == 0 {
+                    break;
+                }
+                let rx = self.host.callers.borrow_mut().wake(from);
+                if !matches!(within(Duration::from_millis(left), rx).await, Some(Ok(()))) {
+                    break;
+                }
+            }
+        }
+        Ok(back)
+    }
+
+    fn raft_reply(&self, back: Vec<raft::Envelope<F::Ev>>) -> Result<Response> {
         let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
         Ok(res)
@@ -870,6 +973,9 @@ impl<F: Family> Routes<F> {
             "prsyncSent": s.prsync_sent,
             "prsyncFirst": s.prsync_first,
             "peers": s.peers,
+            "calls": s.calls,
+            "trace": s.trace,
+            "hops": s.hops,
         });
         if reset {
             s.commit_ms.clear();
@@ -882,6 +988,10 @@ impl<F: Family> Routes<F> {
             s.commands = 0;
             s.failed_calls = 0;
             s.peers.clear();
+            s.calls.clear();
+            s.trace.clear();
+            s.hops.clear();
+            s.apply_ms.clear();
             s.inbound.clear();
             s.inbound_since = now_ms();
         }
@@ -1336,6 +1446,8 @@ impl<F: Family> Routes<F> {
     #[cfg(feature = "test-faults")]
     async fn read_bench(&self, body: Value) -> Result<Response> {
         let rate = body["rate"].as_u64().unwrap_or(1_000).max(1);
+        // `{"samples": true}`: every read's start offset, latency, and end (0 ok, 1 not leader, 2 dropped, 3 timeout).
+        let samples = body["samples"].as_bool().unwrap_or(false);
         let secs = body["secs"].as_u64().unwrap_or(30);
         let n = rate * secs;
         let t0 = now_ms();
@@ -1355,8 +1467,13 @@ impl<F: Family> Routes<F> {
                     let rx = self.host.wait_read(id, json!({ "ranges": true }));
                     let (tx, done) = futures_channel::oneshot::channel();
                     wasm_bindgen_futures::spawn_local(async move {
-                        let ok = matches!(within(Duration::from_secs(10), rx).await, Some(Ok(Ok(_))));
-                        let _ = tx.send((ok, now_ms().saturating_sub(at)));
+                        let end = match within(Duration::from_secs(10), rx).await {
+                            Some(Ok(Ok(_))) => "ok",
+                            Some(Ok(Err(_))) => "notLeader",
+                            Some(Err(_)) => "dropped",
+                            None => "timeout",
+                        };
+                        let _ = tx.send((end, at, now_ms().saturating_sub(at)));
                     });
                     waits.push(done);
                 }
@@ -1365,10 +1482,25 @@ impl<F: Family> Routes<F> {
             self.host.dispatch(out, None);
         }
         let (mut lat, mut failed) = (Vec::with_capacity(waits.len()), 0u64);
+        // Failures by kind, and per second of the run: reads answered, failed, and the slowest answer.
+        let mut ends: std::collections::BTreeMap<&'static str, u64> = std::collections::BTreeMap::new();
+        let mut per_s: std::collections::BTreeMap<u64, (u32, u32, u64)> = std::collections::BTreeMap::new();
+        let mut each = Vec::new();
         for done in waits {
-            match done.await {
-                Ok((true, ms)) => lat.push(ms),
-                _ => failed += 1,
+            let (end, at, ms) = done.await.unwrap_or(("dropped", t0, 0));
+            if samples {
+                let code = ["ok", "notLeader", "dropped", "timeout"].iter().position(|e| *e == end).unwrap_or(2);
+                each.push([at.saturating_sub(t0), ms, code as u64]);
+            }
+            *ends.entry(end).or_insert(0) += 1;
+            let sec = per_s.entry(at.saturating_sub(t0) / 1000).or_default();
+            if end == "ok" {
+                lat.push(ms);
+                sec.0 += 1;
+                sec.2 = sec.2.max(ms);
+            } else {
+                failed += 1;
+                sec.1 += 1;
             }
         }
         lat.sort_unstable();
@@ -1376,7 +1508,9 @@ impl<F: Family> Routes<F> {
         let site = SiteEnv::read(&self.host.env)?.id.0;
         Response::from_json(&json!({
             "site": site, "n": n, "ok": lat.len(), "refused": refused, "failed": failed, "ms": now_ms() - t0,
-            "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(),
+            "p50": pct(0.5), "p99": pct(0.99), "max": lat.last(), "t0": t0, "ends": ends,
+            "perSecond": per_s.iter().map(|(k, (ok, f, max))| json!([k, ok, f, max])).collect::<Vec<_>>(),
+            "samples": samples.then_some(each),
         }))
     }
 

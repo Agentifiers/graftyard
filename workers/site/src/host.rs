@@ -140,7 +140,61 @@ pub struct Stats {
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
+    /// Every member-to-member call this member sent, by message kind: send to answer, in ms (B0-18's trace).
+    pub calls: BTreeMap<&'static str, CallTimes>,
+    /// Test installs: B0-18's read-index trace, oldest first, each `[at, kind, peer, batch, index, ms]` (`Trace`).
+    pub trace: VecDeque<[u64; 6]>,
+    /// Test installs: member-to-member calls by modelled hop (`Host::hop`): `[ok, failed for depth, failed otherwise]`.
+    pub hops: BTreeMap<u64, [u32; 3]>,
 }
+
+/// The kinds in `Stats::trace`. `peer` is the other member's address; `index` is the read index (0 for none), the
+/// applied index, or a call's end (0 ok, 1 late, 2 failed, 3 failed late); `ms` is a call's time or a lag.
+#[derive(Clone, Copy)]
+pub enum Trace {
+    /// A `ReadIndex` left, to the leader.
+    IndexSent = 1,
+    /// That call ended.
+    IndexEnded = 2,
+    /// A `ReadIndexRes` was stepped here: `ms` 0 from the answer to this member's own call, 1 from a call the leader
+    /// made.
+    ResStepped = 3,
+    /// This member's applied index moved to `index`.
+    Applied = 4,
+    /// The leader took a `ReadIndex`.
+    IndexTaken = 5,
+    /// The leader's `ReadIndexRes` left: `ms` 0 in the answer to the asker's call, 1 as its own call.
+    ResSent = 6,
+    /// The leader's own `ReadIndexRes` call ended.
+    ResEnded = 7,
+    /// The member's 100 ms ticker woke `ms` late.
+    Lag = 8,
+    /// A call to `peer` failed "Subrequest depth limit exceeded": `batch` is its message kind's `Call::msg` index,
+    /// `index` its modelled hop (`Host::hop`).
+    DepthFail = 9,
+    /// A transaction's storage confirm (`sync()`) took `ms`; `index` is the applied index it covered.
+    Confirm = 10,
+    /// A learner's call to `peer` had no answer within `HEDGE`, and the same envelope was sent again; `index` is 1 if
+    /// the copy was answered, `ms` its time.
+    Hedge = 11,
+}
+
+/// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
+#[cfg(feature = "test-faults")]
+const TRACE_MAX: usize = 60_000;
+
+/// One message kind's calls: how many, how they ended, their times, and the slowest, newest last.
+#[derive(Default, serde::Serialize)]
+pub struct CallTimes {
+    pub ok: u32,
+    pub failed: u32,
+    pub ms: Vec<u32>,
+    /// Calls over `SLOW_CALL_MS`, each `{at, to, ms, end}`.
+    pub slow: VecDeque<Value>,
+}
+
+/// A call this slow is kept in `CallTimes::slow` [guess]: past the learner read gate's 1 s p99 less a round trip.
+const SLOW_CALL_MS: u32 = 500;
 
 /// Why a member-to-member call failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -235,6 +289,10 @@ struct Call {
     entries: usize,
     bytes: usize,
     at: u64,
+    /// A `ReadIndex` or `ReadIndexRes` call's batch.
+    batch: Option<u64>,
+    /// The call's modelled hop (`Host::hop`), set when it leaves.
+    hop: Cell<u64>,
 }
 
 impl Call {
@@ -262,7 +320,11 @@ impl Call {
             }
             _ => (None, 0),
         };
-        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms() }
+        let batch = match &e.msg {
+            raft::Message::ReadIndex { batch } | raft::Message::ReadIndexRes { batch, .. } => Some(*batch),
+            _ => None,
+        };
+        Call { to: e.to.0, msg, append, entries, bytes, at: now_ms(), batch, hop: Cell::new(0) }
     }
 }
 
@@ -312,6 +374,11 @@ pub async fn answer<T>(
 /// How long past CALL_DEADLINE a call is still awaited [guess]: the slowest AppendEntries a follower answered in the
 /// F43 logs took 2.0 s on the callee (`tests/m1/results/m1-f43.md`).
 const LATE_LIMIT: Duration = Duration::from_secs(10);
+
+/// How long a learner's call waits for its answer before the same envelope is sent once more (`Host::hedge`)
+/// [guess]: past the slowest answer an apac learner had from an enam leader in a normal second of B0-18 (p99 330 ms,
+/// `tests/m3/results/m3-wp5.md`), and half of CALL_DEADLINE.
+const HEDGE: Duration = Duration::from_millis(500);
 
 pub struct Core<F: Family> {
     pub m: raft::Member<F::C>,
@@ -377,9 +444,16 @@ pub struct Host<F: Family> {
     /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
     blocked: RefCell<Vec<(Ticket, RequestId, F::C)>>,
     leasing: Cell<bool>,
+    /// Messages for learners that are calling this member, held for their next call (`crate::callers`).
+    pub callers: RefCell<crate::callers::Callers<Envelope<F>>>,
     /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
     #[cfg(feature = "test-faults")]
     pub abandon: RefCell<BTreeSet<u64>>,
+    /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
+    /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
+    /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
+    #[cfg(feature = "test-faults")]
+    pub hop: Cell<u64>,
 }
 
 pub fn err(m: impl Into<String>) -> Error {
@@ -906,8 +980,11 @@ impl<F: Family> Host<F> {
             truncs: RefCell::new(VecDeque::new()),
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
+            callers: RefCell::new(Default::default()),
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
+            #[cfg(feature = "test-faults")]
+            hop: Cell::new(2),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -924,6 +1001,26 @@ impl<F: Family> Host<F> {
             *h.restore_error.borrow_mut() = Some(e.to_string());
         }
         h
+    }
+
+    /// Test installs: one `Stats::trace` entry, timed now.
+    #[cfg(feature = "test-faults")]
+    pub fn trace(&self, kind: Trace, peer: u8, batch: u64, index: u64, ms: u64) {
+        let mut s = self.stats.borrow_mut();
+        if s.trace.len() >= TRACE_MAX {
+            s.trace.pop_front();
+        }
+        s.trace.push_back([now_ms(), kind as u64, u64::from(peer), batch, index, ms]);
+    }
+
+    #[cfg(not(feature = "test-faults"))]
+    pub fn trace(&self, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+
+    /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
+    pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
+        if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
+            self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own));
+        }
     }
 
     /// The ticket a re-sent `NeedIdBlock` command now waits on.
@@ -1096,6 +1193,7 @@ impl<F: Family> Host<F> {
             return Err(err(format!("fold storage lost: {why}")));
         }
         if applied > applied0 {
+            self.trace(Trace::Applied, 0, 0, applied.0, 0);
             let events: usize = (applied0.0 + 1..=applied.0)
                 .filter_map(|x| core.m.entry_at(Index(x)))
                 .map(|e| match &e.body {
@@ -1326,10 +1424,13 @@ impl<F: Family> Host<F> {
         let truncs = self.truncs.borrow().back().map_or(0, |t| t.0);
         if !pending.is_empty() {
             let h = self.clone();
+            let began = now_ms();
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
                 }
+                let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
+                h.trace(Trace::Confirm, 0, 0, applied, now_ms().saturating_sub(began));
                 if let Some(l) = last {
                     // A truncation stepped after this transaction ran, before its confirm, caps what it vouches for.
                     let l = h.truncs.borrow().iter().filter(|(n, _)| *n > truncs).map(|(_, c)| *c).fold(l, u64::min);
@@ -1584,10 +1685,24 @@ impl<F: Family> Host<F> {
             crate::faults::count("abandoned_timeout_now");
             return;
         }
+        // A learner calling this member gets the message in the response to its next call, never as a call back.
+        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else { return };
+        self.call(e);
+    }
+
+    /// Sends `e` as a member-to-member call and steps the replies.
+    fn call(self: &Rc<Self>, e: Envelope<F>) {
         let h = self.clone();
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
             let call = Call::of(&e, body.len());
+            match (&e.msg, call.batch) {
+                (raft::Message::ReadIndex { .. }, Some(b)) => h.trace(Trace::IndexSent, e.to.0, b, 0, 0),
+                (raft::Message::ReadIndexRes { index, .. }, Some(b)) => {
+                    h.trace(Trace::ResSent, e.to.0, b, index.map_or(0, |(i, _)| i.0), 1)
+                }
+                _ => {}
+            }
             // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
             let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
             #[cfg(feature = "test-faults")]
@@ -1604,20 +1719,31 @@ impl<F: Family> Host<F> {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "fail_call")));
                 return h.call_failed(on_error);
             }
+            #[cfg(feature = "test-faults")]
+            call.hop.set(h.hop.get() + 1);
+            let answered = Rc::new(Cell::new(false));
+            if h.is_learner() {
+                h.hedge(to, body.clone(), call.hop.get(), answered.clone());
+            }
             let missed = || {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "no answer within CALL_DEADLINE")));
                 h.stats.borrow_mut().failed_calls += 1;
                 h.call_failed(on_miss);
             };
             // `answer` starts the limit's timer only once the deadline passed.
-            let (late, r) =
-                match answer(h.call_peer(to, body), Delay::from(raft::CALL_DEADLINE), Delay::from(LATE_LIMIT), missed)
-                    .await
-                {
-                    Answer::InTime(r) => (false, r),
-                    Answer::Late(r) => (true, r),
-                    Answer::Missed => return,
-                };
+            let (late, r) = match answer(
+                h.call_peer(to, body, call.hop.get()),
+                Delay::from(raft::CALL_DEADLINE),
+                Delay::from(LATE_LIMIT),
+                missed,
+            )
+            .await
+            {
+                Answer::InTime(r) => (false, r),
+                Answer::Late(r) => (true, r),
+                Answer::Missed => return,
+            };
+            answered.set(true);
             let replies = match r {
                 Ok(replies) => replies,
                 Err(pe) if late => return h.ended(&call, End::LateFailed(pe)),
@@ -1640,6 +1766,7 @@ impl<F: Family> Host<F> {
             h.ended(&call, if late { End::Late } else { End::Ok });
             for r in replies {
                 let from = r.from;
+                h.trace_res(&r, true);
                 if h.input(|m, t| m.step(t, from, r.msg)).is_err() {
                     break;
                 }
@@ -1663,6 +1790,55 @@ impl<F: Family> Host<F> {
             let v = s.append_ms.entry(c.to).or_default();
             if v.len() < SAMPLES_MAX {
                 v.push(ms);
+            }
+        }
+        let depth = matches!(&end, End::Failed(e) | End::LateFailed(e) if e.msg.contains("Subrequest depth"));
+        if !matches!(&end, End::Failed(e) if e.kind == CallFail::Deadline) {
+            let k = if matches!(end, End::Ok | End::Late) {
+                0
+            } else if depth {
+                1
+            } else {
+                2
+            };
+            s.hops.entry(c.hop.get()).or_default()[k] += 1;
+        }
+        if depth {
+            drop(s);
+            self.trace(Trace::DepthFail, c.to, 0, c.hop.get(), u64::from(ms));
+            s = self.stats.borrow_mut();
+        }
+        if let Some(b) = c.batch {
+            let kind = if c.msg == "readIndex" { Trace::IndexEnded } else { Trace::ResEnded };
+            let code = match &end {
+                End::Ok => 0,
+                End::Late => 1,
+                End::Failed(_) => 2,
+                End::LateFailed(_) => 3,
+            };
+            drop(s);
+            self.trace(kind, c.to, b, code, u64::from(ms));
+            s = self.stats.borrow_mut();
+        }
+        let ct = s.calls.entry(c.msg).or_default();
+        let ok = matches!(end, End::Ok | End::Late);
+        if ok {
+            ct.ok += 1
+        } else {
+            ct.failed += 1
+        }
+        if ct.ms.len() < SAMPLES_MAX {
+            ct.ms.push(ms);
+        }
+        if ms >= SLOW_CALL_MS || !ok {
+            let why = match &end {
+                End::Failed(e) | End::LateFailed(e) => format!("{}: {}", e.kind.name(), e.msg),
+                End::Late => "late".into(),
+                End::Ok => "ok".into(),
+            };
+            ct.slow.push_back(json!({ "at": c.at, "to": c.to, "ms": ms, "end": why }));
+            if ct.slow.len() > PEER_APPENDS {
+                ct.slow.pop_front();
             }
         }
         let p = s.peers.entry(c.to).or_default();
@@ -1701,7 +1877,7 @@ impl<F: Family> Host<F> {
     }
 
     /// One member-to-member call, with no deadline (`answer` adds it), and the cause of its failure.
-    async fn call_peer(&self, to: SiteId, body: Vec<u8>) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
+    async fn call_peer(&self, to: SiteId, body: Vec<u8>, hop: u64) -> std::result::Result<Vec<Envelope<F>>, PeerErr> {
         let (at, name) =
             self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member at address {}", to.0)))?;
         let site = SiteEnv::read(&self.env).map_err(|x| PeerErr::new(CallFail::SiteEnv, x))?;
@@ -1709,6 +1885,14 @@ impl<F: Family> Host<F> {
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(JsValue::from(js_sys::Uint8Array::from(body.as_slice()))));
         drop(body);
+        #[cfg(feature = "test-faults")]
+        {
+            let h = Headers::new();
+            let _ = h.set("x-graft-hop", &hop.to_string());
+            init.with_headers(h);
+        }
+        #[cfg(not(feature = "test-faults"))]
+        let _ = hop;
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
@@ -1719,6 +1903,37 @@ impl<F: Family> Host<F> {
         }
         let b = res.bytes().await.map_err(|x| PeerErr::new(CallFail::Body, x))?;
         codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|x| PeerErr::new(CallFail::Decode, x))
+    }
+
+    /// Whether this member is a learner.
+    fn is_learner(&self) -> bool {
+        self.core.borrow().as_ref().is_some_and(|c| graftyard_types::learner_slot(c.m.me()).is_some())
+    }
+
+    /// A learner's call with no answer within `HEDGE` is sent once more, and the copy's replies are stepped as they
+    /// arrive. A learner keeps one read-index batch in flight, so one call delayed on the network holds every read
+    /// queued behind it until the call ends or CALL_DEADLINE resends it: B0-18's last failures on `graft-m2b` were
+    /// single calls between apac and enam that took 1.1 to 2 s (`tests/m3/results/m3-wp5.md`). Raft takes the copy as
+    /// it takes any duplicate: a second answer to one batch or round is ignored. Both responses are stepped, so what
+    /// a leader held for this learner reaches it in either one.
+    fn hedge(self: &Rc<Self>, to: SiteId, body: Vec<u8>, hop: u64, answered: Rc<Cell<bool>>) {
+        let h = self.clone();
+        spawn_local(async move {
+            Delay::from(HEDGE).await;
+            if answered.get() || h.dying.get() {
+                return;
+            }
+            let at = now_ms();
+            let r = h.call_peer(to, body, hop).await;
+            h.trace(Trace::Hedge, to.0, 0, u64::from(r.is_ok()), now_ms().saturating_sub(at));
+            for e in r.unwrap_or_default() {
+                let from = e.from;
+                h.trace_res(&e, true);
+                if h.input(|m, t| m.step(t, from, e.msg)).is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when.
@@ -1902,6 +2117,7 @@ impl<F: Family> Host<F> {
 
     fn has_waiters(&self) -> bool {
         self.core.borrow().as_ref().is_some_and(|c| !c.waiters.is_empty() || !c.reads.is_empty())
+            || self.callers.borrow().holding()
     }
 
     /// Keeps `tick` running while inputs arrive or calls are held.
@@ -1915,8 +2131,13 @@ impl<F: Family> Host<F> {
         let w = Rc::downgrade(self);
         spawn_local(async move {
             loop {
+                let due = now_ms() + TICK.as_millis() as u64;
                 Delay::from(TICK).await;
                 let Some(h) = w.upgrade() else { return };
+                let lag = now_ms().saturating_sub(due);
+                if lag >= 50 {
+                    h.trace(Trace::Lag, 0, 0, 0, lag);
+                }
                 if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {
                     h.ticking.set(false);
                     return;
@@ -1932,6 +2153,10 @@ impl<F: Family> Host<F> {
         self.active_until.set(until);
         let ((), out) = r?;
         self.dispatch(out, None);
+        let due = self.callers.borrow_mut().due(now_ms());
+        for e in due {
+            self.call(e);
+        }
         Ok(())
     }
 
