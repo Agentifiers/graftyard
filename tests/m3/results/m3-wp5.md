@@ -373,3 +373,19 @@ That is the "batches queue behind the single in-flight one" case. Here it is hit
 A learner's call that has no answer after `HEDGE` (500 ms) is sent once more (`Host::hedge`), and the replies of both copies are stepped. The trace shows the leader answering in 9 to 130 ms whenever the call reaches it. The 1 to 2 s calls were network delays on one call between apac and enam, while the next call went through at once. Raft already ignores a second answer to the same batch or round, so the copy changes no state. The copy is a call from the learner to the leader, like the original, so it adds no call into the learner and no depth. `crates/raft` is still unchanged.
 
 This trades one extra call for each learner call slower than 500 ms. In the 01:29 to 01:35 runs that was under 30 calls per run against the leader's 7,000, at most 0.4%.
+
+### B0-18 on `e174090`: 6 of 6 pass
+
+Deployed at 01:48Z: `graft-m2b-site-a` `28177423` (first phase `380438a5`), `-b` `c111379f` (`761a0d93`), `-c` `2baa447f`, then `b62b3d2a` in the second phase. Wasm `2b463b0b…`, image `graft-m1-site-gitshard-git@sha256:8fa9abd4…`. All 19 members were reset at 01:49:52 to 01:49:57. Each run: `node tests/m3/wp5/b0-18.ts --repo 65539`, 16 learners × 1,000 read-index reads/s for 30 s, 10 pushes/s.
+
+| Run (end) | Leader site | Leader req/s | Reads/s | Learner p50 (median) | Worst learner p99 | Failed reads | Pushes ok | Depth failures | `STEP_DOWN` | Hedged calls | Deepest modelled hop | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 01:50:24 | 0 | 243 | 16,000 | 183 ms | 853 ms (slot 2, site 2) | 0 | 300/301 | 0 | 0 | 5 | 6 | **Pass** |
+| 01:51:26 | 0 | 244 | 16,000 | 193 ms | 615 ms (slot 0, site 0) | 0 | 301/301 | 0 | 0 | 2 | 4 | **Pass** |
+| 01:52:28 | 0 | 247 | 16,000 | 189 ms | 589 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:53:31 | 0 | 249 | 16,000 | 190 ms | 565 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:54:34 | 0 | 248 | 16,000 | 191 ms | 560 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+| 01:55:36 | 0 | 248 | 16,000 | 191 ms | 644 ms (slot 2, site 2) | 0 | 301/301 | 0 | 0 | 0 | 4 | **Pass** |
+
+- The leader ran at 243 to 249 req/s, against the 700 limit. That is above the 172 to 206 before the fix, because learners no longer fail calls or wait out step-downs. It is still under 36% of the limit.
+- The 7 hedged calls were all from slot 2 (site 2, apac), and every copy was answered in 199 to 243 ms. In 4 of the 6 runs no call was slow enough to hedge. These six runs show that the fix leaves no depth failures and no step-downs. They show the hedge working only on those 7 calls, not across many network events. Over this round's 18 runs on the fix, the share of runs with a slow call was 4 of 18.
