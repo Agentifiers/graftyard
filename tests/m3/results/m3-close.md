@@ -28,7 +28,7 @@ Everything ran on `graft-m1-*`. Nothing touched `graft-m2b-*` or `graft-m1-lin-*
   - Day 3 rebuilt from `0479288`, whose site code equals `420ae12`'s, and set `GRAFTYARD_AUDIT=1` [measured, `tests/m3/raw/close-siteday{1,2,3}.log`].
 - **Day 3's shard roll.** It ended early: `catchup` for repository 196625 got no answer within curl's 300 s. Afterward, all 42 running shard instances were on `…57f7e90c0891`, 196625's included. Only stopped instances still name older images [measured, the Containers API, 18:03Z].
 - **Edge versions.** The edge went through `5a651065` (32.9) and `b6e639de` (the link route and the bed read) before `8a824825` (the bed route's `kill`).
-- **Kid 2.** Kid 2's `PutVerifyingKey` is on `tokens:0` at index 24, beside kid 1's. The `MintWrapKey` secret still holds kid 1 ("`mint-key rotate`" below).
+- **Kid 2.** Kid 2's `PutVerifyingKey` is on `tokens:0` at index 24, beside kid 1's. Since 19:35:36Z the `MintWrapKey` secret holds kid 2, and kid 1 may retire from 21:36:36Z ("`mint-key rotate`" below).
 - **Hosted state added.**
   - The App `m3-triage` (1179648), installed on `m3org` as 7190002 with `issues: write`.
   - The install account (1): its `Placement` row, its `Authz` chain opened, and `m3-admin` as its admin.
@@ -130,17 +130,24 @@ GitHub's troubleshooting page says a "Resource not accessible by integration" er
 
 The install account had no group on `names:24` or `authz:1`, because the test install has no genesis acceptance. The script wrote the install account's `Placement` row and opened its `Authz` chain, as `after_genesis` would.
 
-### `graftyard mint-key rotate`. Started; the switch waits an hour by design.
+### `graftyard mint-key rotate`. Switched to kid 2; kid 1 retires no earlier than 21:36:36Z.
 
 - At 18:32Z, `graftyard mint-key rotate --kid 2` wrote kid 2's `MintWrapKey` text (mode 0600) and its request.
 - The request committed on `tokens:0` at index 24. `mint-key step` then answered "wait: kid 2 signs from 1794079972120 ms" (19:32:52Z), one `INSTALLATION_TOKEN_TTL` after the row [measured, `tests/m3/raw/close-mintkey/`].
 - A mint afterward still worked under kid 1: 344 characters, header `{"alg":"EdDSA","typ":"JWT","kid":"1"}`. Both rows are on `tokens:0` with `retired: null` [measured, `mint-after-kid2.txt`].
-- Not done in this round:
-  - the secret switch (`wrangler secrets-store secret update` with the kid 2 text);
-  - a mint under kid 2;
-  - kid 1's retire, which falls at the switch plus `SIGNING_KEY_CACHE`, `INSTALLATION_TOKEN_TTL`, and `CLOCK_SKEW`: over 2 h after the switch.
+- **The switch (branch `m3-rotate`, after `mint-key step` said kid 2 may sign from 19:32:52Z).**
+  - 19:34:25Z: a `ghs_` minted before the switch, as a control. It is signed by kid 1, `jti` `01M6VR2HHEKVW52ZEMVPKEMMG0`, and expires 20:34:25Z. A read with it answered 200.
+  - 19:35:36Z: the Secrets Store secret `graft-m1-mint-wrap-key` (`e4c5ccc9…`) took kid 2's `MintWrapKey` text, by a `PATCH` of the secret through the Cloudflare API. The value went from the 0600 file into a body file, never onto argv. The secret's status was `pending`, then `active` by 19:35:45Z [measured, `tests/m3/raw/rotate/switch.json`].
+  - 19:35:54Z to 19:36:00Z: ten mints through the edge, by `@octokit/app`. All ten are signed by kid 2 [measured, `mints-after-switch.txt`]. No isolate served kid 1 from its `SIGNING_KEY_CACHE`: the cache holds a key for at most an hour, but no warm `graft-ops` isolate held one at the switch [inference].
+  - 19:36Z: the kid 1 control token and a new kid 2 token each read `m3org/j4`'s issues 5 of 5 with 200. Each pushed to `m3org/j4` with stock git, and each push was accepted with the ref moved [measured, `verify-reads.txt`]. Both keys verify during the overlap.
+  - `~/.graft-m3h/mintkey-kid2.json` was deleted once the secret held the text. The kid 1 control token's file was deleted too.
+- **`mint-key step` after the switch** (`--switched 1794080136621`, the secret's 19:35:36.621Z): "retire kid 1 at 1794087396621 ms", which is **2026-11-07T21:36:36Z** [measured, `tests/m3/raw/rotate/step.out`].
+  - The retire time is the switch plus `SIGNING_KEY_CACHE` (1 h), plus `INSTALLATION_TOKEN_TTL` (1 h), plus `CLOCK_SKEW` (60 s).
+  - It wrote `PutVerifyingKey { kid: 1, retired: Some(1794087396621) }` for `tokens:0` to `retire.request.json`.
+- **Not committed:** kid 1's retire, left for the operator to schedule. Committing it early is safe: the row carries the retire time, and `verify` refuses a kid 1 token only once that time has passed. Kid 1 keeps verifying until 21:36:36Z either way.
+- **Scans:** no token, `"wrap"`, or `"wrapped"` in `tests/m3/raw/rotate/` or in a process argv. Workers Observability has none either [measured, `obs-scan.txt`].
 
-  The rotation is tested end to end in memory (M3-WP4, `crates/identity/tests/wp4.rs`).
+The rotation is also tested end to end in memory (M3-WP4, `crates/identity/tests/wp4.rs`).
 
 ### BF-33: device flow with the code shard's leader killed. Pass, 120 of 120.
 
