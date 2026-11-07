@@ -31,6 +31,8 @@ use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3};
 /// 1,024 shards per home family.
 pub const SHARDS_PER_FAMILY: u16 = 1024;
 const FAMILIES: u16 = 3;
+/// Every `Tokens` shard: `TokenShard(0 .. TOKEN_SHARDS)`. Install creates each one's group (R20).
+pub const TOKEN_SHARDS: u16 = SHARDS_PER_FAMILY * FAMILIES;
 /// A new secret is drawn at most this many times. Each draw lands in a given family with chance 1/3, so 64 draws
 /// all miss with chance (2/3)^64, about 5e-12.
 const MAX_DRAWS: u32 = 64;

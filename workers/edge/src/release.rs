@@ -95,9 +95,10 @@ pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
 }
 
 /// Creates the groups the accepted genesis places, and opens `Authz(Genesis.account)`. Returns what each step did.
-/// `Names` and `Tokens` are sharded (1,024 and 3,072 shards); install creates the shard the install account's rows
-/// live on and token shard 0, and every other shard is created on first use from the same genesis record, as the
-/// lookup finds no group (`graftyard_lookup::create`).
+/// `Names` and `Tokens` are sharded (1,024 and 3,072 shards); this creates the shard the install account's rows live
+/// on and token shard 0. `graftyard install` then creates every other `Tokens` shard in ranges through
+/// `precreate::TOKENS_PATH` (R20), and every other `Names` shard is created on first use from the same genesis
+/// record, as the lookup finds no group (`graftyard_lookup::create`).
 async fn after_genesis(c: &Ctx<'_>, g: &graftyard_release::Genesis) -> Value {
     let b = c.bindings();
     let mut steps = Vec::new();
