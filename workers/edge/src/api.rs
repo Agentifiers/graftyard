@@ -384,7 +384,7 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
     }
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
-    // Under a `ghs_` token the command is format 32.8, sent only once `FormatsEnable` enabled it.
+    // Under a `ghs_` token the command is format 32.9, sent only once `FormatsEnable` enabled it.
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(

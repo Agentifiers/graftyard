@@ -1118,7 +1118,7 @@ fn app_cmd(c: &graftyard_identity::stateless::InstallationClaims, op: IssueOp) -
     let call = IssueCall::new(blobless, Principal::installation(c), RequestId(Ulid(77)), serde_json::json!({}));
     assert_eq!(call.format(), REPO_FORMAT_APP_CALLS);
     let wire = serde_json::to_value(&call).unwrap();
-    assert_eq!(wire["format"], serde_json::json!([0x20, 8]));
+    assert_eq!(wire["format"], serde_json::json!([0x20, 9]));
     let back: IssueCall = serde_json::from_value(wire).unwrap();
     assert_eq!(back.actor, Principal::installation(c), "the claims survive the binding");
     IssueCmd { op: back.op.map_blob(|_| Err::<_, ()>(())).expect("no blob"), actor: back.actor, request: back.request }

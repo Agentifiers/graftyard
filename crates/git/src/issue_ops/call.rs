@@ -29,10 +29,11 @@ pub const REPO_FORMAT_ISSUES: Format = Format { family: 0x20, version: 5 };
 /// M3-WP3's collaborator and repository-invitation commands, whose events (`Collaborator` 25, `Invitation` 26) a
 /// release that reads only 32.5 cannot apply.
 pub const REPO_FORMAT_COLLABORATORS: Format = Format { family: 0x20, version: 6 };
-/// An issue or merge command under a `ghs_` installation token: the JSON forms with an App actor and its claims
-/// (`claims`). A release that reads only 32.4 to 32.7 cannot tell the App from an anonymous caller, so such a command
-/// is format 32.8 and the edge sends one only once `FormatsEnable` has enabled it. Version 7 is the push's.
-pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 8 };
+/// An issue command under a `ghs_` installation token: the JSON form with an App actor and its claims (`claims`). A
+/// release that reads only 32.5 to 32.7 cannot tell the App from an anonymous caller, so such a command is format
+/// 32.9, and the edge sends one only once `FormatsEnable` has enabled it. Version 7 is the stateless push's, and 8 is
+/// AM1-WP2's agent push (branch `am1-wp2`).
+pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 9 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -104,7 +105,7 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
-    /// A `ghs_` token's verified claims, only in format 32.8.
+    /// A `ghs_` token's verified claims, only in format 32.9.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claims: Option<InstallationClaims>,
 }
@@ -153,7 +154,7 @@ impl<'de> Deserialize<'de> for IssueCall {
                 credential: Credential::from_wire(w.token.0, w.session),
                 sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
             },
-            _ => return Err(serde::de::Error::custom("claims ride only in format 32.8, and 32.8 always has them")),
+            _ => return Err(serde::de::Error::custom("claims ride only in format 32.9, and 32.9 always has them")),
         };
         Ok(IssueCall::new(w.op, actor, w.request, w.render))
     }
