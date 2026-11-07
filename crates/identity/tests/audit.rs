@@ -106,7 +106,7 @@ fn run_batch(w: &mut World, chain: ChainId, now: Timestamp) -> Option<audit::Rep
     if scanned.through <= cursor {
         return None;
     }
-    let mut f = Finisher::new(chain, scanned.through, owed);
+    let mut f = Finisher::new(chain, cursor, scanned.through, owed);
     for _ in 0..200 {
         match f.want() {
             Want::Read(cs) => {
@@ -185,12 +185,16 @@ fn audit_lists_a_credential_its_edge_left_unlisted_once_a_minute_passed() {
     assert!(listed(&mut w).credentials.contains_key(&pat));
     let t: TokensFold = w.tokens(shard_of_hash(&dead)).fresh_leader();
     assert!(t.audit_cursor() > Index(0));
-    // The cursor's own entry is not yet a minute old; once it is, the batch has nothing to finish.
+    // The cursor's own entry is not yet a minute old; once it is, it owes nothing, and the cursor does not move past
+    // it, or every cursor entry would wake the alarm for another, forever.
+    let at = t.audit_cursor();
     assert_eq!(run_batch(&mut w, chain, now), None);
     advance_all(&mut w, MINUTE + 1);
     let now = now_of_tokens(&mut w, &dead);
     let r = run_batch(&mut w, chain, now).expect("the cursor's entry is due");
-    assert_eq!((r.owed, r.steps), (0, 0), "nothing owed; only the cursor moves");
+    assert_eq!((r.owed, r.steps), (0, 0), "nothing owed");
+    let t: TokensFold = w.tokens(shard_of_hash(&dead)).fresh_leader();
+    assert_eq!(t.audit_cursor(), at, "and no cursor entry");
     // A revocation's entry owes the drop, which the consumer makes.
     w.tokens_cmd(TokensCmd { cred: as_user(u), op: TokensOp::Revoke { hash: dead } }).unwrap();
     advance_all(&mut w, MINUTE + 1);
@@ -234,7 +238,7 @@ fn audit_lists_every_credential_whose_edge_died_200_of_200() {
     for s in &shards {
         let now = w.tokens(*s).now;
         let r = run_batch(&mut w, ChainId::Tokens(*s), now).expect("the cursor entries are due");
-        assert_eq!(r.owed, 0, "nothing owed twice");
+        assert_eq!((r.owed, r.steps), (0, 0), "nothing owed twice");
     }
 }
 
@@ -250,7 +254,7 @@ fn a_batch_lost_before_its_cursor_runs_again_from_the_cursor_under_a_new_leader(
     w.tokens_cmd(TokensCmd { cred: as_user(u), op }).unwrap();
     advance_all(&mut w, MINUTE + 1);
     let chain = ChainId::Tokens(shard_of_hash(&h));
-    // The first attempt: the listing commits, then the attempt is lost before its cursor command.
+    // The first attempt is lost right after its first step committed: the listing, so the cursor has not moved.
     let (log, cursor) = {
         let g = w.tokens(shard_of_hash(&h));
         let m = g.m(g.leader().unwrap());
@@ -268,7 +272,7 @@ fn a_batch_lost_before_its_cursor_runs_again_from_the_cursor_under_a_new_leader(
         |_, e| owed.extend(audit::tokens_owed(&fold, e)),
     )
     .unwrap();
-    let mut f = Finisher::new(chain, scanned.through, owed);
+    let mut f = Finisher::new(chain, cursor, scanned.through, owed);
     loop {
         match f.want() {
             Want::Read(cs) => {
@@ -277,16 +281,15 @@ fn a_batch_lost_before_its_cursor_runs_again_from_the_cursor_under_a_new_leader(
                     f.read(c, fold);
                 }
             }
-            Want::Submit(Step::Tokens(..)) => break,
             Want::Submit(s) => {
-                let r = submit(&mut w, s);
-                f.submitted(r);
+                submit(&mut w, s);
+                break;
             }
             other => panic!("{other:?}"),
         }
     }
     let t: TokensFold = w.tokens(shard_of_hash(&h)).fresh_leader();
-    assert_eq!(t.audit_cursor(), Index(0), "the cursor did not move");
+    assert_eq!(t.audit_cursor(), Index(0), "the cursor moves only after the work it covers");
     // A new leader on the shard: its consumer starts at the committed cursor and owes nothing but the cursor.
     let g = w.tokens(shard_of_hash(&h));
     let old = g.leader().unwrap();

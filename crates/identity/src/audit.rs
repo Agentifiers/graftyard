@@ -34,6 +34,16 @@ pub const FINISH_AFTER: Duration = Duration::from_secs(60);
 /// Steps, refused ones included, one owed item may take before the batch stops with the cursor unmoved [guess: an
 /// App registration takes three]. SHARED parks a chain whose entry fails 10 times; the site counts attempts.
 pub const STEPS_MAX: usize = 6;
+/// A stretch of entries that owe nothing is still covered by a cursor entry this often, as `PrSync`'s
+/// `CURSOR_STRIDE`, so a new leader never reads more than this many entries back [guess]. Below it, a batch that owes
+/// nothing commits nothing: a cursor entry owes nothing, so moving the cursor past one would wake the next alarm to
+/// move it again, forever.
+pub const CURSOR_STRIDE: u64 = 1_000;
+
+/// Whether `(from, through]`, which owed `owed`, needs a batch: work to finish, or a stride to cover.
+pub fn needs_batch(from: Index, through: Index, owed: &[Owed]) -> bool {
+    through > from && (!owed.is_empty() || through.0 - from.0 >= CURSOR_STRIDE)
+}
 
 /// One operation an entry's commit point may have left unfinished.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -233,6 +243,7 @@ pub struct Report {
 #[derive(Clone, Debug)]
 pub struct Finisher {
     chain: ChainId,
+    from: Index,
     through: Index,
     owed: Vec<Owed>,
     at: usize,
@@ -243,10 +254,11 @@ pub struct Finisher {
 }
 
 impl Finisher {
-    pub fn new(chain: ChainId, through: Index, mut owed: Vec<Owed>) -> Finisher {
+    /// The batch for `(from, through]`, where `from` is the committed cursor.
+    pub fn new(chain: ChainId, from: Index, through: Index, mut owed: Vec<Owed>) -> Finisher {
         owed.dedup();
         let report = Report { owed: owed.len() as u32, ..Report::default() };
-        Finisher { chain, through, owed, at: 0, steps: 0, reads: Vec::new(), cursor_sent: false, report }
+        Finisher { chain, from, through, owed, at: 0, steps: 0, reads: Vec::new(), cursor_sent: false, report }
     }
 
     pub fn want(&mut self) -> Want {
@@ -262,7 +274,7 @@ impl Finisher {
                 }
             }
         }
-        if self.cursor_sent {
+        if self.cursor_sent || !needs_batch(self.from, self.through, &self.owed) {
             return Want::Done(self.report);
         }
         match cursor(self.chain, self.through) {
