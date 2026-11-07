@@ -1,16 +1,19 @@
 // BF-33's leader-kill case over HTTPS (`build/BUILD-PLAN.md`, M3-WP3): a device flow as gh's client, where the
 // leader of the code's `Tokens` shard is killed while it decides the exchange's `UseCode`, then the exchange runs as
 // gh would. Each run: `POST /login/device/code`, approve as m3-member, then `UseCode` sent through the edge's bed
-// route with `kill` on its first send (`after_quorum` or `before_commit_sent`, alternating; every 5th run holds the
-// killed object down 12 s), then gh's `POST /login/oauth/access_token`. The edge's own exchange spends the code
-// with `UseCode` too; the one the kill rode on committed or not, so the exchange either gets a token (the killed
-// command did not commit) or `expired_token` (it did, and the code is spent with no token: the login restarts with
-// a new code). Pass: every run ends in one of the two, and a replay of the code never yields a token.
+// route with `kill` on its first send (`after_quorum` or `before_commit_sent`, alternating, or the modes `BF33_KILLS`
+// names; every 5th run holds the killed object down 12 s), then gh's `POST /login/oauth/access_token`. The edge's own
+// exchange spends the code with `UseCode` too; the one the kill rode on committed or not, so the exchange either
+// gets a token (the killed command did not commit) or `expired_token` (it did, and the code is spent with no token:
+// the login restarts with a new code). Pass: every run ends in one of the two, and a replay of the code never yields a token.
 //   node tests/m3/hosted/bf33-kill.mjs <state dir> <runs>
 import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 const [dir, runsArg] = process.argv.slice(2);
 const runs = Number(runsArg ?? 20);
+// The kill modes, in turn: `after_quorum` and `before_commit_sent` keep the entry, so the code is spent;
+// `before_commit_early` loses it, so the exchange spends the code and gets a token. `BF33_KILLS` overrides.
+const KILLS = (process.env.BF33_KILLS ?? "after_quorum,before_commit_sent").split(",");
 const EDGE = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
 const BED = readFileSync(`${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const GH = "178c6fc778ccc68e1d6a";
@@ -29,7 +32,7 @@ for (let i = 1; i <= runs; i++) {
   const d = (await post("/login/device/code", { client_id: GH, scope: "repo" })).body;
   await post("/login/oauth/device/approve", { user_code: d.user_code }, member);
   const h = codeHash(d.device_code);
-  const kill = i % 2 ? "after_quorum" : "before_commit_sent";
+  const kill = KILLS[(i - 1) % KILLS.length];
   const down_ms = i % 5 === 0 ? 12_000 : 0;
   const t0 = Date.now();
   const k = await fetch(`${EDGE}/_bed/identity`, { method: "POST", headers: { "x-bed-token": BED }, signal: AbortSignal.timeout(180_000),
