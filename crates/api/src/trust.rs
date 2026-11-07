@@ -27,7 +27,7 @@
 
 use std::ops::RangeInclusive;
 
-use graftyard_git::issues::CheckRunUpdate;
+use graftyard_git::issues::{AppId, CheckRunUpdate, IssueNumber};
 use graftyard_git::tiers::{CommentRow, ReleaseRow, ReviewRow};
 use graftyard_identity::RepoPermission;
 use graftyard_types::{AccountId, DbId};
@@ -84,7 +84,8 @@ pub struct AuthorTrust {
     pub association: &'static str,
     pub can_push: bool,
     pub is_bot: bool,
-    /// `AgentApp` rows are AM1-WP2's, so no author is an agent yet.
+    /// The object was written by an `AgentApp`: a pull request with `AgentMeta`, or a check run whose App has an
+    /// `AgentApp` row on the install's `Authz(Genesis.account)`.
     pub is_agent: bool,
     /// No fold row records a first contribution yet, so this is false.
     pub first_contribution: bool,
@@ -196,6 +197,15 @@ pub fn view_of(r: &Repo<'_>, kind: Resource, o: &Map<String, Value>) -> Option<T
         (id, u.and_then(|u| u.get("type")).and_then(Value::as_str) == Some("Bot"))
     };
     use Resource as R;
+    let agent = match kind {
+        R::PullRequest => o.get("number").and_then(Value::as_u64).is_some_and(|n| has_agent_meta(r, n)),
+        R::CheckRun => o
+            .get("app")
+            .and_then(|a| a.get("id"))
+            .and_then(Value::as_i64)
+            .is_some_and(|a| r.dir.agent_app(AppId(DbId(a)))),
+        _ => false,
+    };
     let (body, (who, bot)) = match kind {
         R::Issue | R::PullRequest | R::IssueComment | R::Review | R::ReviewComment => {
             (text(o.get("body"))?, account("user"))
@@ -211,50 +221,57 @@ pub fn view_of(r: &Repo<'_>, kind: Resource, o: &Map<String, Value>) -> Option<T
             (parts.join("\n\n"), (None, true))
         }
     };
-    Some(TrustView::of(r, &body, who, bot))
+    Some(TrustView::of(r, &body, who, bot, agent))
+}
+
+/// Whether pull request `n` carries `AgentMeta`, which `OpenPr` writes when the creating credential is an `AgentApp`'s.
+fn has_agent_meta(r: &Repo<'_>, n: u64) -> bool {
+    u32::try_from(n).is_ok_and(|n| graftyard_git::tiers::agent_meta(r.core, IssueNumber(n)).is_some())
 }
 
 impl TrustView {
-    /// The view of `text`, written by `who` (`None` for no account) on this repository.
-    pub fn of(r: &Repo<'_>, text: &str, who: Option<AccountId>, is_bot: bool) -> TrustView {
+    /// The view of `text`, written by `who` (`None` for no account) on this repository, by an `AgentApp` when
+    /// `is_agent`.
+    pub fn of(r: &Repo<'_>, text: &str, who: Option<AccountId>, is_bot: bool, is_agent: bool) -> TrustView {
         let (visible, hidden) = visible(text);
-        TrustView { visible: visible.into(), hidden, author: author_trust(r, who, is_bot) }
+        TrustView { visible: visible.into(), hidden, author: author_trust(r, who, is_bot, is_agent) }
     }
 }
 
 // ---- from fold rows, for MCP and the controller's prompt ----
 
 pub fn issue(r: &Repo<'_>, it: &Item) -> TrustView {
-    TrustView::of(r, &it.row.body, it.row.author, false)
+    let agent = it.is_pull() && has_agent_meta(r, u64::from(it.n.0));
+    TrustView::of(r, &it.row.body, it.row.author, false, agent)
 }
 
 /// An issue comment or a review comment.
 pub fn comment(r: &Repo<'_>, c: &CommentRow) -> TrustView {
-    TrustView::of(r, &c.body, c.author, false)
+    TrustView::of(r, &c.body, c.author, false, false)
 }
 
 pub fn review(r: &Repo<'_>, v: &ReviewRow) -> TrustView {
-    TrustView::of(r, &v.body, v.reviewer, false)
+    TrustView::of(r, &v.body, v.reviewer, false, false)
 }
 
 pub fn release(r: &Repo<'_>, rel: &ReleaseRow) -> TrustView {
-    TrustView::of(r, &rel.rec.body, rel.rec.author, false)
+    TrustView::of(r, &rel.rec.body, rel.rec.author, false, false)
 }
 
-/// A check run's output, written by its App.
+/// A check run's output, written by its App, an agent's when the App has an `AgentApp` row.
 pub fn check_run(r: &Repo<'_>, c: &CheckRunUpdate) -> TrustView {
     let text = c.output.as_ref().map(|o| {
         let parts: Vec<&str> = [Some(&*o.title), Some(&*o.summary), o.text.as_deref()].into_iter().flatten().collect();
         parts.join("\n\n")
     });
-    TrustView::of(r, text.as_deref().unwrap_or(""), None, true)
+    TrustView::of(r, text.as_deref().unwrap_or(""), None, true, r.dir.agent_app(c.app))
 }
 
-/// `AuthorTrust` of `who` on this repository: it can push if it is the owner or holds `write` or more.
-pub fn author_trust(r: &Repo<'_>, who: Option<AccountId>, is_bot: bool) -> AuthorTrust {
+/// `AuthorTrust` of `who` on this repository: it can push if it is the owner or holds `write` or more. An object an
+/// `AgentApp` wrote is never trusted, whoever's account it names.
+pub fn author_trust(r: &Repo<'_>, who: Option<AccountId>, is_bot: bool, is_agent: bool) -> AuthorTrust {
     let can_push =
         !is_bot && who.is_some_and(|a| a == r.at.owner_id || r.dir.permission(a) >= Some(RepoPermission::Write));
-    let is_agent = false;
     AuthorTrust {
         association: crate::wire::association(r, who),
         can_push,

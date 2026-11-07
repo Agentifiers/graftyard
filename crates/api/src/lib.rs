@@ -10,6 +10,7 @@
 //! The scope is the requests a pinned gh and git-lfs send, captured in `gh/` and `lfs/` (see their READMEs), and
 //! nothing beyond them.
 
+pub mod agents;
 pub mod exec;
 pub mod gql;
 pub mod graphql;

@@ -44,6 +44,7 @@ use serde::Deserialize;
 use serde_json::json;
 use worker::*;
 
+mod agents;
 mod api;
 mod release;
 
@@ -139,15 +140,11 @@ struct Repo {
 /// `o/r`"): the owner's login row on `name_shard(Login(o))`, the owner's `Placement` row on `account_shard(owner)`, then
 /// the repository's name on the owner's `Authz` chain. `None` for an unknown owner or repository, which git sees as 404.
 async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Result<Option<Repo>, String>> {
-    let (Ok(login), Ok(name)) = (Login::parse(owner), RepoName::parse(repo)) else { return Ok(Ok(None)) };
-    let names = ChainId::Names(name_shard(&NameKey::Login(login.key())));
-    let row = match system_read(c, names, json!({ "login": owner })).await {
-        Ok(v) => v,
+    let Ok(name) = RepoName::parse(repo) else { return Ok(Ok(None)) };
+    let account = match account_of(c, owner).await {
+        Ok(Some(a)) => a,
+        Ok(None) => return Ok(Ok(None)),
         Err(e) => return Ok(Err(e)),
-    };
-    let account = match serde_json::from_value::<Option<LoginRow>>(row["login"].clone()) {
-        Ok(Some(LoginRow::Claimed { account, .. })) => account,
-        _ => return Ok(Ok(None)),
     };
     let record = match placement(c, account).await {
         Ok(Some(r)) => r,
@@ -168,6 +165,59 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
         owner: account,
         record,
     })))
+}
+
+/// The admission a command by `who` carries to its leader (`graftyard_git::agent::admit_class`), or `None` for Human,
+/// which `Member::commit` takes as before. A user token with no App and no `X-Graftyard-Agent-Session` is Human
+/// without reading anything more, so a default request's reads and bodies do not change. The leader's `decide` classes
+/// the actor again from its own fresh read, so this class only orders admission.
+pub(crate) async fn admission(
+    c: &Ctx<'_>,
+    who: &Principal,
+    provenance: &[graftyard_git::agent::Provenance],
+    push: bool,
+    inline: usize,
+) -> Option<graftyard_git::group::AdmitWire> {
+    let app = c.token_app.get();
+    let user = matches!(who.actor, Actor::User(_) | Actor::Anonymous);
+    if user && app.is_none() && !c.agent_session {
+        return None;
+    }
+    let install = install_authz(c).await;
+    let read = install.as_ref().map(|a| a as &dyn graftyard_identity::AuthzRead);
+    let class = graftyard_git::agent::admit_class(who, read, app, provenance, c.agent_session);
+    graftyard_git::group::AdmitWire::of(class, who, push, inline)
+}
+
+/// The install's `Authz(Genesis.account)` fold, read as a `dep` through `fresh`: its `AgentApp` rows. `None` when it
+/// cannot be read, which classes no App as an agent; the leader's `decide` reads the chain itself either way.
+pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::AuthzFold> {
+    let account = graftyard_identity::install_account();
+    let record = placement(c, account).await.ok()??;
+    authz_fold(c, account, &record).await
+}
+
+/// The account that holds `login`, from its `Names` row read through `fresh`.
+async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
+    let Ok(l) = Login::parse(login) else { return Ok(None) };
+    let names = ChainId::Names(name_shard(&NameKey::Login(l.key())));
+    let row = system_read(c, names, json!({ "login": login })).await?;
+    Ok(match serde_json::from_value::<Option<LoginRow>>(row["login"].clone()) {
+        Ok(Some(LoginRow::Claimed { account, .. })) => Some(account),
+        _ => None,
+    })
+}
+
+/// `owner`'s `Authz` fold, read as a `dep` through `fresh` on its leader.
+async fn authz_fold(c: &Ctx<'_>, owner: AccountId, record: &PlacementRecord) -> Option<graftyard_identity::AuthzFold> {
+    let q = json!({ "q": { "dep": true } }).to_string();
+    let (v, _, _) = graftyard_lookup::call_opt(&c.bindings(), ChainId::Authz(owner), record, "/read", q.as_bytes())
+        .await
+        .ok()??;
+    let s = v["value"].as_str()?;
+    let bytes: Option<Vec<u8>> =
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect();
+    graftyard_raft::codec::from_bytes(&bytes?).ok()
 }
 
 /// The owner's `Placement` row on `account_shard(owner)`.
@@ -261,6 +311,9 @@ fn token_of(req: &Request) -> Result<Option<String>> {
 struct TokenRow {
     account: i64,
     revoked: bool,
+    /// The App of a user-to-server token, for the admission class (AM1-WP2).
+    #[serde(default)]
+    app: Option<i64>,
 }
 
 /// The caller, or `None` for no credential or a refused one: the token's row read through `fresh` on its `Tokens`
@@ -272,7 +325,9 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     let chain = ChainId::Tokens(tok.shard());
     let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
     let row: Option<TokenRow> = serde_json::from_value(v["token"].clone())?;
-    Ok(row.filter(|r| !r.revoked).map(|r| Principal {
+    let row = row.filter(|r| !r.revoked);
+    c.token_app.set(row.as_ref().and_then(|r| r.app).map(|a| graftyard_identity::AppId(DbId(a))));
+    Ok(row.map(|r| Principal {
         actor: Actor::User(UserId(AccountId(DbId(r.account)))),
         scopes: ScopeSet(1),
         credential: Credential::Stored(hash),
@@ -414,6 +469,10 @@ struct Ctx<'a> {
     /// network, a second shard behind its own `IngestCursor`.
     #[cfg(feature = "test-faults")]
     shard: Option<SiteId>,
+    /// `authenticate`'s token's App, when it is a user-to-server token.
+    token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
+    /// The request sent `X-Graftyard-Agent-Session`, which classes a user token's commands Agent and grants nothing.
+    agent_session: bool,
 }
 
 impl Ctx<'_> {
@@ -495,6 +554,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         return refuse(Refusal::updates_too_large(alone, COMMAND_MAX, push.updates.len()));
     }
     let pack = &body[rp.pack_at..];
+    let mut index = None;
     let deletes_only = push.updates.iter().all(|u| u.new.is_none());
     if !deletes_only {
         if pack.is_empty() {
@@ -518,7 +578,10 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         };
         let validate = validate(c, repo, pack, &tips);
         match store.place_teed(stage, validate).await {
-            Ok((d, _)) => push.pack = Some(d.into_pack()),
+            Ok((d, ix)) => {
+                push.pack = Some(d.into_pack());
+                index = Some(ix);
+            }
             Err(TeeError::Invalid(e)) => return refuse(Refusal::unpack_failed(&e)),
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
@@ -528,6 +591,15 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         return refuse(Refusal::updates_too_large(len, COMMAND_MAX, push.updates.len()));
     }
     let mut body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push.clone() })?;
+    // The admission class (AM1-WP2), sent only for a command classed other than Human.
+    let inline = match &push.pack {
+        Some(graftyard_git::pack::PackRef::Inline(b)) => b.len(),
+        _ => 0,
+    };
+    let admit = admission(c, &push.actor, &push.provenance, true, inline).await;
+    if let Some(a) = admit {
+        body["admit"] = serde_json::to_value(a)?;
+    }
     // BF-16's forced unknown variant: the same command, its format tag rewritten to one no release reads.
     if format != REPO_FORMAT_V1 && format != REPO_FORMAT_V2 {
         let mut wire = push.to_wire();
@@ -546,7 +618,30 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         f["down_ms"] = json!(c.down_ms);
         first = Some(f);
     }
-    let reply = commit(c, repo, &body, first.as_ref(), None).await?;
+    let mut reply = commit(c, repo, &body, first.as_ref(), None).await?;
+    // `AdmitError::Stage`: the leader asks for the inline pack as a stored one, sent again under the same request id.
+    if let (Err(CallErrorWire::Stage(_)), Some(ix), Some(mut a)) = (&reply, index, admit) {
+        let raw = buckets(c.env, c.sites)?;
+        let refs: Vec<(SiteId, &R2)> =
+            raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
+        let store = PackStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
+        let stage = Stage {
+            network: NetworkId(repo.id.0),
+            id: PackId(Ulid::new(now(), rand10())),
+            meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
+            bytes: pack,
+            inline: false,
+            part: c.cfg.part,
+        };
+        match store.place_teed(stage, async { Ok::<_, String>(ix) }).await {
+            Ok((d, _)) => push.pack = Some(d.into_pack()),
+            Err(e) => return text(c.rid, 503, &format!("pack store: {e}\n")),
+        }
+        a.inline = 0;
+        body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push.clone() })?;
+        body["admit"] = serde_json::to_value(a)?;
+        reply = commit(c, repo, &body, None, None).await?;
+    }
     match reply {
         Ok(PushOutcome::Ok(ok)) => {
             // The member rendered these bytes from its `&Acked`; the edge only frames them.
@@ -571,6 +666,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         }
         Err(CallErrorWire::Unsupported(u)) => unsupported(c.rid, u.family, u.version),
         Err(CallErrorWire::TooLarge(t)) => refuse(Refusal::updates_too_large(t.len, t.max, rp.updates.len())),
+        Err(CallErrorWire::Stage(_)) => text(c.rid, 503, "the pack could not be staged; retry\n"),
     }
 }
 
@@ -1304,6 +1400,8 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         sites: &sites,
         anchor,
         colo: colo_id(&req),
+        token_app: std::cell::Cell::new(None),
+        agent_session: req.headers().has("x-graftyard-agent-session")?,
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
         #[cfg(feature = "test-faults")]
@@ -1316,6 +1414,11 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     };
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
+        && graftyard_api::agents::route(rest).is_some()
+    {
+        return agents::serve(&c, &mut req, rest).await;
     }
     #[cfg(feature = "test-faults")]
     if path.starts_with("/_bed/") {

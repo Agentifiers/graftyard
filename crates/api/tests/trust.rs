@@ -261,7 +261,7 @@ fn author_trust_is_the_author_s_push_permission_not_the_viewer_s_or_a_lower_role
     // The viewer is a writer, so a trust view computed from the viewer would trust everyone.
     let d = people(WRITER);
     let r = repo(&h, &d, &core, &meta);
-    let t = |who: i64| trust::author_trust(&r, Some(AccountId(DbId(who))), false);
+    let t = |who: i64| trust::author_trust(&r, Some(AccountId(DbId(who))), false, false);
     let row = |who: i64| {
         let a = t(who);
         (a.association, a.can_push, a.trusted)
@@ -272,10 +272,10 @@ fn author_trust_is_the_author_s_push_permission_not_the_viewer_s_or_a_lower_role
     assert_eq!(row(TRIAGER), ("NONE", false, false), "triage cannot push");
     assert_eq!(row(READER), ("NONE", false, false), "read cannot push");
     assert_eq!(row(STRANGER), ("NONE", false, false), "no grant");
-    let ghost = trust::author_trust(&r, None, false);
+    let ghost = trust::author_trust(&r, None, false, false);
     assert!(!ghost.can_push && !ghost.trusted);
     // A bot is never trusted, whatever its grant.
-    let bot = trust::author_trust(&r, Some(AccountId(DbId(WRITER))), true);
+    let bot = trust::author_trust(&r, Some(AccountId(DbId(WRITER))), true, false);
     assert!(bot.is_bot && !bot.can_push && !bot.trusted);
     assert!(
         [OWNER, MAINTAINER, WRITER, TRIAGER, READER, STRANGER]
@@ -580,4 +580,112 @@ fn lf4_one_payload_per_hidden_range_in_each_trust_resource() {
         }
     }
     assert_eq!(objects, 16 * 8);
+}
+
+/// `People` that also reads the install's `AgentApp` rows: App 7 is flagged, App 8 is not.
+struct Install {
+    base: People,
+}
+
+impl Directory for Install {
+    fn login(&self, id: AccountId) -> Option<String> {
+        self.base.login(id)
+    }
+    fn name(&self, id: AccountId) -> Option<String> {
+        self.base.name(id)
+    }
+    fn is_org(&self, id: AccountId) -> bool {
+        self.base.is_org(id)
+    }
+    fn by_login(&self, login: &str) -> Option<AccountId> {
+        self.base.by_login(login)
+    }
+    fn permission(&self, id: AccountId) -> Option<RepoPermission> {
+        self.base.permission(id)
+    }
+    fn repo(&self, id: RepoId) -> Option<RepoRef> {
+        self.base.repo(id)
+    }
+    fn ref_of(&self, r: RepoId, n: &RefName) -> Option<ObjectId> {
+        self.base.ref_of(r, n)
+    }
+    fn team(&self, id: DbId) -> Option<(String, String, String)> {
+        self.base.team(id)
+    }
+    fn viewer(&self) -> Option<AccountId> {
+        self.base.viewer()
+    }
+    fn compare(&self, b: ObjectId, h: ObjectId) -> Compare {
+        self.base.compare(b, h)
+    }
+    fn agent_app(&self, app: graftyard_git::issues::AppId) -> bool {
+        app.0.0 == 7
+    }
+}
+
+/// AM1-WP2 fills `is_agent`: a pull request with `AgentMeta` and a check run by a flagged App are an agent's, never
+/// trusted, even when the account the object names could push. A writer's own pull request, and an unflagged App's run,
+/// are as before. Without the media type the replies are untouched.
+#[test]
+fn is_agent_comes_from_agent_meta_and_the_install_s_agent_app_rows() {
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.push("refs/heads/claude/x", oid(2));
+    c.push("refs/heads/fix", oid(3));
+    let open = |head: &str, sha: u8| IssueOp::OpenPr {
+        head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name(head) },
+        base: name("refs/heads/main"),
+        title: "t".into(),
+        body: "b".into(),
+        draft: true,
+        head_sha: oid(sha),
+        base_sha: oid(1),
+    };
+    c.commit(WRITER, open("refs/heads/claude/x", 2)).unwrap();
+    c.commit(WRITER, open("refs/heads/fix", 3)).unwrap();
+    let meta = graftyard_git::agent::AgentMeta {
+        app: graftyard_git::issues::AppId(DbId(7)),
+        session: None,
+        requester: None,
+        repo: REPO,
+    };
+    c.entry(
+        graftyard_raft::EntryBody::Events(vec![graftyard_git::repo::RepoEvent::AgentMeta { n: IssueNumber(1), meta }]),
+        graftyard_raft::TierSet::CORE,
+    );
+    let (h, dir) = (host(), Install { base: people(WRITER) });
+    let m = &c.members[0];
+    let r = Repo { host: &h, at: dir.base.base.home(), core: &m.core, meta: &m.meta, dir: &dir };
+    let agent = Some(AGENT_MEDIA_TYPE);
+    let pulls = json!([{ "number": 1, "body": "b", "user": { "id": WRITER, "type": "User" } },
+        { "number": 2, "body": "b", "user": { "id": WRITER, "type": "User" } }]);
+    let out = layer(agent, "/repos/o/r/pulls", &r, Reply::json(200, pulls.clone()));
+    let a: Vec<(Value, Value)> = out
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (p["graftyard_trust"]["author"]["is_agent"].clone(), p["graftyard_trust"]["author"]["trusted"].clone())
+        })
+        .collect();
+    assert_eq!(a, [(json!(true), json!(false)), (json!(false), json!(true))]);
+    let it = r.item(IssueNumber(1)).unwrap();
+    assert!(trust::issue(&r, &it).author.is_agent, "the fold-row view agrees with the reply's");
+    let runs = json!({ "total_count": 2, "check_runs": [
+        { "id": 1, "app": { "id": 7 }, "output": { "title": "T", "summary": "S", "text": null } },
+        { "id": 2, "app": { "id": 8 }, "output": { "title": "T", "summary": "S", "text": null } }] });
+    let out = layer(agent, "/repos/o/r/commits/a/check-runs", &r, Reply::json(200, runs.clone()));
+    let flags: Vec<Value> = out.value()["check_runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["graftyard_trust"]["author"]["is_agent"].clone())
+        .collect();
+    assert_eq!(flags, [json!(true), json!(false)]);
+    assert_eq!(layer(None, "/repos/o/r/pulls", &r, Reply::json(200, pulls.clone())), Reply::json(200, pulls));
+    assert_eq!(
+        layer(None, "/repos/o/r/commits/a/check-runs", &r, Reply::json(200, runs.clone())),
+        Reply::json(200, runs)
+    );
 }

@@ -12,6 +12,7 @@
 //! and adds nothing, so no edge path writes an `ok` line. The edge speaks only these types, so it calls the stand-in
 //! group (`standin`) today and a site member's `Repo` slot later by changing the binding.
 
+use graftyard_raft::admit::{ActorKey, Admit, AdmitClass};
 use graftyard_raft::{Acked, CallError, CommitError, NotLeader, Ticket};
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +24,62 @@ pub struct CommitReq {
     /// The request id's 26-character ULID text, minted once per client request and reused on every re-send.
     pub rid: String,
     pub cmd: Push,
+}
+
+/// What the edge sends beside a command it classed other than Human (`crate::agent::admit_class`), as `"admit"` in a
+/// `/commit` body; the member then calls `Member::commit_as` with it. A command classed Human carries none and the
+/// member calls `Member::commit`, so a default command's body, and its admission, are what they were before AM1-WP2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmitWire {
+    pub class: ClassWire,
+    /// `ActorKey`: a user's account id, or an App's id with the top bit set.
+    pub actor: Option<u64>,
+    pub push: bool,
+    pub inline: usize,
+    pub placement_ok: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClassWire {
+    Human,
+    MergeQueue,
+    Bot,
+    Agent,
+}
+
+impl AdmitWire {
+    /// The edge's admission for a command by `p` in `class`, or `None` for Human, which `Member::commit` takes.
+    pub fn of(class: AdmitClass, p: &graftyard_identity::Principal, push: bool, inline: usize) -> Option<AdmitWire> {
+        let class = match class {
+            AdmitClass::Human => return None,
+            AdmitClass::MergeQueue => ClassWire::MergeQueue,
+            AdmitClass::Bot => ClassWire::Bot,
+            AdmitClass::Agent => ClassWire::Agent,
+        };
+        let actor = match p.actor {
+            graftyard_identity::Actor::User(u) => Some(u.0.0.0 as u64),
+            graftyard_identity::Actor::App { app, .. } => Some(1 << 63 | app.0.0 as u64),
+            graftyard_identity::Actor::Anonymous => None,
+        };
+        Some(AdmitWire { class, actor, push, inline, placement_ok: true })
+    }
+
+    pub fn admit(self) -> Admit {
+        let class = match self.class {
+            ClassWire::Human => AdmitClass::Human,
+            ClassWire::MergeQueue => AdmitClass::MergeQueue,
+            ClassWire::Bot => AdmitClass::Bot,
+            ClassWire::Agent => AdmitClass::Agent,
+        };
+        Admit {
+            class,
+            actor: self.actor.map(ActorKey),
+            push: self.push,
+            inline: self.inline,
+            placement_ok: self.placement_ok,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +213,9 @@ pub enum CallErrorWire {
     /// The member's release does not read `family.version`. The edge answers 503 with `Retry-After`.
     Unsupported(UnsupportedWire),
     TooLarge(TooLargeWire),
+    /// `AdmitError::Stage` (`Member::commit_as`): store the pack in the buckets and send again under the same request
+    /// id. Only a command sent with `admit` gets it. `{"stage": true}`.
+    Stage(bool),
 }
 
 impl From<&CallError> for CallErrorWire {

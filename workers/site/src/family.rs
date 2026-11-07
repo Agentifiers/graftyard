@@ -252,7 +252,8 @@ impl Family for Repo {
     /// (`tests/m2/results/m2-wp5.md`, "Design gaps"). It reads 32.5 so that a later `FormatsEnable` can let the edge
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
-    /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that.
+    /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. It reads
+    /// 32.8, AM1-WP2's agent commands, on the same terms: the edge sends one only once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -260,6 +261,7 @@ impl Family for Repo {
             git::merge::REPO_FORMAT_V4,
             git::issue_ops::call::REPO_FORMAT_ISSUES,
             git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
+            git::repo::REPO_FORMAT_AGENT,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -982,10 +984,16 @@ impl Family for Tokens {
         use id::TokensRead;
         let hash = q.get("token").and_then(Value::as_str).and_then(graftyard_types::Digest::parse_hex);
         let row = hash.and_then(|h| f.token(&h.0));
-        json!({
-            "token": row.map(|r| json!({ "account": r.account.0.0, "revoked": r.revoked })),
-            "tokens": f.tokens.len(),
-        })
+        // The token's App, for the edge's admission class (AM1-WP2), only when it has one, so other rows read as before.
+        let app = hash.and_then(|h| f.fields(&h.0)).and_then(|x| x.app);
+        let token = row.map(|r| {
+            let mut t = json!({ "account": r.account.0.0, "revoked": r.revoked });
+            if let Some(a) = app {
+                t["app"] = json!(a.0.0);
+            }
+            t
+        });
+        json!({ "token": token, "tokens": f.tokens.len() })
     }
     fn fold_bytes(f: &id::TokensFold) -> Vec<u8> {
         codec::to_bytes(f)
@@ -1006,7 +1014,8 @@ impl Family for Authz {
     type C = id::AuthzCmd;
 
     fn reads() -> Vec<Format> {
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2]
+        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it.
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {
