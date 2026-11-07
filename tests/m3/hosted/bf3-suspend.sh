@@ -69,6 +69,8 @@ g() { git -c credential.helper= -c credential.helper="$work/cred.sh" -c user.nam
 url="$EDGE/$login/bf3.git"
 mkdir "$work/r" && cd "$work/r" && git init -q -b main
 remote_head() { g ls-remote "$url" refs/heads/main 2>/dev/null | cut -f1; }
+# A rerun finds `main` from the last run: start from it, so the control pushes are fast-forwards.
+if [ -n "$(remote_head)" ]; then g fetch -q "$url" main && git reset -q --hard FETCH_HEAD; fi
 push() { # push LABEL: ok, or refused <why> moved=<yes|no>
   local before rc after
   before=$(remote_head)
