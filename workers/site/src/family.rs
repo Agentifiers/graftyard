@@ -255,7 +255,8 @@ impl Family for Repo {
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
     /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
-    /// (collaborators and invitations) and 32.7 (a push under a `ghs_` token) are read on the same terms.
+    /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), and 32.8 (an issue command under one)
+    /// are read on the same terms.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -264,6 +265,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ISSUES,
             git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
             git::repo::REPO_FORMAT_STATELESS,
+            git::issue_ops::call::REPO_FORMAT_APP_CALLS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

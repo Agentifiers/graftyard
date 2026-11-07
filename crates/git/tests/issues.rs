@@ -1091,3 +1091,114 @@ fn deps_for_account(a: i64) -> Vec<(ChainId, IdentityDep)> {
     }
     out
 }
+
+// ---- M3 close: issue commands under a stateless installation token ----
+
+const APP: i64 = 900;
+const INSTALLATION: i64 = 901;
+
+fn claims(perms: &[(&str, graftyard_identity::Access)]) -> graftyard_identity::stateless::InstallationClaims {
+    use graftyard_identity::{AppId, InstallationId, Jti, Kid, PermissionSet, RepoScope};
+    graftyard_identity::stateless::InstallationClaims {
+        app: AppId(DbId(APP)),
+        installation: InstallationId(DbId(INSTALLATION)),
+        repos: RepoScope::Selected(smallvec![REPO]),
+        permissions: PermissionSet(perms.iter().map(|(k, a)| (Box::from(*k), *a)).collect()),
+        jti: Jti(Ulid(0x0193_0000_0000_0000_0000_0000_0000_0042)),
+        iat: Timestamp(DAY),
+        exp: Timestamp(DAY + 3_600_000),
+        kid: Kid(1),
+    }
+}
+
+/// An issue command under a `ghs_` token, as the edge sends it and a member decodes it: through `IssueCall`'s JSON.
+fn app_cmd(c: &graftyard_identity::stateless::InstallationClaims, op: IssueOp) -> IssueCmd {
+    use graftyard_git::issue_ops::call::{IssueCall, REPO_FORMAT_APP_CALLS};
+    let blobless = op.map_blob(|_| Err::<graftyard_git::blob::BlobRef, ()>(())).expect("no blob");
+    let call = IssueCall::new(blobless, Principal::installation(c), RequestId(Ulid(77)), serde_json::json!({}));
+    assert_eq!(call.format(), REPO_FORMAT_APP_CALLS);
+    let wire = serde_json::to_value(&call).unwrap();
+    assert_eq!(wire["format"], serde_json::json!([0x20, 8]));
+    let back: IssueCall = serde_json::from_value(wire).unwrap();
+    assert_eq!(back.actor, Principal::installation(c), "the claims survive the binding");
+    IssueCmd { op: back.op.map_blob(|_| Err::<_, ()>(())).expect("no blob"), actor: back.actor, request: back.request }
+}
+
+/// The App's installation on the owner, with `perms`, and the token's `jti` shard read as the leader reads it.
+fn install(c: &mut Chain, perms: &[(&str, graftyard_identity::Access)]) {
+    use graftyard_identity::{AppId, InstallationId, InstallationRow, PermissionSet, RepoScope};
+    let claims = claims(perms);
+    for d in c.deps.iter_mut() {
+        if let (ChainId::Authz(_), IdentityDep::Authz(a)) = d {
+            a.apply(&AuthzEvent::Installation {
+                id: InstallationId(DbId(INSTALLATION)),
+                row: Some(InstallationRow {
+                    app: AppId(DbId(APP)),
+                    repos: RepoScope::Selected(smallvec![REPO]),
+                    permissions: PermissionSet(perms.iter().map(|(k, a)| (Box::from(*k), *a)).collect()),
+                }),
+                not_before: Timestamp(0),
+            });
+        }
+    }
+    for ch in graftyard_identity::credential_chains(&Principal::installation(&claims).credential_shard(), None) {
+        let ChainId::Tokens(s) = ch else { unreachable!() };
+        c.deps.retain(|(k, _)| *k != ch);
+        c.deps.push((ch, IdentityDep::Tokens(TokensFold::new(s))));
+    }
+}
+
+/// M3 close, item 1: an installation token's issue write is authorized by its App permissions against the
+/// installation's row, not refused for want of a stored token. Old code sent such a command with an all-zero hash
+/// and no claims, so every one was refused `Unauthorized(NoToken)` and the edge answered 403 whatever the App held.
+#[test]
+fn an_installation_tokens_issue_writes_follow_its_app_permissions() {
+    use graftyard_identity::Access::{Read, Write};
+    let mut c = setup(3, 90);
+    c.commit(OWNER, IssueOp::Settings(settings(90))).unwrap();
+    install(&mut c, &[("issues", Write), ("metadata", Read)]);
+    let label = |n: &str| IssueOp::DefineLabel {
+        id: None,
+        name: graftyard_git::issues::LabelName(n.into()),
+        color: [1, 2, 3],
+        description: None,
+    };
+    let open = || IssueOp::OpenIssue {
+        title: "t".into(),
+        body: "".into(),
+        labels: SmallVec::new(),
+        assignees: SmallVec::new(),
+    };
+    let run = |c: &mut Chain, cmd: IssueCmd| c.commit_all(&[cmd]).pop().unwrap();
+
+    // With `issues: write`: a label and an issue, attributed to no user.
+    let w = claims(&[("issues", Write), ("metadata", Read)]);
+    assert!(matches!(run(&mut c, app_cmd(&w, label("bot"))), Ok(IssueOut::Id(_))));
+    let Ok(IssueOut::Number(n)) = run(&mut c, app_cmd(&w, open())) else { panic!("an App opens an issue") };
+    assert!(matches!(run(&mut c, app_cmd(&w, IssueOp::Close { n })), Ok(IssueOut::Done)));
+
+    // Claims narrowed to `issues: read`: 403 on a repository the token reaches, as GitHub's "Resource not
+    // accessible by integration".
+    let r = claims(&[("issues", Read), ("metadata", Read)]);
+    assert_eq!(run(&mut c, app_cmd(&r, label("ro"))), Err(IssueErr::Forbidden));
+    // Claims wider than the installation's row are cut to the row: `administration` was never installed.
+    let wide = claims(&[("issues", Write), ("administration", Write)]);
+    assert_eq!(run(&mut c, app_cmd(&wide, IssueOp::Settings(settings(30)))), Err(IssueErr::Forbidden));
+    // A token whose claims select another repository: the private repository is hidden, 404.
+    let other = graftyard_identity::stateless::InstallationClaims {
+        repos: graftyard_identity::RepoScope::Selected(smallvec![RepoId(DbId(8))]),
+        ..w.clone()
+    };
+    assert_eq!(run(&mut c, app_cmd(&other, label("x"))), Err(IssueErr::NotFound));
+    // A revoked `jti` is 401 on the next write.
+    let shard = graftyard_identity::jti_shard(&w.jti);
+    for d in c.deps.iter_mut() {
+        if let (ChainId::Tokens(s), IdentityDep::Tokens(t)) = d
+            && *s == shard
+        {
+            t.apply(&TokensEvent::JtiRevoked { jti: w.jti, exp: w.exp });
+        }
+    }
+    assert!(matches!(run(&mut c, app_cmd(&w, label("late"))), Err(IssueErr::Unauthorized(_))));
+    c.agree();
+}

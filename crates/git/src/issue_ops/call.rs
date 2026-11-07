@@ -12,6 +12,7 @@
 //! `BlobStore::confirm` before it admits the command (`IssueCall::confirm`), so `decide` refuses `Unavailable` unless two
 //! buckets hold the bytes (BF-25).
 
+use graftyard_identity::stateless::InstallationClaims;
 use graftyard_identity::{Actor, Credential, IdentityDep, OrgId, Principal, ScopeSet, UserId, credential_chains};
 use graftyard_raft::{Format, TierSet};
 use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId, Timestamp};
@@ -28,6 +29,10 @@ pub const REPO_FORMAT_ISSUES: Format = Format { family: 0x20, version: 5 };
 /// M3-WP3's collaborator and repository-invitation commands, whose events (`Collaborator` 25, `Invitation` 26) a
 /// release that reads only 32.5 cannot apply.
 pub const REPO_FORMAT_COLLABORATORS: Format = Format { family: 0x20, version: 6 };
+/// An issue or merge command under a `ghs_` installation token: the JSON forms with an App actor and its claims
+/// (`claims`). A release that reads only 32.4 to 32.7 cannot tell the App from an anonymous caller, so such a command
+/// is format 32.8 and the edge sends one only once `FormatsEnable` has enabled it. Version 7 is the push's.
+pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 8 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -48,6 +53,9 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
+        if matches!(self.actor.credential, Credential::Stateless(_)) {
+            return REPO_FORMAT_APP_CALLS;
+        }
         match self.op {
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
@@ -96,6 +104,9 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
+    /// A `ghs_` token's verified claims, only in format 32.8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claims: Option<InstallationClaims>,
 }
 
 impl Serialize for IssueCall {
@@ -104,6 +115,10 @@ impl Serialize for IssueCall {
         let f = self.format();
         Wire {
             session,
+            claims: match &self.actor.credential {
+                Credential::Stateless(c) => Some((**c).clone()),
+                _ => None,
+            },
             format: (f.family, f.version),
             op: self.op.clone(),
             account: match self.actor.actor {
@@ -124,16 +139,21 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS];
+        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, REPO_FORMAT_APP_CALLS];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
+        let app = f == serde_json::json!([REPO_FORMAT_APP_CALLS.family, REPO_FORMAT_APP_CALLS.version]);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        let actor = Principal {
-            actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
-            scopes: ScopeSet(w.scopes),
-            credential: Credential::from_wire(w.token.0, w.session),
-            sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
+        let actor = match (app, w.claims) {
+            (true, Some(c)) => Principal::installation(&c),
+            (false, None) => Principal {
+                actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
+                scopes: ScopeSet(w.scopes),
+                credential: Credential::from_wire(w.token.0, w.session),
+                sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
+            },
+            _ => return Err(serde::de::Error::custom("claims ride only in format 32.8, and 32.8 always has them")),
         };
         Ok(IssueCall::new(w.op, actor, w.request, w.render))
     }
