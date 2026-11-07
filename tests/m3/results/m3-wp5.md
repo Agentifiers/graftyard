@@ -348,3 +348,22 @@ Deployed `06762a2` at 01:13Z: `graft-m2b-site-a` `442d7cfe` (first phase `c35e92
 The leader made 334 calls in the first run, 114 of them to learners, and none failed. In the failing runs, one learner each had one slow second (slot 8 at 13 s, max 1,290 ms; slot 0 at 7 s, max 2,028 ms). Every other learner's p99 was under 900 ms.
 
 Slot 0 in the 01:21 run: batch 142 left at 7,087 ms and reached the leader at 9,058 ms. Its resend after `CALL_DEADLINE`, at 8,139 ms, also reached the leader at 9,059. Meanwhile the leader took 295 batches from other learners on time. Once `QUIET` had passed, the leader called slot 0 twice, at 8,230 and 8,330. Slot 0 applied the first at 8,309, but both answers took 825 and 751 ms. So for about 2 s, nothing left slot 0, and the learner's other work kept running. That matches its storage confirm stalling: the output gate holds every outgoing call and response until the writes are durable. Slot 0 had just applied an entry at 7,087. This is not yet measured, so the next build times every member's storage confirm.
+
+### Second set on the fix, with confirm times (01:29 to 01:35Z): 4 of 6 pass
+
+`1808695` adds each storage confirm's time to the trace. Deployed at 01:28Z (`6f9a1a83`, `219251d9`, `c936463d` / `9607dd62`; wasm `16638bcc…`), then all 19 members were reset.
+
+| Run | Leader req/s | Worst learner p99 | Failed reads | Slowest storage confirm | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| 01:30:16 | 240 | 723 ms | 0 | 302 ms | Pass |
+| 01:31:18 | 239 | 749 ms | 0 | 355 ms | Pass |
+| 01:32:20 | 246 | 782 ms | 0 | 407 ms | Pass |
+| 01:33:23 | 244 | 1,382 ms (slot 8, site 2) | 0 | 244 ms | Fail |
+| 01:34:25 | 237 | 1,009 ms (slot 8, site 2) | 0 | 378 ms | Fail |
+| 01:35:28 | 236 | 951 ms | 0 | 522 ms | Pass |
+
+There were no depth failures, no `STEP_DOWN`, and no failed reads in any of the 12 runs on the fix. Storage confirms are not the tail: the slowest was 522 ms, and slot 8's confirms were 31 to 50 ms around its slow second.
+
+What remains is a single `ReadIndex` call, from a learner on site 2 (apac) to the leader on site 0 (enam), whose answer is lost or late. In the 01:33 run, slot 8's batch 42 left at 9,970 ms and never reached the leader. The leader recorded taking batches 41 (9,791) and 43, and nothing for 42 until the resend. `tick_remote` resent it at `CALL_DEADLINE` (1 s), and that resend reached the leader in 71 ms. The 1 s of reads queued behind the one batch in flight therefore waited 1 s more than their round trip, so the worst reads came to 1.4 to 1.6 s. Nothing else on the learner or the leader stalled: the leader took 15 to 20 batches every 100 ms the whole time. In the 01:35 run, 6 learners' calls all took 619 to 694 ms at 10.8 s, with most of the time on the reply's way back. That was one network event on the enam–apac path. Those runs fall inside the gate only because the lost call is rare.
+
+That is the "batches queue behind the single in-flight one" case. Here it is hit by one call lost on the network, where before it was hit by every call being refused. The learner waits `CALL_DEADLINE` before it resends.
