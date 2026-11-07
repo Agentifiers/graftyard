@@ -1,7 +1,11 @@
 #!/bin/bash
 # M3 close's planted bugs: each is applied alone to a clean tree, the gate tests run, and the plant is reverted. A
-# plant counts as caught only if at least one gate test fails on it. Run from the worktree root.
+# plant counts as caught only if at least one gate test fails on it. Run from the worktree root:
+#   bash tests/m3/close/plant.sh <out file>
+# As an orb service, which restarts a command that exits, it writes `DONE` and waits for its stop.
 set -u
+out=${1:?usage: plant.sh <out file>}
+exec >"$out" 2>&1
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
 if [ -n "$(git status --porcelain -- crates)" ]; then
 	echo "commit or stash changes under crates/ first" >&2
@@ -51,10 +55,13 @@ plant cursor-by-anyone crates/identity/src/tokens.rs \
                     return Err(TokensErr::Forbidden);
                 }' \
 	'            TokensOp::AuditCursor { through, .. } => {'
-# Audit: the cursor can move back, so a new leader reads entries again forever.
+# Audit: a cursor behind the shard's is committed again, so a late batch rewinds what the consumer covered.
 plant cursor-moves-back crates/identity/src/tokens.rs \
-	'            self.more.more = self.more.more.max(*through);' \
-	'            self.more.more = *through;'
+	'                if *through <= s.fold.audit_cursor() {
+                    return done(SmallVec::new());
+                }
+                done(smallvec![TokensEvent::AuditCursor' \
+	'                done(smallvec![TokensEvent::AuditCursor'
 # Audit: every cursor entry is followed by another, so an idle shard commits forever.
 plant cursor-chases-itself crates/identity/src/audit.rs \
 	'    through > from && (!owed.is_empty() || through.0 - from.0 >= CURSOR_STRIDE)' \
@@ -67,3 +74,5 @@ plant app-permission-ignored crates/identity/src/access.rs \
 plant status-id-from-edge-clock crates/git/src/issue_ops.rs \
 	'                let id = top.map_or(st.id.0.0, |t| st.id.0.0.max(t + 1));' \
 	'                let id = top.map_or(st.id.0.0, |t| if t == st.id.0.0 { t + 1 } else { st.id.0.0 });'
+echo DONE
+sleep infinity
