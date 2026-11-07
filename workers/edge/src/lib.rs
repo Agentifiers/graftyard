@@ -1046,6 +1046,14 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             }
             return Response::from_json(&out);
         }
+        // `{"chain", "read": q}`: the chain's fresh read, so a gate can see an `Identity` chain's credential list.
+        if let Some(q) = b.get("read") {
+            let body = json!({ "q": q }).to_string();
+            let v = graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes())
+                .await
+                .map_err(Error::RustError)?;
+            return Response::from_json(&json!({ "value": v.map(|(v, _, _)| v["value"].clone()) }));
+        }
         let body = json!({ "rid": c.rid.to_string(), "cmd": b["cmd"] });
         let first = b.get("receipt").and_then(serde_json::Value::as_str).map(|k| {
             let mut f = body.clone();
