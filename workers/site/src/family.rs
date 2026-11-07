@@ -202,6 +202,7 @@ pub enum Kind {
     Tokens,
     Ids,
     Authz,
+    Identity,
     Repo,
     Release,
     /// Test installs only: a `repo:` chain joined with no owner hosts the test register, for M1-WP2's rows and the
@@ -223,7 +224,8 @@ impl Kind {
             ChainId::Release => Some(Kind::Release),
             #[cfg(not(feature = "test-faults"))]
             ChainId::Repo(_) => Some(Kind::Repo),
-            ChainId::Network(_) | ChainId::Identity(_) | ChainId::Actions(..) | ChainId::RepoMeta(_) => None,
+            ChainId::Identity(_) => Some(Kind::Identity),
+            ChainId::Network(_) | ChainId::Actions(..) | ChainId::RepoMeta(_) => None,
         }
     }
 }
@@ -252,7 +254,8 @@ impl Family for Repo {
     /// (`tests/m2/results/m2-wp5.md`, "Design gaps"). It reads 32.5 so that a later `FormatsEnable` can let the edge
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
-    /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that.
+    /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
+    /// (collaborators and invitations) and 32.7 (a push under a `ghs_` token) are read on the same terms.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -260,6 +263,7 @@ impl Family for Repo {
             git::merge::REPO_FORMAT_V4,
             git::issue_ops::call::REPO_FORMAT_ISSUES,
             git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
+            git::repo::REPO_FORMAT_STATELESS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -897,7 +901,7 @@ impl Family for Names {
         }
     }
     /// `{"placement": owner}`, `{"login": key}`, `{"account": id}`, `{"accountLogins": [id, ..]}`, `{"repoOwner": id}`,
-    /// `{"ids": true}`.
+    /// `{"ids": true}`, `{"slug": s}`, `{"app": id}`, `{"client": id}`, `{"installation": id}`.
     fn read_json(f: &id::NamesFold, q: &Value) -> Value {
         use id::NamesRead;
         let mut out = serde_json::Map::new();
@@ -926,6 +930,20 @@ impl Family for Names {
         }
         if q.get("ids").is_some() {
             out.insert("ids".into(), cursor_json(&f.ids));
+        }
+        // M3's routes to an owner: an App by slug or id, a client id, an installation.
+        if let Some(s) = q.get("slug").and_then(Value::as_str).and_then(|s| id::Slug::try_from(s.to_owned()).ok()) {
+            out.insert("slug".into(), json!(f.slug(&s)));
+        }
+        if let Some(a) = q.get("app").and_then(Value::as_i64) {
+            out.insert("app".into(), json!(f.app_owner(id::AppId(DbId(a)))));
+        }
+        if let Some(c) = q.get("client").and_then(Value::as_str).and_then(|c| id::ClientId::try_from(c.to_owned()).ok())
+        {
+            out.insert("client".into(), json!(f.client(&c)));
+        }
+        if let Some(i) = q.get("installation").and_then(Value::as_i64) {
+            out.insert("installation".into(), json!(f.installation(id::InstallationId(DbId(i)))));
         }
         out.insert("logins".into(), json!(f.logins.len()));
         out.insert("placements".into(), json!(f.placements.len()));
@@ -977,15 +995,40 @@ impl Family for Tokens {
             _ => refusal(e, 422),
         }
     }
-    /// `{"token": "<64 hex>"}`.
+    /// `{"token": "<64 hex>"}`; for M3, `{"verifyingKey": kid}`, `{"jti": "<ULID>"}`, `{"sshKey": "<64 hex>"}`, and
+    /// `{"code": "<64 hex>"}`. A code row comes with its `expires`, which the caller checks against its own clock.
     fn read_json(f: &id::TokensFold, q: &Value) -> Value {
         use id::TokensRead;
-        let hash = q.get("token").and_then(Value::as_str).and_then(graftyard_types::Digest::parse_hex);
-        let row = hash.and_then(|h| f.token(&h.0));
-        json!({
-            "token": row.map(|r| json!({ "account": r.account.0.0, "revoked": r.revoked })),
-            "tokens": f.tokens.len(),
-        })
+        let hex_of = |k: &str| q.get(k).and_then(Value::as_str).and_then(graftyard_types::Digest::parse_hex);
+        let row = hex_of("token").map(|h| (h, f.token(&h.0)));
+        let mut out = serde_json::Map::new();
+        out.insert(
+            "token".into(),
+            json!(row.and_then(|(h, r)| r.map(|r| json!({
+                "account": r.account.0.0,
+                "revoked": r.revoked,
+                "kind": r.kind,
+                "expires": r.expires,
+                "fields": f.fields(&h.0),
+            })))),
+        );
+        out.insert("tokens".into(), json!(f.tokens.len()));
+        if let Some(k) = q.get("verifyingKey").and_then(Value::as_u64) {
+            let row = f.verifying_key(id::Kid(k as u32));
+            out.insert("verifyingKey".into(), json!(row.map(|r| json!({ "key": r.key.0, "retired": r.retired }))));
+        }
+        if let Some(j) = q.get("jti").and_then(Value::as_str).and_then(|s| s.parse().ok()) {
+            out.insert("jti".into(), json!(f.more.jtis.get(&id::Jti(j))));
+        }
+        if let Some(fp) = hex_of("sshKey") {
+            let fp = id::Fingerprint(fp.0);
+            out.insert("sshKey".into(), json!(f.ssh_key(&fp)));
+            out.insert("sshRemoved".into(), json!(f.ssh_removed(&fp)));
+        }
+        if let Some(h) = hex_of("code") {
+            out.insert("code".into(), json!(f.more.codes.get(&h.0)));
+        }
+        Value::Object(out)
     }
     fn fold_bytes(f: &id::TokensFold) -> Vec<u8> {
         codec::to_bytes(f)
@@ -1058,6 +1101,78 @@ impl Family for Authz {
     fn source(join: &Join) -> Source {
         match join.chain {
             ChainId::Authz(o) => Source::Owner(o),
+            _ => Source::Given,
+        }
+    }
+}
+
+/// `identity:<account>` members: the account's own record, sessions, and credential list (M3-WP3). The chain sits
+/// under the owner's record, as `Authz` does (`design/DESIGN.md`, Shape, `PlacementRecord`: "It covers the owner's
+/// `Authz`, `Identity`, `Actions`, and repository chains").
+pub struct Identity;
+
+impl Family for Identity {
+    type Ev = id::IdentityEvent;
+    type Fold = id::IdentityFold;
+    type C = id::IdentityCmd;
+
+    fn reads() -> Vec<Format> {
+        vec![id::IDENTITY_FORMAT]
+    }
+    fn new_fold(_sql: &SqlStorage, join: &Join) -> id::IdentityFold {
+        match join.chain {
+            ChainId::Identity(a) => id::IdentityFold::new(a),
+            _ => id::IdentityFold::default(),
+        }
+    }
+    fn store_fold(fold: &id::IdentityFold, _: &[&raft::LogEntry<id::IdentityEvent>], stmts: &mut Vec<Stmt>) {
+        store_blob(fold, stmts);
+    }
+    fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<id::IdentityFold> {
+        Ok(load_blob(sql)?.unwrap_or_else(|| Self::new_fold(sql, join)))
+    }
+    fn out_json(_fold: &Self::Fold, _a: &raft::Acked<()>) -> Value {
+        Value::Null
+    }
+    fn err_json(e: &id::IdentityErr) -> Value {
+        match e {
+            id::IdentityErr::Unauthorized(_) | id::IdentityErr::Suspended => refusal(e, 401),
+            id::IdentityErr::Forbidden => refusal(e, 403),
+            _ => refusal(e, 422),
+        }
+    }
+    /// The created capture, the credential list with titles (what `GET /user/keys` lists), and the session count.
+    /// The password hash and second factors never leave the member.
+    fn read_json(f: &id::IdentityFold, _q: &Value) -> Value {
+        let credentials: Vec<Value> = f
+            .credentials
+            .iter()
+            .map(|(c, title)| match c {
+                id::CredentialRef::Token { hash, kind } => {
+                    json!({ "token": graftyard_types::Digest(*hash).hex(), "kind": kind, "title": title.as_ref() })
+                }
+                id::CredentialRef::SshKey(fp) => {
+                    json!({ "sshKey": graftyard_types::Digest(fp.0).hex(), "title": title.as_ref() })
+                }
+            })
+            .collect();
+        json!({
+            "account": f.account.map(|a| a.0.0),
+            "created": f.created,
+            "credentials": credentials,
+            "sessions": f.sessions.len(),
+            "password": f.password.is_some(),
+        })
+    }
+    fn fold_bytes(f: &id::IdentityFold) -> Vec<u8> {
+        codec::to_bytes(f)
+    }
+    fn dep(chain: ChainId, bytes: &[u8]) -> Result<IdentityDep, String> {
+        identity_dep(chain, bytes)
+    }
+    fn source(join: &Join) -> Source {
+        match join.chain {
+            ChainId::Identity(a) => Source::Owner(a),
             _ => Source::Given,
         }
     }

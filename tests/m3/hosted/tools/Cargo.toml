@@ -1,0 +1,16 @@
+[package]
+name = "m3-hosted-tools"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+graftyard-identity = { path = "../../../../crates/identity" }
+graftyard-raft = { path = "../../../../crates/raft" }
+graftyard-types = { path = "../../../../crates/types" }
+serde_json = "1"
+graftyard-ops = { path = "../../../../workers/ops" }
+smallvec = { version = "1", features = ["serde"] }
+
+# Outside the repository's workspace: a test tool built on its own.
+[workspace]
