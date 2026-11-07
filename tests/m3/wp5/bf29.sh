@@ -21,13 +21,17 @@ BED=$(cat "$BED_TOKEN_FILE")
 EDGE=${GRAFT_EDGE:?}
 UP=$(( D == 1 ? 2 : 1 ))
 log() { echo "$(date -u +%FT%TZ) $*" | tee -a "$OUT/bf29.log"; }
-bed() { curl -sS -m 900 -X POST -H "x-bed-token: $BED" "$EDGE/_bed/$1${2:-}"; }
+# The bed token reaches curl from a builtin printf through a pipe, never argv, which `ps` shows.
+bed() { curl -sS -m 900 -X POST -H @<(printf 'x-bed-token: %s\n' "$BED") "$EDGE/_bed/$1${2:-}"; }
 st() { $M "$1" /status | python3 -c "import json,sys; v=json.load(sys.stdin)['v']; print(v.get('role'), v.get('commit'), v.get('applied'), v.get('base'), v.get('last'))"; }
 # n real git pushes through the edge, each one commit on `main` (a promotion needs the refs' objects, so the edge's
 # `/_bed/push` of made-up ids will not do).
 GIT=$OUT/git; WRITER_TOKEN=$(sed -n 2p "$BF20_HOME/tokens.txt" | cut -d' ' -f1)
 NAME=$(python3 -c "import json; print({v: k for k, v in json.load(open('$BF20_HOME/repos.json')).items()}[$ID])")
-URL=https://x:$WRITER_TOKEN@${EDGE#https://}/m2b/$NAME.git
+# git takes the credential from its environment, never from the URL on its command line.
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader \
+  GIT_CONFIG_VALUE_0="Authorization: Basic $(printf 'x:%s' "$WRITER_TOKEN" | base64 -w0)"
+URL=$EDGE/m2b/$NAME.git
 if [ ! -d "$GIT" ]; then
   git init -q -b main "$GIT" && git -C "$GIT" -c user.name=bf29 -c user.email=bf29@m2b commit -q --allow-empty -m root
   git -C "$GIT" fetch -q "$URL" main 2>/dev/null && git -C "$GIT" reset -q --hard FETCH_HEAD
