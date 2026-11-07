@@ -331,3 +331,20 @@ With both rules, the leader calls a learner only while that learner is not calli
 - `/raft` takes the held messages into the response to a learner's call, ahead of the call's own replies, after the output gate. A learner's `ReadIndex` that the leader could not answer at once waits in the call, up to `READ_INDEX_HOLD` (500 ms), for its `ReadIndexRes` to be held for it.
 - The test `a_learner_that_calls_the_leader_is_never_called_back_so_depth_stays_bounded` models the runtime's rule: each call leaves at its sender's newest incoming depth plus one. It drives one leader and one learner for 30 s with `read_bench`'s pattern and no pushes. The old routing nests past 16, and the test asserts it does. With `Callers`, every call stays at depth 3. A second test covers holding, `QUIET`, and sending again.
 - `crates/raft` is unchanged, so the long sweep and Porcupine do not apply.
+
+### First gate runs on the fix (01:15 to 01:21Z): 4 of 6 pass, and the depth failures are gone
+
+Deployed `06762a2` at 01:13Z: `graft-m2b-site-a` `442d7cfe` (first phase `c35e923f`), `-b` `3bbbc8a9` (`041b2aae`), `-c` `1fc03ca7`/`be45c2d5`, wasm `47c97bc8…`. All 19 members were then sent `/reset` so each one runs it.
+
+| Run | Leader req/s | Worst learner p99 | Failed reads | Depth failures | `STEP_DOWN` | Deepest modelled hop | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 01:15:55 | 244 | 851 ms | 0 | 0 | 0 | 6 | Pass |
+| 01:16:56 | 248 | 564 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:17:58 | 249 | 775 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:19:00 | 251 | 1,097 ms (slot 8) | 0 | 0 | 0 | 4 | Fail |
+| 01:20:03 | 246 | 603 ms | 0 | 0 | 0 | 4 | Pass |
+| 01:21:04 | 247 | 1,729 ms (slot 0) | 0 | 0 | 0 | 6 | Fail |
+
+The leader made 334 calls in the first run, 114 of them to learners, and none failed. In the failing runs, one learner each had one slow second (slot 8 at 13 s, max 1,290 ms; slot 0 at 7 s, max 2,028 ms). Every other learner's p99 was under 900 ms.
+
+Slot 0 in the 01:21 run: batch 142 left at 7,087 ms and reached the leader at 9,058 ms. Its resend after `CALL_DEADLINE`, at 8,139 ms, also reached the leader at 9,059. Meanwhile the leader took 295 batches from other learners on time. Once `QUIET` had passed, the leader called slot 0 twice, at 8,230 and 8,330. Slot 0 applied the first at 8,309, but both answers took 825 and 751 ms. So for about 2 s, nothing left slot 0, and the learner's other work kept running. That matches its storage confirm stalling: the output gate holds every outgoing call and response until the writes are durable. Slot 0 had just applied an entry at 7,087. This is not yet measured, so the next build times every member's storage confirm.
