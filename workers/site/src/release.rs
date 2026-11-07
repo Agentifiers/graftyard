@@ -68,11 +68,11 @@ pub async fn system_record(env: &Env, chain: ChainId) -> Result<PlacementRecord,
     graftyard_lookup::system_record(&Bindings { env, sites: &site.sites }, &anchor, chain).await
 }
 
-/// Any chain's record: a system chain's from the `Release` view, an owner chain's (`Authz(owner)`) from the owner's
-/// `Placement` row on `Names`.
+/// Any chain's record: a system chain's from the `Release` view, an owner chain's (`Authz(owner)`, `Identity(owner)`)
+/// from the owner's `Placement` row on `Names`.
 pub async fn record_for(env: &Env, chain: ChainId) -> Result<PlacementRecord, String> {
     match chain {
-        ChainId::Authz(owner) => crate::member::owner_record(env, owner).await,
+        ChainId::Authz(owner) | ChainId::Identity(owner) => crate::member::owner_record(env, owner).await,
         c => system_record(env, c).await,
     }
 }

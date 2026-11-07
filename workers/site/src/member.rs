@@ -61,6 +61,7 @@ pub enum Hosted {
     Tokens(Rc<Host<family::Tokens>>),
     Ids(Rc<Host<family::Ids>>),
     Authz(Rc<Host<family::Authz>>),
+    Identity(Rc<Host<family::Identity>>),
     Repo(Rc<Host<family::Repo>>),
     Release(Rc<Host<crate::release::Release>>),
     #[cfg(feature = "test-faults")]
@@ -148,6 +149,7 @@ macro_rules! each {
             Hosted::Tokens($x) => $body,
             Hosted::Ids($x) => $body,
             Hosted::Authz($x) => $body,
+            Hosted::Identity($x) => $body,
             Hosted::Repo($x) => $body,
             Hosted::Release($x) => $body,
             #[cfg(feature = "test-faults")]
@@ -163,6 +165,7 @@ impl Hosted {
             Kind::Tokens => Hosted::Tokens(Host::new(state, env)),
             Kind::Ids => Hosted::Ids(Host::new(state, env)),
             Kind::Authz => Hosted::Authz(Host::new(state, env)),
+            Kind::Identity => Hosted::Identity(Host::new(state, env)),
             Kind::Repo => Hosted::Repo(Host::new(state, env)),
             Kind::Release => Hosted::Release(Host::new(state, env)),
             #[cfg(feature = "test-faults")]
