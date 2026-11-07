@@ -631,7 +631,7 @@ Progress at 21:16 UTC (`final`, 93 of 600): home n = 46, p99 1.37 s, 0 over 2 s;
 every sample merged; client EWR and edge EWR on every home sample.
 Progress at 21:45 UTC (184 of 600): home n = 92, p99 1.37 s, 0 over; off n = 89, p99 1.81 s, 0 over.
 Progress at 22:13 UTC (267 of 600): home n = 133, p99 1.31 s, 0 over; off n = 129, p99 1.81 s, 0 over.
-Progress at 22:42 UTC (349 of 600):  home  n =  174 , p99  1358  ms,  0  over;  off  n =  168 , p99  1809  ms,  0  over; one transfer timed out at 22:40 (site 2 did not lead within 10 s) and the driver resumed.
+Progress at 22:42 UTC (349 of 600): home n = 174, p99 1358 ms, 0 over; off n = 168, p99 1809 ms, 0 over. One transfer timed out at 22:40 (site 2 did not lead within 10 s), and the driver resumed.
 Progress at 23:11 UTC (434 of 600): home n = 217, p99 1342 ms, 0 over; off n = 209, p99 1783 ms, 0 over.
 Progress at 23:39 UTC (519 of 600): home n = 259, p99 1358 ms, 0 over; off n = 250, p99 1809 ms, 0 over.
 
