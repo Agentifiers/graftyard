@@ -36,6 +36,10 @@ use crate::faults::Kill;
 use crate::host::{self, Host, Trace, err, within};
 use crate::{SiteEnv, lookup, now_ms};
 
+/// How long a learner's `ReadIndex` call stays open for the leader's answer when it needs a round [guess]: under
+/// the asker's CALL_DEADLINE, past one round to the far voter (230 ms measured, `tests/m2/results/install-m2b.md`).
+const READ_INDEX_HOLD: Duration = Duration::from_millis(500);
+
 /// Round trips per peer; the row keeps their median.
 const RTT_SAMPLES: usize = 20;
 /// A member measures again only on a day it served a request and has not measured yet.
@@ -318,9 +322,7 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/rtt") => Response::from_json(&rtt_rows(&self.host.state, &self.host.env)?),
             (Method::Post, "/raft") => {
                 let body = req.bytes().await?;
-                let r = self.raft(&body);
-                self.host.settled().await;
-                r
+                self.raft(&body).await
             }
             (Method::Post, "/commit") => {
                 let body = match self.decode::<CommitReq<F>>(&req.bytes().await?) {
@@ -656,28 +658,75 @@ impl<F: Family> Routes<F> {
         r
     }
 
-    /// Steps each envelope and answers with the envelopes addressed back to the caller.
-    fn raft(&self, body: &[u8]) -> Result<Response> {
+    /// Steps each envelope and answers with the envelopes addressed back to the caller. A learner's call also takes
+    /// what this member held for it (`crate::callers`), and a `ReadIndex` the leader could not answer at once, because
+    /// it needs a round, keeps the call open up to `READ_INDEX_HOLD` for its answer: this member never calls a learner
+    /// back while it calls.
+    async fn raft(&self, body: &[u8]) -> Result<Response> {
         if !self.host.joined() {
             return Response::error("member not joined", 409);
         }
         let envs: Vec<raft::Envelope<F::Ev>> = raft::codec::from_bytes(body).map_err(|e| err(e.to_string()))?;
+        let Some(from) = envs.first().map(|e| e.from) else { return self.raft_reply(Vec::new()) };
+        self.host.callers.borrow_mut().began(from, now_ms());
+        let r = self.raft_steps(from, envs).await;
+        // The output gate: the reply leaves only after the writes it may rest on.
+        self.host.settled().await;
+        let r = match r {
+            Ok(mut back) => {
+                let mut out = self.host.callers.borrow_mut().take(from);
+                out.append(&mut back);
+                for e in &out {
+                    if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
+                        self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+                    }
+                }
+                self.raft_reply(out)
+            }
+            Err(e) => Err(e),
+        };
+        self.host.callers.borrow_mut().ended(from, now_ms());
+        r
+    }
+
+    async fn raft_steps(&self, from: SiteId, envs: Vec<raft::Envelope<F::Ev>>) -> Result<Vec<raft::Envelope<F::Ev>>> {
         let mut back = Vec::new();
+        let mut asked = Vec::new();
         for e in envs {
-            let from = e.from;
             if let raft::Message::ReadIndex { batch } = &e.msg {
                 self.host.trace(Trace::IndexTaken, from.0, *batch, 0, 0);
+                asked.push(*batch);
             }
             self.host.trace_res(&e, false);
-            let (_, out) = self.host.step(|m, t| m.step(t, from, e.msg))?;
-            let replies = self.host.dispatch(out, Some(from));
-            for r in &replies {
-                if let raft::Message::ReadIndexRes { batch, index } = &r.msg {
-                    self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+            let (_, out) = self.host.step(|m, t| m.step(t, e.from, e.msg))?;
+            back.extend(self.host.dispatch(out, Some(from)));
+        }
+        let answered = |b: &[raft::Envelope<F::Ev>], batch: u64| {
+            b.iter().any(|e| matches!(e.msg, raft::Message::ReadIndexRes { batch: x, .. } if x == batch))
+        };
+        // Only a learner's call waits: a voter's answer leaves as a call, which forms no cycle.
+        if graftyard_types::learner_slot(from).is_none() {
+            return Ok(back);
+        }
+        let end = now_ms() + READ_INDEX_HOLD.as_millis() as u64;
+        for batch in asked {
+            while !answered(&back, batch)
+                && !self.host.callers.borrow().holds(from, |e| answered(std::slice::from_ref(e), batch))
+            {
+                let left = end.saturating_sub(now_ms());
+                if left == 0 {
+                    break;
+                }
+                let rx = self.host.callers.borrow_mut().wake(from);
+                if !matches!(within(Duration::from_millis(left), rx).await, Some(Ok(()))) {
+                    break;
                 }
             }
-            back.extend(replies);
         }
+        Ok(back)
+    }
+
+    fn raft_reply(&self, back: Vec<raft::Envelope<F::Ev>>) -> Result<Response> {
         let mut res = Response::from_bytes(raft::codec::to_bytes(&back))?;
         res.headers_mut().set("content-type", "application/octet-stream")?;
         Ok(res)

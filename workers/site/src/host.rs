@@ -434,6 +434,8 @@ pub struct Host<F: Family> {
     /// Commands refused `NeedIdBlock`, waiting for the lease loop: request id, command, and their waiters.
     blocked: RefCell<Vec<(Ticket, RequestId, F::C)>>,
     leasing: Cell<bool>,
+    /// Messages for learners that are calling this member, held for their next call (`crate::callers`).
+    pub callers: RefCell<crate::callers::Callers<Envelope<F>>>,
     /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
     #[cfg(feature = "test-faults")]
     pub abandon: RefCell<BTreeSet<u64>>,
@@ -968,6 +970,7 @@ impl<F: Family> Host<F> {
             truncs: RefCell::new(VecDeque::new()),
             blocked: RefCell::new(Vec::new()),
             leasing: Cell::new(false),
+            callers: RefCell::new(Default::default()),
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
             #[cfg(feature = "test-faults")]
@@ -1669,6 +1672,13 @@ impl<F: Family> Host<F> {
             crate::faults::count("abandoned_timeout_now");
             return;
         }
+        // A learner calling this member gets the message in the response to its next call, never as a call back.
+        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else { return };
+        self.call(e);
+    }
+
+    /// Sends `e` as a member-to-member call and steps the replies.
+    fn call(self: &Rc<Self>, e: Envelope<F>) {
         let h = self.clone();
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
@@ -2058,6 +2068,7 @@ impl<F: Family> Host<F> {
 
     fn has_waiters(&self) -> bool {
         self.core.borrow().as_ref().is_some_and(|c| !c.waiters.is_empty() || !c.reads.is_empty())
+            || self.callers.borrow().holding()
     }
 
     /// Keeps `tick` running while inputs arrive or calls are held.
@@ -2093,6 +2104,10 @@ impl<F: Family> Host<F> {
         self.active_until.set(until);
         let ((), out) = r?;
         self.dispatch(out, None);
+        let due = self.callers.borrow_mut().due(now_ms());
+        for e in due {
+            self.call(e);
+        }
         Ok(())
     }
 
