@@ -407,6 +407,9 @@ pub fn refused_field(f: &str, e: &graftyard_git::issue_ops::IssueErr) -> Value {
         E::OrgMember => unprocessable(f, "User is a member of the organization"),
         // The host leases a block and re-sends; a client never sees this.
         E::NeedIdBlock | E::Unavailable => json!({ "message": "Service Unavailable", "status": "503" }),
+        // An agent rule: GraphQL's FORBIDDEN, with a text that names the rule (AM1-WP2).
+        E::Agent(a) => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
+            "message": &*a.text }] }),
     }
 }
 
@@ -525,8 +528,8 @@ pub fn refused_merge(p: &Planned, e: &MergeError) -> Value {
 pub fn refused_merge_field(f: &str, e: &MergeError) -> Value {
     match e {
         MergeError::Unauthorized(_) => json!({ "message": "Bad credentials", "status": "401" }),
-        MergeError::Forbidden => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
-            "message": e.message() }] }),
+        MergeError::Forbidden | MergeError::Agent(_) => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN",
+            "path": [f], "message": e.message() }] }),
         MergeError::NotFound => not_found(f, e.message()),
         MergeError::Store(_) => json!({ "message": "Service Unavailable", "status": "503" }),
         _ => unprocessable(f, e.message()),

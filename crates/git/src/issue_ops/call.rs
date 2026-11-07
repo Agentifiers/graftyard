@@ -40,6 +40,9 @@ pub struct IssueCall {
     pub op: IssueOp<BlobRef>,
     pub actor: Principal,
     pub request: RequestId,
+    /// Format 32.8 (`crate::repo::REPO_FORMAT_AGENT`): the edge sends it only once `FormatsEnable` enabled 32.8, and
+    /// only then may the command's entry carry the agent events. `SetAgentPolicy` is always 32.8.
+    pub agent: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -54,6 +57,10 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
+        // 32.8 first: only it may carry agent events, so an App's 32.8 command carries its claims as 32.9 does.
+        if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) {
+            return crate::repo::REPO_FORMAT_AGENT;
+        }
         if matches!(self.actor.credential, Credential::Stateless(_)) {
             return REPO_FORMAT_APP_CALLS;
         }
@@ -66,7 +73,7 @@ impl IssueCall {
     }
 
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
-        IssueCall { op, actor, request, render, confirmed: None }
+        IssueCall { op, actor, request, render, confirmed: None, agent: false }
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -105,7 +112,7 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
-    /// A `ghs_` token's verified claims, only in format 32.9.
+    /// A `ghs_` token's verified claims, in format 32.9, and in 32.8 for an App's agent command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claims: Option<InstallationClaims>,
 }
@@ -140,23 +147,36 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, REPO_FORMAT_APP_CALLS];
+        let reads =
+            [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT, REPO_FORMAT_APP_CALLS];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
-        let app = f == serde_json::json!([REPO_FORMAT_APP_CALLS.family, REPO_FORMAT_APP_CALLS.version]);
+        let fmt = |x: Format| f == serde_json::json!([x.family, x.version]);
+        let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        let actor = match (app, w.claims) {
+        let actor = match (app || agent, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
-            (false, None) => Principal {
+            (false, Some(_)) | (true, None) if !agent => {
+                return Err(serde::de::Error::custom(
+                    "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
+                ));
+            }
+            _ => Principal {
                 actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
                 scopes: ScopeSet(w.scopes),
                 credential: Credential::from_wire(w.token.0, w.session),
                 sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
             },
-            _ => return Err(serde::de::Error::custom("claims ride only in format 32.9, and 32.9 always has them")),
         };
-        Ok(IssueCall::new(w.op, actor, w.request, w.render))
+        let mut c = IssueCall::new(w.op, actor, w.request, w.render);
+        c.agent = agent;
+        // One form per command: a format that does not match the command is malformed.
+        let got = c.format();
+        if !fmt(got) {
+            return Err(serde::de::Error::custom("issue command format does not match the command"));
+        }
+        Ok(c)
     }
 }
 
@@ -166,10 +186,17 @@ impl IssueCall {
     }
 
     /// `IssueCmd::deps`: the actor's credential chains and the owner's and enterprise's `Authz`, named by the fold's
-    /// `RepoSettings`.
+    /// `RepoSettings`. An App's command, and any 32.8 command, also reads the install's `Authz(Genesis.account)` for its
+    /// `AgentApp` rows: an App's for its class, and a user's whose token may be an `AgentApp`'s or whose approval may
+    /// write `AgentGate`. Every other command reads what it did.
     pub fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
+        crate::repo::with_install(&mut d, &self.actor);
+        let install = ChainId::Authz(graftyard_identity::install_account());
+        if self.format() == crate::repo::REPO_FORMAT_AGENT && !d.contains(&install) {
+            d.push(install);
+        }
         d
     }
 
@@ -183,7 +210,7 @@ impl IssueCall {
         let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
         // `RepoView::apply` stamps writes with its time; `decide` writes nothing, so no time is needed.
         let view = RepoView::new(s.fold().tiers(), core, meta, Timestamp(0));
-        let (evs, out) = cmd.decide(&view, deps)?;
+        let (evs, out) = cmd.decide_in(&view, deps, self.format() == crate::repo::REPO_FORMAT_AGENT)?;
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }
 

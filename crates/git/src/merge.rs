@@ -165,6 +165,8 @@ pub enum MergeError {
     NoQueue,
     /// A queue entry's `parent_tip` is not the previous entry's `group_tip`, or a plan does not match its entry.
     StaleChain,
+    /// An agent rule: an `Agent` merging, or a PR with `AgentMeta` whose `AgentGate` does not hold on its head.
+    Agent(crate::agent::AgentRefusal),
 }
 
 impl MergeError {
@@ -184,6 +186,7 @@ impl MergeError {
             MergeError::Queued => "Pull request is already in the merge queue".into(),
             MergeError::NoQueue => "Merge queue is not enabled for this branch".into(),
             MergeError::StaleChain => "Merge queue entry is out of date".into(),
+            MergeError::Agent(a) => a.text.to_string(),
         }
     }
 }
@@ -402,12 +405,34 @@ pub(crate) fn authorize(
     deps: &[(ChainId, IdentityDep)],
 ) -> Result<(UserId, Option<RepoPermission>), MergeError> {
     let cred = actor.credential_shard();
-    if cred.account.is_none() || cred.key.is_none() {
+    let app = matches!(actor.actor, Actor::App { .. });
+    if cred.key.is_none() || (cred.account.is_none() && !app) {
         return Err(MergeError::Unauthorized(CredentialRefusal::NoToken));
     }
     check_credential(&cred, Own::Other, deps).map_err(MergeError::Unauthorized)?;
+    // An `Agent` never merges, from any surface (AM1-WP2). Another App is refused as before.
+    if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(actor, crate::repo::install_authz(deps)) {
+        return Err(MergeError::Agent(crate::agent::AgentRefusal::of(crate::agent::AgentRule::Merge)));
+    }
     let Actor::User(user) = actor.actor else { return Err(MergeError::Unauthorized(CredentialRefusal::NoToken)) };
     Ok((user, permission(actor, v, &crate::repo::authz_folds(deps))))
+}
+
+/// `AgentGate` for a PR with `AgentMeta`: distinct approvers on the current head, the requester excluded, at least
+/// `1 + extra_human_approvals`, plus one when `requester` is empty. A PR without `AgentMeta` passes untouched.
+pub(crate) fn gate_holds(core: &dyn Read, n: IssueNumber, head: ObjectId) -> Result<(), MergeError> {
+    let Some(meta) = crate::tiers::agent_meta(core, n) else { return Ok(()) };
+    let need = crate::agent::approvals_needed(&meta, &crate::tiers::agent_policy(core));
+    let have = crate::tiers::agent_gates(core, n, &head).iter().filter(|u| Some(**u) != meta.requester).count();
+    if have >= need {
+        return Ok(());
+    }
+    let short = &head.hex()[..7];
+    let extra = if meta.requester.is_none() { " (no recorded requester, so one more is needed)" } else { "" };
+    let text = format!(
+        "refused: graftyard/agent-gate is not satisfied for {short}: {have} of {need} approvals from human writers{extra}"
+    );
+    Err(MergeError::Agent(crate::agent::AgentRefusal::new(crate::agent::AgentRule::Gate, text)))
 }
 
 /// A user command's deps: the actor's credential chains and the owner's and enterprise's `Authz`.
@@ -418,6 +443,7 @@ pub(crate) fn user_deps(
 ) -> SmallVec<[ChainId; 3]> {
     let mut d = credential_chains(&actor.credential_shard(), None);
     d.extend(crate::repo::authz_chains(owner, enterprise));
+    crate::repo::with_install(&mut d, actor);
     d
 }
 
@@ -474,6 +500,7 @@ impl Merge {
         };
         let rules = rules_over(core, &ph.base);
         protect(core, &rules, &pr, &required_on(core, &head)).map_err(MergeError::Protection)?;
+        gate_holds(core, self.n, head)?;
         let ev = RepoEvent::Merged {
             n: self.n,
             base: RefUpdate { name: ph.base.clone(), expect: Some(self.plan.base_old), new: Some(self.plan.commit) },
@@ -520,19 +547,23 @@ fn principal_key(p: &Principal) -> PrincipalKey {
         Actor::App { .. } | Actor::Anonymous => None,
     };
     let (h, session) = p.credential.wire();
-    PrincipalKey { base: (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect()), session }
+    let app = matches!(p.actor, Actor::App { .. }).then(|| crate::repo::principal_bytes(p));
+    PrincipalKey { base: (actor, p.scopes.0, h, p.sso_orgs.iter().map(|o| o.0.0.0).collect()), session, app }
 }
 
 pub(crate) struct PrincipalKey {
     base: (Option<i64>, u64, [u8; 32], Vec<i64>),
     session: Option<graftyard_types::Ulid>,
+    /// An App's principal (format 32.8 only), which the base fields cannot tell apart.
+    app: Option<Vec<u8>>,
 }
 
 impl serde::Serialize for PrincipalKey {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        match self.session {
-            None => self.base.serialize(s),
-            Some(id) => (&self.base.0, self.base.1, &self.base.2, &self.base.3, id.0).serialize(s),
+        match (&self.session, &self.app) {
+            (_, Some(app)) => (&self.base.0, self.base.1, &self.base.2, &self.base.3, app).serialize(s),
+            (None, None) => self.base.serialize(s),
+            (Some(id), None) => (&self.base.0, self.base.1, &self.base.2, &self.base.3, id.0).serialize(s),
         }
     }
 }
@@ -608,8 +639,14 @@ impl Command for MergeCmd {
     type Out = MergeCmdOut;
     type Err = (IssueNumber, MergeError);
 
+    /// 32.4, or 32.8 for an App's `Merge` or queue action, whose principal no earlier form carries.
     fn format(&self) -> Format {
-        REPO_FORMAT_V4
+        let app = |p: &Principal| matches!(p.actor, Actor::App { .. });
+        match self {
+            MergeCmd::Merge(m) if app(&m.actor) => crate::repo::REPO_FORMAT_AGENT,
+            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) if app(a) => crate::repo::REPO_FORMAT_AGENT,
+            _ => REPO_FORMAT_V4,
+        }
     }
 
     /// `Merged` touches both tiers (`crate::tiers::tier_of`), so a merge's entry is tagged with both, though `decide`

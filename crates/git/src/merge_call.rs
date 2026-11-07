@@ -41,12 +41,17 @@ struct PrincipalWire {
     sso: Vec<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
+    /// An App principal, as base64 of `crate::repo::principal_bytes` (format 32.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }
 
 impl PrincipalWire {
     fn of(p: &Principal) -> PrincipalWire {
         let (token, session) = p.credential.wire();
         PrincipalWire {
+            app: matches!(p.actor, Actor::App { .. })
+                .then(|| crate::pack::b64::encode(&crate::repo::principal_bytes(p))),
             session,
             account: match p.actor {
                 Actor::User(u) => Some(u.0.0.0),
@@ -59,6 +64,11 @@ impl PrincipalWire {
     }
 
     fn principal(self) -> Principal {
+        if let Some(p) = self.app.as_deref().and_then(crate::pack::b64::decode)
+            && let Ok(p) = crate::repo::principal_from_bytes(&p)
+        {
+            return p;
+        }
         Principal {
             actor: self.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
             scopes: ScopeSet(self.scopes),
@@ -183,12 +193,8 @@ impl CmdWire {
 
 impl Serialize for MergeCall {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        Wire {
-            format: (REPO_FORMAT_V4.family, REPO_FORMAT_V4.version),
-            cmd: CmdWire::of(&self.cmd),
-            render: self.render.clone(),
-        }
-        .serialize(s)
+        let f = graftyard_raft::Command::format(&self.cmd);
+        Wire { format: (f.family, f.version), cmd: CmdWire::of(&self.cmd), render: self.render.clone() }.serialize(s)
     }
 }
 
@@ -196,11 +202,19 @@ impl<'de> Deserialize<'de> for MergeCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<MergeCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        if f != serde_json::json!([REPO_FORMAT_V4.family, REPO_FORMAT_V4.version]) {
+        let a = crate::repo::REPO_FORMAT_AGENT;
+        if f != serde_json::json!([REPO_FORMAT_V4.family, REPO_FORMAT_V4.version])
+            && f != serde_json::json!([a.family, a.version])
+        {
             return Err(serde::de::Error::custom(format!("merge command format {f} is not one this release reads")));
         }
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        Ok(MergeCall { cmd: w.cmd.cmd(), render: w.render })
+        let c = MergeCall { cmd: w.cmd.cmd(), render: w.render };
+        let g = graftyard_raft::Command::format(&c.cmd);
+        if (g.family, g.version) != w.format {
+            return Err(serde::de::Error::custom("merge command format does not match the command"));
+        }
+        Ok(c)
     }
 }
 

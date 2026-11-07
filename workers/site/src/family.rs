@@ -255,8 +255,8 @@ impl Family for Repo {
     /// send it; until then the edge sends none (`design/SHARED.md`, the two-release rule, step 1: "Release N reads the
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
     /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
-    /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), and 32.9 (an issue command under one)
-    /// are read on the same terms.
+    /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), 32.8 (AM1-WP2's agent commands), and 32.9
+    /// (an issue command under a `ghs_` token) are read on the same terms.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -265,6 +265,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_ISSUES,
             git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
             git::repo::REPO_FORMAT_STATELESS,
+            git::repo::REPO_FORMAT_AGENT,
             git::issue_ops::call::REPO_FORMAT_APP_CALLS,
         ]
     }
@@ -1067,7 +1068,8 @@ impl Family for Authz {
     type C = id::AuthzCmd;
 
     fn reads() -> Vec<Format> {
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2]
+        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it.
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {

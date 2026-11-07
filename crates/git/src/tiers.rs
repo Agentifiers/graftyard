@@ -75,6 +75,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Merged { .. } => both,
         RepoEvent::Queue(_) => TierSet::CORE,
         RepoEvent::Collaborator { .. } | RepoEvent::Invitation(_) => TierSet::CORE,
+        RepoEvent::Provenance { .. } => TierSet::METADATA,
+        RepoEvent::AgentMeta { .. } | RepoEvent::AgentGate(_) | RepoEvent::AgentPolicy(_) => TierSet::CORE,
     }
 }
 
@@ -113,6 +115,11 @@ pub const CORE: Schema = Schema {
         // Each base branch's merge queue in order, and each queued pull request's place in it (`crate::queue`).
         t("queue", &["base", "seq"]),
         t("queue_pr", &["n"]),
+        // AM1-WP2: a pull request's `AgentMeta`, each qualifying approval by (pull request, head, approver), and the
+        // repository's `AgentPolicy`. Written only by agent events, so a repository without agents has no row.
+        t("agent_meta", &["n"]),
+        t("agent_gate", &["n", "head", "user"]),
+        t("agent_policy", &[]),
     ],
 };
 
@@ -146,6 +153,8 @@ pub const METADATA: Schema = Schema {
         t("lfs_object", &["oid"]),
         t("lfs_lock", &["id"]),
         t("lfs_lock_by_path", &["path"]),
+        // AM1-WP2: each pushed commit's provenance, by commit and the ref the push moved.
+        t("provenance", &["commit", "ref"]),
     ],
 };
 
@@ -748,6 +757,12 @@ impl RepoTiers {
                     put_rec(w, "consumer_cursor", key, through);
                 }
             }
+            RepoEvent::Provenance { .. } => {}
+            RepoEvent::AgentMeta { n, meta } => put_rec(w, "agent_meta", vec![n_key(*n)], meta),
+            RepoEvent::AgentGate(g) => {
+                mark(w, "agent_gate", vec![n_key(g.pr), sha_key(&g.head), int(g.satisfied_by.0.0.0)])
+            }
+            RepoEvent::AgentPolicy(p) => put_rec(w, "agent_policy", Vec::new(), p),
         }
     }
 
@@ -1023,6 +1038,11 @@ impl RepoTiers {
                     w.delete("lfs_lock", &[int(id.0.0)]);
                 }
             }
+            RepoEvent::Provenance { list, .. } => {
+                for p in list {
+                    put_rec(w, "provenance", vec![sha_key(&p.commit), ref_key(&p.refname)], &p.sources);
+                }
+            }
             _ => {}
         }
     }
@@ -1051,6 +1071,27 @@ pub fn grantee_key(g: &Grantee) -> Val {
         Grantee::User(u) => Val::Text(format!("user:{}", u.0.0.0).into()),
         Grantee::Team(t) => Val::Text(format!("team:{}", t.0.0).into()),
     }
+}
+
+/// A pull request's `AgentMeta`, if an `AgentApp` opened it.
+pub fn agent_meta(r: &(impl Read + ?Sized), n: IssueNumber) -> Option<crate::agent::AgentMeta> {
+    get_rec(r, "agent_meta", &[n_key(n)])
+}
+
+/// The repository's agent policy, or the default when none was set.
+pub fn agent_policy(r: &(impl Read + ?Sized)) -> crate::agent::AgentPolicy {
+    get_rec(r, "agent_policy", &[]).unwrap_or_default()
+}
+
+/// The users whose approval wrote `AgentGate` for pull request `n` at `head`.
+pub fn agent_gates(r: &(impl Read + ?Sized), n: IssueNumber, head: &ObjectId) -> Vec<graftyard_identity::UserId> {
+    r.prefix("agent_gate", &[n_key(n), sha_key(head)])
+        .into_iter()
+        .filter_map(|(k, _)| match k.get(2) {
+            Some(Val::Int(u)) => Some(graftyard_identity::UserId(AccountId(DbId(*u)))),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The `issue_order` key: kind, open, and the number negated, so a forward scan lists the newest first.

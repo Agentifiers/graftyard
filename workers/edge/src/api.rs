@@ -384,8 +384,17 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
         )));
     }
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
-    let call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
-    // Under a `ghs_` token the command is format 32.9, sent only once `FormatsEnable` enabled it.
+    let mut call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
+    // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
+    // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
+    // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
+    // `ghs_` token that is 32.9.
+    let agent_event = match &call.op {
+        IssueOp::OpenPr { .. } => c.token_app.get().is_some() || matches!(who.actor, Actor::App { .. }),
+        IssueOp::Review { n, .. } => graftyard_git::tiers::agent_meta(&rd.core, *n).is_some(),
+        _ => false,
+    };
+    call.agent = agent_event && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(
@@ -393,7 +402,10 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
             f.family, f.version
         )));
     }
-    let body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
+    let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
+    if let Some(a) = crate::admission(c, who, &[], false, 0).await {
+        body["admit"] = serde_json::to_value(a)?;
+    }
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
@@ -426,6 +438,44 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
         },
         Err(Err(e)) => unavailable(&e),
     })
+}
+
+/// `GET` and `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy` (`crate::agents`): the repository's `AgentPolicy`,
+/// for a repository admin. The write is `SetAgentPolicy`, format 32.8, whose `decide` checks the admin right.
+pub(crate) async fn agent_policy(
+    c: &Ctx<'_>,
+    _req: &mut Request,
+    owner: &str,
+    name: &str,
+    who: Option<Principal>,
+    method: Method,
+    body: &Value,
+) -> Result<Reply> {
+    let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+        return Ok(unavailable("agent settings need record format 32.8, which FormatsEnable has not enabled"));
+    }
+    let rd = match read(c, owner, name, Some(&who)).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let admin = match who.actor {
+        Actor::User(u) => {
+            graftyard_api::view::Directory::permission(&rd.dir, u.0) >= Some(graftyard_identity::RepoPermission::Admin)
+        }
+        _ => false,
+    };
+    match method {
+        Method::Get if admin => {
+            Ok(Reply::json(200, graftyard_api::agents::policy_json(&graftyard_git::tiers::agent_policy(&rd.core))))
+        }
+        Method::Get => Ok(graftyard_api::agents::refused(403, "")),
+        Method::Put => match graftyard_api::agents::parse_policy(body) {
+            Ok(p) => commit_issue(c, &rd, &who, IssueOp::SetAgentPolicy(p), What::AgentPolicy).await,
+            Err(r) => Ok(r),
+        },
+        _ => Ok(Reply::error(405, "Method Not Allowed", "graftyard/agents")),
+    }
 }
 
 /// A merge's conflict, as `mergePullRequest` reports it [unverified: GitHub's text for a conflicting merge].
@@ -494,9 +544,19 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
             REPO_FORMAT_V4.family, REPO_FORMAT_V4.version
         )));
     }
+    let admit = match &cmd {
+        MergeCmd::Merge(m) => crate::admission(c, &m.actor, &[], false, 0).await,
+        MergeCmd::Queue(graftyard_git::queue::QueueOp { actor: Some(p), .. }) => {
+            crate::admission(c, p, &[], false, 0).await
+        }
+        _ => None,
+    };
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
     let call = MergeCall { cmd, render: serde_json::to_value(&render)? };
-    let body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
+    let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "merge": call } });
+    if let Some(a) = admit {
+        body["admit"] = serde_json::to_value(a)?;
+    }
     timing::mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace = std::cell::RefCell::new(Vec::new());
@@ -545,8 +605,15 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
         options: Vec::new(),
         request: c.rid,
         agent: None,
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
     };
-    let body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push })?;
+    let admit = crate::admission(c, who, &[], true, 0).await;
+    let mut body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push })?;
+    if let Some(a) = admit {
+        body["admit"] = serde_json::to_value(a)?;
+    }
     Ok(match crate::commit(c, &rd.repo, &body, None, None).await? {
         Ok(PushOutcome::Ok(ok)) if ok.out.refs.iter().all(|o| *o == graftyard_git::repo::RefOutcome::Ok) => {
             Reply::empty(204)
@@ -779,18 +846,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             None => return Ok(Reply::not_found()),
         },
     };
-    let rd = match rd {
+    let mut rd = match rd {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
+    // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the
+    // install's `AgentApp` rows for `is_agent`.
+    let agent_accept = req.headers().get("accept")?;
+    if graftyard_api::trust::opted_in(agent_accept.as_deref()) {
+        rd.dir.install = crate::install_authz(c).await;
+    }
     let r = rd.view(host);
     let need = |w: &Option<Principal>| -> std::result::Result<Principal, Reply> {
         w.clone().ok_or_else(|| Reply::error(401, "Requires authentication", "rest"))
     };
     let body = |b: Vec<u8>| serde_json::from_slice::<Value>(&b).unwrap_or(Value::Null);
     let id = |s: &str| s.parse::<i64>().ok();
-    // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`.
-    let agent_accept = req.headers().get("accept")?;
     let reply = match (method, tail) {
         (Method::Get, ["commits", reference, "statuses"]) => {
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))

@@ -14,6 +14,7 @@ use graftyard_types::{AccountId, ChainId, CredentialShard, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
+use crate::agents::{self, AgentApp, AgentKind, WorkspaceMode};
 use crate::apps::{self, AppId, AppRecord, ClientId, InstallationId, OAuthAppRecord, PermissionSet};
 use crate::compat::tail_serde;
 use crate::credential::{
@@ -28,7 +29,7 @@ use crate::org::{
 };
 use crate::overlay::{Overlay, SetOverlay, Table};
 use crate::tokens::RepoScope;
-use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2};
+use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -125,6 +126,19 @@ pub enum AuthzEvent {
         id: InstallationId,
         row: Option<InstallationRow>,
         not_before: Timestamp,
+    },
+    // ---- AM1-WP2, format 3 ----
+    /// DESIGN's `AuthzEvent::AgentApp(AgentApp)`, written only on the install's own chain. `row: None` removes the
+    /// flag (`DELETE /agents/apps/{id}`) [inference: the design names the event with a row and no removal form].
+    AgentApp {
+        app: AppId,
+        row: Option<AgentApp>,
+    },
+    /// `OrgPolicy.agents_enabled` and `agents_workspace`, a whole record each time. An event of its own, so a `Policy`
+    /// entry's bytes stay M3-WP3's [inference: DESIGN adds the fields to `OrgPolicy` and names no event].
+    OrgAgents {
+        enabled: bool,
+        workspace: WorkspaceMode,
     },
 }
 
@@ -248,6 +262,16 @@ impl Record for AuthzEvent {
                 e.option(row.as_ref(), installation_row);
                 enc::at(&mut e, *not_before);
             }
+            AuthzEvent::AgentApp { app, row } => {
+                e.u8(14);
+                apps::app_id(&mut e, *app);
+                e.option(row.as_ref(), agents::agent_app);
+            }
+            AuthzEvent::OrgAgents { enabled, workspace } => {
+                e.u8(15);
+                e.u8(u8::from(*enabled));
+                e.u8(*workspace as u8);
+            }
         }
     }
 }
@@ -278,7 +302,7 @@ fn installation_row(e: &mut Enc, r: &InstallationRow) {
 
 /// Milestone 3's rows of an `Authz` chain: the fold's trailing part (`crate::compat`). `closed` holds the Apps whose
 /// registration was deleted or aborted, so their slug may be released and their id is never registered again.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AuthzMore {
     pub apps: BTreeMap<AppId, AppRecord>,
     pub closed: std::collections::BTreeSet<AppId>,
@@ -286,6 +310,25 @@ pub struct AuthzMore {
     pub org: OrgRows,
     /// M3-WP4's: every installation this owner has had, removed ones kept for their `not_before`.
     pub installations: BTreeMap<InstallationId, InstallationState>,
+    /// AM1-WP2's rows, a trailing part of their own, so a fold with none keeps M3's bytes.
+    pub more: AgentRows,
+}
+
+tail_serde!(AuthzMore {
+    apps: BTreeMap<AppId, AppRecord>,
+    closed: std::collections::BTreeSet<AppId>,
+    oauth_apps: BTreeMap<ClientId, OAuthAppRecord>,
+    org: OrgRows,
+    installations: BTreeMap<InstallationId, InstallationState>,
+} more: AgentRows);
+
+/// AM1-WP2's rows: the install's flagged Apps (on its own chain only) and an org's agent settings, which `OrgPolicy`
+/// carries in memory and this part stores, so `OrgPolicy`'s stored shape stays M3-WP3's.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRows {
+    pub agent_apps: BTreeMap<AppId, AgentApp>,
+    pub agents_enabled: bool,
+    pub agents_workspace: WorkspaceMode,
 }
 
 /// M3-WP3's rows: teams, team grants, the policy, invitations, `InstanceAuth`, and the enterprise. A scratch view
@@ -333,7 +376,10 @@ impl OrgRows {
             AuthzEvent::TeamGrant { repo, team, permission: None } => {
                 self.team_grants.remove(&(*repo, *team));
             }
-            AuthzEvent::Policy(p) => self.policy = *p,
+            // The agent fields are `OrgAgents`'s, never a `Policy` entry's (`OrgPolicy`'s note).
+            AuthzEvent::Policy(p) => {
+                self.policy = OrgPolicy { agents_enabled: false, agents_workspace: WorkspaceMode::Fork, ..*p }
+            }
             AuthzEvent::Invitation(InvitationEvent::Sent { id, invitee, grant, inviter, expires }) => {
                 let row =
                     InvitationRow { invitee: *invitee, grant: grant.clone(), inviter: *inviter, expires: *expires };
@@ -410,6 +456,10 @@ pub trait AuthzRead {
     fn org(&self) -> &OrgRows;
     /// An installation on this owner, live or removed.
     fn installation(&self, id: InstallationId) -> Option<&InstallationState>;
+    /// The App's `AgentApp` row: only the install's own chain holds any.
+    fn agent_app(&self, app: AppId) -> Option<&AgentApp>;
+    /// The whole org policy, with its agent fields.
+    fn policy(&self) -> OrgPolicy;
     /// The enterprise an org belongs to, whose own `Authz` chain is a third dependency.
     fn enterprise(&self) -> Option<AccountId> {
         self.org().enterprise
@@ -484,9 +534,19 @@ impl AuthzRead for AuthzFold {
     fn installation(&self, id: InstallationId) -> Option<&InstallationState> {
         self.more.installations.get(&id)
     }
+    fn agent_app(&self, app: AppId) -> Option<&AgentApp> {
+        self.more.more.agent_apps.get(&app)
+    }
+    fn policy(&self) -> OrgPolicy {
+        OrgPolicy {
+            agents_enabled: self.more.more.agents_enabled,
+            agents_workspace: self.more.more.agents_workspace,
+            ..self.more.org.policy
+        }
+    }
 }
 
-struct Tables<'t, M, G, N, A, C, O, I> {
+struct Tables<'t, M, G, N, A, C, O, I, X> {
     opened: &'t mut Option<AccountKind>,
     members: &'t mut M,
     grants: &'t mut G,
@@ -497,6 +557,7 @@ struct Tables<'t, M, G, N, A, C, O, I> {
     closed: &'t mut C,
     oauth_apps: &'t mut O,
     installations: &'t mut I,
+    agent_apps: &'t mut X,
 }
 
 trait Remove<K> {
@@ -530,9 +591,10 @@ fn touches_org(ev: &AuthzEvent) -> bool {
     )
 }
 
-fn write<M, G, N, A, C, O, I>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O, I>)
+fn write<M, G, N, A, C, O, I, X>(ev: &AuthzEvent, t: Tables<'_, M, G, N, A, C, O, I, X>)
 where
     I: Table<InstallationId, InstallationState>,
+    X: Table<AppId, AgentApp>,
     M: Table<UserId, OrgRole> + Remove<UserId>,
     G: Table<(RepoId, UserId), RepoPermission> + Remove<(RepoId, UserId)>,
     N: Table<RepoNameKey, RepoEntry> + Remove<RepoNameKey>,
@@ -568,6 +630,9 @@ where
         AuthzEvent::Installation { id, row, not_before } => {
             t.installations.put(*id, InstallationState { row: row.clone(), not_before: *not_before })
         }
+        AuthzEvent::AgentApp { app, row: Some(r) } => t.agent_apps.put(*app, r.clone()),
+        AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
+        AuthzEvent::OrgAgents { .. } => {}
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -592,6 +657,9 @@ pub struct AuthzScratch<'a> {
     closed: SetOverlay<'a, AppId>,
     oauth_apps: Overlay<'a, ClientId, OAuthAppRecord>,
     installations: Overlay<'a, InstallationId, InstallationState>,
+    agent_apps: Overlay<'a, AppId, AgentApp>,
+    /// `OrgPolicy.agents_enabled` and `agents_workspace`, which `AgentRows` stores.
+    agents: (bool, WorkspaceMode),
     org: Cow<'a, OrgRows>,
     /// The entry's time, which an invitation's `expires` is set from and compared with.
     at: Timestamp,
@@ -637,6 +705,12 @@ impl AuthzRead for AuthzScratch<'_> {
     fn installation(&self, id: InstallationId) -> Option<&InstallationState> {
         self.installations.get(&id)
     }
+    fn agent_app(&self, app: AppId) -> Option<&AgentApp> {
+        self.agent_apps.get(&app)
+    }
+    fn policy(&self) -> OrgPolicy {
+        OrgPolicy { agents_enabled: self.agents.0, agents_workspace: self.agents.1, ..self.org.policy }
+    }
 }
 
 /// Whether a new `Live` or `Reserved` entry for `repo` may take a key holding `prev`. `Reserved`, `Live`, and
@@ -666,10 +740,14 @@ impl Scratch for AuthzScratch<'_> {
                 closed: &mut self.closed,
                 oauth_apps: &mut self.oauth_apps,
                 installations: &mut self.installations,
+                agent_apps: &mut self.agent_apps,
             },
         );
         if touches_org(ev) {
             self.org.to_mut().write(ev);
+        }
+        if let AuthzEvent::OrgAgents { enabled, workspace } = ev {
+            self.agents = (*enabled, *workspace);
         }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
@@ -713,6 +791,12 @@ impl Scratch for AuthzScratch<'_> {
             AuthzEvent::InstanceAuth(_) if !self.fold.owner.is_some_and(is_install_account) => {
                 Err("InstanceAuth off the install's own chain".into())
             }
+            AuthzEvent::AgentApp { .. } if self.fold.owner != Some(agents::install_account()) => {
+                Err("AgentApp off Authz(Genesis.account)".into())
+            }
+            AuthzEvent::AgentApp { app, row: Some(r) } if r.app != *app => {
+                Err(format!("{app:?} holds {:?}", r.app).into())
+            }
             AuthzEvent::Installation { id, row, not_before } => {
                 let prev = self.installation(*id);
                 if prev.is_some_and(|p| *not_before < p.not_before) {
@@ -749,6 +833,8 @@ impl Fold for AuthzFold {
             closed: SetOverlay::new(&self.more.closed),
             oauth_apps: Overlay::new(&self.more.oauth_apps),
             installations: Overlay::new(&self.more.installations),
+            agent_apps: Overlay::new(&self.more.more.agent_apps),
+            agents: (self.more.more.agents_enabled, self.more.more.agents_workspace),
             org: Cow::Borrowed(&self.more.org),
             at,
         }
@@ -767,9 +853,14 @@ impl Fold for AuthzFold {
                 closed: &mut self.more.closed,
                 oauth_apps: &mut self.more.oauth_apps,
                 installations: &mut self.more.installations,
+                agent_apps: &mut self.more.more.agent_apps,
             },
         );
         self.more.org.write(ev);
+        if let AuthzEvent::OrgAgents { enabled, workspace } = ev {
+            self.more.more.agents_enabled = *enabled;
+            self.more.more.agents_workspace = *workspace;
+        }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
@@ -911,6 +1002,20 @@ pub enum AuthzOp {
     Uninstall {
         id: InstallationId,
     },
+    // ---- AM1-WP2, format 3 ----
+    /// `PUT /agents/apps/{app_id}`: a site admin flags an App, only on `Authz(Genesis.account)`. A `GraftyardRun` or
+    /// `Mcp` row needs an App the install owns, one whose record is on this chain.
+    PutAgentApp(AgentApp),
+    /// `DELETE /agents/apps/{app_id}`. Removing a row that is not there is a no-op.
+    DeleteAgentApp {
+        app: AppId,
+    },
+    /// `PATCH /orgs/{org}/agents`: the org policy's agent fields, read and written in one decision so the rest of the
+    /// policy is never overwritten from a stale read.
+    SetOrgAgents {
+        enabled: Option<bool>,
+        workspace: Option<WorkspaceMode>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -955,6 +1060,8 @@ pub enum AuthzErr {
     /// `InstanceAuth` lives only on the install's own chain.
     NotInstall,
     NoInstallation,
+    /// 422: a `GraftyardRun` or `Mcp` `AgentApp` for an App the install does not own.
+    NotOwnApp,
 }
 
 impl Record for AuthzCmd {
@@ -1079,6 +1186,19 @@ impl Record for AuthzCmd {
             AuthzOp::Uninstall { id } => {
                 e.u8(25);
                 enc::db(&mut e, id.0);
+            }
+            AuthzOp::PutAgentApp(a) => {
+                e.u8(26);
+                agents::agent_app(&mut e, a);
+            }
+            AuthzOp::DeleteAgentApp { app } => {
+                e.u8(27);
+                apps::app_id(&mut e, *app);
+            }
+            AuthzOp::SetOrgAgents { enabled, workspace } => {
+                e.u8(28);
+                e.option(enabled.as_ref(), |e, b| e.u8(u8::from(*b)));
+                e.option(workspace.as_ref(), |e, w| e.u8(*w as u8));
             }
         }
     }
@@ -1451,6 +1571,40 @@ impl AuthzCmd {
                 let ev = AuthzEvent::Installation { id: *id, row: Some(row.clone()), not_before };
                 Ok((smallvec![ev], AuthzOut::Done))
             }
+            AuthzOp::PutAgentApp(a) => {
+                if s.owner() != Some(agents::install_account()) {
+                    return Err(AuthzErr::NotInstall);
+                }
+                let own = matches!(a.kind, AgentKind::GraftyardRun | AgentKind::Mcp);
+                if own && s.app(a.app).is_none() {
+                    return Err(AuthzErr::NotOwnApp);
+                }
+                if s.agent_app(a.app) == Some(a) {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::AgentApp { app: a.app, row: Some(a.clone()) }], AuthzOut::Done))
+            }
+            AuthzOp::DeleteAgentApp { app } => {
+                if s.owner() != Some(agents::install_account()) {
+                    return Err(AuthzErr::NotInstall);
+                }
+                if s.agent_app(*app).is_none() {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                Ok((smallvec![AuthzEvent::AgentApp { app: *app, row: None }], AuthzOut::Done))
+            }
+            AuthzOp::SetOrgAgents { enabled, workspace } => {
+                org_only(s)?;
+                let was = s.policy();
+                let mut p = was;
+                p.agents_enabled = enabled.unwrap_or(p.agents_enabled);
+                p.agents_workspace = workspace.unwrap_or(p.agents_workspace);
+                if p == was {
+                    return Ok((SmallVec::new(), AuthzOut::Done));
+                }
+                let ev = AuthzEvent::OrgAgents { enabled: p.agents_enabled, workspace: p.agents_workspace };
+                Ok((smallvec![ev], AuthzOut::Done))
+            }
             AuthzOp::Uninstall { id } => match s.installation(*id) {
                 None => Err(AuthzErr::NoInstallation),
                 Some(InstallationState { row: None, .. }) => Ok((SmallVec::new(), AuthzOut::Done)),
@@ -1472,6 +1626,7 @@ impl Command for AuthzCmd {
     /// Milestone 1's ops keep format 1, so their entries are what an older release reads; the rest are format 2.
     fn format(&self) -> Format {
         match self.op {
+            AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }
             | AuthzOp::PutOAuthApp { .. }

@@ -36,6 +36,11 @@ pub trait Directory {
     fn viewer(&self) -> Option<AccountId>;
     /// What the git cache computes between two commits: (commits, additions, deletions, changed files).
     fn compare(&self, base: ObjectId, head: ObjectId) -> Compare;
+    /// Whether the install's `Authz(Genesis.account)` holds an `AgentApp` row for `app`. Only the trust view asks, and
+    /// only for a client that opted in, so a directory that never read the install's rows answers false.
+    fn agent_app(&self, _app: AppId) -> bool {
+        false
+    }
 }
 
 /// The git cache's diff summary of a pull request.

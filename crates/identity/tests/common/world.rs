@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 
 use graftyard_identity::finish::Step;
 use graftyard_identity::{
-    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IdBlock, IdentityCmd, IdentityDep,
-    IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NameKey, NamesCmd, NamesFold, NamesOp, TOKENS_FORMAT,
-    TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
+    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IdBlock, IdentityCmd,
+    IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NameKey, NamesCmd, NamesFold, NamesOp,
+    TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
 };
 use graftyard_types::{AccountId, ChainId, CredentialShard, TokenShard};
 
@@ -61,8 +61,11 @@ impl World {
 
     pub fn authz(&mut self, owner: AccountId) -> &mut Group<AuthzCmd> {
         self.authz.entry(owner.0.0).or_insert_with(|| {
-            let mut g =
-                Group::reading(ChainId::Authz(owner), vec![AUTHZ_FORMAT, AUTHZ_FORMAT_V2], AuthzFold::new(owner));
+            let mut g = Group::reading(
+                ChainId::Authz(owner),
+                vec![AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3],
+                AuthzFold::new(owner),
+            );
             g.elect(A);
             g
         })

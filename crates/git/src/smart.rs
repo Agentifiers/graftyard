@@ -270,7 +270,7 @@ pub fn parse_receive_pack(body: &[u8]) -> Result<ReceivePack, RequestError> {
     Ok(ReceivePack { updates, caps, options, pack_at: r.pos() })
 }
 
-fn reason(r: RejectReason) -> &'static str {
+fn reason(r: &RejectReason) -> &str {
     match r {
         RejectReason::Stale => "fetch first",
         RejectReason::NonFastForward => "non-fast-forward",
@@ -280,6 +280,7 @@ fn reason(r: RejectReason) -> &'static str {
         // receive-pack's text for REF_TRANSACTION_ERROR_NAME_CONFLICT (refs.c, `ref_transaction_error_msg`).
         RejectReason::NameConflict => "refname conflict",
         RejectReason::AtomicTransaction => "atomic transaction failed",
+        RejectReason::Agent(a) => &a.text,
     }
 }
 
@@ -352,7 +353,7 @@ pub fn report_status<T: PushOutOf>(acked: &Acked<T>) -> Option<Vec<u8>> {
                 n,
                 match o {
                     RefOutcome::Ok => Ok(()),
-                    RefOutcome::Rejected(r) => Err(reason(*r)),
+                    RefOutcome::Rejected(r) => Err(reason(r)),
                 },
             )
         })
@@ -396,7 +397,7 @@ impl Refusal {
     pub fn updates_too_large(len: usize, max: usize, refs: usize) -> Refusal {
         Refusal {
             unpack: "ok".into(),
-            reason: reason(RejectReason::TooManyRefs).into(),
+            reason: reason(&RejectReason::TooManyRefs).into(),
             remote: vec![format!(
                 "Push refused: its {refs} ref updates take {len} bytes, over this host's {max}-byte limit for one push. \
                  Split it into smaller pushes."

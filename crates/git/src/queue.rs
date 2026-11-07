@@ -288,6 +288,7 @@ impl QueueOp {
                 }
                 let rules = rules_over(core, &ph.base);
                 let settings = queue_settings(&rules).ok_or(MergeError::NoQueue)?;
+                crate::merge::gate_holds(core, *n, *head)?;
                 let pr = PrView {
                     n: *n,
                     head: *head,

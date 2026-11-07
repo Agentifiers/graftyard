@@ -162,6 +162,10 @@ pub struct HostedDir {
     pub authz: Option<AuthzFold>,
     pub logins: BTreeMap<i64, String>,
     pub viewer: Option<AccountId>,
+    /// The install's `Authz(Genesis.account)` fold, for `AgentApp` rows. The edge reads it only for a reply under the
+    /// agent media type, and it never crosses the binding, so a `Render` is the same bytes with or without it.
+    #[serde(skip)]
+    pub install: Option<AuthzFold>,
 }
 
 mod authz_hex {
@@ -223,6 +227,9 @@ impl Directory for HostedDir {
     fn compare(&self, _: ObjectId, _: ObjectId) -> Compare {
         Compare::default()
     }
+    fn agent_app(&self, app: graftyard_identity::AppId) -> bool {
+        self.install.as_ref().is_some_and(|a| a.agent_app(app).is_some())
+    }
 }
 
 // ---- rendering a write's reply on the member ----
@@ -255,6 +262,8 @@ pub enum What {
     },
     /// `POST /repos/{o}/{r}/labels`.
     LabelCreated,
+    /// `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy`.
+    AgentPolicy,
 }
 
 /// The render request an issue command carries to its leader.
@@ -331,6 +340,9 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::RestMerge => WireReply::of(&Reply::error(500, "a merge rendered as an issue command", "rest")),
         What::StatusCreated { sha, id } => WireReply::of(&crate::rest::status_created(acked, &r, *sha, *id)),
         What::LabelCreated => WireReply::of(&crate::rest::label_created(acked, &r)),
+        What::AgentPolicy => {
+            WireReply::of(&Reply::json(200, crate::agents::policy_json(&graftyard_git::tiers::agent_policy(core))))
+        }
     }
 }
 
@@ -343,6 +355,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::LfsLocked | What::LfsUnlocked { .. } => WireReply::of(&crate::lfs::refused(e)),
         What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
+        What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
     }
 }
 

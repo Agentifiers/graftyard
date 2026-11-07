@@ -89,6 +89,10 @@ fn deps() -> Vec<(ChainId, IdentityDep)> {
         }
     }
     out.push((ChainId::Authz(AccountId(DbId(OWNER))), IdentityDep::Authz(authz)));
+    // The install's own `Authz(Genesis.account)`, which every App command reads for its `AgentApp` rows (AM1-WP2):
+    // none here, so no App is an agent.
+    let install = graftyard_identity::install_account();
+    out.push((ChainId::Authz(install), IdentityDep::Authz(AuthzFold::new(install))));
     out
 }
 

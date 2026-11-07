@@ -105,6 +105,10 @@ struct RttRow {
 struct CommitReq<F: Family> {
     rid: String,
     cmd: F::C,
+    /// The edge's admission for a command it classed other than Human (AM1-WP2): `Member::commit_as` takes it. Absent,
+    /// the command goes through `Member::commit` as Human with no actor, as before.
+    #[serde(default)]
+    admit: Option<graftyard_git::group::AdmitWire>,
     /// Test fault: where to kill this leader for this command (`crate::faults::Kill`).
     #[cfg(feature = "test-faults")]
     kill: Option<String>,
@@ -767,7 +771,13 @@ impl<F: Family> Routes<F> {
             let f = raft::Command::format(&c.cmd);
             *self.host.stats.borrow_mut().received.entry(format!("recv:{}.{}", f.family, f.version)).or_insert(0) += 1;
             let cmd = c.cmd.clone();
-            let (r, out) = self.host.step(|m, t| m.commit(t, rid, c.cmd))?;
+            let (r, out) = match c.admit {
+                None => {
+                    let (r, out) = self.host.step(|m, t| m.commit(t, rid, c.cmd))?;
+                    (r.map_err(raft::admit::AdmitError::Call), out)
+                }
+                Some(a) => self.host.step(|m, t| m.commit_as(t, rid, c.cmd, a.admit()))?,
+            };
             let w = match r {
                 Ok(a) => Ok((a.ticket, self.host.wait_ticket(a.ticket, Some((rid, at, Some(cmd)))))),
                 Err(e) => {
@@ -787,7 +797,12 @@ impl<F: Family> Routes<F> {
         let mut out = Vec::with_capacity(waits.len());
         for w in waits {
             out.push(match w {
-                Err(e) => json!({ "error": host::call_error_json(&e) }),
+                Err(raft::admit::AdmitError::Call(e)) => json!({ "error": host::call_error_json(&e) }),
+                // Refused at admission: the outcome a ticket that waited AGENT_WAIT gets, at once.
+                Err(raft::admit::AdmitError::Full { retry_after_s }) => {
+                    json!({ "done": { "full": { "retry_after_s": retry_after_s } } })
+                }
+                Err(raft::admit::AdmitError::Stage) => json!({ "error": { "stage": true } }),
                 Ok((ticket, mut rx)) => {
                     let left = Duration::from_millis(end.saturating_sub(now_ms()));
                     let r = if left.is_zero() {

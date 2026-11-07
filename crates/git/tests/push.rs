@@ -80,6 +80,9 @@ fn push(updates: Vec<RefUpdate>, atomicity: Atomicity, actor: Principal) -> Push
         options: Vec::new(),
         request: RequestId(Ulid(0)),
         agent: None,
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
     }
 }
 

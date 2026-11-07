@@ -10,6 +10,7 @@ use graftyard_types::{AccountId, DbId, Digest};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::agents::WorkspaceMode;
 use crate::apps::{self, Url};
 use crate::authz::{OrgRole, RepoPermission};
 use crate::credential::UserId;
@@ -41,6 +42,14 @@ pub struct OrgPolicy {
     pub base_permission: Option<RepoPermission>,
     /// Access through membership needs the org in the principal's `sso_orgs`.
     pub sso_enforced: bool,
+    /// AM1-WP2: Graftyard-run tasks may be created in the org's repositories. Off by default. Written by
+    /// `AuthzEvent::OrgAgents` and stored in the fold's `AgentRows`, so a `Policy` record's shape stays M3-WP3's: read
+    /// the whole policy through `AuthzRead::policy`.
+    #[serde(skip)]
+    pub agents_enabled: bool,
+    /// AM1-WP2: where the org's agents work, `Fork` (into `<org>-agents`) by default. Stored as `agents_enabled` is.
+    #[serde(skip)]
+    pub agents_workspace: WorkspaceMode,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

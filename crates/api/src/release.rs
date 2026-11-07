@@ -339,6 +339,7 @@ pub fn refused(e: &IssueErr) -> Reply {
     match e {
         IssueErr::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
         IssueErr::Forbidden => Reply::error(403, "Resource not accessible by integration", DOC),
+        IssueErr::Agent(a) => Reply::error(403, &a.text, DOC),
         IssueErr::NotFound => Reply::not_found(),
         IssueErr::Exists => invalid("tag_name", "already_exists"),
         IssueErr::Invalid(_) => invalid("tag_name", "invalid"),
