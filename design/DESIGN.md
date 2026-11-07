@@ -178,9 +178,9 @@ pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 1
 /// chain's record is in the signed genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes
 /// it. `sites` are logical: `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember`
 /// named. Changing an owner's record bumps `generation` and keeps the old record in `moving_from`. A Workflow then
-/// moves each of the owner's groups, child groups included, through `Joint` (`home` alone: one config change and a
-/// transfer), from the old sites' `MemberRegistry` rows after the new record commits, and clears `moving_from` last. A
-/// record's `home` only seeds bootstrap; once a group exists its committed config's wins (BF-11).
+/// moves each of the owner's groups, child groups included, through `Joint` (pending BF-30) (`home` alone: one config
+/// change and a transfer), from the old sites' `MemberRegistry` rows after the new record commits, and clears
+/// `moving_from` last. A record's `home` only seeds bootstrap; once a group exists its committed config's wins (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
@@ -740,10 +740,10 @@ pub const PROTECTED_PATHS: &[&str] = &[".github/workflows/**", ".github/actions/
 /// changes against its merge base with the default branch or against the old tip (the union of both diffs), where they
 /// match the protected list. This catches an existing outsider commit pushed under an agent ref.
 pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 4]> }
-/// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push` carries
-/// `changed` beside `protected` and `provenance`, `decide` matches it against live Exclusive leases, and `PathSet.paths`
-/// is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by an `Agent` or under an agent
-/// prefix run `validate` on an empty staged pack, so they get all three outputs.
+/// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push`
+/// carries `changed` beside `protected` and `provenance`, `decide` will match it against live Exclusive leases
+/// (AM1-WP4), and `PathSet.paths` is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by
+/// an `Agent` or under an agent prefix run `validate` on an empty staged pack, so they get all three outputs.
 pub struct ChangedPaths { pub refname: RefName, pub paths: Vec<Box<str>> /* <= PATHS_MAX */, pub truncated: bool }
 pub const PATHS_MAX: usize = 1_000;
 /// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves
@@ -829,13 +829,13 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     LeaseRenew { id: LeaseId, expires: Timestamp },               // Core
     LeaseRelease { ids: SmallVec<[LeaseId; 4]>, by: Actor },      // Core
 }
-// `ExtendLeases` rides on the base's `LogEntry.extend`, not as an event, and moves Core lease rows. A `Refs` entry whose
-// push carries `provenance` is Core and Metadata. `PrOpened` with `AgentMeta` keeps `AgentMeta.app` in the core
-// `pull_head` row for `Merge`. `AuthzEvent` gains `AgentApp(AgentApp)`, written only on the install's own
-// `Authz(Genesis.account)` chain. Every command whose actor is an App lists that chain in `deps()`, so `decide` reads
-// the rows `fresh`, and admission uses the leader's cached copy. `OrgPolicy` gains `agents_enabled: bool` (default
-// false), `agents_workspace: WorkspaceMode` (default `Fork`, into `<org>-agents`), and `code_mode: bool` (default
-// false). `IdentityEvent` gains `McpGrant { grant: McpGrant, revoked: bool }`. Both chains are core only.
+// `ExtendLeases` rides on the base's `LogEntry.extend`, not as an event, and moves Core lease rows. A `Refs` entry
+// whose push carries `provenance` is Core and Metadata. `PrOpened` with `AgentMeta` keeps `AgentMeta.app` in the core
+// `pull_head` row for `Merge`. `AuthzEvent` gains `AgentApp { app, row: Option<AgentApp> }` (`None` unflags), only on
+// `Authz(Genesis.account)`. Every command whose actor is an App lists that chain in `deps()`, so `decide` reads the
+// rows `fresh`, and admission uses the leader's cached copy. `AuthzEvent::OrgAgents` sets `agents_enabled: bool`
+// (default false) and `agents_workspace: WorkspaceMode` (default `Fork`, into `<org>-agents`) apart from `Policy`; AM2
+// adds `code_mode`. `IdentityEvent` gains `McpGrant { grant: McpGrant, revoked: bool }`. Both chains are core only.
 pub enum WorkspaceMode { Fork, InRepo }
 
 // ---- The read path ----

@@ -1493,7 +1493,7 @@ M2-WP3's hosted half passed, the site-day work answered F49, and the pure halves
 
 **Decision.** From AM1-WP5's pure code, in AGENT-LAYER's trust view block:
 - `Vary: Accept` is added only to opted-in replies of trust resources; a default reply is byte-identical to GHES and carries no new header.
-- `is_agent` is false until AM1-WP2's `AgentApp` rows exist, so AM1-WP5 also depends on AM1-WP2 for that field.
+- `is_agent` is false until AM1-WP2's `AgentApp` rows exist, so AM1-WP5 also depends on AM1-WP2 for that field. Since AM1-WP2's pure half, `is_agent` comes from `AgentMeta` and `AgentApp` rows ("AM1-WP2's agent rows as the code needs them").
 - A commit's author is never trusted: its name is a claim in the git object, which no account vouches for.
 - Journey A4's list of what `visible` drops now points at the Shape block's full list rather than repeating three items of it.
 - A collapsed `<details>` drops its `</details>` too, which the code always did.
@@ -1811,6 +1811,55 @@ BM-3 passed on the `m3-close` build, F51 was settled in code, and the lead decid
 **Evidence.** `tests/m3/results/m3-close.md`, "Audit, hosted", "`graftyard admin bootstrap`" (11 of 11), "BF-33" (120 of 120), and "Design gaps and contradictions found"; the 8 planted bugs, six on the cursor [measured].
 
 **Flip.** A `Finisher` step that is not idempotent, which would need the cursor committed with the work; a `graft-ops` operator route, which takes the link back; or a hosted kill that loses the `UseCode` and still yields one token, which closes BF-33's branch.
+
+### AM1-WP2's pure half, R20 and rotation hosted, and BF-30's transfer, 2026-11-07
+
+AM1-WP2's pure half passed LF-2, B0-36, and B0-37 in memory as far as `decide` can see before tasks and leases; R20 and the hosted key rotation ran on `graft-m1`; and the lead decided how BF-30's transfer is built (`tests/am1/results/am1-wp2.md`; `tests/m3/results/m3-finish.md`; `build/BUILD-PLAN.md`, AM1-WP2 and "Milestone 3 status").
+
+#### AM1-WP2's agent rows as the code needs them
+
+**Decision.** In the agent block of both DESIGN and AGENT-LAYER, and AGENT-LAYER's trust view:
+- `AuthzEvent::AgentApp { app, row: Option<AgentApp> }` (tag 14), where `row: None` unflags. Only the install org's admin writes it, only on `Authz(Genesis.account)`, through `PutAgentApp` and `DeleteAgentApp`.
+- `agents_enabled` and `agents_workspace` are set by their own `AuthzEvent::OrgAgents { enabled, workspace }` (tag 15, `SetOrgAgents`) and read through `OrgPolicy`, never written in a `Policy` entry, so M3-WP3's `Policy` bytes hold. `code_mode` is AM2's.
+- `AuthorTrust.is_agent` comes from `AgentMeta` and `AgentApp` rows; the "false until AM1-WP2" note is gone.
+- `Push.changed` is carried and stored; matching it against live Exclusive leases waits for AM1-WP4's leases.
+- Formats: repository 32.8 for an agent-validated push, `SetAgentPolicy`, or an issue command with agent fields; Authz 0x12.3. A push with no agent fields keeps its earlier format and bytes.
+
+**Why.** `AgentApp(AgentApp)` had no removal form, and LF-2 and `DELETE /agents/apps/{id}` need one; an `Option` row keeps one event for both. Adding fields to `OrgPolicy`'s `Policy` record would change every M3 `Policy` entry's bytes, which the byte-identity gate forbids. The trust view now has the rows it was waiting for.
+
+**Beat.** A separate `AgentAppRemoved` event, which adds a tag for what `None` says. New `OrgPolicy` fields behind a format bump of `Policy`, which re-encodes every org's policy.
+
+**Evidence.** `tests/am1/results/am1-wp2.md`: LF-2 25 of 25; B0-36 100 of 100 per action across 11 actions for both App kinds, controls never refused; B0-37 10,000 hostile pushes with 0 parse failures, 0 of 17,264 forged trailers linked, 0 of 1,675 forged `Session` sources stored, 1,000 of 1,000 `refs/graftyard/` updates refused; `agent_bytes.golden` and 120 of 120 replies identical to main; 19 of 19 planted bugs [measured, in memory].
+
+**Flip.** A hosted rerun where an unflag through `row: None` leaves a leader classing the App `Agent` after the acknowledgment; or an AM2 change to `OrgPolicy` that must re-encode `Policy` anyway, which would fold `OrgAgents` back in.
+
+#### A transfer's own `Settings` command, and the move between placements pending
+
+**Decision.** The lead's, for BF-30, being built on `m3-finish` on `graft-m1`:
+- The transfer's `Settings` is its own repository command in repository format 32.10, with no account and no key, sent only by the transfer's finisher; a site day reads it before anything sends it. The repository chain's own `Settings` keeps refusing an owner or enterprise change (`OwnerChange`).
+- `Audit` gains a cursor on the destination owner's `Authz` chain, in Authz format 0x12.4, so it finishes a transfer whose finisher died. Until it is built, SHARED's "the `Audit` consumer finishes any other chain operation" does not cover transfers, and SHARED says so.
+- **Pending the builder's finding, not settled:** DESIGN moves an owner's groups "through `Joint`", but `Member::reconfigure` refuses a config that adds or drops more than one voter site (`NotOneChange`, `crates/raft/src/member/leader.rs`). The builder checks whether a real `Joint` of two disjoint placements works. If it does not, the move Workflow goes one voter site per config change and never drops the leader's site without a leadership transfer first. DESIGN and SHARED mark the move pending.
+- `graft-m1` may gain a fourth site script, `graft-m1-site-d`, so a move across placements can run on the test install.
+
+**Why.** Every repository format up to 32.9 is taken, and the finisher's commands carry no account or key, as every finisher step does. A transfer's commit point, the `Reserved` name, is on an `Authz` chain the hosted `Audit` does not scan. Three sites leave no room for a move to other sites, so BF-30's "across placements" could only change home or the placement's name.
+
+**Beat.** Lifting `OwnerChange` from the ordinary `Settings`, which would let an admin change a repository's owner without a transfer. Raising an `Owed` item from a `Names` entry the transfer writes, which ties the finisher to a row the transfer may not have written yet. Testing the move only by re-homing on three sites, which M1-WP7 already covers.
+
+**Evidence.** `tests/m3/results/m3-finish.md`, "Not done yet in this round" [inference, from the code named]; `crates/git/src/issue_ops.rs` (`OwnerChange`), `crates/raft/src/member/leader.rs` (`take_config`, `NotOneChange`), `crates/identity/src/audit.rs` ("A transfer is not finished here").
+
+**Flip.** The builder finding that a disjoint `Joint` commits and keeps both majorities' leases, which settles the move as DESIGN states it; or one-site-per-change moves measured losing availability when a step drops a site, which would need `Joint` built first. For the command and the cursor: an existing command that can land the owner change without opening it to admins.
+
+#### R20 built, and kid 1 retired, on `graft-m1`
+
+**Decision.** "Install creates every `Tokens` shard" stands as built: the edge's `POST /api/graftyard/v1/release/tokens?from&count`, accepted only under the genesis the `Release` group holds, creates up to 16 shards a request, and `graftyard install` drives 192 ranges, 8 at once, and reports failed ranges for an idempotent rerun. Hosted rotation is done: kid 2 signs and kid 1 is retired. A genuine kid-1-signed token refused `Retired` was not observed, and that gap is recorded rather than closed.
+
+**Why.** One invocation cannot create 3,072 groups under the connection and subrequest limits, so the CLI drives ranges. The 13 s was each new member's join, `RTT_SAMPLES` sequential pings to each peer, not an election, so pre-creating removes it. No kid 1 token or key remained after the switch.
+
+**Beat.** Creating shards from one edge invocation. Keeping the kid 1 signing key to mint a control token, which keeps a retired key alive.
+
+**Evidence.** `tests/m3/results/m3-finish.md`: 3,072 shards in 21 minutes with one registry timeout retried; device-code request 13.0 s to 0.83 s median, max 1.3 s, token exchange about 15 s to 1.9 s, 24 of 24 tokens; joins 9.9 s and election 1.2 s on fresh shards; kid 2's secret at 19:35:36Z and 10 of 10 mints under it; kid 1 retired at 22:34:26Z (`tokens:0` index 35), the kid-1 probe `Retired` offline and 5 of 5 pushes refused, kid 2 5 of 5 accepted [measured]. Commits `5938d1b`, `eaff64b`, `74550b6`, `dc81e96`.
+
+**Flip.** A pre-created shard measured slow on first sign-in again, which would put the cost elsewhere than the join; or a genuine kid-1-signed token accepted after its retire, which would mean `verify` checks the signature before `retired`.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 

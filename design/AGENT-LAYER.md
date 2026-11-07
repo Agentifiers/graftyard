@@ -178,10 +178,10 @@ pub const PROTECTED_PATHS: &[&str] = &[".github/workflows/**", ".github/actions/
 /// changes against its merge base with the default branch or against the old tip (the union of both diffs), where they
 /// match the protected list. This catches an existing outsider commit pushed under an agent ref.
 pub struct ProtectedHits { pub refname: RefName, pub paths: SmallVec<[Box<str>; 4]> }
-/// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push` carries
-/// `changed` beside `protected` and `provenance`, `decide` matches it against live Exclusive leases, and `PathSet.paths`
-/// is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by an `Agent` or under an agent
-/// prefix run `validate` on an empty staged pack, so they get all three outputs.
+/// From the same tree diff, every changed path, or past PATHS_MAX their directories with `truncated` set. `Push`
+/// carries `changed` beside `protected` and `provenance`, `decide` will match it against live Exclusive leases
+/// (AM1-WP4), and `PathSet.paths` is copied from it. REST ref writes (`POST` and `PATCH /git/refs`, `POST /merges`) by
+/// an `Agent` or under an agent prefix run `validate` on an empty staged pack, so they get all three outputs.
 pub struct ChangedPaths { pub refname: RefName, pub paths: Vec<Box<str>> /* <= PATHS_MAX */, pub truncated: bool }
 pub const PATHS_MAX: usize = 1_000;
 /// From `validate`, the new commits' trailers and any `refs/notes/ai` update in the same push. A parse failure leaves
@@ -267,13 +267,13 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     LeaseRenew { id: LeaseId, expires: Timestamp },               // Core
     LeaseRelease { ids: SmallVec<[LeaseId; 4]>, by: Actor },      // Core
 }
-// `ExtendLeases` rides on the base's `LogEntry.extend`, not as an event, and moves Core lease rows. A `Refs` entry whose
-// push carries `provenance` is Core and Metadata. `PrOpened` with `AgentMeta` keeps `AgentMeta.app` in the core
-// `pull_head` row for `Merge`. `AuthzEvent` gains `AgentApp(AgentApp)`, written only on the install's own
-// `Authz(Genesis.account)` chain. Every command whose actor is an App lists that chain in `deps()`, so `decide` reads
-// the rows `fresh`, and admission uses the leader's cached copy. `OrgPolicy` gains `agents_enabled: bool` (default
-// false), `agents_workspace: WorkspaceMode` (default `Fork`, into `<org>-agents`), and `code_mode: bool` (default
-// false). `IdentityEvent` gains `McpGrant { grant: McpGrant, revoked: bool }`. Both chains are core only.
+// `ExtendLeases` rides on the base's `LogEntry.extend`, not as an event, and moves Core lease rows. A `Refs` entry
+// whose push carries `provenance` is Core and Metadata. `PrOpened` with `AgentMeta` keeps `AgentMeta.app` in the core
+// `pull_head` row for `Merge`. `AuthzEvent` gains `AgentApp { app, row: Option<AgentApp> }` (`None` unflags), only on
+// `Authz(Genesis.account)`. Every command whose actor is an App lists that chain in `deps()`, so `decide` reads the
+// rows `fresh`, and admission uses the leader's cached copy. `AuthzEvent::OrgAgents` sets `agents_enabled: bool`
+// (default false) and `agents_workspace: WorkspaceMode` (default `Fork`, into `<org>-agents`) apart from `Policy`; AM2
+// adds `code_mode`. `IdentityEvent` gains `McpGrant { grant: McpGrant, revoked: bool }`. Both chains are core only.
 pub enum WorkspaceMode { Fork, InRepo }
 
 // ---- Agent actors in the layer: GitHub Apps ----
@@ -400,7 +400,7 @@ pub const HIDDEN_CHARS: &[RangeInclusive<char>] = &['\u{00AD}'..='\u{00AD}', '\u
     '\u{200B}'..='\u{200F}', '\u{202A}'..='\u{202E}', '\u{2060}'..='\u{2064}', '\u{2066}'..='\u{206F}',
     '\u{3164}'..='\u{3164}', '\u{FEFF}'..='\u{FEFF}', '\u{FFA0}'..='\u{FFA0}', '\u{FFF9}'..='\u{FFFB}',
     '\u{E0000}'..='\u{E007F}', '\u{E0100}'..='\u{E01EF}'];
-/// `trusted` means a human who can push: never a bot, an `AgentApp` (`is_agent` false until AM1-WP2), or a commit author.
+/// `trusted`: a human who can push, never a bot, an `AgentApp` (`is_agent`, from `AgentMeta` or `AgentApp`), or an author.
 pub struct AuthorTrust { pub association: AuthorAssociation, pub can_push: bool, pub is_bot: bool, pub is_agent: bool,
                          pub first_contribution: bool, pub trusted: bool }
 
