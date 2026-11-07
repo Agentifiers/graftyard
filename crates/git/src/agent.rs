@@ -391,7 +391,8 @@ pub fn session_from_url(value: &str, origin: &str, app: AppId) -> Option<Session
     if !lower(origin).starts_with("https://") || value.len() <= origin.len() {
         return None;
     }
-    let (head, rest) = value.split_at(origin.len());
+    // A claimed value is untrusted text: a cut inside a character is not the origin.
+    let (head, rest) = value.split_at_checked(origin.len())?;
     if lower(head) != lower(origin) {
         return None;
     }

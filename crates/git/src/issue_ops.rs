@@ -413,6 +413,12 @@ impl IssueCmd {
             return Err(IssueErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
+        // An `Agent` is refused before any permission check, so its reply names the rule it broke (agents recover by
+        // reading it) rather than GitHub's bare 403.
+        let install = crate::repo::install_authz(deps);
+        if let crate::agent::ActorKind::Agent(_) = crate::agent::actor_kind(&self.actor, install) {
+            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;
+        }
         let owner = v.owner();
         let folds = crate::repo::authz_folds(deps);
         let authz = folds.iter().copied().find(|a| a.owner() == Some(owner));
@@ -438,11 +444,6 @@ impl IssueCmd {
             if n.0 == 0 || n.0 > v.last_number() { Err(IssueErr::NotFound) } else { Ok(()) }
         };
         let one = |e: RepoEvent| smallvec![e];
-        let install = crate::repo::install_authz(deps);
-        let kind = crate::agent::actor_kind(&self.actor, install);
-        if let crate::agent::ActorKind::Agent(_) = &kind {
-            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;
-        }
         match &self.op {
             IssueOp::OpenIssue { title, body, labels, assignees } => {
                 need(RepoPermission::Read)?;

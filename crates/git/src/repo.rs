@@ -1421,8 +1421,9 @@ impl Command for Push {
             REPO_FORMAT_V1
         }
     }
+    /// Core, and Metadata too when the push carries provenance, whose `Provenance` event is a Metadata row.
     fn tiers(&self) -> TierSet {
-        TierSet::CORE
+        if self.provenance.is_empty() { TierSet::CORE } else { TierSet::CORE.union(TierSet::METADATA) }
     }
     /// The actor's `Account` and token rows, and the owner's and enterprise's `Authz`, named by the fold's
     /// `RepoSettings`.
@@ -1612,7 +1613,8 @@ impl Command for RepoCmd {
     }
     fn tiers(&self) -> TierSet {
         match self {
-            RepoCmd::Push(_) | RepoCmd::Sync(_) => TierSet::CORE,
+            RepoCmd::Push(p) => p.tiers(),
+            RepoCmd::Sync(_) => TierSet::CORE,
             RepoCmd::Issue(c) => c.tiers(),
             RepoCmd::Merge(c) => c.cmd.tiers(),
         }
