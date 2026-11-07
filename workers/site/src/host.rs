@@ -172,6 +172,8 @@ pub enum Trace {
     /// A call to `peer` failed "Subrequest depth limit exceeded": `batch` is its message kind's `Call::msg` index,
     /// `index` its modelled hop (`Host::hop`).
     DepthFail = 9,
+    /// A transaction's storage confirm (`sync()`) took `ms`; `index` is the applied index it covered.
+    Confirm = 10,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -1414,10 +1416,13 @@ impl<F: Family> Host<F> {
         let truncs = self.truncs.borrow().back().map_or(0, |t| t.0);
         if !pending.is_empty() {
             let h = self.clone();
+            let began = now_ms();
             spawn_local(async move {
                 if h.state.storage().sync().await.is_err() || h.dying.get() {
                     return;
                 }
+                let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
+                h.trace(Trace::Confirm, 0, 0, applied, now_ms().saturating_sub(began));
                 if let Some(l) = last {
                     // A truncation stepped after this transaction ran, before its confirm, caps what it vouches for.
                     let l = h.truncs.borrow().iter().filter(|(n, _)| *n > truncs).map(|(_, c)| *c).fold(l, u64::min);
