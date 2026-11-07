@@ -696,13 +696,17 @@ impl IssueCmd {
                 if me != Some(st.creator) {
                     return Err(IssueErr::Invalid("a status's creator is its actor"));
                 }
-                // The edge mints the id from its clock, so two statuses on one commit can share it (two in one
-                // millisecond). `status` is keyed (sha, id), so the second takes the smallest free id above it rather
-                // than replace the first; the id is still the status's version, so an older status still loses.
-                let mut id = st.id.0.0;
-                while v.meta().get("status", &[sha_key(&st.sha), int(-id)]).is_some() {
-                    id += 1;
-                }
+                // A status's id is its version: for one (sha, context), the higher id wins. The edge mints it from
+                // its clock, which another edge's may trail, so `decide` takes it above every status the commit
+                // already holds: ids on one commit then increase in commit order, whatever the edges' clocks say
+                // (F51). `status` is keyed (sha, -id), so the commit's first row holds its highest id.
+                let top = v.meta().scan("status", &[sha_key(&st.sha)], 1).into_iter().find_map(|(k, _)| {
+                    match (k.first(), k.get(1)) {
+                        (Some(sha), Some(Val::Int(neg))) if *sha == sha_key(&st.sha) => Some(-neg),
+                        _ => None,
+                    }
+                });
+                let id = top.map_or(st.id.0.0, |t| st.id.0.0.max(t + 1));
                 let st = StatusUpdate { id: StatusId(DbId(id)), ..st.clone() };
                 let mut evs = one(RepoEvent::Status(st.clone()));
                 if required(v, st.sha, &st.context, None) {

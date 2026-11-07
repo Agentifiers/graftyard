@@ -475,8 +475,9 @@ fn a_required_status_maps_its_state_and_a_merge_queue_ref_is_guarded() {
     assert_eq!(c.required(oid(7)), vec![("jenkins".into(), Some(CheckConclusion::Failure))]);
     c.commit(WRITER, status(12, StatusState::Success)).unwrap();
     assert_eq!(c.required(oid(7)), vec![("jenkins".into(), Some(CheckConclusion::Success))]);
+    // A status minted with a lower id but committed later is the newer one: ids on a commit follow commit order (F51).
     c.commit(WRITER, status(9, StatusState::Failure)).unwrap();
-    assert_eq!(c.required(oid(7)), vec![("jenkins".into(), Some(CheckConclusion::Success))], "an older status");
+    assert_eq!(c.required(oid(7)), vec![("jenkins".into(), Some(CheckConclusion::Failure))], "the later status");
     assert_eq!(c.rows(Tier::Metadata, "status"), 4);
     assert_eq!(c.commit(READER, status(13, StatusState::Success)), Err(IssueErr::Forbidden));
 }
@@ -509,6 +510,41 @@ fn two_statuses_minted_in_one_millisecond_keep_both_rows_and_the_later_wins() {
     c.commit(WRITER, status("ci", StatusState::Success, 4).op).unwrap();
     assert_eq!(c.rows(Tier::Metadata, "status"), 4, "no status replaced another");
     assert_eq!(c.required(oid(7)), vec![("ci".into(), Some(CheckConclusion::Success))], "the later status wins");
+}
+
+/// F51: two edges whose clocks differ by a minute report the same required context. The later report comes from
+/// the slower edge, so its minted id is lower; it must still win, because a status's id is its version and ids on one
+/// commit follow commit order. Before the fix, the earlier, faster-clocked `success` kept the check green after a
+/// re-run reported `pending`: BF-23's "a re-run blocks a merge again" failed through two edges.
+#[test]
+fn a_later_status_from_an_edge_whose_clock_trails_still_wins() {
+    let mut c = setup(3, 90);
+    c.commit(OWNER, protect("main", &["ci"])).unwrap();
+    c.push("refs/heads/main", oid(7));
+    let status = |minted: i64, state| {
+        IssueOp::RecordStatus(StatusUpdate {
+            id: StatusId(DbId(minted)),
+            sha: oid(7),
+            context: "ci".into(),
+            state,
+            target_url: None,
+            description: None,
+            creator: AccountId(DbId(WRITER)),
+        })
+    };
+    let fast = 1_793_947_060_000; // edge A, a minute ahead
+    let slow = 1_793_947_000_000; // edge B
+    c.commit(WRITER, status(fast, StatusState::Success)).unwrap();
+    assert_eq!(c.required(oid(7)), vec![("ci".into(), Some(CheckConclusion::Success))]);
+    // The re-run, reported through edge B after A's report committed.
+    let Ok(IssueOut::Id(rerun)) = c.commit(WRITER, status(slow, StatusState::Pending)) else { panic!() };
+    assert!(rerun.0 > fast, "the later status's id is above every status the commit holds: {rerun:?}");
+    assert_eq!(c.required(oid(7)), vec![("ci".into(), None)], "the re-run blocks the merge again");
+    // Its result, through edge A again: still later in commit order, so it wins.
+    c.commit(WRITER, status(fast + 1, StatusState::Failure)).unwrap();
+    assert_eq!(c.required(oid(7)), vec![("ci".into(), Some(CheckConclusion::Failure))]);
+    assert_eq!(c.rows(Tier::Metadata, "status"), 3);
+    c.agree();
 }
 
 #[test]
