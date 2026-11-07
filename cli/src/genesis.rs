@@ -21,6 +21,11 @@ use crate::placement::install_account;
 pub const ENTRIES_PATH: &str = "/api/graftyard/v1/release/entries";
 /// The body is the entry's stored bytes.
 pub const ENTRY_CONTENT_TYPE: &str = "application/octet-stream";
+/// The path the edge creates `Tokens` shard groups on, a range at a time, with the signed genesis as the body.
+pub const TOKENS_PATH: &str = "/api/graftyard/v1/release/tokens";
+/// Shards per request (the edge's `RANGE_MAX`) and requests at once.
+const TOKENS_RANGE: u16 = 16;
+const TOKENS_AT_ONCE: usize = 8;
 
 const SYSTEM: [SystemChain; 4] = [SystemChain::Release, SystemChain::Names, SystemChain::Tokens, SystemChain::Ids];
 
@@ -252,6 +257,45 @@ pub fn post_entry(edge: &str, bytes: &[u8]) -> Res<Answer> {
     })
 }
 
+/// Creates every `Tokens` shard's group after the genesis commits (R20): `TOKEN_SHARDS` in ranges of `TOKENS_RANGE`,
+/// `TOKENS_AT_ONCE` ranges at a time. The edge's create is idempotent, so a failed range is retried by running
+/// `install` again. Returns the ranges that failed, with the edge's answer.
+pub fn precreate_tokens(edge: &str, bytes: &[u8]) -> Vec<(u16, String)> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU16, Ordering};
+    let next = AtomicU16::new(0);
+    let failed = Mutex::new(Vec::new());
+    let base = edge.trim_end_matches('/');
+    std::thread::scope(|s| {
+        for _ in 0..TOKENS_AT_ONCE {
+            s.spawn(|| {
+                loop {
+                    let from = next.fetch_add(TOKENS_RANGE, Ordering::Relaxed);
+                    if from >= graftyard_identity::TOKEN_SHARDS {
+                        return;
+                    }
+                    let url = format!("{base}{TOKENS_PATH}?from={from}&count={TOKENS_RANGE}");
+                    let r = ureq::post(&url)
+                        .timeout(std::time::Duration::from_secs(600))
+                        .set("content-type", ENTRY_CONTENT_TYPE)
+                        .send_bytes(bytes);
+                    let err = match r {
+                        Ok(_) => continue,
+                        Err(ureq::Error::Status(code, r)) => {
+                            format!("HTTP {code} {}", r.into_string().unwrap_or_default())
+                        }
+                        Err(e) => e.to_string(),
+                    };
+                    failed.lock().expect("no thread panics holding it").push((from, err));
+                }
+            });
+        }
+    });
+    let mut f = failed.into_inner().expect("no thread panicked");
+    f.sort();
+    f
+}
+
 pub fn install(config: &Path, genesis: &Path, edge: Option<&str>) -> Res<()> {
     let mut t = InstallToml::load(config)?;
     let mut bytes = Vec::new();
@@ -281,7 +325,19 @@ pub fn install(config: &Path, genesis: &Path, edge: Option<&str>) -> Res<()> {
         }
     }
     t.genesis = Some(ours);
-    t.save(config)
+    t.save(config)?;
+    let failed = precreate_tokens(&edge, &bytes);
+    if !failed.is_empty() {
+        let first: Vec<String> = failed.iter().take(5).map(|(f, e)| format!("from {f}: {e}")).collect();
+        return Err(format!(
+            "installed, but {} of {} Tokens shard ranges did not start; run install again ({})",
+            failed.len(),
+            graftyard_identity::TOKEN_SHARDS.div_ceil(TOKENS_RANGE),
+            first.join("; ")
+        ));
+    }
+    println!("created all {} Tokens shard groups", graftyard_identity::TOKEN_SHARDS);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -365,6 +421,7 @@ mod tests {
         let mut fold = graftyard_release::ReleaseFold::default();
         let mut index = 1; // the bootstrap Config entry
         serve(n, move |seen| match fold.decide(&anchor, &seen.body) {
+            _ if seen.line.starts_with(&format!("POST {TOKENS_PATH}")) => (200, "{}".into()),
             Ok(ev) => {
                 fold.apply(&ev);
                 index += 2; // the leader's term Noop, then the entry
@@ -451,7 +508,9 @@ mod tests {
         // The unsigned file is refused by the edge's own rule before anything is sent.
         assert!(install(&config, &unsigned, Some("http://127.0.0.1:9")).is_err_and(|e| e.contains("WrongKey")));
 
-        let (url, seen) = edge(t.anchor().unwrap(), 3);
+        // The entry three times, and after each of the two that install accepts, every Tokens range.
+        let ranges = usize::from(graftyard_identity::TOKEN_SHARDS.div_ceil(TOKENS_RANGE));
+        let (url, seen) = edge(t.anchor().unwrap(), 3 + 2 * ranges);
         install(&config, &signed, Some(&url)).unwrap();
         let first = seen.recv().unwrap();
         assert_eq!(first.body, fs::read(&signed).unwrap());
@@ -528,6 +587,29 @@ mod tests {
         };
         assert!(genesis(&config, args).is_err());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// R20: install creates every `Tokens` shard once, in ranges, and reports the ranges the edge did not start.
+    #[test]
+    fn install_creates_every_tokens_shard_and_reports_the_ranges_that_failed() {
+        let ranges = usize::from(graftyard_identity::TOKEN_SHARDS.div_ceil(TOKENS_RANGE));
+        let (url, seen) =
+            serve(ranges, |s| if s.line.contains("from=32&") { (503, "{}".into()) } else { (200, "{}".into()) });
+        let failed = precreate_tokens(&url, b"genesis bytes");
+        assert_eq!(failed.iter().map(|(f, _)| *f).collect::<Vec<_>>(), vec![32]);
+        let mut covered = vec![0u8; usize::from(graftyard_identity::TOKEN_SHARDS)];
+        for _ in 0..ranges {
+            let s = seen.recv().unwrap();
+            assert_eq!(s.body, b"genesis bytes", "the signed genesis is the credential");
+            let q = s.line.split(['?', ' ']).nth(2).unwrap();
+            let get = |k: &str| q.split('&').find_map(|p| p.strip_prefix(k)).unwrap().parse::<usize>().unwrap();
+            let (from, count) = (get("from="), get("count="));
+            let end = (from + count).min(covered.len());
+            for c in &mut covered[from..end] {
+                *c += 1;
+            }
+        }
+        assert!(covered.iter().all(|c| *c == 1), "every shard exactly once");
     }
 
     #[test]

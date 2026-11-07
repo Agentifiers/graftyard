@@ -66,10 +66,10 @@ pub use org::{
 pub use placement::validate_record;
 pub use tokens::{
     AUTHORIZATION_CODE_TTL, CodeKind, CodeRow, DEVICE_CODE_TTL, Ed25519Public, Family, Fingerprint, GrantId, Jti, Kid,
-    OpaqueToken, RedrawExhausted, RepoScope, SHARDS_PER_FAMILY, SIGN_IN_LINK_TTL, ScopeSet, SshKeyRow, TokenError,
-    TokenFields, TokenKind, TokenRow, TokensCmd, TokensErr, TokensEvent, TokensFold, TokensMore, TokensOp, TokensRead,
-    TokensScratch, VerifyingKeyRow, WriteScope, code_hash, draw_device_code, draw_secret, draw_secret_on, family_of,
-    fingerprint_shard, jti_shard, shard_of_hash, token_shard,
+    OpaqueToken, RedrawExhausted, RepoScope, SHARDS_PER_FAMILY, SIGN_IN_LINK_TTL, ScopeSet, SshKeyRow, TOKEN_SHARDS,
+    TokenError, TokenFields, TokenKind, TokenRow, TokensCmd, TokensErr, TokensEvent, TokensFold, TokensMore, TokensOp,
+    TokensRead, TokensScratch, VerifyingKeyRow, WriteScope, code_hash, draw_device_code, draw_secret, draw_secret_on,
+    family_of, fingerprint_shard, jti_shard, shard_of_hash, token_shard,
 };
 
 use graftyard_raft::Format;

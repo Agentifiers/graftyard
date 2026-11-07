@@ -47,6 +47,7 @@ use worker::*;
 mod agents;
 mod api;
 mod ident;
+mod precreate;
 mod release;
 
 const AGENT: &str = "git/graftyard-m1";
@@ -1444,6 +1445,13 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     };
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
+    }
+    if path == precreate::TOKENS_PATH {
+        return precreate::tokens(&c, &mut req).await;
+    }
+    #[cfg(feature = "test-faults")]
+    if path == precreate::BED_PATH {
+        return precreate::bed(&c, &req).await;
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()
