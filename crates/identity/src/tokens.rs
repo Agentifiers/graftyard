@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
 use graftyard_types::{
-    AccountId, ChainId, CredentialKey, CredentialShard, DbId, Digest, Region, RepoId, Timestamp, TokenShard, Ulid,
+    AccountId, ChainId, CredentialKey, CredentialShard, DbId, Digest, Index, Region, RepoId, Timestamp, TokenShard,
+    Ulid,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -25,7 +26,7 @@ use crate::compat::tail_serde;
 use crate::credential::{CredentialRefusal, IdentityDep, OrgId, Own, check_credential, credential_chains, encode_cred};
 use crate::enc;
 use crate::overlay::{Overlay, SetOverlay, Table};
-use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2};
+use crate::{TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3};
 
 /// 1,024 shards per home family.
 pub const SHARDS_PER_FAMILY: u16 = 1024;
@@ -501,6 +502,12 @@ pub enum TokensEvent {
     CodeUsed {
         hash: [u8; 32],
     },
+    /// The `Audit` consumer finished, or found nothing owed for, every entry of this shard through `through`
+    /// (`crate::audit`). Not in the design's `TokensEvent` [inference: SHARED, "Event fan-out", gives a committed
+    /// cursor only to consumers that commit to the chain they read].
+    AuditCursor {
+        through: Index,
+    },
 }
 
 fn token_fields(e: &mut Enc, f: &TokenFields) {
@@ -548,7 +555,7 @@ fn code_kind(e: &mut Enc, k: &CodeKind) {
 }
 
 /// Tags 0 and 1 are Milestone 1's and keep their bytes. The rest follow the design's declaration order from 2, with
-/// `StoredWith`, the design's `Stored` with fields, after them at 11.
+/// `StoredWith`, the design's `Stored` with fields, after them at 11, and `AuditCursor` at 12. 10 is unused.
 impl Record for TokensEvent {
     fn encode(&self, out: &mut Vec<u8>) {
         let mut e = Enc(out);
@@ -609,6 +616,10 @@ impl Record for TokensEvent {
                 e.u8(9);
                 e.0.extend_from_slice(hash);
             }
+            TokensEvent::AuditCursor { through } => {
+                e.u8(12);
+                e.u64(through.0);
+            }
             TokensEvent::StoredWith { hash, kind, account, scopes, expires, fields } => {
                 e.u8(11);
                 e.0.extend_from_slice(hash);
@@ -624,7 +635,7 @@ impl Record for TokensEvent {
 
 /// Milestone 3's rows of a `Tokens` shard: the fold's trailing part (`crate::compat`). A `jti` row and a code row are
 /// kept until an entry's time passes their `exp` or `expires`; a lapsed row reads as absent at once.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TokensMore {
     pub fields: BTreeMap<[u8; 32], TokenFields>,
     pub ssh_keys: BTreeMap<Fingerprint, SshKeyRow>,
@@ -634,7 +645,20 @@ pub struct TokensMore {
     pub lifeboat: BTreeMap<[u8; 32], AccountId>,
     pub verifying: BTreeMap<Kid, VerifyingKeyRow>,
     pub codes: BTreeMap<[u8; 32], CodeRow>,
+    /// The `Audit` consumer's cursor (`TokensEvent::AuditCursor`), a trailing part of its own, so a fold whose
+    /// cursor never moved keeps the bytes of the release before it.
+    pub more: Index,
 }
+
+tail_serde!(TokensMore {
+    fields: BTreeMap<[u8; 32], TokenFields>,
+    ssh_keys: BTreeMap<Fingerprint, SshKeyRow>,
+    ssh_removed: BTreeSet<Fingerprint>,
+    jtis: BTreeMap<Jti, Timestamp>,
+    lifeboat: BTreeMap<[u8; 32], AccountId>,
+    verifying: BTreeMap<Kid, VerifyingKeyRow>,
+    codes: BTreeMap<[u8; 32], CodeRow>,
+} more: Index);
 
 /// One `Tokens` shard's fold. Its serde form is Milestone 1's fields, then `more` only when it holds a row.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -653,6 +677,11 @@ tail_serde!(TokensFold {
 impl TokensFold {
     pub fn new(shard: TokenShard) -> TokensFold {
         TokensFold { shard: Some(shard), ..TokensFold::default() }
+    }
+
+    /// Every entry through this index is one the `Audit` consumer finished or found nothing owed for.
+    pub fn audit_cursor(&self) -> Index {
+        self.more.more
     }
 }
 
@@ -814,6 +843,8 @@ fn write(ev: &TokensEvent, t: &mut impl Table<[u8; 32], TokenRow>, m: &mut impl 
                 m.codes().put(*hash, CodeRow { used: true, ..c });
             }
         }
+        // The fold's own field (`TokensFold::apply`); `decide` never reads it from a scratch view.
+        TokensEvent::AuditCursor { .. } => {}
     }
 }
 
@@ -855,7 +886,10 @@ fn shard_of_event(ev: &TokensEvent) -> Option<TokenShard> {
         }
         TokensEvent::JtiRevoked { jti, .. } => Some(jti_shard(jti)),
         TokensEvent::VerifyingKey { .. } => Some(TokenShard(0)),
-        TokensEvent::Revoked { .. } | TokensEvent::CodeApproved { .. } | TokensEvent::CodeUsed { .. } => None,
+        TokensEvent::Revoked { .. }
+        | TokensEvent::CodeApproved { .. }
+        | TokensEvent::CodeUsed { .. }
+        | TokensEvent::AuditCursor { .. } => None,
     }
 }
 
@@ -923,6 +957,10 @@ impl Fold for TokensFold {
     }
     fn apply(&mut self, ev: &TokensEvent) {
         write(ev, &mut self.tokens, &mut self.more);
+        // Never back: two cursor commands in one entry leave the later of the two.
+        if let TokensEvent::AuditCursor { through } = ev {
+            self.more.more = self.more.more.max(*through);
+        }
     }
     /// Applies the entry, then drops every `jti` and code row that lapsed by the entry's time, so every member
     /// prunes the same rows. A lapsed row already read as absent; pruning only bounds the fold.
@@ -1034,6 +1072,13 @@ pub enum TokensOp {
     UseCode {
         hash: [u8; 32],
         client: Option<ClientId>,
+    },
+    // ---- format 3 ----
+    /// The `Audit` consumer's position on `shard`, which only the consumer, as the operator, submits. A cursor at or
+    /// behind the shard's decides to no events.
+    AuditCursor {
+        shard: TokenShard,
+        through: Index,
     },
 }
 
@@ -1166,6 +1211,11 @@ impl Record for TokensCmd {
                 e.0.extend_from_slice(hash);
                 e.option(client.as_ref(), apps::client);
             }
+            TokensOp::AuditCursor { shard, through } => {
+                e.u8(13);
+                e.u16(shard.0);
+                e.u64(through.0);
+            }
         }
     }
 }
@@ -1189,6 +1239,7 @@ impl TokensCmd {
             }
             TokensOp::RevokeJti { jti, .. } => jti_shard(jti),
             TokensOp::PutVerifyingKey { .. } => TokenShard(0),
+            TokensOp::AuditCursor { shard, .. } => *shard,
         }
     }
 
@@ -1410,6 +1461,15 @@ impl TokensCmd {
                 }
                 done(smallvec![TokensEvent::CodeUsed { hash: *hash }])
             }
+            TokensOp::AuditCursor { through, .. } => {
+                if !self.operator() {
+                    return Err(TokensErr::Forbidden);
+                }
+                if *through <= s.fold.audit_cursor() {
+                    return done(SmallVec::new());
+                }
+                done(smallvec![TokensEvent::AuditCursor { through: *through }])
+            }
         }
     }
 }
@@ -1444,6 +1504,7 @@ impl Command for TokensCmd {
     fn format(&self) -> Format {
         match self.op {
             TokensOp::Store { .. } | TokensOp::Revoke { .. } => TOKENS_FORMAT,
+            TokensOp::AuditCursor { .. } => TOKENS_FORMAT_V3,
             _ => TOKENS_FORMAT_V2,
         }
     }

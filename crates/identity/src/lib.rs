@@ -12,6 +12,7 @@
 mod access;
 pub mod appauth;
 mod apps;
+pub mod audit;
 mod authz;
 mod cache;
 mod compat;
@@ -82,3 +83,7 @@ pub const IDS_FORMAT: Format = Format { family: 0x13, version: 1 };
 pub const NAMES_FORMAT_V2: Format = Format { family: 0x10, version: 2 };
 pub const TOKENS_FORMAT_V2: Format = Format { family: 0x11, version: 2 };
 pub const AUTHZ_FORMAT_V2: Format = Format { family: 0x12, version: 2 };
+/// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
+/// same terms as version 2.
+pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
+pub const TOKENS_FORMAT_V3: Format = Format { family: 0x11, version: 3 };
