@@ -174,6 +174,9 @@ pub enum Trace {
     DepthFail = 9,
     /// A transaction's storage confirm (`sync()`) took `ms`; `index` is the applied index it covered.
     Confirm = 10,
+    /// A learner's call to `peer` had no answer within `HEDGE`, and the same envelope was sent again; `index` is 1 if
+    /// the copy was answered, `ms` its time.
+    Hedge = 11,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -371,6 +374,11 @@ pub async fn answer<T>(
 /// How long past CALL_DEADLINE a call is still awaited [guess]: the slowest AppendEntries a follower answered in the
 /// F43 logs took 2.0 s on the callee (`tests/m1/results/m1-f43.md`).
 const LATE_LIMIT: Duration = Duration::from_secs(10);
+
+/// How long a learner's call waits for its answer before the same envelope is sent once more (`Host::hedge`)
+/// [guess]: past the slowest answer an apac learner had from an enam leader in a normal second of B0-18 (p99 330 ms,
+/// `tests/m3/results/m3-wp5.md`), and half of CALL_DEADLINE.
+const HEDGE: Duration = Duration::from_millis(500);
 
 pub struct Core<F: Family> {
     pub m: raft::Member<F::C>,
@@ -1713,6 +1721,10 @@ impl<F: Family> Host<F> {
             }
             #[cfg(feature = "test-faults")]
             call.hop.set(h.hop.get() + 1);
+            let answered = Rc::new(Cell::new(false));
+            if h.is_learner() {
+                h.hedge(to, body.clone(), call.hop.get(), answered.clone());
+            }
             let missed = || {
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "no answer within CALL_DEADLINE")));
                 h.stats.borrow_mut().failed_calls += 1;
@@ -1731,6 +1743,7 @@ impl<F: Family> Host<F> {
                 Answer::Late(r) => (true, r),
                 Answer::Missed => return,
             };
+            answered.set(true);
             let replies = match r {
                 Ok(replies) => replies,
                 Err(pe) if late => return h.ended(&call, End::LateFailed(pe)),
@@ -1890,6 +1903,37 @@ impl<F: Family> Host<F> {
         }
         let b = res.bytes().await.map_err(|x| PeerErr::new(CallFail::Body, x))?;
         codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|x| PeerErr::new(CallFail::Decode, x))
+    }
+
+    /// Whether this member is a learner.
+    fn is_learner(&self) -> bool {
+        self.core.borrow().as_ref().is_some_and(|c| graftyard_types::learner_slot(c.m.me()).is_some())
+    }
+
+    /// A learner's call with no answer within `HEDGE` is sent once more, and the copy's replies are stepped as they
+    /// arrive. A learner keeps one read-index batch in flight, so one call delayed on the network holds every read
+    /// queued behind it until the call ends or CALL_DEADLINE resends it: B0-18's last failures on `graft-m2b` were
+    /// single calls between apac and enam that took 1.1 to 2 s (`tests/m3/results/m3-wp5.md`). Raft takes the copy as
+    /// it takes any duplicate: a second answer to one batch or round is ignored. Both responses are stepped, so what
+    /// a leader held for this learner reaches it in either one.
+    fn hedge(self: &Rc<Self>, to: SiteId, body: Vec<u8>, hop: u64, answered: Rc<Cell<bool>>) {
+        let h = self.clone();
+        spawn_local(async move {
+            Delay::from(HEDGE).await;
+            if answered.get() || h.dying.get() {
+                return;
+            }
+            let at = now_ms();
+            let r = h.call_peer(to, body, hop).await;
+            h.trace(Trace::Hedge, to.0, 0, u64::from(r.is_ok()), now_ms().saturating_sub(at));
+            for e in r.unwrap_or_default() {
+                let from = e.from;
+                h.trace_res(&e, true);
+                if h.input(|m, t| m.step(t, from, e.msg)).is_err() {
+                    break;
+                }
+            }
+        });
     }
 
     /// Registers a waiter for `ticket`; `admitted` names the request it was admitted for, and when.
