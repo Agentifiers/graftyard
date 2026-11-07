@@ -252,6 +252,7 @@ pub fn refused(e: &IssueErr) -> Reply {
     match e {
         IssueErr::Unauthorized(_) => challenge(),
         IssueErr::Forbidden => message(403, "You must have push access to do that"),
+        IssueErr::Agent(a) => message(403, &a.text),
         IssueErr::NotFound => message(404, "Lock not found"),
         IssueErr::Exists => message(409, "already created lock"),
         IssueErr::NeedIdBlock | IssueErr::Unavailable => message(503, "Service Unavailable"),

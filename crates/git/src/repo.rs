@@ -1243,6 +1243,23 @@ fn decode_claims(d: &mut Dec) -> Result<InstallationClaims, WireError> {
     })
 }
 
+/// A principal in the push encoding's canonical form, App actors and installation claims included: what a format-8
+/// issue command carries for an App, whose JSON form has only an account.
+pub fn principal_bytes(p: &Principal) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_principal(&mut Enc(&mut out), p);
+    out
+}
+
+pub fn principal_from_bytes(b: &[u8]) -> Result<Principal, WireError> {
+    let mut d = Dec(b);
+    let p = decode_principal(&mut d, true)?;
+    if !d.0.is_empty() {
+        return Err(WireError::Malformed("trailing bytes"));
+    }
+    Ok(p)
+}
+
 fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError> {
     let actor = match d.u8()? {
         0 => Actor::User(UserId(AccountId(graftyard_types::DbId(d.u64()? as i64)))),

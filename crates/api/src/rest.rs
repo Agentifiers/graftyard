@@ -177,6 +177,7 @@ pub fn refused_merge(e: &graftyard_git::merge::MergeError) -> Reply {
         E::HeadModified | E::BaseModified => Reply::error(409, &e.message(), doc),
         E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
         E::Forbidden => Reply::error(403, "Resource not accessible by integration", doc),
+        E::Agent(a) => Reply::error(403, &a.text, doc),
         E::NotFound => Reply::not_found(),
         E::Store(_) => Reply::error(503, "Service Unavailable", "rest").with("retry-after", "5"),
         E::Protection(_) | E::MethodNotAllowed | E::NotOpen | E::Draft => Reply::error(405, &e.message(), doc),
@@ -427,6 +428,7 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
                 "status": "422" }),
         ),
         E::Forbidden | E::Unauthorized(_) => Reply::error(403, "Resource not accessible by integration", LABELS_DOC),
+        E::Agent(a) => Reply::error(403, &a.text, LABELS_DOC),
         _ => Reply::error(422, "Validation Failed", LABELS_DOC),
     }
 }

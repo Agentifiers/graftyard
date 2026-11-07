@@ -34,6 +34,9 @@ pub struct IssueCall {
     pub op: IssueOp<BlobRef>,
     pub actor: Principal,
     pub request: RequestId,
+    /// Format 32.8 (`crate::repo::REPO_FORMAT_AGENT`): the edge sends it only once `FormatsEnable` enabled 32.8, and
+    /// only then may the command's entry carry the agent events. `SetAgentPolicy` is always 32.8.
+    pub agent: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -48,6 +51,10 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
+        if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) || matches!(self.actor.actor, Actor::App { .. })
+        {
+            return crate::repo::REPO_FORMAT_AGENT;
+        }
         match self.op {
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
@@ -57,7 +64,7 @@ impl IssueCall {
     }
 
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
-        IssueCall { op, actor, request, render, confirmed: None }
+        IssueCall { op, actor, request, render, confirmed: None, agent: false }
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -96,6 +103,9 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
+    /// Format 32.8 only: an App principal, as base64 of `crate::repo::principal_bytes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }
 
 impl Serialize for IssueCall {
@@ -115,6 +125,8 @@ impl Serialize for IssueCall {
             sso: self.actor.sso_orgs.iter().map(|o| o.0.0.0).collect(),
             request: self.request,
             render: self.render.clone(),
+            app: matches!(self.actor.actor, Actor::App { .. })
+                .then(|| crate::pack::b64::encode(&crate::repo::principal_bytes(&self.actor))),
         }
         .serialize(s)
     }
@@ -124,18 +136,33 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS];
+        let reads = [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        let actor = Principal {
+        let app = match &w.app {
+            Some(b) => {
+                let bytes = crate::pack::b64::decode(b).ok_or_else(|| serde::de::Error::custom("app is not base64"))?;
+                Some(crate::repo::principal_from_bytes(&bytes).map_err(serde::de::Error::custom)?)
+            }
+            None => None,
+        };
+        let actor = app.unwrap_or_else(|| Principal {
             actor: w.account.map_or(Actor::Anonymous, |a| Actor::User(UserId(AccountId(DbId(a))))),
             scopes: ScopeSet(w.scopes),
             credential: Credential::from_wire(w.token.0, w.session),
             sso_orgs: w.sso.into_iter().map(|o| OrgId(AccountId(DbId(o)))).collect(),
-        };
-        Ok(IssueCall::new(w.op, actor, w.request, w.render))
+        });
+        let agent =
+            (w.format.0, w.format.1) == (crate::repo::REPO_FORMAT_AGENT.family, crate::repo::REPO_FORMAT_AGENT.version);
+        let mut c = IssueCall::new(w.op, actor, w.request, w.render);
+        c.agent = agent;
+        // One form per command: a format that does not match the command, or an App below 32.8, is malformed.
+        if (c.format().family, c.format().version) != w.format || (w.app.is_some() && !agent) {
+            return Err(serde::de::Error::custom("issue command format does not match the command"));
+        }
+        Ok(c)
     }
 }
 
@@ -162,7 +189,7 @@ impl IssueCall {
         let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
         // `RepoView::apply` stamps writes with its time; `decide` writes nothing, so no time is needed.
         let view = RepoView::new(s.fold().tiers(), core, meta, Timestamp(0));
-        let (evs, out) = cmd.decide(&view, deps)?;
+        let (evs, out) = cmd.decide_in(&view, deps, self.format() == crate::repo::REPO_FORMAT_AGENT)?;
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }
 

@@ -242,6 +242,9 @@ pub enum IssueOp<B = DurableBlob> {
     RemoveCollaborator {
         user: AccountId,
     },
+    // ---- AM1-WP2 ----
+    /// `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy`: the repository's whole agent policy, admin only.
+    SetAgentPolicy(crate::agent::AgentPolicy),
 }
 
 impl<B> IssueOp<B> {
@@ -291,6 +294,7 @@ impl<B> IssueOp<B> {
             O::InviteCollaborator { user, permission } => O::InviteCollaborator { user, permission },
             O::AnswerInvitation { id, accept } => O::AnswerInvitation { id, accept },
             O::RemoveCollaborator { user } => O::RemoveCollaborator { user },
+            O::SetAgentPolicy(p) => O::SetAgentPolicy(p),
         })
     }
 }
@@ -336,6 +340,8 @@ pub enum IssueErr {
     /// The member's metadata tier is still loading (`RepoScratch::view`), or the blob the command names is not in two
     /// buckets: the client retries.
     Unavailable,
+    /// An agent rule (`crate::agent`). GitHub's 403 shape, with a text that names the rule.
+    Agent(crate::agent::AgentRefusal),
 }
 
 fn actor_id(p: &Principal) -> Option<AccountId> {
@@ -366,6 +372,7 @@ impl IssueCmd {
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
             | IssueOp::RemoveCollaborator { .. } => TierSet::CORE,
+            IssueOp::SetAgentPolicy(_) => TierSet::CORE,
             _ => TierSet::METADATA,
         }
     }
@@ -374,17 +381,32 @@ impl IssueCmd {
     pub fn deps(&self, view: &RepoView<'_>) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(crate::repo::authz_chains(Some(view.owner()), view.settings().and_then(|s| s.enterprise)));
+        crate::repo::with_install(&mut d, &self.actor);
         d
     }
 
-    /// Pure: the view, and the deps the leader read once per entry.
+    /// Pure: the view, and the deps the leader read once per entry. Writes no agent event, as a command of format
+    /// 32.5 or 32.6 must not (`decide_in`).
     pub fn decide(
         &self,
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
+        self.decide_in(v, deps, false)
+    }
+
+    /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
+    /// carry `AgentMeta`, `AgentGate`, and `AgentPolicy`. The agent refusals write nothing and apply in any format.
+    pub fn decide_in(
+        &self,
+        v: &RepoView<'_>,
+        deps: &[(ChainId, IdentityDep)],
+        agent: bool,
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
-        if cred.account.is_none() || cred.key.is_none() {
+        // An App's installation token names no account (format 32.8 carries one; no earlier form can).
+        let app = matches!(self.actor.actor, Actor::App { .. });
+        if cred.key.is_none() || (cred.account.is_none() && !app) {
             return Err(IssueErr::Unauthorized(CredentialRefusal::NoToken));
         }
         check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
@@ -401,6 +423,11 @@ impl IssueCmd {
             if n.0 == 0 || n.0 > v.last_number() { Err(IssueErr::NotFound) } else { Ok(()) }
         };
         let one = |e: RepoEvent| smallvec![e];
+        let install = crate::repo::install_authz(deps);
+        let kind = crate::agent::actor_kind(&self.actor, install);
+        if let crate::agent::ActorKind::Agent(_) = &kind {
+            agent_refusal(&self.op, v).map_or(Ok(()), |r| Err(IssueErr::Agent(r)))?;
+        }
         match &self.op {
             IssueOp::OpenIssue { title, body, labels, assignees } => {
                 need(RepoPermission::Read)?;
@@ -457,7 +484,23 @@ impl IssueCmd {
                     changes_from: None,
                 };
                 let ev = RepoEvent::PrOpened { n, head: head.clone(), base: base.clone(), capture };
-                Ok((one(ev), IssueOut::Number(n)))
+                let mut evs = one(ev);
+                // `AgentMeta` when the creating token belongs to an `AgentApp`. `session` and `requester` come from a
+                // task, and none exists before AM1-WP3, so both are empty and the gate needs one more approval.
+                if agent
+                    && let Some(app) = self.credential_app(deps)
+                    && crate::agent::agent_app(install, app).is_some()
+                {
+                    let row = crate::agent::agent_app(install, app).expect("checked");
+                    if row.kind == graftyard_identity::AgentKind::GraftyardRun && !draft {
+                        return Err(IssueErr::Agent(crate::agent::AgentRefusal::of(
+                            crate::agent::AgentRule::DraftOnly,
+                        )));
+                    }
+                    let meta = crate::agent::AgentMeta { app, session: None, requester: None, repo: v.tiers.repo };
+                    evs.push(RepoEvent::AgentMeta { n, meta });
+                }
+                Ok((evs, IssueOut::Number(n)))
             }
             IssueOp::Close { n } => {
                 issue(*n)?;
@@ -573,7 +616,28 @@ impl IssueCmd {
                     commit: *commit,
                     body: body.clone(),
                 };
-                Ok((one(RepoEvent::Review(ev)), IssueOut::Id(id)))
+                let mut evs = one(RepoEvent::Review(ev));
+                // A qualifying APPROVE of a PR with `AgentMeta` writes `AgentGate` for the head it approves: a writer's
+                // credential that is not an `AgentApp`'s (its user-to-server tokens included), who is not the
+                // requester, and approves the current head. Pushers to the head ref are App installations until
+                // AM1-WP3's tasks, so no user pusher is excluded yet [inference].
+                if agent
+                    && *state == ReviewState::Approved
+                    && let Some(meta) = crate::tiers::agent_meta(v.core(), *n)
+                    && let Actor::User(u) = self.actor.actor
+                    && perm >= Some(RepoPermission::Write)
+                    && meta.requester != Some(u)
+                    && *commit == p.head_sha
+                    && self.credential_app(deps).is_none_or(|a| crate::agent::agent_app(install, a).is_none())
+                    && crate::tiers::agent_gates(v.core(), *n, &p.head_sha).iter().all(|g| *g != u)
+                {
+                    evs.push(RepoEvent::AgentGate(crate::agent::AgentGate {
+                        pr: *n,
+                        head: p.head_sha,
+                        satisfied_by: u,
+                    }));
+                }
+                Ok((evs, IssueOut::Id(id)))
             }
             IssueOp::Dismiss { review, message } => {
                 need(RepoPermission::Write)?;
@@ -854,7 +918,32 @@ impl IssueCmd {
                 }
                 Ok((one(RepoEvent::Collaborator { who: *user, permission: None }), IssueOut::Done))
             }
+            IssueOp::SetAgentPolicy(p) => {
+                need(RepoPermission::Admin)?;
+                if !agent {
+                    return Err(IssueErr::Invalid("an agent policy is format 32.8"));
+                }
+                if p.labels.iter().any(|l| l.is_empty() || chars(l) > LABEL_MAX) {
+                    return Err(IssueErr::Invalid("an agent label is 1 to 50 characters"));
+                }
+                if p.extra_paths.iter().any(|g| graftyard_identity::glob::PathGlob::parse(g).is_err()) {
+                    return Err(IssueErr::Invalid("an extra path is a path glob"));
+                }
+                if crate::tiers::agent_policy(v.core()) == *p {
+                    return Ok((SmallVec::new(), IssueOut::Done));
+                }
+                Ok((one(RepoEvent::AgentPolicy(p.clone())), IssueOut::Done))
+            }
         }
+    }
+
+    /// The App behind a stored user-to-server token, from its `Tokens` row the leader read.
+    fn credential_app(&self, deps: &[(ChainId, IdentityDep)]) -> Option<graftyard_identity::AppId> {
+        let graftyard_identity::Credential::Stored(hash) = &self.actor.credential else { return None };
+        deps.iter().find_map(|(_, d)| match d {
+            IdentityDep::Tokens(t) => graftyard_identity::TokensRead::fields(t, hash).and_then(|f| f.app),
+            _ => None,
+        })
     }
 
     /// The issue's author, from the metadata tier.
@@ -879,6 +968,40 @@ impl IssueCmd {
             }
         }
         IssueOut::Done
+    }
+}
+
+/// The agent rules an `Agent`'s issue command breaks (`design/DESIGN.md`, Shape, "Agent load and agent safety"): an
+/// APPROVE review, ready-for-review, rule and settings edits, a label outside the policy's allowlist, a status or check
+/// run named `graftyard/...`, and a release (which may create a tag).
+fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::AgentRefusal> {
+    use crate::agent::{AgentRefusal, AgentRule};
+    let graftyard = |name: &str| {
+        let text = format!("refused: agents may not write {name}; graftyard/ contexts are host-owned");
+        AgentRefusal::new(AgentRule::GraftyardContext, text)
+    };
+    match op {
+        IssueOp::Review { state: ReviewState::Approved, .. } => Some(AgentRefusal::of(AgentRule::Approve)),
+        IssueOp::Change { change: IssueChange::Draft(false), .. } => Some(AgentRefusal::of(AgentRule::ReadyForReview)),
+        IssueOp::SetRule { .. } | IssueOp::Settings(_) | IssueOp::SetAgentPolicy(_) => {
+            Some(AgentRefusal::of(AgentRule::Rules))
+        }
+        IssueOp::PutRelease { .. } | IssueOp::DeleteRelease { .. } | IssueOp::PutAsset { .. } => {
+            Some(AgentRefusal::of(AgentRule::Release))
+        }
+        IssueOp::RecordStatus(st) if st.context.starts_with("graftyard/") => Some(graftyard(&st.context)),
+        IssueOp::RecordCheck(c) if c.name.starts_with("graftyard/") => Some(graftyard(&c.name)),
+        IssueOp::ApplyLabels { add, .. } => {
+            let allowed = crate::tiers::agent_policy(v.core()).labels;
+            add.iter().find_map(|l| {
+                let name = get_rec::<LabelRow>(v.meta(), "label", &[int(l.0.0)]).map(|r| r.name.0)?;
+                (!allowed.iter().any(|a| **a == *name)).then(|| {
+                    let text = format!("refused: label {name:?} is not in this repository's agent label allowlist");
+                    AgentRefusal::new(AgentRule::Label, text)
+                })
+            })
+        }
+        _ => None,
     }
 }
 
@@ -931,7 +1054,9 @@ impl RepoAccess for Access<'_> {
 /// The actor's permission on the repository through identity's `permission` over the owner's `Authz` fold and the
 /// core tier's collaborator rows, and `Read` for anyone signed in on a public repository.
 pub(crate) fn permission(actor: &Principal, v: &RepoView<'_>, folds: &[&dyn AuthzRead]) -> Option<RepoPermission> {
-    let Actor::User(_) = actor.actor else { return None };
+    if matches!(actor.actor, Actor::Anonymous) {
+        return None;
+    }
     let access = Access { repo: v.tiers.repo, owner: v.owner(), core: v.core() };
     let p = graftyard_identity::permission(actor, folds, &access);
     let public = access.visibility() == Visibility::Public;
