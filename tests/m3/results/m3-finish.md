@@ -86,6 +86,21 @@ No kid 1 token survives. The m3-close control token expired at 20:34:25Z, and it
 - **What the probe does not show.** A genuine kid 1 signature refused as `Retired` was not observed. No kid 1 token exists to try, and no kid 1 signing key is kept. The code path is the same: `verify` refuses on `retired` before it checks the signature. The probe's `Retired` at `retired` and later, and its `Signature` 1 ms before, show the row is what refuses it [inference].
 - Token scan: no `ghs_`, `ghp_`, or `gho_` text, and no `wrap` or `wrapped` field, in `tests/m3/raw/finish/` or on any process argv. The probe's token files were in a 0700 temp directory and were deleted [measured].
 
+## Checks
+
+At `dc81e96`, every check passes:
+- `cargo fmt --check`;
+- workspace clippy;
+- wasm32 clippy for site and edge, with and without test-faults, and for ops;
+- `cargo test --workspace`: 467 passed, 0 failed;
+- `check_design.py`, `check_names.py`, and `check_links.py`.
+
+[measured, `tests/m3/raw/finish/checks.log`]
+
 ## Not done yet in this round
 
-BF-30's transfer, BF-34's and BF-35's routes, BF-36's OIDC sign-in, and BF-33's "completes" branch are still to run.
+BF-30's transfer, BF-34's and BF-35's routes, BF-36's OIDC sign-in, and BF-33's "completes" branch have not run. Reading the code for BF-30 found three things the build must settle first [inference, from the code named]:
+
+- **The `Settings` command.** The repository chain's `IssueOp::Settings` refuses any owner or enterprise change with `OwnerChange` (`crates/git/src/issue_ops.rs`). The transfer needs its own repository command that only the finisher sends: one with no account and no key, as every finisher step is. A new repository format is needed for it, because every repository format up to 32.9 is taken (32.8 is AM1-WP2's agent push). It also needs a site day before the edge or a finisher sends it.
+- **The move through `Joint`.** `Member::reconfigure` refuses any config that adds or drops more than one voter site (`NotOneChange`, `crates/raft/src/member/leader.rs`, `take_config`). A `Joint { old, new }` between two disjoint three-site placements adds three, so a move to other sites cannot be expressed today. graft-m1 has only sites 0 to 2, so BF-30's "across placements" can differ hosted only by home or by placement name over the same three sites, which M1-WP7's re-home already covers.
+- **Who finishes it.** The hosted `Audit` consumer scans only `Names` and `Tokens` shards from their `AuditCursor` (`workers/site/src/audit.rs`). A transfer's commit point, the `Reserved` name, is on the destination's `Authz` chain, which has no cursor. `crates/identity/src/audit.rs` says so: "A transfer is not finished here". Submitting `finish::transfer` needs one of two things: an `Authz` cursor, which is a new `Authz` format and a site day, or an `Owed` item raised from a `Names` entry the transfer writes.
