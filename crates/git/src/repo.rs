@@ -826,8 +826,9 @@ impl Push {
             // Provenance of the refs the push moved, as `validate` gave it. A `Graftyard-Session` trailer links to a
             // `Session` only through a task of the pusher's App, and none exists before AM1-WP3, so every trailer
             // stays `Claimed` (`crate::agent::link`).
-            let list: Vec<Provenance> =
+            let moved: Vec<Provenance> =
                 self.provenance.iter().filter(|p| applied.iter().any(|u| u.name == p.refname)).cloned().collect();
+            let list = crate::agent::unlinked(&moved, &[]);
             events.push(RepoEvent::Refs { push: self.request, actor: account, updates: applied, pack });
             if !list.is_empty() {
                 events.push(RepoEvent::Provenance { push: self.request, list });

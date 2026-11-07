@@ -172,10 +172,15 @@ impl IssueCall {
     }
 
     /// `IssueCmd::deps`: the actor's credential chains and the owner's and enterprise's `Authz`, named by the fold's
-    /// `RepoSettings`.
+    /// `RepoSettings`. A 32.8 command also reads the install's `Authz(Genesis.account)` for its `AgentApp` rows: an App's, and a user's
+    /// whose token may be an `AgentApp`'s or whose approval may write `AgentGate`. Every other command reads what it did.
     pub fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
         let mut d = credential_chains(&self.actor.credential_shard(), None);
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
+        let install = ChainId::Authz(graftyard_identity::install_account());
+        if self.format() == crate::repo::REPO_FORMAT_AGENT && !d.contains(&install) {
+            d.push(install);
+        }
         d
     }
 

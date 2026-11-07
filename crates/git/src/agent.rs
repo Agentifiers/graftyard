@@ -425,6 +425,24 @@ pub fn link(list: &[Provenance], pusher: Option<AppId>, own: &[SessionId], origi
         .collect()
 }
 
+/// What `decide` stores of a push's provenance: a `Session` source only when it names one of `own`, the pusher's
+/// App's sessions (none before AM1-WP3), so a `Session` sent on the wire without a task links nothing. Every other
+/// source is kept as the edge's `validate` gave it.
+pub fn unlinked(list: &[Provenance], own: &[SessionId]) -> Vec<Provenance> {
+    list.iter()
+        .map(|p| {
+            let sources = p
+                .sources
+                .iter()
+                .filter(|s| !matches!(s, Source::Session(id) if !own.contains(id)))
+                .cloned()
+                .collect::<SmallVec<[Source; 2]>>();
+            Provenance { commit: p.commit, refname: p.refname.clone(), sources }
+        })
+        .filter(|p| !p.sources.is_empty())
+        .collect()
+}
+
 // ---- classing ----
 
 /// The install's own `Authz` fold among a command's deps, the chain that holds `AgentApp` rows.

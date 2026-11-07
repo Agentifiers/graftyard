@@ -487,8 +487,12 @@ impl IssueCmd {
                 let mut evs = one(ev);
                 // `AgentMeta` when the creating token belongs to an `AgentApp`. `session` and `requester` come from a
                 // task, and none exists before AM1-WP3, so both are empty and the gate needs one more approval.
+                let creator = match self.actor.actor {
+                    Actor::App { app, .. } => Some(app),
+                    _ => self.credential_app(deps),
+                };
                 if agent
-                    && let Some(app) = self.credential_app(deps)
+                    && let Some(app) = creator
                     && crate::agent::agent_app(install, app).is_some()
                 {
                     let row = crate::agent::agent_app(install, app).expect("checked");
