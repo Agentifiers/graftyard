@@ -1522,6 +1522,8 @@ M2-WP3's hosted half passed, the site-day work answered F49, and the pure halves
 
 **Flip.** B0-18's rerun showing a learner region rule that misses its read target, which changes `place_learners`; or a hosted install that cannot fit `REQUEST_RETENTION` of archives in one install.
 
+**Flip met? No, 2026-11-07.** B0-18's rerun passed 6 of 6 on `graft-m2b` with `place_learners`' 16 regions, every learner p99 under 1 s; its failures had been call depth, not placement ("A member never calls a learner that is calling it").
+
 #### F48: the fold audit refolds from the newest snapshot
 
 **Decision.** The fold audit refolds a sampled chain from each tier's newest committed snapshot at or below the audited index, not from genesis. A job streams the snapshot's frames into empty scratch tables one frame at a time (`Restore`), applies the stored log tail one entry at a time with the same `apply` (`refold_segment`), and compares the `fold_digest` with every member's. A refold from one snapshot to the next must reach the next trailer's digest, so archived ranges are audited segment by segment. The first snapshot is trusted as written. F48 leaves OPEN-QUESTIONS. The site's alarm-driven cron, shared with the install loader, followed in M3-WP5's hosted half and skips nothing for log size ("M3-WP5's hosted shapes, and the fold audit at its size limit").
@@ -1685,6 +1687,8 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 
 **Flip.** The home-site run measuring a p99 over 2 s with the client in the home region, which would put the limit in the design's own path rather than distance; or measured traffic showing most merges land on leaders off home for longer than one lease, which would make the off-home bound the one users see.
 
+**Flip met? No, 2026-11-07.** On `bm2-home` the home clause measured p99 1.36 s at n = 300 (p50 0.94 s, max 1.66 s, 0 over 2 s), with every sample's leadership moved back to enam on a new term and the client a Durable Object in EWR (`cdn-cgi/trace`) calling an EWR edge; the off-home clause p99 1.83 s at n = 288 from LAX (weur 1.73 s, apac 1.83 s, 0 over 3 s). On the home site the edge's auth and resolve took 331 ms p50 and the commit 330 ms, against 515 ms and 626 ms off home, so the limit off home is distance, as the Why says. No traffic was measured on where merges land. BM-2 passes and Milestone 2 closes (`tests/m2/results/m2-wp6.md`, "`bm2-home`, 2026-11-06" [measured]; `build/BUILD-PLAN.md`, "Milestone 2 status").
+
 #### `bm2-repack`'s shard repack and catch-up wait match the design
 
 **Decision.** The container's `PUT /refs`, the last step of every catch-up and rehydrate, starts `git repack -d -q --geometric=2` in the background once a network holds more than 50 packs [guess], one repack per shard container at a time, under the network's write lock. The leader site's shard counts its running catch-ups per network, and the first merge plan awaits them. Both follow DESIGN as written ("one repack per shard at a time", Failure modes, git caches; merges on the leader site's shard, Shape, `GitCacheShard`), so DESIGN does not change. Test drivers keep tokens off argv and out of logs.
@@ -1715,6 +1719,34 @@ BM-2 failed on its fresh-leader latency clause, M3-WP5's hosted half passed BF-2
 **Evidence.** `tests/m3/results/m3-wp4.md`: BF-27 1,000 of 1,000 commands and 1,000 of 1,000 pushes refused 401; BF-32's pure half with three `universal-github-app-jwt` 2.2.2 JWTs; rotation kept kid 1 valid for 7,260 s after the switch in the test's clock; 14 of 14 planted bugs [measured]; `crates/identity/src/stateless.rs`, `authz.rs`, `access.rs`, `appauth.rs`, `credential.rs`.
 
 **Flip.** A client measured rejecting the `ghs_APPID_` form or a token of this length; or GitHub's documented installation-token behavior differing from the `contents`-only `Write` mapping.
+
+### Milestone 2 closes, and B0-18's call-depth fix, 2026-11-07
+
+BM-2 passed as reworded, which closes Milestone 2, and B0-18's hosted rerun passed 6 of 6 on `graft-m2b` once the leader stopped calling learners that call it (`tests/m2/results/m2-wp6.md`, "`bm2-home`, 2026-11-06"; `tests/m3/results/m3-wp5.md`, "2026-11-06 (evening): B0-18 traced on `graft-m2b`"; `build/BUILD-PLAN.md`, "Milestone 2 status" and M3-WP5).
+
+#### A member never calls a learner that is calling it
+
+**Decision.** Member-to-member calls must not form loops, because the runtime nests calls at most 16 deep and charges each outgoing call to the object's newest incoming request. In the site host: a member never calls a learner that has a call open at it or called it within `QUIET` (1 s [guess]); that learner's messages are held and ride the response to its next call, ahead of the call's own replies, and the 100 ms ticker sends them as calls once the learner has been quiet for `QUIET`. A learner's `ReadIndex` that needs a round waits in its own call, up to `READ_INDEX_HOLD` (500 ms [guess]), instead of being answered by a later call from the leader. A learner call unanswered after `HEDGE` (500 ms [guess]) is sent once more, and Raft ignores the second answer. Voters are never held. `crates/raft` and its messages do not change. DESIGN states the rule in Shape ("Members reach each other through Durable Object bindings", "The read path"), Scale (learners), and Failure modes (chain groups, noisy-tenant).
+
+**Why.** The leader's AppendEntries and late `ReadIndexRes` were calls into each learner, and each learner's next `ReadIndex` was a call back, so each exchange added 2 to the depth. At 16 the leader's own AppendEntries to its voters failed, `STEP_DOWN` tripped on `CommitErrors`, and learner reads failed `notLeader` or waited for the next leader. Milestone 0's prototype passed because its learners pulled entries inside their own read-index call; M0-WP9's change to feed learners from the leader closed the loop. After the fix, the remaining tail was one call delayed 1 to 2 s on the enam-apac path holding a learner's queued reads to `CALL_DEADLINE`, which the hedge removes.
+
+**Beat.** Learners pulling entries again, which changes Raft's messages and gives up the leader's push. Waiting for edge reads to reset a learner's depth, which helps only learners whose reads arrive faster than the leader's calls. Lowering the read rate or the learner count, which leaves the loop and only slows the climb.
+
+**Evidence.** `tests/m3/results/m3-wp5.md`, "2026-11-06 (evening)": 12 of 12 traced runs failed with depth failures on the leader's AppendEntries; modelled hops climbed 3, 5, 7 to 26; shallow pings to every learner made two runs pass; on `06762a2` 8 of 12 runs passed with 0 depth failures and deepest hop 4 to 6; on `e174090` 6 of 6 passed, worst learner p99 560 to 853 ms, leader 243 to 249 req/s, 7 hedged calls; the depth test fails on the old routing [measured]. `workers/site/src/callers.rs`, `host.rs` (`HEDGE`), `member.rs` (`READ_INDEX_HOLD`).
+
+**Flip.** Cloudflare documents a depth rule that does not inherit from a finished request, or raises the limit far above 16; or a hosted run with voters calling each other at a learner's rate showing the same climb, which would need the rule for voters too; or measured hedges above a few percent of learner calls, which would make `HEDGE` a load on the leader.
+
+#### Milestone 2 closes on reduced rechecks
+
+**Decision.** Milestone 2 is closed. Every gate row, BF-1 and BF-20 to BF-26 and BM-2, is Done in BUILD-PLAN's "Milestone 2 status", each with the run that closed it. Rows that passed on an earlier build were rechecked on M2-WP6's final build at reduced counts or as smokes, not rerun in full, and the table says which. BF-22's prune clause and BF-25's unreadable-bucket clause ran only in their pure tests, because the install's entry clock cannot be moved and a bucket cannot be made unreadable.
+
+**Why.** BUILD-PLAN closes a package on its gate rows, and each row met its Pass value on the hosted install or, for those two clauses, in the only form the install supports. The later builds touched the merge path, the shard, and the credential types, and the rechecks covered each change's rows.
+
+**Beat.** Holding Milestone 2 open for full reruns of every row on the last build, which would repeat days of runs for changes the rechecks already covered. Holding it until the install has a bucket fault hook and a movable entry clock, which no Milestone 2 package builds.
+
+**Evidence.** `build/BUILD-PLAN.md`, "Milestone 2 status"; `tests/m2/results/` [measured].
+
+**Flip.** A later build that changes a Milestone 2 row's code path and fails that row's recheck, which reopens it; or a hosted bucket fault or clock hook, after which BF-25's and BF-22's hosted clauses run in full.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
