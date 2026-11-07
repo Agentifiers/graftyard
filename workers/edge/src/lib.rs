@@ -1019,7 +1019,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
         let b: serde_json::Value = if path == "/_bed/identity" { req.json().await? } else { json!({}) };
         let chain_s = b["chain"].as_str().map(str::to_owned).or_else(|| qp("chain")).ok_or("chain")?;
         let chain: ChainId = chain_s.parse().map_err(|_| "chain")?;
-        let record = c.system_record(chain).await.map_err(Error::RustError)?;
+        // An owner chain (`authz:`, `identity:`) under its owner's `Placement` record, created on first use.
+        let record = match chain {
+            ChainId::Authz(o) | ChainId::Identity(o) => {
+                let r = placement(c, o).await.map_err(Error::RustError)?.ok_or("the owner has no Placement row")?;
+                graftyard_lookup::create(&c.bindings(), chain, &r, &json!({})).await.map_err(Error::RustError)?;
+                r
+            }
+            _ => c.system_record(chain).await.map_err(Error::RustError)?,
+        };
         if path == "/_bed/identity_arrivals" {
             let since = qp("since").unwrap_or_else(|| "0".into());
             let mut out = Vec::new();
