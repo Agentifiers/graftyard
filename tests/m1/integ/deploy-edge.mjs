@@ -1,7 +1,7 @@
 // Deploys the git edge (workers/edge) as graft-m1-edge against the site members of an install: one MEMBER_<n>,
 // REGISTRY_<n>, and SHARD_<n> binding per site with script_name, and BUCKET_<n> per site. Usage:
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
-//                                       [--anchor <install.toml>] [--no-shard] [--var K=V ...]
+//                                       [--anchor <install.toml>] [--no-shard] [--ops <graft-ops name>] [--var K=V ...]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
 // a product edge accepts the Release group's genesis against. `--no-shard` leaves out SHARD_<n>, for site scripts
 // with no `GitShard` class (git requests then fail; the release endpoint does not need a shard). `graftyard sites
@@ -43,6 +43,8 @@ const cfg = {
   durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]]
     .filter(([b]) => !(noShard && b === "SHARD")).map(([b, cls]) => ({ name: `${b}_${s.id}`, class_name: cls, script_name: s.script }))) },
   r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
+  // `--ops <name>`: the `fetch()` binding to `graft-ops` that mints installation tokens (M3-WP4).
+  ...(flag("--ops") ? { services: [{ binding: "OPS", service: flag("--ops") }] } : {}),
   vars: {
     PLAN: "pro", SSH_OPTION: "off", EDGE_CAP_BYTES: "80000000", FORMATS_ENABLED: "32.1", PART_BYTES: "5242880",
     HOST: `${name}.<workers-subdomain>.workers.dev`,

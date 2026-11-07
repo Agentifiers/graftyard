@@ -2,7 +2,7 @@
 //! with `finish::account_login` from two `dep` reads and prints the step it owes, if any, as the tools edge's
 //! `/commit` body. `backfill.sh` does the reads and the commit.
 //!
-//!   m3-backfill <account> <login> <login shard dep hex file> <account shard dep hex file>
+//!   backfill <account> <login> <login shard dep hex file> <account shard dep hex file>
 //!
 //! Prints `{"chain": .., "cmd": ..}`, or `null` when nothing is owed.
 
@@ -22,7 +22,7 @@ fn fold(path: &str) -> NamesFold {
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let [account, login, login_shard, account_shard] = a.as_slice() else {
-        panic!("usage: m3-backfill <account> <login> <login shard hex> <account shard hex>");
+        panic!("usage: backfill <account> <login> <login shard hex> <account shard hex>");
     };
     let account = AccountId(DbId(account.parse().expect("account id")));
     let login = Login::parse(login).expect("login");

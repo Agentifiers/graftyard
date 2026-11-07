@@ -2,7 +2,7 @@
 # The `AccountLogin` backfill for the graft-m1 install's accounts seeded before F50 (tests/m1/integ/seed.ts):
 # for each account, claims its login if the seed never did (writer and reader got only an `Account` row), then reads
 # the login's shard and the account's `account_shard` as `dep` folds and commits what `finish::account_login` plans
-# (m3-backfill). Rerunnable: a second run plans nothing. Every command goes through the M1-WP7 tools edge as the
+# (tools/src/bin/backfill.rs). Rerunnable: a second run plans nothing. Every command goes through the M1-WP7 tools edge as the
 # operator, with its bearer token on stdin.
 #
 #   tests/m3/hosted/backfill.sh <out dir>
@@ -18,8 +18,8 @@ const {createHash}=require("crypto"); const [k,v]=process.argv.slice(1);
 const b=k==="account"?(()=>{const x=Buffer.alloc(8);x.writeBigInt64BE(BigInt(v));return x})():Buffer.from(v.toLowerCase());
 console.log(createHash("sha256").update(`graftyard/names/${k}/`).update(b).digest().readUInt32BE(0)%1024)' "$1" "$2"; }
 rid() { python3 -c 'import os,time; v=(int(time.time()*1000)<<80)|int.from_bytes(os.urandom(10),"big"); A="0123456789ABCDEFGHJKMNPQRSTVWXYZ"; print("".join(A[(v>>(5*i))&31] for i in range(25,-1,-1)))'; }
-plan=$CARGO_TARGET_DIR/debug/m3-backfill
-(cd "$here/backfill" && cargo build -q)
+plan=$CARGO_TARGET_DIR/debug/backfill
+(cd "$here/tools" && cargo build -q --bin backfill)
 
 # account login (tests/m1/integ/seed.ts: owner, writer, reader, revoked).
 while read -r acct login; do

@@ -46,7 +46,7 @@ use crate::{Ctx, Repo, authenticate, ensure_group, resolve};
 
 /// Whether `endpoint` is one this module serves; `Repo` and `Web` are git's or nobody's.
 pub fn serves(e: &Endpoint<'_>) -> bool {
-    !matches!(e, Endpoint::Repo { .. } | Endpoint::Web(_) | Endpoint::OAuth(_))
+    !matches!(e, Endpoint::Repo { .. } | Endpoint::Web(_))
 }
 
 fn surface(e: &Endpoint<'_>) -> Surface {
@@ -120,7 +120,7 @@ mod timing {
     pub fn trace(_: Vec<serde_json::Value>) {}
 }
 
-fn unavailable(why: &str) -> Reply {
+pub(crate) fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
 
@@ -338,14 +338,37 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
         Endpoint::Rest("/meta") => Ok(rest::meta()),
         Endpoint::Rest("/status") => Ok(rest::status()),
         Endpoint::Rest("/rate_limit") => Ok(rest::rate_limit(&m.rate, m.version)),
-        Endpoint::Rest(p) => rest_repo(c, req, host, p, &query).await,
+        Endpoint::Rest(p) => match (&method, p.trim_end_matches('/').split('/').skip(1).collect::<Vec<_>>().as_slice())
+        {
+            (Method::Post, ["app", "installations", id, "access_tokens"]) => {
+                crate::ident::access_tokens(c, req, id).await
+            }
+            (Method::Delete, ["installation", "token"]) => crate::ident::delete_installation_token(c, req).await,
+            (Method::Delete, ["applications", client, "token"]) => crate::ident::revoke_app_token(c, req, client).await,
+            (Method::Get, ["user"]) => crate::ident::get_user(c, req).await,
+            (Method::Get, ["users", login]) => crate::ident::get_named_user(c, login).await,
+            (m @ (Method::Get | Method::Put | Method::Delete), ["orgs", org, "memberships", user]) => {
+                crate::ident::membership(c, req, m.clone(), org, user).await
+            }
+            (Method::Delete, ["orgs", org, "members", user]) => {
+                crate::ident::membership(c, req, Method::Delete, org, user).await
+            }
+            _ => rest_repo(c, req, host, p, &query).await,
+        },
         Endpoint::Graphql => graphql_post(c, req, host).await,
         Endpoint::Uploads(p) => upload(c, req, host, p, &query).await,
         Endpoint::Lfs { owner, repo, rest } => lfs_route(c, req, host, owner, repo, rest, &query, method).await,
         Endpoint::Objects(p) => transfer(c, req, host, p, method).await,
         Endpoint::Codeload { owner, repo, rest } => codeload(c, host, owner, repo, rest).await,
         Endpoint::Raw { .. } => Ok(Reply::not_found()),
-        Endpoint::OAuth(_) | Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
+        Endpoint::OAuth(p) => match (method, p) {
+            (Method::Post, "/login/device/code") => crate::ident::device_code(c, req).await,
+            (Method::Post, "/login/oauth/access_token") => crate::ident::access_token(c, req).await,
+            (Method::Get | Method::Post, "/login/oauth/authorize") => crate::ident::authorize(c, req).await,
+            (Method::Post, "/login/oauth/device/approve") => crate::ident::device_approve(c, req).await,
+            _ => Ok(Reply::not_found()),
+        },
+        Endpoint::Repo { .. } | Endpoint::Web(_) => Ok(Reply::not_found()),
     }
 }
 
@@ -565,7 +588,13 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     timing::mark("auth_resolve");
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd) = match found? {
-        None => return Ok(Reply::json(200, graphql::query(&gq, None))),
+        None => {
+            let viewer = match who.actor {
+                Actor::User(u) => crate::ident::login(c, u.0).await.map(|login| graphql::Viewer { id: u.0, login }),
+                _ => None,
+            };
+            return Ok(Reply::json(200, graphql::query_viewer(&gq, viewer.as_ref())));
+        }
         Some(Ok((owner, name, repo, a, rows))) => {
             let rows = match merging {
                 Some(id) => Rows::Merge(id, rows),
