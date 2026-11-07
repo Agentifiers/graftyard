@@ -901,7 +901,7 @@ impl Family for Names {
         }
     }
     /// `{"placement": owner}`, `{"login": key}`, `{"account": id}`, `{"accountLogins": [id, ..]}`, `{"repoOwner": id}`,
-    /// `{"ids": true}`.
+    /// `{"ids": true}`, `{"slug": s}`, `{"app": id}`, `{"client": id}`, `{"installation": id}`.
     fn read_json(f: &id::NamesFold, q: &Value) -> Value {
         use id::NamesRead;
         let mut out = serde_json::Map::new();
@@ -930,6 +930,20 @@ impl Family for Names {
         }
         if q.get("ids").is_some() {
             out.insert("ids".into(), cursor_json(&f.ids));
+        }
+        // M3's routes to an owner: an App by slug or id, a client id, an installation.
+        if let Some(s) = q.get("slug").and_then(Value::as_str).and_then(|s| id::Slug::try_from(s.to_owned()).ok()) {
+            out.insert("slug".into(), json!(f.slug(&s)));
+        }
+        if let Some(a) = q.get("app").and_then(Value::as_i64) {
+            out.insert("app".into(), json!(f.app_owner(id::AppId(DbId(a)))));
+        }
+        if let Some(c) = q.get("client").and_then(Value::as_str).and_then(|c| id::ClientId::try_from(c.to_owned()).ok())
+        {
+            out.insert("client".into(), json!(f.client(&c)));
+        }
+        if let Some(i) = q.get("installation").and_then(Value::as_i64) {
+            out.insert("installation".into(), json!(f.installation(id::InstallationId(DbId(i)))));
         }
         out.insert("logins".into(), json!(f.logins.len()));
         out.insert("placements".into(), json!(f.placements.len()));
@@ -981,15 +995,40 @@ impl Family for Tokens {
             _ => refusal(e, 422),
         }
     }
-    /// `{"token": "<64 hex>"}`.
+    /// `{"token": "<64 hex>"}`; for M3, `{"verifyingKey": kid}`, `{"jti": "<ULID>"}`, `{"sshKey": "<64 hex>"}`, and
+    /// `{"code": "<64 hex>"}`. A code row comes with its `expires`, which the caller checks against its own clock.
     fn read_json(f: &id::TokensFold, q: &Value) -> Value {
         use id::TokensRead;
-        let hash = q.get("token").and_then(Value::as_str).and_then(graftyard_types::Digest::parse_hex);
-        let row = hash.and_then(|h| f.token(&h.0));
-        json!({
-            "token": row.map(|r| json!({ "account": r.account.0.0, "revoked": r.revoked })),
-            "tokens": f.tokens.len(),
-        })
+        let hex_of = |k: &str| q.get(k).and_then(Value::as_str).and_then(graftyard_types::Digest::parse_hex);
+        let row = hex_of("token").map(|h| (h, f.token(&h.0)));
+        let mut out = serde_json::Map::new();
+        out.insert(
+            "token".into(),
+            json!(row.and_then(|(h, r)| r.map(|r| json!({
+                "account": r.account.0.0,
+                "revoked": r.revoked,
+                "kind": r.kind,
+                "expires": r.expires,
+                "fields": f.fields(&h.0),
+            })))),
+        );
+        out.insert("tokens".into(), json!(f.tokens.len()));
+        if let Some(k) = q.get("verifyingKey").and_then(Value::as_u64) {
+            let row = f.verifying_key(id::Kid(k as u32));
+            out.insert("verifyingKey".into(), json!(row.map(|r| json!({ "key": r.key.0, "retired": r.retired }))));
+        }
+        if let Some(j) = q.get("jti").and_then(Value::as_str).and_then(|s| s.parse().ok()) {
+            out.insert("jti".into(), json!(f.more.jtis.get(&id::Jti(j))));
+        }
+        if let Some(fp) = hex_of("sshKey") {
+            let fp = id::Fingerprint(fp.0);
+            out.insert("sshKey".into(), json!(f.ssh_key(&fp)));
+            out.insert("sshRemoved".into(), json!(f.ssh_removed(&fp)));
+        }
+        if let Some(h) = hex_of("code") {
+            out.insert("code".into(), json!(f.more.codes.get(&h.0)));
+        }
+        Value::Object(out)
     }
     fn fold_bytes(f: &id::TokensFold) -> Vec<u8> {
         codec::to_bytes(f)
