@@ -10,6 +10,7 @@
 //! caller passes in.
 
 mod access;
+mod agents;
 pub mod appauth;
 mod apps;
 mod authz;
@@ -19,6 +20,7 @@ mod credential;
 pub mod edge;
 mod enc;
 pub mod finish;
+pub mod glob;
 mod identity;
 mod ids;
 mod names;
@@ -31,13 +33,14 @@ mod tokens;
 pub use access::{
     Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_write, permission,
 };
+pub use agents::{AgentApp, AgentKind, WorkspaceMode, install_account};
 pub use apps::{
     Access, AppId, AppKey, AppRecord, CLIENT_SECRETS_MAX, ClientId, EventKind, InstallationId, OAuthAppRecord,
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
 };
 pub use authz::{
-    AccountKind, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead, AuthzScratch,
-    InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
+    AccountKind, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead,
+    AuthzScratch, InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -81,3 +84,5 @@ pub const IDS_FORMAT: Format = Format { family: 0x13, version: 1 };
 pub const NAMES_FORMAT_V2: Format = Format { family: 0x10, version: 2 };
 pub const TOKENS_FORMAT_V2: Format = Format { family: 0x11, version: 2 };
 pub const AUTHZ_FORMAT_V2: Format = Format { family: 0x12, version: 2 };
+/// AM1-WP2's `AgentApp` rows and the org's agent settings. Sent only once `FormatsEnable` enabled it.
+pub const AUTHZ_FORMAT_V3: Format = Format { family: 0x12, version: 3 };
