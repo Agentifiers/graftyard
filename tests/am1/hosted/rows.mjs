@@ -7,12 +7,14 @@
 //           `confine`; human PAT), plus the idle-60-s lease then an overlapping acquire 10 min later
 //   lf1     an App with N open tasks across the repositories in REPOS, uninstalled through the operator's `Uninstall`
 //           (the edge serves no uninstall route), then reads and next commands through the edge, then reinstalled
+//   b036    B0-36 hosted for the confined vendor App: each action over every surface the edge serves, N times
+//   l016    L0-16 hosted: metadata tier held unloaded on every member of lf1-2, then pushes, a mint, lease checks, a merge
 //   lf5     five draft PRs' plan blocks through GraphQL `createPullRequest`, and a body edit through `updatePullRequest`
 // Rows go to tests/am1/raw/rows-<row>.jsonl; summaries to stdout.
 //   node tests/am1/hosted/rows.mjs <row> [n]
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { OP, api, ghs, Git, log, must, pat, row, sleep, state, tokens } from "./lib.mjs";
+import { OP, api, ghs, Git, log, member, must, pat, row, sleep, state, tokens } from "./lib.mjs";
 
 const [which, nArg] = process.argv.slice(2);
 const N = Number(nArg ?? 100);
@@ -74,8 +76,13 @@ if (which === "l012") {
   const pol = await api("PUT", `${V1}/agents/policy`, admin, { leases: "agents_exclusive" });
   row(OUT, { step: "policy agents_exclusive", status: pol.status, body: pol.body });
   let app = (await ghs({})).body.token;
-  const holderTask = await task(app, `l012h-${tag}`);
-  const held = await acquire(app, { paths: [`l012/${tag}/**`], mode: "exclusive", ttl_seconds: 3600, intent: "L0-12 holder" }, holderTask);
+  // The holder is another actor than every pusher: m3-member, through a task m3-ci created with m3-member as its
+  // requester. A pusher with no task is refused only by a lease "whose actor differs" (`LeaseEnforce`), so a lease
+  // m3-ci held itself would bind none of m3-ci's pushes.
+  const ht = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `l012h-${tag}`, summary: "am1 l012 holder", requester: "m3-member" });
+  if (ht.status !== 201) throw new Error(`holder task: ${ht.status} ${JSON.stringify(ht.body).slice(0, 200)}`);
+  const holderTask = ht.body.id;
+  const held = await acquire(tokens.member, { paths: [`l012/${tag}/**`], mode: "exclusive", ttl_seconds: 3600, intent: "L0-12 holder" }, holderTask);
   row(OUT, { step: "holder exclusive", status: held.status, lease: held.body?.lease?.id });
   log(`holder: ${held.status} ${held.body?.lease?.id}`);
   const g = new Git(R).as(admin);
@@ -119,6 +126,8 @@ if (which === "l012") {
     log(`${kind}: ${JSON.stringify(summary[kind])}`);
   }
   await flag("refs/heads/claude/**");
+  const back = await api("PUT", `${V1}/agents/policy`, admin, { leases: "advisory" });
+  row(OUT, { step: "policy advisory", status: back.status });
   log(`l012 ${JSON.stringify(summary)}`);
 }
 
@@ -220,6 +229,167 @@ if (which === "plan600") {
   const repoId = (await gql(admin, "query { repository(owner: \"m3org\", name: \"j4\") { id } }")).body?.data?.repository?.id;
   void repoId;
   log("plan600: needs N distinct non-writer accounts with read access to a private repository; see results");
+}
+
+if (which === "l016") {
+  // L0-16 hosted on lf1-2 (not j4, which carries l012 and the stall): every member of the group holds its metadata
+  // tier unloaded and counts reads of it (test-faults `/bench_seed {"metaUnload"}`); then pushes, a mint, lease
+  // checks, and a merge through the edge, with the reads counted after each; then release (the alarm reloads it).
+  const RR = "m3org/lf1-2";
+  const CH = "repo:1048579";
+  const W1 = `/api/graftyard/v1/repos/${RR}`;
+  const admin = tokens.admin;
+  const app = (await ghs({})).body.token;
+  const t = await api("POST", `${W1}/tasks`, app, { kind: "external", session: `l016-${tag}`, summary: "am1 l016" });
+  const sess = { "x-graftyard-agent-session": t.body?.id ?? "" };
+  // lf1-2's lease route (the file's `acquire` is j4's).
+  const acquire = (tok, body) => api("POST", `${W1}/leases`, tok, body, sess);
+  const g = new Git(RR).as(admin);
+  g.clone();
+  const commit = (branch, k) => {
+    g.run(["checkout", "-q", "-B", branch, "origin/main"]);
+    const p = join(g.wt, `l016/${tag}/f${k}.txt`);
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, `${k}\n`);
+    g.run(["add", "-A"]);
+    g.run(["commit", "-q", "-m", `l016 ${k}`]);
+  };
+  commit(`l016-${tag}-pr`, "pr");
+  g.run(["push", "-q", "origin", `HEAD:refs/heads/l016-${tag}-pr`]);
+  const repoId = (await gql(admin, 'query { repository(owner: "m3org", name: "lf1-2") { id } }')).body?.data?.repository?.id;
+  const pc = await gql(admin, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: `l016-${tag}-pr`, title: "l016", body: "l016" } });
+  const pr = { status: pc.status, body: pc.body?.data?.createPullRequest?.pullRequest ?? pc.body };
+  // AgentsExclusive for the run, so the push into the live Exclusive is a refusal; m3-ci flagged ThirdParty with
+  // `confine refs/heads/claude/**` (an Agent). The policy goes back to advisory at the end.
+  const pol = await api("PUT", `${W1}/agents/policy`, admin, { leases: "agents_exclusive" });
+  const fl = await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
+  row(OUT, { step: "policy and flag", policy: pol.status, flag: fl.status });
+  // The holder is m3-member (another actor than m3-ci), through a task m3-ci created with m3-member as requester.
+  const holder = await api("POST", `${W1}/tasks`, app, { kind: "external", session: `l016h-${tag}`, summary: "am1 l016 holder", requester: "m3-member" });
+  const held0 = await api("POST", `${W1}/leases`, tokens.member, { paths: [`l016/${tag}/r/**`], mode: "exclusive", ttl_seconds: 600 }, { "x-graftyard-agent-session": holder.body?.id ?? "" });
+  const hsess = { "x-graftyard-agent-session": holder.body?.id ?? "" };
+  row(OUT, { step: "setup", task: t.status, pr: pr.status, number: pr.body?.number, lease: held0.status });
+  await sleep(3000);
+  const hold = async (h) => Promise.all([0, 1, 2].map(async (s) => {
+    try { return (await member(CH, s, "/bench_seed", { metaUnload: h })).v; } catch (e) { return { error: String(e).slice(0, 80) }; }
+  }));
+  const on = await hold(true);
+  row(OUT, { step: "hold", members: on });
+  log(`hold: ${JSON.stringify(on.map((m) => [m.loaded, m.metaReads]))}`);
+  let last = [0, 0, 0];
+  const rec = async (k, v) => {
+    const now = (await hold(null)).map((m) => m.metaReads ?? -1);
+    const d = now.map((n, i) => n - last[i]);
+    last = now;
+    row(OUT, { check: k, ...v, metaReads: d });
+    log(`${k}: ${JSON.stringify(v)} metaReads ${JSON.stringify(d)}`);
+  };
+  commit(`l016-${tag}-h`, "h");
+  await rec("human push", { ok: g.run(["push", "-q", "origin", `HEAD:refs/heads/l016-${tag}-h`]).ok });
+  const mint = await ghs({});
+  await rec("mint", { status: mint.status, ok: !!mint.body?.token });
+  const tok = mint.body?.token ?? app;
+  g.as(tok);
+  commit(`claude/l016-${tag}`, "a");
+  const ap = g.run(["push", "-q", "origin", `HEAD:refs/heads/claude/l016-${tag}`]);
+  await rec("agent push outside leases", { ok: ap.ok, out: ap.ok ? "" : ap.out.slice(0, 120) });
+  g.run(["checkout", "-q", "-B", `claude/l016-${tag}-c`, "origin/main"]);
+  mkdirSync(join(g.wt, `l016/${tag}/r`), { recursive: true });
+  writeFileSync(join(g.wt, `l016/${tag}/r/x.txt`), "x\n");
+  g.run(["add", "-A"]);
+  g.run(["commit", "-q", "-m", "l016 conflicting"]);
+  const cp = g.run(["push", "-q", "origin", `HEAD:refs/heads/claude/l016-${tag}-c`]);
+  await rec("agent push into a live Exclusive", { ok: cp.ok, out: cp.ok ? "" : (cp.out.match(/refused: ([^)\n|]*)/)?.[1] ?? cp.out).slice(0, 120) });
+  const a = await acquire(tok, { paths: [`l016/${tag}/x/**`], mode: "shared", ttl_seconds: 600 });
+  await rec("shared acquire", { status: a.status, msg: a.body?.message });
+  const c = await acquire(tok, { paths: [`l016/${tag}/r/y/**`], mode: "exclusive" });
+  await rec("conflicting exclusive acquire", { status: c.status, msg: String(c.body?.message).slice(0, 80) });
+  const id = held0.body?.lease?.id;
+  if (id) {
+    const rn = await api("POST", `${W1}/leases/${id}/renew`, tokens.member, {}, hsess);
+    await rec("renew", { status: rn.status, msg: rn.body?.message });
+    const rl = await api("DELETE", `${W1}/leases/${id}`, tokens.member, undefined, hsess);
+    await rec("release", { status: rl.status, msg: rl.body?.message });
+  }
+  if (pr.body?.number) {
+    const m = await api("PUT", `/api/v3/repos/${RR}/pulls/${pr.body.number}/merge`, admin, { merge_method: "merge" });
+    await rec("merge", { status: m.status, msg: m.body?.message });
+  }
+  const off = await hold(false);
+  row(OUT, { step: "release hold", members: off });
+  await sleep(5000);
+  const after = await hold(null);
+  row(OUT, { step: "after release", members: after });
+  const back = await api("PUT", `${W1}/agents/policy`, admin, { leases: "advisory" });
+  row(OUT, { step: "policy advisory", status: back.status });
+  log(`after release: ${JSON.stringify(after.map((m) => [m.loaded, m.metaReads]))}`);
+}
+
+if (which === "b036") {
+  // B0-36 hosted, for the one agent kind this install fields: m3-ci flagged ThirdParty with `confine
+  // refs/heads/claude/**` (its installation has contents, issues, pull_requests, checks write; app-perms.mjs). Each
+  // action N times over every surface the edge serves for it; a Graftyard-run token needs the install's own App.
+  // Then the controls: an unflagged App, a flagged App without `confine`, and a user token with
+  // `X-Graftyard-Agent-Session` push into another holder's Exclusive scope (never refused by the lease), and a user
+  // token's commit whose only trailer is `Co-authored-by` stays Human (its provenance row).
+  const admin = tokens.admin;
+  const flag = (confine) => api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine });
+  row(OUT, { step: "flag confined", status: (await flag("refs/heads/claude/**")).status });
+  await sleep(2000);
+  const app = (await ghs({})).body.token;
+  const repoId = (await gql(admin, 'query { repository(owner: "m3org", name: "j4") { id } }')).body?.data?.repository?.id;
+  const g = new Git(R).as(admin);
+  g.clone();
+  const main = g.run(["rev-parse", "HEAD"]).out.trim();
+  const commitAt = (path, k) => {
+    g.run(["checkout", "-q", "--detach", main]);
+    const p = join(g.wt, path);
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, `${k} ${Math.random()}\n`);
+    g.run(["add", "-A"]);
+    g.run(["commit", "-q", "-m", `b036 ${k}`]);
+    return g.run(["rev-parse", "HEAD"]).out.trim();
+  };
+  // A PR the App opened (draft) and one the admin opened, both on branches the admin pushed.
+  const branch = (b) => { commitAt(`b036/${tag}/${b}.txt`, b); g.as(admin).run(["push", "-q", "origin", `HEAD:refs/heads/${b}`]); return b; };
+  const open = async (tok, b, draft) => (await gql(tok, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: branch(b), title: b, body: "b036", draft } })).body?.data?.createPullRequest?.pullRequest;
+  const prApp = await open(app, `claude/b036-${tag}-a`, true);
+  const prAdm = await open(admin, `b036-${tag}-h`, false);
+  row(OUT, { step: "prs", app: prApp?.number, admin: prAdm?.number });
+  const lbl = await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: `b036-${tag}`, color: "ededed" });
+  row(OUT, { step: "label", status: lbl.status });
+  const out = {};
+  const run = async (name, f) => {
+    const st = [];
+    for (let i = 0; i < N; i++) {
+      try { st.push(await f(i)); } catch (e) { st.push(`error ${String(e).slice(0, 40)}`); }
+    }
+    out[name] = count(st);
+    row(OUT, { action: name, results: out[name] });
+    log(`${name}: ${JSON.stringify(out[name])}`);
+  };
+  const rest = (r) => (r.status >= 200 && r.status < 300 ? "accepted" : `${r.status} ${String(r.body?.message ?? "").replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 70)}`);
+  const gq = (r, f) => (r.body?.data?.[f] ? "accepted" : `gql ${String(r.body?.errors?.[0]?.message ?? r.status).slice(0, 70)}`);
+  const push = (r) => (r.ok ? "accepted" : (r.out.match(/\(([^)]*)\)/)?.[1] ?? "rejected").replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 70));
+  const n1 = prAdm?.number, id1 = prAdm?.id, id2 = prApp?.id;
+  await run("approve (GraphQL addPullRequestReview APPROVE)", async () => gq(await gql(app, "mutation($i: AddPullRequestReviewInput!) { addPullRequestReview(input: $i) { pullRequestReview { id } } }", { i: { pullRequestId: id1, event: "APPROVE" } }), "addPullRequestReview"));
+  await run("merge (REST PUT pulls/n/merge)", async () => rest(await api("PUT", `/api/v3/repos/${R}/pulls/${n1}/merge`, app, { merge_method: "merge" })));
+  await run("merge (GraphQL mergePullRequest)", async () => gq(await gql(app, "mutation($i: MergePullRequestInput!) { mergePullRequest(input: $i) { pullRequest { number } } }", { i: { pullRequestId: id1 } }), "mergePullRequest"));
+  await run("merge (GraphQL enablePullRequestAutoMerge)", async () => gq(await gql(app, "mutation($i: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $i) { pullRequest { number } } }", { i: { pullRequestId: id1 } }), "enablePullRequestAutoMerge"));
+  await run("ready for review (GraphQL updatePullRequest draft:false is not served; REST none)", async () => "not served by the edge");
+  await run("release (REST POST releases)", async (i) => rest(await api("POST", `/api/v3/repos/${R}/releases`, app, { tag_name: `b036-${tag}-${i}`, target_commitish: main })));
+  await run("tag push (git)", async (i) => { g.as(app); g.run(["checkout", "-q", "--detach", main]); return push(g.run(["push", "origin", `${main}:refs/tags/b036-${tag}-${i}`])); });
+  await run("label outside the allowlist (REST POST issues/n/labels is not served)", async () => "not served by the edge");
+  await run("graftyard/ status (REST POST statuses)", async () => rest(await api("POST", `/api/v3/repos/${R}/statuses/${main}`, app, { state: "success", context: "graftyard/agent-gate" })));
+  await run("push outside its prefix (git)", async (i) => { const sha = commitAt(`b036/${tag}/o${i}.txt`, i); void sha; g.as(app); return push(g.run(["push", "origin", `HEAD:refs/heads/b036-${tag}-o${i}`])); });
+  await run("REST ref write outside its prefix (POST git/refs)", async (i) => rest(await api("POST", `/api/v3/repos/${R}/git/refs`, app, { ref: `refs/heads/b036-${tag}-r${i}`, sha: main })));
+  await run("protected path in its prefix (git, .github/workflows/)", async (i) => { commitAt(`.github/workflows/b036-${tag}-${i}.yml`, i); g.as(app); return push(g.run(["push", "origin", `HEAD:refs/heads/claude/b036-${tag}-p${i}`])); });
+  await run("protected path in its prefix (REST POST git/refs)", async (i) => { const sha = commitAt(`CODEOWNERS`, `c${i}`); g.as(admin).run(["push", "-q", "origin", `HEAD:refs/heads/b036s-${tag}-c${i}`]); return rest(await api("POST", `/api/v3/repos/${R}/git/refs`, app, { ref: `refs/heads/claude/b036-${tag}-c${i}`, sha })); });
+  await run("rule or settings edit (PUT agents/policy)", async () => rest(await api("PUT", `${V1}/agents/policy`, app, { leases: "advisory" })));
+  await run("control: ordinary push in its prefix", async (i) => { commitAt(`b036/${tag}/ok${i}.txt`, i); g.as(app); return push(g.run(["push", "origin", `HEAD:refs/heads/claude/b036-${tag}-ok${i}`])); });
+  await run("control: draft PR (GraphQL createPullRequest)", async (i) => { const b = `claude/b036-${tag}-d${i}`; commitAt(`b036/${tag}/d${i}.txt`, i); g.as(app).run(["push", "-q", "origin", `HEAD:refs/heads/${b}`]); return gq(await gql(app, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: b, title: b, body: "b036", draft: true } }), "createPullRequest"); });
+  void id2;
+  log(`b036 ${JSON.stringify(out)}`);
 }
 
 if (which === "pat") {

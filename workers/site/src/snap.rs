@@ -211,6 +211,12 @@ fn load_meta(h: &Rc<Host<Repo>>, sql: &SqlStorage) -> Result<bool> {
     if fold.meta.loaded() {
         return Ok(false);
     }
+    // Test installs (L0-16): a tier held unloaded is not replayed while held, so its read count is the request
+    // paths' alone; release arms the alarm, which loads it here.
+    #[cfg(feature = "test-faults")]
+    if crate::tier::handle(&*fold.meta).reads_while_held().is_some() {
+        return Ok(false);
+    }
     let target = meta(&*fold.core).applied;
     let mut m = crate::tier::handle(&*fold.meta).clone();
     let from = meta(&m).applied;

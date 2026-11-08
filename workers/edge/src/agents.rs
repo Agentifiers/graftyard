@@ -228,7 +228,8 @@ async fn leases(
         let (token, ip) = poll_keys(c, &who, ip);
         return activity(c, &rd, &view, &q, reader.contents, &token, &ip).await;
     }
-    let rd = match crate::api::read_named(c, owner, repo, Some(&who)).await? {
+    // A lease command, and the list, read the core tier alone (L0-16): served while the metadata tier loads.
+    let rd = match crate::api::read_core(c, owner, repo, Some(&who)).await? {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
@@ -631,6 +632,20 @@ mod tests {
     };
     use graftyard_raft::Fold as _;
     use graftyard_types::{AccountId, DbId, RepoId, Timestamp, Ulid};
+
+    /// L0-16: a lease command's read is served while the metadata tier loads, with no metadata rows; every other
+    /// read waits for the tier.
+    #[test]
+    fn a_core_only_read_is_served_while_the_metadata_tier_loads() {
+        let empty = Vec::new();
+        let row = || ("lease".to_owned(), Vec::new(), Vec::new());
+        let loading = graftyard_api::hosted::TierRows { index: 1, core: vec![row()], meta: None, complete: true };
+        assert_eq!(crate::api::served_meta(&loading, true, &empty).map(Vec::len), Some(0));
+        assert!(crate::api::served_meta(&loading, false, &empty).is_none());
+        let loaded = graftyard_api::hosted::TierRows { meta: Some(vec![row(), row()]), ..loading };
+        assert_eq!(crate::api::served_meta(&loaded, true, &empty).map(Vec::len), Some(2));
+        assert_eq!(crate::api::served_meta(&loaded, false, &empty).map(Vec::len), Some(2));
+    }
 
     const APP: AppId = AppId(DbId(1_114_112));
     const ORIGIN: &str = "https://h/o/r";

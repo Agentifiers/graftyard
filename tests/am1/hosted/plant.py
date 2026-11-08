@@ -72,6 +72,10 @@ MUTANTS = [
      '                [\"assigneeIds\", \"baseRefName\", \"labelIds\", \"maintainerCanModify\", \"milestoneId\", \"projectIds\", \"state\"]',
      '                [\"assigneeIds\", \"baseRefName\", \"labelIds\", \"maintainerCanModify\", \"milestoneId\", \"projectIds\"]',
      API),
+    ('a core-only read refused while the metadata tier loads (L0-16)', 'workers/edge/src/api.rs',
+     '        None => core_only.then_some(empty),', '        None => None,', EDGE),
+    ('every read served without the metadata tier', 'workers/edge/src/api.rs',
+     '        None => core_only.then_some(empty),', '        None => Some(empty),', EDGE),
 ]
 
 # The git cache shard's detail (Go): (name, old, new), each run with `go test ./...` in containers/git/server.
