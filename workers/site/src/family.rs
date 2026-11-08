@@ -267,6 +267,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_STATELESS,
             git::repo::REPO_FORMAT_AGENT,
             git::issue_ops::call::REPO_FORMAT_APP_CALLS,
+            git::transfer::REPO_FORMAT_TRANSFER,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -482,6 +483,7 @@ impl Family for Repo {
         match &a.out {
             git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
             git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
+            git::repo::RepoOut::Transfer(o) => json!({ "Transfer": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
@@ -515,6 +517,7 @@ impl Family for Repo {
                 let w = git::group::RefusedWire::of(e, 0);
                 json!({ "err": w.err, "status": w.status })
             }
+            RepoErr::Transfer(e) => json!({ "err": format!("{e:?}"), "status": 409 }),
             RepoErr::Issue { err, render } => {
                 let reply = serde_json::from_value::<graftyard_api::hosted::Render>(render.clone())
                     .map(|r| graftyard_api::hosted::render_err(&r, err))
@@ -562,6 +565,11 @@ impl Family for Repo {
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
+        // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
+        // `Audit` consumer's transfer plans.
+        if q.get("settings").is_some() {
+            return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise() });
+        }
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
         }
@@ -602,8 +610,10 @@ impl Family for Repo {
     /// all (format 0.0), answers `Unsupported` and touches nothing. An issue command names its format first.
     fn unreadable(body: &[u8]) -> Option<Value> {
         let v: Value = serde_json::from_slice(body).ok()?;
-        if let Some(f) =
-            v.pointer("/cmd/issue/format").or_else(|| v.pointer("/cmd/merge/format")).and_then(Value::as_array)
+        if let Some(f) = ["/cmd/issue/format", "/cmd/merge/format", "/cmd/transfer/format"]
+            .iter()
+            .find_map(|p| v.pointer(p))
+            .and_then(Value::as_array)
         {
             let n = |i: usize| f.get(i).and_then(Value::as_u64).unwrap_or(0) as u16;
             return Some(json!({ "unsupported": { "family": n(0), "version": n(1) } }));
@@ -1068,8 +1078,32 @@ impl Family for Authz {
     type C = id::AuthzCmd;
 
     fn reads() -> Vec<Format> {
-        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it.
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3]
+        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it;
+        // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set.
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3, id::AUTHZ_FORMAT_V4]
+    }
+    /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's
+    /// `Reserved` name and an enterprise change commit on this chain.
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        leading.then_some(id::audit::FINISH_AFTER.as_millis() as i64 + 1_000)
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::audit::on_alarm(host).await;
+    }
+    /// `/finish`, the in-band first attempt at what a commit point just left owed (`crate::audit::finish_now`).
+    fn route_paths() -> &'static [&'static str] {
+        &["/finish"]
+    }
+    async fn route(
+        host: &std::rc::Rc<crate::host::Host<Self>>,
+        path: &str,
+        body: Value,
+    ) -> Option<worker::Result<Value>> {
+        match path {
+            "/finish" if crate::audit::enabled(&host.env) => Some(crate::audit::finish_now(host, body).await),
+            "/finish" => Some(Ok(json!({ "error": "GRAFTYARD_AUDIT is not set" }))),
+            _ => None,
+        }
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {

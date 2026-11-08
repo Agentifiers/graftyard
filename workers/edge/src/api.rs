@@ -350,6 +350,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (m @ (Method::Get | Method::Put | Method::Delete), ["orgs", org, "memberships", user]) => {
                 crate::ident::membership(c, req, m.clone(), org, user).await
             }
+            (Method::Post, ["repos", owner, repo, "transfer"]) => crate::transfer::transfer(c, req, owner, repo).await,
             (Method::Delete, ["orgs", org, "members", user]) => {
                 crate::ident::membership(c, req, Method::Delete, org, user).await
             }
@@ -782,10 +783,7 @@ async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, Au
     let (mut known, a) = futures_util::future::join(account_logins(c, &owner), authz(c, &repo)).await;
     let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
     let a = a?;
-    let name = a.names.iter().find_map(|(k, e)| match e {
-        graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
-        _ => None,
-    })?;
+    let name = a.id_name(repo.id)?.as_str().to_owned();
     Some((login, name, repo, a))
 }
 

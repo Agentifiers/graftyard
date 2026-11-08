@@ -49,6 +49,7 @@ mod api;
 mod ident;
 mod precreate;
 mod release;
+mod transfer;
 
 const AGENT: &str = "git/graftyard-m1";
 /// `design/DESIGN.md`, Shape, `Unsupported`: "The edge renders it as 503 with `Retry-After: 5` [guess]".
@@ -1126,6 +1127,20 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 graftyard_lookup::create(&c.bindings(), chain, &r, &json!({})).await.map_err(Error::RustError)?;
                 r
             }
+            // A repository chain, read only (BF-30's `{"settings": true}`), under its `RepoOwner`'s record, or with
+            // `"record_of": owner` under that owner's; `"cold": true` drops the isolate's cached configs first, so the
+            // read finds the group from the record alone, as a new edge isolate would.
+            ChainId::Repo(id) if b.get("read").is_some() => {
+                if b["cold"].as_bool() == Some(true) {
+                    graftyard_lookup::forget_all();
+                }
+                match serde_json::from_value::<Option<AccountId>>(b["record_of"].clone()).ok().flatten() {
+                    Some(o) => {
+                        placement(c, o).await.map_err(Error::RustError)?.ok_or("that owner has no Placement row")?
+                    }
+                    None => repo_by_id(c, id).await.map_err(Error::RustError)?.record,
+                }
+            }
             _ => c.system_record(chain).await.map_err(Error::RustError)?,
         };
         if path == "/_bed/identity_arrivals" {
@@ -1146,13 +1161,19 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             }
             return Response::from_json(&out);
         }
-        // `{"chain", "read": q}`: the chain's fresh read, so a gate can see an `Identity` chain's credential list.
+        // `{"chain", "read": q}`: the chain's fresh read, so a gate can see an `Identity` chain's credential list. With
+        // `"config": true`, also the answering leader's committed config (BF-30: where a moving group's voters are).
         if let Some(q) = b.get("read") {
             let body = json!({ "q": q }).to_string();
             let v = graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes())
                 .await
                 .map_err(Error::RustError)?;
-            return Response::from_json(&json!({ "value": v.map(|(v, _, _)| v["value"].clone()) }));
+            let mut config = serde_json::Value::Null;
+            if let (Some((_, _, t)), true) = (&v, b["config"].as_bool() == Some(true)) {
+                let mut r = c.bindings().member(t.site, &t.do_name)?.fetch_with_str("https://member/status").await?;
+                config = r.json::<serde_json::Value>().await?.pointer("/config").cloned().unwrap_or_default();
+            }
+            return Response::from_json(&json!({ "value": v.map(|(v, _, _)| v["value"].clone()), "config": config }));
         }
         let body = json!({ "rid": c.rid.to_string(), "cmd": b["cmd"] });
         // The first send may carry `receipt` (BF-14) or `kill` with `down_ms` (BF-33 on a code shard's leader).

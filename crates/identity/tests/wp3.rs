@@ -502,8 +502,9 @@ fn a_transfer_keeps_every_route_on_the_group_and_names_the_new_enterprise() {
                 to_authz: &fb,
                 from_placement: &p_alpha,
                 to_placement: &p_beta,
-                group_at: group.last().unwrap(),
+                group: (&group.last().unwrap().sites, group.last().unwrap().home),
                 settings_owner: owner,
+                settings_enterprise: enterprise,
                 repo_owner: ro,
             };
             let Some(step) = graftyard_identity::finish::transfer(&t, &v) else { break };

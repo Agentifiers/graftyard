@@ -22,6 +22,7 @@ pub mod edge;
 mod enc;
 pub mod finish;
 pub mod glob;
+pub mod group_move;
 mod identity;
 mod ids;
 mod names;
@@ -88,6 +89,9 @@ pub const TOKENS_FORMAT_V2: Format = Format { family: 0x11, version: 2 };
 pub const AUTHZ_FORMAT_V2: Format = Format { family: 0x12, version: 2 };
 /// AM1-WP2's `AgentApp` rows and the org's agent settings. Sent only once `FormatsEnable` enabled it.
 pub const AUTHZ_FORMAT_V3: Format = Format { family: 0x12, version: 3 };
+/// The `Audit` consumer's cursor on `Authz` chains (`crate::audit`), which finishes transfers and enterprise changes.
+/// Read and enabled on the same terms as version 2.
+pub const AUTHZ_FORMAT_V4: Format = Format { family: 0x12, version: 4 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };

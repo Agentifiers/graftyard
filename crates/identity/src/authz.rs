@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, RepoId, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, Index, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
@@ -29,7 +29,7 @@ use crate::org::{
 };
 use crate::overlay::{Overlay, SetOverlay, Table};
 use crate::tokens::RepoScope;
-use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3};
+use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -139,6 +139,13 @@ pub enum AuthzEvent {
     OrgAgents {
         enabled: bool,
         workspace: WorkspaceMode,
+    },
+    // ---- M3's close, format 4 ----
+    /// The `Audit` consumer finished, or found nothing owed for, every entry of this chain through `through`
+    /// (`crate::audit`): a transfer's `Reserved` name and an enterprise change commit here. Not in the design's
+    /// `AuthzEvent`, as `NamesEvent::AuditCursor`.
+    AuditCursor {
+        through: Index,
     },
 }
 
@@ -272,6 +279,10 @@ impl Record for AuthzEvent {
                 e.u8(u8::from(*enabled));
                 e.u8(*workspace as u8);
             }
+            AuthzEvent::AuditCursor { through } => {
+                e.u8(16);
+                e.u64(through.0);
+            }
         }
     }
 }
@@ -324,12 +335,21 @@ tail_serde!(AuthzMore {
 
 /// AM1-WP2's rows: the install's flagged Apps (on its own chain only) and an org's agent settings, which `OrgPolicy`
 /// carries in memory and this part stores, so `OrgPolicy`'s stored shape stays M3-WP3's.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AgentRows {
     pub agent_apps: BTreeMap<AppId, AgentApp>,
     pub agents_enabled: bool,
     pub agents_workspace: WorkspaceMode,
+    /// The `Audit` consumer's cursor (`AuthzEvent::AuditCursor`, format 0x12.4), a trailing part of its own, so a fold
+    /// whose cursor never moved keeps AM1-WP2's bytes.
+    pub more: Index,
 }
+
+tail_serde!(AgentRows {
+    agent_apps: BTreeMap<AppId, AgentApp>,
+    agents_enabled: bool,
+    agents_workspace: WorkspaceMode,
+} more: Index);
 
 /// M3-WP3's rows: teams, team grants, the policy, invitations, `InstanceAuth`, and the enterprise. A scratch view
 /// copies them on its entry's first write to them (`Cow`): they are small next to names and grants.
@@ -438,6 +458,26 @@ tail_serde!(AuthzFold {
 impl AuthzFold {
     pub fn new(owner: AccountId) -> AuthzFold {
         AuthzFold { owner: Some(owner), ..AuthzFold::default() }
+    }
+
+    /// Every entry through this index is one the `Audit` consumer finished or found nothing owed for.
+    pub fn audit_cursor(&self) -> Index {
+        self.more.more.more
+    }
+
+    /// The name `/repositories/{id}` renders a repository under, for the owner its `RepoOwner` row names: its `Live`
+    /// name, else its `Alias`. A transfer commits the old owner's `Alias` before `RepoOwner` moves to the new one
+    /// (`finish::transfer`), so between the two the row's owner holds only the `Alias`, which still names the
+    /// repository; without it the id route answered 404 for that window (BF-30, `tests/m3/results/m3-finish.md`).
+    pub fn id_name(&self, repo: RepoId) -> Option<&RepoNameKey> {
+        let find = |live: bool| {
+            self.names.iter().find_map(|(k, e)| match e {
+                RepoEntry::Live { repo: r, .. } if live && *r == repo => Some(k),
+                RepoEntry::Alias { repo: r, .. } if !live && *r == repo => Some(k),
+                _ => None,
+            })
+        };
+        find(true).or_else(|| find(false))
     }
 }
 
@@ -632,7 +672,7 @@ where
         }
         AuthzEvent::AgentApp { app, row: Some(r) } => t.agent_apps.put(*app, r.clone()),
         AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
-        AuthzEvent::OrgAgents { .. } => {}
+        AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } => {}
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -861,6 +901,10 @@ impl Fold for AuthzFold {
             self.more.more.agents_enabled = *enabled;
             self.more.more.agents_workspace = *workspace;
         }
+        // Never back: two cursor commands in one entry leave the later of the two.
+        if let AuthzEvent::AuditCursor { through } = ev {
+            self.more.more.more = self.more.more.more.max(*through);
+        }
     }
     fn apply_id_block(&mut self, b: IdBlock) {
         self.ids.apply_block(b);
@@ -1015,6 +1059,11 @@ pub enum AuthzOp {
     SetOrgAgents {
         enabled: Option<bool>,
         workspace: Option<WorkspaceMode>,
+    },
+    // ---- M3's close, format 4 ----
+    /// The `Audit` consumer's cursor on this chain. Only the consumer sends it, with no account and no key.
+    AuditCursor {
+        through: Index,
     },
 }
 
@@ -1200,6 +1249,10 @@ impl Record for AuthzCmd {
                 e.option(enabled.as_ref(), |e, b| e.u8(u8::from(*b)));
                 e.option(workspace.as_ref(), |e, w| e.u8(*w as u8));
             }
+            AuthzOp::AuditCursor { through } => {
+                e.u8(29);
+                e.u64(through.0);
+            }
         }
     }
 }
@@ -1371,7 +1424,7 @@ impl AuthzCmd {
         }
         let next = NameEpoch(s.epoch.0 + 1);
         match &self.op {
-            AuthzOp::Open { .. } => unreachable!("handled above"),
+            AuthzOp::Open { .. } | AuthzOp::AuditCursor { .. } => unreachable!("handled above"),
             AuthzOp::SetMember { user, role } => {
                 if s.opened != Some(AccountKind::Org) {
                     return Err(AuthzErr::NotAnOrg);
@@ -1626,6 +1679,7 @@ impl Command for AuthzCmd {
     /// Milestone 1's ops keep format 1, so their entries are what an older release reads; the rest are format 2.
     fn format(&self) -> Format {
         match self.op {
+            AuthzOp::AuditCursor { .. } => AUTHZ_FORMAT_V4,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }
@@ -1658,6 +1712,15 @@ impl Command for AuthzCmd {
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, AuthzOut), AuthzErr> {
         check_credential(&self.cred, Own::Other, deps).map_err(AuthzErr::Unauthorized)?;
+        if let AuthzOp::AuditCursor { through } = &self.op {
+            if !self.cred.is_operator() {
+                return Err(AuthzErr::Forbidden);
+            }
+            if *through <= s.fold.audit_cursor() {
+                return Ok((SmallVec::new(), AuthzOut::Done));
+            }
+            return Ok((smallvec![AuthzEvent::AuditCursor { through: *through }], AuthzOut::Done));
+        }
         self.check_claim(s, deps)?;
         self.check_install(s, deps)?;
         if let Some(r) = self.decide_m3(s, deps) {

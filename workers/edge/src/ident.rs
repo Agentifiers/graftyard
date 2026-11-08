@@ -377,7 +377,7 @@ fn code_shard(code: &[u8]) -> ChainId {
 }
 
 /// The refusal variant of a committed outcome, if refused.
-fn refused(done: &Value) -> Option<String> {
+pub(crate) fn refused(done: &Value) -> Option<String> {
     let e = done.get("refused")?.get("err")?.as_str()?;
     Some(e.split(['(', ' ', '{']).next().unwrap_or(e).to_owned())
 }
@@ -726,7 +726,7 @@ async fn login_of(c: &Ctx<'_>, a: AccountId) -> Option<String> {
 }
 
 /// A login's account and kind, from its login row.
-async fn account_of(
+pub(crate) async fn account_of(
     c: &Ctx<'_>,
     login: &str,
 ) -> std::result::Result<Option<(AccountId, graftyard_identity::AccountKind)>, String> {
@@ -740,7 +740,7 @@ async fn account_of(
 
 /// GitHub's `public-user` for an account [inference: profile fields this install does not hold are `null`, and the
 /// counters 0].
-fn user_json(c: &Ctx<'_>, id: AccountId, login: &str, org: bool) -> Value {
+pub(crate) fn user_json(c: &Ctx<'_>, id: AccountId, login: &str, org: bool) -> Value {
     let (api, web) = (format!("https://{}/api/v3", c.cfg.host), format!("https://{}", c.cfg.host));
     let ty = if org { graftyard_wire::NodeType::Organization } else { graftyard_wire::NodeType::User };
     json!({

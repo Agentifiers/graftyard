@@ -11,21 +11,25 @@
 //!   a new leader, a reset member, or a lost attempt starts again from it. The leader's dispatcher and the in-band
 //!   first attempt are `PrSync`'s (`graftyard_git::prsync::Dispatcher`), on the site.
 //!
-//! A transfer is not finished here: its commit point, the destination's `Reserved` name, is on an `Authz` chain,
-//! and its `Settings` step has no command yet (`crate::finish::transfer`).
+//! - **Transfers and enterprise changes (`Authz`, format 0x12.4).** A `Reserved` name on an owner's `Authz` chain
+//!   owes the rest of its transfer (`crate::finish::transfer`), and an org's `Enterprise` event owes the transfer
+//!   `Settings` of each repository the org names `Live` (`crate::finish::enterprise_change`). Their plans read the
+//!   repository chain too (`AuditRead::Repo`), and two of their steps are on it (`Step::Repo`): the group's move and
+//!   the transfer's own `Settings`, which the site performs.
 
 use std::time::Duration;
 
 use graftyard_raft::{EntryBody, LogEntry};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Index, Timestamp};
+use graftyard_types::{AccountId, ChainId, CredentialShard, Index, PlacementRecord, RepoId, SiteId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::apps::{AppId, ClientId, Slug};
-use crate::authz::AuthzFold;
-use crate::finish::{self, Step};
+use crate::authz::{AuthzCmd, AuthzEvent, AuthzFold, AuthzOp, RepoEntry};
+use crate::finish::{self, RepoStep, Step, Transfer, TransferStep, TransferView};
 use crate::identity::{CredentialRef, IdentityFold};
 use crate::names::{
-    Login, LoginKey, NameKey, NamesCmd, NamesEvent, NamesFold, NamesOp, NamesRead, account_shard, name_shard,
+    Login, LoginKey, NameKey, NamesCmd, NamesEvent, NamesFold, NamesOp, NamesRead, RepoNameKey, account_shard,
+    name_shard,
 };
 use crate::tokens::{TokenKind, TokensCmd, TokensEvent, TokensFold, TokensOp, TokensRead};
 
@@ -48,9 +52,30 @@ pub fn needs_batch(from: Index, through: Index, owed: &[Owed]) -> bool {
 /// One operation an entry's commit point may have left unfinished.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Owed {
-    Credential { account: AccountId, credential: CredentialRef },
-    App { slug: Slug, app: AppId, owner: AccountId },
-    Login { account: AccountId, key: LoginKey },
+    Credential {
+        account: AccountId,
+        credential: CredentialRef,
+    },
+    App {
+        slug: Slug,
+        app: AppId,
+        owner: AccountId,
+    },
+    Login {
+        account: AccountId,
+        key: LoginKey,
+    },
+    /// A `Reserved` name on `to`'s `Authz` chain: the transfer of `repo` from `from`.
+    Transfer {
+        repo: RepoId,
+        from: AccountId,
+        to: AccountId,
+        key: RepoNameKey,
+    },
+    /// An `Enterprise` event on `org`'s `Authz` chain.
+    Enterprise {
+        org: AccountId,
+    },
 }
 
 /// A fold the planner reads, as the site's `dep` read answers it.
@@ -60,6 +85,17 @@ pub enum AuditRead {
     Tokens(TokensFold),
     Authz(AuthzFold),
     Identity(IdentityFold),
+    /// A repository chain: the owner and enterprise its `RepoSettings` names (the chain's owner and none before a
+    /// `Settings`), and its group's committed voter sites and home.
+    Repo(RepoRead),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepoRead {
+    pub owner: AccountId,
+    pub enterprise: Option<AccountId>,
+    pub voters: Vec<SiteId>,
+    pub home: SiteId,
 }
 
 /// The credentials an account lists (`GET /user/keys`, PATs, OAuth tokens): not installation, refresh, or lifeboat
@@ -83,6 +119,20 @@ pub fn tokens_owed(fold: &dyn TokensRead, e: &LogEntry<TokensEvent>) -> Vec<Owed
             TokensEvent::SshKey { fingerprint, account, .. } => {
                 Some(Owed::Credential { account: *account, credential: CredentialRef::SshKey(*fingerprint) })
             }
+            _ => None,
+        })
+        .collect()
+}
+
+/// What an `Authz` entry of `owner`'s chain owes.
+pub fn authz_owed(owner: AccountId, e: &LogEntry<AuthzEvent>) -> Vec<Owed> {
+    let EntryBody::Events(evs) = &e.body else { return Vec::new() };
+    evs.iter()
+        .filter_map(|ev| match ev {
+            AuthzEvent::RepoName { key, entry: Some(RepoEntry::Reserved { repo, from }) } => {
+                Some(Owed::Transfer { repo: *repo, from: *from, to: owner, key: key.clone() })
+            }
+            AuthzEvent::Enterprise { .. } => Some(Owed::Enterprise { org: owner }),
             _ => None,
         })
         .collect()
@@ -118,7 +168,33 @@ impl Owed {
             Owed::Login { account, key } => {
                 vec![ChainId::Names(name_shard(&NameKey::Login(key.clone()))), ChainId::Names(account_shard(*account))]
             }
+            // Both owners' `Authz` and `Placement` rows, the repository's `RepoOwner` row, and its chain.
+            Owed::Transfer { repo, from, to, .. } => {
+                let mut v = vec![ChainId::Authz(*from), ChainId::Authz(*to), ChainId::Names(account_shard(*from))];
+                let to_shard = ChainId::Names(account_shard(*to));
+                let repo_shard = ChainId::Names(name_shard(&NameKey::Repo(*repo)));
+                for c in [to_shard, repo_shard, ChainId::Repo(*repo)] {
+                    if !v.contains(&c) {
+                        v.push(c);
+                    }
+                }
+                v
+            }
+            // The org's `Authz`, then each repository it names `Live` (`Owed::repo_reads`).
+            Owed::Enterprise { org } => vec![ChainId::Authz(*org)],
         }
+    }
+
+    /// The repository chains an enterprise change reads, from the org's fold: every repository it names `Live`.
+    fn repo_reads(authz: &AuthzFold) -> Vec<RepoId> {
+        authz
+            .names
+            .values()
+            .filter_map(|e| match e {
+                RepoEntry::Live { repo, .. } => Some(*repo),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -164,13 +240,66 @@ pub fn plan<'a>(o: &Owed, read: impl Fn(ChainId) -> Option<&'a AuditRead>) -> Re
             let Ok(login) = Login::parse(key.as_str()) else { return Ok(None) };
             finish::account_login(*account, &login, names(l)?, home)
         }
+        Owed::Transfer { repo, from, to, key } => {
+            let authz = |c: ChainId| match read(c) {
+                Some(AuditRead::Authz(f)) => Ok(f),
+                _ => Err(c),
+            };
+            let (fa, ta) = (authz(ChainId::Authz(*from))?, authz(ChainId::Authz(*to))?);
+            // The source's live name for the repository, which becomes the `Alias`; a source that already holds the
+            // `Alias` (or nothing) passes the reserved key, which `transfer` finds no `Live` entry under.
+            let from_key = fa
+                .names
+                .iter()
+                .find_map(|(k, e)| matches!(e, RepoEntry::Live { repo: r, .. } if r == repo).then(|| k.clone()))
+                .unwrap_or_else(|| key.clone());
+            let place = |owner: AccountId| -> Result<Option<PlacementRecord>, ChainId> {
+                Ok(names(ChainId::Names(account_shard(owner)))?.placement(owner).cloned())
+            };
+            let (Some(fp), Some(tp)) = (place(*from)?, place(*to)?) else { return Ok(None) };
+            let rc = ChainId::Repo(*repo);
+            let Some(AuditRead::Repo(r)) = read(rc) else { return Err(rc) };
+            let repo_owner = names(ChainId::Names(name_shard(&NameKey::Repo(*repo))))?.repo_owner(*repo);
+            let t = Transfer { repo: *repo, from: *from, from_key, to: *to, to_key: key.clone() };
+            let v = TransferView {
+                from_authz: fa,
+                to_authz: ta,
+                from_placement: &fp,
+                to_placement: &tp,
+                group: (&r.voters, r.home),
+                settings_owner: r.owner,
+                settings_enterprise: r.enterprise,
+                repo_owner,
+            };
+            finish::transfer(&t, &v).map(|s| match s {
+                TransferStep::Step(s) => s,
+                TransferStep::Move { to } => Step::Repo(*repo, RepoStep::Move { to }),
+                TransferStep::Settings { owner, enterprise } => {
+                    Step::Repo(*repo, RepoStep::Settings { owner, enterprise })
+                }
+            })
+        }
+        Owed::Enterprise { org } => {
+            let a = ChainId::Authz(*org);
+            let Some(AuditRead::Authz(f)) = read(a) else { return Err(a) };
+            let live = Owed::repo_reads(f);
+            let repos = |r: RepoId| match read(ChainId::Repo(r)) {
+                Some(AuditRead::Repo(x)) => Some((x.owner, x.enterprise)),
+                _ => None,
+            };
+            finish::enterprise_change(*org, f, &live, &repos).map_err(ChainId::Repo)?
+        }
     })
 }
 
-/// The command that moves the consumer's cursor on `chain`, a `Names` or `Tokens` shard, to `through`.
+/// The command that moves the consumer's cursor on `chain`, a `Names` or `Tokens` shard or an `Authz` chain, to
+/// `through`.
 pub fn cursor(chain: ChainId, through: Index) -> Option<Step> {
     let none = CredentialShard::NONE;
     match chain {
+        ChainId::Authz(_) => {
+            Some(Step::Authz(chain, Box::new(AuthzCmd { cred: none, op: AuthzOp::AuditCursor { through } })))
+        }
         ChainId::Names(s) => {
             Some(Step::Names(chain, NamesCmd { cred: none, op: NamesOp::AuditCursor { shard: s, through } }))
         }
@@ -268,8 +397,14 @@ impl Finisher {
                 Ok(Some(_)) if self.steps >= STEPS_MAX => return Want::Stuck(o.clone()),
                 Ok(Some(step)) => return Want::Submit(step),
                 Ok(None) => self.item_done(),
-                Err(_) => {
-                    let missing = o.reads().into_iter().filter(|c| !reads.iter().any(|(r, _)| r == c)).collect();
+                Err(c) => {
+                    let mut missing: Vec<ChainId> =
+                        o.reads().into_iter().filter(|c| !reads.iter().any(|(r, _)| r == c)).collect();
+                    // A chain the plan found it needs only after reading the others (an enterprise change's
+                    // repositories).
+                    if missing.is_empty() {
+                        missing.push(c);
+                    }
                     return Want::Read(missing);
                 }
             }
@@ -310,11 +445,12 @@ impl Finisher {
     }
 }
 
-/// The cursor a fold holds, for a `Names` or `Tokens` shard.
+/// The cursor a fold holds, for a `Names` or `Tokens` shard or an `Authz` chain.
 pub fn cursor_of(read: &AuditRead) -> Option<Index> {
     match read {
         AuditRead::Names(f) => Some(f.audit_cursor()),
         AuditRead::Tokens(f) => Some(f.audit_cursor()),
+        AuditRead::Authz(f) => Some(f.audit_cursor()),
         _ => None,
     }
 }
