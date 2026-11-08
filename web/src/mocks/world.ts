@@ -105,13 +105,20 @@ export const me: Schemas["private-user"] = {
   site_admin: true,
 };
 
-function repository(
+export function repository(
   name: string,
   description: string,
   visibility: "public" | "internal" | "private",
-  extra: { language: string; stars: number; topics: string[]; pushed: string },
+  extra: {
+    language: string | null;
+    stars: number;
+    topics: string[];
+    pushed: string;
+    owner?: SimpleUser;
+  },
 ): Repository {
-  const full = `graftyard/${name}`;
+  const owner = extra.owner ?? users.org;
+  const full = `${owner.login}/${name}`;
   const base = `${API}/repos/${full}`;
   return {
     id: id(),
@@ -127,7 +134,7 @@ function repository(
     },
     forks: 3,
     permissions: { admin: true, maintain: true, push: true, triage: true, pull: true },
-    owner: users.org,
+    owner,
     private: visibility !== "public",
     html_url: `${HOST}/${full}`,
     description,

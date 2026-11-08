@@ -846,6 +846,24 @@ export const db = {
   },
   simplePull,
 
+  // Repository lifecycle for the areas that create, fork, rename, transfer, or delete one.
+  // Every read keyed by owner/name (repo pages, lists, issues, pulls) follows these.
+  addRepo(repo: Repository): RepoState {
+    const state = seedRepo(repo, [], []);
+    repos.set(repo.full_name.toLowerCase(), state);
+    return state;
+  },
+  moveRepo(fromFullName: string, repo: Repository) {
+    const state = repos.get(fromFullName.toLowerCase());
+    if (!state) return;
+    repos.delete(fromFullName.toLowerCase());
+    state.repo = repo;
+    repos.set(repo.full_name.toLowerCase(), state);
+  },
+  deleteRepo(fullName: string) {
+    repos.delete(fullName.toLowerCase());
+  },
+
   createIssue(state: RepoState, input: { title: string; body?: string; labels?: string[] }): Issue {
     const number = Math.max(0, ...state.issues.map((i) => i.number)) + 1;
     const now = new Date().toISOString();
