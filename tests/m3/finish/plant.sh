@@ -90,5 +90,10 @@ plant settings-before-move crates/identity/src/finish.rs \
 plant settings-ignores-enterprise crates/identity/src/finish.rs \
 	'        if owner == org && enterprise != want {' \
 	'        if owner != org && enterprise != want {'
+# The id route finds only a Live name, as before hosted run a: between the old owner's Alias and RepoOwner, the
+# repository's `/repositories/{id}` had no name and answered 404.
+plant id-name-live-only crates/identity/src/authz.rs \
+	'        find(true).or_else(|| find(false))' \
+	'        find(true)'
 echo DONE
 sleep infinity
