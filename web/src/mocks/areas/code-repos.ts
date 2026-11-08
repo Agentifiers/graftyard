@@ -160,8 +160,21 @@ function seedEdge(): CodeRepo {
     change: { "crates/api/src/rest/issues.rs": edgeAfter.issues },
   });
 
+  // A branch nobody touched in months, so the Stale tab has something to show. It is
+  // code-only: no pull request names it, so world.ts does not list it.
+  const graphql = step(code, main[Math.floor(main.length * 0.6)], {
+    message: "api: sketch GraphQL batching (abandoned)",
+    by: devi,
+    at: "2026-01-14T11:05:00Z",
+    change: {
+      "crates/api/src/graphql.rs": (src) =>
+        `${src}\n// TODO(devi): batch persisted queries; blocked on the byte-diff gate.\n`,
+    },
+  });
+
   const tips: [string, Commit][] = [
     ["main", mainTip],
+    ["devi/graphql-batching", graphql],
     ["mira/idempotent-retry", retry],
     ["devi/ratelimit-on-errors", ratelimit],
     ["lin/learner-reads", learner],

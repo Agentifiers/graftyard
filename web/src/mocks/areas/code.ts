@@ -3,7 +3,7 @@ import { HttpResponse } from "msw";
 import { decodeText } from "@/areas/code/base64";
 import { UI_BASE, type CommitSummary, type UiPaths } from "@/areas/code/ui-api";
 import { gate, http, notFound, page, unprocessable } from "../http";
-import { users } from "../world";
+import { sha, users } from "../world";
 import {
   addStatus,
   blame,
@@ -441,10 +441,7 @@ export const handlers = [
     if (!VALID_REF.test(body.tag)) return response.untyped(unprocessable("Tag", "tag", "invalid"));
     if (!r.code.commits.has(body.object))
       return response.untyped(unprocessable("Tag", "object", "invalid"));
-    const key = `${body.object.slice(0, 20)}${Date.now().toString(16).padStart(20, "0")}`.slice(
-      0,
-      40,
-    );
+    const key = sha(`tagobj:${r.repo.full_name}:${body.tag}:${body.object}:${body.message}`);
     const tagger = body.tagger ?? { name: "Mira Okafor", email: "mira@graftyard.test" };
     const t = {
       node_id: `TAG_${key.slice(0, 12)}`,
@@ -553,6 +550,9 @@ export const handlers = [
     const body = await request.json();
     if (!["error", "failure", "pending", "success"].includes(body.state)) {
       return response.untyped(unprocessable("Status", "state", "invalid"));
+    }
+    if (body.target_url && !/^https?:\/\/[^\s/]+/.test(body.target_url)) {
+      return response.untyped(unprocessable("Status", "target_url", "invalid"));
     }
     const status = addStatus(
       r.code,
@@ -709,7 +709,7 @@ export const handlers = [
   // ---- The private /_t/ui API ----
 
   ui.get("/repos/{owner}/{repo}/resolve/{splat}", async ({ params, response }) => {
-    const fault = await gate("code-tree");
+    const fault = await gate("code-resolve");
     if (fault) return response.untyped(fault);
     const r = codeRepo(params.owner, params.repo);
     const hit = r && splitSplat(r.code, params.splat);
@@ -839,18 +839,19 @@ export const handlers = [
     if (fault) return response.untyped(fault);
     const r = codeRepo(params.owner, params.repo);
     if (!r) return response.untyped(notFound());
-    const scale = r.repo.stargazers_count / 100;
+    // Shares of the same 14 days the views chart counts, so no table outnumbers it.
+    const { totals } = traffic(r.repo, "views", "day");
     return response(200).json(
       [
-        ["ghes.graftyard.test", 412],
-        ["graftyard.dev", 233],
-        ["chat.graftyard.test", 98],
-        ["search.graftyard.test", 61],
-        ["Bing", 14],
-      ].map(([referrer, n]) => ({
+        ["ghes.graftyard.test", 0.34],
+        ["graftyard.dev", 0.19],
+        ["chat.graftyard.test", 0.08],
+        ["search.graftyard.test", 0.05],
+        ["Bing", 0.01],
+      ].map(([referrer, share]) => ({
         referrer: String(referrer),
-        count: Math.round(Number(n) * scale),
-        uniques: Math.round(Number(n) * scale * 0.34),
+        count: Math.round(totals.count * Number(share)),
+        uniques: Math.max(1, Math.round(totals.uniques * Number(share))),
       })),
     );
   }),
@@ -864,19 +865,17 @@ export const handlers = [
     const files = c
       ? [...c.files.keys()].filter((p) => /\.(rs|md|ts|tsx|toml)$/.test(p)).slice(0, 6)
       : [];
-    const scale = r.repo.stargazers_count / 100;
+    const { totals } = traffic(r.repo, "views", "day");
+    const share = (f: number) => ({
+      count: Math.round(totals.count * f),
+      uniques: Math.max(1, Math.round(totals.uniques * f * 1.2)),
+    });
     return response(200).json([
-      {
-        path: `/${r.repo.full_name}`,
-        title: r.repo.full_name,
-        count: Math.round(820 * scale),
-        uniques: Math.round(240 * scale),
-      },
+      { path: `/${r.repo.full_name}`, title: r.repo.full_name, ...share(0.42) },
       ...files.map((p, i) => ({
         path: `/${r.repo.full_name}/blob/main/${p}`,
         title: `${p} at main`,
-        count: Math.round((300 - i * 41) * scale),
-        uniques: Math.round((110 - i * 15) * scale),
+        ...share(0.12 - i * 0.017),
       })),
     ]);
   }),

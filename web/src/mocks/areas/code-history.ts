@@ -29,11 +29,10 @@ function scopeOf(owners: Owners, path: string) {
 }
 
 function messageFor(scope: string, events: Event[]) {
-  const what = (e: Event) =>
-    e.path
-      .split("/")
-      .at(-1)!
-      .replace(/\.[a-z]+$/, "");
+  const what = (e: Event) => {
+    const name = e.path.split("/").at(-1)!;
+    return name.startsWith(".") ? name : name.replace(/(\.tar)?\.[a-z]+$/, "");
+  };
   const first = events[0];
   const ends = chunkEnds(first.total);
   const verb =
