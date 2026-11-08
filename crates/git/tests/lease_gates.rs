@@ -234,6 +234,12 @@ fn lf5_plan_blocks_make_one_lease_and_leave_bodies_alone() {
     assert_eq!(live(&mut w)[0].lease.id, now[0].lease.id, "an invalid block changes nothing");
     edit(&mut w, "no block now");
     assert!(live(&mut w).is_empty(), "a body with no block releases it");
+    // A plan lease lives only while its draft is open: marking it ready ends it, with no command on the lease.
+    edit(&mut w, &plan("paths: pkg/ready/**"));
+    assert_eq!(live(&mut w).len(), 1);
+    let ready = IssueOp::Change { n: IssueNumber(numbers[0]), change: IssueChange::Draft(false) };
+    w.commit(issue(user(WRITER), ready)).unwrap();
+    assert!(live(&mut w).is_empty(), "a readied pull request's plan lease is not held");
     eprintln!(
         "LF-5: 5 draft bodies, 1 lease (the valid block's), 5 bodies byte-identical; edit replaces, invalid keeps, none releases"
     );
@@ -349,6 +355,7 @@ fn l0_13_plan_blocks_need_push_and_stop_at_the_repository_cap() {
     };
     let opened = open(&mut w, &readers, 0);
     let from_readers = live(&mut w).len();
+    assert!(lease::rows(&*w.fold().core).is_empty(), "no lease row is written for a non-writer's block");
     let opened2 = open(&mut w, &writers, EACH);
     let rows = live(&mut w);
     let from_writers = rows.iter().filter(|r| r.plan.is_some()).count();
@@ -442,6 +449,16 @@ fn l0_13_removed_uninstalled_and_old_holders_lose_their_hold() {
     }
     assert!(modes.iter().all(|(m, mode)| (*mode == LeaseMode::Exclusive) == (*m < 240)), "{modes:?}");
     assert!(modes.last().unwrap().0 >= 300);
+    // The same for a holder with no task row here (a claim naming a task this repository does not hold), whose lease
+    // only the installation's `not_before` ends. Last, because the reinstall outdates the harness's RUN token too.
+    let ghost = run(9);
+    let g = lease_id(&w.commit(issue(claimed(RUN, Some(&ghost)), shared(&["ghost/**"], None))));
+    let rinst = claims(RUN).installation;
+    let rrow = w.ident.owner.installation(rinst).cloned().unwrap().row;
+    w.ident.owner.apply(&AuthzEvent::Installation { id: rinst, row: None, not_before: w.now });
+    w.now = Timestamp(w.now.0 + 1);
+    w.ident.owner.apply(&AuthzEvent::Installation { id: rinst, row: rrow, not_before: w.now });
+    assert!(live(&mut w).iter().all(|r| r.lease.id != g), "a reinstall does not revive the ghost claim's lease");
     eprintln!(
         "L0-13: removed holder refuses nothing; uninstall released 7 leases and cancelled 5 tasks; (minutes since grant, mode) {modes:?}"
     );
@@ -502,6 +519,12 @@ fn l0_12_agents_exclusive_refuses_only_agents() {
     assert_eq!(refs(&o), [RefOutcome::Ok]);
     let o = leased_push(&mut w, app(CLAUDE), &["refs/heads/claude/outside".into()], &["pkg/authz/a.rs"], false);
     assert_eq!(refs(&o), [RefOutcome::Ok]);
+    // A push past PATHS_MAX reports a truncated directory (`pkg/`), which covers every lease under it.
+    let mut p = push(app(CLAUDE), vec![up("refs/heads/claude/wide", None, Some(oid(78)))], &[]);
+    p.changed =
+        vec![ChangedPaths { refname: name("refs/heads/claude/wide"), paths: vec!["pkg/".into()], truncated: true }];
+    p.leases = true;
+    assert_eq!(agent_rule(&w.commit(RepoCmd::Push(p))), Some(AgentRule::Leased), "a truncated directory");
     // The refusal names the lease, its holder, and its task; per ref in 32.14, so a second ref of the push passes.
     let o = leased_push(
         &mut w,
@@ -525,10 +548,13 @@ fn l0_12_agents_exclusive_refuses_only_agents() {
 fn l0_12_a_late_exclusive_acquire_after_an_idle_lease_succeeds() {
     let mut w = lease_world();
     create_ext(&mut w, CLAUDE, "late", Some(WRITER));
-    let first = lease_id(
-        &w.commit(issue(claimed(RUN, Some(&run(0))), new_lease(&["docs/**"], LeaseMode::Exclusive, None, Some(60)))),
-    );
-    match lease_err(&w.commit(issue(app(CLAUDE), exclusive(&["docs/api/**"], Some("late"))))) {
+    let first =
+        lease_id(&w.commit(issue(
+            claimed(RUN, Some(&run(0))),
+            new_lease(&["docs/api/**"], LeaseMode::Exclusive, None, Some(60)),
+        )));
+    // An acquire whose literal prefix is above the lease's still finds it in the index.
+    match lease_err(&w.commit(issue(app(CLAUDE), exclusive(&["docs/**"], Some("late"))))) {
         Some(LeaseErr::Conflict(c)) => assert_eq!(c.iter().map(|l| l.id).collect::<Vec<_>>(), [first]),
         other => panic!("{other:?}"),
     }
@@ -716,6 +742,13 @@ fn a_cancel_releases_the_tasks_leases_and_the_feed_reports_each_change() {
     assert!(matches!(&got[..], [ActivityEvent::Lease { change: LeaseChange::Acquired, .. }]), "{got:?}");
     let c = issue(app(CLAUDE), shared(&["g/**"], Some("feed")));
     feed_of(&mut w, c);
+    let c = issue(app(CLAUDE), shared(&["h/**"], Some("feed")));
+    let h = match feed_of(&mut w, c).as_slice() {
+        [ActivityEvent::Lease { lease, change: LeaseChange::Acquired }] => lease.id,
+        other => panic!("{other:?}"),
+    };
+    let got = feed_of(&mut w, issue(app(CLAUDE), IssueOp::ReleaseLease { id: h }));
+    assert!(matches!(&got[..], [ActivityEvent::Lease { change: LeaseChange::Released, .. }]), "{got:?}");
     // A cancel marked 32.14 releases both in its own command.
     let cancel = marked(&mut w, user(WRITER), IssueOp::CancelTask { id: s.clone() });
     let got = feed_of(&mut w, cancel);

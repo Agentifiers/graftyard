@@ -118,7 +118,13 @@ fn lf3_foreign_cursor_long_wait_and_too_many_paths() {
     for c in [FeedCursor { group: REPO, index: Index(2) }.encode(), "garbage".into()] {
         assert_eq!(feed::start(REPO, Some(&c), Index(3), Index(40)), Start::Gone { oldest });
     }
+    // A cursor has one spelling: the same 17 bytes with nonzero padding bits in the last character are refused.
     let mine = FeedCursor { group: REPO, index: Index(10) }.encode();
+    let mut alias = mine.clone().into_bytes();
+    let last = alias.len() - 1;
+    alias[last] += 1; // 'o' (0b101000) to 'p': the 2 padding bits change, the 17 bytes do not
+    let alias = String::from_utf8(alias).unwrap();
+    assert_eq!(feed::start(REPO, Some(&alias), Index(3), Index(40)), Start::Gone { oldest }, "{mine} vs {alias}");
     assert_eq!(feed::start(REPO, Some(&mine), Index(3), Index(40)), Start::After(Index(10)));
     let many: String = (0..33).map(|i| format!("paths=p{i}/**&")).collect();
     let refused = leases::parse_feed(&many).unwrap_err();
@@ -272,6 +278,13 @@ fn the_lease_endpoints_serve_the_reference_shape() {
     let f = w.fold();
     let r = Repo { host: &h, at: here(), core: &f.core, meta: &f.meta, dir: &d };
     assert_eq!(leases::render_ok(&r, &w.ident.owner, w.now, &out(&a), false).status, 200);
+    // Read past its expiry, before any entry prunes the row: the task GET and the list leave it out.
+    let task_a = format!("{}.a", CLAUDE.0.0);
+    let later = Timestamp(w.now.0 + 1_300_000);
+    let g = tasks::get(&r, &w.ident.owner, later, &task_a, Reader { metadata: true, contents: true });
+    assert_eq!(json_of(&g)["leases"], json!([]), "an expired lease is not listed");
+    let all = leases::list(&r, &w.ident.owner, later, "", true, "/repos/o/r/leases");
+    assert!(json_of(&all).as_array().unwrap().iter().all(|l| l["id"] != json!(id.text())));
     drop(f);
     let a = w.commit_all_acked(vec![issue(app(CLAUDE), IssueOp::ReleaseLease { id })]).pop().unwrap().unwrap();
     let f = w.fold();
