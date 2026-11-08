@@ -1,6 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api, unwrap } from "@/api/client";
-import { graftyard } from "./graftyard-api";
+import { gy } from "@/areas/agents/api";
 import { stafftools } from "./stafftools-api";
 
 // One factory per page region of the site admin console. Keys start with the REST path
@@ -260,12 +260,6 @@ export const upgradeStatusQuery = () =>
 
 // ---- Graftyard ----
 
-export const agentAppsQuery = () =>
-  queryOptions({
-    queryKey: ["graftyard", "agents", "apps"],
-    queryFn: ({ signal }) => unwrap(graftyard.GET("/agents/apps", { signal })),
-  });
-
 export const installAppsQuery = () =>
   queryOptions({
     queryKey: ["_t", "stafftools", "apps"],
@@ -276,5 +270,5 @@ export const releaseEntriesQuery = () =>
   queryOptions({
     queryKey: ["graftyard", "release", "entries"],
     queryFn: ({ signal }) =>
-      unwrap(graftyard.GET("/release/entries", { params: { query: { per_page: 100 } }, signal })),
+      unwrap(gy.GET("/release/entries", { params: { query: { per_page: 100 } }, signal })),
   });

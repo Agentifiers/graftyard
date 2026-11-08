@@ -46,7 +46,6 @@ import {
   readTask,
   recordDerived,
   release,
-  releaseEntries,
   trustView,
   type RepoAgents,
 } from "./agents-db";
@@ -579,42 +578,6 @@ export const handlers = [
     if (body.workspace !== undefined) org.workspace = body.workspace;
     if (body.code_mode !== undefined) org.code_mode = body.code_mode;
     return response(200).json(org);
-  }),
-
-  // ---- Agent Apps and release entries (site admin, graftyard-agent) ----
-
-  gy.get("/agents/apps", async ({ response }) => {
-    const fault = await gate("agents-apps");
-    if (fault) return response.untyped(fault);
-    return response(200).json(agentApps.map((a) => a.row));
-  }),
-
-  gy.put("/agents/apps/{app_id}", async ({ params, request, response }) => {
-    const fault = await gate("agents-app-save");
-    if (fault) return response.untyped(fault);
-    const rec = agentApps.find((a) => a.row.app_id === Number(params.app_id));
-    if (!rec) return response.untyped(HttpResponse.json(notFound(), { status: 404 }));
-    const body = await request.json();
-    if ((body.kind === "graftyard_run" || body.kind === "mcp") && !rec.owned)
-      return response(422).json(invalid("AgentApp", "kind"));
-    rec.row = { ...rec.row, kind: body.kind, confine: body.confine ?? null };
-    return response(200).json(rec.row);
-  }),
-
-  gy.delete("/agents/apps/{app_id}", async ({ params, response }) => {
-    const fault = await gate("agents-app-delete");
-    if (fault) return response.untyped(fault);
-    const i = agentApps.findIndex((a) => a.row.app_id === Number(params.app_id));
-    if (i >= 0) agentApps.splice(i, 1);
-    return response(204).empty();
-  }),
-
-  gy.get("/release/entries", async ({ query, response }) => {
-    const fault = await gate("agents-release");
-    if (fault) return response.untyped(fault);
-    const after = Number(query.get("after") ?? -1);
-    const perPage = Math.min(100, Number(query.get("per_page")) || 30);
-    return response(200).json(releaseEntries.filter((e) => e.index > after).slice(0, perPage));
   }),
 
   // ---- MCP grants ----

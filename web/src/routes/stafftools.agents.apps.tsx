@@ -10,8 +10,9 @@ import {
   PencilEdit02Icon,
   Robot01Icon,
 } from "@hugeicons/core-free-icons";
-import { graftyard, type AgentAppRow, type AgentKind } from "@/areas/admin/graftyard-api";
-import { agentAppsQuery, installAppsQuery } from "@/areas/admin/queries";
+import { gy, type AgentAppRow, type AgentAppKind as AgentKind } from "@/areas/agents/api";
+import { agentAppsQuery } from "@/areas/agents/queries";
+import { installAppsQuery } from "@/areas/admin/queries";
 import { send, showFieldErrors, StateBadge, TextField, useWrite } from "@/areas/admin/ui";
 import { PageHeader, Panel } from "@/components/panel";
 import { Region } from "@/components/region";
@@ -91,7 +92,7 @@ function AppsTable() {
       queryClient.setQueryData(KEY, (old) => old?.filter((r) => r.app_id !== row.app_id));
       try {
         return await send(
-          graftyard.DELETE("/agents/apps/{app_id}", { params: { path: { app_id: row.app_id } } }),
+          gy.DELETE("/agents/apps/{app_id}", { params: { path: { app_id: row.app_id } } }),
         );
       } catch (e) {
         queryClient.setQueryData(KEY, before);
@@ -243,7 +244,7 @@ function AppForm({
   const save = useWrite({
     run: async (v: { app_id: number; kind: AgentKind; confine: string }) => {
       const body = { kind: v.kind, confine: v.confine.trim() || null };
-      const { data, error, response } = await graftyard.PUT("/agents/apps/{app_id}", {
+      const { data, error, response } = await gy.PUT("/agents/apps/{app_id}", {
         params: { path: { app_id: v.app_id } },
         body,
       });

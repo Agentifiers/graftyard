@@ -6,7 +6,6 @@ import type {
   Lease,
   OrgAgents,
   Policy,
-  ReleaseEntry,
   SessionLog,
   Task,
   TaskState,
@@ -940,24 +939,18 @@ export const grants: Grant[] = [
   },
 ];
 
+// The one list of agent Apps. Site admin flags, edits, and unflags rows here
+// (src/mocks/areas/admin-ops.ts), and tasks and leases read the same records.
 export const agentApps = appRecords;
 
-const ENTRY_KINDS = [
-  "Genesis",
-  "Keys",
-  "ControllerPointer",
-  "ReleaseUploaded",
-  "IntentStep",
-  "IntentDone",
-  "ControllerRoll",
-  "Rotate",
-  "Halt",
-  "Resume",
-];
-export const releaseEntries: ReleaseEntry[] = ENTRY_KINDS.map((kind, index) => ({
-  index,
-  entry: btoa(`${kind}\u0000${sha(`release:${index}`)}\u0000ed25519:${sha(`sig:${index}`)}`),
-}));
+export function addAgentApp(row: AgentAppRow, name: string, description: string, owned: boolean) {
+  appRecords.push({
+    row,
+    app: integration(row.app_id, row.slug, name, description),
+    installation: 7000 + row.app_id,
+    owned,
+  });
+}
 
 export type { RepoAgents };
 export { agentBot, appAuthor, memberAuthor, trustView, type TrustView };

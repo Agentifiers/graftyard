@@ -1,6 +1,6 @@
 import type { Schemas } from "@/api/client";
 import type { components, paths } from "@/api/ghes";
-import type { AgentAppRow, ReleaseEntry } from "@/areas/admin/graftyard-api";
+import type { ReleaseEntry } from "@/areas/agents/api";
 import type { InstallApp, StaffRepo } from "@/areas/admin/stafftools-api";
 import { encodeEntry, type DecodedEntry } from "@/areas/admin/release-codec";
 import { API, HOST, id, sha, users } from "../world";
@@ -944,72 +944,79 @@ export const installedVersion = () =>
 // ---- Graftyard: agent apps ----
 
 // The Apps on this install. The install owns the first-party ones, so only those may be
-// graftyard_run or mcp (design/AGENT-LAYER.md, "API reference").
+// graftyard_run or mcp (design/AGENT-LAYER.md, "API reference"). Ids match the agents
+// area's records (src/mocks/areas/agents-db.ts), which hold the flagged rows.
 export const installApps: InstallApp[] = [
   {
-    app_id: 101,
+    app_id: 9101,
+    slug: "codex-connector",
+    name: "Codex Connector",
+    owned: false,
+    description: "A third-party coding agent.",
+  },
+  {
+    app_id: 9102,
+    slug: "review-bot",
+    name: "Review Bot",
+    owned: false,
+    description: "Leaves review comments.",
+  },
+  {
+    app_id: 9001,
     slug: "graftyard-agent",
     name: "graftyard-agent",
     owned: true,
     description: "Runs Graftyard agent tasks.",
   },
   {
-    app_id: 102,
+    app_id: 9002,
     slug: "graftyard-workspace",
     name: "graftyard-workspace",
     owned: true,
     description: "Pushes agent work to workspace forks.",
   },
   {
-    app_id: 103,
+    app_id: 9003,
     slug: "graftyard-mcp",
     name: "Graftyard MCP",
     owned: true,
     description: "The install's MCP server.",
   },
   {
-    app_id: 104,
+    app_id: 9004,
     slug: "graftyard-insights",
     name: "graftyard-insights",
     owned: true,
     description: "Overlap and provenance checks.",
   },
   {
-    app_id: 210,
+    app_id: 9201,
     slug: "claude",
     name: "Claude",
     owned: false,
     description: "Anthropic's coding agent.",
   },
   {
-    app_id: 211,
+    app_id: 9202,
     slug: "cursor",
     name: "Cursor",
     owned: false,
     description: "Cursor background agents.",
   },
   {
-    app_id: 212,
+    app_id: 9203,
     slug: "devin",
     name: "Devin",
     owned: false,
     description: "Cognition's coding agent.",
   },
   {
-    app_id: 213,
+    app_id: 9204,
     slug: "renovate",
     name: "Renovate",
     owned: false,
     description: "Dependency updates.",
   },
-];
-
-export const agentApps: AgentAppRow[] = [
-  { app_id: 101, slug: "graftyard-agent", kind: "graftyard_run", confine: null },
-  { app_id: 102, slug: "graftyard-workspace", kind: "graftyard_run", confine: null },
-  { app_id: 103, slug: "graftyard-mcp", kind: "mcp", confine: null },
-  { app_id: 210, slug: "claude", kind: "third_party", confine: "refs/heads/claude/**" },
-  { app_id: 211, slug: "cursor", kind: "third_party", confine: null },
 ];
 
 // ---- Graftyard: the release log ----

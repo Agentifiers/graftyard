@@ -1,12 +1,12 @@
 import { HttpResponse } from "msw";
 import { createOpenApiHttp } from "openapi-msw";
 import type { Schemas } from "@/api/client";
-import { GRAFTYARD_BASE, type GraftyardAdminPaths } from "@/areas/admin/graftyard-api";
+import { GRAFTYARD_BASE, type GraftyardPaths } from "@/areas/agents/api";
+import { addAgentApp, agentApps } from "./agents-db";
 import { gate, http, notFound, page, unprocessable } from "../http";
 import { db as core } from "./core-db";
 import { findOrg } from "./admin-db";
 import {
-  agentApps,
   applyEvents,
   applySettings,
   applyStatus,
@@ -50,7 +50,7 @@ import {
 // path here; Graftyard maps them to the install's own admin API (design/SHARED.md, the
 // `rest:enterprise-admin` row).
 
-const graftyard = createOpenApiHttp<GraftyardAdminPaths>({ baseUrl: GRAFTYARD_BASE });
+const graftyard = createOpenApiHttp<GraftyardPaths>({ baseUrl: GRAFTYARD_BASE });
 const DOCS = "https://docs.github.com/enterprise-server@3.22/rest";
 const conflict = (message: string) =>
   HttpResponse.json({ message, documentation_url: DOCS, status: "409" }, { status: 409 });
@@ -469,13 +469,13 @@ export const handlers = [
 
   // ---- Graftyard: agent apps ----
   graftyard.get("/agents/apps", async ({ response }) => {
-    const fault = await gate("admin-agent-apps");
+    const fault = await gate("agents-apps");
     if (fault) return response.untyped(fault);
-    return response(200).json([...agentApps].sort((a, b) => a.app_id - b.app_id));
+    return response(200).json(agentApps.map((a) => a.row).sort((a, b) => a.app_id - b.app_id));
   }),
 
   graftyard.put("/agents/apps/{app_id}", async ({ params, request, response }) => {
-    const fault = await gate("admin-agent-app-put");
+    const fault = await gate("agents-app-save");
     if (fault) return response.untyped(fault);
     const appId = Number(params.app_id);
     const app = installApps.find((a) => a.app_id === appId);
@@ -495,24 +495,24 @@ export const handlers = [
       return response(422).json(error("AgentApp", "confine", "invalid"));
     }
     const row = { app_id: appId, slug: app.slug, kind: body.kind, confine };
-    const i = agentApps.findIndex((a) => a.app_id === appId);
-    if (i >= 0) agentApps[i] = row;
-    else agentApps.push(row);
+    const rec = agentApps.find((a) => a.row.app_id === appId);
+    if (rec) rec.row = row;
+    else addAgentApp(row, app.name, app.description, app.owned);
     return response(200).json(row);
   }),
 
   graftyard.delete("/agents/apps/{app_id}", async ({ params, response }) => {
-    const fault = await gate("admin-agent-app-delete");
+    const fault = await gate("agents-app-delete");
     if (fault) return response.untyped(fault);
-    const i = agentApps.findIndex((a) => a.app_id === Number(params.app_id));
-    if (i < 0) return response(404).json({ message: "Not Found", documentation_url: DOCS });
+    const i = agentApps.findIndex((a) => a.row.app_id === Number(params.app_id));
+    if (i < 0) return response.untyped(notFound());
     agentApps.splice(i, 1);
     return response(204).empty();
   }),
 
   // ---- Graftyard: the release log ----
   graftyard.get("/release/entries", async ({ query, response }) => {
-    const fault = await gate("admin-release");
+    const fault = await gate("agents-release");
     if (fault) return response.untyped(fault);
     const after = Number(query.get("after")) || 0;
     const perPage = Math.min(100, Number(query.get("per_page")) || 30);
