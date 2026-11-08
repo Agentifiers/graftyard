@@ -83,6 +83,7 @@ fn push(updates: Vec<RefUpdate>, atomicity: Atomicity, actor: Principal) -> Push
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     }
 }
 

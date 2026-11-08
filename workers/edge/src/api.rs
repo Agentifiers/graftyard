@@ -184,7 +184,7 @@ pub(crate) struct Read {
 }
 
 impl Read {
-    fn view<'a>(&'a self, host: &'a Host) -> View<'a> {
+    pub(crate) fn view<'a>(&'a self, host: &'a Host) -> View<'a> {
         View { host, at: self.at.clone(), core: &self.core, meta: &self.meta, dir: &self.dir }
     }
 }
@@ -444,6 +444,10 @@ async fn commit_issue_in(
     if call.agent && matches!(call.op, IssueOp::OpenPr { .. }) {
         call.session = session.filter(|_| c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS));
     }
+    // 32.14 (AM1-WP4) only for a command whose entry may write lease events (`graftyard_git::lease::marks`).
+    call.leases = !call.op.is_lease()
+        && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES)
+        && graftyard_git::lease::marks(&call.op, &rd.core);
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(
@@ -784,6 +788,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     };
     let admit = crate::admission(c, who, &[], true, 0).await;
     let mut body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push })?;

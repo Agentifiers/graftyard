@@ -775,7 +775,7 @@ fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
     let mut ids = BTreeSet::new();
     let mut take = |out: Result<IssueOut, IssueErr>| match out.unwrap() {
         IssueOut::Id(id) => assert!(ids.insert(id), "id {id:?} assigned twice"),
-        IssueOut::Number(_) | IssueOut::Done | IssueOut::Task(_) | IssueOut::TaskFinal(..) => {}
+        IssueOut::Number(_) | IssueOut::Done | IssueOut::Task(_) | IssueOut::TaskFinal(..) | IssueOut::Lease(_) => {}
     };
     // The parent: core-tier commands decided on a view whose metadata tier is empty and never written, as a parent
     // after `MetaDropped` holds none.

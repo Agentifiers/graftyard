@@ -563,6 +563,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     };
     // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4); one whose token
     // carries a `task` claim is 32.12 (AM1-WP3), on the same terms.
@@ -1318,6 +1319,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 provenance: Vec::new(),
                 protected: Vec::new(),
                 changed: Vec::new(),
+                leases: false,
             };
             let t0 = now().0;
             if let Some(n) = b.get("stored").and_then(serde_json::Value::as_u64) {

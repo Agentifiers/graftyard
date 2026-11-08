@@ -97,7 +97,8 @@ pub enum CiMode {
     AutoReadOnly,
 }
 
-/// `AgentPolicy.leases`. AM1-WP4 builds leases; until then nothing reads it.
+/// `AgentPolicy.leases`. Advisory never refuses a push. AgentsExclusive refuses an `ActorKind::Agent` push whose
+/// `changed` paths overlap another holder's live Exclusive lease (`crate::lease::LeaseView::exclusive_conflicts`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeaseEnforce {
     #[default]
@@ -127,6 +128,22 @@ pub struct ProtectedHits {
 pub struct ChangedPaths {
     pub refname: RefName,
     pub paths: Vec<Box<str>>,
+    pub truncated: bool,
+}
+
+/// Written for every push the edge sent `changed` paths for (a ref update by an `Agent` or under an agent prefix),
+/// keyed by ref, in the command that moves the ref (format 32.14), and deleted when the ref's pull request closes.
+/// `planned` is read from the live leases of the pusher's task, or of the pusher and the ref's pull request author,
+/// so overlaps are known before the work is done. `merge_base` is the design's, which `validate` knows and `Push`
+/// does not carry yet, so it is `None` until the git cache reports it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathSet {
+    pub refname: RefName,
+    pub pr: Option<IssueNumber>,
+    pub head: ObjectId,
+    pub merge_base: Option<ObjectId>,
+    pub paths: Vec<Box<str>>,
+    pub planned: Vec<Box<str>>,
     pub truncated: bool,
 }
 
@@ -486,6 +503,9 @@ pub enum AgentRule {
     /// An App's command reached `decide` without the `validate` outputs an agent push needs, or classed as another
     /// kind by an edge whose read is now stale: the edge reads the install's rows again and re-sends.
     Reclass,
+    /// Under `AgentsExclusive`, the push's changed paths overlap another holder's live Exclusive lease (AM1-WP4).
+    /// Stored per ref only in format 32.14; an earlier format's push is refused whole.
+    Leased,
 }
 
 /// A refusal and its text. The text names the rule, the allowed prefix, or the protected path.
@@ -515,7 +535,8 @@ impl AgentRefusal {
             | AgentRule::Protected
             | AgentRule::Label
             | AgentRule::GraftyardContext
-            | AgentRule::Gate => "refused",
+            | AgentRule::Gate
+            | AgentRule::Leased => "refused",
         };
         AgentRefusal::new(rule, text)
     }
@@ -565,6 +586,22 @@ pub fn refuse_update(
         return Some(AgentRefusal::new(AgentRule::Protected, text));
     }
     None
+}
+
+/// The lease refusal from the first of `conflicts`, named with its glob, holder, task, and expiry (epoch ms), as the
+/// design's text gives it: `refused: pkg/auth/** is leased Exclusive by app 4 (task <id>) until <expires>`.
+pub fn leased(conflicts: &[crate::lease::Lease]) -> Option<AgentRefusal> {
+    let l = conflicts.first()?;
+    let glob = l.scope.paths.first().map_or("", |g| g.as_str());
+    let who = match l.holder.actor {
+        crate::lease::ActorId::User(u) => format!("user {}", u.0.0.0),
+        crate::lease::ActorId::App { app, .. } => format!("app {}", app.0.0),
+    };
+    let task = l.holder.session.as_ref().map_or_else(|| "none".to_owned(), SessionId::text);
+    let until = l.expires.0;
+    let text =
+        format!("refused: {glob} is leased Exclusive by {who} (task {task}) until {until} ms (lease {})", l.id.text());
+    Some(AgentRefusal::new(AgentRule::Leased, text))
 }
 
 /// Approvals `AgentGate` needs: one, plus `extra_human_approvals`, plus one more when `requester` is empty, because

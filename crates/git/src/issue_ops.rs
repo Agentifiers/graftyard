@@ -265,6 +265,18 @@ pub enum IssueOp<B = DurableBlob> {
     CancelTask {
         id: graftyard_identity::SessionId,
     },
+    // ---- AM1-WP4, format 32.14 (`crate::lease`) ----
+    /// `POST /api/graftyard/v1/repos/{o}/{r}/leases`.
+    AcquireLease(crate::lease::NewLease),
+    /// `POST .../leases/{id}/renew`, by the holder.
+    RenewLease {
+        id: crate::lease::LeaseId,
+        ttl_seconds: Option<u32>,
+    },
+    /// `DELETE .../leases/{id}`, by the holder or a repository admin.
+    ReleaseLease {
+        id: crate::lease::LeaseId,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -319,7 +331,15 @@ impl<B> IssueOp<B> {
             O::CreateTask(t) => O::CreateTask(t),
             O::UpdateTask { id, state, pr, summary } => O::UpdateTask { id, state, pr, summary },
             O::CancelTask { id } => O::CancelTask { id },
+            O::AcquireLease(l) => O::AcquireLease(l),
+            O::RenewLease { id, ttl_seconds } => O::RenewLease { id, ttl_seconds },
+            O::ReleaseLease { id } => O::ReleaseLease { id },
         })
+    }
+
+    /// Whether this is a lease command (`crate::lease::decide`).
+    pub fn is_lease(&self) -> bool {
+        matches!(self, IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. })
     }
 
     /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
@@ -346,6 +366,8 @@ pub enum IssueOut {
     /// A task command found the task in a derived final state (its installation gone, or TASK_IDLE passed) and
     /// recorded it, and changed nothing else: the client gets 409 with that state.
     TaskFinal(graftyard_identity::SessionId, crate::task::TaskApiState),
+    /// A lease acquire or renew applied: the lease's id, whose row the leader renders.
+    Lease(crate::lease::LeaseId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -378,6 +400,8 @@ pub enum IssueErr {
     Agent(crate::agent::AgentRefusal),
     /// A task command's refusal (`crate::task::TaskErr`).
     Task(crate::task::TaskErr),
+    /// A lease command's refusal (`crate::lease::LeaseErr`).
+    Lease(crate::lease::LeaseErr),
 }
 
 fn actor_id(p: &Principal) -> Option<AccountId> {
@@ -412,6 +436,9 @@ impl IssueCmd {
             IssueOp::SetAgentPolicy(_) => TierSet::CORE,
             // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
             IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => both,
+            IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => TierSet::CORE,
+            // A body edit may replace a plan-block lease (Core).
+            IssueOp::Change { change: IssueChange::Body(_), .. } => both,
             _ => TierSet::METADATA,
         }
     }
@@ -431,7 +458,7 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
-        self.decide_in(v, deps, false, None)
+        self.decide_in(v, deps, false, None, false)
     }
 
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
@@ -442,6 +469,7 @@ impl IssueCmd {
         deps: &[(ChainId, IdentityDep)],
         agent: bool,
         session: Option<&graftyard_identity::SessionId>,
+        leases: bool,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -576,6 +604,14 @@ impl IssueCmd {
                     let meta = crate::agent::AgentMeta { app, session, requester, repo: v.tiers.repo };
                     evs.push(RepoEvent::AgentMeta { n, meta });
                 }
+                // A `graftyard-plan` block in a draft's body becomes its editor's Shared lease (format 32.14).
+                if leases
+                    && *draft
+                    && let Some(owner) = authz
+                {
+                    let lv = crate::lease::LeaseView { core: v.core(), owner, repo: v.tiers.repo, at: v.at };
+                    evs.extend(crate::lease::plan_events(&lv, &self.actor, self.credential_app(deps), n, body));
+                }
                 Ok((evs, IssueOut::Number(n)))
             }
             IssueOp::Close { n } => {
@@ -625,7 +661,17 @@ impl IssueCmd {
                     },
                     _ => {}
                 }
-                Ok((one(RepoEvent::IssueChanged { n: *n, change: change.clone(), actor: me }), IssueOut::Done))
+                let mut evs = one(RepoEvent::IssueChanged { n: *n, change: change.clone(), actor: me });
+                // A draft's body edit replaces its editor's plan-block lease in the edit's own command (32.14).
+                if let IssueChange::Body(b) = change
+                    && leases
+                    && pr.as_ref().is_some_and(|p| matches!(p.state, PrState::Open { draft: true }))
+                    && let Some(owner) = authz
+                {
+                    let lv = crate::lease::LeaseView { core: v.core(), owner, repo: v.tiers.repo, at: v.at };
+                    evs.extend(crate::lease::plan_events(&lv, &self.actor, self.credential_app(deps), *n, b));
+                }
+                Ok((evs, IssueOut::Done))
             }
             IssueOp::Comment { on, body, reply_to } => {
                 need(RepoPermission::Read)?;
@@ -1026,6 +1072,9 @@ impl IssueCmd {
             IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
                 Err(IssueErr::Invalid("a task command is decided by crate::task::decide"))
             }
+            IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
+                Err(IssueErr::Invalid("a lease command is decided by crate::lease::decide"))
+            }
         }
     }
 
@@ -1038,6 +1087,7 @@ impl IssueCmd {
         deps: &[(ChainId, IdentityDep)],
         at: Timestamp,
         applied: graftyard_types::Index,
+        leases: bool,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -1073,8 +1123,55 @@ impl IssueCmd {
             owner: folds.iter().copied().find(|a| a.owner() == Some(owner)),
             install: crate::repo::install_authz(deps),
             perm,
+            leases,
         };
         crate::task::decide(&self.op, &self.actor, v.core(), &ctx).map_err(IssueErr::Task)
+    }
+
+    /// A lease command's `decide` (`crate::lease::decide`): the credential check, then whether the caller may push
+    /// (a user's `Write`, an installation's `contents: write`, within a stored token's own limits) and is a repository
+    /// admin, then the lease rules at the entry's time `at`.
+    pub fn decide_lease(
+        &self,
+        v: &RepoView<'_>,
+        deps: &[(ChainId, IdentityDep)],
+        at: Timestamp,
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
+        let cred = self.actor.credential_shard();
+        let app = match (&self.actor.actor, &self.actor.credential) {
+            (Actor::App { .. }, Credential::Stateless(c)) => Some(c),
+            _ => None,
+        };
+        if cred.key.is_none() || (cred.account.is_none() && app.is_none()) {
+            return Err(IssueErr::Unauthorized(CredentialRefusal::NoToken));
+        }
+        check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
+        let owner = v.owner();
+        let folds = crate::repo::authz_folds(deps);
+        let authz = folds.iter().copied().find(|a| a.owner() == Some(owner)).ok_or(IssueErr::NotFound)?;
+        let access = Access { repo: v.tiers.repo, owner, core: v.core() };
+        let write = [("contents", AppAccess::Write)];
+        let (push, admin) = match app {
+            Some(c) => match graftyard_identity::authorize_app(c, &write, &folds, &access) {
+                Decision::Allow => (true, false),
+                Decision::Forbidden => (false, false),
+                Decision::Hidden => return Err(IssueErr::NotFound),
+            },
+            None => {
+                let p = permission(&self.actor, v, &folds).ok_or(IssueErr::NotFound)?;
+                let fields = crate::repo::stored_fields(&self.actor, deps);
+                let own = graftyard_identity::token_allows(fields, &write, &access) == Decision::Allow;
+                (own && p >= RepoPermission::Write, p >= RepoPermission::Admin)
+            }
+        };
+        let ctx = crate::lease::LeaseCtx {
+            view: crate::lease::LeaseView { core: v.core(), owner: authz, repo: v.tiers.repo, at },
+            install: crate::repo::install_authz(deps),
+            push,
+            admin,
+            token_app: self.credential_app(deps),
+        };
+        crate::lease::decide(&self.op, &self.actor, &ctx).map_err(IssueErr::Lease)
     }
 
     /// The App behind a stored user-to-server token, from its `Tokens` row the leader read.
@@ -1133,6 +1230,9 @@ impl IssueCmd {
             IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
                 smallvec![w("issues")]
             }
+            IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
+                smallvec![w("contents")]
+            }
         }
     }
 
@@ -1156,6 +1256,8 @@ impl IssueCmd {
                 RepoEvent::Status(st) => return IssueOut::Id(st.id.0),
                 RepoEvent::TaskCreated(t) => return IssueOut::Task(t.session.clone()),
                 RepoEvent::TaskUpdated { session, state, .. } => return crate::task::replay(&self.op, session, *state),
+                RepoEvent::LeaseAcquire { lease, .. } if self.op.is_lease() => return IssueOut::Lease(lease.id),
+                RepoEvent::LeaseRenew { id, .. } if self.op.is_lease() => return IssueOut::Lease(*id),
                 _ => {}
             }
         }

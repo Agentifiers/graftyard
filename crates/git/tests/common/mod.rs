@@ -313,6 +313,7 @@ pub fn repo_reads() -> Vec<Format> {
         REPO_FORMAT_AGENT,
         graftyard_git::issue_ops::call::REPO_FORMAT_APP_CALLS,
         graftyard_git::repo::REPO_FORMAT_TASKS,
+        graftyard_git::repo::REPO_FORMAT_LEASES,
     ]
 }
 
@@ -641,6 +642,7 @@ pub fn push(who: Principal, updates: Vec<RefUpdate>, paths: &[&str]) -> graftyar
         provenance: Vec::new(),
         protected,
         changed,
+        leases: false,
     }
 }
 

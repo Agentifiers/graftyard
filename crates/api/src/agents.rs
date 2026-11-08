@@ -25,6 +25,8 @@ pub enum Route<'p> {
     Policy { owner: &'p str, repo: &'p str },
     /// `/repos/{owner}/{repo}/tasks...` (AM1-WP3, `crate::tasks`).
     Tasks(crate::tasks::Route<'p>),
+    /// `/repos/{owner}/{repo}/leases...` and `/activity` (AM1-WP4, `crate::leases`).
+    Leases(crate::leases::Route<'p>),
 }
 
 pub fn route(rest: &str) -> Option<Route<'_>> {
@@ -34,7 +36,7 @@ pub fn route(rest: &str) -> Option<Route<'_>> {
         ["agents", "apps", id] => id.parse::<i64>().ok().filter(|i| *i > 0).map(|i| Route::App(AppId(DbId(i)))),
         ["orgs", org, "agents"] => Some(Route::Org(org)),
         ["repos", owner, repo, "agents", "policy"] => Some(Route::Policy { owner, repo }),
-        _ => crate::tasks::route(rest).map(Route::Tasks),
+        _ => crate::tasks::route(rest).map(Route::Tasks).or_else(|| crate::leases::route(rest).map(Route::Leases)),
     }
 }
 

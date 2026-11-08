@@ -412,6 +412,8 @@ pub fn refused_field(f: &str, e: &graftyard_git::issue_ops::IssueErr) -> Value {
             "message": &*a.text }] }),
         // Task commands are not GraphQL mutations; a refusal of one never reaches here.
         E::Task(_) => unprocessable(f, "task"),
+        // Nor are lease commands.
+        E::Lease(_) => unprocessable(f, "lease"),
     }
 }
 

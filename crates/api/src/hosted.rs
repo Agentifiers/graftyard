@@ -270,6 +270,11 @@ pub enum What {
         created: bool,
         contents: bool,
     },
+    /// A lease command under `/api/graftyard/v1/repos/{o}/{r}/leases` (`crate::leases`): 201 for an acquire, 200 for
+    /// a renew, 204 for a release.
+    Lease {
+        created: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -362,6 +367,19 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
             let reader = crate::tasks::Reader { metadata: true, contents: *contents };
             WireReply::of(&crate::tasks::render_ok(&r, owner, at, acked, *created, reader))
         }
+        What::Lease { created } => {
+            let Some(owner) = render.dir.authz.as_ref() else {
+                return WireReply::of(&Reply::error(503, "the owner's Authz was not read", "rest"));
+            };
+            // Rendered at the lease's grant or renewal time, which the command just wrote, so it reads live.
+            let at = match &acked.out {
+                IssueOut::Lease(id) => graftyard_git::lease::lease_row(core, *id).map_or(Timestamp(0), |row| {
+                    if *created { row.lease.granted } else { Timestamp(row.lease.expires.0.saturating_sub(1)) }
+                }),
+                _ => Timestamp(0),
+            };
+            WireReply::of(&crate::leases::render_ok(&r, owner, at, acked, *created))
+        }
     }
 }
 
@@ -376,6 +394,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
         What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
         What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
+        What::Lease { .. } => WireReply::of(&crate::leases::refused(None, e)),
     }
 }
 
