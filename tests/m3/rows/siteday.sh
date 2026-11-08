@@ -1,5 +1,5 @@
 #!/bin/bash
-# Site day 1 on graft-m2b: main's build (e2c67b5), test-faults, with --roll-shards. Audit stays off (no GRAFTYARD_AUDIT).
+# A site day on graft-m2b from this worktree's HEAD, test-faults, with --roll-shards. Audit stays off (no GRAFTYARD_AUDIT).
 set -euo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/repo/.worktrees/target-rows
 export BED_TOKEN_FILE=$HOME/.graft-m2b/bed.token
