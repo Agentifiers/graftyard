@@ -589,7 +589,11 @@ pub(crate) async fn task_claim(
     let repo = match &grant.repos {
         graftyard_identity::RepoScope::Selected(ids) if !ids.is_empty() => ids[0],
         _ => {
-            return Ok(Err(Reply::error(422, &graftyard_git::task::TaskTokenError::NeedsRepositories.to_string(), doc)));
+            return Ok(Err(Reply::error(
+                422,
+                &graftyard_git::task::TaskTokenError::NeedsRepositories.to_string(),
+                doc,
+            )));
         }
     };
     let Ok(Some(record)) = crate::placement(c, owner).await else {

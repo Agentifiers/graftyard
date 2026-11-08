@@ -185,6 +185,9 @@ fn open_task_caps() {
     );
     w.commit(issue(app(CLAUDE), patch(&ext(CLAUDE, "w-1"), Some(TaskApiState::Completed)))).unwrap();
     w.commit(issue(app(CLAUDE), create("w-x", Some(WRITER)))).unwrap();
+    // The caps scan only the open index: a task stored final, by cancel or by its App, leaves it.
+    let open = |w: &mut World| graftyard_fold::Read::prefix(&*w.fold().core, "agent_task_open", &[]).len();
+    assert_eq!(open(&mut w), per + 2, "w-0 and w-1 left the index; w-over, w-x, w2-0, and none-0 joined");
     // The repository's cap: fill it with requesters of 100 each.
     let have = 102;
     let mut k = 0;
@@ -383,6 +386,15 @@ fn a_live_tasks_push_is_accepted_and_its_trailer_links() {
     }];
     assert_eq!(refs(&w.commit(RepoCmd::Push(p))), [RefOutcome::Ok]);
     assert!(stored_sources(&mut w, oid(20_001)).is_empty(), "a forged Session is dropped");
+    // Another Graftyard-run App holding a token whose claim names RUN's task binds nothing.
+    register_own(&mut w, MCP, "other-run");
+    w.flag(AgentApp { app: MCP, kind: AgentKind::GraftyardRun, confine: None });
+    let o = w.commit(RepoCmd::Push(push(
+        claimed(MCP, Some(&s)),
+        vec![up(&format!("{base}/m"), None, Some(oid(7)))],
+        &["a"],
+    )));
+    assert_eq!(agent_rule(&o), Some(AgentRule::NoLiveTask), "a claim on another App's task");
     // A paused task, then a cancelled one, binds nothing: the next push is `NoLiveTask`.
     let pause = RepoEvent::TaskUpdated {
         session: s.clone(),
