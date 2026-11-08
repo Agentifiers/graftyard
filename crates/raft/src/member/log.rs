@@ -195,6 +195,13 @@ impl<C: Command> Member<C> {
             let next = self.fold.applied().next();
             let e = &self.log[self.pos(next).expect("unapplied entries are in the window")];
             self.fold.apply(e);
+            // The marker clears when an entry carrying `extend` commits, or one stamped after it: the group committed
+            // past it, and that entry's leader judged the time up to its `at`.
+            if let Some(m) = self.state.stalled_since
+                && (e.extend.is_some() || e.at > m)
+            {
+                self.state.stalled_since = None;
+            }
         }
         self.state.applied = self.fold.applied();
         self.writes.push(Write::Apply(c));

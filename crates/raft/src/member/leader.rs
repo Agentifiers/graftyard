@@ -15,8 +15,8 @@ use crate::outcome::{self, Acked};
 use crate::quorum::{self, DurableAck, QuorumProof};
 use crate::read::{Fresh, ReadGrant};
 use crate::types::{
-    Admitted, CallError, CommitError, EntryBody, Format, GroupConfig, Index, LogEntry, Next, NotLeader, RequestId,
-    Ticket, TierSet,
+    Admitted, CallError, CommitError, EntryBody, ExtendLeases, Format, GroupConfig, Index, LogEntry, Next, NotLeader,
+    RequestId, Ticket, TierSet,
 };
 use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
@@ -349,7 +349,7 @@ impl<C: Command> Member<C> {
                 tiers: TierSet::NONE,
                 at: self.now,
                 requests: SmallVec::new(),
-                extend: None,
+                extend: self.take_extend(),
                 body: EntryBody::Noop,
             };
             self.push_entry(e);
@@ -504,7 +504,7 @@ impl<C: Command> Member<C> {
             tiers: TierSet::NONE,
             at: self.now,
             requests: SmallVec::new(),
-            extend: None,
+            extend: self.take_extend(),
             body: EntryBody::Config(next),
         };
         let index = e.index;
@@ -950,7 +950,7 @@ impl<C: Command> Member<C> {
             tiers,
             at: self.now,
             requests,
-            extend: None,
+            extend: self.take_extend(),
             body: EntryBody::Events(events),
         };
         let index = e.index;
@@ -970,7 +970,7 @@ impl<C: Command> Member<C> {
             tiers: TierSet::CORE,
             at: self.now,
             requests: SmallVec::new(),
-            extend: None,
+            extend: self.take_extend(),
             body: EntryBody::IdBlock(block),
         };
         let index = e.index;
@@ -994,7 +994,7 @@ impl<C: Command> Member<C> {
             tiers,
             at: self.now,
             requests: smallvec::smallvec![(id, 0..n)],
-            extend: None,
+            extend: self.take_extend(),
             body: EntryBody::Events(events),
         };
         let index = e.index;
@@ -1526,9 +1526,35 @@ impl<C: Command> Member<C> {
         if ok { Ok(Fresh { fold: &self.fold.fold, index: grant.index }) } else { Err(self.not_leader()) }
     }
 
+    /// The `extend` of the next entry this leader appends (`design/DESIGN.md`, Shape, `ExtendLeases`): with a stall
+    /// recorded in `stalled_since`, `since` is the later of the marker and the `at` of the last entry the log holds, so
+    /// no lease that entry already judged expired is revived, and `by` runs to now. None while an unapplied entry in
+    /// the log already carries one, so one stall moves a lease once.
+    fn take_extend(&self) -> Option<ExtendLeases> {
+        let marker = self.state.stalled_since?;
+        let applied = self.fold.applied();
+        if self.log.iter().any(|e| e.index > applied && e.extend.is_some()) {
+            return None;
+        }
+        let last = self.log.last().map_or(Timestamp(0), |e| e.at);
+        let since = marker.max(last);
+        let by = std::time::Duration::from_millis(self.now.0.saturating_sub(since.0));
+        (!by.is_zero()).then_some(ExtendLeases { since, by })
+    }
+
     pub(super) fn tick_leader(&mut self) {
         let Some(lead) = &self.lead else { return };
         let now = self.now;
+        // A stall marker: this leader's entry in flight that no quorum acknowledged within CALL_DEADLINE. Like every
+        // marker it rides the member's next state write (`mark_stall`).
+        if let Some((index, _)) = &lead.pending
+            && let Some(at) = self.entry_at(*index).map(|e| e.at)
+            && *index > self.state.commit
+            && now >= after(at, CALL_DEADLINE)
+        {
+            self.state.stalled_since = Some(self.state.stalled_since.map_or(at, |m| m.min(at)));
+        }
+        let Some(lead) = &self.lead else { return };
         // A leader that has not served within one round's deadline gives up, as a resumed `led_term` does after its
         // round fails. It keeps `led_term`, so a later request may try to resume again.
         if !lead.ready && now >= after(lead.started, CAMPAIGN_DEADLINE) {
