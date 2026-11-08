@@ -1,7 +1,8 @@
 //! The agent settings endpoints (AM1-WP2; `design/AGENT-LAYER.md`, "API reference"): the install's `AgentApp` rows,
 //! an org's agent settings, and a repository's `AgentPolicy`, under `/api/graftyard/v1`. Each write commits one
 //! command on its chain under the caller's credential, and the leader's `decide` checks who may write it. Served only
-//! once `FormatsEnable` enabled the command's format (Authz 0x12.3, Repo 32.8); until then 503.
+//! once `FormatsEnable` enabled the command's format (Authz 0x12.3, Repo 32.8); until then 503. The task API
+//! (AM1-WP3) is routed here too, and served by `crate::api::tasks` once 32.12 is enabled.
 
 use graftyard_api::agents::{self, Route};
 use graftyard_identity::{AuthzCmd, AuthzFold, AuthzOp, AuthzRead, Principal};
@@ -41,11 +42,17 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
     let who = crate::authenticate(c, req).await?;
     let method = req.method();
     let body = match method {
-        Method::Put | Method::Patch => serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null),
+        Method::Put | Method::Patch | Method::Post => {
+            serde_json::from_slice::<Value>(&req.bytes().await?).unwrap_or(Value::Null)
+        }
         _ => Value::Null,
     };
     let r = match route {
         Route::Policy { owner, repo } => crate::api::agent_policy(c, req, owner, repo, who, method, &body).await?,
+        Route::Tasks(t) => {
+            let query = req.url()?.query().unwrap_or("").to_owned();
+            crate::api::tasks(c, t, who, method, &body, &query).await?
+        }
         _ => {
             let Some(who) = who else { return respond(c, Reply::error(401, "Requires authentication", "rest")) };
             authz_route(c, route, &who, method, &body).await?

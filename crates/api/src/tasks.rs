@@ -13,7 +13,9 @@ use graftyard_git::task::{
     NewTask, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective, task_core, task_ids,
     task_meta,
 };
-use graftyard_identity::{AppId, AuthzRead, RepoPermission, SessionId, UserId};
+use graftyard_identity::{
+    Access as AppAccess, Actor, AppId, AuthzRead, Credential, Principal, RepoPermission, SessionId, UserId,
+};
 use graftyard_raft::Acked;
 use graftyard_types::{AccountId, DbId, Timestamp};
 use graftyard_wire::{FieldError, Reply};
@@ -68,6 +70,27 @@ impl Reader {
         let r = perm >= Some(RepoPermission::Read);
         Reader { metadata: r, contents: r }
     }
+
+    /// The caller's, from the owner's `Authz` the edge read with the tiers: a user's role (`Reader::of_user`); an
+    /// installation token reaching the repository has `metadata: read`, as every installation does, and `contents:
+    /// read` when both its claims and its row grant `contents`. A public repository is readable by anyone signed in.
+    pub fn of(who: Option<&Principal>, owner: &dyn AuthzRead, repo: &graftyard_git::issue_ops::Access<'_>) -> Reader {
+        use graftyard_identity::RepoAccess as _;
+        let Some(p) = who else { return Reader { metadata: false, contents: false } };
+        let public = repo.visibility() == graftyard_identity::Visibility::Public;
+        let floor = Reader { metadata: public, contents: public };
+        let r = match (&p.actor, &p.credential) {
+            (Actor::App { .. }, Credential::Stateless(c)) => {
+                let folds = [owner];
+                let reach = graftyard_identity::app_permission(c, &folds, repo).is_some();
+                let contents = graftyard_identity::authorize_app(c, &[("contents", AppAccess::Read)], &folds, repo);
+                Reader { metadata: reach, contents: reach && contents == graftyard_identity::Decision::Allow }
+            }
+            (Actor::User(_), _) => Reader::of_user(graftyard_identity::permission(p, &[owner], repo)),
+            _ => floor,
+        };
+        Reader { metadata: r.metadata || floor.metadata, contents: r.contents || floor.contents }
+    }
 }
 
 // ---- rendering ----
@@ -81,6 +104,7 @@ fn actor_json(r: &Repo<'_>, a: TaskActor) -> Value {
 
 /// One task as `task` in the API reference, in the state it reads as at `at`. `prompt` is omitted without
 /// `contents: read`. `leases` is the single GET's, and empty until AM1-WP4 builds leases.
+#[allow(clippy::too_many_arguments)]
 pub fn task_json(
     r: &Repo<'_>,
     owner: &dyn AuthzRead,

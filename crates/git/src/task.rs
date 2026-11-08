@@ -542,10 +542,11 @@ pub fn decide(
             }
             // A Graftyard-run task the host paused may only be left paused or finished by its App.
             let to = state.unwrap_or(t.state);
-            if t.kind == TaskKind::GraftyardRun && t.state == TaskApiState::WaitingForUser {
-                if !(to == TaskApiState::WaitingForUser || to.is_final()) {
-                    return Err(TaskErr::Final(t.state));
-                }
+            if t.kind == TaskKind::GraftyardRun
+                && t.state == TaskApiState::WaitingForUser
+                && !(to == TaskApiState::WaitingForUser || to.is_final())
+            {
+                return Err(TaskErr::Final(t.state));
             }
             if t.kind == TaskKind::GraftyardRun && *state == Some(TaskApiState::Idle) {
                 return Err(TaskErr::Invalid("state"));

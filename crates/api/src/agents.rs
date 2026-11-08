@@ -23,6 +23,8 @@ pub enum Route<'p> {
     Org(&'p str),
     /// `/repos/{owner}/{repo}/agents/policy`
     Policy { owner: &'p str, repo: &'p str },
+    /// `/repos/{owner}/{repo}/tasks...` (AM1-WP3, `crate::tasks`).
+    Tasks(crate::tasks::Route<'p>),
 }
 
 pub fn route(rest: &str) -> Option<Route<'_>> {
@@ -32,7 +34,7 @@ pub fn route(rest: &str) -> Option<Route<'_>> {
         ["agents", "apps", id] => id.parse::<i64>().ok().filter(|i| *i > 0).map(|i| Route::App(AppId(DbId(i)))),
         ["orgs", org, "agents"] => Some(Route::Org(org)),
         ["repos", owner, repo, "agents", "policy"] => Some(Route::Policy { owner, repo }),
-        _ => None,
+        _ => crate::tasks::route(rest).map(Route::Tasks),
     }
 }
 
@@ -189,6 +191,8 @@ mod tests {
         assert_eq!(route("/agents/apps/x"), None);
         assert_eq!(route("/orgs/acme/agents"), Some(Route::Org("acme")));
         assert_eq!(route("/repos/o/r/agents/policy"), Some(Route::Policy { owner: "o", repo: "r" }));
+        let t = crate::tasks::Route::Tasks { owner: "o", repo: "r" };
+        assert_eq!(route("/repos/o/r/tasks"), Some(Route::Tasks(t)));
         assert_eq!(route("/repos/o/r/agents"), None);
     }
 

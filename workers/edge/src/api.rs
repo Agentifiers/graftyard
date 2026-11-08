@@ -377,6 +377,20 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
 
 /// Commits an issue command and returns the reply its leader rendered.
 async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobRef>, what: What) -> Result<Reply> {
+    commit_issue_in(c, rd, who, op, what, None).await
+}
+
+/// `commit_issue` with the session a pull request's creator named in `X-Graftyard-Agent-Session` (AM1-WP3), which
+/// `decide` records in `AgentMeta` only for a task of the creating App. Carried only on `OpenPr` by an App's token or
+/// a user-to-server token, and only once 32.12 is enabled; otherwise the header changes nothing.
+async fn commit_issue_in(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+    session: Option<graftyard_identity::SessionId>,
+) -> Result<Reply> {
     if !c.cfg.enabled.contains(&REPO_FORMAT_ISSUES) {
         return Ok(unavailable(&format!(
             "issue writes need record format {}.{}, which FormatsEnable has not enabled on this install",
@@ -395,6 +409,9 @@ async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobR
         _ => false,
     };
     call.agent = agent_event && c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT);
+    if call.agent && matches!(call.op, IssueOp::OpenPr { .. }) {
+        call.session = session.filter(|_| c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS));
+    }
     if !c.cfg.enabled.contains(&call.format()) {
         let f = call.format();
         return Ok(unavailable(&format!(
@@ -476,6 +493,129 @@ pub(crate) async fn agent_policy(
         },
         _ => Ok(Reply::error(405, "Method Not Allowed", "graftyard/agents")),
     }
+}
+
+/// The task API under `/api/graftyard/v1/repos/{o}/{r}/tasks` (AM1-WP3, `graftyard_api::tasks`), served only once
+/// `FormatsEnable` enabled 32.12; until then 503. Reads render the repository's tiers and the owner's `Authz` from one
+/// `read`, so an uninstalled App's tasks read cancelled with no sweep; writes commit an `IssueCall` whose leader renders
+/// the reply from the `&Acked`.
+pub(crate) async fn tasks(
+    c: &Ctx<'_>,
+    route: graftyard_api::tasks::Route<'_>,
+    who: Option<Principal>,
+    method: Method,
+    body: &Value,
+    query: &str,
+) -> Result<Reply> {
+    use graftyard_api::tasks::{self as t, Route};
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS) {
+        return Ok(unavailable("the task API needs record format 32.12, which FormatsEnable has not enabled"));
+    }
+    let (Route::Tasks { owner, repo }
+    | Route::Task { owner, repo, .. }
+    | Route::Cancel { owner, repo, .. }
+    | Route::Log { owner, repo, .. }) = route;
+    let rd = match read(c, owner, repo, who.as_ref()).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let Some(authz) = rd.dir.authz.clone() else {
+        return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let reader = t::Reader::of(who.as_ref(), &authz, &access);
+    let Ok(host) = Host::new(&c.cfg.host, false) else { return Ok(unavailable("the install's host is not valid")) };
+    let view = rd.view(&host);
+    let caller = who.as_ref().and_then(|p| match p.actor {
+        Actor::App { app, .. } => Some(app),
+        _ => None,
+    });
+    let op = match (route, method) {
+        (Route::Tasks { .. }, Method::Get) => {
+            let f = match t::parse_filter(query, &|l| graftyard_api::view::Directory::by_login(&rd.dir, l)) {
+                Ok(f) => f,
+                Err(r) => return Ok(r),
+            };
+            return Ok(t::list(&view, &authz, crate::now(), &f, reader, &format!("/repos/{owner}/{repo}/tasks")));
+        }
+        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, &authz, crate::now(), id, reader)),
+        (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
+        (Route::Tasks { .. }, Method::Post) => {
+            let requester = match body.get("requester").and_then(Value::as_str) {
+                Some(login) => match crate::account_of(c, login).await {
+                    Ok(a) => a.map(graftyard_identity::UserId),
+                    Err(e) => return Ok(unavailable(&e)),
+                },
+                None => None,
+            };
+            t::parse_create(body, requester).map(IssueOp::CreateTask)
+        }
+        (Route::Task { id, .. }, Method::Patch) => match t::path_id(id, caller) {
+            Some(id) => t::parse_patch(id, body),
+            None => return Ok(Reply::not_found()),
+        },
+        (Route::Cancel { id, .. }, Method::Post) => match t::path_id(id, caller) {
+            Some(id) => Ok(IssueOp::CancelTask { id }),
+            None => return Ok(Reply::not_found()),
+        },
+        _ => return Ok(Reply::error(405, "Method Not Allowed", "graftyard/tasks")),
+    };
+    let op = match op {
+        Ok(op) => op,
+        Err(r) => return Ok(r),
+    };
+    let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+    let created = matches!(op, IssueOp::CreateTask(_));
+    commit_issue(c, &rd, &who, op, What::Task { created, contents: reader.contents }).await
+}
+
+/// The `graftyard_task` field of an installation token request (AM1-WP3, `design/SHARED.md`, "Identity and tokens"):
+/// the task's repository is the one the grant names, its tiers and its owner's `Authz` are read fresh, and
+/// `graftyard_git::task::token_task` decides. `Ok(Err(reply))` is GitHub's 422, or 503 while 32.12 is not enabled.
+pub(crate) async fn task_claim(
+    c: &Ctx<'_>,
+    owner_authz: &AuthzFold,
+    grant: &graftyard_identity::stateless::Grant,
+    owner: graftyard_types::AccountId,
+    field: &Value,
+) -> Result<std::result::Result<graftyard_identity::SessionId, Reply>> {
+    let doc = "rest/apps/apps#create-an-installation-access-token-for-an-app";
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_TASKS) {
+        return Ok(Err(unavailable("graftyard_task needs record format 32.12, which FormatsEnable has not enabled")));
+    }
+    let Some(session) = field.as_str().and_then(|s| graftyard_identity::SessionId::parse(s, None)) else {
+        return Ok(Err(Reply::error(422, "graftyard_task is not a task id", doc)));
+    };
+    let repo = match &grant.repos {
+        graftyard_identity::RepoScope::Selected(ids) if !ids.is_empty() => ids[0],
+        _ => {
+            return Ok(Err(Reply::error(422, &graftyard_git::task::TaskTokenError::NeedsRepositories.to_string(), doc)));
+        }
+    };
+    let Ok(Some(record)) = crate::placement(c, owner).await else {
+        return Ok(Err(Reply::error(422, "no such repository", doc)));
+    };
+    let repo = crate::Repo { id: repo, owner, record };
+    let (rows, install) = futures_util::future::join(tier_rows(c, &repo, None), crate::install_authz(c)).await;
+    let rows = match rows? {
+        Ok(v) => match serde_json::from_value::<TierRows>(v["value"].clone()) {
+            Ok(r) if r.complete => r,
+            _ => return Ok(Err(unavailable("the task's repository could not be read; retry"))),
+        },
+        Err(r) => return Ok(Err(r)),
+    };
+    let core = TierRows::store(&rows.core);
+    let checked = graftyard_git::task::token_task(
+        &core,
+        owner_authz,
+        install.as_ref().map(|a| a as &dyn graftyard_identity::AuthzRead),
+        crate::now(),
+        grant.app,
+        repo.id,
+        &grant.repos,
+        &session,
+    );
+    Ok(checked.map_err(|e| Reply::error(422, &e.to_string(), doc)))
 }
 
 /// A merge's conflict, as `mergePullRequest` reports it [unverified: GitHub's text for a conflicting merge].
@@ -631,6 +771,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 // ---- GraphQL ----
 
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
+    let session = req.headers().get("x-graftyard-agent-session")?;
     let body: Value = req.json().await.unwrap_or(Value::Null);
     let q = body["query"].as_str().unwrap_or("").to_owned();
     let vars = body["variables"].as_object().cloned();
@@ -735,7 +876,13 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     match p.plan.clone() {
         graphql::Plan::Issue(op) => {
             let op = op.map_blob(|b| Ok::<_, ()>(b.blob())).expect("no blob");
-            commit_issue(c, &rd, &who, op, what).await
+            // A bare name is scoped to the calling App, as in the task API's paths.
+            let app = match who.actor {
+                Actor::App { app, .. } => Some(app),
+                _ => c.token_app.get(),
+            };
+            let session = session.as_deref().and_then(|s| graftyard_identity::SessionId::parse(s, app));
+            commit_issue_in(c, &rd, &who, op, what, session).await
         }
         graphql::Plan::Merge { .. } => {
             let req = match graphql::merge_request(&p, &r) {
