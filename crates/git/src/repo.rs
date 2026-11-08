@@ -58,10 +58,11 @@ pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
 /// `FormatsEnable` has enabled it; a command without a task and without a claim never takes it.
 pub const REPO_FORMAT_TASKS: Format = Format { family: 0x20, version: 12 };
 /// AM1-WP4's leases and `PathSet`: the lease commands (`crate::lease`) and their events `LeaseAcquire`, `LeaseRenew`,
-/// and `LeaseRelease` (tags 33 to 35), and `PathSet` (36). A superset of 32.12: a push or issue command the edge marks
-/// `leases` (`Push::leases`, `IssueCall::leases`) encodes as 32.12 does and may write those events, and a push stores
-/// a per-ref `Leased` refusal. Version 13 is another package's. An edge sends it only once `FormatsEnable` has enabled
-/// it; a command without the mark never takes it, so every earlier form keeps its bytes.
+/// and `LeaseRelease` (tags 35 to 37), and `PathSet` (38); tags 33 and 34 are 32.13's `Created` and `Deleted`. A
+/// superset of 32.12: a push or issue command the edge marks `leases` (`Push::leases`, `IssueCall::leases`) encodes as
+/// 32.12 does and may write those events, and a push stores a per-ref `Leased` refusal. Version 13 is another
+/// package's. An edge sends it only once `FormatsEnable` has enabled it; a command without the mark never takes it, so
+/// every earlier form keeps its bytes.
 pub const REPO_FORMAT_LEASES: Format = Format { family: 0x20, version: 14 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
@@ -307,7 +308,7 @@ pub enum RepoEvent {
         summary: Option<Box<str>>,
         actor: crate::task::TaskActor,
     },
-    // AM1-WP4, format 32.14: tags 33 to 36.
+    // AM1-WP4, format 32.14: tags 35 to 38 (33 and 34 are 32.13's `Created` and `Deleted`).
     /// Core. `granted` is the entry's `at`. `plan` is the draft pull request whose `graftyard-plan` block declared it
     /// (the design's `plan_block: bool`, with the number its liveness reads).
     LeaseAcquire {
@@ -1609,11 +1610,11 @@ impl Record for RepoEvent {
             RepoEvent::TaskUpdated { session, state, pr, summary, actor } => {
                 return tagged(out, 32, &(session, state, pr, summary, actor));
             }
-            // AM1-WP4: tags 33 to 36.
-            RepoEvent::LeaseAcquire { lease, plan } => return tagged(out, 33, &(lease, plan)),
-            RepoEvent::LeaseRenew { id, expires } => return tagged(out, 34, &(id, expires)),
-            RepoEvent::LeaseRelease { ids, by } => return tagged(out, 35, &(ids, by)),
-            RepoEvent::PathSet(p) => return tagged(out, 36, p),
+            // AM1-WP4: tags 35 to 38.
+            RepoEvent::LeaseAcquire { lease, plan } => return tagged(out, 35, &(lease, plan)),
+            RepoEvent::LeaseRenew { id, expires } => return tagged(out, 36, &(id, expires)),
+            RepoEvent::LeaseRelease { ids, by } => return tagged(out, 37, &(ids, by)),
+            RepoEvent::PathSet(p) => return tagged(out, 38, p),
         };
         e.u8(0);
         e.u128(push.0.0);

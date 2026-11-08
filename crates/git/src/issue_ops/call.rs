@@ -249,8 +249,14 @@ impl IssueCall {
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueCallOut), IssueErr> {
         let cmd = self.cmd()?;
-        // A member whose metadata tier is still loading cannot decide on it.
-        let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
+        // A member whose metadata tier is still loading cannot decide on it. A lease command reads the core tier
+        // alone (L0-16), so it decides there with an empty metadata view.
+        let empty = graftyard_fold::MemStore::default();
+        let (core, meta) = match s.view() {
+            Some(v) => v,
+            None if self.op.is_lease() => (s.core(), &empty as &dyn graftyard_fold::Read),
+            None => return Err(IssueErr::Unavailable),
+        };
         // The entry's time: an invitation's `expires` is set from it and checked against it.
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
         let leases = self.format() == crate::repo::REPO_FORMAT_LEASES;
