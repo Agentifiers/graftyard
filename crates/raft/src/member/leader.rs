@@ -919,8 +919,12 @@ impl<C: Command> Member<C> {
         let mut decided = Vec::with_capacity(batch.len());
         let mut tiers = TierSet::NONE;
         let mut format = Format { family: 0, version: 0 };
+        let extend = self.take_extend();
         {
             let mut s = self.fold.fold.scratch_at(self.now, TierSet(u8::MAX));
+            if let Some(x) = extend {
+                s.extend(x);
+            }
             for q in &batch {
                 tiers = tiers.union(q.cmd.tiers());
                 format = format.max(q.cmd.format());
@@ -950,7 +954,7 @@ impl<C: Command> Member<C> {
             tiers,
             at: self.now,
             requests,
-            extend: self.take_extend(),
+            extend,
             body: EntryBody::Events(events),
         };
         let index = e.index;

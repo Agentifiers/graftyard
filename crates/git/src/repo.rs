@@ -606,6 +606,13 @@ pub fn dir_or_file(a: &RefName, b: &RefName) -> bool {
 impl Scratch for RepoScratch<'_> {
     type Event = RepoEvent;
 
+    /// `ExtendLeases` on the core tier, as `RepoTiers::on_extend` applies it.
+    fn extend(&mut self, x: graftyard_raft::ExtendLeases) {
+        if has(self.tag, Tier::Core) {
+            crate::lease::extend(&mut self.core, x.since, x.by);
+        }
+    }
+
     /// Writes the event into the tiers the entry's tag names, as `apply` will.
     fn apply(&mut self, ev: &RepoEvent) {
         let (t, set) = (self.base.tiers(), tier_of(ev));
