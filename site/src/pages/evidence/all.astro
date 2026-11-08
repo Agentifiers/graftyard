@@ -1,0 +1,118 @@
+---
+// Every check, benchmark and baseline, as the repository records them: tests/RESULTS.md's tables and every
+// milestone's status and gate tables from build/BUILD-PLAN.md, read at build time (src/data/evidence.ts).
+import Page from '../../layouts/Page.astro';
+import Table from '../../components/Table.astro';
+import { ledger, gates, counts, inline, type Table as T } from '../../data/evidence';
+
+// a result cell opens with its verdict; colour the verdict, never the evidence after it
+const GOOD = /^(<b>)?(Pass(es)?( hosted| as reworded)?|Done|Ok|OK)(\.?<\/b>)?/;
+const BAD = /^(<b>)?(Fail(s|ed)?|Not passed|Not run|Not closed|Illegal|Between pass and fail|Partial( pass)?)(\.?<\/b>)?/i;
+const verdictCol = (head: string[]) => head.findIndex((h) => /^(State|Result)$/i.test(h));
+const mark = (html: string) => {
+  for (const [re, cls] of [[GOOD, 'ok'], [BAD, 'no']] as const) {
+    const m = html.match(re);
+    if (m) return `<span class="${cls}">${m[0]}</span>${html.slice(m[0].length)}`;
+  }
+  return html;
+};
+const render = (t: T) => {
+  const v = verdictCol(t.head);
+  return t.rows.map((r) => r.map((c, i) => (i === v ? mark(inline(c)) : inline(c))));
+};
+const ran = gates.filter((p) => !p.planned);
+const planned = gates.filter((p) => p.planned);
+const asOf = new Date().toISOString().slice(0, 10);
+---
+<Page title="All results: every check, benchmark and baseline | Graftyard"
+  description="Every recorded Graftyard test run, gate and pass line: the results ledger and every milestone's status and acceptance tables, straight from the repository."
+  current="evidence" doc>
+<style is:global slot="head">
+/* this page's cells run long: code wraps, and the ledger's evidence tags stay quiet */
+.all .dt code { white-space: normal; overflow-wrap: anywhere; }
+.all .dt td { font-size: var(--t-small); }
+.all .tag, .tag { color: var(--muted); font-size: 0.86em; border: 1px solid var(--line-strong); border-radius: 4px; padding: 0 0.3em; white-space: nowrap; }
+.nw { white-space: nowrap; }
+.all h3 { margin-top: var(--s-8); }
+.all h3 + .note { margin-top: var(--s-3); }
+.all .tbl-label { margin-top: var(--s-6); font-weight: 500; color: var(--muted); }
+.toc { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--s-2) var(--s-6); margin: var(--s-7) 0 0; padding: 0; list-style: none; }
+.toc a { display: block; padding: var(--s-2) 0; border-top: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+.toc a:hover { color: var(--accent); }
+.toc .muted { color: var(--muted); }
+details.planned { border-top: 1px solid var(--line); padding: var(--s-5) 0; }
+details.planned > summary { cursor: pointer; font: 500 var(--t-lead)/1.3 var(--font-display); color: var(--ink); }
+details.planned > summary::marker { color: var(--muted); }
+</style>
+  <section class="section" aria-labelledby="all-h">
+    <div class="wrap">
+      <div class="doc-head">
+        <p class="eyebrow"><a href="/evidence/">Evidence</a> / All results</p>
+        <h1 id="all-h">Every check, benchmark and baseline</h1>
+        <p class="t-lead">This page is the repository's own record, unedited: the results ledger, then each milestone's status and the pass and fail lines of every work package's gate. It lists {counts.rows.toLocaleString('en-GB')} rows in {counts.tables} tables, failures and unrun rows included. For the short version, see the <a href="/evidence/">overview</a>.</p>
+      </div>
+      <ul class="toc">
+        <li><a href={`#${ledger.id}`}>{ledger.title}</a></li>
+        {ran.map((p) => <li><a href={`#${p.id}`}>{p.title}</a></li>)}
+        <li><a href="#planned">Gates not yet run <span class="muted">({planned.length} milestones)</span></a></li>
+      </ul>
+      <p class="note">Built {asOf} from <code>tests/RESULTS.md</code> and <code>build/BUILD-PLAN.md</code>. Paths in the tables are files in the Graftyard repository. Evidence tags: <span class="tag">measured</span> was run; <span class="tag">doc</span> comes from vendor documentation; <span class="tag">inference</span> and <span class="tag">guess</span> are reasoned, not run.</p>
+    </div>
+  </section>
+
+  <section class="section all" id={ledger.id} aria-labelledby={`${ledger.id}-h`}>
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">tests/RESULTS.md</p>
+        <h2 id={`${ledger.id}-h`}>{ledger.title}</h2>
+        {ledger.intro.map((p) => <p set:html={inline(p)} />)}
+      </div>
+      {ledger.blocks.map((b) => (
+        <>
+          <h3 id={`${ledger.id}-${b.id}`} set:html={inline(b.title)} />
+          {b.intro.map((p) => <p class="note" set:html={inline(p)} />)}
+          {b.tables.map((t) => <>{t.label && <p class="tbl-label">{t.label}</p>}<Table head={t.head.map((h) => inline(h).replace(/<[^>]+>/g, ''))} rows={render(t)} /></>)}
+        </>
+      ))}
+    </div>
+  </section>
+
+  {ran.map((p) => (
+    <section class="section all" id={p.id} aria-labelledby={`${p.id}-h`}>
+      <div class="wrap">
+        <div class="sec-head">
+          <p class="eyebrow">build/BUILD-PLAN.md</p>
+          <h2 id={`${p.id}-h`} set:html={inline(p.title)} />
+        </div>
+        {p.blocks.map((b) => (
+          <>
+            <h3 id={`${p.id}-${b.id}`} set:html={inline(b.title)} />
+            {b.intro.map((x) => <p class="note" set:html={inline(x)} />)}
+            {b.tables.map((t) => <>{t.label && <p class="tbl-label">{t.label}: the gate's pass and fail lines</p>}<Table head={t.head} rows={render(t)} /></>)}
+          </>
+        ))}
+      </div>
+    </section>
+  ))}
+
+  <section class="section all" id="planned" aria-labelledby="planned-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">build/BUILD-PLAN.md</p>
+        <h2 id="planned-h">Gates not yet run</h2>
+        <p>Later milestones' pass and fail lines, fixed before the code is written. Nothing below has a result yet.</p>
+      </div>
+      {planned.map((p) => (
+        <details class="planned" id={p.id}>
+          <summary set:html={inline(p.title)} />
+          {p.blocks.map((b) => (
+            <>
+              <h3 id={`${p.id}-${b.id}`} set:html={inline(b.title)} />
+              {b.tables.map((t) => <Table head={t.head} rows={render(t)} />)}
+            </>
+          ))}
+        </details>
+      ))}
+    </div>
+  </section>
+</Page>
