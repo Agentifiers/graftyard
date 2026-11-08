@@ -1528,7 +1528,45 @@ impl<F: Family> Routes<F> {
     /// `graft-ops` cron over Analytics Engine counters; a test install has neither, so its driver posts the load here.
     async fn learners(&self, body: Value) -> Result<Response> {
         let load: graftyard_types::GroupLoad = serde_json::from_value(body["load"].clone())?;
-        let regions = graftyard_types::place_learners(&load);
+        let mut regions = graftyard_types::place_learners(&load);
+        // The activity feed's half (`design/AGENT-LAYER.md`, "Activity feed"): with `{"feed": true}`, each voter's
+        // reported peak held polls and refusals (`/status` `feed`) add learners until held plus refused fit in half
+        // of FEED_HELD_MAX each (`graftyard_git::feed::learners_for_feed`), in the busiest read regions first, then
+        // the voters' own regions.
+        let mut feed = Vec::new();
+        if body["feed"].as_bool() == Some(true) {
+            let voters = {
+                let core = self.host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+                c.m.committed_config().map(|c| match &c.1 {
+                    raft::GroupConfig::Normal(p) => p.voters().to_vec(),
+                    _ => Vec::new(),
+                })
+            };
+            let site = SiteEnv::read(&self.host.env)?;
+            let mut reports = Vec::new();
+            for v in voters.unwrap_or_default() {
+                let stub = site.member(&self.host.env, v.site, &v.do_name)?;
+                let Ok(mut r) = stub.fetch_with_str("https://member/status").await else { continue };
+                let Ok(st) = r.json::<Value>().await else { continue };
+                let peak = st.pointer("/feed/peak").and_then(Value::as_u64).unwrap_or(0) as u32;
+                let refused = st.pointer("/feed/refused").and_then(Value::as_u64).unwrap_or(0) as u32;
+                feed.push(json!({ "site": v.site.0, "peak": peak, "refused": refused }));
+                reports.push((peak, refused));
+            }
+            let want = graftyard_git::feed::learners_for_feed(&reports);
+            let order: Vec<graftyard_types::Region> = load
+                .reads
+                .iter()
+                .map(|(g, _)| *g)
+                .chain(site.sites.0.iter().filter(|s| !s.spare).map(|s| s.region))
+                .collect();
+            let mut k = 0;
+            while regions.len() < want && !regions.is_full() && !order.is_empty() {
+                regions.push(order[k % order.len()]);
+                k += 1;
+            }
+        }
         let (chain, record, cfg, c_owner, c_genesis) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
@@ -1586,7 +1624,7 @@ impl<F: Family> Routes<F> {
             Err(e) => return self.reply(json!({ "error": e.to_string(), "joined": joined })),
         };
         match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
-            Ok(i) => self.reply(json!({ "regions": regions, "learners": joined, "configIndex": i })),
+            Ok(i) => self.reply(json!({ "regions": regions, "learners": joined, "configIndex": i, "feed": feed })),
             Err(e) => self.reply(json!({ "error": e, "learners": joined })),
         }
     }

@@ -452,9 +452,9 @@ thread_local! {
         const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
 }
 
-/// The group's members a poll may go to: learners first, then the voters (the member route refuses a leader or
-/// witness, so the edge never needs to know which voter leads). Read from the leader's committed config at most once a
-/// minute per isolate.
+/// The group's members a poll may go to: learners first, then the voters but the one the status names as leader (the
+/// member route also refuses a leader or witness). Read from a voter's committed config at most once a minute per
+/// isolate.
 async fn feed_members(c: &Ctx<'_>, repo: &crate::Repo) -> Vec<(graftyard_types::SiteId, String, bool)> {
     let now = crate::now().0;
     if let Some((at, m)) = FEED_MEMBERS.with(|f| f.borrow().get(&repo.id.0.0).cloned())
@@ -462,23 +462,35 @@ async fn feed_members(c: &Ctx<'_>, repo: &crate::Repo) -> Vec<(graftyard_types::
     {
         return m;
     }
-    let mut out = Vec::new();
     let chain = ChainId::Repo(repo.id);
-    // The committed config, from the first voter that answers `/status` (every member carries it there).
-    for m in repo.record.bootstrap_members(chain) {
-        let stub = c.bindings().member(m.site, &m.do_name).ok();
-        let Some(stub) = stub else { continue };
-        let Ok(mut r) = stub.fetch_with_str("https://member/status").await else { continue };
-        let Ok(v) = r.json::<Value>().await else { continue };
-        let Some(cfg) = v.pointer("/config/config").cloned() else { continue };
-        let Ok(cfg) = serde_json::from_value::<graftyard_raft::GroupConfig>(cfg) else { continue };
+    // Every voter's `/status` at once: the committed config (every member carries it) names the learners, and a
+    // voter whose status says it leads is left out, so the leader sees no feed request (L0-15). A leader elected
+    // since answers `notServing`, which drops this cache (`activity`).
+    let status = |site: graftyard_types::SiteId, name: String| async move {
+        let stub = c.bindings().member(site, &name).ok()?;
+        let mut r = stub.fetch_with_str("https://member/status").await.ok()?;
+        r.json::<Value>().await.ok()
+    };
+    let voters = repo.record.bootstrap_members(chain);
+    let seen = futures_util::future::join_all(voters.iter().map(|m| status(m.site, m.do_name.to_string()))).await;
+    let leading: Vec<graftyard_types::SiteId> = voters
+        .iter()
+        .zip(&seen)
+        .filter(|(_, v)| v.as_ref().is_some_and(|v| v["role"] == "leader"))
+        .map(|(m, _)| m.site)
+        .collect();
+    let mut out = Vec::new();
+    if let Some(cfg) = seen.iter().flatten().find_map(|v| v.pointer("/config/config").cloned())
+        && let Ok(cfg) = serde_json::from_value::<graftyard_raft::GroupConfig>(cfg)
+    {
         let p = match &cfg {
             graftyard_raft::GroupConfig::Normal(p) | graftyard_raft::GroupConfig::Degraded { placement: p, .. } => p,
             graftyard_raft::GroupConfig::Joint { new, .. } => new,
         };
         out.extend(p.learners().iter().map(|l| (l.site, l.do_name.to_string(), true)));
-        out.extend(p.voters().iter().map(|l| (l.site, l.do_name.to_string(), false)));
-        break;
+        out.extend(
+            p.voters().iter().filter(|l| !leading.contains(&l.site)).map(|l| (l.site, l.do_name.to_string(), false)),
+        );
     }
     FEED_MEMBERS.with(|f| f.borrow_mut().insert(repo.id.0.0, (now, out.clone())));
     out
@@ -537,6 +549,10 @@ pub(crate) async fn activity(
                 answers.push((Admit::Lagging, role, lag, i));
             }
             Some("notServing") if *learner => learner_answered = true,
+            // A voter that leads now: the cached members are stale.
+            Some("notServing") => {
+                FEED_MEMBERS.with(|f| f.borrow_mut().remove(&rd.repo.id.0.0));
+            }
             _ => {}
         }
     }

@@ -65,6 +65,9 @@ pub struct Feed {
     pub gap: bool,
     /// Applied entries waiting for the owner's `Authz` before the ring takes them.
     pub pending: Vec<(Index, Timestamp, Vec<graftyard_git::repo::RepoEvent>)>,
+    /// Every `/feed` that reached this member while it led, and in all: LF-12 and L0-15 count them.
+    pub leader_polls: u64,
+    pub polls: u64,
     /// Held polls per token and per IP.
     by_token: BTreeMap<String, u8>,
     by_ip: BTreeMap<String, u16>,
@@ -84,6 +87,8 @@ impl Default for Feed {
             installing: false,
             gap: false,
             pending: Vec::new(),
+            leader_polls: 0,
+            polls: 0,
             by_token: BTreeMap::new(),
             by_ip: BTreeMap::new(),
             waiters: Vec::new(),
@@ -125,7 +130,8 @@ impl Feed {
         let (floor, newest) = self.ring.bounds();
         json!({ "held": self.serving.held, "peak": self.serving.peak, "refused": self.serving.refused,
                 "floor": floor.0, "through": newest.0, "events": self.ring.events.len(),
-                "following": self.following().following(), "lagMs": self.following().lag.as_millis() as u64 })
+                "following": self.following().following(), "lagMs": self.following().lag.as_millis() as u64,
+                "polls": self.polls, "leaderPolls": self.leader_polls })
     }
 }
 
@@ -249,6 +255,10 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
         // What this member has applied and heard of, for `Following` before any input since boot fed it.
         let f = of(repo);
         let mut f = f.borrow_mut();
+        f.polls += 1;
+        if role == FeedRole::Leader {
+            f.leader_polls += 1;
+        }
         let applied = c.m.group_fold().applied();
         if let Some(e) = c.m.log().last() {
             f.leader_at = f.leader_at.max(e.at);

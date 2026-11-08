@@ -523,6 +523,21 @@ impl Family for Repo {
                 crate::tier::handle(&*c.m.group_fold().fold.core).fail_next_read();
                 Ok(json!({ "failRead": true }))
             })()),
+            // Test installs (L0-16): `{"metaUnload": true}` holds this member's metadata tier unloaded and counts
+            // every read of it; `false` releases it (the alarm then loads it). Either answers the reads counted.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("metaUnload").is_some() => Some((|| {
+                let core = host.core.borrow();
+                let c = core.as_ref().ok_or_else(|| crate::host::err("member not joined"))?;
+                let m = crate::tier::handle(&*c.m.group_fold().fold.meta);
+                let reads = match body["metaUnload"].as_bool() {
+                    Some(h) => m.hold_unloaded(h),
+                    None => m.reads_while_held().unwrap_or(0),
+                };
+                Ok(
+                    json!({ "metaUnload": body["metaUnload"], "metaReads": reads, "loaded": m.reads_while_held().is_none() }),
+                )
+            })()),
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("load").is_some() => Some(crate::snap::bench_load(host, &body["load"]).await),
             // Test installs: the object's alarm as storage holds it, and the host's own idea of it.
