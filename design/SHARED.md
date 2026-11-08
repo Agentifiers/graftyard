@@ -1038,8 +1038,10 @@ Graftyard ships one signed release in every mode. `design/DESIGN.md`, "Deploymen
 
 ## Frontend and native app
 
-**Web.** React 19 with Primer React, the stack GitHub itself ships (`research/clients.md#62`-`#64`).
+**Web.** React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI with ReUI's free components, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It replaces Primer React, the stack GitHub itself ships (`research/clients.md#62`-`#64`).
 
+- SPA mode builds static assets and one HTML shell, with no server functions or server routes, so the app adds no runtime to any mode.
+- One TanStack Query `queryOptions` per page region is the unit the edge seeds when it inlines the first route's data, and the unit each region's error boundary retries.
 - The app reads data through the same public GraphQL and REST endpoints that clients use, with persisted queries, plus a small private `/_t/ui/*` API for diffs, file trees, and blame computed by the git cache.
 - Dogfooding the public API means a UI regression is often a wire regression caught by the same oracles.
 - There is no Node server-side rendering tier, because that would add a runtime and a stateful-looking fleet to every mode.
