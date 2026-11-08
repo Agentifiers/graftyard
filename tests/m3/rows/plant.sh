@@ -16,8 +16,10 @@ run() {
 	cargo test -j 4 -q --no-fail-fast -p graftyard-git --test push --test issues --test agent_gates 2>&1 |
 		grep -E "^    [a-z0-9_]+$|test result" | sort -u
 }
+# `PLANTS_ONLY=a,b` runs only those plants.
 plant() {
 	local name=$1 file=$2 old=$3 new=$4
+	if [ -n "${PLANTS_ONLY:-}" ] && [[ ",$PLANTS_ONLY," != *",$name,"* ]]; then return; fi
 	python3 - "$file" "$old" "$new" <<'PY' || { echo "PLANT $name: pattern not found"; return; }
 import sys
 p, old, new = sys.argv[1:]
