@@ -1219,6 +1219,7 @@ impl<F: Family> Host<F> {
             drop(guard);
             return Err(self.fire(fl, out, stmts));
         }
+        F::stepped(&core.m, &core.join, applied0, applied, &out);
         core.applied = applied;
         let early = std::mem::take(&mut out.early);
         if wrote {

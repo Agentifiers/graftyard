@@ -926,6 +926,8 @@ impl<F: Family> Routes<F> {
             "commit": s.commit.0,
             "applied": s.applied.0,
             "promiseUntil": s.promise_until.0,
+            // AM1-WP4's recorded stall, persisted in the member's state row: L0-12 reads it hosted.
+            "stalledSince": s.stalled_since.map(|t| t.0),
             "boots": [s.boots[0].0, s.boots[1].0],
             "boot": c.m.boot().to_string(),
             "meta": meta(&c.m),
@@ -933,6 +935,11 @@ impl<F: Family> Routes<F> {
             "boot1": c.m.digest_of(raft::Index(1)).map(|d| d.hex()),
             "family": format!("{:?}", Kind::of(&c.join)),
             "restores": self.host.stats.borrow().restores,
+            // A repository member's activity feed: held, peak held, refusals, and its ring, for `place_learners`.
+            "feed": match c.join.chain {
+                graftyard_types::ChainId::Repo(r) => crate::feed::FEEDS.with(|f| f.borrow().get(&r).map(|f| f.borrow().status())),
+                _ => None,
+            },
             "now": now_ms(),
         })
     }

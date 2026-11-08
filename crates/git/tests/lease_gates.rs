@@ -778,3 +778,57 @@ fn a_cancel_releases_the_tasks_leases_and_the_feed_reports_each_change() {
     assert!(matches!(&got[..], [ActivityEvent::AgentPush { paths, .. }] if paths.len() == 2), "{got:?}");
     assert!(got[0].matches(&["f/**"]) && !got[0].matches(&["docs/**"]));
 }
+
+/// The serving member's `feed::Ring` (AM1 hosted half), fed each applied entry as the site host feeds it, gives the
+/// same events as `feed::events` on the same real entries, in order, and serves a poll past a cursor with `paths`.
+#[test]
+fn the_ring_a_serving_member_keeps_matches_the_pure_feed() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "ring", Some(WRITER));
+    let mut ring = feed::Ring::default();
+    let mut want: Vec<(graftyard_types::Index, ActivityEvent)> = Vec::new();
+    let step = |w: &mut World, ring: &mut feed::Ring, c: RepoCmd, want: &mut Vec<_>| {
+        let before = w.fold();
+        let l = w.repo.leader();
+        let at0 = w.repo.members[l.0 as usize].log().last().unwrap().at;
+        w.commit(c).unwrap();
+        let after = w.fold();
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = &e.body else { unreachable!() };
+        for x in feed::events(REPO, &w.ident.owner, (&before.core, at0), (&after.core, &after.meta, e.at), evs) {
+            want.push((e.index, x));
+        }
+        ring.feed(REPO, &w.ident.owner, &after.core, &after.meta, (e.index, e.at, evs));
+    };
+    let c = issue(app(CLAUDE), new_lease(&["f/**"], LeaseMode::Shared, Some("ring"), Some(60)));
+    step(&mut w, &mut ring, c, &mut want);
+    let start = ring.through;
+    let c = issue(app(CLAUDE), shared(&["h/**"], Some("ring")));
+    step(&mut w, &mut ring, c, &mut want);
+    w.now = graftyard_types::Timestamp(w.now.0 + 61_000);
+    let mut p = push(app(CLAUDE), vec![up("refs/heads/claude/ring", None, Some(oid(92)))], &["f/a.rs"]);
+    p.leases = true;
+    step(&mut w, &mut ring, RepoCmd::Push(p), &mut want);
+    let s = ext(CLAUDE, "ring");
+    let cancel = marked(&mut w, user(WRITER), IssueOp::CancelTask { id: s });
+    step(&mut w, &mut ring, cancel, &mut want);
+    let got: Vec<(graftyard_types::Index, ActivityEvent)> =
+        ring.events.iter().map(|(i, _, e)| (*i, e.clone())).collect();
+    assert_eq!(got, want);
+    assert!(want.iter().any(|(_, e)| matches!(e, ActivityEvent::Lease { change: LeaseChange::Expired, .. })));
+    // A poll past the first entry with `paths=f/**` sees the push and the f lease's expiry, not the h lease.
+    let past = ring.past(start, &["f/**"]);
+    assert!(past.iter().all(|(i, _, e)| *i > start && e.matches(&["f/**"])), "{past:?}");
+    assert!(past.iter().any(|(_, _, e)| matches!(e, ActivityEvent::AgentPush { .. })));
+    let (floor, newest) = ring.bounds();
+    assert!(floor < start && newest == ring.through);
+    assert_eq!(feed::learners_for_feed(&[(900, 0), (1_000, 300)]), 5);
+    assert_eq!(feed::learners_for_feed(&[(0, 0)]), 0);
+}

@@ -57,7 +57,8 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
         Route::Leases(l) => {
             let query = req.url()?.query().unwrap_or("").to_owned();
             let session = req.headers().get("x-graftyard-agent-session")?;
-            leases(c, l, who, method, &body, &query, session.as_deref()).await?
+            let ip = req.headers().get("cf-connecting-ip")?.unwrap_or_default();
+            leases(c, l, who, method, &body, &query, session.as_deref(), &ip).await?
         }
         _ => {
             let Some(who) = who else { return respond(c, Reply::error(401, "Requires authentication", "rest")) };
@@ -161,12 +162,23 @@ async fn authz_route(c: &Ctx<'_>, route: Route<'_>, who: &Principal, method: Met
     })
 }
 
+/// FEED_POLLS' keys: the token's credential shard and the client IP, each hashed so neither reaches a member.
+fn poll_keys(c: &Ctx<'_>, who: &Principal, ip: &str) -> (String, String) {
+    use sha2::Digest as _;
+    let h = |s: &str| {
+        let d = sha2::Sha256::digest(format!("{}:{s}", c.cfg.host).as_bytes());
+        d.iter().take(12).map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    (h(&format!("{:?}", who.credential_shard())), h(ip))
+}
+
 /// The lease API and the activity feed under `/api/graftyard/v1/repos/{o}/{r}` (AM1-WP4, `graftyard_api::leases`),
 /// served only once `FormatsEnable` enabled 32.14; until then 503. Lease reads render the repository's core tier and
 /// the owner's `Authz` from one read, so an expired or released lease, and one whose holder lost access, is absent
 /// with no sweep; writes commit an `IssueCall` whose leader renders the reply from the `&Acked`. The feed's query is
-/// checked here (422 for a bad `wait` or glob or over 32 `paths`), and a poll is then 503 until followers and learners
-/// serve it: the edge reads only leaders today, and the feed is never the leader's.
+/// checked here (422 for a bad `wait` or glob or over 32 `paths`), and a poll then goes to the group's learners and
+/// followers (`activity`), never its leader.
+#[allow(clippy::too_many_arguments)]
 async fn leases(
     c: &Ctx<'_>,
     route: graftyard_api::leases::Route<'_>,
@@ -175,6 +187,7 @@ async fn leases(
     body: &Value,
     query: &str,
     session: Option<&str>,
+    ip: &str,
 ) -> Result<Reply> {
     use graftyard_api::leases::{self as l, Route as R};
     use graftyard_git::issue_ops::IssueOp;
@@ -192,12 +205,28 @@ async fn leases(
         if method != Method::Get {
             return Ok(Reply::error(405, "Method Not Allowed", "graftyard/activity"));
         }
-        if let Err(r) = l::parse_feed(query) {
-            return Ok(r);
+        let q = match l::parse_feed(query) {
+            Ok(q) => q,
+            Err(r) => return Ok(r),
+        };
+        let rd = match crate::api::read_named(c, owner, repo, Some(&who)).await? {
+            Ok(r) => r,
+            Err(r) => return Ok(r),
+        };
+        let Some(authz) = rd.dir.authz.clone() else {
+            return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+        };
+        let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+        let reader = graftyard_api::tasks::Reader::of(Some(&who), &authz, &access);
+        if !reader.metadata {
+            return Ok(Reply::not_found());
         }
-        return Ok(unavailable(
-            "the activity feed is served by followers and learners, which this edge does not read yet",
-        ));
+        let Ok(host) = graftyard_wire::Host::new(&c.cfg.host, false) else {
+            return Ok(unavailable("the install's host is not valid"));
+        };
+        let view = rd.view(&host);
+        let (token, ip) = poll_keys(c, &who, ip);
+        return activity(c, &rd, &view, &q, reader.contents, &token, &ip).await;
     }
     let rd = match crate::api::read_named(c, owner, repo, Some(&who)).await? {
         Ok(r) => r,
@@ -410,4 +439,138 @@ pub(crate) async fn write_ref(
         Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
         Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
     })
+}
+
+// ---- the activity feed's routing (AM1's hosted half) ----
+
+/// A group's feed members as an edge isolate caches them: when read, and each (site, object, learner).
+type FeedMembers = (u64, Vec<(graftyard_types::SiteId, String, bool)>);
+
+thread_local! {
+    /// Per isolate: each group's members (learners first, then voters), from its committed config.
+    static FEED_MEMBERS: std::cell::RefCell<std::collections::BTreeMap<i64, FeedMembers>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// The group's members a poll may go to: learners first, then the voters (the member route refuses a leader or
+/// witness, so the edge never needs to know which voter leads). Read from the leader's committed config at most once a
+/// minute per isolate.
+async fn feed_members(c: &Ctx<'_>, repo: &crate::Repo) -> Vec<(graftyard_types::SiteId, String, bool)> {
+    let now = crate::now().0;
+    if let Some((at, m)) = FEED_MEMBERS.with(|f| f.borrow().get(&repo.id.0.0).cloned())
+        && at + 60_000 > now
+    {
+        return m;
+    }
+    let mut out = Vec::new();
+    let chain = ChainId::Repo(repo.id);
+    // The committed config, from the first voter that answers `/status` (every member carries it there).
+    for m in repo.record.bootstrap_members(chain) {
+        let stub = c.bindings().member(m.site, &m.do_name).ok();
+        let Some(stub) = stub else { continue };
+        let Ok(mut r) = stub.fetch_with_str("https://member/status").await else { continue };
+        let Ok(v) = r.json::<Value>().await else { continue };
+        let Some(cfg) = v.pointer("/config/config").cloned() else { continue };
+        let Ok(cfg) = serde_json::from_value::<graftyard_raft::GroupConfig>(cfg) else { continue };
+        let p = match &cfg {
+            graftyard_raft::GroupConfig::Normal(p) | graftyard_raft::GroupConfig::Degraded { placement: p, .. } => p,
+            graftyard_raft::GroupConfig::Joint { new, .. } => new,
+        };
+        out.extend(p.learners().iter().map(|l| (l.site, l.do_name.to_string(), true)));
+        out.extend(p.voters().iter().map(|l| (l.site, l.do_name.to_string(), false)));
+        break;
+    }
+    FEED_MEMBERS.with(|f| f.borrow_mut().insert(repo.id.0.0, (now, out.clone())));
+    out
+}
+
+/// `GET /activity` (`design/AGENT-LAYER.md`, "Activity feed"): sent to the group's learners first, then followers
+/// with `learner_answers` set when a learner answered; a member that refuses as lagging sends the poll on, up to three
+/// tried. If every one tried refused as lagging and the least lagged is a learner, that learner holds it; otherwise,
+/// or at once from a full member, 429 with `Retry-After` of FEED_BATCH_ALL (`graftyard_git::feed::route`). Never the
+/// leader: the member route refuses it before reading anything.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn activity(
+    c: &Ctx<'_>,
+    rd: &crate::api::Read,
+    view: &graftyard_api::view::Repo<'_>,
+    q: &graftyard_git::feed::FeedQuery,
+    contents: bool,
+    token: &str,
+    ip: &str,
+) -> Result<Reply> {
+    use graftyard_git::feed::{Admit, FeedRole};
+    if !contents {
+        return Ok(Reply::not_found());
+    }
+    let members = feed_members(c, &rd.repo).await;
+    let body = |learner_answers: bool, wait: u64| {
+        json!({ "cursor": q.cursor, "wait_s": wait, "paths": q.paths, "learner_answers": learner_answers,
+                "token": token, "ip": ip })
+        .to_string()
+    };
+    let mut answers: Vec<(Admit, FeedRole, std::time::Duration, usize)> = Vec::new();
+    let mut learner_answered = false;
+    for (i, (site, name, learner)) in members.iter().enumerate() {
+        if answers.len() >= 3 {
+            break;
+        }
+        let deadline = std::time::Duration::from_secs(q.wait.as_secs() + 5);
+        let b = body(learner_answered && !learner, q.wait.as_secs());
+        let Some((200, v)) =
+            graftyard_lookup::post_within(&c.bindings(), *site, name, "/feed", b.as_bytes(), deadline).await
+        else {
+            continue;
+        };
+        let role = if *learner { FeedRole::Learner } else { FeedRole::Follower };
+        match v["admit"].as_str() {
+            Some("hold") => return Ok(render_feed(view, &v)),
+            Some("gone") => {
+                let Some(o) = v["oldest"].as_str().and_then(graftyard_git::feed::FeedCursor::decode) else { continue };
+                return Ok(graftyard_api::leases::gone(o));
+            }
+            Some("tooMany") => return Ok(graftyard_api::leases::too_many()),
+            Some("full") => answers.push((Admit::Full, role, std::time::Duration::ZERO, i)),
+            Some("lagging") => {
+                // A lagging learner does not answer for the feed: followers may still serve.
+                let lag = std::time::Duration::from_millis(v["lagMs"].as_u64().unwrap_or(u64::MAX / 2));
+                answers.push((Admit::Lagging, role, lag, i));
+            }
+            Some("notServing") if *learner => learner_answered = true,
+            _ => {}
+        }
+    }
+    let routed: Vec<(Admit, FeedRole, std::time::Duration)> = answers.iter().map(|(a, r, l, _)| (*a, *r, *l)).collect();
+    match graftyard_git::feed::route(&routed) {
+        graftyard_git::feed::Route::Held(k) => {
+            // Every tried member lagged and the least lagged is a learner: it holds the poll under FEED_HELD_MAX.
+            let (site, name, _) = &members[answers[k].3];
+            let b = json!({ "cursor": q.cursor, "wait_s": q.wait.as_secs(), "paths": q.paths, "learner_answers": false,
+                            "token": token, "ip": ip, "lagging_ok": true });
+            let deadline = std::time::Duration::from_secs(q.wait.as_secs() + 5);
+            match graftyard_lookup::post_within(&c.bindings(), *site, name, "/feed", b.to_string().as_bytes(), deadline)
+                .await
+            {
+                Some((200, v)) if v["admit"] == "hold" => Ok(render_feed(view, &v)),
+                _ => Ok(graftyard_api::leases::too_many()),
+            }
+        }
+        graftyard_git::feed::Route::TooMany { .. } => Ok(graftyard_api::leases::too_many()),
+    }
+}
+
+fn render_feed(view: &graftyard_api::view::Repo<'_>, v: &Value) -> Reply {
+    let events: Vec<Value> = v["events"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| {
+                    let at = graftyard_types::Timestamp(e[1].as_u64()?);
+                    let ev = graftyard_git::feed::ActivityEvent::from_json(&e[2])?;
+                    Some(graftyard_api::leases::event_json(view, &ev, at, true))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Reply::json(200, json!({ "cursor": v["cursor"], "events": events }))
 }

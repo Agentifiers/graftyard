@@ -101,6 +101,16 @@ pub trait Family: 'static {
     {
         None
     }
+    /// After an input that applied entries `from+1..=to` (or wrote nothing but stepped): a repository member feeds
+    /// its activity-feed ring (`crate::feed`). Synchronous, inside the input, so the ring sees the tiers the input left.
+    fn stepped(
+        _m: &raft::Member<Self::C>,
+        _join: &Join,
+        _from: raft::Index,
+        _to: raft::Index,
+        _out: &raft::Out<Self::C>,
+    ) {
+    }
     /// The family's work on the member's alarm, before the Raft tick: a repository member's snapshot batches and
     /// metadata load (`crate::snap`).
     async fn on_alarm(_host: &std::rc::Rc<crate::host::Host<Self>>)
@@ -293,6 +303,49 @@ impl Family for Repo {
     fn lost(fold: &git::repo::RepoFold) -> Option<String> {
         crate::tier::handle(&*fold.core).lost().or_else(|| crate::tier::handle(&*fold.meta).lost())
     }
+    /// Feeds the activity feed's ring each applied entry (`crate::feed`), and marks a gap or an install, which stop
+    /// the member following until it catches up. The ring waits for the owner's `Authz` (`crate::feed::Feed::owner`,
+    /// read on the first poll) and keeps the entries meanwhile.
+    fn stepped(m: &raft::Member<Self::C>, join: &Join, from: raft::Index, to: raft::Index, out: &raft::Out<Self::C>) {
+        let Some(repo) = repo_of(join) else { return };
+        let f = crate::feed::of(repo);
+        let mut f = f.borrow_mut();
+        let gap = out.early.iter().chain(&out.messages).any(|e| matches!(&e.msg, raft::Message::AppendRes(r) if !r.ok));
+        let ok = out.early.iter().chain(&out.messages).any(|e| matches!(&e.msg, raft::Message::AppendRes(r) if r.ok));
+        let was = (f.gap, f.installing);
+        if gap {
+            f.gap = true;
+        } else if ok {
+            f.gap = false;
+        }
+        if !out.install.is_empty() {
+            f.installing = true;
+        } else if to > from {
+            f.installing = false;
+        }
+        if let Some(e) = m.log().last() {
+            f.leader_at = f.leader_at.max(e.at);
+        }
+        let fold = &m.group_fold().fold;
+        for i in from.0 + 1..=to.0 {
+            let Some(e) = m.entry_at(raft::Index(i)) else { continue };
+            let evs: Vec<git::repo::RepoEvent> = match &e.body {
+                raft::EntryBody::Events(evs) => evs.clone(),
+                _ => Vec::new(),
+            };
+            f.pending.push((e.index, e.at, evs));
+        }
+        if let Some(owner) = f.owner.clone() {
+            let empty = graftyard_fold::MemStore::default();
+            let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
+            for (i, at, evs) in std::mem::take(&mut f.pending) {
+                f.ring.feed(repo, &owner, &fold.core, meta, (i, at, &evs));
+            }
+        }
+        if to > from || (gap, !out.install.is_empty()) != (false, false) || was != (f.gap, f.installing) {
+            f.fed();
+        }
+    }
     /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
     /// alarm loads it (`crate::snap`).
     /// Before any cursor is open: `DROP TABLE` under an open statement fails with SQLITE_LOCKED, and `load` reads
@@ -377,9 +430,9 @@ impl Family for Repo {
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
-        return &["/snapshot_commit", "/fold", "/bench_seed"];
+        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed"];
         #[cfg(not(feature = "test-faults"))]
-        &["/snapshot_commit", "/fold"]
+        &["/snapshot_commit", "/fold", "/feed"]
     }
     /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
     /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
@@ -390,6 +443,7 @@ impl Family for Repo {
         body: Value,
     ) -> Option<worker::Result<Value>> {
         match path {
+            "/feed" => Some(crate::feed::route(host, body).await),
             "/snapshot_commit" => Some(crate::snap::commit(host, body).await),
             "/fold" => Some((|| {
                 let core = host.core.borrow();
