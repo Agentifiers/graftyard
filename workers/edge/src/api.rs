@@ -120,6 +120,12 @@ mod timing {
     pub fn trace(_: Vec<serde_json::Value>) {}
 }
 
+/// A commit's hedge steps for this request's `x-graft-trace` (test installs only).
+#[cfg(feature = "test-faults")]
+pub(crate) fn trace(t: Vec<Value>) {
+    timing::trace(t);
+}
+
 pub(crate) fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
