@@ -534,6 +534,9 @@ impl Family for Repo {
                     Some(h) => m.hold_unloaded(h),
                     None => m.reads_while_held().unwrap_or(0),
                 };
+                if body["metaUnload"] == false {
+                    host.arm_in(0);
+                }
                 Ok(
                     json!({ "metaUnload": body["metaUnload"], "metaReads": reads, "loaded": m.reads_while_held().is_none() }),
                 )

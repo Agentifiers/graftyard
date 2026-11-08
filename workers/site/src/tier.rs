@@ -299,12 +299,14 @@ impl TierSql {
     }
 
     /// Test installs (L0-16): hold the tier unloaded (`loaded()` false, and `set_loaded` ignored so the alarm's load
-    /// does not bring it back) and count every read of it from now, or release it. Answers the reads counted.
+    /// does not bring it back) and count every read of it from now, or release it. A released tier stays unloaded:
+    /// `apply` skipped it while held, so the alarm's metadata load replays what it missed before it serves again.
+    /// Answers the reads counted.
     #[cfg(feature = "test-faults")]
     pub fn hold_unloaded(&self, hold: bool) -> u64 {
         let mut i = self.0.borrow_mut();
         i.held_unloaded = hold;
-        i.loaded = !hold;
+        i.loaded = false;
         if hold {
             i.reads.set(0);
         }
