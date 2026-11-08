@@ -56,6 +56,21 @@ const day = (unix: number) =>
     day: "numeric",
     timeZone: "UTC",
   });
+// A rounded top, so the highest gridline carries a label. Recharts' own "auto" max can
+// land between ticks and leave the top line unlabeled.
+const NICE: [number, (max: number) => number] = [
+  0,
+  (max) => {
+    // Four steps of 1, 2, or 5 times a power of ten.
+    const raw = Math.max(1, max / 4);
+    const pow = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 5, 10].map((u) => u * pow).find((u) => u >= raw)!;
+    return step * 4;
+  },
+];
+// Recharts paints ticks #666 inline, under 4.5:1 on the dark card. Use the theme's muted
+// text color, which passes in both themes.
+const TICK = { fill: "var(--muted-foreground)" };
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 function NoData({ what }: { what: string }) {
@@ -108,10 +123,17 @@ function Participation({ owner, repo }: Repo) {
         <NoData what="commits" />
       ) : (
         <ChartContainer config={config} className="aspect-auto h-48 w-full">
-          <BarChart data={rows} margin={{ left: -20 }}>
+          <BarChart data={rows} margin={{ left: -20, top: 8 }}>
             <CartesianGrid vertical={false} />
-            <XAxis dataKey="week" tickLine={false} axisLine={false} interval={7} />
-            <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+            <XAxis tick={TICK} dataKey="week" tickLine={false} axisLine={false} interval={7} />
+            <YAxis
+              tick={TICK}
+              allowDecimals={false}
+              tickLine={false}
+              axisLine={false}
+              domain={NICE}
+              interval={0}
+            />
             <ChartTooltip content={<ChartTooltipContent />} />
             <ChartLegend content={<ChartLegendContent />} />
             <Bar dataKey="owner" stackId="a" fill="var(--color-owner)" />
@@ -181,10 +203,17 @@ export function Contributors({ owner, repo }: Repo) {
     <div className="flex flex-col gap-4" data-testid="contributor-graphs">
       <Panel title="Commits over time, everyone">
         <ChartContainer config={config} className="aspect-auto h-48 w-full">
-          <AreaChart data={all} margin={{ left: -20 }}>
+          <AreaChart data={all} margin={{ left: -20, top: 8 }}>
             <CartesianGrid vertical={false} />
-            <XAxis dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
-            <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+            <XAxis tick={TICK} dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
+            <YAxis
+              tick={TICK}
+              allowDecimals={false}
+              tickLine={false}
+              axisLine={false}
+              domain={NICE}
+              interval={0}
+            />
             <ChartTooltip content={<ChartTooltipContent />} />
             <Area
               dataKey="commits"
@@ -219,9 +248,16 @@ export function Contributors({ owner, repo }: Repo) {
               }
             >
               <ChartContainer config={config} className="aspect-auto h-24 w-full">
-                <AreaChart data={rows} margin={{ left: -30, top: 4 }}>
+                <AreaChart data={rows} margin={{ left: -30, top: 8 }}>
                   <XAxis dataKey="week" hide />
-                  <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+                  <YAxis
+                    tick={TICK}
+                    allowDecimals={false}
+                    tickLine={false}
+                    axisLine={false}
+                    domain={NICE}
+                    interval={0}
+                  />
                   <ChartTooltip content={<ChartTooltipContent />} />
                   <Area
                     dataKey="commits"
@@ -257,10 +293,17 @@ export function CommitActivity({ owner, repo }: Repo) {
           className="aspect-auto h-56 w-full"
           data-testid="commit-activity"
         >
-          <BarChart data={rows} margin={{ left: -20 }}>
+          <BarChart data={rows} margin={{ left: -20, top: 8 }}>
             <CartesianGrid vertical={false} />
-            <XAxis dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
-            <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+            <XAxis tick={TICK} dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
+            <YAxis
+              tick={TICK}
+              allowDecimals={false}
+              tickLine={false}
+              axisLine={false}
+              domain={NICE}
+              interval={0}
+            />
             <ChartTooltip content={<ChartTooltipContent />} />
             <Bar dataKey="commits" fill="var(--color-commits)" />
           </BarChart>
@@ -270,10 +313,17 @@ export function CommitActivity({ owner, repo }: Repo) {
         <ChartContainer config={dayConfig} className="aspect-auto h-40 w-full">
           <BarChart
             data={latest.days.map((n, i) => ({ day: DAYS[i], commits: n }))}
-            margin={{ left: -20 }}
+            margin={{ left: -20, top: 8 }}
           >
-            <XAxis dataKey="day" tickLine={false} axisLine={false} />
-            <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+            <XAxis tick={TICK} dataKey="day" tickLine={false} axisLine={false} />
+            <YAxis
+              tick={TICK}
+              allowDecimals={false}
+              tickLine={false}
+              axisLine={false}
+              domain={NICE}
+              interval={0}
+            />
             <ChartTooltip content={<ChartTooltipContent />} />
             <Bar dataKey="commits" fill="var(--color-commits)" />
           </BarChart>
@@ -300,10 +350,10 @@ export function CodeFrequency({ owner, repo }: Repo) {
         className="aspect-auto h-64 w-full"
         data-testid="code-frequency"
       >
-        <AreaChart data={rows} margin={{ left: -10 }} stackOffset="sign">
+        <AreaChart data={rows} margin={{ left: -10, top: 8 }} stackOffset="sign">
           <CartesianGrid vertical={false} />
-          <XAxis dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
-          <YAxis tickLine={false} axisLine={false} />
+          <XAxis tick={TICK} dataKey="week" tickLine={false} axisLine={false} minTickGap={40} />
+          <YAxis tick={TICK} tickLine={false} axisLine={false} />
           <ChartTooltip content={<ChartTooltipContent />} />
           <ChartLegend content={<ChartLegendContent />} />
           <Area
@@ -341,21 +391,23 @@ export function PunchCard({ owner, repo }: Repo) {
           <XAxis
             type="number"
             dataKey="hour"
-            domain={[0, 23]}
+            domain={[-0.5, 23.5]}
             ticks={[0, 3, 6, 9, 12, 15, 18, 21]}
             tickFormatter={(h) => `${h}:00`}
             tickLine={false}
+            tick={TICK}
           />
           <YAxis
             type="number"
             dataKey="day"
-            domain={[0, 6]}
+            domain={[-0.5, 6.5]}
             ticks={[0, 1, 2, 3, 4, 5, 6]}
             tickFormatter={(d) => DAYS[6 - d]}
             tickLine={false}
+            tick={TICK}
             width={40}
           />
-          <ZAxis type="number" dataKey="commits" range={[0, 400]} domain={[0, max]} />
+          <ZAxis type="number" dataKey="commits" range={[0, 260]} domain={[0, max]} />
           <ChartTooltip
             cursor={false}
             content={
@@ -430,11 +482,18 @@ function TrafficChart({
       <ChartContainer config={config} className="aspect-auto h-44 w-full">
         <LineChart
           data={points.map((p) => ({ ...p, label: pointLabel(p.timestamp) }))}
-          margin={{ left: -20 }}
+          margin={{ left: -20, top: 8 }}
         >
           <CartesianGrid vertical={false} />
-          <XAxis dataKey="label" tickLine={false} axisLine={false} minTickGap={24} />
-          <YAxis allowDecimals={false} tickLine={false} axisLine={false} />
+          <XAxis tick={TICK} dataKey="label" tickLine={false} axisLine={false} minTickGap={24} />
+          <YAxis
+            tick={TICK}
+            allowDecimals={false}
+            tickLine={false}
+            axisLine={false}
+            domain={NICE}
+            interval={0}
+          />
           <ChartTooltip content={<ChartTooltipContent />} />
           <ChartLegend content={<ChartLegendContent />} />
           <Line dataKey="count" stroke="var(--color-count)" strokeWidth={2} dot={false} />

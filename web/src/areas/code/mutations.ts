@@ -111,12 +111,18 @@ export function createStatus(
     state: "error" | "failure" | "pending" | "success";
     context: string;
     description: string;
+    target_url?: string;
   },
 ) {
   return call(
     api.POST("/repos/{owner}/{repo}/statuses/{sha}", {
       params: { path: { ...r, sha: input.sha } },
-      body: { state: input.state, context: input.context, description: input.description },
+      body: {
+        state: input.state,
+        context: input.context,
+        description: input.description,
+        target_url: input.target_url,
+      },
     }),
   );
 }

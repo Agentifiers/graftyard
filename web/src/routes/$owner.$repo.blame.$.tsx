@@ -129,11 +129,9 @@ function BlameTable({
                 data-blame-sha={range.commit.sha}
               >
                 <td
-                  className="w-1 p-0"
-                  style={{ backgroundColor: heat(range.commit.date) }}
-                  title={range.commit.date}
-                />
-                <td className="bg-muted/30 w-80 max-w-80 border-r px-2 py-1 font-sans">
+                  className="bg-muted/30 w-80 max-w-80 border-r border-l-4 px-2 py-1 font-sans"
+                  style={{ borderLeftColor: heat(range.commit.date) }}
+                >
                   <div className="flex items-center gap-1.5">
                     <UserAvatar
                       user={

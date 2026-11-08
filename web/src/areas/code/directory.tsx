@@ -50,7 +50,7 @@ export function Directory({ owner, repo, ref, path }: Repo & { ref: string; path
           )}
           {data.entries.map((e) => (
             <tr key={e.path} className="hover:bg-muted/40" data-entry={e.name}>
-              <td className="w-2/5 px-3 py-1.5">
+              <td className="w-1/3 px-3 py-1.5">
                 <span className="flex min-w-0 items-center gap-2">
                   <HugeiconsIcon
                     icon={e.type === "dir" ? Folder01Icon : File02Icon}

@@ -11,7 +11,7 @@ import {
   TerminalIcon,
 } from "@hugeicons/core-free-icons";
 import { repoQuery } from "@/areas/core/queries";
-import { slot, type SlotEntry } from "@/areas/slots";
+import type { SlotEntry } from "@/areas/slots";
 import { MarkdownBody } from "@/components/markdown";
 import { Panel } from "@/components/panel";
 import { Region } from "@/components/region";
@@ -282,9 +282,12 @@ function CloneMenu({ owner, repo }: Repo) {
   );
 }
 
+// Plain literals, not the `slot()` helper: @/areas/slots imports this file eagerly, so a
+// runtime import back from it runs before `slot` exists. The SlotEntry union still checks
+// each Component against its slot's props.
 export const slots: SlotEntry[] = [
-  slot({ slot: "repo-overview", region: "code", order: 0, Component: Overview }),
-  slot({ slot: "repo-sidebar", region: "languages", order: 30, Component: Languages }),
-  slot({ slot: "repo-sidebar", region: "contributors", order: 31, Component: Contributors }),
-  slot({ slot: "repo-actions", region: "clone menu", order: 30, Component: CloneMenu }),
+  { slot: "repo-overview", region: "code", order: 0, Component: Overview },
+  { slot: "repo-sidebar", region: "languages", order: 30, Component: Languages },
+  { slot: "repo-sidebar", region: "contributors", order: 31, Component: Contributors },
+  { slot: "repo-actions", region: "clone menu", order: 30, Component: CloneMenu },
 ];

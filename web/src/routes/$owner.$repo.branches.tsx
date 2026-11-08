@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useForm } from "@tanstack/react-form";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -25,7 +25,7 @@ import {
   WriteError,
   type FieldErrors,
 } from "@/areas/code/mutations";
-import { branchSummariesQuery } from "@/areas/code/queries";
+import { branchSummariesQuery, commitQuery } from "@/areas/code/queries";
 import { Author, CopyButton, RefPicker, short } from "@/areas/code/refs";
 import type { BranchSummary } from "@/areas/code/ui-api";
 import { Ago } from "@/components/github";
@@ -145,6 +145,9 @@ function BranchesPage() {
 
 function BranchLists({ tab, q }: { tab: Tab; q: string }) {
   const params = Route.useParams();
+  // Held here, not in the row: an optimistic rename re-keys the row, and the dialog must
+  // survive that to show a failure.
+  const [renaming, setRenaming] = useState<BranchSummary>();
   const { data } = useSuspenseQuery(branchSummariesQuery(params));
   const match = data.filter((b) => b.name.toLowerCase().includes(q.toLowerCase()));
   const def = match.filter((b) => b.default);
@@ -190,11 +193,12 @@ function BranchLists({ tab, q }: { tab: Tab; q: string }) {
         <Panel key={title} title={title} flush>
           <ul className="divide-y">
             {list.map((b) => (
-              <BranchRow key={b.name} branch={b} max={max} />
+              <BranchRow key={b.name} branch={b} max={max} onRename={() => setRenaming(b)} />
             ))}
           </ul>
         </Panel>
       ))}
+      {renaming && <RenameDialog branch={renaming} onClose={() => setRenaming(undefined)} />}
     </div>
   );
 }
@@ -205,9 +209,20 @@ const STATUS_LOOK = {
   pending: { icon: Clock01Icon, tone: "text-warning", label: "Checks pending" },
 } as const;
 
-function BranchRow({ branch: b, max }: { branch: BranchSummary; max: number }) {
+// Square-root scale with a floor, so one commit still shows next to a branch 35 behind.
+const barWidth = (n: number, max: number) =>
+  n === 0 ? "0%" : `${Math.max(12, Math.sqrt(n / max) * 100)}%`;
+
+function BranchRow({
+  branch: b,
+  max,
+  onRename,
+}: {
+  branch: BranchSummary;
+  max: number;
+  onRename: () => void;
+}) {
   const params = Route.useParams();
-  const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const pending = b.sha === "";
   const status = b.status ? STATUS_LOOK[b.status] : null;
@@ -257,20 +272,23 @@ function BranchRow({ branch: b, max }: { branch: BranchSummary; max: number }) {
       </span>
       {!b.default && (
         <span
-          className="flex w-28 items-center text-[11px] tabular-nums"
+          className="flex w-28 shrink-0 items-center text-[11px] tabular-nums"
           title={`${b.behind} behind, ${b.ahead} ahead of the default branch`}
           data-testid="ahead-behind"
         >
-          <span className="flex w-1/2 flex-col items-end gap-0.5 border-r pr-1">
+          <span className="flex w-14 shrink-0 flex-col items-end gap-0.5 border-r pr-1">
             <span className="text-muted-foreground">{b.behind}</span>
             <span
-              className="bg-muted-foreground/40 h-1"
-              style={{ width: `${(b.behind / max) * 100}%` }}
+              className="bg-muted-foreground block h-1.5 min-w-px"
+              style={{ width: barWidth(b.behind, max) }}
             />
           </span>
-          <span className="flex w-1/2 flex-col items-start gap-0.5 pl-1">
+          <span className="flex w-14 shrink-0 flex-col items-start gap-0.5 pl-1">
             <span className="text-muted-foreground">{b.ahead}</span>
-            <span className="bg-primary/60 h-1" style={{ width: `${(b.ahead / max) * 100}%` }} />
+            <span
+              className="bg-info block h-1.5 min-w-px"
+              style={{ width: barWidth(b.ahead, max) }}
+            />
           </span>
         </span>
       )}
@@ -291,7 +309,7 @@ function BranchRow({ branch: b, max }: { branch: BranchSummary; max: number }) {
           size="icon-xs"
           variant="ghost"
           aria-label={`Rename ${b.name}`}
-          onClick={() => setRenaming(true)}
+          onClick={onRename}
           disabled={pending}
         >
           <HugeiconsIcon icon={Edit02Icon} strokeWidth={2} />
@@ -314,7 +332,6 @@ function BranchRow({ branch: b, max }: { branch: BranchSummary; max: number }) {
           <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} />
         </Button>
       </span>
-      {renaming && <RenameDialog branch={b} onClose={() => setRenaming(false)} />}
       <DeleteDialog branch={b} open={deleting} onOpenChange={setDeleting} />
     </li>
   );
@@ -340,14 +357,28 @@ function useSummaries() {
   };
 }
 
+function SourceSha({ from }: { from: string }) {
+  const { params } = useSummaries();
+  const { data } = useQuery(commitQuery({ ...params, ref: from }));
+  return (
+    <FieldDescription>
+      At <code className="font-mono">{data ? short(data.sha) : "…"}</code>
+    </FieldDescription>
+  );
+}
+
 function CreateBranchDialog({ onClose }: { onClose: () => void }) {
   const { params, edit, restore } = useSummaries();
   const { data: repo } = useSuspenseQuery(repoQuery(params));
   const { data: branches } = useSuspenseQuery(branchSummariesQuery(params));
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
+  const queryClient = useQueryClient();
   const create = useMutation({
-    mutationFn: (v: { name: string; from: string }) => {
-      const sha = branches.find((b) => b.name === v.from)?.sha ?? v.from;
+    // A tag or sha source resolves to its commit first, as git refs need a commit sha.
+    mutationFn: async (v: { name: string; from: string }) => {
+      const sha =
+        branches.find((b) => b.name === v.from)?.sha ??
+        (await queryClient.fetchQuery(commitQuery({ ...params, ref: v.from }))).sha;
       return createBranch(params, { name: v.name, sha });
     },
     onMutate: (v) =>
@@ -447,14 +478,7 @@ function CreateBranchDialog({ onClose }: { onClose: () => void }) {
                   onPick={field.handleChange}
                   label="Pick a source branch or tag"
                 />
-                <FieldDescription>
-                  At{" "}
-                  <code className="font-mono">
-                    {short(
-                      branches.find((b) => b.name === field.state.value)?.sha ?? field.state.value,
-                    )}
-                  </code>
-                </FieldDescription>
+                <SourceSha from={field.state.value} />
                 {serverErrors.sha && (
                   <FieldError errors={[{ message: "The source commit does not exist." }]} />
                 )}

@@ -261,8 +261,12 @@ function AddStatus({ onDone }: { onDone: () => void }) {
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
   const key = combinedStatusQuery({ owner, repo, ref: sha }).queryKey;
   const post = useMutation({
-    mutationFn: (v: { state: StatusState; context: string; description: string }) =>
-      createStatus({ owner, repo }, { sha, ...v }),
+    mutationFn: (v: {
+      state: StatusState;
+      context: string;
+      description: string;
+      target_url: string;
+    }) => createStatus({ owner, repo }, { sha, ...v, target_url: v.target_url || undefined }),
     onMutate: async (v) => {
       // The new context shows at once as the latest for its name; a failure removes it.
       await queryClient.cancelQueries({ queryKey: key });
@@ -274,10 +278,10 @@ function AddStatus({ onDone }: { onDone: () => void }) {
           node_id: "",
           url: "",
           avatar_url: null,
-          target_url: null,
           created_at: now,
           updated_at: now,
           ...v,
+          target_url: v.target_url || null,
         };
         const rest = previous.statuses.filter((s) => s.context !== v.context);
         queryClient.setQueryData(key, {
@@ -306,7 +310,12 @@ function AddStatus({ onDone }: { onDone: () => void }) {
       ]),
   });
   const form = useForm({
-    defaultValues: { state: "success" as StatusState, context: "", description: "" },
+    defaultValues: {
+      state: "success" as StatusState,
+      context: "",
+      description: "",
+      target_url: "",
+    },
     onSubmit: ({ value }) => {
       setServerErrors({});
       return post.mutateAsync({ ...value, context: value.context.trim() }).catch(() => {});
@@ -370,6 +379,23 @@ function AddStatus({ onDone }: { onDone: () => void }) {
             value={field.state.value}
             onChange={(e) => field.handleChange(e.target.value)}
           />
+        )}
+      </form.Field>
+      <form.Field name="target_url">
+        {(field) => (
+          <Field>
+            <Input
+              aria-label="Target URL"
+              className="font-mono text-xs"
+              placeholder="Target URL (optional)"
+              value={field.state.value}
+              onChange={(e) => field.handleChange(e.target.value)}
+              aria-invalid={Boolean(serverErrors.target_url) || undefined}
+            />
+            <FieldError
+              errors={serverErrors.target_url ? [{ message: serverErrors.target_url }] : []}
+            />
+          </Field>
         )}
       </form.Field>
       {serverErrors.sha && (

@@ -278,7 +278,13 @@ export function FileEditor({
     },
     onError: (e, _v, ctx) => {
       if (ctx?.previous) queryClient.setQueryData(ctx.key, ctx.previous);
-      setServerErrors(e instanceof WriteError ? e.fields : {});
+      const fields = e instanceof WriteError ? { ...e.fields } : {};
+      // Creating over an existing file: GHES asks for its sha, which means the path is taken.
+      if (creating && fields.sha) {
+        fields.path = "A file with this name already exists here.";
+        delete fields.sha;
+      }
+      setServerErrors(fields);
       setFailure(errorText(e));
       toast.error(`Could not commit: ${errorText(e)}`);
     },
@@ -470,6 +476,7 @@ export function DeleteFileDialog({
   const r = { owner, repo };
   const navigate = useNavigate();
   const [serverErrors, setServerErrors] = useState<FieldErrors>({});
+  const [failure, setFailure] = useState<string>();
   const remove = useMutation({
     mutationFn: async (v: CommitValues) => {
       const target = await onBranch(r, branch, v);
@@ -483,6 +490,7 @@ export function DeleteFileDialog({
     },
     onError: (e) => {
       setServerErrors(e instanceof WriteError ? e.fields : {});
+      setFailure(errorText(e));
       toast.error(`Could not delete ${file.name}: ${errorText(e)}`);
     },
     onSuccess: async (target) => {
@@ -498,6 +506,7 @@ export function DeleteFileDialog({
   });
   const form = useCommitForm({ message: `Delete ${file.name}` }, (value) => {
     setServerErrors({});
+    setFailure(undefined);
     return remove.mutateAsync(value).catch(() => {});
   });
   return (
@@ -518,6 +527,17 @@ export function DeleteFileDialog({
             </DialogDescription>
           </DialogHeader>
           <CommitFields form={form} branch={branch} serverErrors={serverErrors} />
+          {serverErrors.sha && (
+            <p className="text-destructive text-xs">
+              The file changed on the branch since you opened it. Reload and try again.
+            </p>
+          )}
+          {failure && Object.keys(serverErrors).length === 0 && (
+            <Alert variant="destructive">
+              <AlertTitle>Delete failed</AlertTitle>
+              <AlertDescription>{failure}. The file is unchanged.</AlertDescription>
+            </Alert>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>
               Cancel
