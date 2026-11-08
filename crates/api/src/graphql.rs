@@ -410,6 +410,8 @@ pub fn refused_field(f: &str, e: &graftyard_git::issue_ops::IssueErr) -> Value {
         // An agent rule: GraphQL's FORBIDDEN, with a text that names the rule (AM1-WP2).
         E::Agent(a) => json!({ "data": { f: null }, "errors": [{ "type": "FORBIDDEN", "path": [f],
             "message": &*a.text }] }),
+        // Task commands are not GraphQL mutations; a refusal of one never reaches here.
+        E::Task(_) => unprocessable(f, "task"),
     }
 }
 

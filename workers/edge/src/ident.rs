@@ -205,7 +205,7 @@ pub async fn access_tokens(c: &Ctx<'_>, req: &mut Request, id: &str) -> Result<R
         Err(e) => return Ok(crate::api::unavailable(&e)),
     };
     let resolve = |n: &str| RepoName::parse(n).ok().and_then(|n| inst.resolve(&n.key())).map(|(r, _)| r);
-    let grant = match stateless::access_token_grant(&jwt, &rec, id, &inst, &r, &resolve, now()) {
+    let mut grant = match stateless::access_token_grant(&jwt, &rec, id, &inst, &r, &resolve, now()) {
         Ok(g) => g,
         Err(TokenRequestError::Jwt(e)) => {
             return Ok(Reply::error(401, &format!("A JSON web token could not be decoded ({e})"), doc));
@@ -213,6 +213,14 @@ pub async fn access_tokens(c: &Ctx<'_>, req: &mut Request, id: &str) -> Result<R
         Err(TokenRequestError::NoInstallation) => return Ok(Reply::error(404, "Not Found", doc)),
         Err(TokenRequestError::Narrow(e)) => return Ok(Reply::error(422, &e.to_string(), doc)),
     };
+    // AM1-WP3's additive `graftyard_task`: checked against the task's row on its repository, read fresh, once
+    // `FormatsEnable` enabled 32.12, the format a command under such a token takes. A request without it is unchanged.
+    if let Some(t) = body.get("graftyard_task") {
+        match crate::api::task_claim(c, &inst, &grant, owner, t).await? {
+            Ok(s) => grant.task = Some(s),
+            Err(x) => return Ok(x),
+        }
+    }
     mint(c, &grant).await
 }
 

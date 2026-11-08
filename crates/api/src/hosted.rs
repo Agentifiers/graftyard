@@ -16,7 +16,7 @@ use graftyard_git::issues::IssueNumber;
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_identity::{AccountKind, AuthzFold, AuthzRead, RepoPermission, UserId};
 use graftyard_raft::Acked;
-use graftyard_types::{AccountId, DbId, Index, RepoId};
+use graftyard_types::{AccountId, DbId, Index, RepoId, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -264,6 +264,12 @@ pub enum What {
     LabelCreated,
     /// `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy`.
     AgentPolicy,
+    /// A task command under `/api/graftyard/v1/repos/{o}/{r}/tasks` (`crate::tasks`): 201 for a create, else 200. The
+    /// caller's `contents: read` says whether the reply carries `prompt`.
+    Task {
+        created: bool,
+        contents: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -343,6 +349,19 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::AgentPolicy => {
             WireReply::of(&Reply::json(200, crate::agents::policy_json(&graftyard_git::tiers::agent_policy(core))))
         }
+        What::Task { created, contents } => {
+            // The state as the owner's `Authz` the edge read gives it, at the task's own update time: the command
+            // just wrote it, so it is not idle.
+            let Some(owner) = render.dir.authz.as_ref() else {
+                return WireReply::of(&Reply::error(503, "the owner's Authz was not read", "rest"));
+            };
+            let at = match &acked.out {
+                IssueOut::Task(id) => graftyard_git::task::task_core(core, id).map_or(Timestamp(0), |t| t.updated),
+                _ => Timestamp(0),
+            };
+            let reader = crate::tasks::Reader { metadata: true, contents: *contents };
+            WireReply::of(&crate::tasks::render_ok(&r, owner, at, acked, *created, reader))
+        }
     }
 }
 
@@ -356,6 +375,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::RestMerge | What::StatusCreated { .. } => WireReply::of(&crate::release::refused(e)),
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
         What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
+        What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
     }
 }
 

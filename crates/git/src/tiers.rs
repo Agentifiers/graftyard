@@ -77,6 +77,9 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Collaborator { .. } | RepoEvent::Invitation(_) => TierSet::CORE,
         RepoEvent::Provenance { .. } => TierSet::METADATA,
         RepoEvent::AgentMeta { .. } | RepoEvent::AgentGate(_) | RepoEvent::AgentPolicy(_) => TierSet::CORE,
+        RepoEvent::TaskCreated(_) => both,
+        RepoEvent::TaskUpdated { pr: None, summary: None, .. } => TierSet::CORE,
+        RepoEvent::TaskUpdated { .. } => both,
     }
 }
 
@@ -120,6 +123,10 @@ pub const CORE: Schema = Schema {
         t("agent_meta", &["n"]),
         t("agent_gate", &["n", "head", "user"]),
         t("agent_policy", &[]),
+        // AM1-WP3: each task's core part by its id (`crate::task::TaskCore`), and the ids of tasks whose stored state
+        // is not final, which the open-task caps scan.
+        t("agent_task", &["session"]),
+        t("agent_task_open", &["session"]),
     ],
 };
 
@@ -155,6 +162,8 @@ pub const METADATA: Schema = Schema {
         t("lfs_lock_by_path", &["path"]),
         // AM1-WP2: each pushed commit's provenance, by commit and the ref the push moved.
         t("provenance", &["commit", "ref"]),
+        // AM1-WP3: each task's metadata part (`crate::task::TaskMeta`).
+        t("agent_task_meta", &["session"]),
     ],
 };
 
@@ -763,6 +772,8 @@ impl RepoTiers {
                 mark(w, "agent_gate", vec![n_key(g.pr), sha_key(&g.head), int(g.satisfied_by.0.0.0)])
             }
             RepoEvent::AgentPolicy(p) => put_rec(w, "agent_policy", Vec::new(), p),
+            RepoEvent::TaskCreated(t) => crate::task::write_created_core(w, t, at),
+            RepoEvent::TaskUpdated { session, state, .. } => crate::task::write_updated_core(w, session, *state, at),
         }
     }
 
@@ -1042,6 +1053,10 @@ impl RepoTiers {
                 for p in list {
                     put_rec(w, "provenance", vec![sha_key(&p.commit), ref_key(&p.refname)], &p.sources);
                 }
+            }
+            RepoEvent::TaskCreated(t) => crate::task::write_created_meta(w, t, at),
+            RepoEvent::TaskUpdated { session, pr, summary, .. } => {
+                crate::task::write_updated_meta(w, session, *pr, summary.as_deref())
             }
             _ => {}
         }

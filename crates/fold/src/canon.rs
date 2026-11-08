@@ -56,6 +56,12 @@ impl<'a, 'b> ser::Serializer for &'a mut Canon<'b> {
     type SerializeStruct = Self;
     type SerializeStructVariant = Self;
 
+    /// A compact binary form: a type with a text form for JSON (`graftyard_identity::SessionId`) keeps its derived
+    /// form here, as postcard does.
+    fn is_human_readable(&self) -> bool {
+        false
+    }
+
     fn serialize_bool(self, v: bool) -> Res {
         self.0.push(u8::from(v));
         Ok(())

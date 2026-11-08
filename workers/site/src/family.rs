@@ -256,7 +256,8 @@ impl Family for Repo {
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
     /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
     /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), 32.8 (AM1-WP2's agent commands), and 32.9
-    /// (an issue command under a `ghs_` token) are read on the same terms, as is 32.11 (`CancelInvitation`).
+    /// (an issue command under a `ghs_` token) are read on the same terms, as are 32.11 (`CancelInvitation`) and 32.12
+    /// (AM1-WP3's task commands and any command whose token carries a `task` claim).
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -269,6 +270,7 @@ impl Family for Repo {
             git::issue_ops::call::REPO_FORMAT_APP_CALLS,
             git::transfer::REPO_FORMAT_TRANSFER,
             git::issue_ops::call::REPO_FORMAT_INVITATIONS,
+            git::repo::REPO_FORMAT_TASKS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

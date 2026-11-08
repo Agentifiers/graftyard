@@ -52,6 +52,11 @@ pub const REPO_FORMAT_STATELESS: Format = Format { family: 0x20, version: 7 };
 /// `Agent` (tag 7). An edge sends it only once `FormatsEnable` has enabled it, and a command in an earlier format never
 /// produces one of those encodings (`Push::decide`, `IssueCmd::decide`).
 pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
+/// AM1-WP3's tasks: the task commands (`crate::task`), their events `TaskCreated` and `TaskUpdated` (tags 31 and 32),
+/// and any command whose installation token carries a `task` claim, whose claims encode it. A superset of 32.8: such a
+/// push carries `validate`'s outputs as 32.8 does. Versions 10 and 11 are other packages'. An edge sends it only once
+/// `FormatsEnable` has enabled it; a command without a task and without a claim never takes it.
+pub const REPO_FORMAT_TASKS: Format = Format { family: 0x20, version: 12 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -280,6 +285,19 @@ pub enum RepoEvent {
     AgentGate(AgentGate),
     /// Core. The repository's agent policy, whole.
     AgentPolicy(AgentPolicy),
+    // AM1-WP3, format 32.12: tags 31 and 32.
+    /// Core and Metadata, as `PrOpened`: the task's core row and its metadata row (`crate::task`).
+    TaskCreated(crate::task::AgentTask),
+    /// Core, always, because the core row keeps when the task last changed (TASK_IDLE), and Metadata too when it sets
+    /// `pr` or `summary`. `state` is a new state the task's App set, a cancel, or a derived state (`Cancelled` after
+    /// its installation went, `TimedOut` after TASK_IDLE) that the task's next command records.
+    TaskUpdated {
+        session: SessionId,
+        state: Option<crate::task::TaskApiState>,
+        pr: Option<IssueNumber>,
+        summary: Option<Box<str>>,
+        actor: crate::task::TaskActor,
+    },
 }
 
 impl RepoEvent {
@@ -485,6 +503,11 @@ impl RepoScratch<'_> {
     /// The entry's time: the leader's `now` when it decides, the entry's `at` when a follower verifies.
     pub fn at(&self) -> Timestamp {
         self.at
+    }
+
+    /// The index the fold has applied, which this entry follows: what a task's `snapshot` records.
+    pub fn applied(&self) -> graftyard_types::Index {
+        graftyard_fold::meta(&*self.base.core).applied
     }
 
     /// The owner whose `Authz` chain gates the repository, with the entry's earlier `Settings` on top.
@@ -743,10 +766,11 @@ impl Push {
         s: &RepoScratch<'_>,
         a: &crate::agent::AgentActor,
         install: Option<&dyn AuthzRead>,
+        session_ref: Option<&RefName>,
         refs: &mut [RefOutcome],
     ) -> Result<(), PushErr> {
         for (u, r) in self.updates.iter().zip(refs.iter_mut()) {
-            if *r != RefOutcome::Ok {
+            if *r != RefOutcome::Ok || Some(&u.name) == session_ref {
                 continue;
             }
             let bypass = needs_bypass(s, &u.name, u.expect, u.new, a.app);
@@ -756,7 +780,7 @@ impl Push {
             }
             match why {
                 None => {}
-                Some(w) if self.format() == REPO_FORMAT_AGENT && w.rule != AgentRule::Reclass => {
+                Some(w) if per_ref_agent(self.format()) && w.rule != AgentRule::Reclass => {
                     *r = RefOutcome::Rejected(RejectReason::Agent(w))
                 }
                 Some(w) => return Err(PushErr::Agent(w)),
@@ -769,6 +793,7 @@ impl Push {
         &self,
         s: &RepoScratch<'_>,
         agent: Option<(&crate::agent::AgentActor, Option<&dyn AuthzRead>)>,
+        session_ref: Option<&RefName>,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, PushOut), PushErr> {
         if self.atomicity == Atomicity::AllOrNothing && self.updates.len() > ATOMIC_REFS_MAX {
             return Err(PushErr::TooManyRefs { got: self.updates.len() });
@@ -792,8 +817,18 @@ impl Push {
                 }
             })
             .collect();
+        // The one write under `refs/graftyard/`: `graftyard-workspace` creating or moving its live task's session ref
+        // from the tip it names. Deletion runs only through a retention command. That a move is a fast-forward is
+        // `validate`'s to report, as for any non-fast-forward the fold cannot see.
+        if let Some(own) = session_ref {
+            for (u, r) in self.updates.iter().zip(refs.iter_mut()) {
+                if u.name == *own && u.new.is_some() && s.get(&u.name) == u.expect {
+                    *r = RefOutcome::Ok;
+                }
+            }
+        }
         if let Some((a, install)) = agent {
-            self.agent_rules(s, a, install, &mut refs)?;
+            self.agent_rules(s, a, install, session_ref, &mut refs)?;
         }
         // A create whose name is a directory or a file of a ref that stays: one of this push's other passing updates,
         // or a fold ref this push does not delete.
@@ -847,12 +882,22 @@ impl Push {
             };
             // A pack with zero objects names nothing, and a push of deletes alone has none.
             let pack = if applied.iter().all(|u| u.new.is_none()) { None } else { self.pack.clone() };
-            // Provenance of the refs the push moved, as `validate` gave it. A `Graftyard-Session` trailer links to a
-            // `Session` only through a task of the pusher's App, and none exists before AM1-WP3, so every trailer
-            // stays `Claimed` (`crate::agent::link`).
+            // Provenance of the refs the push moved, as `validate` gave it. A `Session` is kept only when the pusher is
+            // an App's installation and the session is a task of that App here, live or final, or its token's live
+            // task. A `Session` the edge linked (`crate::agent::link`) that no such task names is dropped, and every
+            // other trailer stays `Claimed` (`crate::agent::unlinked`).
             let moved: Vec<Provenance> =
                 self.provenance.iter().filter(|p| applied.iter().any(|u| u.name == p.refname)).cloned().collect();
-            let list = crate::agent::unlinked(&moved, &[]);
+            let own = match self.actor.actor {
+                Actor::App { app, .. } => crate::task::own_sessions(
+                    s.core(),
+                    app,
+                    agent.and_then(|(a, _)| a.task.as_ref()),
+                    crate::agent::named_sessions(&moved),
+                ),
+                _ => Vec::new(),
+            };
+            let list = crate::agent::unlinked(&moved, &own);
             events.push(RepoEvent::Refs { push: self.request, actor: account, updates: applied, pack });
             if !list.is_empty() {
                 events.push(RepoEvent::Provenance { push: self.request, list });
@@ -885,6 +930,9 @@ impl Push {
         }
         e.option(pack, encode_pack);
         encode_principal(&mut e, &self.actor);
+        if self.format() == REPO_FORMAT_TASKS {
+            encode_task_claim(&mut e, &self.actor);
+        }
         e.count(self.options.len());
         for o in &self.options {
             e.str(o);
@@ -911,7 +959,8 @@ impl Push {
     pub fn from_wire(b: &[u8]) -> Result<Push, WireError> {
         let mut d = Dec(b);
         let format = Format { family: d.u16()?, version: d.u16()? };
-        if ![REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT].contains(&format) {
+        let reads = [REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS];
+        if !reads.contains(&format) {
             return Err(WireError::Format(format));
         }
         let atomicity = match d.u8()? {
@@ -928,14 +977,18 @@ impl Push {
             updates.push(RefUpdate { name, expect, new });
         }
         let pack = d.option(decode_pack)?;
-        let actor = decode_principal(&mut d, format == REPO_FORMAT_STATELESS || format == REPO_FORMAT_AGENT)?;
+        let mut actor =
+            decode_principal(&mut d, [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS].contains(&format))?;
+        if format == REPO_FORMAT_TASKS {
+            decode_task_claim(&mut d, &mut actor)?;
+        }
         let n = d.u32()? as usize;
         let mut options = Vec::with_capacity(n.min(1 << 10));
         for _ in 0..n {
             options.push(d.str()?.into());
         }
         let request = RequestId(Ulid(d.u128()?));
-        let (provenance, protected, changed) = if format == REPO_FORMAT_AGENT {
+        let (provenance, protected, changed) = if format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS {
             decode_validated(&mut d)?
         } else {
             for _ in 0..3 {
@@ -1069,14 +1122,7 @@ fn decode_validated(d: &mut Dec) -> Result<Validated, WireError> {
                     Source::Claimed { key, value: d.str()?.into() }
                 }
                 1 => Source::AiNote { note: d.oid()? },
-                2 => Source::Session(match d.u8()? {
-                    0 => SessionId::Run(d.u128()?),
-                    1 => SessionId::External {
-                        app: AppId(graftyard_types::DbId(d.u64()? as i64)),
-                        name: d.str()?.into(),
-                    },
-                    _ => return Err(WireError::Malformed("session tag")),
-                }),
+                2 => Source::Session(decode_session(d)?),
                 _ => return Err(WireError::Malformed("source tag")),
             });
         }
@@ -1265,24 +1311,66 @@ fn decode_claims(d: &mut Dec) -> Result<InstallationClaims, WireError> {
         iat: Timestamp(d.u64()?),
         exp: Timestamp(d.u64()?),
         kid: Kid(d.u32()?),
+        // Carried after the principal, in format 32.12 only (`decode_task_claim`).
+        task: None,
     })
 }
 
 /// A principal in the push encoding's canonical form, App actors and installation claims included: what a format-8
-/// issue command carries for an App, whose JSON form has only an account.
+/// issue command carries for an App, whose JSON form has only an account. A `task` claim (format 32.12) follows it,
+/// only when set, so a principal without one keeps format 8's bytes.
 pub fn principal_bytes(p: &Principal) -> Vec<u8> {
     let mut out = Vec::new();
     encode_principal(&mut Enc(&mut out), p);
+    if crate::task::claim(p).is_some() {
+        encode_task_claim(&mut Enc(&mut out), p);
+    }
     out
 }
 
 pub fn principal_from_bytes(b: &[u8]) -> Result<Principal, WireError> {
     let mut d = Dec(b);
-    let p = decode_principal(&mut d, true)?;
+    let mut p = decode_principal(&mut d, true)?;
+    if !d.0.is_empty() {
+        decode_task_claim(&mut d, &mut p)?;
+        if crate::task::claim(&p).is_none() {
+            return Err(WireError::Malformed("a trailing task claim is set"));
+        }
+    }
     if !d.0.is_empty() {
         return Err(WireError::Malformed("trailing bytes"));
     }
     Ok(p)
+}
+
+/// An installation token's `task` claim, after its principal in format 32.12: an option of the session.
+fn encode_task_claim(e: &mut Enc, p: &Principal) {
+    e.option(crate::task::claim(p), encode_session);
+}
+
+fn decode_task_claim(d: &mut Dec, p: &mut Principal) -> Result<(), WireError> {
+    let task = d.option(decode_session)?;
+    match &mut p.credential {
+        Credential::Stateless(c) => c.task = task,
+        _ if task.is_some() => {
+            return Err(WireError::Malformed("a task claim on a token that is not an installation's"));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn decode_session(d: &mut Dec) -> Result<SessionId, WireError> {
+    match d.u8()? {
+        0 => Ok(SessionId::Run(d.u128()?)),
+        1 => Ok(SessionId::External { app: AppId(graftyard_types::DbId(d.u64()? as i64)), name: d.str()?.into() }),
+        _ => Err(WireError::Malformed("session tag")),
+    }
+}
+
+/// Whether a push of `format` stores a per-ref agent refusal: 32.8 and its superset 32.12.
+fn per_ref_agent(format: Format) -> bool {
+    format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS
 }
 
 fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError> {
@@ -1406,6 +1494,11 @@ impl Record for RepoEvent {
             RepoEvent::AgentMeta { n, meta } => return tagged(out, 28, &(n, meta)),
             RepoEvent::AgentGate(g) => return tagged(out, 29, g),
             RepoEvent::AgentPolicy(p) => return tagged(out, 30, p),
+            // AM1-WP3: tags 31 and 32.
+            RepoEvent::TaskCreated(t) => return tagged(out, 31, t),
+            RepoEvent::TaskUpdated { session, state, pr, summary, actor } => {
+                return tagged(out, 32, &(session, state, pr, summary, actor));
+            }
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1435,7 +1528,9 @@ impl Command for Push {
     fn format(&self) -> Format {
         let stateless =
             matches!(self.actor.credential, Credential::Stateless(_)) || matches!(self.actor.actor, Actor::App { .. });
-        if self.validated() {
+        if crate::task::claim(&self.actor).is_some() {
+            REPO_FORMAT_TASKS
+        } else if self.validated() {
             REPO_FORMAT_AGENT
         } else if stateless {
             REPO_FORMAT_STATELESS
@@ -1474,9 +1569,24 @@ impl Command for Push {
         // The class from the install's rows this entry read, never the edge's: an unflagged App is not an `Agent` in
         // the first decision after the unflag commits (LF-2).
         let install = install_authz(deps);
+        let owner = authz_folds(deps).into_iter().find(|a| a.owner().is_some() && a.owner() == s.authz_owner());
         match crate::agent::actor_kind(&self.actor, install) {
-            crate::agent::ActorKind::Agent(a) => self.decide_refs(s, Some((&a, install))),
-            _ => self.decide_refs(s, None),
+            crate::agent::ActorKind::Agent(mut a) => {
+                // A token's `task` claim binds it to that task while the task reads live here (AM1-WP3): its prefix
+                // and its requester. A claim on a task that reads cancelled, timed out, or paused binds nothing.
+                if let (Some(t), Some(owner)) = (crate::task::claim(&self.actor), owner)
+                    && let Some(repo) = s.fold().repo
+                    && let Some(row) = crate::task::live_run_task(s.core(), owner, install, repo, s.at(), a.app, t)
+                {
+                    a.task = Some(t.clone());
+                    a.requester = row.requester;
+                }
+                let session_ref = a.task.as_ref().filter(|_| crate::task::is_workspace(install, a.app)).and_then(|t| {
+                    RefName::parse(format!("{}{}", crate::agent::SESSION_REFS, t.text()).as_bytes()).ok()
+                });
+                self.decide_refs(s, Some((&a, install)), session_ref.as_ref())
+            }
+            _ => self.decide_refs(s, None, None),
         }
     }
     /// Each ref as the first decide answered it: `Ok` if a stored `Refs` applied it, else the reason a stored

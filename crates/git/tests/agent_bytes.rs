@@ -48,6 +48,7 @@ fn app() -> Principal {
         iat: Timestamp(9_000),
         exp: Timestamp(9_000 + 3_600_000),
         kid: Kid(1),
+        task: None,
     })
 }
 

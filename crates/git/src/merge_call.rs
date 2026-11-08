@@ -202,9 +202,10 @@ impl<'de> Deserialize<'de> for MergeCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<MergeCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let a = crate::repo::REPO_FORMAT_AGENT;
+        let (a, t) = (crate::repo::REPO_FORMAT_AGENT, crate::repo::REPO_FORMAT_TASKS);
         if f != serde_json::json!([REPO_FORMAT_V4.family, REPO_FORMAT_V4.version])
             && f != serde_json::json!([a.family, a.version])
+            && f != serde_json::json!([t.family, t.version])
         {
             return Err(serde::de::Error::custom(format!("merge command format {f} is not one this release reads")));
         }

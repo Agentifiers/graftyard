@@ -180,7 +180,7 @@ fn installed() -> Installed {
     install(&mut w, org, id, row, dev);
     publish(&mut w, Kid(1), [1; 32], None);
     let now = Timestamp(w.authz(org).now.0);
-    let grant = Grant { app: f.app, installation: id, repos: RepoScope::All, permissions: rec.permissions };
+    let grant = Grant { app: f.app, installation: id, repos: RepoScope::All, permissions: rec.permissions, task: None };
     let (text, minted) = Minter::default().mint(&Src(Kid(1), [1; 32]), &grant, now, [3; 10]).unwrap();
     let k = keys(&mut w);
     let claims = stateless::verify(&text, &k, now).unwrap();
@@ -417,6 +417,7 @@ fn key_rotation_keeps_both_keys_valid_through_the_overlap() {
         installation: InstallationId(DbId(6)),
         repos: RepoScope::All,
         permissions: perms(&[("contents", Access::Read)]),
+        task: None,
     };
     let old_src = Src(Kid(1), [1; 32]);
     let new_src = Src(Kid(2), [2; 32]);

@@ -693,6 +693,7 @@ dependencies = [
  "ed25519-dalek",
  "graftyard-raft",
  "graftyard-types",
+ "postcard",
  "rsa",
  "serde",
  "serde_json",

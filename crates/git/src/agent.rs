@@ -16,12 +16,13 @@ use smallvec::SmallVec;
 use crate::issues::IssueNumber;
 use crate::refs::{ObjectId, RefName};
 
+pub use graftyard_identity::SessionId;
 pub use graftyard_identity::glob::{PathGlob, RefPattern};
 
-/// Host-owned: `decide` refuses every update under it for every actor (`SESSION_REFS`).
+/// Host-owned: `decide` refuses every update under it for every actor but one (`SESSION_REFS`).
 pub const HOST_REFS: &str = "refs/graftyard/";
-/// Session logs, under `HOST_REFS`. Only `graftyard-workspace` with a live task's `task` claim may append one, and no
-/// task exists before AM1-WP3, so every update is refused.
+/// Session logs, under `HOST_REFS`: `refs/graftyard/sessions/<task id>`. Only `graftyard-workspace` with a live
+/// task's `task` claim may create or move its own task's (`crate::repo::Push`).
 pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
 /// git-ai's notes ref. An `Agent` update of it is outside its prefix.
 pub const NOTES_AI: &str = "refs/notes/ai";
@@ -54,58 +55,6 @@ pub const VALUE_MAX: usize = 1_024;
 /// Only the last MiB of a message is scanned for its trailer block [guess, the prototype's cap].
 pub const MESSAGE_SCAN_MAX: usize = 1 << 20;
 
-/// A task's id: AM1-WP3 builds the tasks, so here it is only the shape `AgentActor`, `AgentMeta`, and
-/// `Source::Session` carry. Its string form is the lowercase hyphenated UUID, or `<app_id>.<name>`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum SessionId {
-    Run(u128),
-    External { app: AppId, name: Box<str> },
-}
-
-impl SessionId {
-    /// A session's string form. A bare `name` is scoped to `caller`, as the host scopes an App's own name.
-    pub fn parse(s: &str, caller: Option<AppId>) -> Option<SessionId> {
-        if let Some(u) = parse_uuid(s) {
-            return Some(SessionId::Run(u));
-        }
-        let (app, name) = match s.split_once('.') {
-            Some((a, n)) if !a.is_empty() && a.bytes().all(|b| b.is_ascii_digit()) => {
-                (AppId(graftyard_types::DbId(a.parse().ok()?)), n)
-            }
-            _ => (caller?, s),
-        };
-        let ok = (1..=64).contains(&name.len())
-            && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
-            && name.as_bytes()[0].is_ascii_alphanumeric()
-            && !name.contains("..")
-            && !name.ends_with(".lock");
-        ok.then(|| SessionId::External { app, name: name.into() })
-    }
-
-    pub fn text(&self) -> String {
-        match self {
-            SessionId::Run(u) => {
-                let h = format!("{u:032x}");
-                format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
-            }
-            SessionId::External { app, name } => format!("{}.{name}", app.0.0),
-        }
-    }
-}
-
-fn parse_uuid(s: &str) -> Option<u128> {
-    let b = s.as_bytes();
-    let dashes = [8, 13, 18, 23];
-    if b.len() != 36 || dashes.iter().any(|i| b[*i] != b'-') {
-        return None;
-    }
-    let hex: String = s.chars().filter(|c| *c != '-').collect();
-    if !hex.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
-        return None;
-    }
-    u128::from_str_radix(&hex, 16).ok()
-}
-
 /// Which kind of actor `decide` binds. Only `Agent` is refused the agent rules.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActorKind {
@@ -114,7 +63,8 @@ pub enum ActorKind {
     Agent(AgentActor),
 }
 
-/// `task` is the installation token's `task` claim (none before AM1-WP3). `requester` is that task's.
+/// `task` is the installation token's `task` claim, set only while that task reads live on the repository.
+/// `requester` is that task's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentActor {
     pub app: AppId,
@@ -426,9 +376,17 @@ pub fn link(list: &[Provenance], pusher: Option<AppId>, own: &[SessionId], origi
         .collect()
 }
 
+/// The sessions a push's `Session` sources name, which `decide` checks against the pusher's tasks.
+pub fn named_sessions(list: &[Provenance]) -> impl Iterator<Item = SessionId> + '_ {
+    list.iter().flat_map(|p| p.sources.iter()).filter_map(|s| match s {
+        Source::Session(id) => Some(id.clone()),
+        _ => None,
+    })
+}
+
 /// What `decide` stores of a push's provenance: a `Session` source only when it names one of `own`, the pusher's
-/// App's sessions (none before AM1-WP3), so a `Session` sent on the wire without a task links nothing. Every other
-/// source is kept as the edge's `validate` gave it.
+/// App's tasks on this repository and its token's task (`crate::task::own_sessions`), so a `Session` sent on the wire
+/// without such a task links nothing. Every other source is kept as the edge's `validate` gave it.
 pub fn unlinked(list: &[Provenance], own: &[SessionId]) -> Vec<Provenance> {
     list.iter()
         .map(|p| {
@@ -563,10 +521,14 @@ impl AgentRefusal {
     }
 }
 
-/// The allowed prefix of an `Agent`: its `AgentApp`'s `confine`. A Graftyard-run App's prefix is its task's, and no
-/// task exists before AM1-WP3.
+/// The allowed prefix of an `Agent`: a Graftyard-run App's is its live task's (`refs/heads/graftyard/<uuid>/**`), and a
+/// third-party App's is its `AgentApp`'s `confine`.
 pub fn allowed_prefix(install: Option<&dyn AuthzRead>, a: &AgentActor) -> Option<RefPattern> {
-    agent_app(install, a.app).and_then(|r| r.confine)
+    let row = agent_app(install, a.app)?;
+    match row.kind {
+        AgentKind::GraftyardRun => a.task.as_ref().and_then(crate::task::run_refs),
+        _ => row.confine,
+    }
 }
 
 /// The agent rules a ref update breaks, in order, for an `Agent` whose update is not host-owned and not stale.

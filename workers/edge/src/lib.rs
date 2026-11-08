@@ -564,10 +564,12 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
         protected: Vec::new(),
         changed: Vec::new(),
     };
-    // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4).
-    let stateless = graftyard_git::repo::REPO_FORMAT_STATELESS;
-    if graftyard_raft::Command::format(&push) == stateless && !c.cfg.enabled.contains(&stateless) {
-        return unsupported(c.rid, stateless.family, stateless.version);
+    // A push under a `ghs_` token is format 32.7, sent only once `FormatsEnable` enabled it (M3-WP4); one whose token
+    // carries a `task` claim is 32.12 (AM1-WP3), on the same terms.
+    let late = [graftyard_git::repo::REPO_FORMAT_STATELESS, graftyard_git::repo::REPO_FORMAT_TASKS];
+    let f = graftyard_raft::Command::format(&push);
+    if late.contains(&f) && !c.cfg.enabled.contains(&f) {
+        return unsupported(c.rid, f.family, f.version);
     }
     // Format 2 carries the client's agent. A forced unknown format is sent with format 2's fields and its own tag.
     let format = c.cfg.push_format();

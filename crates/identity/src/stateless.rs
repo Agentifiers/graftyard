@@ -27,6 +27,7 @@ use graftyard_types::{RepoId, Timestamp, Ulid};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+use crate::agents::SessionId;
 use crate::apps::{Access, AppId, InstallationId, PermissionSet};
 use crate::tokens::{Ed25519Public, Jti, Kid, RepoScope, TokensRead};
 
@@ -45,8 +46,10 @@ fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
 }
 
-/// SHARED's `InstallationClaims`, without `task`, which comes with the agent layer. Its serde form is what an issue
-/// or merge command under the token carries across a binding (format 32.9).
+/// SHARED's `InstallationClaims`. Its serde form is what an issue or merge command under the token carries across a
+/// binding (format 32.9). `task` is AM1-WP3's: set only when the token request's additive `graftyard_task` named a live
+/// Graftyard-run task, and absent from the serde form, the JWT, and every encoding when it is `None`, so a token
+/// without one keeps M3-WP4's bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallationClaims {
     pub app: AppId,
@@ -58,6 +61,8 @@ pub struct InstallationClaims {
     pub iat: Timestamp,
     pub exp: Timestamp,
     pub kid: Kid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<SessionId>,
 }
 
 impl InstallationClaims {
@@ -114,6 +119,9 @@ struct Payload {
     jti: String,
     iat: u64,
     exp: u64,
+    /// The `task` claim's string form (`SessionId::text`), only when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    task: Option<String>,
 }
 
 fn level(a: Access) -> &'static str {
@@ -146,11 +154,16 @@ impl Payload {
             jti: c.jti.0.to_string(),
             iat: c.iat.0 / 1000,
             exp: c.exp.0 / 1000,
+            task: c.task.as_ref().map(SessionId::text),
         }
     }
 
     fn claims(self, kid: Kid) -> Option<InstallationClaims> {
         use graftyard_types::DbId;
+        let task = match self.task {
+            None => None,
+            Some(t) => Some(SessionId::parse(&t, None)?),
+        };
         let mut permissions = BTreeMap::new();
         for (k, v) in self.perms {
             permissions.insert(k.into_boxed_str(), parse_level(&v)?);
@@ -167,6 +180,7 @@ impl Payload {
             iat: Timestamp(self.iat.checked_mul(1000)?),
             exp: Timestamp(self.exp.checked_mul(1000)?),
             kid,
+            task,
         })
     }
 }
@@ -275,13 +289,16 @@ pub trait KeySource {
 }
 
 /// What the token request asks for after `narrow`: the installation, its App, and the token's scope. The edge sends
-/// it to `graft-ops` over the binding as JSON.
+/// it to `graft-ops` over the binding as JSON. `task` is set only after the edge checked the request's
+/// `graftyard_task` against the task's row (`graftyard_git::task::token_task`), and is absent from the JSON otherwise.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Grant {
     pub app: AppId,
     pub installation: InstallationId,
     pub repos: RepoScope,
     pub permissions: PermissionSet,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<SessionId>,
 }
 
 /// One `graft-ops` isolate's minter: the unwrapped key and when it was fetched.
@@ -324,6 +341,7 @@ impl Minter {
             iat,
             exp: Timestamp(iat.0 + ms(INSTALLATION_TOKEN_TTL)),
             kid: *kid,
+            task: grant.task.clone(),
         };
         Ok((sign(key, &claims), claims))
     }
@@ -486,7 +504,7 @@ pub fn access_token_grant(
         .ok_or(TokenRequestError::NoInstallation)?;
     let (repos, permissions) =
         narrow(&row.repos, &row.permissions, &app.permissions, req, resolve).map_err(TokenRequestError::Narrow)?;
-    Ok(Grant { app: app.id, installation: id, repos, permissions })
+    Ok(Grant { app: app.id, installation: id, repos, permissions, task: None })
 }
 
 /// `DELETE /installation/token`: the command the edge commits on `jti_shard` under the token itself. The leader
@@ -524,6 +542,7 @@ mod tests {
             installation: InstallationId(DbId(42)),
             repos,
             permissions: perms(&[("contents", Access::Write), ("metadata", Access::Read)]),
+            task: None,
         }
     }
 
@@ -556,6 +575,27 @@ mod tests {
         }
         assert!(lens.windows(2).all(|w| w[0] < w[1]), "length varies with the claims: {lens:?}");
         assert_eq!(m.fetches, 1);
+    }
+
+    /// AM1-WP3: a grant's `task` becomes the token's `task` claim and verifies back; a token without one carries no
+    /// `task` member at all, so its payload is M3-WP4's.
+    #[test]
+    fn a_task_claim_round_trips_and_its_absence_keeps_the_payload() {
+        let now = Timestamp(1_800_000_000_000);
+        let src = Src(Kid(3), [5; 32]);
+        let f = keys(Kid(3), [5; 32], None);
+        let task = SessionId::parse("0193a1b2-c3d4-8e5f-8a9b-0c1d2e3f4a5b", None).unwrap();
+        let mut g = grant(RepoScope::Selected(smallvec::smallvec![RepoId(DbId(7))]));
+        let (plain, pc) = Minter::default().mint(&src, &g, now, [1; 10]).unwrap();
+        let payload = |t: &str| String::from_utf8(B64.decode(t.split('.').nth(1).unwrap()).unwrap()).unwrap();
+        assert!(!payload(&plain).contains("task"), "{}", payload(&plain));
+        assert_eq!(verify(&plain, &f, now).unwrap().task, None);
+        assert!(!serde_json::to_string(&pc).unwrap().contains("task"), "the claims' serde form keeps M3-WP4's");
+        g.task = Some(task.clone());
+        let (t, c) = Minter::default().mint(&src, &g, now, [1; 10]).unwrap();
+        assert!(payload(&t).contains(&format!("\"task\":\"{}\"", task.text())));
+        assert_eq!(verify(&t, &f, now).unwrap().task, Some(task));
+        assert_eq!(verify(&t, &f, now), Ok(c));
     }
 
     #[test]

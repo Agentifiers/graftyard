@@ -650,9 +650,17 @@ impl Command for MergeCmd {
     /// 32.4, or 32.8 for an App's `Merge` or queue action, whose principal no earlier form carries.
     fn format(&self) -> Format {
         let app = |p: &Principal| matches!(p.actor, Actor::App { .. });
+        // An App's principal with a `task` claim encodes the claim, which only 32.12 reads.
+        let f = |p: &Principal| {
+            if crate::task::claim(p).is_some() {
+                crate::repo::REPO_FORMAT_TASKS
+            } else {
+                crate::repo::REPO_FORMAT_AGENT
+            }
+        };
         match self {
-            MergeCmd::Merge(m) if app(&m.actor) => crate::repo::REPO_FORMAT_AGENT,
-            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) if app(a) => crate::repo::REPO_FORMAT_AGENT,
+            MergeCmd::Merge(m) if app(&m.actor) => f(&m.actor),
+            MergeCmd::Queue(QueueOp { actor: Some(a), .. }) if app(a) => f(a),
             _ => REPO_FORMAT_V4,
         }
     }

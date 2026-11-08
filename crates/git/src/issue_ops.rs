@@ -251,6 +251,20 @@ pub enum IssueOp<B = DurableBlob> {
     CancelInvitation {
         id: graftyard_identity::InvitationId,
     },
+    // ---- AM1-WP3, format 32.12 (`crate::task`) ----
+    /// `POST /api/graftyard/v1/repos/{o}/{r}/tasks` with `kind: external`, by an `AgentApp`'s installation token.
+    CreateTask(crate::task::NewTask),
+    /// `PATCH .../tasks/{id}`, by the task's App.
+    UpdateTask {
+        id: graftyard_identity::SessionId,
+        state: Option<crate::task::TaskApiState>,
+        pr: Option<IssueNumber>,
+        summary: Option<Box<str>>,
+    },
+    /// `POST .../tasks/{id}/cancel`, by the requester, a repository admin, or the task's App.
+    CancelTask {
+        id: graftyard_identity::SessionId,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -302,7 +316,15 @@ impl<B> IssueOp<B> {
             O::RemoveCollaborator { user } => O::RemoveCollaborator { user },
             O::SetAgentPolicy(p) => O::SetAgentPolicy(p),
             O::CancelInvitation { id } => O::CancelInvitation { id },
+            O::CreateTask(t) => O::CreateTask(t),
+            O::UpdateTask { id, state, pr, summary } => O::UpdateTask { id, state, pr, summary },
+            O::CancelTask { id } => O::CancelTask { id },
         })
+    }
+
+    /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
+    pub fn is_task(&self) -> bool {
+        matches!(self, IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. })
     }
 }
 
@@ -319,6 +341,11 @@ pub enum IssueOut {
     Number(IssueNumber),
     Id(DbId),
     Done,
+    /// A task command applied: the task's id, whose row the leader renders.
+    Task(graftyard_identity::SessionId),
+    /// A task command found the task in a derived final state (its installation gone, or TASK_IDLE passed) and
+    /// recorded it, and changed nothing else: the client gets 409 with that state.
+    TaskFinal(graftyard_identity::SessionId, crate::task::TaskApiState),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -349,6 +376,8 @@ pub enum IssueErr {
     Unavailable,
     /// An agent rule (`crate::agent`). GitHub's 403 shape, with a text that names the rule.
     Agent(crate::agent::AgentRefusal),
+    /// A task command's refusal (`crate::task::TaskErr`).
+    Task(crate::task::TaskErr),
 }
 
 fn actor_id(p: &Principal) -> Option<AccountId> {
@@ -381,6 +410,8 @@ impl IssueCmd {
             | IssueOp::RemoveCollaborator { .. }
             | IssueOp::CancelInvitation { .. } => TierSet::CORE,
             IssueOp::SetAgentPolicy(_) => TierSet::CORE,
+            // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
+            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => both,
             _ => TierSet::METADATA,
         }
     }
@@ -400,7 +431,7 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
-        self.decide_in(v, deps, false)
+        self.decide_in(v, deps, false, None)
     }
 
     /// `decide`, where `agent` says the command is format 32.8 (`crate::repo::REPO_FORMAT_AGENT`), so its entry may
@@ -410,6 +441,7 @@ impl IssueCmd {
         v: &RepoView<'_>,
         deps: &[(ChainId, IdentityDep)],
         agent: bool,
+        session: Option<&graftyard_identity::SessionId>,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
         let cred = self.actor.credential_shard();
         let app = match (&self.actor.actor, &self.actor.credential) {
@@ -519,7 +551,8 @@ impl IssueCmd {
                 let ev = RepoEvent::PrOpened { n, head: head.clone(), base: base.clone(), capture };
                 let mut evs = one(ev);
                 // `AgentMeta` when the creating token belongs to an `AgentApp`. `session` and `requester` come from a
-                // task, and none exists before AM1-WP3, so both are empty and the gate needs one more approval.
+                // task of that App on this repository: the token's `task` claim, or the session the client named in
+                // `X-Graftyard-Agent-Session`. Without one both are empty and the gate needs one more approval.
                 let creator = match self.actor.actor {
                     Actor::App { app, .. } => Some(app),
                     _ => self.credential_app(deps),
@@ -534,7 +567,13 @@ impl IssueCmd {
                             crate::agent::AgentRule::DraftOnly,
                         )));
                     }
-                    let meta = crate::agent::AgentMeta { app, session: None, requester: None, repo: v.tiers.repo };
+                    let named = crate::task::claim(&self.actor).or(session);
+                    let task = named.and_then(|s| crate::task::task_core(v.core(), s).map(|t| (s, t)));
+                    let (session, requester) = match task {
+                        Some((s, t)) if t.app == app => (Some(s.clone()), t.requester),
+                        _ => (None, None),
+                    };
+                    let meta = crate::agent::AgentMeta { app, session, requester, repo: v.tiers.repo };
                     evs.push(RepoEvent::AgentMeta { n, meta });
                 }
                 Ok((evs, IssueOut::Number(n)))
@@ -656,8 +695,8 @@ impl IssueCmd {
                 let mut evs = one(RepoEvent::Review(ev));
                 // A qualifying APPROVE of a PR with `AgentMeta` writes `AgentGate` for the head it approves: a writer's
                 // credential that is not an `AgentApp`'s (its user-to-server tokens included), who is not the
-                // requester, and approves the current head. Pushers to the head ref are App installations until
-                // AM1-WP3's tasks, so no user pusher is excluded yet [inference].
+                // requester, and approves the current head. Pushers to the head ref are App installations: no user
+                // pushes for a task, so no user pusher is excluded yet [inference].
                 if agent
                     && *state == ReviewState::Approved
                     && let Some(meta) = crate::tiers::agent_meta(v.core(), *n)
@@ -983,7 +1022,59 @@ impl IssueCmd {
                 }
                 Ok((one(RepoEvent::AgentPolicy(p.clone())), IssueOut::Done))
             }
+            // Decided on the scratch, which carries the entry's time (`crate::issue_ops::call::IssueCall::decide`).
+            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
+                Err(IssueErr::Invalid("a task command is decided by crate::task::decide"))
+            }
         }
+    }
+
+    /// A task command's `decide` (`crate::task::decide`): the credential check, then the caller's permission, then the
+    /// task rules, at the entry's time `at` after index `applied`. An installation token needs `issues: write` and
+    /// `contents: read`, as the design gates external create and cancel.
+    pub fn decide_task(
+        &self,
+        v: &RepoView<'_>,
+        deps: &[(ChainId, IdentityDep)],
+        at: Timestamp,
+        applied: graftyard_types::Index,
+    ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueOut), IssueErr> {
+        let cred = self.actor.credential_shard();
+        let app = match (&self.actor.actor, &self.actor.credential) {
+            (Actor::App { .. }, Credential::Stateless(c)) => Some(c),
+            _ => None,
+        };
+        if cred.key.is_none() || (cred.account.is_none() && app.is_none()) {
+            return Err(IssueErr::Unauthorized(CredentialRefusal::NoToken));
+        }
+        check_credential(&cred, Own::Other, deps).map_err(IssueErr::Unauthorized)?;
+        let owner = v.owner();
+        let folds = crate::repo::authz_folds(deps);
+        let perm = match app {
+            Some(c) => {
+                let access = Access { repo: v.tiers.repo, owner, core: v.core() };
+                let issues = graftyard_identity::authorize_app(c, &self.app_needs(v), &folds, &access);
+                let contents = graftyard_identity::authorize_app(c, &[("contents", AppAccess::Read)], &folds, &access);
+                match (issues, contents) {
+                    (Decision::Allow, Decision::Allow) => Some(RepoPermission::Admin),
+                    (Decision::Hidden, _) | (_, Decision::Hidden) => return Err(IssueErr::NotFound),
+                    _ => return Err(IssueErr::Forbidden),
+                }
+            }
+            None => permission(&self.actor, v, &folds),
+        };
+        if perm.is_none() {
+            return Err(IssueErr::NotFound);
+        }
+        let ctx = crate::task::TaskCtx {
+            repo: v.tiers.repo,
+            at,
+            applied,
+            owner: folds.iter().copied().find(|a| a.owner() == Some(owner)),
+            install: crate::repo::install_authz(deps),
+            perm,
+        };
+        crate::task::decide(&self.op, &self.actor, v.core(), &ctx).map_err(IssueErr::Task)
     }
 
     /// The App behind a stored user-to-server token, from its `Tokens` row the leader read.
@@ -999,7 +1090,7 @@ impl IssueCmd {
     /// documented per-endpoint permissions [inference: the endpoints' "Fine-grained access" sections, mapped onto these
     /// commands]. A command no App may run (answering a user's invitation, a status, whose creator is an account)
     /// needs nothing listed and is refused.
-    fn app_needs(&self, v: &RepoView<'_>) -> SmallVec<[(&'static str, AppAccess); 2]> {
+    pub(crate) fn app_needs(&self, v: &RepoView<'_>) -> SmallVec<[(&'static str, AppAccess); 2]> {
         let w = |p: &'static str| (p, AppAccess::Write);
         let on = |n: IssueNumber| if pull_head(v.core(), n).is_some() { w("pull_requests") } else { w("issues") };
         let comment = |id: &CommentId| match get_rec::<CommentRow>(v.meta(), "comment", &[int(id.0.0)]).map(|r| r.on) {
@@ -1038,6 +1129,10 @@ impl IssueCmd {
             | IssueOp::LockLfs { .. }
             | IssueOp::UnlockLfs { .. } => smallvec![w("contents")],
             IssueOp::RecordStatus(_) | IssueOp::AnswerInvitation { .. } => SmallVec::new(),
+            // External create and cancel need `issues: write` (and `contents: read`, which `crate::task` checks).
+            IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => {
+                smallvec![w("issues")]
+            }
         }
     }
 
@@ -1059,6 +1154,8 @@ impl IssueCmd {
                 RepoEvent::ReleaseAsset { id, asset: Some(_), .. } => return IssueOut::Id(id.0),
                 RepoEvent::LfsLock(LfsLockEvent::Created { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Status(st) => return IssueOut::Id(st.id.0),
+                RepoEvent::TaskCreated(t) => return IssueOut::Task(t.session.clone()),
+                RepoEvent::TaskUpdated { session, state, .. } => return crate::task::replay(&self.op, session, *state),
                 _ => {}
             }
         }
