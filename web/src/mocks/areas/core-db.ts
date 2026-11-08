@@ -13,7 +13,9 @@ import {
   type SimpleUser,
 } from "../world";
 
-// Issues, pull requests, their comments, files, and check runs.
+// Issues, pull requests, their comments, files, and check runs. Other areas read and
+// change these through `db` and build matching records with the exported builders, so a
+// review, a merge, or a new PR lands in the same store the lists read.
 
 type Issue = Schemas["issue"];
 type IssueComment = Schemas["issue-comment"];
@@ -23,7 +25,7 @@ type CheckRun = Schemas["check-run"];
 // The pulls list schema (pull-request-simple) requires a non-null description, the strictest of the three.
 type Label = Schemas["pull-request-simple"]["labels"][number];
 
-const LABELS: Record<string, [color: string, description: string]> = {
+export const LABELS: Record<string, [color: string, description: string]> = {
   bug: ["d73a4a", "Something is not working"],
   edge: ["1d76db", "The Rust edge Worker"],
   wire: ["5319e7", "GHES wire compatibility"],
@@ -33,7 +35,7 @@ const LABELS: Record<string, [color: string, description: string]> = {
   ui: ["0e8a16", "The web app"],
 };
 
-function label(repo: Repository, name: string): Label {
+export function label(repo: Repository, name: string): Label {
   const [color, description] = LABELS[name];
   return {
     id: parseInt(sha(name).slice(0, 7), 16),
@@ -47,7 +49,7 @@ function label(repo: Repository, name: string): Label {
   };
 }
 
-type IssueSeed = {
+export type IssueSeed = {
   number: number;
   title: string;
   body: string;
@@ -58,7 +60,7 @@ type IssueSeed = {
   updated: string;
 };
 
-function issue(repo: Repository, s: IssueSeed): Issue {
+export function issue(repo: Repository, s: IssueSeed): Issue {
   const url = `${repo.url}/issues/${s.number}`;
   return {
     id: id(),
@@ -88,14 +90,14 @@ function issue(repo: Repository, s: IssueSeed): Issue {
   };
 }
 
-type PullSeed = IssueSeed & {
+export type PullSeed = IssueSeed & {
   head: string;
   draft?: boolean;
   merged?: string;
   files: DiffEntry[];
 };
 
-function pullRequest(repo: Repository, s: PullSeed): PullRequest {
+export function pullRequest(repo: Repository, s: PullSeed): PullRequest {
   const url = `${repo.url}/pulls/${s.number}`;
   const headSha = sha(`${repo.full_name}:${s.head}`);
   const additions = s.files.reduce((n, f) => n + f.additions, 0);
@@ -205,7 +207,7 @@ function issueForPull(repo: Repository, s: PullSeed, pr: PullRequest): Issue {
   };
 }
 
-function file(
+export function file(
   repo: Repository,
   head: string,
   filename: string,
@@ -230,7 +232,7 @@ function file(
   };
 }
 
-function comment(
+export function comment(
   repo: Repository,
   number: number,
   author: SimpleUser,
@@ -252,7 +254,7 @@ function comment(
   };
 }
 
-function checkRun(
+export function checkRun(
   repo: Repository,
   headSha: string,
   name: string,
@@ -860,4 +862,4 @@ export const db = {
   },
 };
 
-export type { RepoState };
+export type { CheckRun, DiffEntry, Issue, IssueComment, Label, PullRequest, RepoState };

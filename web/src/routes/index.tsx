@@ -3,6 +3,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RepositoryIcon, StarIcon } from "@hugeicons/core-free-icons";
 import { userReposQuery } from "@/areas/core/queries";
+import { Slot } from "@/areas/slots";
 import { Ago } from "@/components/github";
 import { Region } from "@/components/region";
 import { Badge } from "@/components/reui/badge";
@@ -15,7 +16,7 @@ export const Route = createFileRoute("/")({
 
 function Home() {
   return (
-    <main className="mx-auto max-w-6xl p-4 sm:p-6">
+    <main className="mx-auto grid max-w-6xl items-start gap-4 p-4 sm:p-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
       <Frame spacing="sm" dense>
         <FrameHeader>
           <FrameTitle>Your repositories</FrameTitle>
@@ -26,6 +27,9 @@ function Home() {
           </Region>
         </FramePanel>
       </Frame>
+      <aside className="flex flex-col gap-4">
+        <Slot name="home" props={{}} />
+      </aside>
     </main>
   );
 }
