@@ -25,6 +25,7 @@ pub mod glob;
 mod identity;
 mod ids;
 mod names;
+pub mod oidc;
 mod org;
 mod overlay;
 mod placement;

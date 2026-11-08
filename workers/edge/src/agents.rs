@@ -12,7 +12,7 @@ use worker::*;
 
 use crate::Ctx;
 
-fn respond(c: &Ctx<'_>, r: Reply) -> Result<Response> {
+pub(crate) fn respond(c: &Ctx<'_>, r: Reply) -> Result<Response> {
     let h = crate::headers(c.rid)?;
     for (k, v) in &r.headers {
         h.set(k, v)?;

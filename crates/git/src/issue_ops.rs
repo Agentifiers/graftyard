@@ -246,6 +246,11 @@ pub enum IssueOp<B = DurableBlob> {
     // ---- AM1-WP2 ----
     /// `PUT /api/graftyard/v1/repos/{o}/{r}/agents/policy`: the repository's whole agent policy, admin only.
     SetAgentPolicy(crate::agent::AgentPolicy),
+    // ---- format 32.11 ----
+    /// `DELETE /repos/{o}/{r}/invitations/{id}`: a repository admin withdraws a pending invitation, as `Cancelled`.
+    CancelInvitation {
+        id: graftyard_identity::InvitationId,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -296,6 +301,7 @@ impl<B> IssueOp<B> {
             O::AnswerInvitation { id, accept } => O::AnswerInvitation { id, accept },
             O::RemoveCollaborator { user } => O::RemoveCollaborator { user },
             O::SetAgentPolicy(p) => O::SetAgentPolicy(p),
+            O::CancelInvitation { id } => O::CancelInvitation { id },
         })
     }
 }
@@ -372,7 +378,8 @@ impl IssueCmd {
             IssueOp::Resolve { .. } | IssueOp::DeleteComment { .. } => both,
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
-            | IssueOp::RemoveCollaborator { .. } => TierSet::CORE,
+            | IssueOp::RemoveCollaborator { .. }
+            | IssueOp::CancelInvitation { .. } => TierSet::CORE,
             IssueOp::SetAgentPolicy(_) => TierSet::CORE,
             _ => TierSet::METADATA,
         }
@@ -945,6 +952,14 @@ impl IssueCmd {
                 ];
                 Ok((evs, IssueOut::Done))
             }
+            IssueOp::CancelInvitation { id } => {
+                need(RepoPermission::Admin)?;
+                get_rec::<InvitationRow>(v.core(), "invitation", &[int(id.0.0)])
+                    .filter(|r| r.expires > v.at)
+                    .ok_or(IssueErr::NotFound)?;
+                let ev = InvitationEvent::Cancelled { id: *id, actor: me };
+                Ok((one(RepoEvent::Invitation(ev)), IssueOut::Done))
+            }
             IssueOp::RemoveCollaborator { user } => {
                 need(RepoPermission::Admin)?;
                 if collaborator(v.core(), *user).is_none() {
@@ -1012,6 +1027,7 @@ impl IssueCmd {
             | IssueOp::Settings(_)
             | IssueOp::InviteCollaborator { .. }
             | IssueOp::RemoveCollaborator { .. }
+            | IssueOp::CancelInvitation { .. }
             | IssueOp::SetAgentPolicy(_) => smallvec![w("administration")],
             IssueOp::RecordCheck(_) => smallvec![w("checks")],
             IssueOp::PutRelease { .. }

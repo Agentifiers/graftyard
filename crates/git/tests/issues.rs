@@ -1087,6 +1087,14 @@ fn collaborators_and_org_grants_never_overlap_and_acceptance_grants_in_one_entry
     c.deps.extend(deps_for_account(103));
     let IssueOut::Id(id2) = c.commit(OWNER, invite(103, RepoPermission::Write)).unwrap() else { panic!() };
     c.commit(103, IssueOp::AnswerInvitation { id: InvitationId(id2), accept: false }).unwrap();
+    // A withdrawn invitation (32.11) can no longer be accepted, and only an admin withdraws one.
+    let IssueOut::Id(id3) = c.commit(OWNER, invite(103, RepoPermission::Triage)).unwrap() else { panic!() };
+    let cancel = IssueOp::CancelInvitation { id: InvitationId(id3) };
+    assert_eq!(c.commit(103, cancel.clone()), Err(IssueErr::Forbidden), "only an admin withdraws");
+    c.commit(OWNER, cancel.clone()).unwrap();
+    assert_eq!(c.commit(OWNER, cancel), Err(IssueErr::NotFound), "withdrawn once");
+    let late = IssueOp::AnswerInvitation { id: InvitationId(id3), accept: true };
+    assert_eq!(c.commit(103, late), Err(IssueErr::NotFound), "a withdrawn invitation grants nothing");
     let core = &c.members[0].core;
     assert_eq!(graftyard_git::issue_ops::collaborator(core, AccountId(DbId(READER))), Some(RepoPermission::Maintain));
     assert_eq!(graftyard_git::issue_ops::collaborator(core, AccountId(DbId(103))), None, "declined");
