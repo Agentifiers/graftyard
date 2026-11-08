@@ -180,8 +180,7 @@ fn installed() -> Installed {
     install(&mut w, org, id, row, dev);
     publish(&mut w, Kid(1), [1; 32], None);
     let now = Timestamp(w.authz(org).now.0);
-    let grant =
-        Grant { app: f.app, installation: id, repos: RepoScope::All, permissions: rec.permissions, task: None };
+    let grant = Grant { app: f.app, installation: id, repos: RepoScope::All, permissions: rec.permissions, task: None };
     let (text, minted) = Minter::default().mint(&Src(Kid(1), [1; 32]), &grant, now, [3; 10]).unwrap();
     let k = keys(&mut w);
     let claims = stateless::verify(&text, &k, now).unwrap();

@@ -958,7 +958,8 @@ impl Push {
             updates.push(RefUpdate { name, expect, new });
         }
         let pack = d.option(decode_pack)?;
-        let mut actor = decode_principal(&mut d, [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS].contains(&format))?;
+        let mut actor =
+            decode_principal(&mut d, [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS].contains(&format))?;
         if format == REPO_FORMAT_TASKS {
             decode_task_claim(&mut d, &mut actor)?;
         }
@@ -1332,7 +1333,9 @@ fn decode_task_claim(d: &mut Dec, p: &mut Principal) -> Result<(), WireError> {
     let task = d.option(decode_session)?;
     match &mut p.credential {
         Credential::Stateless(c) => c.task = task,
-        _ if task.is_some() => return Err(WireError::Malformed("a task claim on a token that is not an installation's")),
+        _ if task.is_some() => {
+            return Err(WireError::Malformed("a task claim on a token that is not an installation's"));
+        }
         _ => {}
     }
     Ok(())
@@ -1559,11 +1562,9 @@ impl Command for Push {
                     a.task = Some(t.clone());
                     a.requester = row.requester;
                 }
-                let session_ref = a
-                    .task
-                    .as_ref()
-                    .filter(|_| crate::task::is_workspace(install, a.app))
-                    .and_then(|t| RefName::parse(format!("{}{}", crate::agent::SESSION_REFS, t.text()).as_bytes()).ok());
+                let session_ref = a.task.as_ref().filter(|_| crate::task::is_workspace(install, a.app)).and_then(|t| {
+                    RefName::parse(format!("{}{}", crate::agent::SESSION_REFS, t.text()).as_bytes()).ok()
+                });
                 self.decide_refs(s, Some((&a, install)), session_ref.as_ref())
             }
             _ => self.decide_refs(s, None, None),

@@ -20,3 +20,6 @@ serde_json.workspace = true
 sha2.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+postcard.workspace = true

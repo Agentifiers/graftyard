@@ -265,7 +265,7 @@ fn b0_36_agents_are_refused_and_others_are_not() {
 
     // The Graftyard-run App: with no live task (none exists before AM1-WP3) every push is refused, and so is
     // everything above.
-    register_own(&mut w, RUN);
+    register_own(&mut w, RUN, "graftyard-agent");
     w.flag(AgentApp { app: RUN, kind: AgentKind::GraftyardRun, confine: None });
     let mut run_counts = Vec::new();
     for (label, rule, make) in &cases {
@@ -310,27 +310,6 @@ fn b0_36_agents_are_refused_and_others_are_not() {
         "B0-36 confined vendor App: {counts:?}; protected path {prot}/100; bypass refused; allowlisted label applied"
     );
     eprintln!("B0-36 Graftyard-run App: {run_counts:?}; draft-only refused a ready PR");
-}
-
-/// Registers `app` as the install's own App, the way `PutApp` commits after its `Names` slug claim, so a
-/// `GraftyardRun` row for it is allowed.
-fn register_own(w: &mut World, a: AppId) {
-    let rec = graftyard_identity::AppRecord {
-        id: a,
-        slug: graftyard_identity::Slug::parse("graftyard-agent").unwrap(),
-        name: "graftyard-agent".into(),
-        client: graftyard_identity::ClientId::for_app(a),
-        keys: SmallVec::new(),
-        permissions: everything(),
-        events: SmallVec::new(),
-        webhook: None,
-        webhook_secret: None,
-        client_secrets: SmallVec::new(),
-        callbacks: SmallVec::new(),
-        public: false,
-    };
-    w.ident.names.apply(&NamesEvent::AppSlug { slug: rec.slug.clone(), app: Some(a), owner: install_account() });
-    w.authz(AuthzOp::PutApp { record: Box::new(rec) }, admin()).expect("the install registers its own App");
 }
 
 // ---- AgentGate ----

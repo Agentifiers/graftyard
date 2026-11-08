@@ -644,7 +644,11 @@ impl Command for MergeCmd {
         let app = |p: &Principal| matches!(p.actor, Actor::App { .. });
         // An App's principal with a `task` claim encodes the claim, which only 32.12 reads.
         let f = |p: &Principal| {
-            if crate::task::claim(p).is_some() { crate::repo::REPO_FORMAT_TASKS } else { crate::repo::REPO_FORMAT_AGENT }
+            if crate::task::claim(p).is_some() {
+                crate::repo::REPO_FORMAT_TASKS
+            } else {
+                crate::repo::REPO_FORMAT_AGENT
+            }
         };
         match self {
             MergeCmd::Merge(m) if app(&m.actor) => f(&m.actor),

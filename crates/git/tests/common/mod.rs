@@ -3,7 +3,7 @@
 //! request by reading the install's chain through `fresh` on its own leader, as a site host does once per entry. Moved
 //! here from `agent_gates.rs` (AM1-WP2) so `task_gates.rs` (AM1-WP3) runs on the same members.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 pub use graftyard_git::agent::{self, AgentPolicy, AgentRule, ChangedPaths};
 pub use graftyard_git::issue_ops::call::IssueCall;
@@ -300,6 +300,29 @@ impl<C: Command> Group<C> {
     }
 }
 
+/// The formats every repository member here reads: the base's and AM1's.
+pub fn repo_reads() -> Vec<Format> {
+    vec![
+        REPO_FORMAT_V1,
+        REPO_FORMAT_V2,
+        graftyard_git::prsync::REPO_FORMAT_V3,
+        graftyard_git::merge::REPO_FORMAT_V4,
+        graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES,
+        graftyard_git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
+        REPO_FORMAT_STATELESS,
+        REPO_FORMAT_AGENT,
+        graftyard_git::issue_ops::call::REPO_FORMAT_APP_CALLS,
+        graftyard_git::repo::REPO_FORMAT_TASKS,
+    ]
+}
+
+/// Three members of `repo:<id>`, owned by `OWNER`, with a leader.
+pub fn repo_group(id: RepoId, now: Timestamp) -> Group<RepoCmd> {
+    let mut g = Group::new(ChainId::Repo(id), repo_reads(), RepoFold::new(id, AccountId(DbId(OWNER))), now);
+    g.elect(now);
+    g
+}
+
 /// The install's group and the repository's group, with time.
 pub struct World {
     pub now: Timestamp,
@@ -309,6 +332,10 @@ pub struct World {
     pub next: u128,
     /// The planted-bug hook for LF-2's stale class: the leader's deps from a copy of the install fold taken once.
     pub pinned: Option<AuthzFold>,
+    /// Other repositories of the same owner, each its own three members, parked while `repo` is another's
+    /// (`World::add_repo`, `World::switch`).
+    pub parked: Vec<(RepoId, Group<RepoCmd>)>,
+    pub current: RepoId,
 }
 
 pub type RepoOutcome = Result<RepoOut, RepoErr>;
@@ -324,30 +351,31 @@ impl World {
             now,
         );
         iv.elect(now);
-        let reads = vec![
-            REPO_FORMAT_V1,
-            REPO_FORMAT_V2,
-            graftyard_git::prsync::REPO_FORMAT_V3,
-            graftyard_git::merge::REPO_FORMAT_V4,
-            graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES,
-            graftyard_git::issue_ops::call::REPO_FORMAT_COLLABORATORS,
-            REPO_FORMAT_STATELESS,
-            REPO_FORMAT_AGENT,
-            graftyard_git::issue_ops::call::REPO_FORMAT_APP_CALLS,
-            graftyard_git::repo::REPO_FORMAT_TASKS,
-        ];
-        let mut rg = Group::new(ChainId::Repo(REPO), reads, RepoFold::new(REPO, AccountId(DbId(OWNER))), now);
-        rg.elect(now);
-        let mut w = World { now, install: iv, repo: rg, ident: Ident::new(), next: 1, pinned: None };
+        let mut w = World {
+            now,
+            install: iv,
+            repo: repo_group(REPO, now),
+            ident: Ident::new(),
+            next: 1,
+            pinned: None,
+            parked: Vec::new(),
+            current: REPO,
+        };
         // The install is an org whose admin flags Apps; ids for its rows; the repository's ids and its default branch.
         w.authz(AuthzOp::Open { kind: AccountKind::Org, enterprise: None }, CredentialShard::NONE).unwrap();
         let op = AuthzOp::SetMember { user: UserId(AccountId(DbId(SITE_ADMIN))), role: Some(OrgRole::Admin) };
         w.authz(op, CredentialShard::NONE).unwrap();
-        let l = w.repo.leader();
-        let now = w.now;
-        w.repo.on(l, now, |m, t| m.id_block(t, graftyard_types::IdBlock::whole(0, 3).unwrap())).unwrap();
-        w.settle();
-        w.record(vec![
+        w.seed_repo();
+        w
+    }
+
+    /// The new repository's ids and its default branch.
+    fn seed_repo(&mut self) {
+        let l = self.repo.leader();
+        let now = self.now;
+        self.repo.on(l, now, |m, t| m.id_block(t, graftyard_types::IdBlock::whole(0, 3).unwrap())).unwrap();
+        self.settle();
+        self.record(vec![
             RepoEvent::Settings(settings()),
             RepoEvent::Refs {
                 push: RequestId(Ulid(1)),
@@ -356,7 +384,34 @@ impl World {
                 pack: None,
             },
         ]);
-        w
+    }
+
+    /// Another repository of the same owner on its own three members, seeded as `repo:7` is, and parked. The owner's
+    /// `Authz` (`Ident::owner`) is the one every repository's leader reads.
+    pub fn add_repo(&mut self, id: RepoId) {
+        let was = self.current;
+        let g = repo_group(id, self.now);
+        self.parked.push((id, g));
+        self.switch(id);
+        self.seed_repo();
+        self.switch(was);
+    }
+
+    /// Makes `id`'s group the one `commit`, `record`, and `fold` use, and settles it at the current time.
+    pub fn switch(&mut self, id: RepoId) {
+        if id == self.current {
+            return;
+        }
+        let i = self.parked.iter().position(|(r, _)| *r == id).expect("a parked repository");
+        let (_, g) = self.parked.remove(i);
+        let old = std::mem::replace(&mut self.repo, g);
+        self.parked.push((self.current, old));
+        self.current = id;
+        // A group parked while time moved on: its followers may have given up on the leader, so make sure one leads.
+        if !self.repo.members.iter().any(|m| m.role() == Role::Leader) {
+            self.repo.elect(self.now);
+        }
+        self.settle();
     }
 
     pub fn rid(&mut self) -> RequestId {
@@ -456,6 +511,11 @@ impl World {
 
     /// Commits `cmds` on the repository leader as one entry, as one `/commit_many` does, and returns each outcome.
     pub fn commit_all(&mut self, cmds: Vec<RepoCmd>) -> Vec<RepoOutcome> {
+        self.commit_all_acked(cmds).into_iter().map(|r| r.map(|a| a.out)).collect()
+    }
+
+    /// `commit_all` with each acknowledgement the core built, for a renderer that takes `&Acked`.
+    pub fn commit_all_acked(&mut self, cmds: Vec<RepoCmd>) -> Vec<Result<graftyard_raft::Acked<RepoOut>, RepoErr>> {
         let l = self.repo.leader();
         let now = self.now;
         let tickets: Vec<_> = cmds
@@ -473,7 +533,7 @@ impl World {
                     Resolution::Ticket { ticket, result } if ticket == t => Some(result.clone()),
                     _ => None,
                 }) {
-                    Some(Ok(a)) => Ok(a.out),
+                    Some(Ok(a)) => Ok(a),
                     Some(Err(CommitError::Refused { err, .. })) => Err(err),
                     other => panic!("unresolved: {other:?}"),
                 }
@@ -504,6 +564,27 @@ impl World {
             pack: None,
         }]);
     }
+}
+
+/// Registers `app` as the install's own App, the way `PutApp` commits after its `Names` slug claim, so a
+/// `GraftyardRun` row for it is allowed.
+pub fn register_own(w: &mut World, a: AppId, slug: &str) {
+    let rec = graftyard_identity::AppRecord {
+        id: a,
+        slug: graftyard_identity::Slug::parse(slug).unwrap(),
+        name: slug.into(),
+        client: graftyard_identity::ClientId::for_app(a),
+        keys: SmallVec::new(),
+        permissions: everything(),
+        events: SmallVec::new(),
+        webhook: None,
+        webhook_secret: None,
+        client_secrets: SmallVec::new(),
+        callbacks: SmallVec::new(),
+        public: false,
+    };
+    w.ident.names.apply(&NamesEvent::AppSlug { slug: rec.slug.clone(), app: Some(a), owner: install_account() });
+    w.authz(AuthzOp::PutApp { record: Box::new(rec) }, admin()).expect("the install registers its own App");
 }
 
 pub fn admin() -> CredentialShard {

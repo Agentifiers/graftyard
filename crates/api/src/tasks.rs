@@ -10,8 +10,8 @@
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::IssueNumber;
 use graftyard_git::task::{
-    NewTask, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective,
-    task_core, task_ids, task_meta,
+    NewTask, SUMMARY_MAX, TaskActor, TaskApiState, TaskCore, TaskErr, TaskMeta, effective, task_core, task_ids,
+    task_meta,
 };
 use graftyard_identity::{AppId, AuthzRead, RepoPermission, SessionId, UserId};
 use graftyard_raft::Acked;
@@ -177,14 +177,7 @@ fn decode_after(s: &str) -> Option<SessionId> {
 
 /// `GET /tasks`: the tasks that match `f`, in id order, each in the state it reads as at `at`, with GitHub's `Link`
 /// header while more remain.
-pub fn list(
-    r: &Repo<'_>,
-    owner: &dyn AuthzRead,
-    at: Timestamp,
-    f: &Filter,
-    reader: Reader,
-    path: &str,
-) -> Reply {
+pub fn list(r: &Repo<'_>, owner: &dyn AuthzRead, at: Timestamp, f: &Filter, reader: Reader, path: &str) -> Reply {
     if !reader.metadata {
         return Reply::not_found();
     }
@@ -310,7 +303,10 @@ pub fn render_ok(
         IssueOut::Task(id) => {
             let Some(core) = task_core(r.core, id) else { return Reply::error(500, "no task row", DOC) };
             let meta = task_meta(r.meta, id);
-            Reply::json(if created { 201 } else { 200 }, task_json(r, owner, at, id, &core, meta.as_ref(), reader, true))
+            Reply::json(
+                if created { 201 } else { 200 },
+                task_json(r, owner, at, id, &core, meta.as_ref(), reader, true),
+            )
         }
         IssueOut::TaskFinal(_, s) => final_state(*s),
         _ => Reply::error(500, "not a task reply", DOC),
@@ -334,7 +330,9 @@ pub fn refused(e: &IssueErr) -> Reply {
             Reply::error(503, "Service Unavailable", "rest").with("retry-after", "5")
         }
         IssueErr::Task(t) => match t {
-            TaskErr::NotAgentApp => Reply::error(403, "Only an agent App's installation token creates an external task", DOC),
+            TaskErr::NotAgentApp => {
+                Reply::error(403, "Only an agent App's installation token creates an external task", DOC)
+            }
             TaskErr::NotYours => Reply::error(403, "Must be the task's App, its requester, or a repository admin", DOC),
             TaskErr::NoTask => Reply::not_found(),
             TaskErr::BadSession => invalid("session", "invalid"),

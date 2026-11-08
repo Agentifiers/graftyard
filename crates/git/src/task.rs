@@ -77,7 +77,10 @@ impl TaskApiState {
     ];
 
     pub fn is_final(self) -> bool {
-        matches!(self, TaskApiState::Completed | TaskApiState::Failed | TaskApiState::TimedOut | TaskApiState::Cancelled)
+        matches!(
+            self,
+            TaskApiState::Completed | TaskApiState::Failed | TaskApiState::TimedOut | TaskApiState::Cancelled
+        )
     }
 
     /// Live for pushes and minting: not final, and not waiting for its user, which is how a paused task reads.
@@ -453,12 +456,7 @@ fn updated(session: &SessionId, state: TaskApiState, actor: TaskActor) -> crate:
 
 /// A command on a task that reads final only by derivation (its installation gone, or TASK_IDLE passed) records that
 /// state and changes nothing else; one already stored final changes nothing.
-fn derived_final(
-    ctx: &TaskCtx<'_>,
-    id: &SessionId,
-    t: &TaskCore,
-    actor: TaskActor,
-) -> Option<Decided> {
+fn derived_final(ctx: &TaskCtx<'_>, id: &SessionId, t: &TaskCore, actor: TaskActor) -> Option<Decided> {
     let owner = ctx.owner?;
     let now = effective(t, owner, ctx.repo, ctx.at);
     if t.state.is_final() {
@@ -559,7 +557,8 @@ pub fn decide(
                 return Err(TaskErr::Invalid("summary"));
             }
             // An empty `PATCH` still records that the task is alive, against TASK_IDLE.
-            let ev = RepoEvent::TaskUpdated { session: id.clone(), state: *state, pr: *pr, summary: summary.clone(), actor };
+            let ev =
+                RepoEvent::TaskUpdated { session: id.clone(), state: *state, pr: *pr, summary: summary.clone(), actor };
             Ok((smallvec::smallvec![ev], IssueOut::Task(id.clone())))
         }
         IssueOp::CancelTask { id } => {
