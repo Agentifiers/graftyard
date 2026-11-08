@@ -4,14 +4,16 @@ import type { components, paths } from "./ghes";
 
 export type Schemas = components["schemas"];
 
-export const api = createClient<paths>({ baseUrl: "/api/v3" });
-
-// No request leaves before the mock worker (when enabled) is intercepting.
-api.use({
+// No request leaves before the mock worker (when enabled) is intercepting. Every
+// openapi-fetch client in the app, including the hand-typed Graftyard ones, uses this.
+export const waitForMocks = {
   async onRequest() {
     await mocksReady();
   },
-});
+};
+
+export const api = createClient<paths>({ baseUrl: "/api/v3" });
+api.use(waitForMocks);
 
 // GHES error bodies are basic-error: { message, documentation_url, status }.
 export class ApiError extends Error {

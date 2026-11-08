@@ -22,31 +22,37 @@ The build has no server tier. Start prerenders only the root route into `_shell.
 
 ## Layout
 
-- `src/api/ghes.d.ts` holds the generated GHES 3.22 types for the operations this app uses. Do not edit it.
-- `src/api/client.ts` is the `openapi-fetch` client on `/api/v3`.
-- `src/api/queries.ts` has one `queryOptions` factory per page region. Keep data loading here, so the edge can later seed the first route's queries from inlined data.
+The app is split by area. An area owns a folder, its mock files, and its routes, and plugs into the shared layouts through two registries. It never edits a shared file, so areas can be built in parallel.
+
+Shared, edited only by the shell:
+
+- `src/api/ghes.d.ts` holds the GHES 3.22 types for every operation, generated from the whole description. Do not edit it.
+- `src/api/client.ts` is the `openapi-fetch` client on `/api/v3`, `ApiError`, `unwrap`, and `waitForMocks`, the middleware any other client (such as one on `/api/graftyard/v1`) must also use.
 - `src/api/query-client.ts` sets the retry policy. A query retries at most 2 times with full jitter and never retries a 4xx. A mutation never retries.
-- `src/api/collections.ts` has the TanStack DB collections. The issues collection backs the issue list. The comments collection's `onInsert` POSTs a comment, so a new comment shows at once and rolls back if the POST fails.
-- `src/components/region.tsx` is the `Region` component. Each page region is its own error boundary and Suspense boundary with its own queries.
-- `src/routes/` holds the file routes.
+- `src/areas/nav.ts` is the nav registry. Each `src/areas/<area>/nav.ts` exports `nav: NavEntry[]` for the slots `repo` (tabs), `repo-settings`, `org` (tabs), `org-settings`, `user-settings`, `user-menu`, and `admin`. Settings sidebars and the user menu draw one heading per `group`. `web/scripts/check-nav.mjs` fails on a target that is not a route or uses a param other than `$owner`, `$repo`, or `$org`.
+- `src/areas/slots.tsx` is the widget registry. Each `src/areas/<area>/slots.tsx` exports `slots: SlotEntry[]` built with `slot({...})`. The slots are `topbar`, `home`, `repo-actions`, `repo-overview`, `repo-sidebar`, `issue-sidebar`, and `pull-sidebar`, each with typed props. Every widget is its own `Region`.
+- `src/components/region.tsx` is `Region`: one error boundary and Suspense boundary per page region, with "Try again".
+- `src/components/panel.tsx` has `Panel` (a bordered box with a title bar) and `PageHeader`.
+- `src/components/markdown.tsx` renders GitHub Flavored Markdown with raw HTML escaped.
+- `src/components/github.tsx` has state badges and icons, labels, avatars, and relative times.
+- `src/components/side-nav.tsx` and `tab-nav.tsx` draw the registries. `src/components/mock-panel.tsx` is the Mock button in the top bar.
+- Layout routes: `__root.tsx` (top bar), `$owner.$repo.tsx` (repository header and tabs), `$owner.$repo.settings.tsx`, `orgs.$org.tsx` (organization header and tabs), `orgs.$org.settings.tsx`, `settings.tsx` (the viewer's settings), and `stafftools.tsx` (site admin). A settings index redirects to its slot's first section.
+- `src/mocks/world.ts` holds the people, the org, its teams and members, the repositories, branch names and shas, and tags. `src/mocks/http.ts` holds `http` (openapi-msw typed by the full `paths`), `gate`, `page`, `notFound`, and `unprocessable`.
 
-## Mocks
+Owned by one area:
 
-`src/mocks/` holds the mocks. MSW runs in the browser through `public/mockServiceWorker.js`.
+- `src/areas/<area>/` holds its `nav.ts`, `slots.tsx`, `queries.ts` (one `queryOptions` factory per page region), collections, and components.
+- `src/mocks/areas/<area>*.ts` holds its records and handlers. Every module there that exports `handlers` is served.
+- Its routes in `src/routes/`.
+- `core` owns users, repositories, issues, comments, pull requests, files, and check runs, and `shell` owns the organization header's reads.
 
-- `db.ts` is one in-memory store, seeded with a user, the `graftyard` org, 3 repositories, issues, pull requests with diffs, comments, and check runs. Every record is typed by its GHES schema. As in GHES, the issues list includes pull requests, each with a `pull_request` key.
-- `handlers.ts` uses `openapi-msw`, so each path, parameter, request body, and response is checked against the same generated `paths` the client uses. The POST handlers change the store. A reload resets it.
-- `browser.ts` starts the worker. The API client waits for it before the first request.
+Rules for an area:
 
-Mocking is on by default, in the production build too. Build with `VITE_MOCK_API=false` to call a real `/api/v3`.
-
-## Fault injection
-
-Add `?fail=<region>[,<region>]` to any URL. That region's handler answers 503 with a GHES error body. The setting persists in sessionStorage for the tab, and `?fail=` clears it.
-
-Regions are `user`, `repos`, `repo`, `issues`, `issue`, `comments`, `post-comment`, `pulls`, `pull`, `files`, and `checks`. `post-comment` fails only new comments, which shows the rollback.
-
-Example: `/graftyard/edge/pull/1?fail=checks` breaks only the Checks region.
+- Type every record by its GHES schema, and serve it through `http`, so a fixture that drifts from the wire contract fails typecheck. An API outside GHES 3.22, such as `/_t/ui/*` or `/api/graftyard/v1`, gets hand-written types in the area, a client that uses `waitForMocks`, and `createOpenApiHttp` on its own base URL.
+- Start each handler with `gate("<fault key>")`, and give each mutation its own fault key, so the Mock panel can fail one region or one write.
+- Use only the components in `src/components/ui` and `src/components/reui` and free HugeIcons. Keep corners square: `rounded-sm` at most, never `rounded-full`, `rounded-lg`, or larger.
+- Show writes at once where the UI can (a TanStack DB collection or an optimistic update), never retry them, and roll them back visibly on failure. Forms use TanStack Form and show a 422's field errors.
+- Link only to routes that exist. Add no npm dependency.
 
 ## Regenerate the types
 
@@ -54,8 +60,8 @@ Example: `/graftyard/edge/pull/1?fail=checks` breaks only the Checks region.
 npm run gen:api
 ```
 
-`web/scripts/gen-api.mjs` downloads the GHES 3.22 description at the commit `crates/api/gh/README.md` pins (about 11 MB) and caches it under `node_modules/.cache`. Set `GHES_JSON=/path/to/ghes-3.22.json` to use a local copy instead. The script keeps only the operations in its `OPERATIONS` list and the components they reach, drops examples, and writes `src/api/ghes.d.ts`. To use a new endpoint, add it to `OPERATIONS` and rerun the script.
+`web/scripts/gen-api.mjs` downloads the GHES 3.22 description at the commit `crates/api/gh/README.md` pins (about 11 MB) and caches it under `node_modules/.cache`. Set `GHES_JSON=/path/to/ghes-3.22.json` to use a local copy instead. The script drops examples and writes every operation to `src/api/ghes.d.ts`.
 
 ## UI components
 
-`components.json` uses the `base-nova` style, HugeIcons, and the `@reui` registry. Add components with the shadcn CLI: `npx shadcn@latest add <name>` for stock components and `npx shadcn@latest add @reui/<name>` for ReUI's free items. Do not add lucide or any paid icon set.
+`components.json` uses the `base-nova` style, HugeIcons, and the `@reui` registry. Every stock shadcn component and every free ReUI primitive is installed. Vendored files are patched only where the strict tsconfig rejects them, and `rounded-full` became `rounded-sm` except on the radio dot. ReUI's `registry:block` items need a Pro license and are not used. Do not add lucide or any paid icon set.

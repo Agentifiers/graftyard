@@ -3,6 +3,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { navFor, type NavSlot } from "@/areas/nav";
 
 // The tab strip under a repository or organization header, built from every area's nav.
+// The first tab is the overview, so it is active only on its own page.
 export function TabNav({
   slot,
   params,
@@ -13,13 +14,17 @@ export function TabNav({
   label: string;
 }) {
   const match = useMatchRoute();
+  const tabs = navFor(slot);
   return (
     <nav className="-mb-px flex gap-1 overflow-x-auto text-sm" aria-label={label}>
-      {navFor(slot).map((t) => {
-        const exact = t.to === "/$owner/$repo" || t.to === "/$org";
+      {tabs.map((t, i) => {
         const active = [t.to, ...(t.match ?? [])].some((to) =>
           Boolean(
-            match({ to: to as never, params: params as never, fuzzy: !exact || to !== t.to }),
+            match({
+              to: to as never,
+              params: params as never,
+              fuzzy: !(i === 0 && to === t.to),
+            }),
           ),
         );
         return (

@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { repoQuery } from "@/areas/core/queries";
+import { Slot } from "@/areas/slots";
 import { Region } from "@/components/region";
 import { Badge } from "@/components/reui/badge";
 import { Frame, FrameHeader, FramePanel, FrameTitle } from "@/components/reui/frame";
@@ -10,21 +11,36 @@ export const Route = createFileRoute("/$owner/$repo/")({
 });
 
 function RepoOverview() {
+  const params = Route.useParams();
   return (
-    <Frame spacing="sm" dense className="max-w-xl">
+    <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      <div className="flex min-w-0 flex-col gap-4">
+        <Slot name="repo-overview" props={params} />
+      </div>
+      <div className="flex flex-col gap-4">
+        <About />
+        <Slot name="repo-sidebar" props={params} />
+      </div>
+    </div>
+  );
+}
+
+function About() {
+  return (
+    <Frame spacing="sm" dense>
       <FrameHeader>
         <FrameTitle>About</FrameTitle>
       </FrameHeader>
       <FramePanel className="rounded-t-none">
         <Region name="repository">
-          <About />
+          <AboutBody />
         </Region>
       </FramePanel>
     </Frame>
   );
 }
 
-function About() {
+function AboutBody() {
   const params = Route.useParams();
   const { data: repo } = useSuspenseQuery(repoQuery(params));
   return (

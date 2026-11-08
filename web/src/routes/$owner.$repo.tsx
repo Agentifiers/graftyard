@@ -3,6 +3,7 @@ import { useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { GitBranchIcon, RepositoryIcon, StarIcon } from "@hugeicons/core-free-icons";
 import { repoQuery } from "@/areas/core/queries";
+import { Slot } from "@/areas/slots";
 import { Region } from "@/components/region";
 import { TabNav } from "@/components/tab-nav";
 import { Badge } from "@/components/reui/badge";
@@ -62,7 +63,10 @@ function RepoHeader() {
           <p className="text-muted-foreground mt-1 text-sm">{repo.description}</p>
         )}
       </div>
-      <div className="text-muted-foreground flex items-center gap-4 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <Slot name="repo-actions" props={{ owner: repo.owner.login, repo: repo.name }} bare />
+      </div>
+      <div className="text-muted-foreground flex w-full items-center gap-4 text-xs">
         <span className="flex items-center gap-1" title="Default branch">
           <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-3.5" />
           <code className="font-mono">{repo.default_branch}</code>

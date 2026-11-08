@@ -12,6 +12,7 @@ import {
 import type { Schemas } from "@/api/client";
 import { commentsCollection } from "@/api/collections";
 import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/areas/core/queries";
+import { Slot } from "@/areas/slots";
 import { Conversation } from "@/components/conversation";
 import { FileDiff } from "@/components/diff";
 import { Ago, pullState, StateBadge } from "@/components/github";
@@ -61,11 +62,16 @@ function PullPage() {
             </Region>
           </Section>
         </div>
-        <Section title="Checks" className="lg:sticky lg:top-4">
-          <Region name="checks" rows={4}>
-            <Checks />
+        <div className="flex flex-col gap-4 lg:sticky lg:top-4">
+          <Section title="Checks">
+            <Region name="checks" rows={4}>
+              <Checks />
+            </Region>
+          </Section>
+          <Region name="pull request" fallback={null}>
+            <PullSidebar />
           </Region>
-        </Section>
+        </div>
       </div>
     </div>
   );
@@ -86,6 +92,13 @@ function Section({
       {children}
     </section>
   );
+}
+
+// Other areas' widgets (reviewers, merge box, agent session). They need the head sha.
+function PullSidebar() {
+  const params = Route.useParams();
+  const { data: pr } = useSuspenseQuery(pullQuery(params));
+  return <Slot name="pull-sidebar" props={{ ...params, headSha: pr.head.sha }} />;
 }
 
 function PullHeader() {

@@ -112,3 +112,15 @@ export const checkRunsQuery = ({ owner, repo, ref }: Repo & { ref: string }) =>
         }),
       ),
   });
+
+export const orgQuery = (org: string) =>
+  queryOptions({
+    queryKey: ["orgs", org],
+    queryFn: ({ signal }) => unwrap(api.GET("/orgs/{org}", { params: { path: { org } }, signal })),
+  });
+
+export const userOrgsQuery = () =>
+  queryOptions({
+    queryKey: ["user", "orgs"],
+    queryFn: ({ signal }) => unwrap(api.GET("/user/orgs", { signal })),
+  });

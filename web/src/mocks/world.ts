@@ -101,6 +101,8 @@ export const me: Schemas["private-user"] = {
   disk_usage: 20480,
   collaborators: 0,
   two_factor_authentication: true,
+  // The viewer administers the site, so the admin console is reachable.
+  site_admin: true,
 };
 
 function repository(
@@ -257,3 +259,110 @@ export const repositories = [edge, raft, web];
 export function findRepo(owner: string, name: string): Repository | undefined {
   return repositories.find((r) => r.full_name.toLowerCase() === `${owner}/${name}`.toLowerCase());
 }
+
+// ---- The organization, its teams, and the branches every repository has ----
+
+export const org: Schemas["organization-full"] = {
+  login: "graftyard",
+  id: users.org.id,
+  node_id: users.org.node_id,
+  url: `${API}/orgs/graftyard`,
+  repos_url: `${API}/orgs/graftyard/repos`,
+  events_url: `${API}/orgs/graftyard/events`,
+  hooks_url: `${API}/orgs/graftyard/hooks`,
+  issues_url: `${API}/orgs/graftyard/issues`,
+  members_url: `${API}/orgs/graftyard/members{/member}`,
+  public_members_url: `${API}/orgs/graftyard/public_members{/member}`,
+  avatar_url: users.org.avatar_url,
+  description: "A GHES-compatible forge on Cloudflare.",
+  name: "Graftyard",
+  company: null,
+  blog: "https://graftyard.dev",
+  location: "Everywhere Cloudflare is",
+  email: null,
+  is_verified: true,
+  has_organization_projects: false,
+  has_repository_projects: false,
+  public_repos: 1,
+  public_gists: 0,
+  followers: 40,
+  following: 0,
+  html_url: `${HOST}/graftyard`,
+  type: "Organization",
+  total_private_repos: 2,
+  owned_private_repos: 2,
+  default_repository_permission: "read",
+  default_repository_branch: "main",
+  members_can_create_repositories: true,
+  two_factor_requirement_enabled: true,
+  members_can_create_public_repositories: false,
+  members_can_create_private_repositories: true,
+  members_can_create_internal_repositories: true,
+  members_can_fork_private_repositories: false,
+  web_commit_signoff_required: false,
+  created_at: "2025-01-10T00:00:00Z",
+  updated_at: "2026-10-01T00:00:00Z",
+  archived_at: null,
+};
+
+function team(slug: string, name: string, description: string, permission: string) {
+  const url = `${API}/orgs/graftyard/teams/${slug}`;
+  const t: Schemas["team"] = {
+    id: parseInt(sha(`team:${slug}`).slice(0, 6), 16),
+    node_id: `T_${sha(`team:${slug}`).slice(0, 12)}`,
+    name,
+    slug,
+    description,
+    privacy: "closed",
+    notification_setting: "notifications_enabled",
+    permission,
+    url,
+    html_url: `${HOST}/orgs/graftyard/teams/${slug}`,
+    members_url: `${url}/members{/member}`,
+    repositories_url: `${url}/repos`,
+    type: "organization",
+    organization_id: org.id,
+    parent: null,
+  };
+  return t;
+}
+
+export const teams = {
+  maintainers: team("maintainers", "Maintainers", "Merge rights on every repository.", "maintain"),
+  edge: team("edge", "Edge", "The Rust edge Worker and the wire crates.", "push"),
+  storage: team("storage", "Storage", "Raft groups, folds, and the blob store.", "push"),
+};
+
+// Who belongs to which team. Org owners are mira and devi; everyone else is a member.
+export const teamMembers: Record<keyof typeof teams, SimpleUser[]> = {
+  maintainers: [users.mira, users.devi],
+  edge: [users.mira, users.tomas, users.devi],
+  storage: [users.lin, users.devi],
+};
+export const orgOwners = [users.mira, users.devi];
+export const orgMembers = [users.mira, users.tomas, users.lin, users.devi];
+
+// Branch names per repository. The core area's PR heads are among them, so every area
+// that reads refs (code browser, branches, compare, Actions runs) agrees on the same set.
+export const branches: Record<string, string[]> = {
+  "graftyard/edge": [
+    "main",
+    "mira/idempotent-retry",
+    "devi/ratelimit-on-errors",
+    "lin/learner-reads",
+    "tomas/label-objects",
+    "release/0.4",
+  ],
+  "graftyard/raft": ["main", "lin/joint-consensus"],
+  "graftyard/web": ["main", "lin/dark-diff"],
+};
+
+// The commit sha a branch points at. Matches core-db's PR head and base shas.
+export const branchSha = (fullName: string, branch: string) => sha(`${fullName}:${branch}`);
+
+// Tags per repository, oldest first. Releases are made from these.
+export const tags: Record<string, string[]> = {
+  "graftyard/edge": ["v0.1.0", "v0.2.0", "v0.3.0", "v0.4.0-rc.1"],
+  "graftyard/raft": ["v0.1.0"],
+  "graftyard/web": [],
+};

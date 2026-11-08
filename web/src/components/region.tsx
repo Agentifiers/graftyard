@@ -45,7 +45,9 @@ export function Region({
             </Alert>
           )}
         >
-          <Suspense fallback={fallback ?? <RegionSkeleton rows={rows} />}>{children}</Suspense>
+          <Suspense fallback={fallback === undefined ? <RegionSkeleton rows={rows} /> : fallback}>
+            {children}
+          </Suspense>
         </ErrorBoundary>
       )}
     </QueryErrorResetBoundary>

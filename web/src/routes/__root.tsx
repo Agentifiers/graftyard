@@ -1,5 +1,4 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { useSuspenseQuery } from "@tanstack/react-query";
 import {
   ClientOnly,
   HeadContent,
@@ -11,11 +10,14 @@ import {
 } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
-import { userQuery } from "@/areas/core/queries";
-import { UserAvatar } from "@/components/github";
+import { useSyncExternalStore } from "react";
+import { Slot } from "@/areas/slots";
+import { MockPanel } from "@/components/mock-panel";
 import { Region } from "@/components/region";
+import { UserMenu } from "@/components/user-menu";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Toaster } from "@/components/ui/sonner";
 import appCss from "../styles.css?url";
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
@@ -67,30 +69,47 @@ function AppShell() {
             <Logo />
             Graftyard
           </Link>
-          <div className="ml-auto flex items-center gap-1">
+          {/* The shell prerender has no API, so everything that reads it renders only in the browser. */}
+          <ClientOnly>
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <Slot name="topbar" props={{}} bare />
+            </div>
+          </ClientOnly>
+          <div className="flex items-center gap-1">
+            <ClientOnly>
+              <MockPanel />
+            </ClientOnly>
             <ThemeToggle />
-            {/* The shell prerender has no API, so the viewer renders only in the browser. */}
             <ClientOnly fallback={<Skeleton className="size-6 rounded-sm" />}>
               <Region name="user" fallback={<Skeleton className="size-6 rounded-sm" />}>
-                <Viewer />
+                <UserMenu />
               </Region>
             </ClientOnly>
           </div>
         </div>
       </header>
       <Outlet />
+      <ClientOnly>
+        <ThemedToaster />
+      </ClientOnly>
     </>
   );
 }
 
-function Viewer() {
-  const { data: user } = useSuspenseQuery(userQuery());
-  return (
-    <span className="flex items-center gap-2 pl-1 text-sm" title={user.name ?? user.login}>
-      <UserAvatar user={user} />
-      <span className="text-muted-foreground hidden sm:inline">{user.login}</span>
-    </span>
+// The toaster follows the html element's dark class, which ThemeToggle flips.
+function subscribeTheme(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
+
+function ThemedToaster() {
+  const dark = useSyncExternalStore(
+    subscribeTheme,
+    () => document.documentElement.classList.contains("dark"),
+    () => false,
   );
+  return <Toaster theme={dark ? "dark" : "light"} position="bottom-right" />;
 }
 
 function ThemeToggle() {

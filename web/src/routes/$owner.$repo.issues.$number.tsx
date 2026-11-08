@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { commentsCollection } from "@/api/collections";
 import { issueQuery } from "@/areas/core/queries";
+import { Slot } from "@/areas/slots";
 import { Conversation } from "@/components/conversation";
 import { Ago, issueState, LabelBadge, StateBadge } from "@/components/github";
 import { Region } from "@/components/region";
@@ -25,14 +26,19 @@ export const Route = createFileRoute("/$owner/$repo/issues/$number")({
 function IssuePage() {
   const params = Route.useParams();
   return (
-    <div className="flex max-w-4xl flex-col gap-4">
+    <div className="flex flex-col gap-4">
       <Region name="issue" fallback={<Skeleton className="h-24" />}>
         <IssueHeader />
       </Region>
       <Separator />
-      <Region name="comments" rows={4} onRetry={() => commentsCollection(params).reload()}>
-        <Thread />
-      </Region>
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_16rem]">
+        <Region name="comments" rows={4} onRetry={() => commentsCollection(params).reload()}>
+          <Thread />
+        </Region>
+        <aside className="flex flex-col gap-4">
+          <Slot name="issue-sidebar" props={params} />
+        </aside>
+      </div>
     </div>
   );
 }

@@ -1,12 +1,11 @@
 import { useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { useForm } from "@tanstack/react-form";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { commentsCollection, draftComment } from "@/api/collections";
 import { userQuery } from "@/areas/core/queries";
 import { Ago, UserAvatar } from "@/components/github";
+import { MarkdownBody } from "@/components/markdown";
 import { Alert, AlertDescription, AlertTitle } from "@/components/reui/alert";
 import { Badge } from "@/components/reui/badge";
 import {
@@ -24,15 +23,6 @@ type Thread = { owner: string; repo: string; number: number };
 type Author = { login: string; avatar_url: string } | null;
 type Post = { author: Author; at: string; body: string };
 
-// GHES returns `body` as GitHub Flavored Markdown. react-markdown escapes raw HTML.
-function Body({ text }: { text: string }) {
-  return (
-    <div className="prose prose-sm dark:prose-invert prose-p:my-2 prose-pre:bg-muted prose-pre:text-foreground prose-code:before:content-none prose-code:after:content-none prose-code:font-normal [&_:not(pre)>code]:bg-muted max-w-none px-3 py-1 leading-relaxed [&_:not(pre)>code]:rounded [&_:not(pre)>code]:px-1 [&_:not(pre)>code]:py-0.5">
-      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
-    </div>
-  );
-}
-
 export function CommentCard({ author, at, body, pending }: Post & { pending?: boolean }) {
   return (
     <div className="bg-card overflow-hidden rounded-lg border" data-pending={pending || undefined}>
@@ -47,7 +37,7 @@ export function CommentCard({ author, at, body, pending }: Post & { pending?: bo
           </Badge>
         )}
       </div>
-      <Body text={body} />
+      <MarkdownBody text={body} className="px-3 py-1" />
     </div>
   );
 }
