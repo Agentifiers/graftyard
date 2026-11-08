@@ -1251,3 +1251,54 @@ fn an_installation_tokens_issue_writes_follow_its_app_permissions() {
     assert!(matches!(run(&mut c, app_cmd(&w, label("late"))), Err(IssueErr::Unauthorized(_))));
     c.agree();
 }
+
+/// `rest:repos`' create (format 32.13): `InitRepo` writes the chain's first settings and `Created` once, needs Admin,
+/// names the chain's own owner, and a re-sent create commits nothing.
+#[test]
+fn init_repo_writes_the_first_settings_once_and_needs_an_admin() {
+    let mut c = Chain::new(3);
+    assert_eq!(c.commit(WRITER, IssueOp::InitRepo(settings(90))), Err(IssueErr::Forbidden));
+    let mut other = settings(90);
+    other.owner = AccountId(DbId(5));
+    assert_eq!(c.commit(OWNER, IssueOp::InitRepo(other)), Err(IssueErr::OwnerChange));
+    let n = c.log.len();
+    assert_eq!(c.commit(OWNER, IssueOp::InitRepo(settings(90))), Ok(IssueOut::Done));
+    assert_eq!(c.log.len(), n + 1);
+    let created = graftyard_git::tiers::created(&c.members[0].core);
+    assert_eq!(created, Some(c.now), "created_at is the entry's time");
+    // A second create (the edge re-sent it, or a later client) commits nothing and keeps the first settings.
+    c.now = Timestamp(2 * DAY);
+    let mut later = settings(30);
+    later.description = Some("later".into());
+    assert_eq!(c.commit(OWNER, IssueOp::InitRepo(later)), Ok(IssueOut::Done));
+    assert_eq!(c.log.len(), n + 1, "no entry");
+    assert_eq!(graftyard_git::tiers::created(&c.members[0].core), created);
+    c.agree();
+}
+
+/// `rest:repos`' delete: `DeleteRepo` is the chain's `Deleted` tombstone, kept until `retain_until`. Only an admin
+/// sends it, the chain then refuses every client write, and a repeat commits nothing.
+#[test]
+fn delete_repo_tombstones_the_chain_and_refuses_every_later_write() {
+    let mut c = setup(3, 90);
+    let keep = Timestamp(c.now.0 + 90 * DAY);
+    assert_eq!(c.commit(WRITER, IssueOp::DeleteRepo { retain_until: keep }), Err(IssueErr::Forbidden));
+    assert!(matches!(c.commit(OWNER, IssueOp::DeleteRepo { retain_until: c.now }), Err(IssueErr::Invalid(_))));
+    assert_eq!(c.commit(OWNER, IssueOp::DeleteRepo { retain_until: keep }), Ok(IssueOut::Done));
+    assert_eq!(
+        graftyard_git::tiers::deleted(&c.members[0].core),
+        Some((keep, Some(AccountId(DbId(OWNER))))),
+        "the tombstone keeps the repository until retain_until"
+    );
+    let n = c.log.len();
+    assert_eq!(c.commit(OWNER, IssueOp::DeleteRepo { retain_until: keep }), Ok(IssueOut::Done));
+    assert_eq!(c.log.len(), n, "a repeated delete commits nothing");
+    let open =
+        IssueOp::OpenIssue { title: "t".into(), body: "".into(), labels: SmallVec::new(), assignees: SmallVec::new() };
+    assert_eq!(c.commit(OWNER, open), Err(IssueErr::NotFound));
+    assert_eq!(c.commit(OWNER, IssueOp::Settings(settings(30))), Err(IssueErr::NotFound));
+    assert_eq!(c.commit(OWNER, IssueOp::InitRepo(settings(30))), Err(IssueErr::NotFound));
+    // The refs stay, so GC keeps the objects until `retain_until`.
+    assert_eq!(c.ref_of(&name("refs/heads/main")), Some(oid(1)));
+    c.agree();
+}

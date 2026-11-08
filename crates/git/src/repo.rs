@@ -57,6 +57,10 @@ pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
 /// push carries `validate`'s outputs as 32.8 does. Versions 10 and 11 are other packages'. An edge sends it only once
 /// `FormatsEnable` has enabled it; a command without a task and without a claim never takes it.
 pub const REPO_FORMAT_TASKS: Format = Format { family: 0x20, version: 12 };
+/// `rest:repos`' create and delete (branch `m3-repos`): `IssueOp::InitRepo` and `IssueOp::DeleteRepo`, and their
+/// events `Created` and `Deleted` (tags 33 and 34). Version 13, after AM1-WP3's 12. An edge sends it only once
+/// `FormatsEnable` has enabled it.
+pub const REPO_FORMAT_REPOS: Format = Format { family: 0x20, version: 13 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -297,6 +301,19 @@ pub enum RepoEvent {
         pr: Option<IssueNumber>,
         summary: Option<Box<str>>,
         actor: crate::task::TaskActor,
+    },
+    // Format 32.13 (`crate::issue_ops::call::REPO_FORMAT_REPOS`): tags 33 and 34.
+    /// Core. The repository was created over REST or GraphQL (`IssueOp::InitRepo`), in the entry that writes its first
+    /// `Settings`: the core `created` row keeps the entry's time, which GHES's `created_at` reads. Not in SHARED's
+    /// event list, which has no creation time for a repository [inference].
+    Created {
+        actor: Option<AccountId>,
+    },
+    /// Core. SHARED's `Deleted { retain_until, actor }`: the repository was deleted and is kept until `retain_until`.
+    /// The core `deleted` row then refuses every client write on the chain.
+    Deleted {
+        retain_until: Timestamp,
+        actor: Option<AccountId>,
     },
 }
 
@@ -679,6 +696,9 @@ pub fn hidden(name: &RefName) -> bool {
 /// tier's collaborator rows: an admin, a `Write` grant, a team's, the org's base permission, or a `Collaborator` row.
 fn may_write(actor: &Principal, s: &RepoScratch<'_>, deps: &[(ChainId, IdentityDep)]) -> bool {
     let (Some(repo), Some(owner)) = (s.fold().repo, s.authz_owner()) else { return false };
+    if crate::tiers::deleted(s.core()).is_some() {
+        return false;
+    }
     let access = crate::issue_ops::Access { repo, owner, core: s.core() };
     let folds = authz_folds(deps);
     graftyard_identity::authorize_write(actor, WriteAction::Push, &folds, &access) == Decision::Allow
@@ -1499,6 +1519,9 @@ impl Record for RepoEvent {
             RepoEvent::TaskUpdated { session, state, pr, summary, actor } => {
                 return tagged(out, 32, &(session, state, pr, summary, actor));
             }
+            // Format 32.13: tags 33 and 34.
+            RepoEvent::Created { actor } => return tagged(out, 33, actor),
+            RepoEvent::Deleted { retain_until, actor } => return tagged(out, 34, &(retain_until, actor)),
         };
         e.u8(0);
         e.u128(push.0.0);

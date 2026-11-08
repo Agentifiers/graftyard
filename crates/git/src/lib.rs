@@ -12,6 +12,7 @@ pub mod bucket;
 pub mod clone;
 pub mod group;
 pub mod ingest;
+pub mod init;
 pub mod issue_ops;
 pub mod issues;
 pub mod key;

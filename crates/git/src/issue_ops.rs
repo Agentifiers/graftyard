@@ -265,6 +265,16 @@ pub enum IssueOp<B = DurableBlob> {
     CancelTask {
         id: graftyard_identity::SessionId,
     },
+    // ---- format 32.13 (`crate::issue_ops::call::REPO_FORMAT_REPOS`) ----
+    /// `POST /orgs/{org}/repos` and `POST /user/repos`, after the name's `CreateRepo` committed on the owner's `Authz`
+    /// chain: the repository's first settings and its creation time, once.
+    InitRepo(RepoSettings),
+    /// `DELETE /repos/{o}/{r}`: the chain's `Deleted` tombstone, kept until `retain_until`, after which the chain
+    /// refuses every write. A repeat on a deleted chain commits nothing, so the edge can finish the name's
+    /// `DeleteRepo` after a crash.
+    DeleteRepo {
+        retain_until: Timestamp,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -319,6 +329,8 @@ impl<B> IssueOp<B> {
             O::CreateTask(t) => O::CreateTask(t),
             O::UpdateTask { id, state, pr, summary } => O::UpdateTask { id, state, pr, summary },
             O::CancelTask { id } => O::CancelTask { id },
+            O::InitRepo(s) => O::InitRepo(s),
+            O::DeleteRepo { retain_until } => O::DeleteRepo { retain_until },
         })
     }
 
@@ -409,7 +421,9 @@ impl IssueCmd {
             | IssueOp::AnswerInvitation { .. }
             | IssueOp::RemoveCollaborator { .. }
             | IssueOp::CancelInvitation { .. } => TierSet::CORE,
-            IssueOp::SetAgentPolicy(_) => TierSet::CORE,
+            IssueOp::SetAgentPolicy(_) | IssueOp::DeleteRepo { .. } => TierSet::CORE,
+            // `Settings` writes the metadata tier's `retention` too.
+            IssueOp::InitRepo(_) => both,
             // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
             IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. } => both,
             _ => TierSet::METADATA,
@@ -493,6 +507,16 @@ impl IssueCmd {
             if n.0 == 0 || n.0 > v.last_number() { Err(IssueErr::NotFound) } else { Ok(()) }
         };
         let one = |e: RepoEvent| smallvec![e];
+        // A deleted repository takes no client write; a repeated delete commits nothing.
+        if crate::tiers::deleted(v.core()).is_some() {
+            return match &self.op {
+                IssueOp::DeleteRepo { .. } => {
+                    need(RepoPermission::Admin)?;
+                    Ok((SmallVec::new(), IssueOut::Done))
+                }
+                _ => Err(IssueErr::NotFound),
+            };
+        }
         match &self.op {
             IssueOp::OpenIssue { title, body, labels, assignees } => {
                 need(RepoPermission::Read)?;
@@ -798,6 +822,27 @@ impl IssueCmd {
                     return Err(IssueErr::OwnerChange);
                 }
                 Ok((one(RepoEvent::Settings(s.clone())), IssueOut::Done))
+            }
+            IssueOp::InitRepo(s) => {
+                need(RepoPermission::Admin)?;
+                if !(1..=CHECK_RETENTION_MAX).contains(&s.check_retention_days) || s.merge_methods.is_empty() {
+                    return Err(IssueErr::Invalid("a new repository's settings"));
+                }
+                // Once: the chain's first settings. A re-sent create finds them and commits nothing.
+                if v.settings().is_some() || crate::tiers::created(v.core()).is_some() {
+                    return Ok((SmallVec::new(), IssueOut::Done));
+                }
+                if s.owner != owner || s.enterprise != authz.and_then(|a| a.enterprise()) {
+                    return Err(IssueErr::OwnerChange);
+                }
+                Ok((smallvec![RepoEvent::Settings(s.clone()), RepoEvent::Created { actor: me }], IssueOut::Done))
+            }
+            IssueOp::DeleteRepo { retain_until } => {
+                need(RepoPermission::Admin)?;
+                if *retain_until <= v.at {
+                    return Err(IssueErr::Invalid("retain_until is after the entry"));
+                }
+                Ok((one(RepoEvent::Deleted { retain_until: *retain_until, actor: me }), IssueOut::Done))
             }
             IssueOp::RecordCheck(run) => {
                 need(RepoPermission::Write)?;
@@ -1119,7 +1164,9 @@ impl IssueCmd {
             | IssueOp::InviteCollaborator { .. }
             | IssueOp::RemoveCollaborator { .. }
             | IssueOp::CancelInvitation { .. }
-            | IssueOp::SetAgentPolicy(_) => smallvec![w("administration")],
+            | IssueOp::SetAgentPolicy(_)
+            | IssueOp::InitRepo(_)
+            | IssueOp::DeleteRepo { .. } => smallvec![w("administration")],
             IssueOp::RecordCheck(_) => smallvec![w("checks")],
             IssueOp::PutRelease { .. }
             | IssueOp::DeleteRelease { .. }
@@ -1175,9 +1222,11 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
     match op {
         IssueOp::Review { state: ReviewState::Approved, .. } => Some(AgentRefusal::of(AgentRule::Approve)),
         IssueOp::Change { change: IssueChange::Draft(false), .. } => Some(AgentRefusal::of(AgentRule::ReadyForReview)),
-        IssueOp::SetRule { .. } | IssueOp::Settings(_) | IssueOp::SetAgentPolicy(_) => {
-            Some(AgentRefusal::of(AgentRule::Rules))
-        }
+        IssueOp::SetRule { .. }
+        | IssueOp::Settings(_)
+        | IssueOp::SetAgentPolicy(_)
+        | IssueOp::InitRepo(_)
+        | IssueOp::DeleteRepo { .. } => Some(AgentRefusal::of(AgentRule::Rules)),
         IssueOp::PutRelease { .. } | IssueOp::DeleteRelease { .. } | IssueOp::PutAsset { .. } => {
             Some(AgentRefusal::of(AgentRule::Release))
         }
