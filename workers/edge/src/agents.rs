@@ -276,7 +276,17 @@ pub(crate) fn agentish(
     install: Option<&AuthzFold>,
     updates: &[graftyard_git::refs::RefUpdate],
 ) -> bool {
-    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+    agentish_with(c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT), who, install, updates)
+}
+
+/// `agentish` once the edge knows whether 32.8 is enabled.
+fn agentish_with(
+    agent_format: bool,
+    who: &Principal,
+    install: Option<&AuthzFold>,
+    updates: &[graftyard_git::refs::RefUpdate],
+) -> bool {
+    if !agent_format {
         return false;
     }
     if matches!(who.actor, graftyard_identity::Actor::App { .. }) {
@@ -351,7 +361,18 @@ pub(crate) fn fill_push(
     path: &str,
 ) {
     let origin = format!("https://{}/{path}", c.cfg.host);
-    let v = linked(&push.actor, &a.core, detail, &origin);
+    fill(a, push, detail, &origin, c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES));
+}
+
+/// `fill_push` once the edge knows its origin and whether 32.14 is enabled.
+fn fill(
+    a: &AgentPush,
+    push: &mut graftyard_git::repo::Push,
+    detail: &[graftyard_git::agent::RefDetail],
+    origin: &str,
+    leases: bool,
+) {
+    let v = linked(&push.actor, &a.core, detail, origin);
     let install = a.install.as_ref().map(|f| f as &dyn AuthzRead);
     let agent =
         matches!(graftyard_git::agent::actor_kind(&push.actor, install), graftyard_git::agent::ActorKind::Agent(_));
@@ -366,7 +387,7 @@ pub(crate) fn fill_push(
     push.provenance = v.provenance;
     push.changed = v.changed.into_iter().filter(|x| under(&x.refname)).collect();
     push.protected = v.protected.into_iter().filter(|x| under(&x.refname)).collect();
-    push.leases = c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES);
+    push.leases = leases;
 }
 
 /// `POST /git/refs` and `PATCH /git/refs/{ref}` as a one-update `Push` (`design/DESIGN.md`, Shape, `ChangedPaths`:
@@ -589,4 +610,133 @@ fn render_feed(view: &graftyard_api::view::Repo<'_>, v: &Value) -> Reply {
         })
         .unwrap_or_default();
     Reply::json(200, json!({ "cursor": v["cursor"], "events": events }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use graftyard_git::agent::{RawCommit, RefDetail, Source};
+    use graftyard_git::refs::{RefName, RefUpdate};
+    use graftyard_identity::glob::RefPattern;
+    use graftyard_identity::stateless::InstallationClaims;
+    use graftyard_identity::{
+        Access, Actor, AgentApp, AgentKind, AppId, AuthzEvent, Credential, InstallationId, Jti, Kid, PermissionSet,
+        RepoScope, ScopeSet, UserId,
+    };
+    use graftyard_raft::Fold as _;
+    use graftyard_types::{AccountId, DbId, RepoId, Timestamp, Ulid};
+
+    const APP: AppId = AppId(DbId(1_114_112));
+    const ORIGIN: &str = "https://h/o/r";
+
+    fn app_token(task: Option<&str>) -> Principal {
+        let c = InstallationClaims {
+            app: APP,
+            installation: InstallationId(DbId(7_190_001)),
+            repos: RepoScope::Selected(smallvec::smallvec![RepoId(DbId(5))]),
+            permissions: PermissionSet([(Box::from("contents"), Access::Write)].into_iter().collect()),
+            jti: Jti(Ulid(1)),
+            iat: Timestamp(0),
+            exp: Timestamp(u64::MAX / 2),
+            kid: Kid(1),
+            task: task.and_then(|t| graftyard_identity::SessionId::parse(t, Some(APP))),
+        };
+        Principal::installation(&c)
+    }
+
+    fn user_token() -> Principal {
+        Principal {
+            actor: Actor::User(UserId(AccountId(DbId(7)))),
+            scopes: ScopeSet(1),
+            credential: Credential::Stored([7; 32]),
+            sso_orgs: smallvec::SmallVec::new(),
+        }
+    }
+
+    fn install(confine: &str) -> AuthzFold {
+        let mut f = AuthzFold::new(graftyard_identity::install_account());
+        let row =
+            AgentApp { app: APP, kind: AgentKind::ThirdParty, confine: Some(RefPattern::parse(confine).unwrap()) };
+        f.apply(&AuthzEvent::AgentApp { app: APP, row: Some(row) });
+        f
+    }
+
+    fn update(name: &str) -> RefUpdate {
+        RefUpdate { name: RefName::parse(name.as_bytes()).unwrap(), expect: None, new: None }
+    }
+
+    fn detail(refname: &str, trailer: &str, paths: &[&str]) -> RefDetail {
+        let raw = format!(
+            "tree 4b825dc642cb6eb9a060e54bf8d69288fbee4904\nauthor A <a@x> 1 +0000\ncommitter A <a@x> 1 +0000\n\nFix\n\n{trailer}\n"
+        );
+        RefDetail {
+            refname: refname.into(),
+            commits: vec![RawCommit { oid: "7".repeat(40), raw: raw.into_bytes() }],
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn empty_push(who: Principal, refname: &str) -> graftyard_git::repo::Push {
+        graftyard_git::repo::Push {
+            updates: vec![update(refname)],
+            atomicity: graftyard_git::refs::Atomicity::PerRef,
+            pack: None,
+            actor: who,
+            options: Vec::new(),
+            request: graftyard_raft::RequestId(Ulid(9)),
+            agent: None,
+            provenance: Vec::new(),
+            protected: Vec::new(),
+            changed: Vec::new(),
+            leases: false,
+        }
+    }
+
+    /// Which pushes ask the git cache for detail: none before 32.8; any App token; a user token only under a
+    /// `confine` prefix or `refs/heads/graftyard/`. A default push asks nothing, so its bytes are unchanged.
+    #[test]
+    fn only_agentish_pushes_ask_for_detail() {
+        let i = install("refs/heads/claude/**");
+        let main = [update("refs/heads/main")];
+        assert!(!agentish_with(false, &app_token(None), Some(&i), &main));
+        assert!(agentish_with(true, &app_token(None), Some(&i), &main));
+        assert!(!agentish_with(true, &user_token(), Some(&i), &main));
+        assert!(agentish_with(true, &user_token(), Some(&i), &[update("refs/heads/claude/x")]));
+        assert!(agentish_with(true, &user_token(), None, &[update("refs/heads/graftyard/u/w/x")]));
+        assert!(!agentish_with(true, &user_token(), None, &[update("refs/heads/claude/x")]));
+    }
+
+    /// A claimed token's trailer links to its task; a forged one stays claimed; `changed` and `protected` are kept
+    /// for an agent's update and dropped for a user's push outside every agent prefix; `leases` follows 32.14.
+    #[test]
+    fn fill_links_the_claim_and_keeps_paths_only_for_agent_updates() {
+        let a = AgentPush { install: Some(install("refs/heads/claude/**")), core: Default::default() };
+        let mut p = empty_push(app_token(Some("1114112.t1")), "refs/heads/claude/a");
+        let d = [detail(
+            "refs/heads/claude/a",
+            &format!("Graftyard-Session: {ORIGIN}/_graftyard/sessions/1114112.t1"),
+            &["src/x.rs", ".github/workflows/ci.yml"],
+        )];
+        fill(&a, &mut p, &d, ORIGIN, true);
+        assert!(p.provenance[0].sources.iter().any(|s| matches!(s, Source::Session(_))));
+        assert_eq!(p.changed[0].paths.len(), 2);
+        assert_eq!(p.protected[0].paths.as_slice(), [Box::from(".github/workflows/ci.yml")]);
+        assert!(p.leases);
+
+        let mut forged = empty_push(app_token(Some("1114112.t1")), "refs/heads/claude/b");
+        let d = [detail(
+            "refs/heads/claude/b",
+            &format!("Graftyard-Session: {ORIGIN}/_graftyard/sessions/1114112.other"),
+            &["a"],
+        )];
+        fill(&a, &mut forged, &d, ORIGIN, false);
+        assert!(forged.provenance[0].sources.iter().all(|s| !matches!(s, Source::Session(_))));
+        assert!(!forged.leases);
+
+        let mut human = empty_push(user_token(), "refs/heads/main");
+        let d = [detail("refs/heads/main", "Signed-off-by: A <a@x>", &[".github/workflows/ci.yml"])];
+        fill(&a, &mut human, &d, ORIGIN, true);
+        assert!(human.changed.is_empty() && human.protected.is_empty());
+    }
 }
