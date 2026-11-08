@@ -16,6 +16,11 @@
 //	                                 joins the repository only when /ingest names it after the push committed, so a
 //	                                 push that never commits leaves no object a later push could lean on
 //	     validated packs older than an hour (PACK_COMMIT_WINDOW) are deleted
+//	     [&detailn=D]                after the tips, D bytes of "<new> <old> <ref>" lines: the reply's "detail" holds,
+//	                                 per update with a new tip, its new commits (raw, newest first), the paths it
+//	                                 changes against its merge base with HEAD and against the old tip, whether it is a
+//	                                 fast-forward, and refs/notes/ai's changed entries. With an empty pack, only
+//	                                 "detail", read from the repository's own objects (a REST ref write)
 //	POST /ingest?net=N&sha256=H      body: a committed pack. A pack /validate kept aside under H moves in without a
 //	                                 second index-pack; otherwise verifies H while writing, then index-pack --strict
 //	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet,
@@ -58,6 +63,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -365,6 +371,26 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		}
 		tips = append(tips, strings.Fields(string(head))...)
 	}
+	// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
+	var updates []update
+	if k := r.URL.Query().Get("detailn"); k != "" {
+		var n int64
+		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
+			fail(w, 400, "bad detailn")
+			return
+		}
+		head := make([]byte, n)
+		if _, err := io.ReadFull(r.Body, head); err != nil {
+			fail(w, 400, "body shorter than detailn")
+			return
+		}
+		us, err := parseUpdates(string(head))
+		if err != nil {
+			fail(w, 400, "%v", err)
+			return
+		}
+		updates = us
+	}
 	for _, t := range tips {
 		if !hexRe.MatchString(t) {
 			fail(w, 400, "bad tip %q", t)
@@ -392,6 +418,16 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	file, sum, n, err := spool(q, body)
 	if err != nil {
 		fail(w, 500, "%v", err)
+		return
+	}
+	if n == 0 && len(updates) > 0 {
+		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
+		d, err := details(rp, nil, updates)
+		if err != nil {
+			fail(w, 422, "detail: %v", err)
+			return
+		}
+		jsonOut(w, map[string]any{"detail": d})
 		return
 	}
 	if n == 0 {
@@ -427,6 +463,16 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		f.Close()
 		trailer = hex.EncodeToString(t)
 	}
+	// Detail reads the quarantine, so it runs before the pack is set aside.
+	out := map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer}
+	if len(updates) > 0 {
+		d, err := details(rp, env, updates)
+		if err != nil {
+			fail(w, 422, "detail: %v", err)
+			return
+		}
+		out["detail"] = d
+	}
 	// Kept aside under the pack's SHA-256 until /ingest names it.
 	os.Remove(file)
 	dst := filepath.Join(rp, "graft", "validated-"+sum)
@@ -436,7 +482,164 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	keep = true
-	jsonOut(w, map[string]any{"checksum": sum, "bytes": n, "objects": len(objs), "trailer": trailer})
+	jsonOut(w, out)
+}
+
+// update is one ref update of a detail request: its new and old tips (all zeros for a create or a delete) and name.
+type update struct{ New, Old, Ref string }
+
+// refDetail is what /validate reports of one update for the agent layer (design/DESIGN.md, Shape, ProtectedHits,
+// ChangedPaths, Provenance): the raw new commits, newest first (headers whole, bodies cut to their last MESSAGE_MAX
+// bytes, at most COMMITS_MAX), every path the new tip changes against its merge base with HEAD or against the old
+// tip, whether the update is a fast-forward, and for refs/notes/ai the changed note entries.
+type refDetail struct {
+	Ref       string      `json:"ref"`
+	Commits   []commitObj `json:"commits"`
+	More      bool        `json:"more"`
+	Paths     []string    `json:"paths"`
+	FF        bool        `json:"ff"`
+	Notes     []noteEntry `json:"notes,omitempty"`
+	MergeBase string      `json:"merge_base,omitempty"`
+}
+
+type commitObj struct {
+	Oid string `json:"oid"`
+	Raw []byte `json:"raw"`
+}
+
+type noteEntry struct {
+	Path string `json:"path"`
+	Blob bool   `json:"blob"`
+	Oid  string `json:"oid"`
+}
+
+const (
+	commitsMax = 1000    // [guess]: new commits read per update
+	messageMax = 1 << 20 // MESSAGE_SCAN_MAX: the bytes of a message the trailer parser reads
+)
+
+func zero(oid string) bool { return strings.Trim(oid, "0") == "" }
+
+// parseUpdates reads a detail request's head: one "<new> <old> <ref>" line per update.
+func parseUpdates(head string) ([]update, error) {
+	var us []update
+	for _, l := range strings.Split(head, "\n") {
+		f := strings.Fields(l)
+		if len(f) == 0 {
+			continue
+		}
+		if len(f) != 3 || !hexRe.MatchString(f[0]) || !hexRe.MatchString(f[1]) || !strings.HasPrefix(f[2], "refs/") {
+			return nil, fmt.Errorf("bad update line %q", l)
+		}
+		us = append(us, update{f[0], f[1], f[2]})
+	}
+	return us, nil
+}
+
+func details(rp string, env []string, us []update) ([]refDetail, error) {
+	emptyTree, err := git(rp, env, strings.NewReader(""), "hash-object", "-t", "tree", "--stdin")
+	if err != nil {
+		return nil, err
+	}
+	empty := strings.TrimSpace(string(emptyTree))
+	head, _ := git(rp, env, nil, "rev-parse", "--verify", "-q", "HEAD^{commit}")
+	var out []refDetail
+	for _, u := range us {
+		if zero(u.New) {
+			continue
+		}
+		d := refDetail{Ref: u.Ref, Paths: []string{}, Commits: []commitObj{}}
+		// The new commits: reachable from the new tip and from no ref the repository holds.
+		list, err := git(rp, env, nil, "rev-list", fmt.Sprintf("--max-count=%d", commitsMax+1), u.New, "--not", "--all")
+		if err != nil {
+			return nil, err
+		}
+		oids := strings.Fields(string(list))
+		if len(oids) > commitsMax {
+			oids, d.More = oids[:commitsMax], true
+		}
+		if len(oids) > 0 {
+			raw, err := git(rp, env, strings.NewReader(strings.Join(oids, "\n")+"\n"), "cat-file", "--batch")
+			if err != nil {
+				return nil, err
+			}
+			for i, obj := range splitBatch(raw) {
+				if i < len(oids) {
+					d.Commits = append(d.Commits, commitObj{Oid: oids[i], Raw: obj})
+				}
+			}
+		}
+		// The paths: the union of the diffs against the merge base with HEAD and against the old tip.
+		bases := []string{}
+		if h := strings.TrimSpace(string(head)); h != "" {
+			if mb, err := git(rp, env, nil, "merge-base", h, u.New); err == nil {
+				d.MergeBase = strings.TrimSpace(string(mb))
+				bases = append(bases, d.MergeBase)
+			}
+		}
+		if !zero(u.Old) {
+			bases = append(bases, u.Old)
+			_, err := git(rp, env, nil, "merge-base", "--is-ancestor", u.Old, u.New)
+			d.FF = err == nil
+		}
+		if len(bases) == 0 {
+			bases = append(bases, empty)
+		}
+		seen := map[string]bool{}
+		for _, b := range bases {
+			m, err := changes(rp, env, b, u.New)
+			if err != nil {
+				return nil, err
+			}
+			for p, entry := range m {
+				if !seen[p] {
+					seen[p] = true
+					d.Paths = append(d.Paths, p)
+				}
+				if u.Ref == "refs/notes/ai" && b == bases[len(bases)-1] {
+					f := strings.Fields(entry)
+					if len(f) == 2 && !zero(f[1]) {
+						d.Notes = append(d.Notes, noteEntry{Path: p, Blob: strings.HasPrefix(f[0], "100"), Oid: f[1]})
+					}
+				}
+			}
+		}
+		sort.Strings(d.Paths)
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// splitBatch cuts `git cat-file --batch` output into raw objects, each cut to its header and the last messageMax
+// bytes of its message.
+func splitBatch(raw []byte) [][]byte {
+	var objs [][]byte
+	for len(raw) > 0 {
+		nl := bytes.IndexByte(raw, '\n')
+		if nl < 0 {
+			break
+		}
+		f := strings.Fields(string(raw[:nl]))
+		if len(f) != 3 {
+			break
+		}
+		var size int
+		fmt.Sscan(f[2], &size)
+		start := nl + 1
+		if start+size > len(raw) {
+			break
+		}
+		obj := raw[start : start+size]
+		if i := bytes.Index(obj, []byte("\n\n")); i >= 0 && len(obj)-(i+2) > messageMax {
+			obj = append(append([]byte{}, obj[:i+2]...), obj[len(obj)-messageMax:]...)
+		}
+		objs = append(objs, obj)
+		raw = raw[start+size:]
+		if len(raw) > 0 && raw[0] == '\n' {
+			raw = raw[1:]
+		}
+	}
+	return objs
 }
 
 // sweepValidated deletes validated packs no commit named within the hour a commit may take (PACK_COMMIT_WINDOW).
