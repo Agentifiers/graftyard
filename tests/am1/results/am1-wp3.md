@@ -71,7 +71,34 @@ These results are from 2026-11-08, on branch `am1-wp3` (worktree `.worktrees/am1
 
 ## Planted bugs (`tests/am1/wp3/plant.py`)
 
-PLANTS_TABLE
+24 of 24 caught. Each mutant is planted alone, the gating tests run, and the file is restored byte for byte. Two mutants were MISSED on the first run: the open index kept for completed tasks (6), and an earlier version of 19 that removed `AgentActor.requester`, which nothing reads yet (it is for leases in AM1-WP4). I added an open-index assertion to `open_task_caps`, and pointed 19 at `AgentMeta.requester`, which the gate reads. Both are now caught (rerun with `plant.py 6 19`). On the first run, 23's cargo arguments (`--lib` given twice) made cargo fail before any test ran, so its CAUGHT named no test. It now adds `-p graftyard-identity` alone, and the rerun names the two tests that catch it.
+
+| # | Mutant | Caught by |
+| --- | --- | --- |
+| 0 | effective ignores the installation: an uninstalled App's tasks read live | `a_task_token_needs_a_live_run_task_of_the_app_on_its_repository`, `lf1_uninstall_cancels_every_task_with_no_sweep`, `task::tests::derived_states_come_from_the_installation_and_the_idle_time` |
+| 1 | a reinstall revives the old tasks (not_before not checked) | `a_task_token_needs_a_live_run_task_of_the_app_on_its_repository` |
+| 2 | TASK_IDLE never fires | `an_idle_task_times_out_and_its_next_command_records_it`, `task::tests::derived_states_come_from_the_installation_and_the_idle_time` |
+| 3 | a final state does not stay final in effective | `task::tests::derived_states_come_from_the_installation_and_the_idle_time` |
+| 4 | the requester cap off | `open_task_caps` |
+| 5 | the repository cap off | `open_task_caps` |
+| 6 | a final task leaves the open index only on cancel (caps count completed tasks) | `open_task_caps` |
+| 7 | PATCH may set cancelled or timed_out | `external_tasks_follow_the_reference_rules` |
+| 8 | a command on a stored final task changes it | `an_idle_task_times_out_and_its_next_command_records_it`, `external_tasks_follow_the_reference_rules` |
+| 9 | a derived final state is not recorded by the next command | `an_idle_task_times_out_and_its_next_command_records_it`, `lf1_uninstall_cancels_every_task_with_no_sweep` |
+| 10 | any writer may cancel any task | `external_tasks_follow_the_reference_rules` |
+| 11 | an App that is not an AgentApp creates external tasks | `external_tasks_follow_the_reference_rules` |
+| 12 | a duplicate session is created again | `external_tasks_follow_the_reference_rules` |
+| 13 | own_sessions takes any session named on the wire | `a_live_tasks_push_is_accepted_and_its_trailer_links`, `b0_37_hostile_provenance_and_host_refs` |
+| 14 | a claim binds another App's Graftyard-run task | `a_live_tasks_push_is_accepted_and_its_trailer_links` |
+| 15 | a run task's refs match the bare id (run_refs is the stored ** pattern) | `a_live_tasks_push_is_accepted_and_its_trailer_links`, `task::tests::a_run_prefix_needs_a_segment_after_the_id` |
+| 16 | a paused task reads live for pushes and minting | `a_live_tasks_push_is_accepted_and_its_trailer_links`, `task::tests::derived_states_come_from_the_installation_and_the_idle_time` |
+| 17 | token_task lets a token cover another repository | `a_task_token_needs_a_live_run_task_of_the_app_on_its_repository` |
+| 18 | the workspace may delete its session ref | `the_workspace_writes_only_its_tasks_session_ref` |
+| 19 | AgentMeta drops the task's requester (the gate no longer excludes them) | `agent_meta_takes_the_session_and_requester_from_the_task` |
+| 20 | AgentMeta takes a session of another App's task | `agent_meta_takes_the_session_and_requester_from_the_task` |
+| 21 | the API renders the stored state, not the derived one | `lf1_uninstall_cancels_every_task_with_no_sweep` |
+| 22 | the prompt is shown without contents: read | `the_read_endpoints_serve_the_reference_shape` |
+| 23 | a session is a number in JSON (a UUID cannot cross the issue-command wire) | `agent_meta_takes_the_session_and_requester_from_the_task`, `agents::tests::a_session_is_its_string_in_json_and_its_enum_in_postcard` |
 
 ## Bugs the gates found in my own code
 
@@ -127,7 +154,17 @@ PLANTS_TABLE
 
 ## Checks
 
-CHECKS
+Run on the branch head, after the last code commit:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- wasm32 clippy (`--target wasm32-unknown-unknown -- -D warnings`) of `workers/site` and `workers/edge`, each with and without `--features test-faults`, and of `workers/ops`: clean (5 of 5).
+- `cargo test --workspace`: 502 passed, 0 failed, 3 ignored (the long raft sweeps), in 58 suites.
+- `GRAFTYARD_REPLIES` dump of `cargo test -p graftyard-api` on this branch, compared with `diff -r` against the same dump from `main` (`e2c67b5`): 120 of 120 files identical. The new `task_api` suite writes no reply files.
+- `crates/git/tests/agent_bytes.rs` against `agent_bytes.golden` (unchanged since AM1-WP2): pass.
+- `python3 scripts/check_design.py` (agent block OK), `check_names.py` (1,219 files), `check_links.py` (2,650 citations): pass.
+
+`crates/raft` was not touched, so the long sweep and Porcupine were not rerun. `crates/fold/src/canon.rs` gained only `is_human_readable() == false`, which changes no bytes for any type that existed before (none asked).
 
 ## Assumptions
 
