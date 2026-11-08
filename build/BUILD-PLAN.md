@@ -1014,7 +1014,7 @@ It also carries BM-4's matrix run.
 
 **Depends on.** M2-WP4, M3-WP3, M4-WP3.
 
-**Started early on a mock (2026-11-08).** The pages that need no M4 backend start now in `web/`, against a browser mock that answers the pinned GHES 3.22 REST description with the same generated types the client uses (`decisions/DECISIONS.md`, "The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)"). The mock carries no gate row: BF-38 and BF-61 count only runs against a hosted edge. Several routes the first pages read are not served by the edge yet (`decisions/OPEN-QUESTIONS.md`, F58), and the live log view waits for `LogRelay` (M4-WP3).
+**Started early on a mock (2026-11-08).** The pages that need no M4 backend start now in `web/`, against a browser mock that answers the pinned GHES 3.22 REST description with the same generated types the client uses (`decisions/DECISIONS.md`, "The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)"). The mock carries no gate row: BF-38 and BF-61 count only runs against a hosted edge. By the end of that day the mock covered every GHES surface the app has a page for, plus the `/api/graftyard/v1` agent API, each area of it owning its pages and mock handlers (`web/README.md`, "Layout"). Most routes those pages read are not served by the edge yet (`decisions/OPEN-QUESTIONS.md`, F58), the pages also read private `/_t/ui/*` routes the design does not name (F59), and the live log view runs against a mocked `LogRelay` socket until M4-WP3.
 
 **Acceptance.**
 

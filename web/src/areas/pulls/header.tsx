@@ -165,7 +165,7 @@ function BaseSelect({ pull, base, head }: { pull: Pull; base: string; head: stri
       value={base}
       disabled={update.isPending}
       onChange={(e) => update.mutate({ base: e.target.value })}
-      className="[&_select]:bg-info/10 [&_select]:h-6 [&_select]:rounded-sm [&_select]:font-mono [&_select]:text-xs"
+      className="[&_select]:bg-info/10 [&_select]:text-foreground [&_select]:h-6 [&_select]:rounded-sm [&_select]:font-mono [&_select]:text-xs"
     >
       {(branches ?? [{ name: base }])
         .filter((b) => b.name !== head)

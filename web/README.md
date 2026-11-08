@@ -1,8 +1,8 @@
 # Graftyard web app
 
-The web app is build-plan package M4-WP5. This first slice runs against a mocked GHES 3.22 REST API in the browser.
+The web app is build-plan package M4-WP5. It runs against a mocked GHES 3.22 REST API and a mocked `/api/graftyard/v1` agent API, both in the browser.
 
-It uses TanStack Start in SPA mode, TanStack Router, Query, DB, and Form, shadcn components on Base UI, ReUI free components, and HugeIcons free icons.
+It uses TanStack Start in SPA mode, TanStack Router, Query, DB, Form, Table, Virtual, Pacer, and Hotkeys, shadcn components on Base UI, ReUI free components, and HugeIcons free icons.
 
 ## Run it
 
@@ -53,6 +53,40 @@ Rules for an area:
 - Use only the components in `src/components/ui` and `src/components/reui` and free HugeIcons. Keep corners square: `rounded-sm` at most, never `rounded-full`, `rounded-lg`, or larger.
 - Show writes at once where the UI can (a TanStack DB collection or an optimistic update), never retry them, and roll them back visibly on failure. Forms use TanStack Form and show a 422's field errors.
 - Link only to routes that exist. Add no npm dependency.
+
+## Areas
+
+| Area         | Pages                                                                                                                                                                                                                               |
+| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core`       | Repository list, repository header and About                                                                                                                                                                                        |
+| `code`       | Overview file tree and README, tree, blob with edit and delete, blame, commits, commit, branches, tags, Insights (pulse, contributors, commits, code frequency, punch card, traffic), clone menu                                    |
+| `issues`     | Issue list with filters, new issue, issue page (edit, close, lock, pin, reactions, timeline, sidebar), labels, milestones                                                                                                           |
+| `pulls`      | Pull request list, compare and create, pull request page (conversation, commits, checks, files with review comments and a virtualized diff), reviews, merge box, auto-merge                                                         |
+| `actions`    | Runs, workflows and dispatch, run page with job graph and deployment review, job log streamed over a mocked `LogRelay` socket with the saved-log fallback, Actions settings, secrets, variables, runners, caches, org runner groups |
+| `releases`   | Releases with asset upload, deployments, environments with protection rules, secrets, and variables                                                                                                                                 |
+| `repo-admin` | Repository settings (general, access, branch protection, rulesets and insights, autolinks, webhooks and deliveries, deploy keys, pre-receive hooks, installations), new repository, fork                                            |
+| `orgs`       | Profiles, organization overview, repositories, teams, people, organization settings                                                                                                                                                 |
+| `account`    | The viewer's settings (profile, emails, keys, tokens, two-factor, sessions, applications, developer settings, GitHub Apps, notifications), sign-in, device code, OAuth consent, App installation                                    |
+| `activity`   | Notifications inbox, search, command palette, watch and star, stargazers and watchers, home feed, rate limit                                                                                                                        |
+| `admin`      | Site admin (overview, announcement, users, organizations, repositories, pre-receive hooks, global webhooks, tokens, migrations and live migrations, management console, agent Apps, release log)                                    |
+| `agents`     | Agents tab (tasks, leases, activity feed), session log page, trust view, repository and organization agent settings, MCP grants, and agent widgets on PRs, issues, and home                                                         |
+
+## Mocks
+
+`src/mocks/` holds the mocks. MSW runs in the browser through `public/mockServiceWorker.js`.
+
+- `world.ts` is the shared base, and `areas/*.ts` hold each area's records and handlers. As in GHES, the issues list includes pull requests, each with a `pull_request` key.
+- `handlers.ts` serves every area's handlers. They use `openapi-msw`, so each path, parameter, request body, and response is checked against the same generated `paths` the client uses. Writes change the in-memory store, so navigation shows them. A reload resets it.
+- Timers in the mock move long-running state along: workflow runs, live logs, deployments, migrations, agent tasks, and lease expiry.
+- `browser.ts` starts the worker. The API clients wait for it before the first request.
+
+Mocking is on by default, in the production build too. Build with `VITE_MOCK_API=false` to call real APIs.
+
+## Fault injection
+
+Open the Mock button in the top bar and switch on any fault key. Its handlers answer 503 with a GHES error body, so only the regions that read it show an error. The list shows every key a handler has gated since the page loaded. Every write has its own key, so one write can fail while its reads work. `?fail=<key>[,<key>]` does the same from a URL. The setting persists in sessionStorage for the tab, and `?fail=` clears it.
+
+Example: `/graftyard/edge/pull/1?fail=checks` breaks only the Checks region.
 
 ## Regenerate the types
 
