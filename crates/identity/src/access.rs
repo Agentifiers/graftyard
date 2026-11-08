@@ -14,7 +14,7 @@ use crate::apps::Access;
 use crate::authz::{AccountKind, AuthzRead, RepoPermission};
 use crate::credential::{Actor, Credential, OrgId, Principal, UserId};
 use crate::stateless::InstallationClaims;
-use crate::tokens::RepoScope;
+use crate::tokens::{RepoScope, TokenFields};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Visibility {
@@ -164,6 +164,33 @@ pub fn authorize_app(
     };
     let granted = |name: &str| c.permissions.0.get(name).min(row.permissions.0.get(name)).copied();
     if needs.iter().any(|(name, level)| granted(name) >= Some(*level)) { Decision::Allow } else { Decision::Forbidden }
+}
+
+/// A stored token's own limit (`design/SHARED.md`, "Identity and tokens"; `crate::TokenFields`): a `github_pat_` acts
+/// only on its `resource_owner`'s repositories in `repos`, and a `github_pat_` or `ghu_` only with one of `needs` at
+/// its level in `permissions`, as an installation token's `authorize_app` asks [inference: GitHub documents a
+/// fine-grained token's per-resource permissions as the App permissions' names]. A token whose row carries none of
+/// these (a `ghp_`, a `gho_`) is limited by its user's permission alone. `Allow` here never grants: the caller's own
+/// permission still applies. A command no App permission names (`needs` empty) is limited by the reach alone. A token
+/// that does not reach a private repository is `Hidden`, 404.
+pub fn token_allows(f: Option<&TokenFields>, needs: &[(&str, Access)], repo: &dyn RepoAccess) -> Decision {
+    let Some(f) = f.filter(|f| f.permissions.is_some() || f.resource_owner.is_some() || f.repos.is_some()) else {
+        return Decision::Allow;
+    };
+    let reaches = f.resource_owner.is_none_or(|o| o == repo.owner())
+        && match &f.repos {
+            None | Some(RepoScope::All) => true,
+            Some(RepoScope::Selected(r)) => r.contains(&repo.repo()),
+        };
+    if !reaches {
+        return if repo.visibility() == Visibility::Public { Decision::Forbidden } else { Decision::Hidden };
+    }
+    let granted = |name: &str| f.permissions.as_ref().and_then(|p| p.0.get(name).copied());
+    if f.permissions.is_none() || needs.is_empty() || needs.iter().any(|(name, level)| granted(name) >= Some(*level)) {
+        Decision::Allow
+    } else {
+        Decision::Forbidden
+    }
 }
 
 fn enterprise_member(authz: &[&dyn AuthzRead], enterprise: AccountId, user: UserId) -> bool {

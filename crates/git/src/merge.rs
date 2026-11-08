@@ -415,6 +415,14 @@ pub(crate) fn authorize(
         return Err(MergeError::Agent(crate::agent::AgentRefusal::of(crate::agent::AgentRule::Merge)));
     }
     let Actor::User(user) = actor.actor else { return Err(MergeError::Unauthorized(CredentialRefusal::NoToken)) };
+    // A `github_pat_` or `ghu_` merges only within its scope and with `contents: write`.
+    let access = crate::issue_ops::Access { repo: v.repo(), owner: v.owner(), core: v.core() };
+    let needs = [("contents", graftyard_identity::Access::Write)];
+    if graftyard_identity::token_allows(crate::repo::stored_fields(actor, deps), &needs, &access)
+        != graftyard_identity::Decision::Allow
+    {
+        return Err(MergeError::Forbidden);
+    }
     Ok((user, permission(actor, v, &crate::repo::authz_folds(deps))))
 }
 

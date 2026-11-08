@@ -433,7 +433,17 @@ impl IssueCmd {
                     Decision::Hidden => return Err(IssueErr::NotFound),
                 }
             }
-            None => permission(&self.actor, v, &folds),
+            None => {
+                // A `github_pat_` or `ghu_` acts only within its own scope and permissions, by the same per-resource
+                // names an App's command needs.
+                let access = Access { repo: v.tiers.repo, owner, core: v.core() };
+                let fields = crate::repo::stored_fields(&self.actor, deps);
+                match graftyard_identity::token_allows(fields, &self.app_needs(v), &access) {
+                    Decision::Allow => permission(&self.actor, v, &folds),
+                    Decision::Forbidden => return Err(IssueErr::Forbidden),
+                    Decision::Hidden => return Err(IssueErr::NotFound),
+                }
+            }
         };
         let me = actor_id(&self.actor);
         let need = |p: RepoPermission| if perm >= Some(p) { Ok(()) } else { Err(IssueErr::Forbidden) };

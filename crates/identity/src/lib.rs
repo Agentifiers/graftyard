@@ -33,7 +33,7 @@ mod tokens;
 
 pub use access::{
     Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_app,
-    authorize_write, permission,
+    authorize_write, permission, token_allows,
 };
 pub use agents::{AgentApp, AgentKind, WorkspaceMode, install_account};
 pub use apps::{
@@ -50,8 +50,9 @@ pub use credential::{
     credential_chains,
 };
 pub use identity::{
-    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IdentityCmd, IdentityErr,
-    IdentityEvent, IdentityFold, IdentityOp, IdentityScratch, SessionEvent, SsoEvent,
+    AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IDENTITY_FORMAT_V2,
+    IdentityCmd, IdentityErr, IdentityEvent, IdentityFold, IdentityMore, IdentityOp, IdentityScratch, SessionEvent,
+    SsoEvent, key_fingerprint,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{

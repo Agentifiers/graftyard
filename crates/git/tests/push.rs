@@ -911,3 +911,63 @@ fn an_installation_token_pushes_only_inside_its_claims_and_installation() {
     assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 403 || r.status == 404), "{o:?}");
     assert!(g.refs().is_empty());
 }
+
+/// BF-31 on the repository chain: a `github_pat_` pushes only to its `resource_owner`'s repositories in `repos`, and
+/// only with `contents: write`; its user's own `Write` grant does not widen it.
+#[test]
+fn a_fine_grained_token_pushes_only_inside_its_scope_and_permissions() {
+    use graftyard_identity::{Access, PermissionSet, RepoScope, TokenFields, TokenKind};
+    let mut g = group();
+    let writer = AccountId(DbId(WRITER));
+    let scoped = |n: u8, repo: i64, level: Access| {
+        (
+            hash(n),
+            TokenFields {
+                resource_owner: Some(AccountId(DbId(OWNER))),
+                repos: Some(RepoScope::Selected(smallvec::smallvec![graftyard_types::RepoId(DbId(repo))])),
+                permissions: Some(PermissionSet([(Box::from("contents"), level)].into_iter().collect())),
+                ..TokenFields::default()
+            },
+        )
+    };
+    let status = |o: &PushOutcome| match o {
+        PushOutcome::Refused(r) => r.status,
+        _ => 200,
+    };
+    let one = |r: &str| vec![up(r, None, Some(oid(1)))];
+    for (n, repo, level, want) in [(20, 7, Access::Read, 403), (21, 8, Access::Write, 403), (22, 7, Access::Write, 200)]
+    {
+        let (h, f) = scoped(n, repo, level);
+        g.store_token(h, TokenKind::FineGrained, writer, f);
+        let (_, o) = commit(&mut g, push(one(&format!("refs/heads/t{n}")), Atomicity::PerRef, who(WRITER, n)));
+        assert_eq!(status(&o), want, "token {n}: repo {repo}, contents {level:?}: {o:?}");
+    }
+    // A `ghp_` of the same user is limited by the user's grant alone.
+    let (_, o) = commit(&mut g, push(one("refs/heads/classic"), Atomicity::PerRef, who(WRITER, 2)));
+    assert_eq!(refs_of(&o), [RefOutcome::Ok]);
+}
+
+/// BF-2 in memory: 100 pushes under one token wait in admission; the token is revoked; every one is refused 401, so
+/// none is acknowledged at an index after the revocation's, and the user's other token still pushes.
+#[test]
+fn bf2_a_revoked_token_refuses_all_100_queued_pushes() {
+    let mut g = group();
+    let waiting: Vec<_> = (0..100u32)
+        .map(|i| {
+            let r = rid();
+            let mut p =
+                push(vec![up(&format!("refs/heads/q{i}"), None, Some(oid(i + 1)))], Atomicity::PerRef, who(WRITER, 2));
+            p.request = r;
+            g.admit(r, p).expect("admitted")
+        })
+        .collect();
+    g.revoke(hash(2));
+    g.run();
+    let refused =
+        waiting.iter().filter(|t| matches!(g.resolved(**t), Some(PushOutcome::Refused(r)) if r.status == 401)).count();
+    assert_eq!(refused, 100);
+    assert!(g.refs().is_empty(), "no queued push moved a ref: {:?}", g.refs());
+    let (_, o) =
+        commit(&mut g, push(vec![up("refs/heads/late", None, Some(oid(1)))], Atomicity::PerRef, who(WRITER, 2)));
+    assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 401), "{o:?}");
+}

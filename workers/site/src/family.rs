@@ -1136,8 +1136,10 @@ impl Family for Identity {
     type Fold = id::IdentityFold;
     type C = id::IdentityCmd;
 
+    /// 0x14.2 is `AddKey` with its `KeyText` (BF-35), read on the same terms as every M3 format: the edge sends it only
+    /// once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
-        vec![id::IDENTITY_FORMAT]
+        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::IdentityFold {
         match join.chain {
@@ -1171,9 +1173,10 @@ impl Family for Identity {
                 id::CredentialRef::Token { hash, kind } => {
                     json!({ "token": graftyard_types::Digest(*hash).hex(), "kind": kind, "title": title.as_ref() })
                 }
-                id::CredentialRef::SshKey(fp) => {
-                    json!({ "sshKey": graftyard_types::Digest(fp.0).hex(), "title": title.as_ref() })
-                }
+                id::CredentialRef::SshKey(fp) => json!({
+                    "sshKey": graftyard_types::Digest(fp.0).hex(), "title": title.as_ref(),
+                    "key": f.more.key_text.get(fp).map(AsRef::<str>::as_ref),
+                }),
             })
             .collect();
         json!({
