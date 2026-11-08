@@ -43,6 +43,9 @@ pub struct IssueCall {
     /// Format 32.8 (`crate::repo::REPO_FORMAT_AGENT`): the edge sends it only once `FormatsEnable` enabled 32.8, and
     /// only then may the command's entry carry the agent events. `SetAgentPolicy` is always 32.8.
     pub agent: bool,
+    /// The session an `OpenPr` names in `X-Graftyard-Agent-Session` (format 32.12): `decide` takes it into
+    /// `AgentMeta` only for a task of the opening App.
+    pub session: Option<graftyard_identity::SessionId>,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -57,7 +60,12 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
-        // 32.8 first: only it may carry agent events, so an App's 32.8 command carries its claims as 32.9 does.
+        // 32.12 first: a task command, a `task` claim on the token, or a session the client named, none of which an
+        // earlier release reads. It may carry 32.8's agent events too.
+        if self.op.is_task() || crate::task::claim(&self.actor).is_some() || self.session.is_some() {
+            return crate::repo::REPO_FORMAT_TASKS;
+        }
+        // 32.8 next: only it may carry agent events, so an App's 32.8 command carries its claims as 32.9 does.
         if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) {
             return crate::repo::REPO_FORMAT_AGENT;
         }
@@ -73,7 +81,7 @@ impl IssueCall {
     }
 
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
-        IssueCall { op, actor, request, render, confirmed: None, agent: false }
+        IssueCall { op, actor, request, render, confirmed: None, agent: false, session: None }
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -112,9 +120,13 @@ struct Wire {
     render: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     session: Option<graftyard_types::Ulid>,
-    /// A `ghs_` token's verified claims, in format 32.9, and in 32.8 for an App's agent command.
+    /// A `ghs_` token's verified claims, in format 32.9, and in 32.8 and 32.12 for an App's agent command. Only 32.12
+    /// carries their `task`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claims: Option<InstallationClaims>,
+    /// `IssueCall::session`, in format 32.12 only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent_session: Option<graftyard_identity::SessionId>,
 }
 
 impl Serialize for IssueCall {
@@ -138,6 +150,7 @@ impl Serialize for IssueCall {
             sso: self.actor.sso_orgs.iter().map(|o| o.0.0.0).collect(),
             request: self.request,
             render: self.render.clone(),
+            agent_session: self.session.clone(),
         }
         .serialize(s)
     }
@@ -147,17 +160,26 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads =
-            [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT, REPO_FORMAT_APP_CALLS];
+        let reads = [
+            REPO_FORMAT_ISSUES,
+            REPO_FORMAT_COLLABORATORS,
+            crate::repo::REPO_FORMAT_AGENT,
+            REPO_FORMAT_APP_CALLS,
+            crate::repo::REPO_FORMAT_TASKS,
+        ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
         let fmt = |x: Format| f == serde_json::json!([x.family, x.version]);
+        let tasks = fmt(crate::repo::REPO_FORMAT_TASKS);
         let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
-        let actor = match (app || agent, w.claims) {
+        if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
+            return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
+        }
+        let actor = match (app || agent || tasks, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
-            (false, Some(_)) | (true, None) if !agent => {
+            (false, Some(_)) | (true, None) if !agent && !tasks => {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
                 ));
@@ -171,6 +193,7 @@ impl<'de> Deserialize<'de> for IssueCall {
         };
         let mut c = IssueCall::new(w.op, actor, w.request, w.render);
         c.agent = agent;
+        c.session = w.agent_session;
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -194,7 +217,7 @@ impl IssueCall {
         d.extend(crate::repo::authz_chains(fold.authz_owner(), fold.authz_enterprise()));
         crate::repo::with_install(&mut d, &self.actor);
         let install = ChainId::Authz(graftyard_identity::install_account());
-        if self.format() == crate::repo::REPO_FORMAT_AGENT && !d.contains(&install) {
+        if self.agent_events() && !d.contains(&install) {
             d.push(install);
         }
         d
@@ -210,8 +233,18 @@ impl IssueCall {
         let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
         // `RepoView::apply` stamps writes with its time; `decide` writes nothing, so no time is needed.
         let view = RepoView::new(s.fold().tiers(), core, meta, Timestamp(0));
-        let (evs, out) = cmd.decide_in(&view, deps, self.format() == crate::repo::REPO_FORMAT_AGENT)?;
+        let (evs, out) = if self.op.is_task() {
+            cmd.decide_task(&view, deps, s.at(), s.applied())?
+        } else {
+            cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref())?
+        };
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
+    }
+
+    /// Whether the command's entry may carry the agent events: formats 32.8 and 32.12.
+    pub fn agent_events(&self) -> bool {
+        let f = self.format();
+        f == crate::repo::REPO_FORMAT_AGENT || f == crate::repo::REPO_FORMAT_TASKS
     }
 
     pub fn replay(&self, events: &[RepoEvent]) -> IssueCallOut {
@@ -221,6 +254,12 @@ impl IssueCall {
             IssueOp::SetRule { id, pattern, protection } => {
                 IssueOp::SetRule { id: *id, pattern: pattern.clone(), protection: protection.clone() }
             }
+            // A task command's replay reads which command it was (`crate::task::replay`); none names a blob.
+            IssueOp::CreateTask(t) => IssueOp::CreateTask(t.clone()),
+            IssueOp::UpdateTask { id, state, pr, summary } => {
+                IssueOp::UpdateTask { id: id.clone(), state: *state, pr: *pr, summary: summary.clone() }
+            }
+            IssueOp::CancelTask { id } => IssueOp::CancelTask { id: id.clone() },
             _ => IssueOp::Close { n: crate::issues::IssueNumber(0) },
         };
         let out = IssueCmd { op, actor: self.actor.clone(), request: self.request }.replay(events);

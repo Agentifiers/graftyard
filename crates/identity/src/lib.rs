@@ -35,7 +35,7 @@ pub use access::{
     Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_app,
     authorize_write, permission,
 };
-pub use agents::{AgentApp, AgentKind, WorkspaceMode, install_account};
+pub use agents::{AgentApp, AgentKind, SessionId, WorkspaceMode, install_account};
 pub use apps::{
     Access, AppId, AppKey, AppRecord, CLIENT_SECRETS_MAX, ClientId, EventKind, InstallationId, OAuthAppRecord,
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
