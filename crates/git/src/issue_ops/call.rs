@@ -15,7 +15,7 @@
 use graftyard_identity::stateless::InstallationClaims;
 use graftyard_identity::{Actor, Credential, IdentityDep, OrgId, Principal, ScopeSet, UserId, credential_chains};
 use graftyard_raft::{Format, TierSet};
-use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId, Timestamp};
+use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -217,8 +217,8 @@ impl IssueCall {
         let cmd = self.cmd()?;
         // A member whose metadata tier is still loading cannot decide on it.
         let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
-        // `RepoView::apply` stamps writes with its time; `decide` writes nothing, so no time is needed.
-        let view = RepoView::new(s.fold().tiers(), core, meta, Timestamp(0));
+        // The entry's time: an invitation's `expires` is set from it and checked against it.
+        let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
         let (evs, out) = cmd.decide_in(&view, deps, self.format() == crate::repo::REPO_FORMAT_AGENT)?;
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }

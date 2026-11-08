@@ -482,6 +482,11 @@ impl RepoScratch<'_> {
         self.base
     }
 
+    /// The entry's time: the leader's `now` when it decides, the entry's `at` when a follower verifies.
+    pub fn at(&self) -> Timestamp {
+        self.at
+    }
+
     /// The owner whose `Authz` chain gates the repository, with the entry's earlier `Settings` on top.
     pub fn authz_owner(&self) -> Option<AccountId> {
         get_rec::<RepoSettings>(&self.core, "settings", &[]).map(|s| s.owner).or(self.base.owner)
