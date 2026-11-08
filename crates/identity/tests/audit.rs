@@ -596,6 +596,11 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
         let fb: AuthzFold = w.authz(beta).fresh_leader();
         assert!(matches!(fb.name(&name.key()), Some(RepoEntry::Live { repo: r, .. }) if r == repo));
         assert!(matches!(fa.name(&name.key()), Some(RepoEntry::Alias { repo: r, .. }) if r == repo));
+        // `/repositories/{id}` renders under the owner `RepoOwner` names. Before its last step that is still the
+        // source, which holds only the `Alias` by then: the id route still finds a name there (hosted, it answered
+        // 404 in that window before `id_name`), and under the destination's `Live` name after.
+        assert_eq!(fa.id_name(repo), Some(&name.key()));
+        assert_eq!(fb.id_name(repo), Some(&name.key()));
         let ro: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo)))).fresh_leader();
         assert_eq!(ro.repo_owner(repo), Some(beta));
         assert!(fb.audit_cursor() > Index(0), "the cursor moved past the reservation");

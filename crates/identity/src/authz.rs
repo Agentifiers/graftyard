@@ -464,6 +464,21 @@ impl AuthzFold {
     pub fn audit_cursor(&self) -> Index {
         self.more.more.more
     }
+
+    /// The name `/repositories/{id}` renders a repository under, for the owner its `RepoOwner` row names: its `Live`
+    /// name, else its `Alias`. A transfer commits the old owner's `Alias` before `RepoOwner` moves to the new one
+    /// (`finish::transfer`), so between the two the row's owner holds only the `Alias`, which still names the
+    /// repository; without it the id route answered 404 for that window (BF-30, `tests/m3/results/m3-finish.md`).
+    pub fn id_name(&self, repo: RepoId) -> Option<&RepoNameKey> {
+        let find = |live: bool| {
+            self.names.iter().find_map(|(k, e)| match e {
+                RepoEntry::Live { repo: r, .. } if live && *r == repo => Some(k),
+                RepoEntry::Alias { repo: r, .. } if !live && *r == repo => Some(k),
+                _ => None,
+            })
+        };
+        find(true).or_else(|| find(false))
+    }
 }
 
 pub trait AuthzRead {

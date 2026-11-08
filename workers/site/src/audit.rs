@@ -324,7 +324,11 @@ async fn repo_step(
                 if v["step"] == "Done" {
                     return Ok(false);
                 }
-                if v.pointer("/error/notLeader").is_some() {
+                // Refused before the step, or by `reconfigure` because leadership moved under it (`"NotLeader(..)"`,
+                // hosted BF-30 transfer #20): the next step goes to the new leader.
+                if v.pointer("/error/notLeader").is_some()
+                    || v["error"].as_str().is_some_and(|e| e.starts_with("NotLeader"))
+                {
                     graftyard_lookup::forget_leader(chain);
                     continue;
                 }

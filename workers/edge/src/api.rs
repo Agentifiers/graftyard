@@ -783,10 +783,7 @@ async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, Au
     let (mut known, a) = futures_util::future::join(account_logins(c, &owner), authz(c, &repo)).await;
     let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
     let a = a?;
-    let name = a.names.iter().find_map(|(k, e)| match e {
-        graftyard_identity::RepoEntry::Live { repo: r, .. } if *r == repo.id => Some(k.as_str().to_owned()),
-        _ => None,
-    })?;
+    let name = a.id_name(repo.id)?.as_str().to_owned();
     Some((login, name, repo, a))
 }
 
