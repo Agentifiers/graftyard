@@ -191,7 +191,7 @@ function simplePull(pr: PullRequest): Schemas["pull-request-simple"] {
 }
 
 // The issues list returns pull requests too, marked with a pull_request key.
-function issueForPull(repo: Repository, s: PullSeed, pr: PullRequest): Issue {
+export function issueForPull(repo: Repository, s: PullSeed, pr: PullRequest): Issue {
   return {
     ...issue(repo, s),
     id: pr.id,
@@ -668,7 +668,13 @@ const repos = new Map<string, RepoState>([
   ],
 ]);
 
-function addComment(full: string, number: number, author: SimpleUser, body: string, at: string) {
+export function addComment(
+  full: string,
+  number: number,
+  author: SimpleUser,
+  body: string,
+  at: string,
+) {
   const state = repos.get(full)!;
   const list = state.comments.get(number) ?? [];
   list.push(comment(state.repo, number, author, body, at));
@@ -834,6 +840,10 @@ export const db = {
   },
   state: (owner: string, name: string) => repos.get(`${owner}/${name}`.toLowerCase()),
   checkRuns: (headSha: string) => checkRuns.get(headSha) ?? [],
+  // Actions adds the check runs its workflow runs produce, so a PR's Checks region shows them.
+  addCheckRun(headSha: string, run: CheckRun) {
+    checkRuns.set(headSha, [...(checkRuns.get(headSha) ?? []), run]);
+  },
   simplePull,
 
   createIssue(state: RepoState, input: { title: string; body?: string; labels?: string[] }): Issue {
