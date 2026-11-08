@@ -423,7 +423,7 @@ pub(crate) async fn write_ref(
         Ok((_, d)) => d,
         Err(_) => return Ok(Reply::error(422, "Object does not exist", doc)),
     };
-    if u.expect.is_some() && !force && !detail.first().is_some_and(|d| d.ff) {
+    if !may_write(&u, force, &detail) {
         return Ok(Reply::error(422, "Update is not a fast forward", doc));
     }
     if let Some(a) = &agent {
@@ -460,6 +460,12 @@ pub(crate) async fn write_ref(
         Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
         Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
     })
+}
+
+/// A REST ref write goes ahead when it creates the ref, when `force` is set, or when the git cache found the new tip
+/// a fast-forward of the old (GHES: "Update is not a fast forward" otherwise).
+fn may_write(u: &graftyard_git::refs::RefUpdate, force: bool, detail: &[graftyard_git::agent::RefDetail]) -> bool {
+    u.expect.is_none() || force || detail.first().is_some_and(|d| d.ff)
 }
 
 // ---- the activity feed's routing (AM1's hosted half) ----
@@ -691,6 +697,20 @@ mod tests {
             changed: Vec::new(),
             leases: false,
         }
+    }
+
+    /// A REST `PATCH` that is not a fast-forward is refused unless forced; a create needs no ancestry.
+    #[test]
+    fn a_rest_ref_write_needs_a_fast_forward_unless_forced_or_created() {
+        let mut u = update("refs/heads/claude/a");
+        u.new = Some(graftyard_git::refs::ObjectId([1; 20]));
+        let ff = |b| [RefDetail { refname: "refs/heads/claude/a".into(), ff: b, ..Default::default() }];
+        assert!(may_write(&u, false, &ff(false)), "a create");
+        u.expect = Some(graftyard_git::refs::ObjectId([2; 20]));
+        assert!(!may_write(&u, false, &ff(false)));
+        assert!(!may_write(&u, false, &[]));
+        assert!(may_write(&u, true, &ff(false)));
+        assert!(may_write(&u, false, &ff(true)));
     }
 
     /// Which pushes ask the git cache for detail: none before 32.8; any App token; a user token only under a
