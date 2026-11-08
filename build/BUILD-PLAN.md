@@ -819,7 +819,7 @@ Milestone 3 is **not closed**. Every gate row is Done hosted except BF-34's `Tes
 
 `m3-rows` also took 16 of 16 planted bugs (`tests/m3/rows/plant.sh`) and formats Identity 0x14.2 (`KeyText`, event tag 6; `AddKey`, op tag 7) and repository 32.11 (`CancelInvitation`), and fixed issue commands deciding at `Timestamp(0)`, which gave every hosted repository invitation an `expires` a week after the epoch (`db1c6be`). BF-30 took repository 32.10 (`RepoCmd::Transfer`) and Authz 0x12.4 (`AuditCursor`, event tag 16, op tag 29), and fixed `/repositories/{id}` answering 404 in the window where the old owner holds only an `Alias` (35 of 2,715 samples in run a) and a `/move` step that lost leadership not being retried (`b18894e`). Design records: `decisions/DECISIONS.md`, "BF-30, M3's last rows, and AM1-WP3's pure half, 2026-11-08"; F57 for the plaintext OIDC client secret.
 
-Formats reserved for the open work: repository 32.13 and Authz 0x12.7 for `m3-repos`, and repository 32.14 and Authz 0x12.8 for AM1-WP4.
+Formats reserved for the open work: repository 32.13 and Authz 0x12.7 for `m3-repos`, still running on `graft-m2b` (2026-11-08: `rest:repos` creation, then `TestAccGithubRepositoryCollaborator`); repository 32.15 and Authz 0x12.9 for `am1-hosted`. AM1-WP4 took 32.14 and needed no Authz format, so 0x12.8 stays unused.
 
 Also done on `graft-m1` (`tests/m3/results/m3-finish.md`):
 - **R20: install creates every `Tokens` shard** (`5938d1b`, `eaff64b`). The edge's `POST /api/graftyard/v1/release/tokens?from&count`, under the signed genesis, creates up to 16 shards per request, and `graftyard install` creates all 3,072 in 192 ranges, 8 requests at once, reporting failed ranges for a rerun. Hosted on edge `9339fb5b`, the 3,072 shards were created in 21 minutes, with one shard's registry claim timing out and its range retried (14 s); a second sweep found every group. Over 24 device flows the device-code request fell from 13.0 s to 0.83 s median (max 1.3 s), the token exchange from about 15 s to 1.9 s, and 24 of 24 tokens were issued. The 13 s was not elections: each new member pings every peer `RTT_SAMPLES` (20) times on join, 9.9 s of joins, then 1.2 s to elect [measured].
@@ -908,7 +908,24 @@ The design now says what the code needed (DESIGN and AGENT-LAYER, Shape, agent b
 
 It also carries LM-1's rerun of L0-12, L0-13, and L0-16, and reruns LF-12 and LF-13 on real code [inference].
 
-**Status (2026-11-08).** In progress on branch `am1-wp4`, with repository 32.14 and Authz 0x12.8 reserved.
+**Built so far (2026-11-08), the pure half** (`tests/am1/results/am1-wp4.md`; branch `am1-wp4`, merged at `9fb5032`). In `crates/identity/src/glob.rs`: `glob_overlap`, `literal_prefix`, and `PathGlob::overlaps`. In `crates/git/src/lease.rs`: `LeaseId` (a ULID from the entry's `at` and `lease_seq`), `ActorId`, `LeaseHolder`, `LeaseScope`, `LeaseMode`, `Lease`, the caps and TTL range, the core lease tables with Exclusive globs indexed by literal prefix, `LeaseView::holds`, `decide` for `AcquireLease`, `RenewLease`, and `ReleaseLease`, `graftyard-plan` parsing with the editor's plan lease replaced or released in the body write's own command, and `marks` for the edge. `Push::decide` matches `changed` against live Exclusive leases under `AgentsExclusive` for `ActorKind::Agent` only, per ref in 32.14; a 32.14 push writes `PathSet`; a task's cancel, finish, or derived final record releases its leases in the same command. `crates/git/src/feed.rs`: the `FEED_*` constants, `ActivityEvent` without `Verdict`, the 17-byte `FeedCursor`, `parse_query`, `start`, `events`, and the serving model (`Serving`, `route`). `crates/api/src/leases.rs`: the lease and activity routes under `/api/graftyard/v1`. In `crates/raft`: `stalled_since` marked at a `suspect`, a campaign start, or the leader's unacknowledged entry and stored with the member's next state write, and the leader applying an entry's `extend` before its commands decide (`Scratch::extend`); the raft suite passes, the 2,000-seed sweep passed in 348 s with 0 step-downs flagged, and Porcupine was Ok on 156,742 and 2,226,521 operations. Format: repository 32.14, `RepoEvent` 35 `LeaseAcquire`, 36 `LeaseRenew`, 37 `LeaseRelease`, and 38 `PathSet`; the first draft took 33 to 36, which collided with `m3-repos`' 33 and 34, and moved before the merge (`0477a8b`). In memory, on real members:
+- **LF-3: pass.** A foreign cursor 410 with `oldest_cursor`, `wait` clamped to 25, 422 for 33 `paths`, 32 accepted.
+- **LF-5: pass.** One Shared lease from the valid block, none from the four invalid ones, 5 of 5 bodies stored byte for byte; readying the draft ends the plan lease with no command.
+- **L0-13: pass.** 100 of 100 refused for each of 9 bad acquires with 0 written; 0 plan leases from non-writers and 500 from writers; a demoted holder's lease refuses nothing; uninstall takes 7 leases to 0 and cancels 5 of 5 tasks; Exclusive reads Shared after 4 h.
+- **L0-12, pure parts: pass.** Under `AgentsExclusive`, 100 of 100 pushes and REST writes refused for both agent kinds and 0 for the other three; a late Exclusive acquire succeeds; a 30-minute stall moves 3 of 3 leases by exactly the recorded `by`.
+- **L0-16: pass.** 5 of 5 lease decisions identical on the core tier alone, with 0 metadata reads.
+- **LF-12 and LF-13, pure models: pass.** 5,000 polls held at most 1,000 per member, 0 on the leader, 0 on followers once learners answer; a lagging follower answers 1,000 of 1,000 held polls at once and loses no event.
+- **Byte identity:** 120 of 120 replies identical to main's, and `agent_bytes.golden` untouched.
+- 40 of 40 planted bugs caught (`tests/am1/wp4/plant.py`). The plant runner had two bugs, a doubled `--lib` that counted a cargo usage error as a catch and a second argument bug that left mutant 26 uncompiled; both are fixed, and every count is from named failing tests. Two code bugs the gates found, fixed at the cause: the first command after a stall decided before the extension, and a lease command waited for the metadata tier.
+
+The design now says what the code needed (DESIGN, Shape, "Chains" and the agent block; AGENT-LAYER, Shape and "Leases"; `decisions/DECISIONS.md`, "AM1-WP4's pure half: leases, `PathSet`, and the feed as the code needs them, 2026-11-08"). The hosted half needs:
+1. A site day onto a release that reads 32.14, then `FormatsEnable` for 32.14; until then the lease endpoints answer 503, no command is marked 32.14, and no push writes `PathSet` or is refused `Leased`.
+2. The edge sending `changed` and `validate`'s other outputs on agent pushes and REST ref writes, and setting `Push.leases` once 32.14 is enabled.
+3. Feed serving on followers and learners from their applied log, held polls with `Serving`, the edge's `route`, `FEED_POLLS` per token and IP, and each member's peak, refusals, and read rate reported to `place_learners`; until then the edge answers 503 after checking the query.
+4. `stalled_since` wired into the site's `suspect` path and the leader's tick, stored with the member's state row, and the hosted 30-minute stall with member calls blackholed and real clock offsets (L0-12's `DRIFT` line).
+5. The hosted runs: L0-12 on the A1 replay with leader kills and 500 long-pollers, LF-12's 5,000 polls and commit p99, LF-13 with a real gap and `InstallSnapshot`, and L0-16 with the metadata tier unloaded.
+6. Plan blocks on the PR body paths: no REST `PATCH /pulls/{n}` or GraphQL `updatePullRequest` builds a body change yet; a GraphQL `createPullRequest` draft already marks.
+7. MCP's `coordination.*` tools (AM2) and the controller's Shared lease at task start (AM3).
 
 ### AM1-WP5. The trust view
 
@@ -939,6 +956,8 @@ It also carries LM-1's byte diff (the rerun of L0-11).
 | LM-1 | Base journeys pass unchanged, the base's agent rows rerun on real code, the base's 30-day hot-group storage row passes on a group seeded with the 4 GB tier, the leases and feed, lease limits, gate and read permissions, and core-tier rows pass, and the byte diff passes. Fleets of A1's size on one repository are enabled only after metadata child groups (base Milestone 7) |
 
 The base's agent rows are B0-29 to B0-37 and the stateless revocation in BM-3 (`design/AGENT-LAYER.md`, "Milestone 0 rows"). The 30-day hot-group storage row is B0-30. The layer rows named are L0-12, L0-13, L0-15, L0-16, and L0-11. Fleets of A1's size on one repository stay off until M7-WP4 passes.
+
+**Status (2026-11-08).** AM1's hosted half and this gate are in progress on branch `am1-hosted`, on `graft-m1`, with repository 32.15 and Authz 0x12.9 reserved. AM1-WP1 to AM1-WP5 have passed their pure halves.
 
 ## Milestone 4: events, webhooks, and Actions
 
