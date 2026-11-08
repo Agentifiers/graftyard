@@ -150,6 +150,9 @@ pub struct TaskCore {
     pub requester: Option<UserId>,
     pub app: AppId,
     pub installation: InstallationId,
+    /// The time of the entry that created the task: an installation whose `not_before` is later no longer covers it,
+    /// as it no longer covers a token minted before then.
+    pub created: Timestamp,
     /// The time of the entry that last wrote the task.
     pub updated: Timestamp,
 }
@@ -223,12 +226,15 @@ fn open_ids(r: &(impl Read + ?Sized)) -> Vec<SessionId> {
         .collect()
 }
 
-/// Whether the owner's `Authz` read still finds the task's installation, for its App, reaching `repo`: the check an
-/// installation token's `app_permission` makes. Uninstalling or suspending the App, or taking `repo` out of its
-/// selection, fails it, as it fails the App's token and releases its leases.
+/// Whether the owner's `Authz` read still finds the task's installation, for its App, reaching `repo`, and not reset
+/// since the task was created: the check an installation token's `app_permission` makes, with the task's create time
+/// in place of the token's `iat`. Uninstalling or suspending the App, narrowing it, or taking `repo` out of its
+/// selection fails it, as it fails the App's tokens and releases its leases, and a reinstall does not revive it.
 pub fn installed(t: &TaskCore, owner: &dyn AuthzRead, repo: RepoId) -> bool {
-    owner.installation(t.installation).and_then(|s| s.row.as_ref()).is_some_and(|r| {
+    let Some(state) = owner.installation(t.installation) else { return false };
+    state.row.as_ref().is_some_and(|r| {
         r.app == t.app
+            && t.created >= state.not_before
             && match &r.repos {
                 RepoScope::All => true,
                 RepoScope::Selected(ids) => ids.contains(&repo),
@@ -611,6 +617,7 @@ pub(crate) fn write_created_core(w: &mut dyn Rows, t: &AgentTask, at: Timestamp)
         requester: t.requester,
         app: t.app,
         installation: t.installation,
+        created: at,
         updated: at,
     };
     put_rec(w, "agent_task", task_key(&t.session), &core);
@@ -670,6 +677,7 @@ mod tests {
             requester: None,
             app: AppId(DbId(3)),
             installation: InstallationId(DbId(903)),
+            created: Timestamp(updated),
             updated: Timestamp(updated),
         }
     }

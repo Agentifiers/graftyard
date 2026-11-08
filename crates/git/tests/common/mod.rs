@@ -334,6 +334,7 @@ impl World {
             REPO_FORMAT_STATELESS,
             REPO_FORMAT_AGENT,
             graftyard_git::issue_ops::call::REPO_FORMAT_APP_CALLS,
+            graftyard_git::repo::REPO_FORMAT_TASKS,
         ];
         let mut rg = Group::new(ChainId::Repo(REPO), reads, RepoFold::new(REPO, AccountId(DbId(OWNER))), now);
         rg.elect(now);
@@ -438,10 +439,15 @@ impl World {
     }
 
     pub fn record(&mut self, events: Vec<RepoEvent>) {
+        self.record_in(REPO_FORMAT_V1, events);
+    }
+
+    /// `record` in `format`, as a host records an entry of a later format's events.
+    pub fn record_in(&mut self, format: Format, events: Vec<RepoEvent>) {
         let rid = self.rid();
         let l = self.repo.leader();
         let now = self.now;
-        self.repo.on(l, now, |m, t| m.record(t, rid, REPO_FORMAT_V1, events)).unwrap();
+        self.repo.on(l, now, |m, t| m.record(t, rid, format, events)).unwrap();
         self.settle();
         assert!(
             self.repo.resolutions.iter().any(|r| matches!(r, Resolution::Recorded { id, result: Ok(_) } if *id == rid))
