@@ -942,6 +942,13 @@ fn a_fine_grained_token_pushes_only_inside_its_scope_and_permissions() {
         let (_, o) = commit(&mut g, push(one(&format!("refs/heads/t{n}")), Atomicity::PerRef, who(WRITER, n)));
         assert_eq!(status(&o), want, "token {n}: repo {repo}, contents {level:?}: {o:?}");
     }
+    // A `contents: write` token for another owner's repositories, naming no repositories, does not reach this one.
+    let (h, mut f) = scoped(23, 7, Access::Write);
+    f.resource_owner = Some(AccountId(DbId(OWNER + 1000)));
+    f.repos = None;
+    g.store_token(h, TokenKind::FineGrained, writer, f);
+    let (_, o) = commit(&mut g, push(one("refs/heads/t23"), Atomicity::PerRef, who(WRITER, 23)));
+    assert_eq!(status(&o), 403, "another owner's token: {o:?}");
     // A `ghp_` of the same user is limited by the user's grant alone.
     let (_, o) = commit(&mut g, push(one("refs/heads/classic"), Atomicity::PerRef, who(WRITER, 2)));
     assert_eq!(refs_of(&o), [RefOutcome::Ok]);
