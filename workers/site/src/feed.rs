@@ -56,8 +56,9 @@ pub struct Feed {
     pub serving: Serving,
     pub owner: Option<AuthzFold>,
     pub owner_at: u64,
-    /// The newest entry `at` this member heard of from its leader, and the `at` of its last applied entry, for
-    /// `Following::lag`.
+    /// The `at` of the newest entry this member heard is committed, and of its last applied entry, for
+    /// `Following::lag`. Not the newest entry in its log: an idle group's follower holds the leader's last entries
+    /// without hearing they committed until the next write, and read as lagging (every poll 429) until then.
     pub leader_at: Timestamp,
     pub applied_at: Timestamp,
     /// An InstallSnapshot catch-up is running, or the last AppendEntries left a gap.
@@ -260,7 +261,7 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             f.leader_polls += 1;
         }
         let applied = c.m.group_fold().applied();
-        if let Some(e) = c.m.log().last() {
+        if let Some(e) = c.m.entry_at(c.m.state().commit) {
             f.leader_at = f.leader_at.max(e.at);
         }
         f.applied_at = f.applied_at.max(c.m.entry_at(applied).map_or(f.leader_at, |e| e.at));

@@ -323,7 +323,7 @@ impl Family for Repo {
         } else if to > from {
             f.installing = false;
         }
-        if let Some(e) = m.log().last() {
+        if let Some(e) = m.entry_at(m.state().commit) {
             f.leader_at = f.leader_at.max(e.at);
         }
         if let Some(e) = m.entry_at(to) {
