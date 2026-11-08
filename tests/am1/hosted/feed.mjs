@@ -126,7 +126,8 @@ if (which === "lf12") {
   log(`A: ${JSON.stringify(ra.status)} noRetryAfter=${ra.noRetryAfter} ${JSON.stringify(sa.map((m) => [m.site, m.role, m.feed?.peak, m.feed?.refused, m.feed?.leaderPolls]))}`);
   // Phase B, straight to members: n polls with distinct token and IP hashes over the voters, commits running.
   const st = await feedStatus();
-  const voters = st.map((m) => m.site);
+  // The followers, as the edge picks them (it leaves out the voter whose status says it leads).
+  const voters = st.filter((m) => m.role === "follower").map((m) => m.site);
   const polls = Array.from({ length: n }, (_, k) => sleep((k % 1000) * 3).then(() => direct(voters[k % voters.length], k, 25)));
   await sleep(5_000);
   const during = commits(app, id, 25);

@@ -147,6 +147,67 @@ if (which === "lf1") {
   log(`after reinstall (old tasks stay cancelled): ${JSON.stringify(reread)}`);
 }
 
+
+/** GraphQL through the edge. */
+const gql = (tok, query, variables) => api("POST", "/api/graphql", tok, { query, variables });
+const CREATE = "mutation($input: CreatePullRequestInput!) { createPullRequest(input: $input) { pullRequest { id number body } } }";
+const UPDATE = "mutation($input: UpdatePullRequestInput!) { updatePullRequest(input: $input) { pullRequest { number body } } }";
+const fence = (lines) => "```graftyard-plan\n" + lines.join("\n") + "\n```";
+
+if (which === "lf5") {
+  // A branch to open drafts from: one commit pushed as the writer (m3-admin, an org admin).
+  const admin = tokens.admin;
+  const repoId = (await gql(admin, "query { repository(owner: \"m3org\", name: \"j4\") { id } }")).body?.data?.repository?.id;
+  const g = new Git(R).as(admin);
+  g.clone();
+  const branch = (k) => {
+    g.run(["checkout", "-q", "-B", `lf5-${tag}-${k}`, "origin/main"]);
+    writeFileSync(join(g.wt, `lf5-${tag}-${k}.txt`), `${k}\n`);
+    g.run(["add", "-A"]);
+    g.run(["commit", "-q", "-m", `lf5 ${k}`]);
+    g.run(["push", "-q", "origin", `HEAD:refs/heads/lf5-${tag}-${k}`]);
+    return `lf5-${tag}-${k}`;
+  };
+  const big = fence([`paths: lf5/${tag}/big/**`, "intent: " + "x".repeat(4200)]);
+  const bodies = {
+    valid: `Plan\n\n${fence([`paths: lf5/${tag}/valid/**, docs/${tag}/*.md`, "intent: the valid block"])}\n`,
+    repeated: fence([`paths: lf5/${tag}/rep/**`, `paths: lf5/${tag}/rep2/**`]),
+    badglob: fence(["paths: /etc/passwd"]),
+    second: `${fence(["paths: /bad"])}\n\n${fence([`paths: lf5/${tag}/second/**`])}`,
+    over4k: big,
+  };
+  const out = {};
+  for (const [k, body] of Object.entries(bodies)) {
+    const r = await gql(admin, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: branch(k), title: `lf5 ${k}`, body, draft: true } });
+    const pr = r.body?.data?.createPullRequest?.pullRequest;
+    out[k] = { status: r.status, number: pr?.number, bodyUnchanged: pr?.body === body, errors: r.body?.errors?.[0]?.message };
+  }
+  const leases = await api("GET", `${V1}/leases?per_page=100&paths=lf5/${tag}/**`, admin);
+  const list = Array.isArray(leases.body) ? leases.body : [];
+  for (const k of Object.keys(out)) out[k].leases = list.filter((l) => l.paths?.some((p) => p.includes(`/${k === "repeated" ? "rep" : k}/`))).length;
+  row(OUT, { step: "drafts", out, leasesListed: list.length });
+  log(`lf5 drafts: ${JSON.stringify(out)} listed ${list.length}`);
+  // A body edit through updatePullRequest: a draft without a block gains one; the body comes back unchanged.
+  const plain = await gql(admin, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: branch("edit"), title: "lf5 edit", body: "no plan yet", draft: true } });
+  const id = plain.body?.data?.createPullRequest?.pullRequest?.id;
+  const edited = `Edited\n\n${fence([`paths: lf5/${tag}/edit/**`])}\n`;
+  const u = await gql(admin, UPDATE, { input: { pullRequestId: id, body: edited } });
+  const l2 = await api("GET", `${V1}/leases?per_page=100&paths=lf5/${tag}/edit/**`, admin);
+  const v = { status: u.status, bodyUnchanged: u.body?.data?.updatePullRequest?.pullRequest?.body === edited, errors: u.body?.errors?.[0]?.message,
+    leases: Array.isArray(l2.body) ? l2.body.length : l2.status };
+  row(OUT, { step: "updatePullRequest body edit", ...v });
+  log(`lf5 edit: ${JSON.stringify(v)}`);
+}
+
+if (which === "plan600") {
+  // L0-13's plan half: N plan blocks from accounts without push access (fresh users, no org membership), then N
+  // from writers; zero plan leases from the first, at most PLAN_LEASES_PER_REPO from the second.
+  const admin = tokens.admin;
+  const repoId = (await gql(admin, "query { repository(owner: \"m3org\", name: \"j4\") { id } }")).body?.data?.repository?.id;
+  void repoId;
+  log("plan600: needs N distinct non-writer accounts with read access to a private repository; see results");
+}
+
 if (which === "pat") {
   // One fresh PAT for m3-member (a writer through the org's base permission), for drivers that need a second user.
   log(`made ${(await pat(state.member)).length} chars`);
