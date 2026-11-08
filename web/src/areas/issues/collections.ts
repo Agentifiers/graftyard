@@ -1,8 +1,8 @@
 import { createCollection } from "@tanstack/react-db";
 import { queryCollectionOptions } from "@tanstack/query-db-collection";
-import { api, unwrap, type Schemas } from "./client";
-import { commentsQuery, issueQuery, issuesQuery } from "@/areas/core/queries";
-import { queryClient } from "./query-client";
+import { api, unwrap, type Schemas } from "@/api/client";
+import { commentsQuery, issueQuery, issuesQuery } from "./queries";
+import { queryClient } from "@/api/query-client";
 
 type Repo = { owner: string; repo: string };
 

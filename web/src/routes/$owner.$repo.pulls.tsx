@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { pullsQuery } from "@/areas/core/queries";
+import { pullsQuery } from "@/areas/pulls/queries";
 import { Ago, LabelBadge, pullState, StateBadge, StateIcon } from "@/components/github";
 import { Region } from "@/components/region";
 import { Frame, FrameHeader, FramePanel, FrameTitle } from "@/components/reui/frame";

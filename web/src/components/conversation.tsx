@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useForm } from "@tanstack/react-form";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
-import { commentsCollection, draftComment } from "@/api/collections";
+import { commentsCollection, draftComment } from "@/areas/issues/collections";
 import { userQuery } from "@/areas/core/queries";
 import { Ago, UserAvatar } from "@/components/github";
 import { MarkdownBody } from "@/components/markdown";

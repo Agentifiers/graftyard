@@ -44,7 +44,7 @@ Owned by one area:
 - `src/areas/<area>/` holds its `nav.ts`, `slots.tsx`, `queries.ts` (one `queryOptions` factory per page region), collections, and components.
 - `src/mocks/areas/<area>*.ts` holds its records and handlers. Every module there that exports `handlers` is served.
 - Its routes in `src/routes/`.
-- `core` owns users, repositories, issues, comments, pull requests, files, and check runs, and `shell` owns the organization header's reads.
+- `core` owns the viewer and repository reads the layouts use. `issues` owns issues and comments, and `pulls` owns pull requests, files, and check runs. All three share the store in `src/mocks/areas/core-db.ts`, which exports its record builders so other areas add reviews, merges, or new PRs to the same store. `shell` owns the organization header's reads.
 
 Rules for an area:
 

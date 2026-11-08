@@ -10,8 +10,8 @@ import {
   MinusSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import type { Schemas } from "@/api/client";
-import { commentsCollection } from "@/api/collections";
-import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/areas/core/queries";
+import { commentsCollection } from "@/areas/issues/collections";
+import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/areas/pulls/queries";
 import { Slot } from "@/areas/slots";
 import { Conversation } from "@/components/conversation";
 import { FileDiff } from "@/components/diff";

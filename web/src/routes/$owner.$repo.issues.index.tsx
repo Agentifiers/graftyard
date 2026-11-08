@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { and, eq, ilike, isUndefined, useLiveSuspenseQuery } from "@tanstack/react-db";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Comment01Icon, Search01Icon } from "@hugeicons/core-free-icons";
-import { issuesCollection } from "@/api/collections";
+import { issuesCollection } from "@/areas/issues/collections";
 import { Ago, issueState, LabelBadge, StateIcon } from "@/components/github";
 import { Region } from "@/components/region";
 import { Frame, FrameHeader, FramePanel } from "@/components/reui/frame";
