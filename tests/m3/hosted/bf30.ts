@@ -14,13 +14,15 @@
 // admin is refused, both through `deps`.
 //
 // Secrets stay in memory; nothing is printed but ids, logins, statuses, and counts.
-//   node tests/m3/hosted/bf30.ts --out ~/.graft-m3h --tag <a..z> --raw tests/m3/raw/finish/bf30
+// m3-admin, the one destination every run shares, gets the repository as `<name>-<tag>` (`new_name`), so a run never
+// meets an earlier run's repository there. `--only user` runs only the two transfers to it, from new repositories.
+//   node tests/m3/hosted/bf30.ts --out ~/.graft-m3h --tag <a..z> --raw tests/m3/raw/finish/bf30 [--only user]
 
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-const { values: opt } = parseArgs({ options: { out: { type: "string" }, tag: { type: "string" }, raw: { type: "string" } } });
+const { values: opt } = parseArgs({ options: { out: { type: "string" }, tag: { type: "string" }, raw: { type: "string" }, only: { type: "string" } } });
 if (!opt.out || !opt.tag || !opt.raw) throw new Error("usage: bf30.ts --out DIR --tag X --raw DIR");
 mkdirSync(opt.raw, { recursive: true });
 const ROOT = new URL("./", import.meta.url).pathname;
@@ -176,8 +178,12 @@ async function createRepo(o: Org, name: string): Promise<number> {
   return id;
 }
 const repos: Record<string, number> = {};
-for (let i = 1; i <= 9; i++) repos[`t${i}`] = await createRepo(A, `t${i}`);
-for (const n of ["g1", "g2"]) repos[n] = await createRepo(G, n);
+if (opt.only === "user") {
+  for (const n of ["u1", "u2"]) repos[n] = await createRepo(D, n);
+} else {
+  for (let i = 1; i <= 9; i++) repos[`t${i}`] = await createRepo(A, `t${i}`);
+  for (const n of ["g1", "g2"]) repos[n] = await createRepo(G, n);
+}
 log(`repos ${JSON.stringify(repos)}`);
 
 // ---- one transfer ----
@@ -185,11 +191,12 @@ type Row = Record<string, unknown>;
 let saved202 = false;
 async function transfer(n: number, name: string, from: Org, to: Org, kind: string, kill = false): Promise<Row> {
   const repo = repos[name];
+  const newName = to === M3ADMIN ? `${name}-${tag}` : name;
   const before = await routeRead(repo, from.id);
   const t0 = Date.now();
-  const r = await api("POST", `/repos/${from.login}/${name}/transfer`, ADMIN_PAT, { new_owner: to.login },
+  const r = await api("POST", `/repos/${from.login}/${name}/transfer`, ADMIN_PAT, { new_owner: to.login, new_name: newName },
     kill ? { "x-graft-kill": "after_reserved" } : {});
-  const row: Row = { n, name, repo, kind, from: from.login, to: to.login, fromPlace: from.place, toPlace: to.place, kill, status: r.status, replyMs: r.ms, before };
+  const row: Row = { n, name, newName, repo, kind, from: from.login, to: to.login, fromPlace: from.place, toPlace: to.place, kill, status: r.status, replyMs: r.ms, before };
   if (r.status !== 202) {
     row.error = r.body;
     log(`#${n} ${from.login}/${name} -> ${to.login}: ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
@@ -217,7 +224,7 @@ async function transfer(n: number, name: string, from: Org, to: Org, kind: strin
         routeRead(repo, from.id), routeRead(repo, to.id),
         api("GET", `/repositories/${repo}/issues`, ADMIN_PAT),
         api("GET", `/repos/${from.login}/${name}/issues`, ADMIN_PAT),
-        api("GET", `/repos/${to.login}/${name}/issues`, ADMIN_PAT),
+        api("GET", `/repos/${to.login}/${newName}/issues`, ADMIN_PAT),
       ]);
       note("rOld", ro !== null);
       note("rNew", rn !== null);
@@ -238,7 +245,7 @@ async function transfer(n: number, name: string, from: Org, to: Org, kind: strin
       const [ownerRow, settings, live, alias] = await Promise.all([
         readValue(`names:${repoShard(repo)}`, { repoOwner: repo }),
         routeRead(repo, to.id),
-        readValue(`authz:${to.id}`, { repo: name }),
+        readValue(`authz:${to.id}`, { repo: newName }),
         readValue(`authz:${from.id}`, { repo: name }),
       ]);
       const wantEnt = to.id === ADMIN ? null : to.enterprise;
@@ -261,7 +268,7 @@ async function transfer(n: number, name: string, from: Org, to: Org, kind: strin
   row.fails = fails;
   row.configs = [...voterSets];
   // `deps` after `Settings`: the new owner's admin writes, the old owner's admin is refused.
-  const labelBy = (o: Org, who: string) => api("POST", `/repos/${to.login}/${name}/labels`, o.pat, { name: `bf30-${n}-${who}`, color: "ededed" });
+  const labelBy = (o: Org, who: string) => api("POST", `/repos/${to.login}/${newName}/labels`, o.pat, { name: `bf30-${n}-${who}`, color: "ededed" });
   const [byNew, byOld] = [await labelBy(to, "new"), await labelBy(from, "old")];
   row.labelNew = byNew.status;
   row.labelOld = byOld.status;
@@ -272,7 +279,7 @@ async function transfer(n: number, name: string, from: Org, to: Org, kind: strin
   return row;
 }
 
-const plan: [string, Org, Org, string, boolean?][] = [
+const full: [string, Org, Org, string, boolean?][] = [
   ["t1", A, B, "enterprise"], ["t2", A, B, "enterprise"], ["t3", A, B, "enterprise"], ["t4", A, B, "enterprise"],
   ["t5", A, C, "placement"], ["t6", A, C, "placement"], ["t7", A, C, "placement"], ["t8", A, C, "placement"],
   ["t9", A, C, "placement", true],
@@ -281,24 +288,29 @@ const plan: [string, Org, Org, string, boolean?][] = [
   ["t1", D, M3ADMIN, "home, org to user"], ["t2", D, M3ADMIN, "home, org to user"],
   ["t9", C, A, "placement"],
 ];
+const plan = opt.only === "user" ? [["u1", D, M3ADMIN, "home, org to user"], ["u2", D, M3ADMIN, "home, org to user"]] as typeof full : full;
 const rows: Row[] = [];
 for (const [i, [name, from, to, kind, kill]] of plan.entries()) rows.push(await transfer(i + 1, name, from, to, kind, kill ?? false));
 
-// ---- the org's enterprise change: `Enterprise` on G's `Authz`, then `Audit` alone writes each repository's Settings ----
-const t0 = Date.now();
-await must(`authz:${G.id}`, { cred: OP, op: { SetEnterprise: { enterprise: E2 } } });
-let entDone = 0;
-const entSeen: unknown[] = [];
-while (Date.now() - t0 < 8 * 60_000) {
-  await sleep(5000);
-  const s = await Promise.all(["g1", "g2"].map((n) => routeRead(repos[n], G.id)));
-  if (s.every((x) => x?.enterprise === E2 && x?.owner === G.id)) { entDone = Date.now() - t0; entSeen.push(s); break; }
+// ---- the org's enterprise change: `Enterprise` on G's `Authz`, then `Audit` alone writes each repository's Settings
+// (not with --only) ----
+let ent: Record<string, unknown> = { pass: null };
+if (opt.only === undefined) {
+  const t0 = Date.now();
+  await must(`authz:${G.id}`, { cred: OP, op: { SetEnterprise: { enterprise: E2 } } });
+  let entDone = 0;
+  const entSeen: unknown[] = [];
+  while (Date.now() - t0 < 8 * 60_000) {
+    await sleep(5000);
+    const s = await Promise.all(["g1", "g2"].map((n) => routeRead(repos[n], G.id)));
+    if (s.every((x) => x?.enterprise === E2 && x?.owner === G.id)) { entDone = Date.now() - t0; entSeen.push(s); break; }
+  }
+  const entLabels = await Promise.all(["g1", "g2"].map((n) => api("POST", `/repos/${G.login}/${n}/labels`, G.pat, { name: "bf30-ent", color: "ededed" })));
+  ent = { org: G.login, from: E1, to: E2, doneMs: entDone || null, settings: entSeen, labels: entLabels.map((l) => l.status),
+    pass: entDone > 0 && entLabels.every((l) => l.status === 201) };
+  out("enterprise.jsonl", ent);
+  log(`enterprise change ${G.login} E1 -> E2: ${ent.pass ? "pass" : "FAIL"} Settings on 2 of 2 after ${entDone} ms, labels ${ent.labels}`);
 }
-const entLabels = await Promise.all(["g1", "g2"].map((n) => api("POST", `/repos/${G.login}/${n}/labels`, G.pat, { name: "bf30-ent", color: "ededed" })));
-const ent = { org: G.login, from: E1, to: E2, doneMs: entDone || null, settings: entSeen, labels: entLabels.map((l) => l.status),
-  pass: entDone > 0 && entLabels.every((l) => l.status === 201) };
-out("enterprise.jsonl", ent);
-log(`enterprise change ${G.login} E1 -> E2: ${ent.pass ? "pass" : "FAIL"} Settings on 2 of 2 after ${entDone} ms, labels ${ent.labels}`);
 
 const pass = rows.filter((r) => r.pass).length;
 const done = rows.filter((r) => r.doneMs).map((r) => r.doneMs as number).sort((a, b) => a - b);
