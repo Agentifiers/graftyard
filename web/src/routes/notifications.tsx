@@ -296,6 +296,7 @@ function Inbox() {
                 ].map((t) => (
                   <Link
                     key={t.label}
+                    from="/notifications"
                     to="/notifications"
                     search={(prev) => ({ ...prev, unread: t.unread })}
                     role="tab"
@@ -369,6 +370,7 @@ function FilterChips({ search }: { search: Search }) {
     <Badge key={c.label} variant="outline" size="lg" className="gap-1">
       {c.label}
       <Link
+        from="/notifications"
         to="/notifications"
         search={(prev) => ({ ...prev, ...c.drop })}
         aria-label={`Clear ${c.label}`}

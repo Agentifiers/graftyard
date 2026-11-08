@@ -154,7 +154,7 @@ export const handlers = [
   http.get("/notifications/threads/{thread_id}/subscription", async ({ params, response }) => {
     const fault = await gate("notifications");
     if (fault) return response.untyped(fault);
-    const t = activity.thread(params.thread_id);
+    const t = activity.threadOrIssue(params.thread_id);
     return t ? response(200).json(activity.threadSubscription(t)) : response.untyped(notFound());
   }),
 

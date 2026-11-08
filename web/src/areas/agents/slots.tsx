@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useQueries, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -6,7 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Robot01Icon } from "@hugeicons/core-free-icons";
 import { userQuery, userReposQuery } from "@/areas/core/queries";
 import { checkRunsQuery } from "@/areas/pulls/queries";
-import type { SlotEntry, SlotName, SlotProps } from "@/areas/slots";
+import type { SlotEntry } from "@/areas/slots";
 import { Panel } from "@/components/panel";
 import { Button } from "@/components/ui/button";
 import { GraftyardError, type Task } from "./api";
@@ -223,22 +223,18 @@ function YourTasks() {
   );
 }
 
-// src/areas/slots.tsx imports this file eagerly, so its `slot` helper is not yet
-// initialized when this module runs. This is the same identity cast with type-only imports.
-const slot = <K extends SlotName>(entry: {
-  slot: K;
-  region: string;
-  order: number;
-  Component: ComponentType<SlotProps[K]>;
-}) => entry as SlotEntry;
-
 export const slots: SlotEntry[] = [
-  slot({ slot: "pull-sidebar", region: "agent session", order: 30, Component: PullAgentCard }),
-  slot({
+  {
+    slot: "pull-sidebar",
+    region: "agent session",
+    order: 30,
+    Component: PullAgentCard,
+  } satisfies SlotEntry,
+  {
     slot: "issue-sidebar",
     region: "agent tasks for this issue",
     order: 30,
     Component: AssignToAgent,
-  }),
-  slot({ slot: "home", region: "your agent tasks", order: 20, Component: YourTasks }),
+  } satisfies SlotEntry,
+  { slot: "home", region: "your agent tasks", order: 20, Component: YourTasks } satisfies SlotEntry,
 ];

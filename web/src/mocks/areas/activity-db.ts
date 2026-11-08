@@ -161,7 +161,8 @@ function subscription(owner: string, repo: string, w: Watch): Schemas["repositor
 
 // ---- Notifications ----
 
-type Box = "inbox" | "done";
+// "none" is a thread with no notification yet, made when an issue page subscribes.
+type Box = "inbox" | "done" | "none";
 type ThreadState = { thread: Thread; box: Box; saved: boolean; subscribed: boolean };
 
 let threadSeq = 4100;
@@ -202,6 +203,28 @@ function issueSubject(_repo: Repository, i: Issue | PullRequest, isPull: boolean
 }
 
 const threads: ThreadState[] = [];
+
+function threadForIssueId(id: string): ThreadState | undefined {
+  for (const r of core.repos()) {
+    const state = core.state(r.owner.login, r.name);
+    const i = state?.issues.find((x) => String(x.id) === id);
+    if (!state || !i) continue;
+    const t = threadFor(
+      state.repo,
+      issueSubject(state.repo, i, Boolean(i.pull_request)),
+      "subscribed",
+      i.updated_at,
+      false,
+    );
+    t.id = id;
+    t.url = `${API}/notifications/threads/${id}`;
+    t.subscription_url = `${t.url}/subscription`;
+    const rec: ThreadState = { thread: t, box: "none", saved: false, subscribed: false };
+    threads.push(rec);
+    return rec;
+  }
+  return undefined;
+}
 
 function push(t: Thread, extra: Partial<Omit<ThreadState, "thread">> = {}) {
   threads.push({ thread: t, box: "inbox", saved: false, subscribed: true, ...extra });
@@ -674,11 +697,14 @@ export const activity = {
     };
   },
   setThreadSubscribed(id: string, subscribed: boolean) {
-    const t = threads.find((x) => x.thread.id === id);
+    const t = threads.find((x) => x.thread.id === id) ?? threadForIssueId(id);
     if (!t) return undefined;
     t.subscribed = subscribed;
     return t;
   },
+  // The issue page names its thread by the issue's id. A thread for an issue nobody was
+  // notified about yet starts unsubscribed and out of the inbox, as GHES does.
+  threadOrIssue: (id: string) => threads.find((t) => t.thread.id === id) ?? threadForIssueId(id),
 
   // Stars
   stargazers: (owner: string, repo: string) =>

@@ -30,10 +30,10 @@ type Entry<K extends SlotName> = {
   Component: ComponentType<SlotProps[K]>;
 };
 
+// A union over the slots, so a literal's Component is checked against its slot's props.
+// Area files import this module only for types: it loads every area's slots.tsx eagerly,
+// so a runtime import back from it would run before it finished evaluating.
 export type SlotEntry = { [K in SlotName]: Entry<K> }[SlotName];
-
-// Builds an entry with its props checked against the slot.
-export const slot = <K extends SlotName>(entry: Entry<K>): SlotEntry => entry as SlotEntry;
 
 const modules = import.meta.glob<{ slots: SlotEntry[] }>("./*/slots.tsx", { eager: true });
 const all = Object.values(modules)
