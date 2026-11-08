@@ -49,6 +49,7 @@ mod api;
 mod ident;
 mod precreate;
 mod release;
+mod transfer;
 
 const AGENT: &str = "git/graftyard-m1";
 /// `design/DESIGN.md`, Shape, `Unsupported`: "The edge renders it as 503 with `Retry-After: 5` [guess]".

@@ -350,6 +350,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (m @ (Method::Get | Method::Put | Method::Delete), ["orgs", org, "memberships", user]) => {
                 crate::ident::membership(c, req, m.clone(), org, user).await
             }
+            (Method::Post, ["repos", owner, repo, "transfer"]) => crate::transfer::transfer(c, req, owner, repo).await,
             (Method::Delete, ["orgs", org, "members", user]) => {
                 crate::ident::membership(c, req, Method::Delete, org, user).await
             }

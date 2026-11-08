@@ -42,6 +42,8 @@ const SCAN_MAX: u64 = 2_000;
 const BATCH_FOR: std::time::Duration = std::time::Duration::from_secs(120);
 /// After a failed or lost batch, the alarm comes back this soon [guess].
 const RETRY_MS: i64 = 30_000;
+/// One `/move` step: a join measures two peers 20 times each, and a config change waits up to 20 s to commit.
+const MOVE_STEP: std::time::Duration = std::time::Duration::from_secs(60);
 
 thread_local! {
     /// Per member object of this isolate: the leadership whose batch is running.
@@ -50,7 +52,7 @@ thread_local! {
 
 /// Whether this site runs the consumer: `GRAFTYARD_AUDIT` set to `1`, which a test install sets once a site day put
 /// every member on a release that reads 0x10.3 and 0x11.3.
-fn enabled(env: &Env) -> bool {
+pub fn enabled(env: &Env) -> bool {
     env.var("GRAFTYARD_AUDIT").is_ok_and(|v| v.to_string() == "1")
 }
 
@@ -151,6 +153,48 @@ pub async fn on_alarm<F: Audited>(h: &Rc<Host<F>>) {
         let Some(h) = w.upgrade() else { return };
         h.arm_in(if r.is_ok() { 1_000 } else { RETRY_MS });
     });
+}
+
+/// The in-band first attempt for one item a commit point just left owed (a transfer's `Reserved` name), on the
+/// leader of the chain it committed on: `{"owed": Owed}` runs a batch for that item alone now, with the cursor where it
+/// is, under the same per-leadership guard as the alarm's batch, so the alarm does not run one beside it. The alarm
+/// still scans the entry a minute later and finds nothing owed, or finishes what this attempt did not.
+pub async fn finish_now<F: Audited>(h: &Rc<Host<F>>, body: Value) -> Result<Value> {
+    let owed: audit::Owed = serde_json::from_value(body["owed"].clone())?;
+    let (key, leadership, chain, cursor) = {
+        let core = h.core.borrow();
+        let Some(c) = core.as_ref().filter(|c| c.m.role() == Role::Leader) else {
+            return Ok(json!({ "error": "not the leader" }));
+        };
+        let key = c.join.me.do_name.to_string();
+        (key, (c.m.term().0, c.m.boot()), c.join.chain, F::cursor(&c.m.group_fold().fold))
+    };
+    if RUNNING.with(|r| r.borrow().get(&key) == Some(&leadership)) {
+        return Ok(json!({ "running": true }));
+    }
+    RUNNING.with(|r| r.borrow_mut().insert(key.clone(), leadership));
+    let env = h.env.clone();
+    let w = Rc::downgrade(h);
+    spawn_local(async move {
+        let t0 = now_ms();
+        let r = crate::host::within(BATCH_FOR, batch(&env, chain, cursor, cursor, vec![owed]))
+            .await
+            .unwrap_or_else(|| Err(format!("no answer in {} s", BATCH_FOR.as_secs())));
+        match &r {
+            Ok(v) => console_log!("audit {chain} in band {}ms {v}", now_ms() - t0),
+            Err(e) => console_error!("audit {chain} in band: {e}"),
+        }
+        RUNNING.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.get(&key) == Some(&leadership) {
+                m.remove(&key);
+            }
+        });
+        if let Some(h) = w.upgrade() {
+            h.arm_in(RETRY_MS);
+        }
+    });
+    Ok(json!({ "started": true }))
 }
 
 /// One batch: plan, read, and commit until it is done.
@@ -262,19 +306,32 @@ async fn repo_step(
     let b = graftyard_lookup::Bindings { env, sites: &site.sites };
     match step {
         RepoStep::Move { to } => {
+            // Each step joins a member or waits for a config to commit, well past the lookup's 3.5 s call: the
+            // leader is found once, then called with a step's own deadline.
             let body = json!({ "to": to }).to_string();
+            let probe = json!({ "q": { "probe": true } }).to_string();
             for _ in 0..40 {
-                let (v, _, _) = graftyard_lookup::call_opt(&b, chain, &record, "/move", body.as_bytes())
+                let (_, _, t) = graftyard_lookup::call_opt(&b, chain, &record, "/read", probe.as_bytes())
                     .await?
                     .ok_or_else(|| format!("{chain}: no group"))?;
+                let Some((_, v)) =
+                    graftyard_lookup::post_within(&b, t.site, &t.do_name, "/move", body.as_bytes(), MOVE_STEP).await
+                else {
+                    graftyard_lookup::forget_leader(chain);
+                    continue;
+                };
                 console_log!("audit move {chain}: {v}");
                 if v["step"] == "Done" {
                     return Ok(false);
                 }
+                if v.pointer("/error/notLeader").is_some() {
+                    graftyard_lookup::forget_leader(chain);
+                    continue;
+                }
                 if let Some(e) = v.get("error") {
                     return Err(format!("{chain} move: {e}"));
                 }
-                // A transfer completes within the LEASE; the next leader answers the next step.
+                // A transfer completes within the LEASE; the next step goes to the new leader.
                 if v["ok"].get("transfer").is_some() {
                     worker::Delay::from(std::time::Duration::from_millis(1_500)).await;
                     graftyard_lookup::forget_leader(chain);

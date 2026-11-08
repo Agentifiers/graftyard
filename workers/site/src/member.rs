@@ -1458,9 +1458,20 @@ impl<F: Family> Routes<F> {
                     let stub = site.member(&self.host.env, v.site, &v.do_name)?;
                     rtt.extend(stub.fetch_with_str("https://member/rtt").await?.json::<Vec<(SiteId, Rtt)>>().await?);
                 }
-                let voters = voters_of(p).into_iter().map(|m| if m.site == drop { new.clone() } else { m }).collect();
-                // The home stays unless it leaves; then the new member's site holds it until `Home` moves it.
-                let home = if p.home() == drop { add } else { p.home() };
+                let voters: arrayvec::ArrayVec<MemberRef, 3> =
+                    voters_of(p).into_iter().map(|m| if m.site == drop { new.clone() } else { m }).collect();
+                // The home stays unless it leaves; then the target's home if the new half holds it as a Full voter,
+                // else the new member's site, until `Home` moves it.
+                let home = if p.home() != drop {
+                    p.home()
+                } else if voters
+                    .iter()
+                    .any(|m: &MemberRef| m.site == to.home && m.kind == graftyard_types::MemberKind::Full)
+                {
+                    to.home
+                } else {
+                    add
+                };
                 match checked(voters, home, &rtt) {
                     Ok(np) => self
                         .change(raft::GroupConfig::Joint { old: p.clone(), new: Box::new(np) })

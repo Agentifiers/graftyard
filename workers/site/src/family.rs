@@ -1090,6 +1090,21 @@ impl Family for Authz {
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
         crate::audit::on_alarm(host).await;
     }
+    /// `/finish`, the in-band first attempt at what a commit point just left owed (`crate::audit::finish_now`).
+    fn route_paths() -> &'static [&'static str] {
+        &["/finish"]
+    }
+    async fn route(
+        host: &std::rc::Rc<crate::host::Host<Self>>,
+        path: &str,
+        body: Value,
+    ) -> Option<worker::Result<Value>> {
+        match path {
+            "/finish" if crate::audit::enabled(&host.env) => Some(crate::audit::finish_now(host, body).await),
+            "/finish" => Some(Ok(json!({ "error": "GRAFTYARD_AUDIT is not set" }))),
+            _ => None,
+        }
+    }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {
             ChainId::Authz(o) => id::AuthzFold::new(o),
