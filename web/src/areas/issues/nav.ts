@@ -8,6 +8,14 @@ export const nav: NavEntry[] = [
     to: "/$owner/$repo/issues",
     icon: RecordIcon,
     order: 10,
-    match: ["/$owner/$repo/issues/$number", "/$owner/$repo/issues/new"],
+    match: [
+      "/$owner/$repo/issues/$number",
+      "/$owner/$repo/issues/new",
+      "/$owner/$repo/labels",
+      "/$owner/$repo/milestones",
+      "/$owner/$repo/milestones/new",
+      "/$owner/$repo/milestones/$number",
+      "/$owner/$repo/milestones/$number/edit",
+    ],
   },
 ];
