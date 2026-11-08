@@ -123,24 +123,25 @@ pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub request
 /// [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 /// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
 /// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
-/// Only `POST .../cancel` sets Cancelled, and a task whose `installation` the owner `Authz` read no longer finds active
-/// reads as Cancelled, the same check that releases its leases. Only the host sets TimedOut: `decide` and reads treat a
-/// task with no update for TASK_IDLE as timed out. In both derived cases the task's next command records the state.
-/// The task's App sets the other states with `PATCH`.
+/// Only `POST .../cancel` sets Cancelled, and a task reads as Cancelled, the check that releases its leases, once the
+/// owner `Authz` read finds no row for its App reaching the repository with `not_before` at or before the task's
+/// creation, the token rule. Only the host sets TimedOut: a task with no update for TASK_IDLE reads timed out. In both
+/// cases the next command records the state, answering 409. The task's App sets the other states with `PATCH`.
 /// Cancelling or finishing a task releases its leases in the same command. `state` uses GitHub's agent task states.
-/// Core tier: `session`, `kind`, `state`, `prefix`, `requester`, and `app`, about 100 bytes. Metadata tier: the rest.
+/// Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`, `installation`, and the create and last-update
+/// times. Metadata: the rest. `issue` and `pr` number the task's repository.
 pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: TaskApiState, pub prefix: Option<RefPattern>,
                        pub requester: Option<UserId>, pub app: AppId, pub installation: InstallationId, pub creator: Actor,
-                       pub issue: Option<IssueRef>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
-                       pub pr: Option<PrNumber>, pub summary: Box<str> }
+                       pub issue: Option<IssueNumber>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
+                       pub pr: Option<IssueNumber>, pub summary: Box<str> }
 pub enum TaskKind { GraftyardRun, External }
 pub enum TaskApiState { Queued, InProgress, Completed, Failed, Idle, WaitingForUser, TimedOut, Cancelled }
 /// A task's id. For a `GraftyardRun` task the host mints a lowercase hyphenated UUID at create, and `prefix` is
-/// `refs/heads/graftyard/<uuid>/`, matched as the `RefPattern` `refs/heads/graftyard/<uuid>/**`, so a ref needs at least
-/// one segment after the id. For an `External` task the creating App names it: 1 to 64 bytes of `[a-z0-9._-]`,
-/// starting with a letter or digit, with no `..` and no `.lock` suffix, unique among that App's tasks on the repository.
-/// Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is the UUID, or `<app_id>.<name>`. An App may send
-/// its own bare `name`, which the host scopes to the calling App.
+/// `refs/heads/graftyard/<uuid>/`, matched as the `RefPattern` `refs/heads/graftyard/<uuid>/*/**`, because `**` also
+/// matches zero segments, so a ref needs at least one segment after the id. For an `External` task the creating App
+/// names it: 1 to 64 bytes of `[a-z0-9._-]`, starting with a letter or digit, with no `..` and no `.lock` suffix,
+/// unique among that App's tasks on the repository. Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is
+/// the UUID, or `<app_id>.<name>`. An App may send its own bare `name`, which the host scopes to the calling App.
 pub enum SessionId { Run(Uuid), External { app: AppId, name: Box<str> } }
 /// `POST .../tasks` for a `GraftyardRun` task returns 422 while the org's `OrgPolicy.agents_enabled` is off, its default.
 /// It needs a human user credential with `contents: write`, never an installation token, an `AgentApp`'s user token, or
@@ -258,7 +259,7 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
     TaskCreated(AgentTask),                                       // Core and Metadata, as PrOpened
     TaskUpdated { session: SessionId, state: Option<TaskApiState>, pr: Option<PrNumber>, summary: Option<Box<str>>,
-                  actor: Actor },                                 // Core for state, Metadata for pr and summary
+                  actor: Actor },                                 // Core always; Metadata too for pr and summary
     AgentGate(AgentGate),                                         // Core, in the APPROVE review's entry
     AgentPolicy(AgentPolicy),                                     // Core
     PathSet(PathSet),                                             // Metadata, in the push's entry
@@ -718,7 +719,7 @@ grant: {id, client, redirect_hosts: [host], generation, created_at}
   get: {200: task}
   patch: {body: {state?, pr_number?, summary?}, 200: task, 403: not the task's App, 409: {message, state} for a final or
     paused task, 422: cancelled or timed_out}
-/repos/{owner}/{repo}/tasks/{id}/cancel: {post: {200: task, 409: {message, state} for a final task}}
+/repos/{owner}/{repo}/tasks/{id}/cancel: {post: {200: task, 409: {message, state} for a final task, recorded or derived}}
 /repos/{owner}/{repo}/tasks/{id}/log: {get: {200: SessionLog schema 1, 404: until the log is pushed}}
 /repos/{owner}/{repo}/leases:
   post: {header: X-Graftyard-Agent-Session?, body: {paths: [glob] (1 to 32), refs?: [pattern] (<= 2), mode?: shared | exclusive,

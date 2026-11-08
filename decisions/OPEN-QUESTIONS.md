@@ -53,6 +53,7 @@ Sources: "Open questions and risks" in `design/DESIGN.md` and `design/AGENT-LAYE
 | F54 | Is the `SiteAdmin` bypass needed before M3 closes? SHARED says a `SiteAdmin` actor bypasses org and repository permissions, audited in the same entry, but M3-WP3's code models a site admin only as an admin of the install account's org, checked by `SetInstanceAuth`; the code's `Actor` has no `SiteAdmin` variant and no command bypasses `authorize` [measured, `tests/m3/results/m3-wp3.md`; `crates/identity/src/authz.rs`] | `design/SHARED.md`, "Identity and tokens" (`Actor`, "Instance sign-in in installs") | Site-admin repairs and support actions on repositories the admin does not belong to, and BM-3's admin journeys | M3-WP3's hosted half or M3-WP6: build the bypass with its audit, or record that installs go without it until a named milestone |
 | F55 | How does a person enter a device flow's user code, or approve an OAuth authorization, and how does that page sign them in? SHARED says the flows "run on the bare host at `/login/oauth/*` and `/login/device/code`", and no section designs the browser pages for approving a user code or an authorization; the hosted half stood in for them with PAT-authenticated test routes, `GET|POST /login/oauth/authorize` and `POST /login/oauth/device/approve` [measured, `tests/m3/results/m3-hosted.md`, "Design gaps found"] | `design/SHARED.md`, "Identity and tokens" (OAuth) | `oauth-web-flow` and `oauth-device-flow` for real users, and the web sign-in session the pages need | M4-WP5 (the web app) owns the pages, built on M3-WP3's web sign-in; until then the test routes stand in, and no install exposes them |
 | F56 | Does GHES 3.22 answer 403 "Resource not accessible by integration" or 404 when an installation token without `issues: write` creates a label? The edge answers 403, which github.com sends for a token that "has insufficient permissions" [doc, docs.github.com, "Troubleshooting the REST API"; `github/rest-api-description` #6994], but GHES 3.22's description lists only 201, 404, and 422 for `POST /repos/{owner}/{repo}/labels` while it lists 403 for issue, comment, and merge writes, so `validate.py` fails the 10 hosted refusals [measured, `tests/m3/results/m3-close.md`, "Stateless issue writes"] | `design/SHARED.md`, "Identity and tokens" (installation tokens) | Clients that branch on 403 against 404 for an App's missing permission, and `validate.py`'s oracle for the label route | No work package: needs a GHES 3.22 instance, as A4 does. Until then the edge keeps 403 and the validator records the label refusal as a known mismatch |
+| F57 | Which key wraps the secrets inside `InstanceAuth` configs? SHARED says "secrets inside the configs are ciphertext", but no wrap key exists for them, so the edge stores the OIDC client secret the admin sent as plaintext bytes on the install's own `Authz` chain [measured, `tests/m3/results/m3-rows.md`, "Design notes and contradictions"; `workers/edge/src/oidc.rs`] | `design/SHARED.md`, "Identity and tokens" (`InstanceAuth`) | Any install that turns on OIDC or SAML with a real IdP, since every member and every snapshot of that chain holds the secret | M5-WP3 (`graft-ops` owns rotatable secrets): a Secrets Store wrap key for instance-auth secrets, like `SecretsWrapKey`, before any non-test install enables OIDC |
 
 ## Cloudflare platform facts
 
@@ -200,10 +201,10 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 
 | Group | Rows |
 | --- | --- |
-| Foundation and protocol | 43 |
+| Foundation and protocol | 44 |
 | Cloudflare platform facts | 19 |
 | Git and storage | 5 |
 | Release and operations | 14 |
 | Agents | 22 |
 | Costs | 7 |
-| Total | 110 |
+| Total | 111 |

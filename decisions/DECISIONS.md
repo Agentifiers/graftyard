@@ -1849,6 +1849,8 @@ AM1-WP2's pure half passed LF-2, B0-36, and B0-37 in memory as far as `decide` c
 
 **Flip.** The builder finding that a disjoint `Joint` commits and keeps both majorities' leases, which settles the move as DESIGN states it; or one-site-per-change moves measured losing availability when a step drops a site, which would need `Joint` built first. For the command and the cursor: an existing command that can land the owner change without opening it to admins.
 
+**Settled (2026-11-08).** The builder found that `reconfigure` accepts a one-site `Joint` and refuses a disjoint one, so the move goes one voter site per change; 32.10 (`RepoCmd::Transfer`) and 0x12.4 (`AuditCursor`) are built, and BF-30 passed hosted. Flip met? No: no disjoint `Joint` was built, and 0 of 2,313 route samples were lost across one-site steps ("BF-30's transfer as built", below).
+
 #### R20 built, and kid 1 retired, on `graft-m1`
 
 **Decision.** "Install creates every `Tokens` shard" stands as built: the edge's `POST /api/graftyard/v1/release/tokens?from&count`, accepted only under the genesis the `Release` group holds, creates up to 16 shards a request, and `graftyard install` drives 192 ranges, 8 at once, and reports failed ranges for an idempotent rerun. Hosted rotation is done: kid 2 signs and kid 1 is retired. A genuine kid-1-signed token refused `Retired` was not observed, and that gap is recorded rather than closed.
@@ -1860,6 +1862,58 @@ AM1-WP2's pure half passed LF-2, B0-36, and B0-37 in memory as far as `decide` c
 **Evidence.** `tests/m3/results/m3-finish.md`: 3,072 shards in 21 minutes with one registry timeout retried; device-code request 13.0 s to 0.83 s median, max 1.3 s, token exchange about 15 s to 1.9 s, 24 of 24 tokens; joins 9.9 s and election 1.2 s on fresh shards; kid 2's secret at 19:35:36Z and 10 of 10 mints under it; kid 1 retired at 22:34:26Z (`tokens:0` index 35), the kid-1 probe `Retired` offline and 5 of 5 pushes refused, kid 2 5 of 5 accepted [measured]. Commits `5938d1b`, `eaff64b`, `74550b6`, `dc81e96`.
 
 **Flip.** A pre-created shard measured slow on first sign-in again, which would put the cost elsewhere than the join; or a genuine kid-1-signed token accepted after its retire, which would mean `verify` checks the signature before `retired`.
+
+### BF-30, M3's last rows, and AM1-WP3's pure half, 2026-11-08
+
+BF-30 passed hosted on `graft-m1`, M3's assigned rows passed hosted on `graft-m2b`, and AM1-WP3's external tasks passed in memory (`tests/m3/results/m3-finish.md`; `tests/m3/results/m3-rows.md`; `tests/am1/results/am1-wp3.md`; `build/BUILD-PLAN.md`, "Milestone 3 status" and AM1-WP3).
+
+#### BF-30's transfer as built: one voter site per change, finished in band
+
+**Decision.**
+- An owner's groups move between placements one voter site per config change: each swap is a one-site `Joint` (the new member joins at the next generation, then `Joint { old, new }`) followed by its `Normal`, leadership leaves a site before that site is dropped, and `Home` with a leadership transfer comes last. `crates/raft` is unchanged. DESIGN, "Sites and placement" and Deployment modes, and SHARED, "Multi-chain operations", say so.
+- A transfer finishes in band, not in a Cloudflare Workflow. The edge commits `ReserveTransfer` under the caller's credential, starts `/finish` on the destination's `Authz` leader, and answers 202; that leader runs the move, `Settings`, `Live`, `Alias`, and `RepoOwner`, one `/move` step at a time with a `NotLeader` refusal retried at the new leader. The `Audit` alarm on the same `Authz` chain, from its `AuditCursor`, finishes any transfer left after `FINISH_AFTER` (60 s), and any org's enterprise change. DESIGN's Stack no longer lists repository transfers under Workflows.
+- While `RepoOwner` still names the old owner, which by then holds only an `Alias`, `/repositories/{id}` resolves through that `Alias` as well as a `Live` name (`AuthzFold::id_name`).
+
+**Why.** A disjoint `Joint` cannot be expressed under `reconfigure`'s `NotOneChange`, and a one-site `Joint` keeps a majority of both configs at every step. The transfer's steps are short, idempotent, and keyed by the reservation, so the destination's leader can run them where the commit point lives, and `Audit` already had to own the dead-finisher case; a Workflow would add a script and a site day for steps a member already runs. The id route looked for a `Live` name only, so it lost the repository between the last two steps.
+
+**Beat.** Building a disjoint `Joint` in `crates/raft`, which needs a new config shape, a sweep rerun, and Porcupine. A Workflow per transfer, as DESIGN's Stack had it. Reordering `RepoOwner` before the `Alias`, which leaves a window where `RepoOwner` names an owner whose name is not yet `Live` on every read.
+
+**Evidence.** `tests/m3/results/m3-finish.md`, BF-30: `a_joint_of_two_placements_differing_by_two_sites_is_refused`; hosted configs `0,1,2 h0` → `0,1,2,3 h0` → `0,1,3 h0` → `0,1,3 h3`; 20 of 20 transfers, 0 of 2,313 route samples lost, `deps` naming the new owner in 20 of 20; a finisher killed after `Reserved` finished by `Audit` alone in 76.2 s with 0 of 586 samples lost; the enterprise change on 2 of 2 repositories; 9 of 9 planted bugs; run a before `b18894e`, 35 of 2,715 id-route samples 404 and a `/move` step that stopped on `"NotLeader(..)"` [measured].
+
+**Flip.** A one-site step measured losing a route or a lease, which would need a disjoint `Joint` built; a transfer whose steps outgrow one alarm's budget, such as a network with many child groups, which would move it to a Workflow; or a second route that resolves a repository by its owner's name during the window, which would need the same `Alias` fallback.
+
+#### BF-34's compatibility choices, and M3's last row shapes
+
+**Decision.**
+- `IdentityEvent::KeyText { fingerprint, key }` (tag 6, Identity 0x14.2, op `AddKey` tag 7) holds a listed SSH key's public text; the leader refuses text whose blob does not hash to the fingerprint and a key whose `Tokens` row is not live. `IssueOp::CancelInvitation` is repository 32.11. An issue command decides at the leader's `now`, or the entry's `at` on a follower.
+- Where GHES 3.22 is silent or differs from GitHub.com: `PUT .../collaborators/{u}` answers 204 for a new invitation; an org invitation is declined by `DELETE /user/memberships/orgs/{org}` [inference]; a 404 from `GET .../collaborators/{u}` carries GitHub's JSON body; a team's `node_id` uses the Organization node type; an SSH key's `created_at` is the epoch and its `id` the first 6 bytes of its fingerprint. SHARED, "Who owns which fact", lists them.
+- `/user/repository_invitations` lists only the repository named by `?repo=o/r` until `Notify`'s `Inbox` (M4-WP2), and the OIDC client secret is plaintext until F57 names its wrap key.
+
+**Why.** `GET /user/keys` renders a key's text, which the `Tokens` row does not hold. The GHES 3.22 description is the oracle, and it lists 204, not 201, for the collaborator PUT; where it names no route or body, the edge takes GitHub.com's. Nothing stores a key's creation time or id, or has a Team node type, and adding them would change M3's bytes for no client that checks them. Invitations were born expired because `decide` ran at time 0 (`db1c6be`).
+
+**Beat.** Storing key text in the `Tokens` row, which every token check reads. Answering GitHub.com's 201 with a `repository-invitation`, which the GHES description fails. A new Team node type and stored key times now.
+
+**Evidence.** `tests/m3/results/m3-rows.md`: BF-34 10 of 10 driver runs and 170 of 170 replies valid against GHES 3.22; BF-35 100 of 100 with no `Audit`; BF-2 9 of 9, BF-31 10 of 10, BF-33 99 of 100 completed with one token, BF-36 10 of 10; 16 of 16 planted bugs; "Design notes and contradictions" [measured].
+
+**Flip.** A client or the Terraform provider that needs the 201 body, a real team node type, or a key's real `created_at`; a GHES route found that declines an org invitation; or the `Inbox` built, which drops `?repo`.
+
+#### AM1-WP3's task rows as the code needs them
+
+**Decision.** In the agent block of both DESIGN and AGENT-LAYER:
+- A task's `prefix` is matched as `refs/heads/graftyard/<uuid>/*/**`, because `**` also matches zero segments, so the bare id is refused.
+- Every `TaskUpdated` writes Core, an empty `PATCH` too; Metadata too when it sets `pr` or `summary`.
+- Core holds `session`, `kind`, `state`, `prefix`, `requester`, `app`, `installation`, and the create and last-update times; Metadata holds the rest.
+- A task reads Cancelled once the owner `Authz` read finds no installation row for its App that reaches the repository with `not_before` at or before the task's creation (the token rule), and timed out after `TASK_IDLE` with no update; its next command records the state and answers 409 with it, also from `cancel` (AGENT-LAYER, "API reference").
+- `issue` and `pr` are `Option<IssueNumber>` in the task's own repository. `SessionId`'s string form is what JSON carries.
+- Format: repository 32.12, `RepoEvent` 31 `TaskCreated` and 32 `TaskUpdated`.
+
+**Why.** `decide` derives `cancelled` and `timed_out` from the core tier alone, so the fields and the last-update time it reads must be Core. "Active installation" was undefined, and a row-exists check let a reinstall revive old tasks, which an old token never could. `IssueRef` and `PrNumber` did not exist, and an external task only names its own repository. `serde_json` has no 128-bit integers.
+
+**Beat.** Keeping the design's `**` pattern, which accepts the bare id. Reading the metadata tier on every task `decide`. Defining "active" by row existence.
+
+**Evidence.** `tests/am1/results/am1-wp3.md`: LF-1 100 of 100 read cancelled with 0 events written by reads and 100 of 100 answered 409; linking 100 of 100; caps at 100 per requester and 2,000 per repository; 24 h idle reads `timed_out`; 120 of 120 replies identical to main; 24 of 24 planted bugs; bugs 1 and 2; "Design sentences these findings contradict or leave open" [measured, in memory].
+
+**Flip.** A hosted LF-1 rerun where a reinstall or a token from before it reaches an old task; a Core tier measured over its budget from the extra fields; or a task reference to another repository's issue, which would need `IssueRef`.
 
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
