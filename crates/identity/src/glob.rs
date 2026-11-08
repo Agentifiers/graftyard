@@ -111,12 +111,23 @@ fn seg_match(pat: &str, s: &str) -> bool {
     true
 }
 
+/// Whether segments `p` match pattern segments `g`, in O(|g|·|p|) rather than backtracking over every `**`: after
+/// the first `i` pattern segments, `ok[j]` is whether they match `p[..j]`.
 fn match_segs(g: &[&str], p: &[&str]) -> bool {
-    match g.first() {
-        None => p.is_empty(),
-        Some(&"**") => (0..=p.len()).any(|k| match_segs(&g[1..], &p[k..])),
-        Some(seg) => !p.is_empty() && seg_match(seg, p[0]) && match_segs(&g[1..], &p[1..]),
+    let mut ok = vec![false; p.len() + 1];
+    ok[0] = true;
+    let mut next = vec![false; p.len() + 1];
+    for seg in g {
+        for j in 0..=p.len() {
+            next[j] = if *seg == "**" {
+                ok[j] || (j > 0 && next[j - 1])
+            } else {
+                j > 0 && ok[j - 1] && seg_match(seg, p[j - 1])
+            };
+        }
+        std::mem::swap(&mut ok, &mut next);
     }
+    ok[p.len()]
 }
 
 /// Whether `path` (a file path or a full ref name) matches `glob`.
@@ -227,5 +238,14 @@ mod tests {
         assert_eq!(literal_prefix("**"), "");
         assert_eq!(literal_prefix("*/x"), "");
         assert_eq!(literal_prefix("docs/auth.md"), "docs/auth.md");
+    }
+
+    /// Backtracking tried about C(42, 12) splits here; the table takes 13 rows of 31.
+    #[test]
+    fn many_double_stars_against_a_deep_path_that_does_not_match_finish() {
+        let glob = format!("{}x", "**/".repeat(12));
+        let path = vec!["a"; 30].join("/");
+        assert!(!glob_match(&glob, &path));
+        assert!(glob_match(&glob, &format!("{path}/x")));
     }
 }

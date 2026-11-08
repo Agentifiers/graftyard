@@ -737,6 +737,7 @@ dependencies = [
  "serde",
  "sha2",
  "smallvec",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -781,6 +782,7 @@ name = "graftyard-types"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
+ "postcard",
  "serde",
  "serde_json",
  "sha2",
@@ -796,6 +798,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smallvec",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

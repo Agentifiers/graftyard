@@ -39,6 +39,7 @@ use graftyard_git::{Copies, ObjectMeta};
 use graftyard_identity::{Actor, AuthzFold, Principal};
 use graftyard_types::{ChainId, NetworkId, SiteId};
 use graftyard_wire::{Body, Endpoint, Host, Incoming, Meta, RateLimits, Reply, Surface};
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 use worker::*;
 
@@ -251,7 +252,7 @@ async fn read_repo(
         Err(r) => return Ok(Err(r)),
     };
     // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
-    let Ok(rows) = serde_json::from_value::<TierRows>(v["value"].clone()) else {
+    let Ok(rows) = TierRows::deserialize(&v["value"]) else {
         return Ok(Err(unavailable("the repository's members do not serve tier rows yet (site release)")));
     };
     if !rows.complete {
@@ -555,11 +556,11 @@ pub(crate) async fn tasks(
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
-    let Some(authz) = rd.dir.authz.clone() else {
+    let Some(authz) = rd.dir.authz.as_ref() else {
         return Ok(unavailable("the owner's Authz chain did not answer; retry"));
     };
     let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
-    let reader = t::Reader::of(who.as_ref(), &authz, &access);
+    let reader = t::Reader::of(who.as_ref(), authz, &access);
     let Ok(host) = Host::new(&c.cfg.host, false) else { return Ok(unavailable("the install's host is not valid")) };
     let view = rd.view(&host);
     let caller = who.as_ref().and_then(|p| match p.actor {
@@ -572,9 +573,9 @@ pub(crate) async fn tasks(
                 Ok(f) => f,
                 Err(r) => return Ok(r),
             };
-            return Ok(t::list(&view, &authz, crate::now(), &f, reader, &format!("/repos/{owner}/{repo}/tasks")));
+            return Ok(t::list(&view, authz, crate::now(), &f, reader, &format!("/repos/{owner}/{repo}/tasks")));
         }
-        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, &authz, crate::now(), id, reader)),
+        (Route::Task { id, .. }, Method::Get) => return Ok(t::get(&view, authz, crate::now(), id, reader)),
         (Route::Log { id, .. }, Method::Get) => return Ok(t::log(&view, id, reader)),
         (Route::Tasks { .. }, Method::Post) => {
             let requester = match body.get("requester").and_then(Value::as_str) {
@@ -638,7 +639,7 @@ pub(crate) async fn task_claim(
     let repo = crate::Repo { id: repo, owner, record };
     let (rows, install) = futures_util::future::join(tier_rows(c, &repo, None), crate::install_authz(c)).await;
     let rows = match rows? {
-        Ok(v) => match serde_json::from_value::<TierRows>(v["value"].clone()) {
+        Ok(v) => match TierRows::deserialize(&v["value"]) {
             Ok(r) if r.complete => r,
             _ => return Ok(Err(unavailable("the task's repository could not be read; retry"))),
         },
@@ -925,8 +926,8 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             let session = session.as_deref().and_then(|s| graftyard_identity::SessionId::parse(s, app));
             commit_issue_in(c, &rd, &who, op, what, session).await
         }
-        graphql::Plan::Merge { .. } => {
-            let req = match graphql::merge_request(&p, &r) {
+        graphql::Plan::Merge(m) => {
+            let req = match graphql::merge_request(&p.field, &m, &r) {
                 Ok(req) => req,
                 Err(e) => return Ok(Reply::json(200, e)),
             };
@@ -938,7 +939,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
                 }
                 Ok(Err(CacheError::Bad(e))) | Err(e) => return Ok(unavailable(&format!("the git cache: {e}"))),
             };
-            let cmd = MergeCmd::Merge(graphql::merge_command(&p, plan, who.clone()));
+            let cmd = MergeCmd::Merge(graphql::merge_command(&m, plan, who.clone()));
             rd.dir.logins = logins;
             commit_merge(c, &rd, cmd, what).await
         }
@@ -1264,8 +1265,7 @@ async fn lfs_route(
             Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::LfsLocked).await?,
             Err(x) => x,
         },
-        (Method::Post, p) if p.starts_with("locks/") && p.ends_with("/unlock") => {
-            let id = &p["locks/".len()..p.len() - "/unlock".len()];
+        (Method::Post, p) if let Some(id) = p.strip_prefix("locks/").and_then(|r| r.strip_suffix("/unlock")) => {
             match lfs::plan_unlock(&r, id, &body) {
                 Ok((op, lock)) => commit_issue(c, &rd, &who, to_wire(op), What::LfsUnlocked { lock }).await?,
                 Err(x) => x,

@@ -1426,37 +1426,78 @@ pub fn branch_matches(pattern: &str, name: &RefName) -> bool {
     glob(pattern.as_bytes(), branch.as_bytes())
 }
 
-fn glob(p: &[u8], s: &[u8]) -> bool {
-    match p.first() {
-        None => s.is_empty(),
-        Some(b'*') if p.get(1) == Some(&b'*') => (0..=s.len()).any(|i| glob(&p[2..], &s[i..])),
-        Some(b'*') => {
-            let stop = s.iter().position(|c| *c == b'/').unwrap_or(s.len());
-            (0..=stop).any(|i| glob(&p[1..], &s[i..]))
-        }
-        Some(b'?') => s.first().is_some_and(|c| *c != b'/') && glob(&p[1..], &s[1..]),
-        Some(b'[') => {
-            let Some(end) = p[1..].iter().position(|c| *c == b']').map(|e| e + 1) else {
-                return s.first() == Some(&b'[') && glob(&p[1..], &s[1..]);
-            };
-            let Some(&c) = s.first() else { return false };
-            let (neg, set) = match p[1] {
-                b'!' | b'^' => (true, &p[2..end]),
-                _ => (false, &p[1..end]),
-            };
-            let mut hit = false;
-            let mut i = 0;
-            while i < set.len() {
-                if i + 2 < set.len() && set[i + 1] == b'-' {
-                    hit |= (set[i]..=set[i + 2]).contains(&c);
-                    i += 3;
-                } else {
-                    hit |= set[i] == c;
-                    i += 1;
-                }
-            }
-            c != b'/' && hit != neg && glob(&p[end + 1..], &s[1..])
-        }
-        Some(c) => s.first() == Some(c) && glob(&p[1..], &s[1..]),
+/// One token of a branch pattern, in pattern order.
+enum Tok<'a> {
+    /// `**`: any run of bytes, `/` included.
+    Any,
+    /// `*`: any run of bytes but `/`.
+    Star,
+    /// `?`: one byte but `/`.
+    One,
+    /// `[...]`: one byte but `/` in (or, negated, not in) the set.
+    Class {
+        neg: bool,
+        set: &'a [u8],
+    },
+    Lit(u8),
+}
+
+fn tokens(mut p: &[u8]) -> Vec<Tok<'_>> {
+    let mut out = Vec::new();
+    while let Some(&c) = p.first() {
+        let (t, len) = match c {
+            b'*' if p.get(1) == Some(&b'*') => (Tok::Any, 2),
+            b'*' => (Tok::Star, 1),
+            b'?' => (Tok::One, 1),
+            b'[' => match p[1..].iter().position(|c| *c == b']').map(|e| e + 1) {
+                None => (Tok::Lit(b'['), 1),
+                Some(end) => match p[1] {
+                    b'!' | b'^' => (Tok::Class { neg: true, set: &p[2..end] }, end + 1),
+                    _ => (Tok::Class { neg: false, set: &p[1..end] }, end + 1),
+                },
+            },
+            c => (Tok::Lit(c), 1),
+        };
+        out.push(t);
+        p = &p[len..];
     }
+    out
+}
+
+fn class_hit(set: &[u8], c: u8) -> bool {
+    let mut hit = false;
+    let mut i = 0;
+    while i < set.len() {
+        if i + 2 < set.len() && set[i + 1] == b'-' {
+            hit |= (set[i]..=set[i + 2]).contains(&c);
+            i += 3;
+        } else {
+            hit |= set[i] == c;
+            i += 1;
+        }
+    }
+    hit
+}
+
+/// Whether `s` matches pattern `p`, in O(|p|·|s|): `ok[j]` is whether the tokens after the current one match `s[j..]`,
+/// filled from the last token back.
+fn glob(p: &[u8], s: &[u8]) -> bool {
+    let n = s.len();
+    let mut ok = vec![false; n + 1];
+    ok[n] = true;
+    let mut cur = vec![false; n + 1];
+    for t in tokens(p).iter().rev() {
+        for j in (0..=n).rev() {
+            let c = s.get(j).copied();
+            cur[j] = match t {
+                Tok::Any => ok[j] || (j < n && cur[j + 1]),
+                Tok::Star => ok[j] || (c.is_some_and(|c| c != b'/') && cur[j + 1]),
+                Tok::One => c.is_some_and(|c| c != b'/') && ok[j + 1],
+                Tok::Class { neg, set } => c.is_some_and(|c| c != b'/' && class_hit(set, c) != *neg) && ok[j + 1],
+                Tok::Lit(l) => c == Some(*l) && ok[j + 1],
+            };
+        }
+        std::mem::swap(&mut ok, &mut cur);
+    }
+    ok[0]
 }

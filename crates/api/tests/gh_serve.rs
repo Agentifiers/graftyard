@@ -159,14 +159,14 @@ fn serve() {
                 Some(_) => match plan(&req, &r) {
                     Err(e) => e,
                     Ok(p) => match p.plan.clone() {
-                        Plan::Merge { .. } => {
-                            let mr = graftyard_api::graphql::merge_request(&p, &r);
+                        Plan::Merge(pm) => {
+                            let mr = graftyard_api::graphql::merge_request(&p.field, &pm, &r);
                             drop(r);
                             match mr {
                                 Err(e) => e,
                                 Ok(mr) => {
                                     let plan = cache_plan(&mr);
-                                    let m = graftyard_api::graphql::merge_command(&p, plan, who(WRITER));
+                                    let m = graftyard_api::graphql::merge_command(&pm, plan, who(WRITER));
                                     match c.commit_merge(m) {
                                         Ok(out) => render_merge(&req, &ack(out)),
                                         Err(e) => graftyard_api::graphql::refused_merge(&p, &e),

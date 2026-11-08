@@ -45,11 +45,25 @@ pub struct SnapAt {
     pub at: Timestamp,
 }
 
+/// The tier's meta row; the zero row before anything applied.
+///
+/// # Panics
+///
+/// If the stored row does not decode. A caller that returns `Result` uses `try_meta`.
 pub fn meta(store: &dyn Store) -> Meta {
-    match store.get(META, &[]) {
+    try_meta(store).expect("the tier's own meta row")
+}
+
+/// The tier's meta row; the zero row before anything applied.
+///
+/// # Errors
+///
+/// `FoldError::Meta` when the stored row has no blob or its blob does not decode.
+pub fn try_meta(store: &dyn Store) -> Result<Meta, FoldError> {
+    Ok(match store.get(META, &[]) {
         Some(s) => match s.cols.first() {
-            Some(Val::Blob(b)) => postcard::from_bytes(b).expect("the tier's own meta row"),
-            _ => panic!("meta row has no blob"),
+            Some(Val::Blob(b)) => postcard::from_bytes(b).map_err(|e| FoldError::Meta(e.to_string()))?,
+            _ => return Err(FoldError::Meta("the row has no blob".into())),
         },
         None => Meta {
             applied: Index(0),
@@ -60,7 +74,7 @@ pub fn meta(store: &dyn Store) -> Meta {
             snap: None,
             snap_sum: [0; 32],
         },
-    }
+    })
 }
 
 pub(crate) fn save_meta(store: &mut dyn Store, m: &Meta) {
@@ -89,6 +103,9 @@ pub enum FoldError {
     /// An event that writes a tier the entry's tag leaves out: the tier the tag skips would never apply it.
     #[error("entry {index:?} is tagged {tag:?} but event {event} needs {needs:?}")]
     Tag { index: Index, tag: TierSet, event: usize, needs: TierSet },
+    /// The tier's stored meta row does not decode.
+    #[error("the tier's meta row is corrupt: {0}")]
+    Meta(String),
 }
 
 /// The chain-specific part of a tier fold: which tiers each event touches, and what it writes to one tier's rows. A
@@ -181,7 +198,7 @@ impl<S: Store + ?Sized> Read for S {
 /// before it writes anything. Otherwise it runs `on_entry`, then, if the tag names the tier, the writes of each event
 /// the tier owns, and advances `applied` to the entry.
 pub fn apply<T: Tiered>(t: &T, store: &mut dyn Store, tier: Tier, e: &LogEntry<T::Event>) -> Result<(), FoldError> {
-    let m = meta(store);
+    let m = try_meta(store)?;
     let want = Index(m.applied.0 + 1);
     if e.index != want {
         return Err(FoldError::Index { got: e.index, want });

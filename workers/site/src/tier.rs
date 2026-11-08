@@ -241,17 +241,19 @@ fn from_sql(v: SqlStorageValue) -> Val {
     }
 }
 
-fn row_of(written: SqlStorageValue, v: SqlStorageValue) -> Stored {
+/// A stored row's index and columns. `Err` names what did not decode, such as a row written under another layout of
+/// the columns; the caller treats it as a refused read (`Inner::refused`), never a panic.
+fn row_of(written: SqlStorageValue, v: SqlStorageValue) -> Result<Stored, String> {
     let written = match written {
         SqlStorageValue::Integer(i) => Index(i as u64),
         SqlStorageValue::Float(f) => Index(f as u64),
-        other => panic!("a fold row's index is {other:?}"),
+        other => return Err(format!("index is {other:?}")),
     };
     let cols = match v {
-        SqlStorageValue::Blob(b) => postcard::from_bytes(&b).expect("a fold row this release wrote"),
-        other => panic!("a fold row's columns are {other:?}"),
+        SqlStorageValue::Blob(b) => postcard::from_bytes(&b).map_err(|e| format!("columns: {e}"))?,
+        other => return Err(format!("columns are {other:?}")),
     };
-    Stored { written, cols }
+    Ok(Stored { written, cols })
 }
 
 impl TierSql {
@@ -390,7 +392,13 @@ impl Inner {
         };
         let v = r.pop().expect("v");
         let w = r.pop().expect("written");
-        Some(row_of(w, v))
+        match row_of(w, v) {
+            Ok(s) => Some(s),
+            Err(e) => {
+                self.refused("a fold row", table, e);
+                None
+            }
+        }
     }
 
     fn sql_scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
@@ -432,7 +440,13 @@ impl Inner {
             let key: Key = r.into_iter().map(from_sql).collect();
             // A `from` longer than the key's prefix compared on: drop rows below it.
             if from.len() > m || key.as_slice() >= from {
-                out.push((key, row_of(w, v)));
+                match row_of(w, v) {
+                    Ok(s) => out.push((key, s)),
+                    Err(e) => {
+                        self.refused("a fold row", table, e);
+                        return out;
+                    }
+                }
             }
         }
         out
@@ -598,7 +612,9 @@ mod tests {
     use graftyard_fold::{Schema, TableDef};
     use graftyard_types::Tier;
 
-    use super::{columns, create, tables};
+    use worker::SqlStorageValue;
+
+    use super::{columns, create, row_of, tables};
 
     /// The metadata tables `2ba89d5` created on the BF-20 members, before M2-WP2 rekeyed three of them.
     const SEEDED: Schema = Schema {
@@ -632,5 +648,15 @@ mod tests {
             create("m_check_run", 2)
                 .contains("(k0, k1, written INTEGER NOT NULL, v BLOB NOT NULL, PRIMARY KEY (k0, k1))")
         );
+    }
+    /// A stored row that does not decode is an error for the caller to treat as lost storage, never a panic.
+    #[test]
+    fn a_row_that_does_not_decode_is_an_error() {
+        let cols = postcard::to_allocvec(&vec![graftyard_fold::Val::Int(7)]).expect("encodes");
+        let ok = row_of(SqlStorageValue::Integer(3), SqlStorageValue::Blob(cols.clone())).expect("decodes");
+        assert_eq!(ok.written.0, 3);
+        assert!(row_of(SqlStorageValue::String("x".into()), SqlStorageValue::Blob(cols)).is_err());
+        assert!(row_of(SqlStorageValue::Integer(3), SqlStorageValue::Integer(4)).is_err());
+        assert!(row_of(SqlStorageValue::Integer(3), SqlStorageValue::Blob(vec![0xff; 3])).is_err());
     }
 }

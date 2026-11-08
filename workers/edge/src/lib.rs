@@ -460,12 +460,24 @@ async fn read_capped(req: &mut Request, cap: u64) -> Result<std::result::Result<
     Ok(Ok(buf))
 }
 
+/// A Worker isolate's memory, 128 MB [doc: Workers limits]: a body that inflates past it cannot be served.
+const ISOLATE_BYTES: u64 = 128 << 20;
+
 /// git sends a gzip-compressed receive-pack body only for small requests (`http.c`, below `postBuffer`); the edge
-/// decompresses it after the cap check, which counts the bytes on the wire.
-fn gunzip(b: &[u8]) -> Result<Vec<u8>> {
+/// decompresses it after the cap check, which counts the bytes on the wire. The inflated body is held to the same
+/// `cap` as one sent uncompressed, and never past the isolate's memory, so a small gzip bomb fails as a corrupt gzip
+/// does instead of exhausting the isolate.
+fn gunzip(b: &[u8], cap: u64) -> Result<Vec<u8>> {
     use std::io::Read;
+    let max = cap.min(ISOLATE_BYTES);
     let mut out = Vec::new();
-    flate2::read::GzDecoder::new(b).read_to_end(&mut out).map_err(|e| Error::RustError(format!("gzip: {e}")))?;
+    flate2::read::GzDecoder::new(b)
+        .take(max + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| Error::RustError(format!("gzip: {e}")))?;
+    if out.len() as u64 > max {
+        return Err(Error::RustError(format!("gzip: the body inflates past {max} bytes")));
+    }
     Ok(out)
 }
 
@@ -526,7 +538,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
     let body = match read_capped(&mut req, c.cfg.cap).await? {
         Ok(b) => b,
         Err((head, _)) => {
-            let head = if gz { gunzip(&head).unwrap_or(head) } else { head };
+            let head = if gz { gunzip(&head, c.cfg.cap).unwrap_or(head) } else { head };
             let rp = parse_receive_pack(&head).unwrap_or(ReceivePack {
                 updates: Vec::new(),
                 caps: PushCaps { report_status: true, side_band_64k: true, ..PushCaps::default() },
@@ -537,7 +549,7 @@ async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) ->
             return git_result(c.rid, Service::ReceivePack, r.render(&rp));
         }
     };
-    let body = if gz { gunzip(&body)? } else { body };
+    let body = if gz { gunzip(&body, c.cfg.cap)? } else { body };
     // git's `probe_rpc` (remote-curl.c): before streaming a request over `http.postBuffer` it posts a bare flush,
     // after authentication, and streams the real body only on a 200. Nothing reaches the group.
     if body == b"0000" {
@@ -727,7 +739,7 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
     let proto = req.headers().get("git-protocol")?.unwrap_or_default();
     let enc = req.headers().get("content-encoding")?.unwrap_or_default();
     let raw = req.bytes().await?;
-    let body = if enc == "gzip" { gunzip(&raw)? } else { raw.clone() };
+    let body = if enc == "gzip" { gunzip(&raw, c.cfg.cap)? } else { raw };
     // The clone cache: a v2 fetch with no haves, read from R2 by its `CloneKey`, else upload-pack on the shard with
     // its output teed to the client and to R2.
     // BF-18 clones from a chosen shard (`x-graft-shard`) bypass the clone cache, so the shard serves every one.
@@ -1566,5 +1578,30 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     match r {
         Ok(r) => Ok(r),
         Err(e) => text(rid, 500, &format!("{e}\n")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+
+    use super::gunzip;
+
+    fn gzip(b: &[u8]) -> Vec<u8> {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(b).expect("writes to a Vec");
+        e.finish().expect("finishes into a Vec")
+    }
+
+    /// A body that inflates past the cap fails as a corrupt gzip does, without inflating the rest; one at the cap
+    /// inflates whole.
+    #[test]
+    fn a_body_that_inflates_past_the_cap_is_refused_as_a_bad_gzip() {
+        let body = vec![0u8; 1 << 20];
+        let z = gzip(&body);
+        assert_eq!(gunzip(&z, 1 << 20).expect("at the cap"), body);
+        let e = gunzip(&z, (1 << 20) - 1).expect_err("past the cap").to_string();
+        assert!(e.starts_with("gzip: "), "{e}");
+        assert!(gunzip(b"not gzip", 1 << 20).expect_err("corrupt").to_string().starts_with("gzip: "));
     }
 }
