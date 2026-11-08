@@ -32,6 +32,7 @@ pub mod standin;
 pub mod store;
 pub mod sweep;
 pub mod tiers;
+pub mod transfer;
 
 #[cfg(feature = "worker")]
 pub mod host;
