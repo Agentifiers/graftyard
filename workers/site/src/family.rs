@@ -565,6 +565,11 @@ impl Family for Repo {
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
+        // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
+        // `Audit` consumer's transfer plans.
+        if q.get("settings").is_some() {
+            return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise() });
+        }
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
         }
@@ -1073,8 +1078,17 @@ impl Family for Authz {
     type C = id::AuthzCmd;
 
     fn reads() -> Vec<Format> {
-        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it.
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3]
+        // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it;
+        // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set.
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3, id::AUTHZ_FORMAT_V4]
+    }
+    /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's
+    /// `Reserved` name and an enterprise change commit on this chain.
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        leading.then_some(id::audit::FINISH_AFTER.as_millis() as i64 + 1_000)
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::audit::on_alarm(host).await;
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::AuthzFold {
         match join.chain {

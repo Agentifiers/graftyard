@@ -402,6 +402,10 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.replace(body)).await
             }
+            (Method::Post, "/move") => {
+                let body: Value = req.json().await?;
+                self.ready_or(|| self.move_step(body)).await
+            }
             (Method::Post, "/learners") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.learners(body)).await
@@ -1386,6 +1390,117 @@ impl<F: Family> Routes<F> {
             Err(e) => return self.reply(json!({ "error": format!("normal: {e}"), "tried": tried })),
         };
         self.reply(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 }))
+    }
+
+    /// One step of the group's move to `{"to": PlacementRecord}` (`graftyard_identity::group_move`), on the leader:
+    /// a leadership transfer, a one-site `Joint` with a new member on the site it adds (joined first, at the next
+    /// generation, measuring the config's other voters), its `Normal`, or the target's home. Answers the step and,
+    /// once the step committed, the config; `{"step": "Done"}` when the group is where `to` places it. The caller
+    /// asks again after each step, so a step lost with its leader is planned again from the next leader's config.
+    /// The new member's placement is checked by `Placement::new` against the joined members' round trips.
+    async fn move_step(&self, body: Value) -> Result<Response> {
+        use graftyard_identity::group_move::{MoveStep, next_step};
+        let to: PlacementRecord = serde_json::from_value(body["to"].clone())?;
+        let (chain, record, me, cfg, c_owner, c_genesis) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            if c.m.role() != Role::Leader {
+                return self.reply(json!({ "error": { "notLeader": host::nl_json(&c.m.not_leader()) } }));
+            }
+            (
+                c.join.chain,
+                c.join.record.clone(),
+                c.m.me(),
+                c.m.committed_config().map(|c| c.1.clone()),
+                c.join.owner,
+                c.join.genesis.clone(),
+            )
+        };
+        let Some(cfg) = cfg else { return self.reply(json!({ "error": "no committed config" })) };
+        let step = next_step(&cfg, me, &to);
+        let label = format!("{step:?}");
+        let t0 = now_ms();
+        let site = SiteEnv::read(&self.host.env)?;
+        let checked = |voters: arrayvec::ArrayVec<MemberRef, 3>, home: SiteId, rtt: &[(SiteId, Rtt)]| {
+            let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt };
+            graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), home, &checks).map_err(|e| e.to_string())
+        };
+        let mut rtt = rtt_rows(&self.host.state, &self.host.env)?;
+        let voters_of =
+            |p: &graftyard_types::Placement| p.voters().iter().cloned().collect::<arrayvec::ArrayVec<_, 3>>();
+        let r: std::result::Result<Value, String> = match (step, &cfg) {
+            (MoveStep::Done, _) => Ok(json!({ "step": "Done" })),
+            (MoveStep::Degraded, _) => Err("the config is Degraded: replace the lost member first".into()),
+            (MoveStep::Transfer { to }, _) => {
+                let r = self.host.input(|m, t| m.transfer(t, to))?;
+                r.map(|id| json!({ "transfer": id.0.to_string() })).map_err(|e| format!("{e:?}"))
+            }
+            (MoveStep::Swap { add, drop }, raft::GroupConfig::Normal(p)) => {
+                let old = p.voters().iter().find(|m| m.site == drop).cloned().ok_or_else(|| err("no member there"))?;
+                let new = MemberRef::new(chain, add, old.kind, old.slot, p.next_generation());
+                let peers: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != drop).cloned().collect();
+                let join = Join {
+                    chain,
+                    me: new.clone(),
+                    record: record.clone(),
+                    peers,
+                    owner: c_owner,
+                    genesis: c_genesis.clone(),
+                    #[cfg(feature = "test-faults")]
+                    no_claim: false,
+                };
+                let (status, rows) = self.post_member(&new, "/join", &serde_json::to_value(&join)?).await?;
+                if status != 200 {
+                    return self.reply(json!({ "step": label, "error": format!("join answered {status}: {rows}") }));
+                }
+                rtt.extend(serde_json::from_value::<Vec<(SiteId, Rtt)>>(rows).unwrap_or_default());
+                for v in p.voters().iter().filter(|v| v.site != me && v.site != drop) {
+                    let stub = site.member(&self.host.env, v.site, &v.do_name)?;
+                    rtt.extend(stub.fetch_with_str("https://member/rtt").await?.json::<Vec<(SiteId, Rtt)>>().await?);
+                }
+                let voters = voters_of(p).into_iter().map(|m| if m.site == drop { new.clone() } else { m }).collect();
+                // The home stays unless it leaves; then the new member's site holds it until `Home` moves it.
+                let home = if p.home() == drop { add } else { p.home() };
+                match checked(voters, home, &rtt) {
+                    Ok(np) => self
+                        .change(raft::GroupConfig::Joint { old: p.clone(), new: Box::new(np) })
+                        .await
+                        .map(|i| json!({ "configIndex": i, "joined": new.do_name })),
+                    Err(e) => Err(e),
+                }
+            }
+            (MoveStep::Leave, raft::GroupConfig::Joint { new, .. }) => {
+                self.change(raft::GroupConfig::Normal(new.clone())).await.map(|i| json!({ "configIndex": i }))
+            }
+            (MoveStep::Home { home }, raft::GroupConfig::Normal(p)) => match checked(voters_of(p), home, &rtt) {
+                Ok(np) => {
+                    self.change(raft::GroupConfig::Normal(Box::new(np))).await.map(|i| json!({ "configIndex": i }))
+                }
+                // A pair the leader never measured (a member joined from another leader): the rows are each voter's
+                // own, so read them.
+                Err(_) => {
+                    for v in p.voters().iter().filter(|v| v.site != me) {
+                        let stub = site.member(&self.host.env, v.site, &v.do_name)?;
+                        rtt.extend(
+                            stub.fetch_with_str("https://member/rtt").await?.json::<Vec<(SiteId, Rtt)>>().await?,
+                        );
+                    }
+                    match checked(voters_of(p), home, &rtt) {
+                        Ok(np) => self
+                            .change(raft::GroupConfig::Normal(Box::new(np)))
+                            .await
+                            .map(|i| json!({ "configIndex": i })),
+                        Err(e) => Err(e),
+                    }
+                }
+            },
+            (s, c) => Err(format!("{s:?} does not apply to {c:?}")),
+        };
+        let config = self.host.core.borrow().as_ref().and_then(|c| c.m.committed_config().map(|c| json!(c)));
+        match r {
+            Ok(v) => self.reply(json!({ "step": label, "ok": v, "config": config, "ms": now_ms() - t0 })),
+            Err(e) => self.reply(json!({ "step": label, "error": e, "config": config, "ms": now_ms() - t0 })),
+        }
     }
 
     /// The leader's half of learner placement (`design/DESIGN.md`, Shape, `place_learners`): `{"load": GroupLoad}`

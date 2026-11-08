@@ -15,8 +15,10 @@
 //!   side right after it, and the finisher lists a committed credential the `Identity` fold does not, or drops one
 //!   whose row was revoked or removed.
 //! - **Transfer (M3-WP3).** The commit point is the destination's `Reserved` name (`transfer`).
+//! - **Enterprise change.** The commit point is the org's `Enterprise` event; each repository the org names `Live`
+//!   then gets the transfer's own `Settings` with the new enterprise (`enterprise_change`).
 
-use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId};
+use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId, SiteId};
 
 use crate::apps::{AppRecord, ClientId, Slug};
 use crate::authz::{AuthzCmd, AuthzOp, AuthzRead, RepoEntry};
@@ -34,6 +36,18 @@ pub enum Step {
     Identity(ChainId, IdentityCmd),
     /// Only the `Audit` consumer's cursor (`crate::audit::cursor`): no finisher plan owes a `Tokens` command.
     Tokens(ChainId, Box<crate::tokens::TokensCmd>),
+    /// A step on the repository chain, which this crate cannot name as a command: the site builds it.
+    Repo(RepoId, RepoStep),
+}
+
+/// A transfer's or an enterprise change's step on the repository chain (`TransferStep`'s two that are not identity
+/// commands).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RepoStep {
+    /// Move the repository's group to `to`'s sites and home (`crate::group_move`).
+    Move { to: PlacementRecord },
+    /// The transfer's own `Settings` (repository format 32.10) with the new owner and its enterprise.
+    Settings { owner: AccountId, enterprise: Option<AccountId> },
 }
 
 fn names(key: NameKey, op: NamesOp) -> Step {
@@ -133,10 +147,11 @@ pub struct TransferView<'a> {
     pub to_authz: &'a dyn AuthzRead,
     pub from_placement: &'a PlacementRecord,
     pub to_placement: &'a PlacementRecord,
-    /// The record of the repository group's latest committed config.
-    pub group_at: &'a PlacementRecord,
-    /// The owner the repository chain's `RepoSettings` names.
+    /// The voter sites and home of the repository group's latest committed config.
+    pub group: (&'a [SiteId], SiteId),
+    /// The owner and enterprise the repository chain's `RepoSettings` names.
     pub settings_owner: AccountId,
+    pub settings_enterprise: Option<AccountId>,
     /// The repository's `RepoOwner` row on `Names`.
     pub repo_owner: Option<AccountId>,
 }
@@ -162,6 +177,12 @@ fn same_place(a: &PlacementRecord, b: &PlacementRecord) -> bool {
     (a.name, &a.sites, a.home) == (b.name, &b.sites, b.home)
 }
 
+/// Whether a group with these voter sites and home is where `r` places it.
+pub fn group_at(group: (&[SiteId], SiteId), r: &PlacementRecord) -> bool {
+    let (voters, home) = group;
+    voters.len() == r.sites.len() && voters.iter().all(|s| r.sites.contains(s)) && home == r.home
+}
+
 /// The next step of a transfer whose `Reserved` name committed, in SHARED's order ("Multi-chain operations",
 /// Transfer): the group's move when the placements differ, `Settings`, the destination's `Live` name, the source's
 /// `Alias`, then `RepoOwner`. The move goes first, so a route through the new owner's record (its `Live` name, or
@@ -176,10 +197,10 @@ pub fn transfer(t: &Transfer, v: &TransferView<'_>) -> Option<TransferStep> {
     let on_authz = |owner: AccountId, op| {
         TransferStep::Step(Step::Authz(ChainId::Authz(owner), Box::new(AuthzCmd { cred: CredentialShard::NONE, op })))
     };
-    if !same_place(v.from_placement, v.to_placement) && !same_place(v.group_at, v.to_placement) {
+    if !same_place(v.from_placement, v.to_placement) && !group_at(v.group, v.to_placement) {
         return Some(TransferStep::Move { to: v.to_placement.clone() });
     }
-    if v.settings_owner != t.to {
+    if v.settings_owner != t.to || v.settings_enterprise != v.to_authz.enterprise() {
         return Some(TransferStep::Settings { owner: t.to, enterprise: v.to_authz.enterprise() });
     }
     if reserved {
@@ -195,4 +216,23 @@ pub fn transfer(t: &Transfer, v: &TransferView<'_>) -> Option<TransferStep> {
         )));
     }
     None
+}
+
+/// The next step of an org's enterprise change: the first repository the org's `Authz` fold names `Live` whose
+/// `Settings` names the org but another enterprise. `repos` is each such repository's settings owner and enterprise,
+/// as its chain holds them; a repository missing from it is read first (`Err`).
+pub fn enterprise_change(
+    org: AccountId,
+    authz: &dyn AuthzRead,
+    live: &[RepoId],
+    repos: &dyn Fn(RepoId) -> Option<(AccountId, Option<AccountId>)>,
+) -> Result<Option<Step>, RepoId> {
+    let want = authz.enterprise();
+    for r in live {
+        let (owner, enterprise) = repos(*r).ok_or(*r)?;
+        if owner == org && enterprise != want {
+            return Ok(Some(Step::Repo(*r, RepoStep::Settings { owner: org, enterprise: want })));
+        }
+    }
+    Ok(None)
 }
