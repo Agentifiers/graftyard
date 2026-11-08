@@ -191,8 +191,8 @@ impl Read {
 }
 
 /// `o/r` resolved, then its tiers and the owner's `Authz` read through `fresh`. `Ok(Err(reply))` when the repository
-/// is unknown or cannot be read now.
-async fn read(
+/// is unknown, cannot be read now, or is hidden from `viewer` (404).
+pub(crate) async fn read(
     c: &Ctx<'_>,
     owner: &str,
     name: &str,
@@ -203,23 +203,56 @@ async fn read(
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
-    read_repo(c, repo, owner, name, viewer, None, Rows::All).await
+    read_repo(c, repo, owner, name, viewer, None, Rows::All, Gate::Readers).await
 }
 
-/// `read` for another module's route (`crate::collab`).
-pub(crate) async fn read_named(
+/// `read` for the invitee's side of a repository invitation (`crate::collab::user_invitation`), with no read gate: an
+/// invitee is not yet a collaborator. The caller answers 404 unless the viewer holds an invitation or `readable`.
+pub(crate) async fn read_for_invitee(
     c: &Ctx<'_>,
     owner: &str,
     name: &str,
-    viewer: Option<&Principal>,
+    viewer: &Principal,
 ) -> Result<std::result::Result<Read, Reply>> {
-    read(c, owner, name, viewer).await
+    let repo = match resolve(c, owner, name).await? {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(Err(Reply::not_found())),
+        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+    };
+    read_repo(c, repo, owner, name, Some(viewer), None, Rows::All, Gate::Invitees).await
+}
+
+/// Which callers `read_repo` serves: those `authorize_read` allows, or anyone, for a route that checks the caller
+/// against the repository's invitations itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    Readers,
+    Invitees,
+}
+
+/// `graftyard_identity::authorize_read` over the core rows a read holds and the owner's `Authz` it read.
+fn may_read(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    core: &MemStore,
+    authz: Option<&AuthzFold>,
+    viewer: Option<&Principal>,
+) -> graftyard_identity::Decision {
+    let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core };
+    let folds: Vec<&dyn graftyard_identity::AuthzRead> = authz.iter().map(|a| *a as _).collect();
+    graftyard_identity::authorize_read(viewer, c.token_fields.borrow().as_ref(), &folds, &access)
+}
+
+/// Whether `viewer` may read the repository `rd` holds, as `read` checks it.
+pub(crate) fn readable(c: &Ctx<'_>, rd: &Read, viewer: &Principal) -> bool {
+    may_read(c, &rd.repo, &rd.core, rd.dir.authz.as_ref(), Some(viewer)) == graftyard_identity::Decision::Allow
 }
 
 /// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
 /// `known` is the owner's `Authz` this request already read through `fresh` to resolve the repository, if it did.
 /// With `Rows::Merge`, only the rows a `mergePullRequest` plans from are read (`TierRows::merge_rows`), or taken as
 /// the caller already read them, and `dir.logins` is left for the caller to read alongside the merge plan.
+#[expect(clippy::too_many_arguments, reason = "each caller supplies a different subset of what it already read")]
 async fn read_repo(
     c: &Ctx<'_>,
     repo: Repo,
@@ -228,6 +261,7 @@ async fn read_repo(
     viewer: Option<&Principal>,
     known: Option<AuthzFold>,
     rows: Rows,
+    gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
         Rows::All => None,
@@ -262,13 +296,24 @@ async fn read_repo(
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
     timing::mark("rows_authz");
+    // The read gate (`crate::read_gate`), on the rows this read already holds: every read and merge row set carries
+    // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
+    // 404 the caller would take as "no such repository".
+    let core = TierRows::store(&rows.core);
+    if gate == Gate::Readers {
+        match may_read(c, &repo, &core, authz.as_ref(), viewer) {
+            graftyard_identity::Decision::Allow => {}
+            _ if authz.is_none() => return Ok(Err(unavailable("the owner's Authz chain did not answer; retry"))),
+            _ => return Ok(Err(Reply::not_found())),
+        }
+    }
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
     dir.viewer = viewer.and_then(|p| match p.actor {
         Actor::User(u) => Some(u.0),
         Actor::App { .. } | Actor::Anonymous => None,
     });
-    let (core, meta) = (TierRows::store(&rows.core), TierRows::store(meta));
+    let meta = TierRows::store(meta);
     let mut rd = Read { repo, at, core, meta, dir };
     if merge.is_none() {
         rd.dir.logins = read_logins(c, &rd).await;
@@ -313,6 +358,27 @@ async fn tier_rows(c: &Ctx<'_>, repo: &Repo, merge: Option<i64>) -> Result<std::
         Ok(Some((v, _, _))) => Ok(v),
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
         Err(e) => Err(unavailable(&e)),
+    })
+}
+
+/// The repository's `settings` and `collaborator` rows (`TierRows::access_rows`), what `crate::read_gate` reads.
+/// `Ok(Err(why))` when the leader cannot answer them now.
+pub(crate) async fn access_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<MemStore, String>> {
+    let chain = ChainId::Repo(repo.id);
+    let b = c.bindings();
+    let q = json!({ "q": { "rows": { "access": true }, "ranges": true } }).to_string();
+    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    if let Ok(None) = v {
+        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    }
+    Ok(match v {
+        Ok(Some((v, _, _))) => match TierRows::deserialize(&v["value"]) {
+            Ok(rows) => Ok(TierRows::store(&rows.core)),
+            Err(_) => Err("the repository's members do not serve tier rows yet (site release)".into()),
+        },
+        Ok(None) => Err("the repository's group has no leader".into()),
+        Err(e) => Err(e),
     })
 }
 
@@ -386,7 +452,7 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
         Endpoint::Uploads(p) => upload(c, req, host, p, &query).await,
         Endpoint::Lfs { owner, repo, rest } => lfs_route(c, req, host, owner, repo, rest, &query, method).await,
         Endpoint::Objects(p) => transfer(c, req, host, p, method).await,
-        Endpoint::Codeload { owner, repo, rest } => codeload(c, host, owner, repo, rest).await,
+        Endpoint::Codeload { owner, repo, rest } => codeload(c, req, host, owner, repo, rest).await,
         Endpoint::Raw { .. } => Ok(Reply::not_found()),
         Endpoint::OAuth(p) => match (method, p) {
             (Method::Post, "/login/device/code") => crate::ident::device_code(c, req).await,
@@ -874,7 +940,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
                 Some(id) => Rows::Merge(id, rows),
                 None => Rows::All,
             };
-            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows).await?;
+            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows, Gate::Readers).await?;
             (owner, name, rd)
         }
         Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
@@ -890,6 +956,13 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     };
     let mut rd = match rd {
         Ok(r) => r,
+        // A node id the caller may not read answers as an unknown node, so the reply never names the repository.
+        Err(r) if r.status == 404 && matches!(target, Some(graphql::Target::Id(_))) => {
+            return Ok(Reply::json(
+                200,
+                json!({ "errors": [{ "type": "NOT_FOUND", "message": "Could not resolve to a node with that id." }] }),
+            ));
+        }
         Err(r) if r.status == 404 => {
             let m = format!("Could not resolve to a Repository with the name '{owner}/{name}'.");
             return Ok(Reply::json(
@@ -1028,7 +1101,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let rd = match at {
         graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
-            Some((owner, name, repo, a)) => read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), Rows::All).await?,
+            Some((owner, name, repo, a)) => {
+                read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), Rows::All, Gate::Readers).await?
+            }
             None => return Ok(Reply::not_found()),
         },
     };
@@ -1282,12 +1357,17 @@ async fn transfer(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, method: 
     let Ok(repo) = crate::repo_by_id(c, graftyard_types::RepoId(graftyard_types::DbId(repo_id))).await else {
         return Ok(Reply::not_found());
     };
+    match crate::read_gate(c, &repo, Some(&who)).await? {
+        Ok(graftyard_identity::Decision::Allow) => {}
+        Ok(_) => return Ok(Reply::not_found()),
+        Err(e) => return Ok(unavailable(&format!("the repository's access rows did not answer; retry ({e})"))),
+    }
     let raw = buckets(c, &repo)?;
     let refs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
     let store = BlobStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
     match method {
         Method::Put => {
-            let _ = (host, &who);
+            let _ = host;
             let bytes = req.bytes().await?;
             let meta = ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid };
             Ok(match store.place(repo.id, &bytes, Some((oid, bytes.len() as u64)), meta).await {
@@ -1344,8 +1424,11 @@ impl Archiver for ShardArchiver<'_> {
     }
 }
 
-async fn codeload(c: &Ctx<'_>, host: &Host, owner: &str, name: &str, rest: &str) -> Result<Reply> {
-    let rd = match read(c, owner, name, None).await? {
+/// Read-gated like the API: the redirect from `/repos/{o}/{r}/tarball` lands on the same host, so the client sends
+/// its credential again, and a private repository's archive is served only to a caller who may read it.
+async fn codeload(c: &Ctx<'_>, req: &Request, host: &Host, owner: &str, name: &str, rest: &str) -> Result<Reply> {
+    let who = authenticate(c, req).await?;
+    let rd = match read(c, owner, name, who.as_ref()).await? {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };

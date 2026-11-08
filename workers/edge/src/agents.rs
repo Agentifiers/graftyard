@@ -199,7 +199,7 @@ async fn leases(
             "the activity feed is served by followers and learners, which this edge does not read yet",
         ));
     }
-    let rd = match crate::api::read_named(c, owner, repo, Some(&who)).await? {
+    let rd = match crate::api::read(c, owner, repo, Some(&who)).await? {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };

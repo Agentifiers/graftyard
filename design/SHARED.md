@@ -446,6 +446,10 @@ pub struct NodeId { pub ty: NodeType, pub ids: SmallVec<[DbId; 3]> }
 /// member, a `Collaborator` row, and `Read` on an internal repository for a member of the org or its enterprise.
 pub fn authorize(p: &Principal, a: ReadAction, authz: &[ReadView], repo: &ReadView) -> Decision;
 pub fn authorize_write(p: &Principal, a: WriteAction, authz: &[Fresh], repo: &Fresh) -> Decision;   // never `Stale`
+/// The edge's gate before any repository route: `Allow` on a public repository, `Hidden` for an anonymous caller or a
+/// token whose reach misses the repository, else `authorize(.., Contents, ..)`. Never `Forbidden`. The edge caches the
+/// decision per (repository, stored token) for `READ_CACHE`; anonymous git gets 401, anyone else hidden gets 404.
+pub fn authorize_read(p: Option<&Principal>, t: Option<&TokenFields>, authz: &[ReadView], repo: &ReadView) -> Decision;
 pub enum Decision { Allow, Forbidden, Hidden }
 pub enum ReadAction { Metadata, Contents, Issues }   // each needs `Read`
 /// By GitHub's repository roles [inference]: `Participate` (open, comment, react) needs Read, `Triage` (label, assign,

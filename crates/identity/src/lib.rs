@@ -35,7 +35,7 @@ mod tokens;
 
 pub use access::{
     Decision, ReadAction, RepoAccess, Visibility, WriteAction, app_permission, authorize, authorize_app,
-    authorize_write, permission, token_allows,
+    authorize_read, authorize_write, permission, token_allows,
 };
 pub use agents::{AgentApp, AgentKind, SessionId, WorkspaceMode, install_account};
 pub use apps::{

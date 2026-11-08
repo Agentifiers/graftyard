@@ -80,7 +80,7 @@ impl TierRows {
     pub fn merge_rows(core: &dyn Read, meta: Option<&dyn Read>, id: DbId) -> TierRows {
         use graftyard_git::tiers::{get_rec, n_key, pull_head, ref_key};
         let row = |r: &dyn Read, t: &str, k: Key| r.get(t, &k).map(|cols| (t.to_owned(), k, cols));
-        let mut c: Vec<_> = row(core, "settings", Vec::new()).into_iter().collect();
+        let mut c = TierRows::access_rows(core);
         let mut m = Vec::new();
         if let Some(meta) = meta {
             let by_id = vec![Val::Int(id.0)];
@@ -95,6 +95,16 @@ impl TierRows {
             }
         }
         TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true }
+    }
+
+    /// The core rows `graftyard_identity::authorize_read` reads through `graftyard_git::issue_ops::Access`: `settings`
+    /// for the visibility and every `collaborator` row. The member answers them alone to `{"rows": {"access": true}}`,
+    /// which a member built before it answers with every row, so the edge's read gate works on both.
+    pub fn access_rows(core: &dyn Read) -> Vec<(String, Key, Vec<Val>)> {
+        let mut c: Vec<_> =
+            core.get("settings", &[]).map(|cols| ("settings".to_owned(), Vec::new(), cols)).into_iter().collect();
+        c.extend(core.prefix("collaborator", &[]).into_iter().map(|(k, cols)| ("collaborator".to_owned(), k, cols)));
+        c
     }
 
     /// The rows as a store `Repo` reads.

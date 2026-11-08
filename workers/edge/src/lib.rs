@@ -176,6 +176,80 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
     })))
 }
 
+/// Whether the caller may read `repo`, before the edge serves any of its bytes (`graftyard_identity::authorize_read`
+/// over the repository's `settings` and `collaborator` rows and the owner's `Authz`, both read through `fresh`, at
+/// once). `who` is the caller `authenticate` found, so the token's own reach is the one in `c.token_fields`.
+/// `Ok(Err(why))` when either read failed: the caller answers 503, never a 404 that would read as "no such
+/// repository".
+async fn read_gate(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: Option<&Principal>,
+) -> Result<std::result::Result<graftyard_identity::Decision, String>> {
+    let key = gate::key(repo.id, who);
+    if let Some(d) = key.as_ref().and_then(|k| gate::get(k, now())) {
+        return Ok(Ok(d));
+    }
+    let (rows, owner) =
+        futures_util::future::join(api::access_rows(c, repo), authz_fold(c, repo.owner, &repo.record)).await;
+    let core = match rows? {
+        Ok(core) => core,
+        Err(e) => return Ok(Err(e)),
+    };
+    let Some(owner) = owner else { return Ok(Err("the owner's Authz chain did not answer".into())) };
+    let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
+    let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
+    let d = graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access);
+    if let Some(k) = key {
+        gate::put(k, now(), d);
+    }
+    Ok(Ok(d))
+}
+
+/// The read gate's per-isolate cache: a decision is reused for `READ_CACHE` (`design/DESIGN.md`, Shape, Identity:
+/// "reads honor a revocation within 10 s"), so the three requests of one clone or fetch read the access rows and the
+/// owner's `Authz` once. Keyed by the repository and the stored token's hash, or no token. A request under an
+/// installation token or a session is not cached: its key would need its claims.
+mod gate {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use graftyard_identity::{Actor, Credential, Decision, Principal, READ_CACHE};
+    use graftyard_types::{RepoId, Timestamp};
+
+    /// The most decisions one isolate keeps; past it the cache starts empty again.
+    const ENTRIES_MAX: usize = 4_096;
+
+    pub(crate) type Key = (RepoId, Option<[u8; 32]>);
+
+    thread_local! {
+        static CACHE: RefCell<BTreeMap<Key, (Timestamp, Decision)>> = const { RefCell::new(BTreeMap::new()) };
+    }
+
+    pub(crate) fn key(repo: RepoId, who: Option<&Principal>) -> Option<Key> {
+        match who {
+            None => Some((repo, None)),
+            Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => Some((repo, Some(*h))),
+            Some(_) => None,
+        }
+    }
+
+    pub(crate) fn get(k: &Key, now: Timestamp) -> Option<Decision> {
+        let ttl = u64::try_from(READ_CACHE.as_millis()).unwrap_or(u64::MAX);
+        CACHE.with(|c| c.borrow().get(k).filter(|(at, _)| now.0.saturating_sub(at.0) <= ttl).map(|(_, d)| *d))
+    }
+
+    pub(crate) fn put(k: Key, now: Timestamp, d: Decision) {
+        CACHE.with(|c| {
+            let mut c = c.borrow_mut();
+            if c.len() >= ENTRIES_MAX {
+                c.clear();
+            }
+            c.insert(k, (now, d));
+        });
+    }
+}
+
 /// The admission a command by `who` carries to its leader (`graftyard_git::agent::admit_class`), or `None` for Human,
 /// which `Member::commit` takes as before. A user token with no App and no `X-Graftyard-Agent-Session` is Human
 /// without reading anything more, so a default request's reads and bodies do not change. The leader's `decide` classes
@@ -532,8 +606,15 @@ impl Ctx<'_> {
     }
 }
 
-async fn receive_pack(c: &Ctx<'_>, mut req: Request, repo: &Repo, path: &str) -> Result<Response> {
-    let Some(actor) = authenticate(c, &req).await? else { return unauthorized(c.rid, "No anonymous write access.") };
+/// `who` is the caller the read gate authenticated.
+async fn receive_pack(
+    c: &Ctx<'_>,
+    mut req: Request,
+    repo: &Repo,
+    path: &str,
+    who: Option<Principal>,
+) -> Result<Response> {
+    let Some(actor) = who else { return unauthorized(c.rid, "No anonymous write access.") };
     let gz = req.headers().get("content-encoding")?.is_some_and(|e| e == "gzip");
     let body = match read_capped(&mut req, c.cfg.cap).await? {
         Ok(b) => b,
@@ -816,7 +897,8 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
 
 // ---- advertisements ----
 
-async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service) -> Result<Response> {
+/// `signed_in` is whether the read gate found a caller.
+async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, signed_in: bool) -> Result<Response> {
     let proto = req.headers().get("git-protocol")?;
     match service {
         Service::UploadPack if wants_v2(proto.as_deref()) => {
@@ -835,7 +917,7 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service) ->
             Ok(Response::from_bytes(b)?.with_headers(git_headers(c.rid, &service.advertisement_type())?))
         }
         Service::ReceivePack => {
-            if authenticate(c, req).await?.is_none() {
+            if !signed_in {
                 return unauthorized(c.rid, "No anonymous write access.");
             }
             let refs = match read_refs(c, repo).await? {
@@ -1557,11 +1639,30 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         Err(e) => return text(rid, 503, &format!("the repository lookup failed; retry ({e})\n")),
     };
     let repo = &repo;
+    // The read gate, before any byte of the repository: an anonymous request for a repository that is not visibly
+    // public gets 401 at once, so git asks for credentials, and a caller who may not read it gets the 404 an unknown
+    // repository gets (`design/SHARED.md`, "Identity and tokens", `authorize`). A push needs read too.
+    let dumb = matches!(route, Route::InfoRefs { service: None, .. } | Route::Dumb { .. });
+    let who = if dumb { None } else { authenticate(&c, &req).await? };
+    if !dumb {
+        let push = matches!(
+            route,
+            Route::InfoRefs { service: Some(Service::ReceivePack), .. }
+                | Route::Rpc { service: Service::ReceivePack, .. }
+        );
+        match read_gate(&c, repo, who.as_ref()).await? {
+            Ok(graftyard_identity::Decision::Allow) => {}
+            Ok(_) if who.is_none() && push => return unauthorized(rid, "No anonymous write access."),
+            Ok(_) if who.is_none() => return unauthorized(rid, "Authentication required\n"),
+            Ok(_) => return text(rid, 404, "Repository not found.\n"),
+            Err(e) => return text(rid, 503, &format!("the repository's access rows did not answer; retry ({e})\n")),
+        }
+    }
     let r = match route {
         // Dumb HTTP is refused: info/refs without a service is 403 and object paths 404, as on github.com.
         Route::InfoRefs { service: None, .. } => text(rid, 403, "Please upgrade your git client.\n"),
         Route::Dumb { .. } => text(rid, 404, "Not Found\n"),
-        Route::InfoRefs { service: Some(s), .. } => info_refs(&c, &req, repo, s).await,
+        Route::InfoRefs { service: Some(s), .. } => info_refs(&c, &req, repo, s, who.is_some()).await,
         Route::Rpc { service: Service::UploadPack, .. } => {
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
@@ -1572,7 +1673,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             if req.method() != Method::Post {
                 return text(rid, 405, "Method Not Allowed\n");
             }
-            receive_pack(&c, req, repo, &format!("{owner}/{name}")).await
+            receive_pack(&c, req, repo, &format!("{owner}/{name}"), who).await
         }
     };
     match r {

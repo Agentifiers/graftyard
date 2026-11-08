@@ -550,6 +550,8 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
         },
     )
     .unwrap();
+    // An outside collaborator (104), who reads the private repository through its row alone.
+    c.collaborator(104, graftyard_identity::RepoPermission::Read);
     let h = host();
     let dir = Dir::new(WRITER);
     let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(WRITER))), ..Default::default() };
@@ -570,7 +572,20 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     let small = plan_on(&core, &meta, &vars).unwrap();
     assert_eq!(small, plan_on(&m.core, &m.meta, &vars).unwrap());
     assert_eq!((small.1.n, small.1.base_old, small.1.head), (IssueNumber(2), oid(1), oid(2)));
-    assert!(crossed.core.len() + crossed.meta.as_ref().unwrap().len() <= 6, "{crossed:?}");
+    assert!(crossed.core.len() + crossed.meta.as_ref().unwrap().len() <= 7, "{crossed:?}");
+    // The edge's read gate decides on these rows, and on the access rows alone, as on both tiers: `settings` and the
+    // collaborator row ride along.
+    let (outsider, gate) = (who(103), |core: &MemStore, p: &graftyard_identity::Principal| {
+        let access = graftyard_git::issue_ops::Access { repo: REPO, owner: AccountId(DbId(OWNER)), core };
+        graftyard_identity::authorize_read(Some(p), None, &[], &access)
+    });
+    let access = TierRows::store(&TierRows::access_rows(&m.core));
+    for (p, want) in [(who(104), graftyard_identity::Decision::Allow), (outsider, graftyard_identity::Decision::Hidden)]
+    {
+        assert_eq!(gate(&core, &p), want);
+        assert_eq!(gate(&access, &p), want);
+        assert_eq!(gate(&m.core, &p), want);
+    }
     let mut rebase = vars.clone().unwrap();
     rebase["input"]["mergeMethod"] = json!("REBASE");
     assert_eq!(plan_on(&core, &meta, &Some(rebase.clone())), plan_on(&m.core, &m.meta, &Some(rebase)));
