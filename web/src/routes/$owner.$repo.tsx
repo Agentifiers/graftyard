@@ -1,15 +1,10 @@
-import { createFileRoute, Link, Outlet, useMatchRoute } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  GitBranchIcon,
-  GitPullRequestIcon,
-  RecordIcon,
-  RepositoryIcon,
-  StarIcon,
-} from "@hugeicons/core-free-icons";
-import { repoQuery } from "@/api/queries";
+import { GitBranchIcon, RepositoryIcon, StarIcon } from "@hugeicons/core-free-icons";
+import { repoQuery } from "@/areas/core/queries";
 import { Region } from "@/components/region";
+import { TabNav } from "@/components/tab-nav";
 import { Badge } from "@/components/reui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -82,40 +77,5 @@ function RepoHeader() {
 }
 
 function RepoTabs({ owner, repo }: { owner: string; repo: string }) {
-  const match = useMatchRoute();
-  const tabs = [
-    {
-      to: "/$owner/$repo/issues",
-      alt: "/$owner/$repo/issues/$number",
-      label: "Issues",
-      icon: RecordIcon,
-    },
-    {
-      to: "/$owner/$repo/pulls",
-      alt: "/$owner/$repo/pull/$number",
-      label: "Pull requests",
-      icon: GitPullRequestIcon,
-    },
-  ] as const;
-  return (
-    <nav className="-mb-px flex gap-1 text-sm" aria-label="Repository">
-      {tabs.map((t) => {
-        const active = Boolean(
-          match({ to: t.to, fuzzy: true }) || match({ to: t.alt, fuzzy: true }),
-        );
-        return (
-          <Link
-            key={t.to}
-            to={t.to}
-            params={{ owner, repo }}
-            data-active={active || undefined}
-            className="text-muted-foreground hover:text-foreground data-active:border-primary data-active:text-foreground flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 font-medium"
-          >
-            <HugeiconsIcon icon={t.icon} strokeWidth={2} className="size-4" />
-            {t.label}
-          </Link>
-        );
-      })}
-    </nav>
-  );
+  return <TabNav slot="repo" params={{ owner, repo }} label="Repository" />;
 }

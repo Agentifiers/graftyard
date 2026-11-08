@@ -1,36 +1,19 @@
-// ?fail=checks,files makes those regions' handlers answer 503. The choice persists in
-// sessionStorage so it survives client-side navigation; ?fail= (empty) clears it.
-
-// "comments" fails listing comments; "post-comment" fails only creating one, which shows
-// the optimistic comment rolling back.
-export const REGIONS = [
-  "user",
-  "repos",
-  "repo",
-  "issues",
-  "issue",
-  "comments",
-  "post-comment",
-  "pulls",
-  "pull",
-  "files",
-  "checks",
-] as const;
-export type FaultRegion = (typeof REGIONS)[number];
+// ?fail=<region>[,<region>] makes the mock handlers that gate on those regions answer 503.
+// A region is any name a handler passes to gate(), such as "checks", "post-comment", or
+// "actions-runs"; there is no fixed list, so each area names its own. The choice persists
+// in sessionStorage so it survives client-side navigation; ?fail= (empty) clears it.
 
 const KEY = "graftyard.fail";
 
-function read(): Set<FaultRegion> {
+function read(): Set<string> {
   const url = new URL(window.location.href);
   const param = url.searchParams.get("fail");
   if (param !== null) sessionStorage.setItem(KEY, param);
   const raw = param ?? sessionStorage.getItem(KEY) ?? "";
-  return new Set(
-    raw.split(",").filter((r): r is FaultRegion => (REGIONS as readonly string[]).includes(r)),
-  );
+  return new Set(raw.split(",").filter(Boolean));
 }
 
-export function failing(region: FaultRegion): boolean {
+export function failing(region: string): boolean {
   return read().has(region);
 }
 

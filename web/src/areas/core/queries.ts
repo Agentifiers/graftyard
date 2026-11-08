@@ -1,5 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
-import { api, unwrap } from "./client";
+import { api, unwrap } from "@/api/client";
 
 // One factory per page region. Keys start with the REST path segments so the edge can
 // later seed the cache for the first route from inlined data.

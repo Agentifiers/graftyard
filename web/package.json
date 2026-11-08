@@ -6,11 +6,12 @@
     "dev": "vite dev --port 3000",
     "build": "vite build",
     "preview": "node ./scripts/preview.mjs",
-    "typecheck": "tsrs --noEmit --pretty false",
+    "typecheck": "tsr generate && tsrs --noEmit --pretty false && node ./scripts/check-nav.mjs",
     "gen:api": "node ./scripts/gen-api.mjs",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
-    "check": "npm run format:check && npm run typecheck && npm run build"
+    "check": "npm run format:check && npm run typecheck && npm run build",
+    "routes:generate": "tsr generate"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -40,6 +41,7 @@
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.19",
+    "@tanstack/router-cli": "1.168.0",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",

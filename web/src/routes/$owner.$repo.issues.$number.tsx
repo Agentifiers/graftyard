@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { commentsCollection } from "@/api/collections";
-import { issueQuery } from "@/api/queries";
+import { issueQuery } from "@/areas/core/queries";
 import { Conversation } from "@/components/conversation";
 import { Ago, issueState, LabelBadge, StateBadge } from "@/components/github";
 import { Region } from "@/components/region";

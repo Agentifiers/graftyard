@@ -5,7 +5,7 @@ import { useForm } from "@tanstack/react-form";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useLiveSuspenseQuery } from "@tanstack/react-db";
 import { commentsCollection, draftComment } from "@/api/collections";
-import { userQuery } from "@/api/queries";
+import { userQuery } from "@/areas/core/queries";
 import { Ago, UserAvatar } from "@/components/github";
 import { Alert, AlertDescription, AlertTitle } from "@/components/reui/alert";
 import { Badge } from "@/components/reui/badge";

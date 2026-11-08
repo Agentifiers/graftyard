@@ -8,3 +8,4 @@ dist
 *.local
 .env*
 *.tsbuildinfo
+src/routeTree.gen.ts

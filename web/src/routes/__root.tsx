@@ -11,7 +11,7 @@ import {
 } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Moon02Icon, Sun03Icon } from "@hugeicons/core-free-icons";
-import { userQuery } from "@/api/queries";
+import { userQuery } from "@/areas/core/queries";
 import { UserAvatar } from "@/components/github";
 import { Region } from "@/components/region";
 import { Button } from "@/components/ui/button";

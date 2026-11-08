@@ -11,7 +11,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { Schemas } from "@/api/client";
 import { commentsCollection } from "@/api/collections";
-import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/api/queries";
+import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/areas/core/queries";
 import { Conversation } from "@/components/conversation";
 import { FileDiff } from "@/components/diff";
 import { Ago, pullState, StateBadge } from "@/components/github";

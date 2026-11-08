@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { RepositoryIcon, StarIcon } from "@hugeicons/core-free-icons";
-import { userReposQuery } from "@/api/queries";
+import { userReposQuery } from "@/areas/core/queries";
 import { Ago } from "@/components/github";
 import { Region } from "@/components/region";
 import { Badge } from "@/components/reui/badge";
