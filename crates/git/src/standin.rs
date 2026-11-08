@@ -256,6 +256,30 @@ impl StandIn {
         });
     }
 
+    /// Stores a token row with `fields` (a `github_pat_`'s or `ghu_`'s scope), as `StoreWith` would.
+    pub fn store_token(
+        &mut self,
+        hash: [u8; 32],
+        kind: TokenKind,
+        account: AccountId,
+        fields: graftyard_identity::TokenFields,
+    ) {
+        let ev = TokensEvent::StoredWith {
+            hash,
+            kind,
+            account,
+            scopes: ScopeSet(1),
+            expires: None,
+            fields: Box::new(fields),
+        };
+        self.identity.tokens.apply(&ev);
+    }
+
+    /// Revokes a stored token, as `Revoke` commits on its shard: every command decided after this reads the row.
+    pub fn revoke(&mut self, hash: [u8; 32]) {
+        self.identity.tokens.apply(&TokensEvent::Revoked { hash });
+    }
+
     /// Installs an App on the owner with `row`, as an `Install` entry on the owner's `Authz` chain would.
     pub fn install(&mut self, id: graftyard_identity::InstallationId, row: graftyard_identity::InstallationRow) {
         let ev = AuthzEvent::Installation { id, row: Some(row), not_before: Timestamp(0) };

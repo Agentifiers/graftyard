@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 
 use graftyard_identity::finish::Step;
 use graftyard_identity::{
-    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AuthzCmd, AuthzFold, IDENTITY_FORMAT, IdBlock,
-    IdentityCmd, IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2, NAMES_FORMAT_V3, NameKey, NamesCmd,
-    NamesFold, NamesOp, TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3, TokensCmd, TokensFold, name_shard,
+    AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AuthzCmd, AuthzFold, IDENTITY_FORMAT,
+    IDENTITY_FORMAT_V2, IdBlock, IdentityCmd, IdentityDep, IdentityFold, NAMES_FORMAT, NAMES_FORMAT_V2,
+    NAMES_FORMAT_V3, NameKey, NamesCmd, NamesFold, NamesOp, TOKENS_FORMAT, TOKENS_FORMAT_V2, TOKENS_FORMAT_V3,
+    TokensCmd, TokensFold, name_shard,
 };
 use graftyard_types::{AccountId, ChainId, CredentialShard, TokenShard};
 
@@ -73,7 +74,11 @@ impl World {
 
     pub fn identity(&mut self, account: AccountId) -> &mut Group<IdentityCmd> {
         self.identity.entry(account.0.0).or_insert_with(|| {
-            let mut g = Group::reading(ChainId::Identity(account), vec![IDENTITY_FORMAT], IdentityFold::new(account));
+            let mut g = Group::reading(
+                ChainId::Identity(account),
+                vec![IDENTITY_FORMAT, IDENTITY_FORMAT_V2],
+                IdentityFold::new(account),
+            );
             g.elect(A);
             g
         })

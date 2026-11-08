@@ -459,6 +459,7 @@ async fn issue(
     kind: graftyard_identity::TokenKind,
     client: graftyard_identity::ClientId,
     title: &str,
+    kill_on: Option<&str>,
 ) -> std::result::Result<String, Reply> {
     let fam = graftyard_identity::Family::Na;
     let (secret, _) =
@@ -468,27 +469,64 @@ async fn issue(
     let fields = graftyard_identity::TokenFields { client: Some(client), ..Default::default() };
     let cmd = json!({ "cred": { "account": null, "key": null }, "op": { "StoreWith": {
         "hash": tok.hash(), "kind": kind, "account": account, "scopes": 1, "expires": null, "fields": fields } } });
-    let done = commit_system(c, ChainId::Tokens(tok.shard()), cmd).await?;
+    let done = commit_killable(c, ChainId::Tokens(tok.shard()), cmd, "token", kill_on).await?;
     if done.get("ok").is_none() {
         return Err(crate::api::unavailable(&format!("the token did not commit: {done}")));
     }
-    // The `Identity` side right after the `Tokens` commit; `Audit` finishes it if this edge dies first.
     let cred = graftyard_identity::CredentialRef::Token { hash: tok.hash(), kind };
+    list_credential(c, account, cred, title).await;
+    Ok(tok.text())
+}
+
+/// The `Identity` side of a new credential, right after its `Tokens` commit; `Audit` finishes it if this edge dies
+/// first. A failure here is not the client's: the credential is live either way.
+pub async fn list_credential(c: &Ctx<'_>, account: AccountId, cred: graftyard_identity::CredentialRef, title: &str) {
     let graftyard_identity::finish::Step::Identity(chain, cmd) =
         graftyard_identity::edge::after_credential(account, graftyard_types::CredentialShard::NONE, cred, title)
     else {
         unreachable!("an Identity step")
     };
-    if c.cfg.enabled.contains(&graftyard_identity::IDENTITY_FORMAT) {
-        let _ = commit_owner(
-            c,
-            chain,
-            account,
-            serde_json::to_value(&cmd).map_err(|e| crate::api::unavailable(&e.to_string()))?,
-        )
-        .await;
+    if c.cfg.enabled.contains(&graftyard_identity::IDENTITY_FORMAT)
+        && let Ok(v) = serde_json::to_value(&cmd)
+    {
+        let _ = commit_owner(c, chain, account, v).await;
     }
-    Ok(tok.text())
+}
+
+/// `commit_system`, but on a test install the first send may carry this request's `x-graft-kill` when
+/// `x-graft-kill-on` names `step` (`code`: the exchange's `UseCode`; `token`: its new token's `StoreWith`), so BF-33
+/// kills the leader of that shard while it decides the exchange's own command.
+async fn commit_killable(
+    c: &Ctx<'_>,
+    chain: ChainId,
+    cmd: Value,
+    step: &str,
+    on: Option<&str>,
+) -> std::result::Result<Value, Reply> {
+    #[cfg(not(feature = "test-faults"))]
+    let _ = (step, on);
+    #[cfg(feature = "test-faults")]
+    if let (Some(k), true) = (c.kill.as_deref(), on == Some(step)) {
+        let record = c.system_record(chain).await.map_err(|e| crate::api::unavailable(&e))?;
+        let b = c.bindings();
+        if let Err(e) = graftyard_lookup::create(&b, chain, &record, &json!({})).await {
+            return Err(crate::api::unavailable(&e));
+        }
+        let body = json!({ "rid": c.rid.to_string(), "cmd": cmd });
+        let mut first = body.clone();
+        first["kill"] = json!(k);
+        first["down_ms"] = json!(c.down_ms);
+        let (bytes, first) = (body.to_string().into_bytes(), first.to_string().into_bytes());
+        let trace = std::cell::RefCell::new(Vec::new());
+        let hooks = graftyard_lookup::Hooks { first: Some(&first), trace: Some(&trace) };
+        let r = graftyard_lookup::commit_hedged(&b, chain, &record, &bytes, c.colo, 60_000, hooks).await;
+        // The hedge's sends and misses, in the reply's `x-graft-trace` (BF-33 shows the kill fired).
+        let mut t = trace.into_inner();
+        t.insert(0, json!({ "killOn": step, "chain": chain.to_string() }));
+        crate::api::trace(t);
+        return r.map_err(|e| crate::api::unavailable(&format!("{e:?}")));
+    }
+    commit_system(c, chain, cmd).await
 }
 
 /// `POST /login/oauth/access_token`: a device code, an authorization code, or a refresh. The code is spent with
@@ -498,6 +536,8 @@ pub async fn access_token(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
     if let Err(x) = enabled(c, graftyard_identity::TOKENS_FORMAT_V2) {
         return Ok(x);
     }
+    let kill_on = req.headers().get("x-graft-kill-on")?;
+    let kill_on = kill_on.as_deref();
     let f = form(req).await?;
     let id = f.get("client_id").cloned().unwrap_or_default();
     let (client, k) = match client_of(c, &id).await.map_err(Error::RustError)? {
@@ -511,6 +551,7 @@ pub async fn access_token(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
         }
     };
     let device = f.get("grant_type").is_some_and(|g| g == "urn:ietf:params:oauth:grant-type:device_code");
+    let refresh = f.get("grant_type").is_some_and(|g| g == "refresh_token");
     // A registered client's secret is checked on the web flow; public first-party clients' are ignored.
     if let Client::Registered { secrets, .. } = &k
         && !device
@@ -520,6 +561,17 @@ pub async fn access_token(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
             401,
             json!({ "error": "incorrect_client_credentials", "error_description": "The client_id and/or client_secret passed are incorrect." }),
         ));
+    }
+    // BF-31: an App's `ghr_` for a new pair (`crate::usertok`), after the client secret checked above.
+    if refresh {
+        let Client::Registered { app: Some(app), .. } = k else {
+            return Ok(oauth_error(json_wanted, "unsupported_grant_type", "Only a GitHub App's tokens refresh."));
+        };
+        let text = f.get("refresh_token").cloned().unwrap_or_default();
+        return Ok(match crate::usertok::refresh(c, client, app, &text).await {
+            Ok(v) => oauth_reply(json_wanted, 200, v),
+            Err(x) => x,
+        });
     }
     let code = match (device, f.get("device_code"), f.get("code")) {
         (true, Some(d), _) => d.clone(),
@@ -546,7 +598,7 @@ pub async fn access_token(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
     };
     let cmd =
         json!({ "cred": { "account": null, "key": null }, "op": { "UseCode": { "hash": hash, "client": client } } });
-    let done = match commit_system(c, chain, cmd).await {
+    let done = match commit_killable(c, chain, cmd, "code", kill_on).await {
         Ok(d) => d,
         Err(x) => return Ok(x),
     };
@@ -568,18 +620,15 @@ pub async fn access_token(c: &Ctx<'_>, req: &mut Request) -> Result<Reply> {
     let Some(account) = account else {
         return Ok(oauth_error(json_wanted, "authorization_pending", "The authorization request is still pending."));
     };
-    let kind = match k {
-        Client::Registered { app: Some(_), .. } => graftyard_identity::TokenKind::UserToServer,
-        _ => graftyard_identity::TokenKind::OAuth,
-    };
-    if kind == graftyard_identity::TokenKind::UserToServer {
-        return Ok(oauth_error(
-            json_wanted,
-            "unsupported_grant_type",
-            "user-to-server tokens are not served by this install yet",
-        ));
+    // An App's code yields a `ghu_` and its `ghr_` (`crate::usertok`); an OAuth app's, a `gho_`.
+    if let Client::Registered { app: Some(app), .. } = k {
+        return Ok(match crate::usertok::issue_pair(c, account, app, client).await {
+            Ok(v) => oauth_reply(json_wanted, 200, v),
+            Err(x) => x,
+        });
     }
-    match issue(c, account, kind, client, &format!("OAuth {}", client.as_str())).await {
+    let kind = graftyard_identity::TokenKind::OAuth;
+    match issue(c, account, kind, client, &format!("OAuth {}", client.as_str()), kill_on).await {
         Ok(token) => {
             Ok(oauth_reply(json_wanted, 200, json!({ "access_token": token, "token_type": "bearer", "scope": "repo" })))
         }
@@ -810,7 +859,7 @@ async fn org_and_user(
     Ok(Ok((who, o, u, a)))
 }
 
-fn membership_json(
+pub(crate) fn membership_json(
     c: &Ctx<'_>,
     org: &str,
     o: AccountId,

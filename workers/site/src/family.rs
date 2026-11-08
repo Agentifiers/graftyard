@@ -256,7 +256,7 @@ impl Family for Repo {
     /// format"). It reads 32.4, the merge commands', on the same terms as 32.5: the edge sends one only once
     /// `FormatsEnable` enabled it, and only this release's own `MergeQueue` consumer writes one before that. 32.6
     /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), 32.8 (AM1-WP2's agent commands), and 32.9
-    /// (an issue command under a `ghs_` token) are read on the same terms.
+    /// (an issue command under a `ghs_` token) are read on the same terms, as is 32.11 (`CancelInvitation`).
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -268,6 +268,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_AGENT,
             git::issue_ops::call::REPO_FORMAT_APP_CALLS,
             git::transfer::REPO_FORMAT_TRANSFER,
+            git::issue_ops::call::REPO_FORMAT_INVITATIONS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -1170,8 +1171,10 @@ impl Family for Identity {
     type Fold = id::IdentityFold;
     type C = id::IdentityCmd;
 
+    /// 0x14.2 is `AddKey` with its `KeyText` (BF-35), read on the same terms as every M3 format: the edge sends it only
+    /// once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
-        vec![id::IDENTITY_FORMAT]
+        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2]
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::IdentityFold {
         match join.chain {
@@ -1205,9 +1208,10 @@ impl Family for Identity {
                 id::CredentialRef::Token { hash, kind } => {
                     json!({ "token": graftyard_types::Digest(*hash).hex(), "kind": kind, "title": title.as_ref() })
                 }
-                id::CredentialRef::SshKey(fp) => {
-                    json!({ "sshKey": graftyard_types::Digest(fp.0).hex(), "title": title.as_ref() })
-                }
+                id::CredentialRef::SshKey(fp) => json!({
+                    "sshKey": graftyard_types::Digest(fp.0).hex(), "title": title.as_ref(),
+                    "key": f.more.key_text.get(fp).map(AsRef::<str>::as_ref),
+                }),
             })
             .collect();
         json!({

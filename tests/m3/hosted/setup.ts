@@ -55,7 +55,7 @@ function rid(): string {
 // `identity:` chains, which the tools edge has no record source for, go through the graft-m1 edge's bed-token
 // `/_bed/identity` route, which finds an owner chain under its owner's `Placement` row.
 const BED = process.env.GRAFT_EDGE ?? "https://graft-m1-edge.<workers-subdomain>.workers.dev";
-const BED_TOKEN = readFileSync(`${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
+const BED_TOKEN = readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 async function bed(chain: string, cmd: unknown): Promise<any> {
   const r = await fetch(`${BED}/_bed/identity`, { method: "POST", body: JSON.stringify({ chain, cmd }), headers: { "x-bed-token": BED_TOKEN }, signal: AbortSignal.timeout(120_000) });
   const v = await r.json();

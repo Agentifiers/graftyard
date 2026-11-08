@@ -482,6 +482,11 @@ impl RepoScratch<'_> {
         self.base
     }
 
+    /// The entry's time: the leader's `now` when it decides, the entry's `at` when a follower verifies.
+    pub fn at(&self) -> Timestamp {
+        self.at
+    }
+
     /// The owner whose `Authz` chain gates the repository, with the entry's earlier `Settings` on top.
     pub fn authz_owner(&self) -> Option<AccountId> {
         get_rec::<RepoSettings>(&self.core, "settings", &[]).map(|s| s.owner).or(self.base.owner)
@@ -654,6 +659,25 @@ fn may_write(actor: &Principal, s: &RepoScratch<'_>, deps: &[(ChainId, IdentityD
     let access = crate::issue_ops::Access { repo, owner, core: s.core() };
     let folds = authz_folds(deps);
     graftyard_identity::authorize_write(actor, WriteAction::Push, &folds, &access) == Decision::Allow
+        && graftyard_identity::token_allows(
+            stored_fields(actor, deps),
+            &[("contents", graftyard_identity::Access::Write)],
+            &access,
+        ) == Decision::Allow
+}
+
+/// A stored token's optional fields (a `github_pat_`'s or `ghu_`'s scope), from its `Tokens` row the leader read as
+/// a dependency of this entry.
+pub(crate) fn stored_fields<'d>(
+    actor: &Principal,
+    deps: &'d [(ChainId, IdentityDep)],
+) -> Option<&'d graftyard_identity::TokenFields> {
+    let graftyard_identity::Credential::Stored(hash) = &actor.credential else { return None };
+    let shard = ChainId::Tokens(graftyard_identity::shard_of_hash(hash));
+    deps.iter().find_map(|(c, d)| match d {
+        IdentityDep::Tokens(t) if *c == shard => graftyard_identity::TokensRead::fields(t, hash),
+        _ => None,
+    })
 }
 
 /// Whether the update would need a branch rule's bypass: a deletion a rule forbids, or a push a rule restricts and

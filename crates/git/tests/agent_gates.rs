@@ -1076,6 +1076,32 @@ fn a_default_pr_merges_as_before() {
     assert_eq!(agent_events, 0);
 }
 
+/// BF-34 through a real leader: an invitation's `expires` is the entry's time plus a week, so the invitee can list
+/// and accept it (the leader once decided issue commands at time 0, so every invitation had already lapsed).
+#[test]
+fn a_repository_invitation_sent_through_the_leader_is_pending_and_accepted() {
+    let mut w = World::new();
+    // A clock past a week since the epoch, as a hosted leader's is (2026-11-08).
+    w.now = Timestamp(1_794_000_000_000);
+    w.settle();
+    let invite = IssueOp::InviteCollaborator { user: AccountId(DbId(READER)), permission: RepoPermission::Write };
+    let id = match w.commit(issue(user(OWNER), invite)) {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Id(id) => id,
+            ref x => panic!("{x:?}"),
+        },
+        other => panic!("{other:?}"),
+    };
+    let f = w.fold();
+    let row: graftyard_identity::InvitationRow =
+        tiers::get_rec(&*f.core, "invitation", &[graftyard_fold::Val::Int(id.0)]).expect("a pending invitation");
+    assert!(row.expires > w.now, "expires {:?} is not after the entry's time {:?}", row.expires, w.now);
+    let accept = IssueOp::AnswerInvitation { id: graftyard_identity::InvitationId(id), accept: true };
+    w.commit(issue(user(READER), accept)).expect("the invitee accepts");
+    let f = w.fold();
+    assert_eq!(graftyard_git::issue_ops::collaborator(&*f.core, AccountId(DbId(READER))), Some(RepoPermission::Write));
+}
+
 // ---- Co-authored-by ----
 
 fn raw_commit(message: &[u8]) -> Vec<u8> {

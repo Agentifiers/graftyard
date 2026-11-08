@@ -592,3 +592,47 @@ fn the_edges_writes_keep_the_account_login_and_identity_in_step() {
     assert_eq!(refused(w.names_cmd(ChainId::Names(account_shard(a)), late)), graftyard_identity::NamesErr::NotHolder);
     assert_eq!(rendered(&mut w), Some(new));
 }
+
+/// An OpenSSH `ssh-ed25519` public key line for a 32-byte key.
+fn ed25519_line(k: [u8; 32]) -> String {
+    use base64::Engine as _;
+    let mut blob = Vec::new();
+    for part in [&b"ssh-ed25519"[..], &k[..]] {
+        blob.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        blob.extend_from_slice(part);
+    }
+    format!("ssh-ed25519 {}", base64::engine::general_purpose::STANDARD.encode(blob))
+}
+
+/// BF-35's key text (format 0x14.2): `AddKey` lists a committed key with its text at once, refuses text whose blob
+/// does not hash to the fingerprint and a key with no live `Tokens` row, and a fold with no key text keeps 0x14.1's
+/// bytes.
+#[test]
+fn add_key_lists_the_key_text_only_for_its_own_committed_fingerprint() {
+    use graftyard_raft::codec;
+    let mut w = World::default();
+    let u = acct(0, 2, 1);
+    account(&mut w, u);
+    created(&mut w, u, "alice");
+    let before = codec::to_bytes(&w.identity(u).fresh_leader());
+    let plain = IdentityFold { more: Default::default(), ..codec::from_bytes::<IdentityFold>(&before).unwrap() };
+    assert_eq!(codec::to_bytes(&plain), before, "no key text: 0x14.1's bytes");
+    let (line, other) = (ed25519_line([5; 32]), ed25519_line([6; 32]));
+    let fp = graftyard_identity::key_fingerprint(&line).expect("an ed25519 key");
+    let add = |key: &str| IdentityCmd {
+        cred: as_user(u),
+        op: IdentityOp::AddKey { fingerprint: fp, key: key.into(), title: "laptop".into() },
+    };
+    assert_eq!(refused(w.identity_cmd(u, add(&line))), IdentityErr::NotCommitted, "no Tokens row yet");
+    let op = TokensOp::AddSshKey { fingerprint: fp, account: u, repo: None };
+    w.tokens_cmd(TokensCmd { cred: as_user(u), op }).unwrap();
+    assert_eq!(refused(w.identity_cmd(u, add(&other))), IdentityErr::KeyMismatch, "another key's text");
+    assert_eq!(refused(w.identity_cmd(u, add("ssh-ed25519 !!"))), IdentityErr::KeyMismatch, "not a key");
+    w.identity_cmd(u, add(&line)).unwrap();
+    w.identity_cmd(u, add(&line)).unwrap();
+    let f: IdentityFold = w.identity(u).fresh_leader();
+    assert!(f.credentials.contains_key(&CredentialRef::SshKey(fp)));
+    assert_eq!(f.more.key_text.get(&fp).map(AsRef::as_ref), Some(line.as_str()));
+    assert_eq!(codec::from_bytes::<IdentityFold>(&codec::to_bytes(&f)).unwrap(), f);
+    assert_eq!(graftyard_raft::Command::format(&add(&line)), graftyard_identity::IDENTITY_FORMAT_V2);
+}

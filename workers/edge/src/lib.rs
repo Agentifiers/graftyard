@@ -46,10 +46,16 @@ use worker::*;
 
 mod agents;
 mod api;
+#[cfg(feature = "test-faults")]
+mod bed_rows;
+mod collab;
 mod ident;
+mod keys;
+mod oidc;
 mod precreate;
 mod release;
 mod transfer;
+mod usertok;
 
 const AGENT: &str = "git/graftyard-m1";
 /// `design/DESIGN.md`, Shape, `Unsupported`: "The edge renders it as 503 with `Retry-After: 5` [guess]".
@@ -317,6 +323,10 @@ struct TokenRow {
     /// The row's optional fields; a user-to-server token's `app` is its App, for the admission class (AM1-WP2).
     #[serde(default)]
     fields: Option<graftyard_identity::TokenFields>,
+    #[serde(default)]
+    kind: Option<graftyard_identity::TokenKind>,
+    #[serde(default)]
+    expires: Option<Timestamp>,
 }
 
 /// The caller, or `None` for no credential or a refused one: a stored token's row read through `fresh` on its
@@ -332,8 +342,10 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     let chain = ChainId::Tokens(tok.shard());
     let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
     let row: Option<TokenRow> = serde_json::from_value(v["token"].clone())?;
-    let row = row.filter(|r| !r.revoked);
+    // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock.
+    let row = row.filter(|r| !r.revoked && usertok::usable(r.kind, r.expires, now()));
     c.token_app.set(row.as_ref().and_then(|r| r.fields.as_ref()?.app));
+    c.token_fields.replace(row.as_ref().and_then(|r| r.fields.clone()));
     Ok(row.map(|r| Principal {
         actor: Actor::User(UserId(AccountId(DbId(r.account)))),
         scopes: ScopeSet(1),
@@ -478,6 +490,8 @@ struct Ctx<'a> {
     shard: Option<SiteId>,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
+    /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
+    token_fields: std::cell::RefCell<Option<graftyard_identity::TokenFields>>,
     /// The request sent `X-Graftyard-Agent-Session`, which classes a user token's commands Agent and grants nothing.
     agent_session: bool,
 }
@@ -1453,6 +1467,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         anchor,
         colo: colo_id(&req),
         token_app: std::cell::Cell::new(None),
+        token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
@@ -1473,6 +1488,20 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     #[cfg(feature = "test-faults")]
     if path == precreate::BED_PATH {
         return precreate::bed(&c, &req).await;
+    }
+    if path == oidc::INSTANCE_AUTH_PATH {
+        return oidc::instance_auth(&c, &mut req).await;
+    }
+    if path == usertok::TOKENS_PATH {
+        let r = usertok::create_fine_grained(&c, &mut req).await?;
+        return agents::respond(&c, r);
+    }
+    if let Some(r) = oidc::route(&c, &mut req, &path).await? {
+        return Ok(r);
+    }
+    #[cfg(feature = "test-faults")]
+    if path.starts_with(bed_rows::PREFIX) {
+        return bed_rows::serve(&c, &mut req, &path).await;
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()

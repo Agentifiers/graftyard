@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
 use crate::authz::{AccountKind, AuthzRead};
+use crate::compat::tail_serde;
 use crate::credential::{
     CredentialRefusal, IdentityDep, OrgId, Own, WebSessionId, check_credential, credential_chains, encode_cred,
 };
@@ -29,6 +30,9 @@ use crate::tokens::{Fingerprint, TokenKind, TokensFold, TokensRead, fingerprint_
 
 /// The `Identity` chain's format. Family 0x14: the identity families are 0x10 to 0x13 (`crate::lib`).
 pub const IDENTITY_FORMAT: Format = Format { family: 0x14, version: 1 };
+/// `AddKey`: an SSH key listed with its public key text, which `GET /user/keys` renders (BF-35). A release that reads
+/// only 0x14.1 cannot apply `KeyText`, so the edge sends it only once `FormatsEnable` enabled 0x14.2.
+pub const IDENTITY_FORMAT_V2: Format = Format { family: 0x14, version: 2 };
 
 /// The audit log keeps this many entries in the fold; the archive keeps them all [guess].
 pub const AUDIT_KEEP: usize = 1_000;
@@ -89,6 +93,13 @@ pub enum IdentityEvent {
     Audit(AuditEvent),
     /// Not in SHARED's list, which puts sessions on this chain but names no event for them [inference].
     Session(SessionEvent),
+    /// Format 0x14.2: the public key text of a listed SSH key, which its fingerprint is the SHA-256 of (the key blob,
+    /// decoded from base64, as OpenSSH's `SHA256:` fingerprint hashes it). Not in SHARED's list [inference: `GET
+    /// /user/keys` renders a key's text, which the `Tokens` row does not hold].
+    KeyText {
+        fingerprint: Fingerprint,
+        key: Box<str>,
+    },
 }
 
 impl Record for IdentityEvent {
@@ -124,6 +135,11 @@ impl Record for IdentityEvent {
                 e.u8(3);
                 e.str(&a.action);
                 enc::at(&mut e, a.at);
+            }
+            IdentityEvent::KeyText { fingerprint, key } => {
+                e.u8(6);
+                e.0.extend_from_slice(&fingerprint.0);
+                e.str(key);
             }
             IdentityEvent::Session(s) => {
                 e.u8(5);
@@ -180,8 +196,9 @@ fn credential_event(e: &mut Enc, c: &CredentialEvent) {
     }
 }
 
-/// One account's `Identity` fold.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// One account's `Identity` fold. Its serde form is M3-WP3's fields, then `more` only when it holds a row
+/// (`crate::compat`), so a fold with no key text keeps 0x14.1's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IdentityFold {
     pub account: Option<AccountId>,
     pub created: Option<AccountCapture>,
@@ -192,7 +209,25 @@ pub struct IdentityFold {
     pub sessions: BTreeMap<WebSessionId, SignInMethod>,
     pub sso: BTreeMap<OrgId, Digest>,
     pub audit: Vec<AuditEvent>,
+    pub more: IdentityMore,
 }
+
+/// Format 0x14.2's rows: each listed SSH key's public key text, by fingerprint.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentityMore {
+    pub key_text: BTreeMap<Fingerprint, Box<str>>,
+}
+
+tail_serde!(IdentityFold {
+    account: Option<AccountId>,
+    created: Option<AccountCapture>,
+    credentials: BTreeMap<CredentialRef, Box<str>>,
+    password: Option<Box<str>>,
+    second_factors: BTreeMap<u32, Box<[u8]>>,
+    sessions: BTreeMap<WebSessionId, SignInMethod>,
+    sso: BTreeMap<OrgId, Digest>,
+    audit: Vec<AuditEvent>,
+} more: IdentityMore);
 
 impl IdentityFold {
     pub fn new(account: AccountId) -> IdentityFold {
@@ -207,6 +242,12 @@ impl IdentityFold {
             }
             IdentityEvent::Credential(CredentialEvent::Removed { credential }) => {
                 self.credentials.remove(credential);
+                if let CredentialRef::SshKey(fp) = credential {
+                    self.more.key_text.remove(fp);
+                }
+            }
+            IdentityEvent::KeyText { fingerprint, key } => {
+                self.more.key_text.insert(*fingerprint, key.clone());
             }
             IdentityEvent::Credential(CredentialEvent::Password { hash }) => self.password = Some(hash.clone()),
             IdentityEvent::Credential(CredentialEvent::SecondFactor { id, verifier: Some(v) }) => {
@@ -322,6 +363,15 @@ pub enum IdentityOp {
         org: OrgId,
         subject: Digest,
     },
+    // ---- format 0x14.2 ----
+    /// `POST /user/keys`, after the key's `AddSshKey` committed on its `fingerprint_shard`: `AddCredential` for the key
+    /// with its public key text. The leader refuses text whose blob's SHA-256 is not the fingerprint, so the list
+    /// never shows a key under another key's row. A repeat is a no-op.
+    AddKey {
+        fingerprint: Fingerprint,
+        key: Box<str>,
+        title: Box<str>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +387,8 @@ pub enum IdentityErr {
     Suspended,
     /// `install` does not name the install's own chain.
     NotInstall,
+    /// The key text is not an OpenSSH public key whose blob hashes to the fingerprint.
+    KeyMismatch,
 }
 
 impl Record for IdentityCmd {
@@ -373,6 +425,12 @@ impl Record for IdentityCmd {
                 enc::account(&mut e, org.0);
                 e.0.extend_from_slice(&subject.0);
             }
+            IdentityOp::AddKey { fingerprint, key, title } => {
+                e.u8(7);
+                e.0.extend_from_slice(&fingerprint.0);
+                e.str(key);
+                e.str(title);
+            }
         }
     }
 }
@@ -394,12 +452,42 @@ impl IdentityCmd {
             (IdentityOp::AddCredential { credential, .. } | IdentityOp::RemoveCredential { credential }, _) => {
                 smallvec![ChainId::Tokens(credential.shard())]
             }
+            (IdentityOp::AddKey { fingerprint, .. }, _) => smallvec![ChainId::Tokens(fingerprint_shard(fingerprint))],
             (IdentityOp::SignIn { install, .. }, Some(a)) => {
                 smallvec![ChainId::Authz(*install), ChainId::Names(account_shard(a))]
             }
             _ => SmallVec::new(),
         }
     }
+}
+
+/// An OpenSSH public key's fingerprint: the SHA-256 of its blob, the second field decoded from base64, for a key
+/// whose type GitHub accepts (`ssh-rsa`, `ssh-dss`, `ssh-ed25519`, `ecdsa-sha2-nistp256/384/521`, and the `sk-`
+/// forms) and whose blob names that type. The text is the type and the blob; a comment is dropped by the caller.
+pub fn key_fingerprint(text: &str) -> Option<Fingerprint> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    let mut parts = text.split_ascii_whitespace();
+    let (ty, b64) = (parts.next()?, parts.next()?);
+    const TYPES: [&str; 8] = [
+        "ssh-rsa",
+        "ssh-dss",
+        "ssh-ed25519",
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp521",
+        "sk-ssh-ed25519@openssh.com",
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+    ];
+    if !TYPES.contains(&ty) {
+        return None;
+    }
+    let blob = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let n = u32::from_be_bytes(blob.get(..4)?.try_into().ok()?) as usize;
+    if blob.get(4..4 + n)? != ty.as_bytes() {
+        return None;
+    }
+    Some(Fingerprint(sha2::Sha256::digest(&blob).into()))
 }
 
 fn dep(deps: &[(ChainId, IdentityDep)], c: ChainId) -> Result<&IdentityDep, IdentityErr> {
@@ -430,7 +518,10 @@ impl Command for IdentityCmd {
     type Err = IdentityErr;
 
     fn format(&self) -> Format {
-        IDENTITY_FORMAT
+        match self.op {
+            IdentityOp::AddKey { .. } => IDENTITY_FORMAT_V2,
+            _ => IDENTITY_FORMAT,
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
@@ -525,6 +616,23 @@ impl Command for IdentityCmd {
             }
             IdentityOp::LinkSso { org, subject } => {
                 one(IdentityEvent::Sso(SsoEvent::Linked { org: *org, subject: *subject }))
+            }
+            IdentityOp::AddKey { fingerprint, key, title } => {
+                if key_fingerprint(key) != Some(*fingerprint) {
+                    return Err(IdentityErr::KeyMismatch);
+                }
+                let credential = CredentialRef::SshKey(*fingerprint);
+                if !live_for(tokens_dep(deps, &credential)?, &credential, account) {
+                    return Err(IdentityErr::NotCommitted);
+                }
+                let mut evs = SmallVec::new();
+                if !f.credentials.contains_key(&credential) {
+                    evs.push(IdentityEvent::Credential(CredentialEvent::Added { credential, title: title.clone() }));
+                }
+                if f.more.key_text.get(fingerprint) != Some(key) {
+                    evs.push(IdentityEvent::KeyText { fingerprint: *fingerprint, key: key.clone() });
+                }
+                Ok((evs, ()))
             }
         }
     }

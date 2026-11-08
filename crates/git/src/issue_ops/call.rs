@@ -15,7 +15,7 @@
 use graftyard_identity::stateless::InstallationClaims;
 use graftyard_identity::{Actor, Credential, IdentityDep, OrgId, Principal, ScopeSet, UserId, credential_chains};
 use graftyard_raft::{Format, TierSet};
-use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId, Timestamp};
+use graftyard_types::{AccountId, ChainId, DbId, Digest, RequestId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use smallvec::SmallVec;
@@ -34,6 +34,9 @@ pub const REPO_FORMAT_COLLABORATORS: Format = Format { family: 0x20, version: 6 
 /// 32.9, and the edge sends one only once `FormatsEnable` has enabled it. Version 7 is the stateless push's, and 8 is
 /// AM1-WP2's agent push (branch `am1-wp2`).
 pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 9 };
+/// `CancelInvitation` (BF-34's `DELETE /repos/{o}/{r}/invitations/{id}`): a release that reads only up to 32.9 has no
+/// such command. Version 10 is taken by BF-30's transfer `Settings` (branch of the BF-30 work), so this is 32.11.
+pub const REPO_FORMAT_INVITATIONS: Format = Format { family: 0x20, version: 11 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -68,6 +71,7 @@ impl IssueCall {
             IssueOp::InviteCollaborator { .. }
             | IssueOp::AnswerInvitation { .. }
             | IssueOp::RemoveCollaborator { .. } => REPO_FORMAT_COLLABORATORS,
+            IssueOp::CancelInvitation { .. } => REPO_FORMAT_INVITATIONS,
             _ => REPO_FORMAT_ISSUES,
         }
     }
@@ -147,8 +151,13 @@ impl<'de> Deserialize<'de> for IssueCall {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<IssueCall, D::Error> {
         let v = Value::deserialize(d)?;
         let f = v.get("format").cloned().unwrap_or(Value::Null);
-        let reads =
-            [REPO_FORMAT_ISSUES, REPO_FORMAT_COLLABORATORS, crate::repo::REPO_FORMAT_AGENT, REPO_FORMAT_APP_CALLS];
+        let reads = [
+            REPO_FORMAT_ISSUES,
+            REPO_FORMAT_COLLABORATORS,
+            crate::repo::REPO_FORMAT_AGENT,
+            REPO_FORMAT_APP_CALLS,
+            REPO_FORMAT_INVITATIONS,
+        ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
@@ -208,8 +217,8 @@ impl IssueCall {
         let cmd = self.cmd()?;
         // A member whose metadata tier is still loading cannot decide on it.
         let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
-        // `RepoView::apply` stamps writes with its time; `decide` writes nothing, so no time is needed.
-        let view = RepoView::new(s.fold().tiers(), core, meta, Timestamp(0));
+        // The entry's time: an invitation's `expires` is set from it and checked against it.
+        let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
         let (evs, out) = cmd.decide_in(&view, deps, self.format() == crate::repo::REPO_FORMAT_AGENT)?;
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }

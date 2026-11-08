@@ -120,6 +120,12 @@ mod timing {
     pub fn trace(_: Vec<serde_json::Value>) {}
 }
 
+/// A commit's hedge steps for this request's `x-graft-trace` (test installs only).
+#[cfg(feature = "test-faults")]
+pub(crate) fn trace(t: Vec<Value>) {
+    timing::trace(t);
+}
+
 pub(crate) fn unavailable(why: &str) -> Reply {
     Reply::error(503, why, "rest").with("retry-after", "5")
 }
@@ -169,12 +175,12 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
 }
 
 /// What a handler reads: the repository, its tiers at one index, and the directory.
-struct Read {
-    repo: Repo,
-    at: RepoRef,
-    core: MemStore,
+pub(crate) struct Read {
+    pub(crate) repo: Repo,
+    pub(crate) at: RepoRef,
+    pub(crate) core: MemStore,
     meta: MemStore,
-    dir: HostedDir,
+    pub(crate) dir: HostedDir,
 }
 
 impl Read {
@@ -197,6 +203,16 @@ async fn read(
         Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
     };
     read_repo(c, repo, owner, name, viewer, None, Rows::All).await
+}
+
+/// `read` for another module's route (`crate::collab`).
+pub(crate) async fn read_named(
+    c: &Ctx<'_>,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+) -> Result<std::result::Result<Read, Reply>> {
+    read(c, owner, name, viewer).await
 }
 
 /// `read` of a repository already resolved: its tiers and the owner's `Authz`, both read through `fresh` at once.
@@ -354,6 +370,15 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (Method::Delete, ["orgs", org, "members", user]) => {
                 crate::ident::membership(c, req, Method::Delete, org, user).await
             }
+            (Method::Get, ["user", "keys"]) => crate::keys::list(c, req).await,
+            (Method::Post, ["user", "keys"]) => crate::keys::add(c, req).await,
+            (_, ["orgs", _, "teams", ..] | ["user", "memberships", "orgs", _]) => {
+                crate::collab::org_route(c, req, p).await
+            }
+            (Method::Get, ["user", "repository_invitations"]) => crate::collab::user_invitation(c, req, None).await,
+            (Method::Patch | Method::Delete, ["user", "repository_invitations", id]) => {
+                crate::collab::user_invitation(c, req, Some(id)).await
+            }
             _ => rest_repo(c, req, host, p, &query).await,
         },
         Endpoint::Graphql => graphql_post(c, req, host).await,
@@ -377,7 +402,13 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
 // ---- writes ----
 
 /// Commits an issue command and returns the reply its leader rendered.
-async fn commit_issue(c: &Ctx<'_>, rd: &Read, who: &Principal, op: IssueOp<BlobRef>, what: What) -> Result<Reply> {
+pub(crate) async fn commit_issue(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+) -> Result<Reply> {
     if !c.cfg.enabled.contains(&REPO_FORMAT_ISSUES) {
         return Ok(unavailable(&format!(
             "issue writes need record format {}.{}, which FormatsEnable has not enabled on this install",
@@ -848,6 +879,14 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
+    // A `github_pat_` reads only inside its scope (BF-31); every write's leader checks it again.
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    if let Some(r) = crate::usertok::reaches(c, &access) {
+        return Ok(r);
+    }
+    if let Some(r) = crate::collab::repo_route(c, req, &rd, who.as_ref(), tail).await? {
+        return Ok(r);
+    }
     // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the
     // install's `AgentApp` rows for `is_agent`.
     let agent_accept = req.headers().get("accept")?;
