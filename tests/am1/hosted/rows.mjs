@@ -61,50 +61,64 @@ if (which === "l013") {
 }
 
 if (which === "l012") {
-  // The Exclusive holder: a task of m3-ci's with a lease on `pkg/auth/**`, under AgentsExclusive.
+  // The Exclusive holder: a task of m3-ci's with a lease on `l012/<tag>/**`, under AgentsExclusive. Then, per actor
+  // kind the install can field, N pushes and N REST ref writes whose changed paths fall in that scope:
+  //   confined vendor App   m3-ci flagged ThirdParty, confine refs/heads/claude/** (ActorKind::Agent): all refused
+  //   flagged App, no confine  m3-ci flagged ThirdParty with no confine (an Agent too, by the design's classing)
+  //   unflagged App         m3-ci with no AgentApp row (Bot): none refused
+  //   human PAT             m3-admin (Human): none refused
+  // A Graftyard-run App and `Graftyard MCP` need the install's own Apps, which this install has not registered.
   const admin = tokens.admin;
+  const flag = (confine) => api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine });
+  await flag("refs/heads/claude/**");
   const pol = await api("PUT", `${V1}/agents/policy`, admin, { leases: "agents_exclusive" });
   row(OUT, { step: "policy agents_exclusive", status: pol.status, body: pol.body });
-  const app = (await ghs({})).body.token;
+  let app = (await ghs({})).body.token;
   const holderTask = await task(app, `l012h-${tag}`);
   const held = await acquire(app, { paths: [`l012/${tag}/**`], mode: "exclusive", ttl_seconds: 3600, intent: "L0-12 holder" }, holderTask);
   row(OUT, { step: "holder exclusive", status: held.status, lease: held.body?.lease?.id });
-  // A second task of the same App is another holder: its pushes and ref writes touch the held path.
-  const other = await task(app, `l012o-${tag}`);
-  const g = new Git(R).as(app);
+  log(`holder: ${held.status} ${held.body?.lease?.id}`);
+  const g = new Git(R).as(admin);
   g.clone();
   const main = g.run(["rev-parse", "HEAD"]).out.trim();
-  const commitTouching = (i) => {
+  const commitTouching = (k) => {
     g.run(["checkout", "-q", "--detach", main]);
-    const p = join(g.wt, `l012/${tag}/f${i}.txt`);
+    const p = join(g.wt, `l012/${tag}/f${k}.txt`);
     mkdirSync(join(p, ".."), { recursive: true });
-    writeFileSync(p, `${i} ${Math.random()}\n`);
+    writeFileSync(p, `${k} ${Math.random()}\n`);
     g.run(["add", "-A"]);
-    g.run(["commit", "-q", "-m", `l012 ${i}`]);
+    g.run(["commit", "-q", "-m", `l012 ${k}`]);
     return g.run(["rev-parse", "HEAD"]).out.trim();
   };
   const kinds = [
-    ["confined vendor App", app, (i) => `refs/heads/claude/l012-${tag}-${i}`],
-    ["human PAT", admin, (i) => `refs/heads/l012-${tag}-h${i}`],
+    ["confined vendor App", async () => { await flag("refs/heads/claude/**"); return (await ghs({})).body.token; }, (k) => `refs/heads/claude/l012-${tag}-${k}`],
+    ["flagged App without confine", async () => { await flag(null); return (await ghs({})).body.token; }, (k) => `refs/heads/l012-${tag}-u${k}`],
+    ["unflagged App", async () => { await api("DELETE", `/api/graftyard/v1/agents/apps/${state.app}`, admin); return (await ghs({})).body.token; }, (k) => `refs/heads/l012-${tag}-b${k}`],
+    ["human PAT", async () => admin, (k) => `refs/heads/l012-${tag}-h${k}`],
   ];
   const summary = {};
-  for (const [kind, tok, ref] of kinds) {
-    g.as(tok);
+  for (const [kind, tokenOf, ref] of kinds) {
+    const tok = await tokenOf();
+    await sleep(2000);
     const pushes = [], writes = [];
     for (let i = 0; i < N; i++) {
-      const sha = commitTouching(`${kind[0]}${i}`);
-      const r = g.run(["push", "-q", "origin", `HEAD:${ref(i)}`]);
-      pushes.push(r.ok ? "accepted" : (r.out.match(/refused: ([^)\n|]*)/)?.[1]?.slice(0, 60) ?? "rejected"));
-      // A REST ref write of the same commit (already in the repository when the push was accepted, else the push's
-      // pack is not there and the write is refused as a missing object: counted apart).
+      // A REST ref write needs a commit the repository holds: one pushed by the admin under a scratch ref first.
+      g.as(admin);
+      const sha = commitTouching(`${kind.length}-${i}`);
+      g.run(["push", "-q", "origin", `HEAD:refs/heads/l012s-${tag}-${kind.length}-${i}`]);
       const w = await api("POST", `/api/v3/repos/${R}/git/refs`, tok, { ref: `${ref(i)}-rest`, sha });
-      writes.push(w.status === 201 ? "accepted" : `${w.status} ${String(w.body?.message).slice(0, 50)}`);
+      writes.push(w.status === 201 ? "accepted" : `${w.status} ${String(w.body?.message).replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 60)}`);
+      g.as(tok);
+      const sha2 = commitTouching(`${kind.length}-p${i}`);
+      void sha2;
+      const r = g.run(["push", "-q", "origin", `HEAD:${ref(i)}`]);
+      pushes.push(r.ok ? "accepted" : (r.out.match(/refused: ([^)\n|]*)/)?.[1]?.replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 60) ?? "rejected"));
     }
     summary[kind] = { pushes: count(pushes), writes: count(writes) };
     row(OUT, { kind, ...summary[kind] });
     log(`${kind}: ${JSON.stringify(summary[kind])}`);
   }
-  void other;
+  await flag("refs/heads/claude/**");
   log(`l012 ${JSON.stringify(summary)}`);
 }
 

@@ -161,6 +161,39 @@ if (which === "lf12") {
   log(`C: ${JSON.stringify(byL)} commits ${JSON.stringify(cc)} edge ${JSON.stringify(rd.status)} voter polls ${JSON.stringify(fBefore)} -> ${JSON.stringify(fAfter)}`);
 }
 
+
+if (which === "lf12c") {
+  // Phase C alone, after `place_learners` ran: the learners from the committed config (every voter carries it), n
+  // polls straight to them with distinct token and IP hashes while commits run, then 200 through the edge; the
+  // voters' `polls` before and after must not move.
+  const n = Number(nArg ?? 5000);
+  const app = (await ghs({})).body.token;
+  let task;
+  for (let i = 0; i < 5; i++) {
+    task = await api("POST", `/api/graftyard/v1/repos/${R}/tasks`, app, { kind: "external", session: `lf12c-${Date.now().toString(36)}`, summary: "lf12c" });
+    if (task.status === 201) break;
+    log(`task create ${task.status} ${JSON.stringify(task.body).slice(0, 120)}`);
+    await sleep(3000);
+  }
+  const cfg = (await statuses(CHAIN)).find((s) => s.config)?.config?.config?.normal;
+  const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
+  const vBefore = (await feedStatus()).map((m) => [m.site, m.role, m.feed?.polls ?? 0]);
+  const pc = Array.from({ length: n }, (_, k) => sleep((k % 1000) * 3).then(() => {
+    const l = learners[k % learners.length];
+    return direct(l.site, 100_000 + k, 25, { name: l.name }).then((r) => ({ ...r, l: l.name }));
+  }));
+  await sleep(5_000);
+  const [rc, cc] = await Promise.all([Promise.all(pc), commits(app, task.body.id, 25)]);
+  const byL = {};
+  for (const r of rc) { byL[r.l] ??= {}; byL[r.l][r.admit] = (byL[r.l][r.admit] ?? 0) + 1; }
+  const toks = await tokensFor(20);
+  const rd = await hold(200, toks, 5);
+  const vAfter = (await feedStatus()).map((m) => [m.site, m.role, m.feed?.polls ?? 0]);
+  const v = { learners: learners.length, byLearner: byL, commits: cc, edge: rd.status, edgeNoRetryAfter: rd.noRetryAfter, voterPollsBefore: vBefore, voterPollsAfter: vAfter };
+  row(OUT.replace("lf12c", "lf12"), { phase: "C after place_learners (rerun)", ...v });
+  log(JSON.stringify(v).slice(0, 2000));
+}
+
 if (which === "lf13") {
   // 1,000 polls held on one follower, then its site's member calls fail for 5 s while commits run, so its next
   // AppendEntries leaves a gap.
