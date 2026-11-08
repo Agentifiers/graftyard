@@ -8,6 +8,7 @@
 //   lf1     an App with N open tasks across the repositories in REPOS, uninstalled through the operator's `Uninstall`
 //           (the edge serves no uninstall route), then reads and next commands through the edge, then reinstalled
 //   b036    B0-36 hosted for the confined vendor App: each action over every surface the edge serves, N times
+//   b037    B0-37 hosted, the push half: malformed and forged trailers, writer pushes to refs/graftyard/
 //   l016    L0-16 hosted: metadata tier held unloaded on every member of lf1-2, then pushes, a mint, lease checks, a merge
 //   lf5     five draft PRs' plan blocks through GraphQL `createPullRequest`, and a body edit through `updatePullRequest`
 // Rows go to tests/am1/raw/rows-<row>.jsonl; summaries to stdout.
@@ -390,6 +391,110 @@ if (which === "b036") {
   await run("control: draft PR (GraphQL createPullRequest)", async (i) => { const b = `claude/b036-${tag}-d${i}`; commitAt(`b036/${tag}/d${i}.txt`, i); g.as(app).run(["push", "-q", "origin", `HEAD:refs/heads/${b}`]); return gq(await gql(app, CREATE, { input: { repositoryId: repoId, baseRefName: "main", headRefName: b, title: b, body: "b036", draft: true } }), "createPullRequest"); });
   void id2;
   log(`b036 ${JSON.stringify(out)}`);
+}
+
+if (which === "b037") {
+  // B0-37 hosted, the push half, on lf1-3 (scaled: N pushes per kind, not 10,000). m3-ci flagged and confined, on
+  // its own task's prefix. Kinds: malformed trailers (a bad URL, a NUL-free control-char value, a 4 KiB line, a
+  // repeated key, a trailer block with no blank line), a forged `Graftyard-Session` (another App's id, an unknown
+  // task, another repository's origin), and writer pushes to `refs/graftyard/` (m3-admin). Then a user token's commit
+  // whose only trailer is `Co-authored-by`. Provenance is read from the leader's stored entries (`/log`).
+  const RR = "m3org/lf1-3";
+  const CH = "repo:1048580";
+  const W1 = `/api/graftyard/v1/repos/${RR}`;
+  const admin = tokens.admin;
+  await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
+  await sleep(2000);
+  const app = (await ghs({})).body.token;
+  const t = await api("POST", `${W1}/tasks`, app, { kind: "external", session: `b037-${tag}`, summary: "am1 b037" });
+  const origin = `https://${process.env.GRAFT_HOST ?? "graft-m1-edge.<workers-subdomain>.workers.dev"}/${RR}`;
+  const g = new Git(RR).as(admin);
+  g.clone();
+  let main = g.run(["rev-parse", "HEAD"]).out.trim();
+  if (!/^[0-9a-f]{40}$/.test(main)) {
+    g.run(["checkout", "-q", "--orphan", "main"]);
+    writeFileSync(join(g.wt, "README.md"), "lf1-3\n");
+    g.run(["add", "-A"]); g.run(["commit", "-q", "-m", "init main"]);
+    g.run(["push", "-q", "origin", "HEAD:refs/heads/main"]);
+    main = g.run(["rev-parse", "HEAD"]).out.trim();
+  }
+  const msgs = {
+    "malformed: bad URL": (k) => `b037 ${k}\n\nGraftyard-Session: ht!tp://[::1/${k}\n`,
+    "malformed: control chars": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/\u0007\u001b${k}\n`,
+    "malformed: 4 KiB line": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${"x".repeat(4096)}${k}\n`,
+    "malformed: repeated key": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}\nGraftyard-Session: ${origin}/_graftyard/sessions/${k}\n`,
+    "malformed: no blank line": (k) => `b037 ${k}\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}`,
+    "forged: another App's task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/999.b037-${k}\n`,
+    "forged: unknown task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${state.app}.nope-${tag}-${k}\n`,
+    "forged: another repository": (k) => `b037 ${k}\n\nGraftyard-Session: https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/j4/_graftyard/sessions/${t.body?.id}\n`,
+    "linked (control)": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}\n`,
+  };
+  const out = {};
+  const pushed = {};
+  const before = (await member(CH, 0, "/status")).v?.applied ?? 1;
+  for (const [kind, msg] of Object.entries(msgs)) {
+    const st = [];
+    for (let i = 0; i < N; i++) {
+      g.as(app);
+      g.run(["checkout", "-q", "--detach", main]);
+      writeFileSync(join(g.wt, `b037-${tag}.txt`), `${kind} ${i} ${Math.random()}\n`);
+      g.run(["add", "-A"]);
+      writeFileSync(join(g.dir, "msg"), msg(i));
+      g.run(["commit", "-q", "-F", join(g.dir, "msg")]);
+      const sha = g.run(["rev-parse", "HEAD"]).out.trim();
+      const ref = `refs/heads/claude/b037-${tag}-${Object.keys(msgs).indexOf(kind)}-${i}`;
+      const r = g.run(["push", "-q", "origin", `HEAD:${ref}`]);
+      st.push(r.ok ? "accepted" : (r.out.match(/\(([^)]*)\)/)?.[1] ?? r.out).slice(0, 80));
+      if (r.ok) pushed[sha] = kind;
+    }
+    out[kind] = count(st);
+    row(OUT, { kind, pushes: out[kind] });
+    log(`${kind}: ${JSON.stringify(out[kind])}`);
+  }
+  // Writer pushes to refs/graftyard/ (m3-admin, a repository admin).
+  {
+    const st = [];
+    for (let i = 0; i < N; i++) {
+      g.as(admin);
+      const r = g.run(["push", "-q", "origin", `${main}:refs/graftyard/sessions/b037-${tag}-${i}`]);
+      st.push(r.ok ? "accepted" : (r.out.match(/\(([^)]*)\)/)?.[1] ?? r.out).slice(0, 80));
+    }
+    out["writer push to refs/graftyard/"] = count(st);
+    row(OUT, { kind: "writer push to refs/graftyard/", pushes: out["writer push to refs/graftyard/"] });
+    log(`refs/graftyard/: ${JSON.stringify(out["writer push to refs/graftyard/"])}`);
+  }
+  // A user token's commit whose only trailer is Co-authored-by.
+  g.as(admin);
+  g.run(["checkout", "-q", "--detach", main]);
+  writeFileSync(join(g.wt, `b037-${tag}-h.txt`), "h\n");
+  g.run(["add", "-A"]);
+  writeFileSync(join(g.dir, "msg"), "b037 human\n\nCo-authored-by: Claude <noreply@anthropic.com>\n");
+  g.run(["commit", "-q", "-F", join(g.dir, "msg")]);
+  const hsha = g.run(["rev-parse", "HEAD"]).out.trim();
+  const hp = g.run(["push", "-q", "origin", `HEAD:refs/heads/b037-${tag}-human`]);
+  row(OUT, { kind: "user Co-authored-by push", ok: hp.ok });
+  // Stored provenance: per kind, the sources of the commits' rows.
+  const lead = await (async () => { for (let s = 0; s < 3; s++) { const v = (await member(CH, s, "/status")).v; if (v?.role === "leader") return s; } return 0; })();
+  const ents = [];
+  for (let from = before; ; from += 200) {
+    const r = await member(CH, lead, `/log?from=${from}&n=200`);
+    const v = r.v ?? [];
+    ents.push(...v);
+    if (v.length < 200) break;
+  }
+  const bySource = {};
+  let humanProv = null;
+  for (const e of ents) for (const p of e.provenance ?? []) {
+    // `/log`'s provenance item: [refname, commit, sources].
+    const sha = p[1];
+    const src = JSON.stringify(p[2]).replace(/[0-9]{6,}\.[\w-]+/g, "<task>").slice(0, 80);
+    const kind = pushed[sha];
+    if (kind) { bySource[kind] = bySource[kind] ?? {}; bySource[kind][src] = (bySource[kind][src] ?? 0) + 1; }
+    if (sha === hsha) humanProv = p;
+  }
+  row(OUT, { step: "stored provenance by kind", bySource, entries: ents.length, sample: ents.find((e) => (e.provenance ?? []).length)?.provenance?.[0] });
+  row(OUT, { step: "Co-authored-by push provenance", human: humanProv });
+  log(`provenance: ${JSON.stringify(bySource)} human ${JSON.stringify(humanProv)}`);
 }
 
 if (which === "pat") {
