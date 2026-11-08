@@ -1,9 +1,9 @@
 // L0-12's stall on m3org/j4: leases live before a stall of every member call, read after it.
 //   1. N leases (half Exclusive on distinct tasks, half Shared), TTL 3,600 s; each lease's `expires` recorded.
 //   2. Every member's `/status` `now` against this host's clock, three times: the member clock offsets.
-//   3. Every member call on every site fails (`/_bed/fault?site=255`) for STALL minutes, every member running. A
-//      push is sent at the start so the leader has an entry in flight that no quorum acknowledges (`tick_leader`'s
-//      marker); followers' `suspect` reports add theirs.
+//   3. Every member call on every site fails (`/_bed/fault?site=255`) for STALL minutes, every member running. Task
+//      writes go out every 250 ms across the cutover so the leader has an entry in flight that no quorum
+//      acknowledges (`tick_leader`'s marker); followers' `suspect` reports add theirs.
 //   4. The fault clears. The next write carries `extend`; then every lease is read: live, with `expires` moved by the
 //      recorded stall (`stalledSince` from `/status` before it clears), and clock offsets again.
 //   5. An idle 60 s Shared lease, then 10 minutes later an overlapping Exclusive acquire, which must succeed.
@@ -46,19 +46,28 @@ step("leases before", { n: leases.length, sample: leases.slice(0, 2) });
 step("clock offsets before", { offsets: await offsets() });
 step("status before", { members: (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, term: s.term, commit: s.commit, stalledSince: s.stalledSince })) });
 
-const fault = await bedGet(`/_bed/fault?site=255&for_ms=${STALL * 60_000}`);
-step("fault on", { status: fault.status, body: fault.body.slice(0, 300) });
-const tFault = Date.now();
-// An entry in flight that no quorum acknowledges: a task write the leader takes and cannot commit.
-const inflight = api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-inflight`, summary: "in flight" });
+// The fault takes effect AHEAD_MS from now (members reread it at most once a second), while task writes go out every
+// 250 ms across the cutover: a write sent after the fault never reaches `decide` (the leader's `fresh` read of its
+// deps fails first), so the leader holds an entry in flight only if one is appended just before replication fails.
+const AHEAD_MS = 3_000;
+const fault = await bedGet(`/_bed/fault?site=255&after_ms=${AHEAD_MS}&for_ms=${STALL * 60_000}`);
+step("fault armed", { status: fault.status, aheadMs: AHEAD_MS, body: fault.body.slice(0, 300) });
+const tFault = Date.now() + AHEAD_MS;
+const writes = [];
+for (let k = 0; Date.now() < tFault + 3_000; k++) {
+  writes.push(api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-w${k}`, summary: "across the cutover" }).then((r) => r.status));
+  await sleep(250);
+}
+const inflight = Promise.all(writes).then((st) => ({ status: st.reduce((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {}) }));
+step("cutover writes sent", { n: writes.length, members: (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, last: s.last, commit: s.commit, stalledSince: s.stalledSince })) });
 while (Date.now() - tFault < STALL * 60_000) {
   await sleep(60_000);
   const st = await statuses(CHAIN);
-  step("during", { min: Math.round((Date.now() - tFault) / 60_000), members: st.map((s) => ({ site: s.site, role: s.role, term: s.term, commit: s.commit, stalledSince: s.stalledSince })) });
+  step("during", { min: Math.round((Date.now() - tFault) / 60_000), members: st.map((s) => ({ site: s.site, role: s.role, term: s.term, last: s.last, commit: s.commit, stalledSince: s.stalledSince })) });
 }
 const off = await bedGet("/_bed/fault?off=1");
 step("fault off", { status: off.status, stalledMs: Date.now() - tFault });
-step("inflight answer", { status: (await inflight).status });
+step("cutover write answers", await inflight);
 step("status after", { members: (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, term: s.term, commit: s.commit, stalledSince: s.stalledSince })) });
 // The next write carries `extend`.
 app = (await ghs({})).body.token;
