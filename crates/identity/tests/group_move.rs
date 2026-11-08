@@ -365,3 +365,22 @@ fn a_joint_of_two_placements_differing_by_two_sites_is_refused() {
     let np = Placement::new(new, Default::default(), SiteId(0), &checks).unwrap();
     assert_eq!(g.change(GroupConfig::Joint { old: p, new: Box::new(np) }), Err(ReconfigError::NotOneChange));
 }
+
+/// A leader elected on the site a `Joint` drops (the old leader moved leadership there, or it won an election while
+/// the `Joint` held): it moves leadership to a voter of the new half before the `Normal` that drops its site.
+#[test]
+fn a_leader_on_the_site_a_joint_drops_transfers_before_it_leaves() {
+    let mut g = G::new();
+    let to = record([3, 1, 2], 3);
+    // Leadership on 1, then the swap of 0 for 3: the `Joint` drops 0 while 1 leads.
+    g.perform(MoveStep::Transfer { to: SiteId(1) }, &to);
+    g.perform(MoveStep::Swap { add: SiteId(3), drop: SiteId(0) }, &to);
+    // Leadership moves back to 0, which the `Joint`'s old half still names.
+    g.perform(MoveStep::Transfer { to: SiteId(0) }, &to);
+    assert_eq!(g.leader(), SiteId(0));
+    assert!(matches!(next_step(&g.cfg(), SiteId(0), &to), MoveStep::Transfer { .. }));
+    let steps = g.move_to(&to, next_step);
+    assert!(matches!(steps[0], MoveStep::Transfer { .. }), "{steps:?}");
+    assert_eq!(voters(&g.cfg()), vec![1, 2, 3]);
+    g.assert_all_kept(&[1, 2, 3]);
+}
