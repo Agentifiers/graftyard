@@ -326,6 +326,9 @@ impl Family for Repo {
         if let Some(e) = m.log().last() {
             f.leader_at = f.leader_at.max(e.at);
         }
+        if let Some(e) = m.entry_at(to) {
+            f.applied_at = f.applied_at.max(e.at);
+        }
         let fold = &m.group_fold().fold;
         for i in from.0 + 1..=to.0 {
             let Some(e) = m.entry_at(raft::Index(i)) else { continue };
@@ -335,6 +338,9 @@ impl Family for Repo {
             };
             f.pending.push((e.index, e.at, evs));
         }
+        // A member nobody polls keeps at most FEED_RING's count waiting; older entries are past what the ring keeps.
+        let over = f.pending.len().saturating_sub(git::feed::FEED_RING.0);
+        f.pending.drain(..over);
         if let Some(owner) = f.owner.clone() {
             let empty = graftyard_fold::MemStore::default();
             let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
@@ -813,6 +819,16 @@ impl Family for Repo {
             })
             .collect();
         m.insert("testMerged".into(), json!(merged));
+        // AM1's hosted rows: each stored provenance source, so B0-37 counts linked and claimed trailers.
+        let prov: Vec<Value> = evs
+            .iter()
+            .flat_map(|ev| match ev {
+                git::repo::RepoEvent::Provenance { list, .. } => list.iter().collect::<Vec<_>>(),
+                _ => Vec::new(),
+            })
+            .map(|p| json!([p.refname.display(), p.commit.hex(), p.sources]))
+            .collect();
+        m.insert("provenance".into(), json!(prov));
         m
     }
     /// A member joined with no owner holds a fold no push can write (`may_write` needs the owner), so it is trusted

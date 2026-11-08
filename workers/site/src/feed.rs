@@ -56,8 +56,10 @@ pub struct Feed {
     pub serving: Serving,
     pub owner: Option<AuthzFold>,
     pub owner_at: u64,
-    /// The newest entry `at` this member heard of from its leader, for `Following::lag`.
+    /// The newest entry `at` this member heard of from its leader, and the `at` of its last applied entry, for
+    /// `Following::lag`.
     pub leader_at: Timestamp,
+    pub applied_at: Timestamp,
     /// An InstallSnapshot catch-up is running, or the last AppendEntries left a gap.
     pub installing: bool,
     pub gap: bool,
@@ -78,6 +80,7 @@ impl Default for Feed {
             owner: None,
             owner_at: 0,
             leader_at: Timestamp(0),
+            applied_at: Timestamp(0),
             installing: false,
             gap: false,
             pending: Vec::new(),
@@ -98,8 +101,9 @@ pub fn of(repo: RepoId) -> Rc<RefCell<Feed>> {
 
 impl Feed {
     fn following(&self) -> Following {
-        let applied = self.ring.held.back().map_or(Timestamp(0), |(_, at)| *at);
-        let lag = Duration::from_millis(self.leader_at.0.saturating_sub(applied.0));
+        // The member's own last applied entry, not the ring's: the ring is empty after a boot and waits for the
+        // owner's `Authz`, and a caught-up member must not read as lagging then.
+        let lag = Duration::from_millis(self.leader_at.0.saturating_sub(self.applied_at.0));
         Following { gap: self.gap, installing: self.installing, lag }
     }
 
@@ -242,6 +246,15 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             (_, graftyard_types::MemberKind::Witness) => FeedRole::Witness,
             _ => FeedRole::Follower,
         };
+        // What this member has applied and heard of, for `Following` before any input since boot fed it.
+        let f = of(repo);
+        let mut f = f.borrow_mut();
+        let applied = c.m.group_fold().applied();
+        if let Some(e) = c.m.log().last() {
+            f.leader_at = f.leader_at.max(e.at);
+        }
+        f.applied_at = f.applied_at.max(c.m.entry_at(applied).map_or(f.leader_at, |e| e.at));
+        drop(f);
         (repo, role, c.join.owner, c.join.record.clone())
     };
     if matches!(role, FeedRole::Leader | FeedRole::Witness) {
@@ -261,9 +274,12 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             fd.owner = Some(f);
             fd.owner_at = now_ms();
         }
-        // Entries applied while no owner was known go into the ring now.
+        // Entries applied while no owner was known go into the ring now. The owner is cloned out first: a `borrow()`
+        // in the `if let` would live through the block and panic the `borrow_mut()` below (it reset the isolate on
+        // the first hosted poll).
         let core = host.core.borrow();
-        if let (Some(c), Some(o)) = (core.as_ref(), feed.borrow().owner.clone()) {
+        let owner = feed.borrow().owner.clone();
+        if let (Some(c), Some(o)) = (core.as_ref(), owner) {
             let fold = &c.m.group_fold().fold;
             let empty = graftyard_fold::MemStore::default();
             let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
