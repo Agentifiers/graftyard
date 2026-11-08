@@ -129,9 +129,18 @@ func TestValidateDetail(t *testing.T) {
 		t.Fatalf("notes: %d %s", code, body)
 	}
 
-	// A bad update line is refused before anything is indexed.
+	// A bad update line is refused before anything is indexed: a bad oid, or a name outside refs/.
 	if code, _, _ := validateDetail(t, s.URL, nil, []update{{"x", base, "refs/heads/a"}}, nil); code != 400 {
 		t.Fatalf("a bad update line answered %d", code)
+	}
+	if code, _, _ := validateDetail(t, s.URL, nil, []update{{base, z, "heads/a"}}, nil); code != 400 {
+		t.Fatalf("an update outside refs/ answered %d", code)
+	}
+
+	// A delete has no new tip, so it gets no detail; the create beside it does.
+	code, o, body = validateDetail(t, s.URL, nil, []update{{z, base, "refs/heads/claude/gone"}, {base, z, "refs/heads/claude/y2"}}, nil)
+	if code != 200 || len(o.Detail) != 1 || o.Detail[0].Ref != "refs/heads/claude/y2" {
+		t.Fatalf("delete beside a create: %d %s", code, body)
 	}
 }
 

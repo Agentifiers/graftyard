@@ -17,8 +17,8 @@ import { api, bedGet, ghs, log, member, pat, row, sleep, state, statuses } from 
 const [which, nArg] = process.argv.slice(2);
 const RAW = new URL("../raw/", import.meta.url).pathname;
 const OUT = `${RAW}feed-${which}.jsonl`;
-const R = "m3org/j4";
-const CHAIN = `repo:${state.repo}`;
+const R = `m3org/${process.env.FEED_REPO ?? "j4"}`;
+const CHAIN = `repo:${process.env.FEED_REPO_ID ?? state.repo}`;
 const FEED = `/api/graftyard/v1/repos/${R}/activity`;
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
 const feedStatus = async () => (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, feed: s.feed, stalledSince: s.stalledSince }));
@@ -89,24 +89,101 @@ async function tokensFor(n) {
   return out;
 }
 
+/** A poll straight to one member's `/feed` (as the edge sends it), with its own token and IP hashes. */
+async function direct(site, k, wait, extra = {}) {
+  const t0 = Date.now();
+  try {
+    const r = await member(CHAIN, site, "/feed", { cursor: extra.cursor ?? null, wait_s: wait, paths: extra.paths ?? [`held/${k % 50}/**`],
+      learner_answers: false, token: `t${k}`, ip: `ip${k}`, ...extra.body }, (wait + 10) * 1000, extra.name);
+    return { admit: r.v?.admit ?? `status ${r.status}`, events: r.v?.events?.length ?? 0, cursor: r.v?.cursor, ms: Date.now() - t0, stopped: !!r.v?.stopped };
+  } catch (e) { return { admit: `error ${String(e).slice(0, 60)}`, ms: Date.now() - t0 }; }
+}
+
+/** Commits through the edge while polls are held: PATCHes of one task's summary, `rate` a second; client latency. */
+async function commits(app, id, secs, rate = 2) {
+  const ms = [], st = {};
+  const end = Date.now() + secs * 1000;
+  let k = 0;
+  const inflight = [];
+  while (Date.now() < end) {
+    inflight.push(api("PATCH", `/api/graftyard/v1/repos/${R}/tasks/${id}`, app, { summary: `lf12 ${k++}` }).then((r) => { ms.push(r.ms); st[r.status] = (st[r.status] ?? 0) + 1; }));
+    await sleep(1000 / rate);
+  }
+  await Promise.all(inflight);
+  return { n: ms.length, status: st, p50: pct(ms, 0.5), p99: pct(ms, 0.99), max: Math.max(...ms) };
+}
+
 if (which === "lf12") {
   const n = Number(nArg ?? 5000);
-  const toks = await tokensFor(Math.ceil(n / 2 / 10));
-  const before = await feedStatus();
-  const t0 = Date.now();
-  const r1 = await hold(n, toks);
-  const mid = await feedStatus();
-  row(OUT, { phase: "before place_learners", ms: Date.now() - t0, status: r1.status, noRetryAfter: r1.noRetryAfter, p99: pct(r1.ms, 0.99), before, after: mid });
-  log(`lf12 before: ${JSON.stringify(r1.status)} noRetryAfter=${r1.noRetryAfter} members=${JSON.stringify(mid.map((m) => [m.site, m.role, m.feed?.peak, m.feed?.refused, m.feed?.leaderPolls]))}`);
-  const leader = mid.find((m) => m.role === "leader")?.site;
+  const app = (await ghs({})).body.token;
+  const task = await api("POST", `/api/graftyard/v1/repos/${R}/tasks`, app, { kind: "external", session: `lf12-${Date.now().toString(36)}`, summary: "lf12" });
+  const id = task.body?.id;
+  // Phase A, through the edge: one client IP, so FEED_POLLS' 50 per IP per member binds before FEED_HELD_MAX.
+  const toks = await tokensFor(20);
+  const ra = await hold(400, toks);
+  const sa = await feedStatus();
+  row(OUT, { phase: "A edge, one IP", polls: 400, status: ra.status, noRetryAfter: ra.noRetryAfter, members: sa });
+  log(`A: ${JSON.stringify(ra.status)} noRetryAfter=${ra.noRetryAfter} ${JSON.stringify(sa.map((m) => [m.site, m.role, m.feed?.peak, m.feed?.refused, m.feed?.leaderPolls]))}`);
+  // Phase B, straight to members: n polls with distinct token and IP hashes over the voters, commits running.
+  const st = await feedStatus();
+  const voters = st.map((m) => m.site);
+  const polls = Array.from({ length: n }, (_, k) => sleep((k % 1000) * 3).then(() => direct(voters[k % voters.length], k, 25)));
+  await sleep(5_000);
+  const during = commits(app, id, 25);
+  const [pb, cb] = await Promise.all([Promise.all(polls), during]);
+  const sb = await feedStatus();
+  const bySite = {};
+  pb.forEach((r, k) => { const s = voters[k % voters.length]; bySite[s] ??= {}; bySite[s][r.admit] = (bySite[s][r.admit] ?? 0) + 1; });
+  row(OUT, { phase: "B members, before place_learners", polls: n, bySite, commits: cb, members: sb });
+  log(`B: ${JSON.stringify(bySite)} commits ${JSON.stringify(cb)} ${JSON.stringify(sb.map((m) => [m.site, m.role, m.feed?.peak, m.feed?.refused]))}`);
+  const leader = sb.find((m) => m.role === "leader")?.site;
   const placed = await member(CHAIN, leader, "/learners", { load: { reads: [] }, feed: true }, 120_000);
   row(OUT, { phase: "place_learners", leader, placed: placed.v ?? placed });
-  log(`place_learners: ${JSON.stringify(placed.v ?? placed).slice(0, 500)}`);
-  await sleep(70_000); // the edge's member cache lives 60 s
-  const r2 = await hold(n, toks);
-  const after = await feedStatus();
-  row(OUT, { phase: "after place_learners", status: r2.status, noRetryAfter: r2.noRetryAfter, p99: pct(r2.ms, 0.99), after });
-  log(`lf12 after: ${JSON.stringify(r2.status)} members=${JSON.stringify(after.map((m) => [m.site, m.role, m.feed?.peak, m.feed?.refused, m.feed?.polls]))}`);
+  log(`place_learners: ${JSON.stringify(placed.v ?? placed).slice(0, 600)}`);
+  await sleep(70_000);
+  const st2 = await statuses(CHAIN, 3);
+  const learners = (placed.v?.learners ?? []).map((l) => ({ site: l.site, name: l.doName }));
+  // Phase C: the same n polls to learners (the members the edge now tries first), commits running; then through the
+  // edge, where followers must see none.
+  const pc = Array.from({ length: n }, (_, k) => sleep((k % 1000) * 3).then(() => {
+    const l = learners[k % Math.max(1, learners.length)];
+    return l ? direct(l.site, k, 25, { name: l.name }) : { admit: "no learner" };
+  }));
+  await sleep(5_000);
+  const [rc, cc] = await Promise.all([Promise.all(pc), commits(app, id, 25)]);
+  const byL = {};
+  rc.forEach((r, k) => { const l = learners[k % Math.max(1, learners.length)]?.name ?? "-"; byL[l] ??= {}; byL[l][r.admit] = (byL[l][r.admit] ?? 0) + 1; });
+  const fBefore = (await feedStatus()).map((m) => [m.site, m.feed?.polls]);
+  const rd = await hold(200, toks);
+  const fAfter = (await feedStatus()).map((m) => [m.site, m.feed?.polls]);
+  row(OUT, { phase: "C after place_learners", byLearner: byL, commits: cc, edge: rd.status, voterPollsBefore: fBefore, voterPollsAfter: fAfter, voters: st2.map((m) => [m.site, m.role]) });
+  log(`C: ${JSON.stringify(byL)} commits ${JSON.stringify(cc)} edge ${JSON.stringify(rd.status)} voter polls ${JSON.stringify(fBefore)} -> ${JSON.stringify(fAfter)}`);
+}
+
+if (which === "lf13") {
+  // 1,000 polls held on one follower, then its site's member calls fail for 5 s while commits run, so its next
+  // AppendEntries leaves a gap.
+  const app = (await ghs({})).body.token;
+  const task = await api("POST", `/api/graftyard/v1/repos/${R}/tasks`, app, { kind: "external", session: `lf13-${Date.now().toString(36)}`, summary: "lf13" });
+  const st = await feedStatus();
+  const f = st.find((m) => m.role === "follower")?.site;
+  const held = Array.from({ length: 1000 }, (_, k) => sleep(k * 2).then(() => direct(f, k, 25)));
+  await sleep(6_000);
+  const s1 = await feedStatus();
+  row(OUT, { step: "held", follower: f, members: s1 });
+  const t0 = Date.now();
+  const on = await bedGet(`/_bed/fault?site=${f}&for_ms=5000`);
+  const during = commits(app, task.body.id, 8, 2);
+  // New polls while it is behind (after the fault lifts, before it catches up), sampled every 300 ms.
+  const probes = [];
+  await sleep(5_200);
+  for (let i = 0; i < 20; i++) { probes.push({ at: Date.now() - t0, ...(await direct(f, 5000 + i, 0)) }); await sleep(300); }
+  const res = await Promise.all(held);
+  const c = await during;
+  const ret = res.map((r) => r.ms);
+  row(OUT, { step: "after", fault: on.status, commits: c, held: res.length, admits: res.reduce((m, r) => ((m[r.admit] = (m[r.admit] ?? 0) + 1), m), {}),
+    stopped: res.filter((r) => r.stopped).length, withEvents: res.filter((r) => r.events > 0).length, returnMs: { p50: pct(ret, 0.5), p99: pct(ret, 0.99) }, probes, members: await feedStatus() });
+  log(`lf13: stopped ${res.filter((r) => r.stopped).length}/1000, events ${res.filter((r) => r.events > 0).length}, probes ${JSON.stringify(probes.map((p) => [p.at, p.admit]))}`);
 }
 
 if (which === "status") log(JSON.stringify(await feedStatus()));

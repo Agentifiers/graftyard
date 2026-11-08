@@ -65,8 +65,8 @@ async function post(url, body, headers, timeout = 120_000) {
   }
 }
 /** One raw call to a member through the tools edge: `{status, v}`. */
-export const member = (chain, site, path, body, deadline = 30_000) =>
-  post(`${TOOLS}/member`, { chain, site, path, body, deadline, gen: 1 }, { authorization: `Bearer ${TOOLS_TOKEN}` }, deadline + 30_000);
+export const member = (chain, site, path, body, deadline = 30_000, doName = undefined) =>
+  post(`${TOOLS}/member`, { chain, site, path, body, deadline, gen: 1, do_name: doName }, { authorization: `Bearer ${TOOLS_TOKEN}` }, deadline + 30_000);
 export const tools = (path, body) => post(TOOLS + path, body, { authorization: `Bearer ${TOOLS_TOKEN}` });
 export const bed = (body) => post(`${EDGE}/_bed/identity`, body, { "x-bed-token": BED });
 export async function bedGet(path) {
