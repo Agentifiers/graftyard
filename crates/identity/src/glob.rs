@@ -124,6 +124,52 @@ pub fn glob_match(glob: &str, path: &str) -> bool {
     match_segs(&segments(glob), &path.split('/').collect::<Vec<_>>())
 }
 
+/// Whether two single segments overlap: some string matches both. A literal against a pattern is exact. Two patterns
+/// compare their literal prefixes and suffixes, which is exact for one `*` each and conservative (it may say they
+/// overlap when they do not) beyond that, as the M0-WP12 prototype's `segOverlap` does.
+fn seg_overlap(a: &str, b: &str) -> bool {
+    match (a.contains('*'), b.contains('*')) {
+        (false, false) => a == b,
+        (false, true) => seg_match(b, a),
+        (true, false) => seg_match(a, b),
+        (true, true) => {
+            let (pa, pb) = (&a[..a.find('*').unwrap_or(0)], &b[..b.find('*').unwrap_or(0)]);
+            let (sa, sb) = (&a[a.rfind('*').map_or(0, |i| i + 1)..], &b[b.rfind('*').map_or(0, |i| i + 1)..]);
+            (pa.starts_with(pb) || pb.starts_with(pa)) && (sa.ends_with(sb) || sb.ends_with(sa))
+        }
+    }
+}
+
+fn overlap_segs(a: &[&str], b: &[&str]) -> bool {
+    match (a.first(), b.first()) {
+        (None, None) => true,
+        (Some(&"**"), _) => overlap_segs(&a[1..], b) || (!b.is_empty() && overlap_segs(a, &b[1..])),
+        (_, Some(&"**")) => overlap_segs(a, &b[1..]) || (!a.is_empty() && overlap_segs(&a[1..], b)),
+        (Some(x), Some(y)) => seg_overlap(x, y) && overlap_segs(&a[1..], &b[1..]),
+        _ => false,
+    }
+}
+
+/// Whether some path matches both globs, found by walking both segment lists (`design/DESIGN.md`, Shape, the lease
+/// block: "Two globs overlap when some path matches both"). A trailing `/` means everything under it, so a changed
+/// directory past `PATHS_MAX` (`truncated`) written as `dir/` overlaps every glob under it.
+pub fn glob_overlap(a: &str, b: &str) -> bool {
+    overlap_segs(&segments(a), &segments(b))
+}
+
+/// A glob's literal prefix: its segments before the first one with a wildcard, joined. The index key of an Exclusive
+/// lease's globs (`LeaseEnforce`: "Exclusive globs are indexed by literal prefix").
+pub fn literal_prefix(glob: &str) -> String {
+    segments(glob).into_iter().take_while(|s| !s.contains('*')).collect::<Vec<_>>().join("/")
+}
+
+impl PathGlob {
+    /// `glob_overlap` of two globs.
+    pub fn overlaps(&self, other: &str) -> bool {
+        glob_overlap(&self.0, other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -148,5 +194,38 @@ mod tests {
         assert!(!claude.matches(b"refs/heads/claudex/a"));
         assert_eq!(RefPattern::parse("heads/x"), Err(GlobError::NotRefs));
         assert_eq!(RefPattern::parse("refs//x"), Err(GlobError::Shape));
+    }
+
+    #[test]
+    fn two_globs_overlap_when_some_path_matches_both() {
+        let yes = [
+            ("pkg/auth/**", "pkg/auth/session.go"),
+            ("pkg/auth/**", "pkg/**"),
+            ("pkg/*/x.go", "pkg/auth/*"),
+            ("**/AGENTS.md", "docs/AGENTS.md"),
+            ("**", "a/b/c"),
+            ("src/*.rs", "src/lib.rs"),
+            ("src/a*.rs", "src/*b.rs"),
+            ("pkg/", "pkg/auth/x"),
+            ("docs/auth.md", "docs/auth.md"),
+        ];
+        let no = [
+            ("pkg/auth/**", "pkg/billing/**"),
+            ("pkg/auth/**", "pkgx/auth"),
+            ("src/*.rs", "src/a/b.rs"),
+            ("src/a*.rs", "src/b*.go"),
+            ("docs/auth.md", "docs/auth.mdx"),
+            ("pkg/", "pk"),
+        ];
+        for (a, b) in yes {
+            assert!(glob_overlap(a, b) && glob_overlap(b, a), "{a} {b}");
+        }
+        for (a, b) in no {
+            assert!(!glob_overlap(a, b) && !glob_overlap(b, a), "{a} {b}");
+        }
+        assert_eq!(literal_prefix("pkg/auth/**"), "pkg/auth");
+        assert_eq!(literal_prefix("**"), "");
+        assert_eq!(literal_prefix("*/x"), "");
+        assert_eq!(literal_prefix("docs/auth.md"), "docs/auth.md");
     }
 }
