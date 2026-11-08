@@ -1,242 +1,261 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useSuspenseQuery } from "@tanstack/react-query";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ArrowLeft02Icon,
-  CancelCircleIcon,
-  CheckmarkCircle02Icon,
-  Clock01Icon,
-  Loading03Icon,
-  MinusSignCircleIcon,
-} from "@hugeicons/core-free-icons";
-import type { Schemas } from "@/api/client";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { commentsCollection } from "@/areas/issues/collections";
-import { checkRunsQuery, pullFilesQuery, pullQuery } from "@/areas/pulls/queries";
+import { ChecksTab } from "@/areas/pulls/checks-tab";
+import { CommitList } from "@/areas/pulls/commit-list";
+import { ConversationTab } from "@/areas/pulls/conversation-tab";
+import { FilesTab } from "@/areas/pulls/files-tab";
+import { PullHeader } from "@/areas/pulls/header";
+import { MergeBox } from "@/areas/pulls/merge-box";
+import { checkRollup } from "@/areas/pulls/merge-rules";
+import {
+  checkRunsQuery,
+  mergeRequirementsQuery,
+  pullCommitsQuery,
+  pullEventsQuery,
+  pullFilesQuery,
+  pullQuery,
+  reviewCommentsQuery,
+  reviewsQuery,
+  threadsQuery,
+  viewedQuery,
+  type Pull,
+} from "@/areas/pulls/queries";
+import { ReviewBox } from "@/areas/pulls/review-box";
+import { useReviewModel } from "@/areas/pulls/review-data";
 import { Slot } from "@/areas/slots";
-import { Conversation } from "@/components/conversation";
-import { FileDiff } from "@/components/diff";
-import { Ago, pullState, StateBadge } from "@/components/github";
+import { CHECK_LOOK, StateIconOf } from "@/areas/pulls/bits";
 import { Region } from "@/components/region";
-import { cn } from "cn";
+import { Badge } from "@/components/reui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "cn";
+
+const TABS = ["conversation", "commits", "checks", "files"] as const;
+type Tab = (typeof TABS)[number];
+
+type Search = { tab?: Exclude<Tab, "conversation">; view?: "split"; run?: number };
 
 export const Route = createFileRoute("/$owner/$repo/pull/$number")({
   params: {
     parse: ({ number }) => ({ number: Number(number) }),
     stringify: ({ number }) => ({ number: String(number) }),
   },
-  loader: async ({ context, params }) => {
-    const { queryClient } = context;
-    void queryClient.prefetchQuery(pullFilesQuery(params));
-    void commentsCollection(params)
-      .preload()
-      .catch(() => {});
+  validateSearch: (s: Record<string, unknown>): Search => ({
+    tab: s.tab === "commits" || s.tab === "checks" || s.tab === "files" ? s.tab : undefined,
+    view: s.view === "split" ? "split" : undefined,
+    run:
+      typeof s.run === "number"
+        ? s.run
+        : typeof s.run === "string" && /^\d+$/.test(s.run)
+          ? Number(s.run)
+          : undefined,
+  }),
+  loaderDeps: ({ search }) => ({ tab: search.tab }),
+  loader: async ({ context, params, deps }) => {
+    const qc = context.queryClient;
+    void qc.prefetchQuery(reviewsQuery(params));
+    void qc.prefetchQuery(reviewCommentsQuery(params));
+    void qc.prefetchQuery(threadsQuery(params));
+    void qc.prefetchQuery(mergeRequirementsQuery(params));
+    void qc.prefetchQuery(pullCommitsQuery(params));
+    if (!deps.tab) {
+      void qc.prefetchQuery(pullEventsQuery(params));
+      void commentsCollection(params)
+        .preload()
+        .catch(() => {});
+    }
+    if (deps.tab === "files") {
+      void qc.prefetchQuery(pullFilesQuery(params));
+      void qc.prefetchQuery(viewedQuery(params));
+    }
     // Checks are keyed by the head sha, which only the PR knows.
-    const pr = await queryClient.ensureQueryData(pullQuery(params)).catch(() => undefined);
-    if (pr) void queryClient.prefetchQuery(checkRunsQuery({ ...params, ref: pr.head.sha }));
+    const pr = await qc.ensureQueryData(pullQuery(params)).catch(() => undefined);
+    if (pr) void qc.prefetchQuery(checkRunsQuery({ ...params, ref: pr.head.sha }));
   },
   component: PullPage,
 });
 
 function PullPage() {
   const params = Route.useParams();
+  const { tab = "conversation" } = Route.useSearch();
   return (
-    <div className="flex flex-col gap-4">
-      <Region name="pull request" fallback={<Skeleton className="h-16" />}>
-        <PullHeader />
-      </Region>
-      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <div className="flex min-w-0 flex-col gap-4">
-          <Section title="Conversation">
-            <Region
-              name="conversation"
-              rows={4}
-              onRetry={() => commentsCollection(params).reload()}
-            >
-              <Thread />
+    <div className="flex flex-col gap-3">
+      <Region name="pull request" fallback={<Skeleton className="h-20" />}>
+        <PullHeader
+          pull={params}
+          actions={
+            <Region name="review" fallback={null}>
+              <ReviewAction />
             </Region>
-          </Section>
-          <Section title="Files changed">
-            <Region name="files" rows={6}>
-              <Files />
-            </Region>
-          </Section>
-        </div>
-        <div className="flex flex-col gap-4 lg:sticky lg:top-4">
-          <Section title="Checks">
-            <Region name="checks" rows={4}>
-              <Checks />
-            </Region>
-          </Section>
-          <Region name="pull request" fallback={null}>
-            <PullSidebar />
-          </Region>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Section({
-  title,
-  className,
-  children,
-}: {
-  title: string;
-  className?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className={cn("flex flex-col gap-3", className)} data-section={title}>
-      <h2 className="text-sm font-semibold">{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-// Other areas' widgets (reviewers, merge box, agent session). They need the head sha.
-function PullSidebar() {
-  const params = Route.useParams();
-  const { data: pr } = useSuspenseQuery(pullQuery(params));
-  return <Slot name="pull-sidebar" props={{ ...params, headSha: pr.head.sha }} />;
-}
-
-function PullHeader() {
-  const { data: pr } = useSuspenseQuery(pullQuery(Route.useParams()));
-  return (
-    <div>
-      <h1 className="text-xl font-semibold">
-        {pr.title} <span className="text-muted-foreground font-normal">#{pr.number}</span>
-      </h1>
-      <div className="text-muted-foreground mt-1.5 flex flex-wrap items-center gap-2 text-sm">
-        <StateBadge state={pullState(pr)} />
-        <span>
-          <span className="text-foreground font-medium">{pr.user.login}</span>{" "}
-          {pr.merged_at ? "merged" : "wants to merge"} {pr.commits} commits into
-        </span>
-        <code className="bg-muted text-foreground rounded border px-1.5 py-0.5 font-mono text-xs">
-          {pr.base.ref}
-        </code>
-        <HugeiconsIcon
-          icon={ArrowLeft02Icon}
-          strokeWidth={2}
-          className="size-3.5"
-          aria-label="from"
+          }
         />
-        <code className="bg-muted text-foreground rounded border px-1.5 py-0.5 font-mono text-xs">
-          {pr.head.ref}
-        </code>
-        <span className="font-mono text-xs">
-          <span className="text-success">+{pr.additions}</span>{" "}
-          <span className="text-destructive">-{pr.deletions}</span>
-        </span>
-      </div>
+      </Region>
+      <TabBar />
+      {tab === "files" ? (
+        <Region name="files" rows={10}>
+          <Files />
+        </Region>
+      ) : (
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_18rem]">
+          <div className="flex min-w-0 flex-col gap-4">
+            {tab === "conversation" && (
+              <Region
+                name="conversation"
+                rows={6}
+                onRetry={() => commentsCollection(params).reload()}
+              >
+                <Thread />
+              </Region>
+            )}
+            {tab === "commits" && (
+              <Region name="commits" rows={5}>
+                <Commits />
+              </Region>
+            )}
+            {tab === "checks" && (
+              <Region name="checks" rows={5}>
+                <Checks />
+              </Region>
+            )}
+          </div>
+          <aside className="flex flex-col gap-4 lg:sticky lg:top-4">
+            <Region name="pull request" fallback={null}>
+              <PullSidebar />
+            </Region>
+          </aside>
+        </div>
+      )}
     </div>
   );
+}
+
+// Tab counts come from their own reads; a failing count shows no number, not an error.
+function TabBar() {
+  const params = Route.useParams();
+  const { tab = "conversation" } = Route.useSearch();
+  const pr = useQuery(pullQuery(params)).data;
+  const reviews = useQuery(reviewCommentsQuery(params)).data;
+  const runs = useQuery({
+    ...checkRunsQuery({ ...params, ref: pr?.head.sha ?? "" }),
+    enabled: Boolean(pr),
+  }).data;
+  const roll = runs ? checkRollup(runs.check_runs) : undefined;
+  const look = roll ? CHECK_LOOK[roll.state] : undefined;
+  const items: { tab: Tab; label: string; count?: number; extra?: React.ReactNode }[] = [
+    {
+      tab: "conversation",
+      label: "Conversation",
+      count: pr ? pr.comments + (reviews?.length ?? 0) : undefined,
+    },
+    { tab: "commits", label: "Commits", count: pr?.commits },
+    {
+      tab: "checks",
+      label: "Checks",
+      count: roll?.total,
+      extra: look && roll && roll.total > 0 ? <StateIconOf {...look} className="size-3.5" /> : null,
+    },
+    { tab: "files", label: "Files changed", count: pr?.changed_files },
+  ];
+  return (
+    <nav className="flex gap-1 border-b" aria-label="Pull request" role="tablist">
+      {items.map((it) => (
+        <Link
+          key={it.tab}
+          from={Route.fullPath}
+          search={(prev) => ({
+            ...prev,
+            tab: it.tab === "conversation" ? undefined : it.tab,
+            run: undefined,
+          })}
+          role="tab"
+          aria-selected={tab === it.tab}
+          className={cn(
+            "text-muted-foreground hover:text-foreground -mb-px flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 text-sm font-medium",
+            "aria-selected:border-primary aria-selected:text-foreground",
+          )}
+          data-tab={it.tab}
+        >
+          {it.label}
+          {it.extra}
+          {it.count !== undefined && (
+            <Badge variant="secondary" size="sm">
+              {it.count}
+            </Badge>
+          )}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+function ReviewAction() {
+  const pull = Route.useParams();
+  const model = useReviewModel(pull);
+  return <ReviewBox pull={pull} model={model} />;
 }
 
 function Thread() {
-  const params = Route.useParams();
-  const { data: pr } = useSuspenseQuery(pullQuery(params));
+  const pull: Pull = Route.useParams();
+  const model = useReviewModel(pull);
   return (
-    <Conversation
-      {...params}
-      opening={{
-        author: pr.user,
-        at: pr.created_at,
-        body: pr.body || "_No description provided._",
-      }}
+    <ConversationTab
+      pull={pull}
+      model={model}
+      mergeBox={
+        <Region name="merge box" rows={3}>
+          <MergeBox pull={pull} />
+        </Region>
+      }
+    />
+  );
+}
+
+function Commits() {
+  const params = Route.useParams();
+  const { data } = useSuspenseQuery(pullCommitsQuery(params));
+  return <CommitList owner={params.owner} repo={params.repo} commits={data} />;
+}
+
+function Checks() {
+  const params = Route.useParams();
+  const { run } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  return (
+    <ChecksTab
+      pull={params}
+      runId={run}
+      onRun={(id) => navigate({ search: (prev) => ({ ...prev, run: id }), replace: true })}
     />
   );
 }
 
 function Files() {
-  const { data: files } = useSuspenseQuery(pullFilesQuery(Route.useParams()));
+  const pull = Route.useParams();
+  const { view } = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const model = useReviewModel(pull);
   return (
-    <div className="flex flex-col gap-3" data-testid="files">
-      {files.map((f) => (
-        <FileDiff key={f.filename} file={f} />
-      ))}
-    </div>
+    <FilesTab
+      pull={pull}
+      model={model}
+      view={view ?? "unified"}
+      onView={(v) =>
+        navigate({
+          search: (prev) => ({ ...prev, view: v === "split" ? "split" : undefined }),
+          replace: true,
+        })
+      }
+    />
   );
 }
 
-type CheckRun = Schemas["check-run"];
-
-function checkLook(run: CheckRun) {
-  if (run.status === "in_progress")
-    return { icon: Loading03Icon, tone: "text-warning animate-spin", label: "In progress" };
-  if (run.status !== "completed")
-    return { icon: Clock01Icon, tone: "text-muted-foreground", label: "Queued" };
-  switch (run.conclusion) {
-    case "success":
-      return { icon: CheckmarkCircle02Icon, tone: "text-success", label: "Success" };
-    case "failure":
-    case "timed_out":
-    case "action_required":
-      return {
-        icon: CancelCircleIcon,
-        tone: "text-destructive",
-        label: run.conclusion === "failure" ? "Failure" : run.conclusion,
-      };
-    default:
-      return {
-        icon: MinusSignCircleIcon,
-        tone: "text-muted-foreground",
-        label: run.conclusion ?? "Neutral",
-      };
-  }
-}
-
-function Checks() {
+// Other areas' widgets (reviewers, agent session) under the pull's own sidebar slot.
+function PullSidebar() {
   const params = Route.useParams();
   const { data: pr } = useSuspenseQuery(pullQuery(params));
-  const { data } = useSuspenseQuery(checkRunsQuery({ ...params, ref: pr.head.sha }));
-  const runs = data.check_runs;
-  const passed = runs.filter((r) => r.conclusion === "success").length;
   return (
-    <div className="flex flex-col gap-2" data-testid="checks">
-      <p className="text-muted-foreground text-xs">
-        {passed} of {data.total_count} checks passed
-      </p>
-      <ul className="divide-y rounded-lg border">
-        {runs.map((run) => {
-          const look = checkLook(run);
-          return (
-            <li key={run.id} className="flex items-start gap-2 px-3 py-2 text-sm">
-              <HugeiconsIcon
-                icon={look.icon}
-                strokeWidth={2}
-                className={`mt-0.5 size-4 shrink-0 ${look.tone}`}
-                aria-label={look.label}
-              />
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium">{run.name}</div>
-                <div className="text-muted-foreground text-xs break-words">
-                  {/* A no-break space ties each dot to what follows, so a line never ends on one. */}
-                  <span className="capitalize">{look.label}</span>
-                  {run.output.summary && (
-                    <>
-                      {" "}
-                      ·{"\u00a0"}
-                      {run.output.summary}
-                    </>
-                  )}
-                  {run.completed_at && (
-                    <>
-                      {" "}
-                      <span className="whitespace-nowrap">
-                        ·{"\u00a0"}
-                        <Ago at={run.completed_at} />
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+    <div className="flex flex-col gap-4">
+      <Slot name="pull-sidebar" props={{ ...params, headSha: pr.head.sha }} />
     </div>
   );
 }
