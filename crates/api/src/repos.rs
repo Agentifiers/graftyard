@@ -15,13 +15,14 @@
 use graftyard_git::issues::{MergeMethod, RepoSettings, Visibility};
 use graftyard_git::refs::RefName;
 use graftyard_identity::{RepoName, RepoPermission, Url};
+use graftyard_raft::Acked;
 use graftyard_types::{AccountId, Timestamp};
 use serde_json::{Map, Value, json};
 use smallvec::SmallVec;
 
 use crate::exec::{Args, Obj, Out, Request, leaf, obj};
 use crate::view::Repo;
-use crate::wire::{FieldError, Host, NodeId, NodeType, Reply, iso, simple_user, validation_error};
+use crate::wire::{FieldError, NodeId, NodeType, Reply, iso, simple_user, validation_error};
 
 pub const DOC_CREATE: &str = "rest/repos/repos#create-an-organization-repository";
 pub const DOC_CREATE_USER: &str = "rest/repos/repos#create-a-repository-for-the-authenticated-user";
@@ -163,8 +164,11 @@ pub fn get(r: &Repo<'_>, index: graftyard_types::Index) -> Reply {
     Reply::json(200, full_repository(r)).with("etag", tag)
 }
 
-/// A create's reply: 201 with `Location`, as GHES documents it.
-pub fn created(r: &Repo<'_>) -> Reply {
+/// A committed create's reply, 201 with `Location` as GHES documents it, or an update's 200: only from `&Acked`.
+pub fn saved<T>(_acked: &Acked<T>, r: &Repo<'_>, created: bool) -> Reply {
+    if !created {
+        return Reply::json(200, full_repository(r));
+    }
     let loc = format!("{}/repos/{}/{}", r.host.api(), r.at.owner, r.at.name);
     Reply::json(201, full_repository(r)).with("location", loc)
 }
@@ -278,8 +282,8 @@ pub fn graphql_input(input: &Value) -> Value {
     Value::Object(b)
 }
 
-/// The `createRepository` payload over the new repository's tiers.
-pub fn create_payload(req: &Request<'_>, r: &Repo<'_>) -> Value {
+/// The `createRepository` payload over the new repository's tiers, once its `InitRepo` is acknowledged.
+pub fn create_payload<T>(_acked: &Acked<T>, req: &Request<'_>, r: &Repo<'_>) -> Value {
     struct Root<'a>(&'a Repo<'a>);
     struct Payload<'a>(&'a Repo<'a>);
     struct Created<'a>(&'a Repo<'a>);
@@ -340,7 +344,16 @@ pub fn create_payload(req: &Request<'_>, r: &Repo<'_>) -> Value {
     req.run(&Root(r))
 }
 
-/// The edge's host for a reply rendered off the member.
-pub fn host(name: &str) -> Option<Host> {
-    Host::new(name, false).ok()
+/// A refused `InitRepo`, `Settings`, or `DeleteRepo`: GHES's 403 for a caller who is not an admin, 404 for a
+/// repository that is gone, and 422 for settings it refuses.
+pub fn refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    use graftyard_git::issue_ops::IssueErr as E;
+    match e {
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
+        E::Forbidden => Reply::error(403, "Must have admin rights to Repository.", DOC_UPDATE),
+        E::Agent(a) => Reply::error(403, &a.text, DOC_UPDATE),
+        E::NotFound => Reply::not_found(),
+        E::NeedIdBlock | E::Unavailable => Reply::error(503, "Service Unavailable", "rest"),
+        _ => Reply::json(422, validation_error("Validation Failed", DOC_UPDATE, &[])),
+    }
 }

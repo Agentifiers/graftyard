@@ -6,7 +6,7 @@ mod common;
 
 use common::*;
 use graftyard_api::exec::Request;
-use graftyard_api::repos::{apply_body, create_payload, created, defaults, full_repository, get, name_of, taken};
+use graftyard_api::repos::{apply_body, create_payload, defaults, full_repository, get, name_of, saved, taken};
 use graftyard_api::wire::Host;
 use graftyard_git::issue_ops::IssueOp;
 use graftyard_git::issues::{MergeMethod, Visibility};
@@ -54,7 +54,7 @@ fn a_created_repository_renders_ghes_full_repository_with_its_settings() {
     assert_eq!(v["created_at"], graftyard_wire::iso(c.now));
     assert_eq!(v["permissions"]["admin"], true);
     assert!(v.get("security_and_analysis").is_none(), "the provider would then read vulnerability alerts");
-    let made = created(&r);
+    let made = saved(&ack(()), &r, true);
     assert_eq!(made.status, 201);
     assert_eq!(made.header("location"), Some("https://ghes.graftyard.test/api/v3/repos/o/r"));
     keep("repos-create-user", "POST", "/user/repos", &made);
@@ -116,7 +116,7 @@ fn gh_create_repository_gets_its_payload() {
     let c = created_chain(&body);
     let (h, dir) = (host(), Dir::new(OWNER));
     let req = Request::parse(q, vars.as_object().cloned(), None).unwrap();
-    let out = create_payload(&req, &c.repo(0, &h, &dir));
+    let out = create_payload(&ack(()), &req, &c.repo(0, &h, &dir));
     let repo = &out["data"]["createRepository"]["repository"];
     assert_eq!(repo["name"], "r");
     assert_eq!(repo["owner"]["login"], "o");

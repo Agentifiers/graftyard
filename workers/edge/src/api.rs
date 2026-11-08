@@ -181,12 +181,42 @@ pub(crate) struct Read {
     pub(crate) core: MemStore,
     meta: MemStore,
     pub(crate) dir: HostedDir,
+    /// The leader's applied index the tiers were read at, which `GET /repos/{o}/{r}`'s ETag names.
+    pub(crate) index: u64,
 }
 
 impl Read {
     fn view<'a>(&'a self, host: &'a Host) -> View<'a> {
         View { host, at: self.at.clone(), core: &self.core, meta: &self.meta, dir: &self.dir }
     }
+
+    /// `view` for another module's route (`crate::repos`).
+    pub(crate) fn view_of<'a>(&'a self, host: &'a Host) -> View<'a> {
+        self.view(host)
+    }
+
+    /// The same read under another name, as a rename's `Settings` renders under the new one.
+    pub(crate) fn clone_at(&self, at: RepoRef) -> Read {
+        Read {
+            repo: self.repo.clone(),
+            at,
+            core: self.core.clone(),
+            meta: self.meta.clone(),
+            dir: self.dir.clone(),
+            index: self.index,
+        }
+    }
+}
+
+/// `read_repo` of a repository `crate::repos` just created, under the login and name it was created with.
+pub(crate) async fn read_new(
+    c: &Ctx<'_>,
+    repo: Repo,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+) -> Result<std::result::Result<Read, Reply>> {
+    read_repo(c, repo, owner, name, viewer, None, Rows::All).await
 }
 
 /// `o/r` resolved, then its tiers and the owner's `Authz` read through `fresh`. `Ok(Err(reply))` when the repository
@@ -268,7 +298,7 @@ async fn read_repo(
         Actor::App { .. } | Actor::Anonymous => None,
     });
     let (core, meta) = (TierRows::store(&rows.core), TierRows::store(meta));
-    let mut rd = Read { repo, at, core, meta, dir };
+    let mut rd = Read { repo, at, core, meta, dir, index: rows.index };
     if merge.is_none() {
         rd.dir.logins = read_logins(c, &rd).await;
     }
@@ -374,6 +404,14 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (Method::Post, ["user", "keys"]) => crate::keys::add(c, req).await,
             (_, ["orgs", _, "teams", ..] | ["user", "memberships", "orgs", _]) => {
                 crate::collab::org_route(c, req, p).await
+            }
+            (Method::Post, ["orgs", org, "repos"]) => {
+                let body = req.json().await.unwrap_or(Value::Null);
+                crate::repos::create(c, req, crate::repos::Via::Org((*org).to_owned()), body).await
+            }
+            (Method::Post, ["user", "repos"]) => {
+                let body = req.json().await.unwrap_or(Value::Null);
+                crate::repos::create(c, req, crate::repos::Via::User, body).await
             }
             (Method::Get, ["user", "repository_invitations"]) => crate::collab::user_invitation(c, req, None).await,
             (Method::Patch | Method::Delete, ["user", "repository_invitations", id]) => {
@@ -815,6 +853,35 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Ok(r) => r,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
     };
+    // gh's `repo create` without a README: `createRepository(input:)` names no repository yet (`crate::repos`).
+    if let Ok(roots) = gq.roots()
+        && let [(field, args)] = roots.as_slice()
+        && field == "createRepository"
+    {
+        let input = args.get("input").cloned().unwrap_or(Value::Null);
+        let owner = input["ownerId"].as_str().and_then(graftyard_wire::NodeId::parse).and_then(|n| {
+            matches!(n.ty, graftyard_wire::NodeType::User | graftyard_wire::NodeType::Organization)
+                .then(|| graftyard_types::AccountId(graftyard_types::DbId(n.id())))
+        });
+        let via = crate::repos::Via::Graphql {
+            owner,
+            query: q.clone(),
+            variables: vars.clone().map(Value::Object).unwrap_or(Value::Null),
+        };
+        let r = crate::repos::create(c, req, via, graftyard_api::repos::graphql_input(&input)).await?;
+        // A refusal before the leader rendered is GraphQL's error shape, at 200.
+        return Ok(if r.status == 200 {
+            r
+        } else {
+            let m = r.value()["message"].as_str().unwrap_or("Repository creation failed.").to_owned();
+            let m = r.value()["errors"][0]["message"].as_str().map(str::to_owned).unwrap_or(m);
+            Reply::json(
+                200,
+                json!({ "data": { "createRepository": null },
+                "errors": [{ "type": "UNPROCESSABLE", "path": ["createRepository"], "message": m }] }),
+            )
+        });
+    }
     let target = match graphql::route(&gq) {
         Ok(t) => t,
         Err(e) => return Ok(Reply::json(200, json!({ "errors": [e.json()] }))),
@@ -1036,6 +1103,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         return Ok(r);
     }
     if let Some(r) = crate::collab::repo_route(c, req, &rd, who.as_ref(), tail).await? {
+        return Ok(r);
+    }
+    if let Some(r) = crate::repos::repo_route(c, req, &rd, who.as_ref(), tail, rd.index, host).await? {
         return Ok(r);
     }
     // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the

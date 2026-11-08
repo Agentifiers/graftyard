@@ -54,6 +54,7 @@ mod keys;
 mod oidc;
 mod precreate;
 mod release;
+mod repos;
 mod transfer;
 mod usertok;
 
@@ -717,6 +718,53 @@ async fn validate(c: &Ctx<'_>, repo: &Repo, pack: &[u8], tips: &[String]) -> std
     match run.await {
         Ok(r) => r,
         Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `auto_init`'s first commit on a new repository (`crate::repos`): the README commit's pack, validated by the git
+/// cache and placed as a push's is, then committed as an ordinary `Push` of `refs/heads/main` under the caller's
+/// credential. `Ok(false)` when the leader refused it; the repository then has no commit, as a create without
+/// `auto_init` has none.
+pub(crate) async fn push_init(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    who: &Principal,
+    init: &graftyard_git::init::InitCommit,
+) -> std::result::Result<bool, String> {
+    let main = RefName::parse(b"refs/heads/main").map_err(|e| format!("{e:?}"))?;
+    let tips = vec![init.commit.hex()];
+    let raw = buckets(c.env, c.sites).map_err(|e| e.to_string())?;
+    let refs: Vec<(SiteId, &R2)> =
+        raw.iter().filter(|(s, _)| repo.record.sites.contains(s)).map(|(s, b)| (*s, b)).collect();
+    let store = PackStore { sites: c.sites, buckets: &refs, copies: Copies::TwoRegions };
+    let stage = Stage {
+        network: NetworkId(repo.id.0),
+        id: PackId(Ulid::new(now(), rand10())),
+        meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
+        bytes: &init.pack,
+        inline: init.pack.len() <= INLINE_MAX,
+        part: c.cfg.part,
+    };
+    ensure_group(c, repo).await?;
+    let (d, _) = store.place_teed(stage, validate(c, repo, &init.pack, &tips)).await.map_err(|e| e.to_string())?;
+    let push = Push {
+        updates: vec![graftyard_git::refs::RefUpdate { name: main, expect: None, new: Some(init.commit) }],
+        atomicity: Atomicity::AllOrNothing,
+        pack: Some(d.into_pack()),
+        actor: who.clone(),
+        options: Vec::new(),
+        request: c.rid,
+        agent: None,
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
+    };
+    let body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push }).map_err(|e| e.to_string())?;
+    match commit(c, repo, &body, None, None).await.map_err(|e| e.to_string())? {
+        Ok(PushOutcome::Ok(ok)) => Ok(ok.out.refs.iter().all(|r| *r == graftyard_git::repo::RefOutcome::Ok)),
+        Ok(PushOutcome::Refused(_)) => Ok(false),
+        Ok(other) => Err(format!("{other:?}")),
+        Err(e) => Err(format!("{e:?}")),
     }
 }
 

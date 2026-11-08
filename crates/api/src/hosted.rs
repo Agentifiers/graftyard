@@ -270,6 +270,15 @@ pub enum What {
         created: bool,
         contents: bool,
     },
+    /// `rest:repos` (`crate::repos`): a create's 201 with `Location`, or an update's 200, both `full-repository`.
+    RepoSaved {
+        created: bool,
+    },
+    /// gh's GraphQL `createRepository` (`crate::repos::create_payload`).
+    RepoCreatedGraphql {
+        query: String,
+        variables: Value,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -362,6 +371,13 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
             let reader = crate::tasks::Reader { metadata: true, contents: *contents };
             WireReply::of(&crate::tasks::render_ok(&r, owner, at, acked, *created, reader))
         }
+        What::RepoSaved { created } => WireReply::of(&crate::repos::saved(acked, &r, *created)),
+        What::RepoCreatedGraphql { query, variables } => {
+            match Request::parse(query, variables.as_object().cloned(), None) {
+                Ok(req) => graphql(crate::repos::create_payload(acked, &req, &r)),
+                Err(e) => graphql(json!({ "errors": [e.json()] })),
+            }
+        }
     }
 }
 
@@ -376,6 +392,8 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::LabelCreated => WireReply::of(&crate::rest::label_refused(e)),
         What::AgentPolicy => WireReply::of(&crate::release::refused(e)),
         What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
+        What::RepoSaved { .. } => WireReply::of(&crate::repos::refused(e)),
+        What::RepoCreatedGraphql { .. } => graphql(crate::graphql::refused_field("createRepository", e)),
     }
 }
 
