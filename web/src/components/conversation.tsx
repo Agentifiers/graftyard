@@ -66,31 +66,56 @@ function RailItem({
   );
 }
 
-// The opening post, every comment, and the composer, on one rail. value={0} keeps
-// ReUI's "completed" styling off, so the rail stays the border colour.
-export function Conversation({ opening, ...thread }: Thread & { opening: Post }) {
+// Something other than a comment that belongs on the rail, such as a review, a label
+// change, a merge, or a force-push. The area that owns it renders `node`.
+export type TimelineEvent = {
+  key: string;
+  at: string;
+  author: Author;
+  node: React.ReactNode;
+};
+
+// The opening post, every comment and extra event in time order, and the composer, on
+// one rail. value={0} keeps ReUI's "completed" styling off, so the rail stays the border
+// colour. `composer={false}` hides the comment box, for a locked thread.
+export function Conversation({
+  opening,
+  events = [],
+  composer = true,
+  ...thread
+}: Thread & { opening: Post; events?: TimelineEvent[]; composer?: boolean }) {
   const comments = commentsCollection(thread);
   const { data } = useLiveSuspenseQuery({
     query: (q) => q.from({ c: comments }).orderBy(({ c }) => c.created_at, "asc"),
   });
-  const posts = [
-    { key: "opening", ...opening, pending: false },
+  const items = [
     ...data.map((c) => ({
       key: String(c.id),
-      author: c.user,
       at: c.created_at,
-      body: c.body ?? "",
-      pending: c.$hasPendingWrites,
+      author: c.user,
+      node: (
+        <CommentCard
+          author={c.user}
+          at={c.created_at}
+          body={c.body ?? ""}
+          pending={c.$hasPendingWrites}
+        />
+      ),
     })),
+    ...events,
+  ].sort((a, b) => a.at.localeCompare(b.at));
+  const all = [
+    { key: "opening", author: opening.author, node: <CommentCard {...opening} /> },
+    ...items,
   ];
   return (
     <Timeline value={0} data-testid="comments">
-      {posts.map(({ key, ...post }, i) => (
-        <RailItem key={key} author={post.author} step={i + 1}>
-          <CommentCard {...post} />
+      {all.map(({ key, author, node }, i) => (
+        <RailItem key={key} author={author} step={i + 1}>
+          {node}
         </RailItem>
       ))}
-      <CommentBox {...thread} step={posts.length + 1} />
+      {composer && <CommentBox {...thread} step={all.length + 1} />}
     </Timeline>
   );
 }
