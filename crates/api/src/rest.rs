@@ -134,6 +134,60 @@ pub fn plan_delete_ref(r: &Repo<'_>, reference: &str) -> Result<graftyard_git::r
     }
 }
 
+/// `POST /repos/{o}/{r}/git/refs` (`{ref, sha}`) and `PATCH /repos/{o}/{r}/git/refs/{ref}` (`{sha, force}`): the ref
+/// update the edge commits as a `Push`, which `validate` checks on an empty pack for an agent (AM1). `reference` is
+/// `None` for a create. A `PATCH` without `force` must be a fast-forward, which the git cache's detail reports; the
+/// caller checks it.
+pub fn plan_write_ref(
+    r: &Repo<'_>,
+    reference: Option<&str>,
+    body: &Value,
+) -> Result<(graftyard_git::refs::RefUpdate, bool), Reply> {
+    let doc = "rest/git/refs";
+    let bad = |m: &str| Reply::error(422, m, doc);
+    let sha = body["sha"]
+        .as_str()
+        .and_then(|s| ObjectId::parse_hex(s.as_bytes()))
+        .ok_or_else(|| bad("Invalid request.\n\n\"sha\" wasn't supplied."))?;
+    match reference {
+        None => {
+            let full = body["ref"].as_str().ok_or_else(|| bad("Invalid request.\n\n\"ref\" wasn't supplied."))?;
+            let name = RefName::parse(full.as_bytes())
+                .ok()
+                .filter(|_| full.starts_with("refs/") && full.matches('/').count() >= 2)
+                .ok_or_else(|| bad("Reference name must start with 'refs/' and have at least two slashes."))?;
+            if r.ref_value(&name).is_some() {
+                return Err(bad("Reference already exists"));
+            }
+            Ok((graftyard_git::refs::RefUpdate { name, expect: None, new: Some(sha) }, true))
+        }
+        Some(reference) => {
+            let full = format!("refs/{}", reference.replace("%2F", "/").replace("%2f", "/"));
+            let name = RefName::parse(full.as_bytes()).map_err(|_| bad("Reference does not exist"))?;
+            let old = r.ref_value(&name).ok_or_else(|| bad("Reference does not exist"))?;
+            let force = body["force"].as_bool().unwrap_or(false);
+            Ok((graftyard_git::refs::RefUpdate { name, expect: Some(old), new: Some(sha) }, force))
+        }
+    }
+}
+
+/// A `git-ref` object as GHES renders it.
+pub fn ref_json(r: &Repo<'_>, name: &RefName, sha: &ObjectId) -> Value {
+    let n = name.display();
+    let url = format!("{}/repos/{}/{}/git/{}", r.host.api(), r.at.owner, r.at.name, n);
+    let kind = "commit";
+    let object_url = format!("{}/repos/{}/{}/git/commits/{}", r.host.api(), r.at.owner, r.at.name, sha.hex());
+    // GitHub's legacy `Ref` id: base64 of `<len>:Ref<repo id>:<name>`.
+    let raw = format!("Ref{}:{n}", r.at.id.0.0);
+    let node_id = graftyard_git::pack::b64::encode(format!("{:02}:{raw}", raw.len()).as_bytes());
+    json!({
+        "ref": n,
+        "node_id": node_id,
+        "url": url,
+        "object": { "type": kind, "sha": sha.hex(), "url": object_url },
+    })
+}
+
 /// `PUT /repos/{o}/{r}/pulls/{n}/merge`'s body: the method (default `merge`) and `sha`, the head it must be at.
 pub fn plan_rest_merge(
     r: &Repo<'_>,

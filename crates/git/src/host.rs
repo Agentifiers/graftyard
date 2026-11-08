@@ -253,10 +253,16 @@ pub struct Room {
 
 #[derive(Debug, Deserialize)]
 struct ValidateOut {
+    #[serde(default)]
     checksum: String,
+    #[serde(default)]
     bytes: u64,
+    #[serde(default)]
     objects: u32,
+    #[serde(default)]
     trailer: String,
+    #[serde(default)]
+    detail: Vec<crate::agent::RefDetail>,
 }
 
 /// The shard object's view of its container.
@@ -438,9 +444,29 @@ impl ShardHost<'_> {
     /// against the refs the leader just gave, which the container holds once `set_refs` ran. The tips ride in the
     /// body ahead of the pack, because a 10,000-ref push has too many for a URL.
     pub async fn validate(&self, network: NetworkId, pack: Vec<u8>, tips: &[String]) -> Result<PackIndex, StoreError> {
-        let mut head: Vec<u8> = tips.join("\n").into_bytes();
-        head.push(b'\n');
-        let path = format!("/validate?net={}&tipsn={}", network.0.0, head.len());
+        self.validate_detail(network, pack, tips, "").await.map(|(ix, _)| ix.expect("a pack has an index"))
+    }
+
+    /// `validate` with `detail`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
+    /// notes the agent layer needs (`crate::agent::RefDetail`). With an empty pack, only the detail, read from the
+    /// repository's own objects (a REST ref write), and no index.
+    pub async fn validate_detail(
+        &self,
+        network: NetworkId,
+        pack: Vec<u8>,
+        tips: &[String],
+        detail: &str,
+    ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), StoreError> {
+        let mut head: Vec<u8> = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
+        if !tips.is_empty() {
+            head.push(b'\n');
+        }
+        let mut path = format!("/validate?net={}&tipsn={}", network.0.0, head.len());
+        if !detail.is_empty() {
+            path.push_str(&format!("&detailn={}", detail.len()));
+            head.extend_from_slice(detail.as_bytes());
+        }
+        let empty = pack.is_empty();
         head.extend_from_slice(&pack);
         let mut r = self.call(Method::Post, &path, Some(head), &[]).await?;
         if r.status_code() >= 300 {
@@ -448,12 +474,16 @@ impl ShardHost<'_> {
             return Err(StoreError(format!("validate: {} {t}", r.status_code())));
         }
         let v: ValidateOut = r.json().await.map_err(worker_err)?;
-        Ok(PackIndex {
+        if empty {
+            return Ok((None, v.detail));
+        }
+        let ix = PackIndex {
             checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
             bytes: v.bytes,
             objects: v.objects,
             trailer: v.trailer.into(),
-        })
+        };
+        Ok((Some(ix), v.detail))
     }
 
     pub async fn init(&self, network: NetworkId, fresh: bool) -> Result<(), StoreError> {

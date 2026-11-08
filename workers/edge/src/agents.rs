@@ -233,3 +233,181 @@ async fn leases(
     };
     crate::api::commit_issue(c, &rd, &who, op, graftyard_api::hosted::What::Lease { created }).await
 }
+
+// ---- agent pushes and REST ref writes (AM1's hosted half) ----
+
+/// Whether a push or REST ref write by `who` may be an agent's, so the edge asks the git cache for `validate`'s detail
+/// (`design/DESIGN.md`, Shape, `ProtectedHits`: "for each ref update by an `Agent` or under an agent prefix"): an
+/// installation token whose App has an `AgentApp` row, or any App token once 32.8 is enabled (a classing trailer makes
+/// it Agent for admission), or an update under a `confine` prefix or `refs/heads/graftyard/`. A user token's push
+/// outside every agent prefix is never asked, so a default push's `validate` call and bytes are unchanged.
+pub(crate) fn agentish(
+    c: &Ctx<'_>,
+    who: &Principal,
+    install: Option<&AuthzFold>,
+    updates: &[graftyard_git::refs::RefUpdate],
+) -> bool {
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+        return false;
+    }
+    if matches!(who.actor, graftyard_identity::Actor::App { .. }) {
+        return true;
+    }
+    let prefixes: Vec<&graftyard_identity::glob::RefPattern> = install
+        .map(|a| a.more.more.agent_apps.values().filter_map(|r| r.confine.as_ref()).collect())
+        .unwrap_or_default();
+    updates.iter().any(|u| {
+        u.name.starts_with(graftyard_git::task::RUN_PREFIX) || prefixes.iter().any(|p| p.matches(u.name.as_bytes()))
+    })
+}
+
+/// The `validate` outputs of an agent push or REST ref write, linked: `graftyard_git::agent::validated_of` over the
+/// git cache's detail with the repository's `AgentPolicy.extra_paths`, then `agent::link` against the pusher's App's
+/// sessions on this repository and its token's claim, under `https://<host>/<owner>/<repo>`. `decide` keeps a
+/// `Session` only when its own fresh read finds that task (`agent::unlinked`), so this read only saves a round.
+pub(crate) fn linked(
+    who: &Principal,
+    core: &dyn graftyard_fold::Read,
+    detail: &[graftyard_git::agent::RefDetail],
+    origin: &str,
+) -> graftyard_git::agent::Validated {
+    let policy = graftyard_git::tiers::agent_policy(core);
+    let mut v = graftyard_git::agent::validated_of(detail, &policy.extra_paths);
+    let pusher = match who.actor {
+        graftyard_identity::Actor::App { app, .. } => Some(app),
+        _ => None,
+    };
+    let mut own = pusher.map(|a| graftyard_git::task::app_sessions(core, a)).unwrap_or_default();
+    own.extend(graftyard_git::task::claim(who).cloned());
+    v.provenance = graftyard_git::agent::link(&v.provenance, pusher, &own, Some(origin));
+    v
+}
+
+/// What an agent push needs read before its commit: the install's `AgentApp` rows and the repository's core rows (its
+/// `AgentPolicy` and tasks). `None` for a push `agentish` rules out, which reads nothing more.
+pub(crate) struct AgentPush {
+    install: Option<AuthzFold>,
+    core: graftyard_fold::MemStore,
+}
+
+pub(crate) async fn push_context(
+    c: &Ctx<'_>,
+    repo: &crate::Repo,
+    push: &graftyard_git::repo::Push,
+) -> Option<AgentPush> {
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_AGENT) {
+        return None;
+    }
+    let install = crate::install_authz(c).await;
+    if !agentish(c, &push.actor, install.as_ref(), &push.updates) {
+        return None;
+    }
+    let rows = match crate::api::tier_rows(c, repo, None).await {
+        Ok(Ok(v)) => serde_json::from_value::<graftyard_api::hosted::TierRows>(v["value"].clone()).ok(),
+        _ => None,
+    };
+    let core = rows.map(|r| graftyard_api::hosted::TierRows::store(&r.core)).unwrap_or_default();
+    Some(AgentPush { install, core })
+}
+
+/// Fills `push` with `validate`'s linked outputs (`linked`). `changed` and `protected` are kept only for an update by
+/// an `ActorKind::Agent` or under an agent prefix (the design's "for each ref update by an `Agent` or under an agent
+/// prefix"); a plain App's push keeps only its provenance, so one with no recognized trailer keeps its format and
+/// bytes. `leases` is set once 32.14 is enabled, so a push with `changed` may write `PathSet` and be refused `Leased`.
+pub(crate) fn fill_push(
+    c: &Ctx<'_>,
+    a: &AgentPush,
+    push: &mut graftyard_git::repo::Push,
+    detail: &[graftyard_git::agent::RefDetail],
+    path: &str,
+) {
+    let origin = format!("https://{}/{path}", c.cfg.host);
+    let v = linked(&push.actor, &a.core, detail, &origin);
+    let install = a.install.as_ref().map(|f| f as &dyn AuthzRead);
+    let agent =
+        matches!(graftyard_git::agent::actor_kind(&push.actor, install), graftyard_git::agent::ActorKind::Agent(_));
+    let prefixes: Vec<&graftyard_identity::glob::RefPattern> = a
+        .install
+        .as_ref()
+        .map(|f| f.more.more.agent_apps.values().filter_map(|r| r.confine.as_ref()).collect())
+        .unwrap_or_default();
+    let under = |r: &graftyard_git::refs::RefName| {
+        agent || r.starts_with(graftyard_git::task::RUN_PREFIX) || prefixes.iter().any(|p| p.matches(r.as_bytes()))
+    };
+    push.provenance = v.provenance;
+    push.changed = v.changed.into_iter().filter(|x| under(&x.refname)).collect();
+    push.protected = v.protected.into_iter().filter(|x| under(&x.refname)).collect();
+    push.leases = c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES);
+}
+
+/// `POST /git/refs` and `PATCH /git/refs/{ref}` as a one-update `Push` (`design/DESIGN.md`, Shape, `ChangedPaths`:
+/// "REST ref writes ... by an `Agent` or under an agent prefix run `validate` on an empty staged pack, so they get all
+/// three outputs"). Every write asks the git cache, on an empty pack, that the new tip exists and, without `force`,
+/// that a `PATCH` is a fast-forward; an agent's also carries the linked outputs. Replies are GHES's `git-ref`.
+pub(crate) async fn write_ref(
+    c: &Ctx<'_>,
+    rd: &crate::api::Read,
+    r: &graftyard_api::view::Repo<'_>,
+    who: &Principal,
+    u: graftyard_git::refs::RefUpdate,
+    force: bool,
+) -> Result<Reply> {
+    use graftyard_git::group::{CommitReq, PushOutcome};
+    let doc = "rest/git/refs";
+    let mut push = graftyard_git::repo::Push {
+        updates: vec![u.clone()],
+        atomicity: graftyard_git::refs::Atomicity::PerRef,
+        pack: None,
+        actor: who.clone(),
+        options: Vec::new(),
+        request: c.rid,
+        agent: None,
+        provenance: Vec::new(),
+        protected: Vec::new(),
+        changed: Vec::new(),
+        leases: false,
+    };
+    let agent = push_context(c, &rd.repo, &push).await;
+    let lines = graftyard_git::agent::detail_lines(&push.updates, true);
+    let detail = match crate::validate(c, &rd.repo, &[], &[], &lines).await {
+        Ok((_, d)) => d,
+        Err(_) => return Ok(Reply::error(422, "Object does not exist", doc)),
+    };
+    if u.expect.is_some() && !force && !detail.first().is_some_and(|d| d.ff) {
+        return Ok(Reply::error(422, "Update is not a fast forward", doc));
+    }
+    if let Some(a) = &agent {
+        fill_push(c, a, &mut push, &detail, &format!("{}/{}", r.at.owner, r.at.name));
+    }
+    let f = graftyard_raft::Command::format(&push);
+    if !c.cfg.enabled.contains(&f) && f != graftyard_git::repo::REPO_FORMAT_V1 {
+        return Ok(unavailable(&format!(
+            "this write needs record format {}.{}, which FormatsEnable has not enabled",
+            f.family, f.version
+        )));
+    }
+    let admit = crate::admission(c, who, &push.provenance, true, 0).await;
+    let mut body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push })?;
+    if let Some(a) = admit {
+        body["admit"] = serde_json::to_value(a)?;
+    }
+    let created = u.expect.is_none();
+    let new = u.new.expect("a write names a new tip");
+    Ok(match crate::commit(c, &rd.repo, &body, None, None).await? {
+        Ok(PushOutcome::Ok(ok)) => match ok.out.refs.first() {
+            Some(graftyard_git::repo::RefOutcome::Ok) => {
+                Reply::json(if created { 201 } else { 200 }, graftyard_api::rest::ref_json(r, &u.name, &new))
+            }
+            Some(graftyard_git::repo::RefOutcome::Rejected(graftyard_git::repo::RejectReason::Agent(w))) => {
+                Reply::error(422, &w.text, doc)
+            }
+            _ => Reply::error(422, "Reference cannot be updated", doc),
+        },
+        Ok(PushOutcome::Refused(x)) if x.status == 403 => {
+            Reply::error(403, "Resource not accessible by integration", doc)
+        }
+        Ok(PushOutcome::Refused(x)) => Reply::error(422, &x.err, doc),
+        Ok(PushOutcome::Full(f)) => Reply::secondary_rate_limit(f.retry_after_s),
+        Ok(PushOutcome::NotLeader(_)) | Err(_) => unavailable("the repository's group has no leader; retry"),
+    })
+}

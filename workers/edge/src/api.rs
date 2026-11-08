@@ -297,7 +297,11 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 
 /// The repository's `{"rows": true}` read on its leader, creating its group on first use; `{"rows": {"merge": id}}`
 /// for a merge's rows only, which a member built before it answers with every row.
-async fn tier_rows(c: &Ctx<'_>, repo: &Repo, merge: Option<i64>) -> Result<std::result::Result<Value, Reply>> {
+pub(crate) async fn tier_rows(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    merge: Option<i64>,
+) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
@@ -1166,6 +1170,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     Reply::error(405, "Pull Request is not mergeable", "rest/pulls/pulls#merge-a-pull-request")
                 }
                 Ok(Err(CacheError::Bad(e))) | Err(e) => unavailable(&format!("the git cache: {e}")),
+            }
+        }
+        // AM1: `POST /git/refs` and `PATCH /git/refs/{ref}`, served in `crate::agents` so an agent's write carries
+        // `validate`'s outputs on an empty pack and a lease check sees its `changed` paths.
+        (Method::Post, ["git", "refs"]) | (Method::Patch, ["git", "refs", ..]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let reference = match tail {
+                [_, _, rest @ ..] if !rest.is_empty() => Some(rest.join("/")),
+                _ => None,
+            };
+            match rest::plan_write_ref(&r, reference.as_deref(), &body(req.bytes().await?)) {
+                Ok((u, force)) => crate::agents::write_ref(c, &rd, &r, &who, u, force).await?,
+                Err(x) => x,
             }
         }
         (Method::Delete, ["git", "refs", reference @ ..]) => {

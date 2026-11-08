@@ -175,8 +175,19 @@ impl DurableObject for GitShard {
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let tips: Vec<String> =
                     String::from_utf8_lossy(&body[..n.min(body.len())]).split_whitespace().map(str::to_owned).collect();
-                match host.validate(net, body[n.min(body.len())..].to_vec(), &tips).await {
-                    Ok(ix) => Response::from_json(&ix),
+                let rest = &body[n.min(body.len())..];
+                // `detailn` (AM1's agent pushes and REST ref writes): the next bytes are the updates the git cache
+                // reports detail for. A default push sends none, and its reply is the `PackIndex` alone, as before.
+                let d: usize = q(&url, "detailn").and_then(|v| v.parse().ok()).unwrap_or(0);
+                if d == 0 {
+                    return match host.validate(net, rest.to_vec(), &tips).await {
+                        Ok(ix) => Response::from_json(&ix),
+                        Err(e) => Response::error(e.0, 422),
+                    };
+                }
+                let detail = String::from_utf8_lossy(&rest[..d.min(rest.len())]).into_owned();
+                match host.validate_detail(net, rest[d.min(rest.len())..].to_vec(), &tips, &detail).await {
+                    Ok((ix, detail)) => Response::from_json(&serde_json::json!({ "index": ix, "detail": detail })),
                     Err(e) => Response::error(e.0, 422),
                 }
             }
