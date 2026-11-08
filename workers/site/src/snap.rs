@@ -790,6 +790,7 @@ pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
             provenance: Vec::new(),
             protected: Vec::new(),
             changed: Vec::new(),
+            leases: false,
         };
         let at = now_ms();
         match h.input(|m, t| m.commit(t, rid, git::repo::RepoCmd::Push(push))) {

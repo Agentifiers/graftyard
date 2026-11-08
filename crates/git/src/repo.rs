@@ -57,6 +57,12 @@ pub const REPO_FORMAT_AGENT: Format = Format { family: 0x20, version: 8 };
 /// push carries `validate`'s outputs as 32.8 does. Versions 10 and 11 are other packages'. An edge sends it only once
 /// `FormatsEnable` has enabled it; a command without a task and without a claim never takes it.
 pub const REPO_FORMAT_TASKS: Format = Format { family: 0x20, version: 12 };
+/// AM1-WP4's leases and `PathSet`: the lease commands (`crate::lease`) and their events `LeaseAcquire`, `LeaseRenew`,
+/// and `LeaseRelease` (tags 33 to 35), and `PathSet` (36). A superset of 32.12: a push or issue command the edge marks
+/// `leases` (`Push::leases`, `IssueCall::leases`) encodes as 32.12 does and may write those events, and a push stores
+/// a per-ref `Leased` refusal. Version 13 is another package's. An edge sends it only once `FormatsEnable` has enabled
+/// it; a command without the mark never takes it, so every earlier form keeps its bytes.
+pub const REPO_FORMAT_LEASES: Format = Format { family: 0x20, version: 14 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -80,6 +86,9 @@ pub struct Push {
     pub provenance: Vec<Provenance>,
     pub protected: Vec<ProtectedHits>,
     pub changed: Vec<ChangedPaths>,
+    /// Format 32.14 (`REPO_FORMAT_LEASES`): the edge enabled it, so the push's entry may carry `PathSet` and a
+    /// `Leased` refusal. Not encoded: the format tag carries it.
+    pub leases: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +307,25 @@ pub enum RepoEvent {
         summary: Option<Box<str>>,
         actor: crate::task::TaskActor,
     },
+    // AM1-WP4, format 32.14: tags 33 to 36.
+    /// Core. `granted` is the entry's `at`. `plan` is the draft pull request whose `graftyard-plan` block declared it
+    /// (the design's `plan_block: bool`, with the number its liveness reads).
+    LeaseAcquire {
+        lease: crate::lease::Lease,
+        plan: Option<IssueNumber>,
+    },
+    /// Core. Changes only `expires`.
+    LeaseRenew {
+        id: crate::lease::LeaseId,
+        expires: Timestamp,
+    },
+    /// Core.
+    LeaseRelease {
+        ids: SmallVec<[crate::lease::LeaseId; 4]>,
+        by: crate::lease::ActorId,
+    },
+    /// Metadata, in the push's entry: one row per ref, deleted when the ref's pull request closes.
+    PathSet(crate::agent::PathSet),
 }
 
 impl RepoEvent {
@@ -761,32 +789,100 @@ impl Push {
     /// design's order. A format-8 push gets a per-ref `RejectReason::Agent`; an earlier format cannot store one, so
     /// the whole push is refused. A protected-path check needs `validate`'s output for the ref: without it the push is
     /// refused `Reclass`, so the edge reads the install's rows again and re-sends with them.
+    /// Last, under `AgentsExclusive` (`lease`): an update whose `changed` paths overlap another holder's live
+    /// Exclusive lease is refused `Leased`, per ref in format 32.14 and whole in an earlier one, whose entries cannot
+    /// carry the new rule.
     fn agent_rules(
         &self,
         s: &RepoScratch<'_>,
         a: &crate::agent::AgentActor,
         install: Option<&dyn AuthzRead>,
         session_ref: Option<&RefName>,
+        lease: Option<&crate::lease::LeaseView<'_>>,
         refs: &mut [RefOutcome],
     ) -> Result<(), PushErr> {
+        let holder = crate::lease::ActorId::of(&self.actor).map(|actor| crate::lease::LeaseHolder {
+            actor,
+            app: Some(a.app),
+            session: a.task.clone(),
+        });
         for (u, r) in self.updates.iter().zip(refs.iter_mut()) {
             if *r != RefOutcome::Ok || Some(&u.name) == session_ref {
                 continue;
             }
             let bypass = needs_bypass(s, &u.name, u.expect, u.new, a.app);
             let mut why = crate::agent::refuse_update(install, a, &u.name, u.new, &self.protected, bypass);
-            if why.is_none() && u.new.is_some() && !self.changed.iter().any(|c| c.refname == u.name) {
+            let changed = self.changed.iter().find(|c| c.refname == u.name);
+            if why.is_none() && u.new.is_some() && changed.is_none() {
                 why = Some(AgentRefusal::of(AgentRule::Reclass));
             }
+            if why.is_none()
+                && let (Some(v), Some(c), Some(h)) = (lease, changed, holder.as_ref())
+            {
+                let globs: Vec<&str> = c.paths.iter().map(|p| &**p).collect();
+                why = crate::agent::leased(&v.exclusive_conflicts(&globs, h));
+            }
+            let per_ref = match why.as_ref().map(|w| w.rule) {
+                Some(AgentRule::Leased) => self.format() == REPO_FORMAT_LEASES,
+                Some(AgentRule::Reclass) | None => false,
+                Some(_) => per_ref_agent(self.format()),
+            };
             match why {
                 None => {}
-                Some(w) if per_ref_agent(self.format()) && w.rule != AgentRule::Reclass => {
-                    *r = RefOutcome::Rejected(RejectReason::Agent(w))
-                }
+                Some(w) if per_ref => *r = RefOutcome::Rejected(RejectReason::Agent(w)),
                 Some(w) => return Err(PushErr::Agent(w)),
             }
         }
         Ok(())
+    }
+
+    /// The `PathSet` rows of a 32.14 push: one per applied create or move that `validate` gave `changed` for, with
+    /// the ref's open pull request and the paths of the live leases of the pusher's task, or of the pusher.
+    fn path_sets(
+        &self,
+        s: &RepoScratch<'_>,
+        lease: Option<&crate::lease::LeaseView<'_>>,
+        applied: &[RefUpdate],
+    ) -> Vec<crate::agent::PathSet> {
+        if self.format() != REPO_FORMAT_LEASES {
+            return Vec::new();
+        }
+        let planned: Vec<Box<str>> = match (lease, crate::lease::ActorId::of(&self.actor)) {
+            (Some(v), Some(actor)) => {
+                let task = crate::task::claim(&self.actor);
+                let mut p: Vec<Box<str>> = v
+                    .live()
+                    .into_iter()
+                    .filter(|r| match task {
+                        Some(t) => r.lease.holder.session.as_ref() == Some(t),
+                        None => r.lease.holder.actor == actor,
+                    })
+                    .flat_map(|r| r.lease.scope.paths.into_iter().map(|g| Box::from(g.as_str())))
+                    .collect();
+                p.sort();
+                p.dedup();
+                p
+            }
+            _ => Vec::new(),
+        };
+        let repo = s.fold().repo;
+        applied
+            .iter()
+            .filter_map(|u| {
+                let head = u.new?;
+                let c = self.changed.iter().find(|c| c.refname == u.name)?;
+                let pr = repo.and_then(|r| crate::tiers::pulls_from(s.core(), r, &u.name).into_iter().next());
+                Some(crate::agent::PathSet {
+                    refname: u.name.clone(),
+                    pr,
+                    head,
+                    merge_base: None,
+                    paths: c.paths.clone(),
+                    planned: planned.clone(),
+                    truncated: c.truncated,
+                })
+            })
+            .collect()
     }
 
     fn decide_refs(
@@ -794,6 +890,7 @@ impl Push {
         s: &RepoScratch<'_>,
         agent: Option<(&crate::agent::AgentActor, Option<&dyn AuthzRead>)>,
         session_ref: Option<&RefName>,
+        lease: Option<&crate::lease::LeaseView<'_>>,
     ) -> Result<(SmallVec<[RepoEvent; 4]>, PushOut), PushErr> {
         if self.atomicity == Atomicity::AllOrNothing && self.updates.len() > ATOMIC_REFS_MAX {
             return Err(PushErr::TooManyRefs { got: self.updates.len() });
@@ -828,7 +925,9 @@ impl Push {
             }
         }
         if let Some((a, install)) = agent {
-            self.agent_rules(s, a, install, session_ref, &mut refs)?;
+            let enforce = lease
+                .filter(|v| crate::tiers::agent_policy(v.core).leases == crate::agent::LeaseEnforce::AgentsExclusive);
+            self.agent_rules(s, a, install, session_ref, enforce, &mut refs)?;
         }
         // A create whose name is a directory or a file of a ref that stays: one of this push's other passing updates,
         // or a fold ref this push does not delete.
@@ -898,10 +997,12 @@ impl Push {
                 _ => Vec::new(),
             };
             let list = crate::agent::unlinked(&moved, &own);
+            let path_sets = self.path_sets(s, lease, &applied);
             events.push(RepoEvent::Refs { push: self.request, actor: account, updates: applied, pack });
             if !list.is_empty() {
                 events.push(RepoEvent::Provenance { push: self.request, list });
             }
+            events.extend(path_sets.into_iter().map(RepoEvent::PathSet));
         }
         if !refused.is_empty() {
             events.push(RepoEvent::Refused { push: self.request, refs: refused });
@@ -930,7 +1031,7 @@ impl Push {
         }
         e.option(pack, encode_pack);
         encode_principal(&mut e, &self.actor);
-        if self.format() == REPO_FORMAT_TASKS {
+        if [REPO_FORMAT_TASKS, REPO_FORMAT_LEASES].contains(&self.format()) {
             encode_task_claim(&mut e, &self.actor);
         }
         e.count(self.options.len());
@@ -959,7 +1060,14 @@ impl Push {
     pub fn from_wire(b: &[u8]) -> Result<Push, WireError> {
         let mut d = Dec(b);
         let format = Format { family: d.u16()?, version: d.u16()? };
-        let reads = [REPO_FORMAT_V1, REPO_FORMAT_V2, REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS];
+        let reads = [
+            REPO_FORMAT_V1,
+            REPO_FORMAT_V2,
+            REPO_FORMAT_STATELESS,
+            REPO_FORMAT_AGENT,
+            REPO_FORMAT_TASKS,
+            REPO_FORMAT_LEASES,
+        ];
         if !reads.contains(&format) {
             return Err(WireError::Format(format));
         }
@@ -977,9 +1085,9 @@ impl Push {
             updates.push(RefUpdate { name, expect, new });
         }
         let pack = d.option(decode_pack)?;
-        let mut actor =
-            decode_principal(&mut d, [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS].contains(&format))?;
-        if format == REPO_FORMAT_TASKS {
+        let stateless = [REPO_FORMAT_STATELESS, REPO_FORMAT_AGENT, REPO_FORMAT_TASKS, REPO_FORMAT_LEASES];
+        let mut actor = decode_principal(&mut d, stateless.contains(&format))?;
+        if format == REPO_FORMAT_TASKS || format == REPO_FORMAT_LEASES {
             decode_task_claim(&mut d, &mut actor)?;
         }
         let n = d.u32()? as usize;
@@ -988,7 +1096,7 @@ impl Push {
             options.push(d.str()?.into());
         }
         let request = RequestId(Ulid(d.u128()?));
-        let (provenance, protected, changed) = if format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS {
+        let (provenance, protected, changed) = if per_ref_agent(format) {
             decode_validated(&mut d)?
         } else {
             for _ in 0..3 {
@@ -1002,7 +1110,9 @@ impl Push {
         if !d.0.is_empty() {
             return Err(WireError::Malformed("trailing bytes"));
         }
-        let push = Push { updates, atomicity, pack, actor, options, request, agent, provenance, protected, changed };
+        let leases = format == REPO_FORMAT_LEASES;
+        let push =
+            Push { updates, atomicity, pack, actor, options, request, agent, provenance, protected, changed, leases };
         // One form per command, so its digest is one: a format that does not match the command is malformed.
         if push.format() != format {
             return Err(WireError::Malformed("format does not match the command"));
@@ -1368,9 +1478,9 @@ fn decode_session(d: &mut Dec) -> Result<SessionId, WireError> {
     }
 }
 
-/// Whether a push of `format` stores a per-ref agent refusal: 32.8 and its superset 32.12.
+/// Whether a push of `format` stores a per-ref agent refusal: 32.8 and its supersets 32.12 and 32.14.
 fn per_ref_agent(format: Format) -> bool {
-    format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS
+    format == REPO_FORMAT_AGENT || format == REPO_FORMAT_TASKS || format == REPO_FORMAT_LEASES
 }
 
 fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError> {
@@ -1499,6 +1609,11 @@ impl Record for RepoEvent {
             RepoEvent::TaskUpdated { session, state, pr, summary, actor } => {
                 return tagged(out, 32, &(session, state, pr, summary, actor));
             }
+            // AM1-WP4: tags 33 to 36.
+            RepoEvent::LeaseAcquire { lease, plan } => return tagged(out, 33, &(lease, plan)),
+            RepoEvent::LeaseRenew { id, expires } => return tagged(out, 34, &(id, expires)),
+            RepoEvent::LeaseRelease { ids, by } => return tagged(out, 35, &(ids, by)),
+            RepoEvent::PathSet(p) => return tagged(out, 36, p),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1528,7 +1643,9 @@ impl Command for Push {
     fn format(&self) -> Format {
         let stateless =
             matches!(self.actor.credential, Credential::Stateless(_)) || matches!(self.actor.actor, Actor::App { .. });
-        if crate::task::claim(&self.actor).is_some() {
+        if self.leases && self.validated() {
+            REPO_FORMAT_LEASES
+        } else if crate::task::claim(&self.actor).is_some() {
             REPO_FORMAT_TASKS
         } else if self.validated() {
             REPO_FORMAT_AGENT
@@ -1540,9 +1657,11 @@ impl Command for Push {
             REPO_FORMAT_V1
         }
     }
-    /// Core, and Metadata too when the push carries provenance, whose `Provenance` event is a Metadata row.
+    /// Core, and Metadata too when the push carries provenance, whose `Provenance` event is a Metadata row, or is
+    /// 32.14 with `changed` paths, whose `PathSet` is.
     fn tiers(&self) -> TierSet {
-        if self.provenance.is_empty() { TierSet::CORE } else { TierSet::CORE.union(TierSet::METADATA) }
+        let path_set = self.format() == REPO_FORMAT_LEASES && !self.changed.is_empty();
+        if self.provenance.is_empty() && !path_set { TierSet::CORE } else { TierSet::CORE.union(TierSet::METADATA) }
     }
     /// The actor's `Account` and token rows, and the owner's and enterprise's `Authz`, named by the fold's
     /// `RepoSettings`.
@@ -1570,6 +1689,11 @@ impl Command for Push {
         // the first decision after the unflag commits (LF-2).
         let install = install_authz(deps);
         let owner = authz_folds(deps).into_iter().find(|a| a.owner().is_some() && a.owner() == s.authz_owner());
+        // The lease rows the `AgentsExclusive` check and `PathSet.planned` read, at the entry's time.
+        let view = match (owner, s.fold().repo) {
+            (Some(owner), Some(repo)) => Some(crate::lease::LeaseView { core: s.core(), owner, repo, at: s.at() }),
+            _ => None,
+        };
         match crate::agent::actor_kind(&self.actor, install) {
             crate::agent::ActorKind::Agent(mut a) => {
                 // A token's `task` claim binds it to that task while the task reads live here (AM1-WP3): its prefix
@@ -1584,9 +1708,11 @@ impl Command for Push {
                 let session_ref = a.task.as_ref().filter(|_| crate::task::is_workspace(install, a.app)).and_then(|t| {
                     RefName::parse(format!("{}{}", crate::agent::SESSION_REFS, t.text()).as_bytes()).ok()
                 });
-                self.decide_refs(s, Some((&a, install)), session_ref.as_ref())
+                self.decide_refs(s, Some((&a, install)), session_ref.as_ref(), view.as_ref())
             }
-            _ => self.decide_refs(s, None, None),
+            // Humans, bots, `Graftyard MCP`, and user tokens are never refused by a lease, but their 32.14 pushes
+            // still write `PathSet`.
+            _ => self.decide_refs(s, None, None, view.as_ref()),
         }
     }
     /// Each ref as the first decide answered it: `Ok` if a stored `Refs` applied it, else the reason a stored

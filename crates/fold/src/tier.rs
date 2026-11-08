@@ -103,6 +103,9 @@ pub trait Tiered {
     fn write(&self, ev: &Self::Event, tier: Tier, at: Timestamp, rows: &mut dyn Rows);
     /// Runs in every tier for every entry, owned or not, before its events: time-based pruning.
     fn on_entry(&self, _tier: Tier, _at: Timestamp, _rows: &mut dyn Rows) {}
+    /// An entry's `extend` (`ExtendLeases`), in every tier before `on_entry` and its events: leases move by the
+    /// recorded stall.
+    fn on_extend(&self, _tier: Tier, _since: Timestamp, _by: std::time::Duration, _rows: &mut dyn Rows) {}
     /// An `EntryBody::IdBlock`, in every tier whatever the entry's tag: the leader tags them `CORE`
     /// (`graftyard_raft`), and each tier that assigns ids keeps its own cursor over the group's blocks.
     fn id_block(&self, _block: graftyard_types::IdBlock, _tier: Tier, _rows: &mut dyn Rows) {}
@@ -196,6 +199,10 @@ pub fn apply<T: Tiered>(t: &T, store: &mut dyn Store, tier: Tier, e: &LogEntry<T
         }
     }
     let mut w = Writer { store, schema: T::schema(tier), index: e.index, meta: m };
+    // A stall's extension first, so a lease whose `expires` fell inside the stall moves before `on_entry` prunes.
+    if let Some(x) = e.extend {
+        t.on_extend(tier, x.since, x.by, &mut w);
+    }
     t.on_entry(tier, e.at, &mut w);
     match &e.body {
         EntryBody::Events(evs) if mine => {

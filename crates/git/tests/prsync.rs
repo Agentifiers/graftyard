@@ -657,6 +657,7 @@ fn the_member_wire_form_reads_a_push_and_a_sync() {
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     };
     let v = serde_json::to_value(RepoCmd::Push(push.clone())).unwrap();
     assert!(v.is_string(), "a push keeps its base64 wire form");

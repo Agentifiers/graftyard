@@ -784,6 +784,7 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     };
     let admit = crate::admission(c, who, &[], true, 0).await;
     let mut body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push })?;

@@ -49,6 +49,7 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Respons
             provenance: Vec::new(),
             protected: Vec::new(),
             changed: Vec::new(),
+            leases: false,
         };
         cmds.push(serde_json::to_value(CommitReq { rid: r.to_string(), cmd: push })?);
     }

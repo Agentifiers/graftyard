@@ -80,6 +80,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::TaskCreated(_) => both,
         RepoEvent::TaskUpdated { pr: None, summary: None, .. } => TierSet::CORE,
         RepoEvent::TaskUpdated { .. } => both,
+        RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
+        RepoEvent::PathSet(_) => TierSet::METADATA,
     }
 }
 
@@ -127,6 +129,17 @@ pub const CORE: Schema = Schema {
         // is not final, which the open-task caps scan.
         t("agent_task", &["session"]),
         t("agent_task_open", &["session"]),
+        // AM1-WP4: each lease by id (`crate::lease::LeaseRow`), the next lease's sequence number, and the indexes the
+        // caps, the task API, expiry, plan blocks, and the `AgentsExclusive` check read: by holder, App, session,
+        // expiry time, plan pull request, and each Exclusive glob's literal prefix.
+        t("lease", &["id"]),
+        t("lease_seq", &[]),
+        t("lease_by_holder", &["holder", "id"]),
+        t("lease_by_app", &["app", "id"]),
+        t("lease_by_session", &["session", "id"]),
+        t("lease_expiry", &["expires", "id"]),
+        t("lease_plan", &["n", "holder", "id"]),
+        t("lease_exclusive", &["prefix", "id"]),
     ],
 };
 
@@ -164,6 +177,8 @@ pub const METADATA: Schema = Schema {
         t("provenance", &["commit", "ref"]),
         // AM1-WP3: each task's metadata part (`crate::task::TaskMeta`).
         t("agent_task_meta", &["session"]),
+        // AM1-WP4: each agent ref's `PathSet` (`crate::agent::PathSet`).
+        t("path_set", &["ref"]),
     ],
 };
 
@@ -774,6 +789,14 @@ impl RepoTiers {
             RepoEvent::AgentPolicy(p) => put_rec(w, "agent_policy", Vec::new(), p),
             RepoEvent::TaskCreated(t) => crate::task::write_created_core(w, t, at),
             RepoEvent::TaskUpdated { session, state, .. } => crate::task::write_updated_core(w, session, *state, at),
+            RepoEvent::LeaseAcquire { lease, plan } => crate::lease::write_acquire(w, lease, *plan),
+            RepoEvent::LeaseRenew { id, expires } => crate::lease::write_renew(w, *id, *expires),
+            RepoEvent::LeaseRelease { ids, .. } => {
+                for id in ids {
+                    crate::lease::write_release(w, *id);
+                }
+            }
+            RepoEvent::PathSet(_) => {}
         }
     }
 
@@ -840,10 +863,19 @@ impl RepoTiers {
                     );
                 }
             }
-            RepoEvent::PrClosed { n, .. } | RepoEvent::Merged { n, .. } => touch(w, *n, &|r| {
-                r.open = false;
-                r.closed = Some(at);
-            }),
+            RepoEvent::PrClosed { n, .. } | RepoEvent::Merged { n, .. } => {
+                touch(w, *n, &|r| {
+                    r.open = false;
+                    r.closed = Some(at);
+                });
+                // The head ref's `PathSet` row goes when its pull request closes. A repository with none has no row,
+                // so this deletes nothing and changes no digest.
+                if let Some(p) = get_rec::<PullRow>(w, "pull", &[n_key(*n)])
+                    && p.head.repo == self.repo
+                {
+                    w.delete("path_set", &[ref_key(&p.head.branch)]);
+                }
+            }
             RepoEvent::IssueChanged { n, change, .. } => match change {
                 IssueChange::Title(t) => touch(w, *n, &|r| r.title = t.clone()),
                 IssueChange::Body(b) => touch(w, *n, &|r| r.body = b.clone()),
@@ -1058,6 +1090,7 @@ impl RepoTiers {
             RepoEvent::TaskUpdated { session, pr, summary, .. } => {
                 crate::task::write_updated_meta(w, session, *pr, summary.as_deref())
             }
+            RepoEvent::PathSet(p) => put_rec(w, "path_set", vec![ref_key(&p.refname)], p),
             _ => {}
         }
     }
@@ -1125,6 +1158,13 @@ pub(crate) fn target_issue(on: &CommentTarget) -> Option<IssueNumber> {
 impl Tiered for RepoTiers {
     type Event = RepoEvent;
 
+    /// `ExtendLeases`: every lease with `expires` after `since` moves by `by` (Core only).
+    fn on_extend(&self, tier: Tier, since: Timestamp, by: std::time::Duration, w: &mut dyn Rows) {
+        if tier == Tier::Core {
+            crate::lease::extend(w, since, by);
+        }
+    }
+
     fn tier_of(ev: &RepoEvent) -> TierSet {
         tier_of(ev)
     }
@@ -1152,11 +1192,13 @@ impl Tiered for RepoTiers {
         }
     }
 
-    /// Metadata only: deletes every check run, suite, and status whose time plus the retention is before `at`.
+    /// Core: drops leases that expired at or before `at` (`crate::lease::prune`). Metadata: check retention.
     fn on_entry(&self, tier: Tier, at: Timestamp, w: &mut dyn Rows) {
         if tier != Tier::Metadata {
+            crate::lease::prune(w, at);
             return;
         }
+        // Metadata: deletes every check run, suite, and status whose time plus the retention is before `at`.
         let keep = u64::from(retention_days(w)) * DAY_MS;
         loop {
             let batch = w.scan("check_expiry", &[], 256);
