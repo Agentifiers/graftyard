@@ -271,6 +271,7 @@ impl Family for Repo {
             git::transfer::REPO_FORMAT_TRANSFER,
             git::issue_ops::call::REPO_FORMAT_INVITATIONS,
             git::repo::REPO_FORMAT_TASKS,
+            git::repo::REPO_FORMAT_LEASES,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

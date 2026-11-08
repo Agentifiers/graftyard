@@ -103,7 +103,7 @@ fn actor_json(r: &Repo<'_>, a: TaskActor) -> Value {
 }
 
 /// One task as `task` in the API reference, in the state it reads as at `at`. `prompt` is omitted without
-/// `contents: read`. `leases` is the single GET's, and empty until AM1-WP4 builds leases.
+/// `contents: read`. `leases` is the single GET's: the task's leases held at `at` (`crate::leases::task_leases`).
 #[allow(clippy::too_many_arguments)]
 pub fn task_json(
     r: &Repo<'_>,
@@ -137,7 +137,7 @@ pub fn task_json(
         v["prompt"] = meta.and_then(|m| m.prompt.as_deref()).map_or(Value::Null, |p| Value::String(p.into()));
     }
     if single {
-        v["leases"] = json!([]);
+        v["leases"] = crate::leases::task_leases(r, owner, at, id);
     }
     v
 }

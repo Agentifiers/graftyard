@@ -783,6 +783,25 @@ pub fn plan_events(
     out
 }
 
+/// Whether the edge sends an issue command as 32.14 once that format is enabled, because its entry may write lease
+/// events: a lease command; a draft pull request opened with a `graftyard-plan` block; a body edit of a pull request
+/// that has a plan lease or now names a block; and a task command on a task with lease rows (its cancel or finish
+/// releases them). Every other command keeps its format and its bytes.
+pub fn marks<B>(op: &crate::issue_ops::IssueOp<B>, core: &(impl Read + ?Sized)) -> bool {
+    use crate::issue_ops::IssueOp;
+    match op {
+        IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => true,
+        IssueOp::OpenPr { draft: true, body, .. } => body.contains("graftyard-plan"),
+        IssueOp::Change { n, change: crate::issues::IssueChange::Body(b) } => {
+            b.contains("graftyard-plan") || !ids_in(core, "lease_plan", &[int(i64::from(n.0))], 2).is_empty()
+        }
+        IssueOp::UpdateTask { id, .. } | IssueOp::CancelTask { id } => {
+            !ids_in(core, "lease_by_session", &[text(&id.text())], 1).is_empty()
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -15,6 +15,7 @@ pub mod exec;
 pub mod gql;
 pub mod graphql;
 pub mod hosted;
+pub mod leases;
 pub mod lfs;
 pub mod release;
 pub mod rest;
