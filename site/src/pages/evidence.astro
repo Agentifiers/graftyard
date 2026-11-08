@@ -1,6 +1,7 @@
 ---
-// Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/am1/results/am1-wp5.md and
-// design/DESIGN.md ("Scale"), as of 2026-11-05. Update this page when those files change.
+// Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
+// tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-wp5.md, tests/am1/results/am1-wp2.md, am1-wp5.md and
+// design/DESIGN.md ("Scale"), as of 2026-11-07. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -38,32 +39,43 @@ const gateRows = [
   ['Every member of 4 or 8 groups reset inside 60 s (B0-26)', '4 runs at 100 writes/s', ok('Pass') + '. Every group commits within 1.2 s of its last reset'],
   ['Simulator, HARSH and GRAY faults', '40,191,804 steps, 2,000 seeds', ok('1,000,856') + ' acked writes, every one with valid ack evidence'],
 ];
+const identityRows = [
+  ['Revoked tokens over HTTPS, stock git 2.56.0 (BM-3)', '100 rounds: a PAT and a GitHub App <code>ghs_</code> token each push, are revoked, push again', ok('200 of 200') + ' refused on the next push (401), ref not moved; 100 of them stateless App tokens'],
+  ['A member removed from the org mid-run (BM-3)', 'Round 50: the member\'s live PAT pushes', ok('Refused') + ' 403, ref not moved'],
+  ['GitHub App installation tokens, <code>@octokit/app</code> 16.1.4 (BF-32)', 'Mint, read, narrow, wrong key, revoke, OAuth web flow', ok('12 of 12') + ', twice'],
+  ['<code>gh auth login</code> device flow, 24 flows as gh\'s client', 'Device-code request, then the token exchange', ok('0.83 s') + ' median request (was 13.0 s); exchange ' + ok('1.9 s') + ' (was about 15 s)'],
+  ['Device flow with the code shard\'s leader killed (BF-33)', '120 runs, three kill points', ok('120 of 120') + ' restarted cleanly; no token from a spent code'],
+  ['A suspended user\'s pushes (BF-3)', '200 pushes after the suspension', ok('200 of 200') + ' refused'],
+];
 const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
   ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
   ['Commit, one entry in flight, 15 runs', 'p50 172 to 370 ms', 'p99 399 to 690 ms', 'B0-01, Milestone 0'],
-  ['Learner reads, 16 learners at 1,000 reads/s each', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
+  ['Learner reads, 16 learners at 1,000 reads/s each, Milestone 0', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
+  ['The same on the production host, under 10 pushes/s, 6 runs', '0 failed reads', 'worst learner p99 560 to 853 ms', 'B0-18 rerun, BM-3'],
+  ['Merge on a newly elected leader, client in its region, 300 samples', '0 over 2 s', 'p99 1.36 s', 'BM-2'],
+  ['Merge on a newly elected leader on another continent, 288 samples', '0 over 3 s', 'p99 1.83 s', 'BM-2'],
   ['CI clones from the R2 clone cache, 33 a second', '100% from R2 with the push hook', 'time to first byte p99 406 ms', 'B0-23'],
   ['Clients during the 24-hour chaos run <code>lin24b</code>', 'p50 314 ms', 'p99 952 ms', 'BM-1'],
 ];
 ---
 <Page title="Evidence: GHES 3.22, chaos and latency tests | Graftyard"
-  description="The tests behind Graftyard: real GitHub clients against GHES 3.22 schemas, 104.6 hours of chaos on Cloudflare, and measured commit latency."
+  description="The tests behind Graftyard: real GitHub clients against GHES 3.22 schemas, 104.6 hours of chaos on Cloudflare, token revocation over HTTPS, and measured commit latency."
   current="evidence" doc>
   <section class="section" aria-labelledby="ev-h">
     <div class="wrap">
       <div class="doc-head">
         <p class="eyebrow">Evidence</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 5 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 7 November 2026, failures included.</p>
       </div>
       <ul class="kpis">
         <li><b>348 of 348</b><span>git client checks on three git versions, a site failing in half</span></li>
         <li><b>0 of 3,588,424</b><span>acknowledged writes lost in audited chaos runs</span></li>
         <li><b>104.6 h</b><span>of chaos on Cloudflare, 12,304,207 operations checked</span></li>
         <li><b>172 to 370 ms</b><span>median commit across two continents</span></li>
-        <li><b>84 of 85</b><span>planted bugs caught by the test suites</span></li>
-        <li><b>259</b><span>Rust tests in the workspace, 0 failing</span></li>
+        <li><b>200 of 200</b><span>revoked tokens refused on the next push, over HTTPS</span></li>
+        <li><b>486</b><span>Rust tests in the workspace, 0 failing</span></li>
       </ul>
     </div>
   </section>
@@ -108,6 +120,18 @@ const latencyRows = [
     </div>
   </section>
 
+  <section class="section" id="identity" aria-labelledby="identity-h">
+    <div class="wrap">
+      <div class="sec-head">
+        <p class="eyebrow">Tokens and sign-in</p>
+        <h2 id="identity-h">A revoked token stops working on the next write</h2>
+        <p>Personal access tokens, GitHub App installation tokens and <code>gh auth login</code> run against the hosted edge with stock clients. Revocation is checked where it matters: the very next push.</p>
+      </div>
+      <Table head={['Check', 'Runs', 'Result']} rows={identityRows} />
+      <p class="note">App installation tokens are stateless: the edge verifies their signature, and a revoke is a committed entry the next write reads. The signing key was rotated on the hosted install, and a token naming the retired key is refused. An earlier 100-round run lost one App-token revoke before it reached the edge, so that token rightly kept working; the gate counts the later run, in which all 100 revokes answered.</p>
+    </div>
+  </section>
+
   <section class="section" id="latency" aria-labelledby="latency-h">
     <div class="wrap">
       <div class="sec-head">
@@ -129,10 +153,10 @@ const latencyRows = [
         <div class="prose span-7 start-6">
           <ul>
             <li>SSH git sessions held at 99.59% to 99.89% through container kills, between the 99% and 99.9% lines. SSH is opt-in, and its gate is carried to Milestone 6.</li>
-            <li>One planted bug of 85 went uncaught: a resumed leader sending entries before they were durable.</li>
-            <li>Milestone 2 (pull requests, merge queues, folds) is under way; its gate has not run yet.</li>
+            <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Milestone 3's close caught 8 of 8, and the agent rules 19 of 19 in memory.</li>
+            <li>Milestone 3 (identity and authorization) passed its gate but is not closed: repository transfer, outside collaborators, OIDC sign-in, and the SSH-key and scoped-token routes have not run hosted yet.</li>
           </ul>
-          <p class="muted">Sources: <code>tests/RESULTS.md</code> and the results files it cites, in the Graftyard repository.</p>
+          <p class="muted">Sources: <code>tests/RESULTS.md</code>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code> and <code>tests/am1</code>'s results, in the Graftyard repository.</p>
         </div>
       </div>
     </div>
