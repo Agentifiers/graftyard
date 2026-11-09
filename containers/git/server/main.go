@@ -899,28 +899,40 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
-	args := []string{"upload-pack", "--stateless-rpc"}
-	if advertise {
-		args = append(args, "--http-backend-info-refs")
-	}
-	args = append(args, rp)
 	// The client's Git-Protocol header, which the object forwards; git 2.26 and later ask for version 2.
 	proto := r.Header.Get("git-protocol")
-	cmd := exec.Command("git", args...)
-	cmd.Env = append(os.Environ(), "GIT_PROTOCOL="+proto)
-	body := io.Reader(r.Body)
-	if r.Header.Get("content-encoding") == "gzip" {
-		z, err := gzip.NewReader(r.Body)
+	var body []byte
+	if !advertise {
+		in := io.Reader(r.Body)
+		if r.Header.Get("content-encoding") == "gzip" {
+			z, err := gzip.NewReader(r.Body)
+			if err != nil {
+				fail(w, 400, "%v", err)
+				return
+			}
+			in = z
+		}
+		b, err := io.ReadAll(in)
 		if err != nil {
 			fail(w, 400, "%v", err)
 			return
 		}
-		body = z
+		body = b
 	}
+	var sessions []string
+	if strings.Contains(proto, "version=2") {
+		sessions = sessionPrefixes(body)
+	}
+	args := append(hideRefs(sessions), "upload-pack", "--stateless-rpc")
 	if advertise {
-		body = nil
+		args = append(args, "--http-backend-info-refs")
 	}
-	cmd.Stdin = body
+	args = append(args, rp)
+	cmd := exec.Command("git", args...)
+	cmd.Env = append(os.Environ(), "GIT_PROTOCOL="+proto)
+	if !advertise {
+		cmd.Stdin = bytes.NewReader(body)
+	}
 	stdout, _ := cmd.StdoutPipe()
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -935,10 +947,94 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 			io.WriteString(w, "001e# service=git-upload-pack\n0000")
 		}
 	}
-	io.CopyBuffer(w, stdout, make([]byte, 64<<10))
+	if len(sessions) > 0 {
+		// An ls-refs reply: small, so buffered and cut.
+		b, _ := io.ReadAll(stdout)
+		w.Write(lsRefsOnly(b, sessions))
+	} else {
+		io.CopyBuffer(w, stdout, make([]byte, 64<<10))
+	}
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())
 	}
+}
+
+// The host-owned refs (`crates/git` `agent::HOST_REFS`) and the session logs under them (`agent::SESSION_REFS`):
+// never in a v0 or v1 advertisement, and listed by v2 `ls-refs` only when a `ref-prefix` begins with the session
+// namespace and the ref begins with that `ref-prefix` (`design/DESIGN.md`, Shape, `SESSION_REFS`). Objects stay
+// fetchable by id; hiding a ref changes only what is listed.
+const hostRefs, sessionRefs = "refs/graftyard/", "refs/graftyard/sessions/"
+
+// hideRefs is the `-c` arguments upload-pack runs with: every host-owned ref hidden, and the session namespace
+// unhidden when the request names a session prefix. git matches `hideRefs` at a path boundary while a v2 `ref-prefix`
+// is a string prefix, so `lsRefsOnly` then cuts the listing to the refs that begin with one of those prefixes.
+func hideRefs(sessions []string) []string {
+	a := []string{"-c", "uploadpack.hideRefs=" + hostRefs}
+	if len(sessions) > 0 {
+		a = append(a, "-c", "uploadpack.hideRefs=!"+sessionRefs)
+	}
+	return a
+}
+
+// sessionPrefixes is the `ref-prefix` values that begin with the session namespace, when a v2 request body is
+// `command=ls-refs`; otherwise none. A malformed body names none, and upload-pack refuses it.
+func sessionPrefixes(b []byte) []string {
+	ls := false
+	var out []string
+	for len(b) >= 4 {
+		var n int
+		if _, err := fmt.Sscanf(string(b[:4]), "%04x", &n); err != nil {
+			return nil
+		}
+		if n < 4 {
+			// flush, delim, or response-end
+			b = b[4:]
+			continue
+		}
+		if n > len(b) {
+			return nil
+		}
+		line := strings.TrimSuffix(string(b[4:n]), "\n")
+		b = b[n:]
+		switch {
+		case line == "command=ls-refs":
+			ls = true
+		case strings.HasPrefix(line, "command="):
+			return nil
+		case strings.HasPrefix(line, "ref-prefix "+sessionRefs):
+			out = append(out, strings.TrimPrefix(line, "ref-prefix "))
+		}
+	}
+	if !ls {
+		return nil
+	}
+	return out
+}
+
+// lsRefsOnly drops from a v2 `ls-refs` reply every session ref that begins with none of `sessions`, so a sibling
+// `ref-prefix refs/` in the same request lists no session ref. Each line is `<oid> <name>[ <attribute>...]`.
+func lsRefsOnly(reply []byte, sessions []string) []byte {
+	var out []byte
+	for len(reply) >= 4 {
+		var n int
+		if _, err := fmt.Sscanf(string(reply[:4]), "%04x", &n); err != nil || n > len(reply) {
+			return append(out, reply...)
+		}
+		n = max(n, 4)
+		p := reply[:n]
+		reply = reply[n:]
+		if f := strings.Fields(string(p[4:])); len(f) >= 2 && strings.HasPrefix(f[1], sessionRefs) {
+			kept := false
+			for _, s := range sessions {
+				kept = kept || strings.HasPrefix(f[1], s)
+			}
+			if !kept {
+				continue
+			}
+		}
+		out = append(out, p...)
+	}
+	return append(out, reply...)
 }
 
 // changes is `git diff-tree -r` from a to b: each changed path and its entry in b ("mode oid", all zeros if deleted).
