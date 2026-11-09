@@ -1953,6 +1953,51 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** A hosted run, or a customer report, where a crash during a stall lapses an Exclusive lease and a second holder's push lands inside it; leases made more than advisory (an enforced mode that a lapse would break); or a durable marker write that costs nothing measurable on the commit path, which would make losing the marker needless.
 
+### Milestone 3 closes, the read gate's 401, and AM1's hosted half, 2026-11-09
+
+`m3-repos` built repository creation over REST and BF-34's Terraform test passed as written, which closed Milestone 3; the edge read gate ran hosted; and `am1-hosted` ran AM1's hosted half on `graft-m1`, where LM-1 does not yet pass (`tests/m3/results/m3-repos.md`; `tests/am1/results/am1-hosted.md`; `build/BUILD-PLAN.md`, "Milestone 3 status" and AM1-WP6).
+
+#### Repository create and delete in format 32.13
+
+**Decision.** `POST /orgs/{org}/repos`, `POST /user/repos`, and GraphQL `createRepository` commit `CreateRepo` on the owner's `Authz` chain first (the commit point), then `RepoOwner`, the `auto_init` README push under its own request id, and `InitRepo`, whose leader renders the 201. `DELETE` appends the chain's `Deleted`, then turns the name `Deleted`. Repository format 32.13 holds `InitRepo` and `DeleteRepo`, with `RepoEvent::Created { actor: Option<AccountId> }` (tag 33), whose entry time is `created_at`, and `Deleted { retain_until, actor: Option<AccountId> }` (tag 34), after which the chain refuses every push and issue command. `updated_at` and `pushed_at` render as the creation time. SHARED's `RepoEvent` and "Multi-chain operations" say so, and F59 holds the missing finisher.
+
+**Why.** BF-34's acceptance test creates and deletes its own repositories. GHES's `full-repository` needs `created_at`, and no event recorded one. The other 32.x events carry `actor: Option<AccountId>`, and `Actor` would have been the only enum-shaped actor on the chain's new events. The README push and `InitRepo` shared an id, so the leader answered `InitRepo` from the push's stored row.
+
+**Beat.** Seeding repositories for the test, which would not run it as written. Recording `updated_at` and `pushed_at` now, with no route that reads them yet. A finisher built in the same round, which needs the `Audit` owed-work model M4-WP1 extends.
+
+**Evidence.** `tests/m3/results/m3-repos.md`: Terraform 6 of 6 runs and 12 of 12 subtests, 12 of 12 created repositories 404 afterwards; `gh repo create` 20 of 20; REST smoke 23 of 23; 14 hosted replies valid against GHES 3.22; 14 of 14 planted bugs; the `auto_init` bug before and after `cb98c9d` [measured].
+
+**Flip.** A client that reads `updated_at` or `pushed_at` and needs them true; or an edge crash measured stranding a name before F59's finisher exists, which would move the finisher ahead of M4-WP1.
+
+#### A refused credential is 401 before the read gate
+
+**Decision.** A REST repository request carrying a credential the edge refuses (revoked, lapsed, or unknown) gets 401 "Bad credentials" before `authorize_read` runs, so a bad token is never served as anonymous, even on a public repository. Git already answered such a request 401. SHARED, "Identity and tokens" (`authorize_read`), says so.
+
+**Why.** GitHub answers 401 "Bad credentials" for a token it does not accept. Treating the request as anonymous made a revoked token's read of a private repository 404 and of a public one 200, so a client could not tell a dead token from a missing repository, and a dead token kept reading public data.
+
+**Beat.** Leaving the gate to answer for anonymous callers, which serves public repositories to a dead token. Answering 404 for every refused credential, which hides the cause from gh and Octokit.
+
+**Evidence.** `tests/m3/results/m3-repos.md`, "Edge read gate": 12 of 12 per case, with the revoked token's REST read 404 and its git read 401 before the fix; `932cc33`. The rerun after it is on `m3-gate2`, on `graft-m2b` [measured before the fix; the fix pending that rerun].
+
+**Flip.** A GHES 3.22 capture that answers a bad token on a public repository as anonymous, or a client that breaks on 401 where it expected public data.
+
+#### AM1's hosted half: what the code needed, and LM-1 pending `am1-fix`
+
+**Decision.**
+- **L0-15:** a feed poll without `contents: read` answers 404, as task and lease reads do; the row now names 401, 404, or 429.
+- **External tasks:** a `graftyard_task` claim binds only a live `GraftyardRun` task, so an `External` task links pushes only by trailer and sends its session on lease calls. The agent block says so.
+- **`LeaseEnforce`:** for a pusher with no task, another holder is one whose actor differs, so a vendor App with only external tasks is never bound by its own leases. The agent block says so, and hosted L0-12 holds the lease with another actor.
+- **Core rows:** they are what pushes, minting, and lease checks read; a merge reads its pull row and writes `Merged`, both Metadata, so L0-16 no longer lists merges.
+- **Pending `am1-fix`, not settled:** LF-12's commit p99 (A24), and a recorded stall lost when leadership moves (F60). The lead authorized a raft change for F60. Both gates stay as written.
+
+**Why.** The edge's 404 for a reader who cannot see a field is the rule every other agent read follows, and 403 would confirm what the reader may not see. `graftyard_task` is how first-party sandboxes bind tokens; an external App reports its own work and gets no prefix. Binding a vendor App's tasks to each other needs a claim external tasks cannot carry. `tier_of` puts `Merged` and the pull row in Metadata.
+
+**Beat.** Answering 403 for the feed only. Letting `graftyard_task` name an external task, which would hand third-party tokens a task claim. Splitting a vendor App's leases by session with no claim, which no push can prove.
+
+**Evidence.** `tests/am1/results/am1-hosted.md`, "LM-1 rows" and contradictions 1 to 6: base journeys j2 and j3 20 of 20 and journey 4 10 of 10; L0-11's diffs only j3's new issues and the read gate's anonymous 404s; L0-12's refusals 100 of 100 for the confined vendor App and 0 for the three other kinds present; L0-13 for what ran; L0-16 0 metadata reads on 3 members for 8 checks; LF-1 100 of 100; LF-2, LF-3, LF-5 pass; B0-36 100 of 100 for the confined vendor App; B0-37's push half; L0-12's stall 0 ms of extension on 20 leases after 1,814,090 ms; LF-12 leader commit p99 3,414 ms; 25 of 25 planted bugs [measured].
+
+**Flip.** For the feed: a GHES client that branches on 403 for a visible repository. For external tasks: a vendor that needs its tasks to bind each other, which would need a claim for external tasks. For core rows: a merge built from core rows alone. For F60 and A24: `am1-fix`'s measurements settle them.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.

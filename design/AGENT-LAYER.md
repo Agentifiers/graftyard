@@ -122,14 +122,14 @@ pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub request
 /// reassignment to the controller's bot clears the pause, sets `queued`, and moves `snapshot` to that entry's index
 /// [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 /// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
-/// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
-/// Only `POST .../cancel` sets Cancelled, and a task reads as Cancelled, the check that releases its leases, once the
-/// owner `Authz` read finds no row for its App reaching the repository with `not_before` at or before the task's
-/// creation, the token rule. Only the host sets TimedOut: a task with no update for TASK_IDLE reads timed out. In both
-/// cases the next command records the state, answering 409. The task's App sets the other states with `PATCH`.
-/// Cancelling or finishing a task releases its leases in the same command. `state` uses GitHub's agent task states.
-/// Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`, `installation`, and the create and last-update
-/// times. Metadata: the rest. `issue` and `pr` number the task's repository.
+/// `requester` that App names, and gets no prefix and no `task` claim, so it links pushes only by trailer and sends its
+/// session on lease calls. Completed, Failed, TimedOut, Cancelled are final. Only `POST .../cancel` sets Cancelled, and
+/// a task reads as Cancelled, the check that releases its leases, once the owner `Authz` read finds no row for its App
+/// reaching the repository with `not_before` at or before the task's creation, the token rule. Only the host sets
+/// TimedOut: a task with no update for TASK_IDLE reads timed out. In both cases the next command records the state,
+/// answering 409. Its App sets the other states with `PATCH`. Cancelling or finishing a task releases its leases in the
+/// same command. `state` is GitHub's agent task states. Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`,
+/// `installation`, and the create and last-update times. Metadata: the rest. `issue` and `pr` are in its repository.
 pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: TaskApiState, pub prefix: Option<RefPattern>,
                        pub requester: Option<UserId>, pub app: AppId, pub installation: InstallationId, pub creator: Actor,
                        pub issue: Option<IssueNumber>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
@@ -223,10 +223,9 @@ pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
 pub struct Lease { pub id: LeaseId /* ULID */, pub holder: LeaseHolder, pub scope: LeaseScope, pub mode: LeaseMode,
                    pub intent: Box<str> /* <= 280 bytes, untrusted, shown through the trust view */,
                    pub granted: Timestamp, pub expires: Timestamp }
-/// `actor` keys SHARED's `Actor`: a user (a site admin as its user) or an App installation (a job's token as the Actions
-/// App's). Other actors hold no lease. `app` is the App behind a user-to-server token. `session` is the task the holder
-/// works for. An App token must name one on acquire: its `task` claim, or for a third-party App an `External` task the
-/// same App created.
+/// `actor` keys SHARED's `Actor`: a user (a site admin as its user) or an App installation (a job's token as the
+/// Actions App's). No other actor holds one. `app` is a user-to-server token's App. `session` is the task the holder
+/// works for. An App token names one on acquire: its `task` claim, or a third-party App's own `External` task.
 pub enum ActorId { User(UserId), App { app: AppId, installation: InstallationId } }
 pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session: Option<SessionId> }
 /// Gitignore-style: `*` matches within one path segment and `**` across segments. Unlike gitignore, every glob is
@@ -248,12 +247,13 @@ pub const PLAN_LEASES_PER_REPO: u16 = 500;                      // live plan-blo
 pub const LEASES_PER_REPO: u16 = 4_000;                         // live leases per repository
 /// `AgentPolicy.leases`. Advisory never refuses a push. AgentsExclusive refuses an `ActorKind::Agent` push whose `changed`
 /// paths overlap another holder's live Exclusive lease, and names the lease and its holder. Another holder's lease is one
-/// whose `session` differs from the pusher's task, or, for a pusher with no task, whose actor differs. With `truncated` set, a
-/// changed directory overlaps any glob under it. Exclusive globs are indexed by literal prefix, so the check fits in
-/// group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
+/// whose `session` differs from the pusher's task, or, for a pusher with no task, whose actor differs, so a vendor App
+/// with only external tasks is never bound by its own leases. With `truncated` set, a changed directory overlaps any
+/// glob under it. Exclusive globs are indexed by literal prefix, so the check fits in group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
 pub enum LeaseEnforce { Advisory, AgentsExclusive }
 // Agent-layer entries: variants added to SHARED's event enums, each with its `tier_of`. Core rows are what pushes,
-// merges, and minting read. `LeaseAcquire` sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
+// minting, and lease checks read (a merge also reads its pull row and writes `Merged`, both Metadata). `LeaseAcquire`
+// sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
 pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     Assigned { n: IssueNumber, assignees: SmallVec<[AccountId; 2]>, actor: Actor },          // Metadata
     IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
@@ -940,8 +940,8 @@ The base's Milestone 0 carries the rows that test base changes (A1 replay, 30-da
 | Leases and the feed. The A1 replay with a lease per agent and leader kills, then a 30-minute stall with every member running and member calls blackholed, then an idle 60 s lease followed 10 minutes later by an overlapping Exclusive acquire, then 100 conflicting pushes and 100 conflicting REST ref writes into another task's Exclusive scope under `AgentsExclusive`, run once per actor kind: Graftyard-run App, confined vendor App, flagged App without `confine`, `Graftyard MCP`, and a human user token | No two holders hold overlapping Exclusive leases for longer than `DRIFT` (500 ms), and measured member clock offsets stay under 500 ms. Every lease live before the stall is live after it, with `expires` moved by the recorded stall. The late Exclusive acquire succeeds. 500 long-pollers see each event within FEED_BATCH plus 2 s (3 s) at p99 outside leader kills. 100 of 100 refused for each of the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Any overlap over 500 ms, any lease expired by the stall, the late acquire refused, feed p99 over 2 s, or a refusal count off for any kind |
 | Lease limits. Exclusive acquires of `**`, `*`, and `*/x`, one with no live task, and a second for one task; an App-token acquire with no session; 600 plan blocks from accounts without push access, then 600 from writers; a holder whose push access is removed; an App uninstalled while it holds leases and tasks; an Exclusive lease renewed for 5 h | 100 of 100 refused for each bad acquire. Zero plan leases from non-writers and at most 500 from writers. The removed holder's lease refuses nothing at the next `decide`. Uninstall releases every lease and cancels every task. The lease reads as Shared after 4 h | Any accepted, any plan lease from a non-writer, or an Exclusive lease past 4 h |
 | Task rules. With `agents_enabled` off, then on: Graftyard-run creates from an installation token, an `AgentApp`'s user token, an MCP token, a demoted user, and a read-only user; a controller create from an issue assigned to another bot; 101 open tasks for one requester; `PATCH` of a cancelled task to `in_progress`; a token request naming another App's task or a repository outside the token's list; a body that sets `prefix` | 422 for every create while off. When on, 100 of 100 refused for each bad case, the prefix always derived from `session`, and every create and cancel at the controller within 5 s, at no other App's webhook | Any accepted, or the delivery reaches any other App |
-| Gate and read permissions. An MCP client with `WriteApproveMerge` approves an agent PR. Code Mode calls approve and merge through `codemode.request()` without that scope. A vendor's named requester approves its PR. Anonymous, `metadata: read`-only, and over-limit feed polls, and `/log` and prompt reads with `metadata: read` only | `AgentGate` stays unsatisfied in all three cases, and Code Mode is refused 100 of 100. Feed polls get 401, 403, or 429, the leader sees zero feed requests, and `/log` and prompts return 403 | Any gate satisfied, any Code Mode approve or merge, or any read served |
-| Core tier alone. Pushes, merges, minting, and lease checks on the A1 replay with the metadata tier unloaded | Every check passes or refuses with zero metadata loads | Any metadata load on those paths |
+| Gate and read permissions. An MCP client with `WriteApproveMerge` approves an agent PR. Code Mode calls approve and merge through `codemode.request()` without that scope. A vendor's named requester approves its PR. Anonymous, `metadata: read`-only, and over-limit feed polls, and `/log` and prompt reads with `metadata: read` only | `AgentGate` stays unsatisfied in all three cases, and Code Mode is refused 100 of 100. Feed polls get 401, 404 (no `contents: read`, as task and lease reads answer), or 429, the leader sees zero feed requests, and `/log` and prompts return 403 | Any gate satisfied, any Code Mode approve or merge, or any read served |
+| Core tier alone. Pushes, minting, and lease checks on the A1 replay with the metadata tier unloaded (a merge reads its pull row and writes `Merged`, both Metadata, so it waits for the tier) | Every check passes or refuses with zero metadata loads | Any metadata load on those paths |
 
 ### Milestones
 

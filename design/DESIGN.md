@@ -245,16 +245,16 @@ pub enum EntryBody { Events(Vec<Event>) /* <= 1.5 MB with inline packs; DO rows 
                      Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
 /// The recorded stall. A member marks `stalled_since` at the earliest of a follower's first `suspect` report, a
 /// candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE, and stores
-/// it with its next state write (a campaign writes at once): a crash before then loses the stall, and leases lapse by
-/// it [measured: a write per marker broke the harsh simulator's floor, AM1-WP4]. Queueing in admission is not a stall.
-/// The next entry the group commits carries `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`)
-/// and Actions job lease with `expires > since` moves `expires` by `by`. Idle time never counts: an idle group sets no
-/// marker. A leader adds no `extend` while an unapplied entry in its log carries one with `since` at or before its own
-/// marker, so one stall moves a lease once, and `since` is at least the `at` of the last entry it holds, so no lease
-/// that entry judged expired is revived over a newer holder. Without the first rule, one 30-minute stall moved 501
-/// leases twice [measured, `tests/m0/results/m0-wp12.md`, L0-12]. The leader applies an entry's `extend` before its
-/// commands decide, so `decide` sees the moved leases and compares `expires` with the entry's `at`; reads compare it
-/// with the leader's leased clock, expiry needs no command, and clients time it from `expires`.
+/// it with its next state write (a campaign writes at once): a crash before then loses it, and leases lapse by the
+/// stall [measured: a write per marker broke the harsh simulator, AM1-WP4]; a new leader writes no `extend` for an old
+/// leader's marker (F60). Queueing in admission is not a stall. The next entry the group commits carries `ExtendLeases
+/// { since, by: at - since }`, and every path lease (`Lease`) and Actions job lease with `expires > since` moves
+/// `expires` by `by`. An idle group sets no marker. A leader adds no `extend` while an unapplied entry in its log
+/// carries one with `since` at or before its own marker, so one stall moves a lease once, and `since` is at least the
+/// `at` of the last entry it holds, so no lease that entry judged expired is revived over a newer holder. Without the
+/// first rule, one 30-minute stall moved 501 leases twice [measured, M0-WP12, L0-12]. The leader applies an entry's
+/// `extend` before its commands decide, so `decide` sees the moved leases and compares `expires` with the entry's `at`;
+/// reads compare it with the leader's leased clock, expiry needs no command, and clients time it from `expires`.
 pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
 /// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
 /// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
@@ -686,14 +686,14 @@ pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub request
 /// reassignment to the controller's bot clears the pause, sets `queued`, and moves `snapshot` to that entry's index
 /// [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 /// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
-/// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
-/// Only `POST .../cancel` sets Cancelled, and a task reads as Cancelled, the check that releases its leases, once the
-/// owner `Authz` read finds no row for its App reaching the repository with `not_before` at or before the task's
-/// creation, the token rule. Only the host sets TimedOut: a task with no update for TASK_IDLE reads timed out. In both
-/// cases the next command records the state, answering 409. The task's App sets the other states with `PATCH`.
-/// Cancelling or finishing a task releases its leases in the same command. `state` uses GitHub's agent task states.
-/// Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`, `installation`, and the create and last-update
-/// times. Metadata: the rest. `issue` and `pr` number the task's repository.
+/// `requester` that App names, and gets no prefix and no `task` claim, so it links pushes only by trailer and sends its
+/// session on lease calls. Completed, Failed, TimedOut, Cancelled are final. Only `POST .../cancel` sets Cancelled, and
+/// a task reads as Cancelled, the check that releases its leases, once the owner `Authz` read finds no row for its App
+/// reaching the repository with `not_before` at or before the task's creation, the token rule. Only the host sets
+/// TimedOut: a task with no update for TASK_IDLE reads timed out. In both cases the next command records the state,
+/// answering 409. Its App sets the other states with `PATCH`. Cancelling or finishing a task releases its leases in the
+/// same command. `state` is GitHub's agent task states. Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`,
+/// `installation`, and the create and last-update times. Metadata: the rest. `issue` and `pr` are in its repository.
 pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: TaskApiState, pub prefix: Option<RefPattern>,
                        pub requester: Option<UserId>, pub app: AppId, pub installation: InstallationId, pub creator: Actor,
                        pub issue: Option<IssueNumber>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
@@ -787,10 +787,9 @@ pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
 pub struct Lease { pub id: LeaseId /* ULID */, pub holder: LeaseHolder, pub scope: LeaseScope, pub mode: LeaseMode,
                    pub intent: Box<str> /* <= 280 bytes, untrusted, shown through the trust view */,
                    pub granted: Timestamp, pub expires: Timestamp }
-/// `actor` keys SHARED's `Actor`: a user (a site admin as its user) or an App installation (a job's token as the Actions
-/// App's). Other actors hold no lease. `app` is the App behind a user-to-server token. `session` is the task the holder
-/// works for. An App token must name one on acquire: its `task` claim, or for a third-party App an `External` task the
-/// same App created.
+/// `actor` keys SHARED's `Actor`: a user (a site admin as its user) or an App installation (a job's token as the
+/// Actions App's). No other actor holds one. `app` is a user-to-server token's App. `session` is the task the holder
+/// works for. An App token names one on acquire: its `task` claim, or a third-party App's own `External` task.
 pub enum ActorId { User(UserId), App { app: AppId, installation: InstallationId } }
 pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session: Option<SessionId> }
 /// Gitignore-style: `*` matches within one path segment and `**` across segments. Unlike gitignore, every glob is
@@ -812,12 +811,13 @@ pub const PLAN_LEASES_PER_REPO: u16 = 500;                      // live plan-blo
 pub const LEASES_PER_REPO: u16 = 4_000;                         // live leases per repository
 /// `AgentPolicy.leases`. Advisory never refuses a push. AgentsExclusive refuses an `ActorKind::Agent` push whose `changed`
 /// paths overlap another holder's live Exclusive lease, and names the lease and its holder. Another holder's lease is one
-/// whose `session` differs from the pusher's task, or, for a pusher with no task, whose actor differs. With `truncated` set, a
-/// changed directory overlaps any glob under it. Exclusive globs are indexed by literal prefix, so the check fits in
-/// group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
+/// whose `session` differs from the pusher's task, or, for a pusher with no task, whose actor differs, so a vendor App
+/// with only external tasks is never bound by its own leases. With `truncated` set, a changed directory overlaps any
+/// glob under it. Exclusive globs are indexed by literal prefix, so the check fits in group commit. Humans, bots, `Graftyard MCP`, user tokens, and the merge queue are never refused by a lease.
 pub enum LeaseEnforce { Advisory, AgentsExclusive }
 // Agent-layer entries: variants added to SHARED's event enums, each with its `tier_of`. Core rows are what pushes,
-// merges, and minting read. `LeaseAcquire` sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
+// minting, and lease checks read (a merge also reads its pull row and writes `Merged`, both Metadata). `LeaseAcquire`
+// sets `granted` to the entry's `at`, and `LeaseRenew` changes only `expires`.
 pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     Assigned { n: IssueNumber, assignees: SmallVec<[AccountId; 2]>, actor: Actor },          // Metadata
     IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
