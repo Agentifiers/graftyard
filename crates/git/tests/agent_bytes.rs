@@ -67,6 +67,7 @@ fn push(actor: Principal, agent: Option<&str>) -> Push {
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     }
 }
 

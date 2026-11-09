@@ -225,7 +225,7 @@ fn load_meta(h: &Rc<Host<Repo>>, sql: &SqlStorage) -> Result<bool> {
         let e: raft::LogEntry<git::repo::RepoEvent> =
             raft::codec::from_bytes(blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
         graftyard_fold::apply(&tiers, &mut m, Tier::Metadata, &e)
-            .map_err(|e| Error::RustError(format!("metadata load at {:?}: {e}", e)))?;
+            .map_err(|x| Error::RustError(format!("metadata load at {:?}: {x}", e.index)))?;
     }
     // The load's own writes, outside any Raft input: they change nothing a peer or a client has seen.
     let mut stmts = Vec::new();
@@ -790,6 +790,7 @@ pub async fn bench_load(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
             provenance: Vec::new(),
             protected: Vec::new(),
             changed: Vec::new(),
+            leases: false,
         };
         let at = now_ms();
         match h.input(|m, t| m.commit(t, rid, git::repo::RepoCmd::Push(push))) {

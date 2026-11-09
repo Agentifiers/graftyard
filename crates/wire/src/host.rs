@@ -10,12 +10,14 @@ pub struct Host {
     isolation: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum HostError {
     /// Not a lower-case DNS name of labels of `[a-z0-9-]`: a port, a path, or a scheme included.
+    #[error("not a lower-case DNS name")]
     NotAHostname,
     /// Is or ends in `.github.com`, `.ghe.com`, or `.localhost`, which clients classify as dotcom, GHE.com, or
     /// `github.localhost` (`research/clients.md` #1 and #2).
+    #[error("a github.com, ghe.com, or localhost name, which clients do not treat as GHES")]
     NotGhes,
 }
 

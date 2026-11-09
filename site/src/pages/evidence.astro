@@ -6,6 +6,7 @@ import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
 
+const ARROW = '<svg class="m-arrow" viewBox="0 0 12 12" aria-hidden="true"><path class="m-arrow__stem" d="M1 6h8"/><path class="m-arrow__head" d="M4.5 2.5 8 6l-3.5 3.5"/></svg>';
 const ok = (s: string) => `<span class="ok">${s}</span>`;
 const no = (s: string) => `<span class="no">${s}</span>`;
 
@@ -59,15 +60,16 @@ const latencyRows = [
   ['Clients during the 24-hour chaos run <code>lin24b</code>', 'p50 314 ms', 'p99 952 ms', 'BM-1'],
 ];
 ---
-<Page title="Evidence: GHES 3.22, chaos and latency tests | Graftyard"
+<Page title="Evidence overview: GHES 3.22, chaos and latency tests | Graftyard"
   description="The tests behind Graftyard: real GitHub clients against GHES 3.22 schemas, 104.6 hours of chaos on Cloudflare, token revocation over HTTPS, and measured commit latency."
   current="evidence" doc>
   <section class="section" aria-labelledby="ev-h">
     <div class="wrap">
       <div class="doc-head">
-        <p class="eyebrow">Evidence</p>
+        <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
         <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 7 November 2026, failures included.</p>
+        <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
         <li><b>348 of 348</b><span>git client checks on three git versions, a site failing in half</span></li>
@@ -156,7 +158,7 @@ const latencyRows = [
             <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Milestone 3's close caught 8 of 8, and the agent rules 19 of 19 in memory.</li>
             <li>Milestone 3 (identity and authorization) passed its gate but is not closed: repository transfer, outside collaborators, OIDC sign-in, and the SSH-key and scoped-token routes have not run hosted yet.</li>
           </ul>
-          <p class="muted">Sources: <code>tests/RESULTS.md</code>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code> and <code>tests/am1</code>'s results, in the Graftyard repository.</p>
+          <p class="muted">Sources: <code>tests/RESULTS.md</code>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code> and <code>tests/am1</code>'s results, in the Graftyard repository. <a href="/evidence/all/">All results</a> lists every row of the ledger and every gate.</p>
         </div>
       </div>
     </div>

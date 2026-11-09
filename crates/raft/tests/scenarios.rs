@@ -6,8 +6,8 @@ use common::cluster::Cluster;
 use common::kv::{KvCmd, KvErr};
 use common::sim::{CHAIN, SITES, config, record};
 use graftyard_raft::{
-    ByRequest, CallError, CommitError, Deny, Digest, EntryBody, Index, Member, Message, RequestId, Resolution, Role,
-    Term, Verdict, VoteReq, bootstrap, digest, quorums,
+    ByRequest, CallError, CommitError, Deny, Digest, EntryBody, Index, Member, Message, RequestId, Resolution,
+    RestoreError, Role, Term, Verdict, VoteReq, bootstrap, digest, quorums,
 };
 use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
 
@@ -1036,6 +1036,38 @@ fn a_lagging_follower_catches_up_in_calls_under_the_byte_cap() {
     }
     assert_eq!(c.m(C).digests(), c.m(A).digests(), "C caught up");
     assert!(most <= graftyard_raft::APPEND_BYTES_MAX, "one AppendEntries carried {most} bytes");
+}
+
+/// A stored fold outside the stored log window (`base <= applied <= base + log.len()`) is refused with an error the
+/// host answers 500 to, not a panic, which would reset every object in the isolate.
+#[test]
+fn restore_refuses_a_fold_outside_the_stored_log_window() {
+    let mut c = Cluster::new(46);
+    c.elect(A);
+    admit(&mut c, A, 9_000, put("k", "v"));
+    c.deliver_all();
+    c.sync(A);
+    let disk = c.disks[B.0 as usize].clone();
+    let applied = disk.fold.applied();
+    assert!(applied.0 >= 2 && disk.base.index == Index(0), "B applied {applied:?} from a whole log");
+    let window = |r: Result<_, RestoreError>| match r {
+        Err(RestoreError::Window { base, applied, last }) => (base, applied, last),
+        Err(e) => panic!("restore refused for another reason: {e}"),
+        Ok(_) => panic!("restore took a fold outside the log window"),
+    };
+
+    // The log's base is above the applied fold.
+    let mut above = disk.clone();
+    above.base.index = Index(applied.0 + 1);
+    above.log.clear();
+    let next = Index(applied.0 + 1);
+    assert_eq!(window(Member::<KvCmd>::restore(config(B), above, c.now, 7)), (next, applied, next));
+
+    // The fold has applied past the log's last entry.
+    let mut short = disk;
+    short.log.truncate(applied.0 as usize - 1);
+    let last = Index(applied.0 - 1);
+    assert_eq!(window(Member::<KvCmd>::restore(config(B), short, c.now, 7)), (Index(0), applied, last));
 }
 
 /// F45: a window bounded by entry count alone holds 1,000 entries of up to 1.5 MB, which a 128 MB isolate cannot

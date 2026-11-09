@@ -206,7 +206,17 @@ impl<'a, 'q> Ex<'a, 'q> {
     }
 
     /// The fields of `set` that apply to `o`, in document order, with fragments flattened.
-    fn collect(&self, o: &dyn Obj, set: &'a SelectionSet<'q, String>, out: &mut Vec<&'a Field<'q, String>>) {
+    ///
+    /// `seen` is the spec's `visitedFragments`: a fragment spread already expanded for this object is skipped, so a
+    /// cycle ends and a chain of repeated spreads expands each fragment once. A skipped spread could only repeat
+    /// fields already collected, which `object` merges by response key.
+    fn collect(
+        &self,
+        o: &dyn Obj,
+        set: &'a SelectionSet<'q, String>,
+        seen: &mut Vec<&'a str>,
+        out: &mut Vec<&'a Field<'q, String>>,
+    ) {
         for s in &set.items {
             match s {
                 Selection::Field(f) => out.push(f),
@@ -216,14 +226,18 @@ impl<'a, 'q> Ex<'a, 'q> {
                         None => true,
                     };
                     if ok {
-                        self.collect(o, &i.selection_set, out);
+                        self.collect(o, &i.selection_set, seen, out);
                     }
                 }
                 Selection::FragmentSpread(fs) => {
+                    if seen.contains(&fs.fragment_name.as_str()) {
+                        continue;
+                    }
+                    seen.push(&fs.fragment_name);
                     if let Some(f) = self.req.fragment(&fs.fragment_name) {
                         let TypeCondition::On(t) = &f.type_condition;
                         if Self::applies(o, t) {
-                            self.collect(o, &f.selection_set, out);
+                            self.collect(o, &f.selection_set, seen, out);
                         }
                     }
                 }
@@ -234,8 +248,9 @@ impl<'a, 'q> Ex<'a, 'q> {
     fn object(&mut self, o: &dyn Obj, sets: &[&'a SelectionSet<'q, String>], path: &mut Vec<String>) -> Value {
         // Fields with one response key merge their selection sets and resolve once, as the spec's CollectFields does.
         let mut fields = Vec::new();
+        let mut seen = Vec::new();
         for set in sets {
-            self.collect(o, set, &mut fields);
+            self.collect(o, set, &mut seen, &mut fields);
         }
         let mut grouped: Vec<(String, Vec<&'a Field<'q, String>>)> = Vec::new();
         for f in fields {

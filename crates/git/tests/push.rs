@@ -83,6 +83,7 @@ fn push(updates: Vec<RefUpdate>, atomicity: Atomicity, actor: Principal) -> Push
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
+        leases: false,
     }
 }
 
@@ -381,6 +382,18 @@ fn the_wire_form_round_trips_and_refuses_an_unknown_format() {
     for cut in [0, 3, 10, w.len() - 1] {
         assert!(Push::from_wire(&w[..cut]).is_err(), "{cut}");
     }
+}
+
+#[test]
+fn a_principal_with_more_than_64_sso_orgs_round_trips() {
+    let mut actor = who(OWNER, 1);
+    actor.sso_orgs = (0..65).map(|i| graftyard_identity::OrgId(AccountId(DbId(1_000 + i)))).collect();
+    let mut p = push(vec![up("refs/heads/main", None, Some(oid(1)))], Atomicity::PerRef, actor.clone());
+    p.options = vec!["ci.skip".into()];
+    p.request = RequestId(Ulid(42));
+    assert_eq!(Push::from_wire(&p.to_wire()), Ok(p));
+    let b = graftyard_git::repo::principal_bytes(&actor);
+    assert_eq!(graftyard_git::repo::principal_from_bytes(&b), Ok(actor));
 }
 
 #[test]

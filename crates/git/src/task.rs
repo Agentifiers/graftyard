@@ -446,9 +446,23 @@ pub struct TaskCtx<'a> {
     pub install: Option<&'a dyn AuthzRead>,
     /// The caller's permission on the repository, as `issue_ops::permission` or `authorize_app` gives it.
     pub perm: Option<graftyard_identity::RepoPermission>,
+    /// Format 32.14: the command may write `LeaseRelease`, so a command that makes the task final releases its leases
+    /// in the same command (AM1-WP4). Before it they count as released anyway, because `holds` reads the task final.
+    pub leases: bool,
 }
 
 type Decided = Result<(smallvec::SmallVec<[crate::repo::RepoEvent; 4]>, crate::issue_ops::IssueOut), TaskErr>;
+
+/// The task's leases that a command making it final releases: every lease row naming its session, held or not.
+fn release(ctx: &TaskCtx<'_>, core: &dyn Read, id: &SessionId, p: &Principal) -> Option<crate::repo::RepoEvent> {
+    if !ctx.leases {
+        return None;
+    }
+    let ids: smallvec::SmallVec<[crate::lease::LeaseId; 4]> =
+        crate::lease::session_rows(core, id).into_iter().map(|r| r.lease.id).collect();
+    let by = crate::lease::ActorId::of(p)?;
+    (!ids.is_empty()).then_some(crate::repo::RepoEvent::LeaseRelease { ids, by })
+}
 
 fn updated(session: &SessionId, state: TaskApiState, actor: TaskActor) -> crate::repo::RepoEvent {
     crate::repo::RepoEvent::TaskUpdated { session: session.clone(), state: Some(state), pr: None, summary: None, actor }
@@ -456,7 +470,14 @@ fn updated(session: &SessionId, state: TaskApiState, actor: TaskActor) -> crate:
 
 /// A command on a task that reads final only by derivation (its installation gone, or TASK_IDLE passed) records that
 /// state and changes nothing else; one already stored final changes nothing.
-fn derived_final(ctx: &TaskCtx<'_>, id: &SessionId, t: &TaskCore, actor: TaskActor) -> Option<Decided> {
+fn derived_final(
+    ctx: &TaskCtx<'_>,
+    core: &dyn Read,
+    p: &Principal,
+    id: &SessionId,
+    t: &TaskCore,
+    actor: TaskActor,
+) -> Option<Decided> {
     let owner = ctx.owner?;
     let now = effective(t, owner, ctx.repo, ctx.at);
     if t.state.is_final() {
@@ -464,7 +485,9 @@ fn derived_final(ctx: &TaskCtx<'_>, id: &SessionId, t: &TaskCore, actor: TaskAct
     }
     if now.is_final() {
         let out = crate::issue_ops::IssueOut::TaskFinal(id.clone(), now);
-        return Some(Ok((smallvec::smallvec![updated(id, now, actor)], out)));
+        let mut evs = smallvec::smallvec![updated(id, now, actor)];
+        evs.extend(release(ctx, core, id, p));
+        return Some(Ok((evs, out)));
     }
     None
 }
@@ -537,7 +560,7 @@ pub fn decide(
             if matches!(state, Some(TaskApiState::Cancelled | TaskApiState::TimedOut)) {
                 return Err(TaskErr::HostState);
             }
-            if let Some(d) = derived_final(ctx, id, &t, actor) {
+            if let Some(d) = derived_final(ctx, core, p, id, &t, actor) {
                 return d;
             }
             // A Graftyard-run task the host paused may only be left paused or finished by its App.
@@ -560,7 +583,12 @@ pub fn decide(
             // An empty `PATCH` still records that the task is alive, against TASK_IDLE.
             let ev =
                 RepoEvent::TaskUpdated { session: id.clone(), state: *state, pr: *pr, summary: summary.clone(), actor };
-            Ok((smallvec::smallvec![ev], IssueOut::Task(id.clone())))
+            let mut evs = smallvec::smallvec![ev];
+            // Finishing a task releases its leases in the same command.
+            if to.is_final() {
+                evs.extend(release(ctx, core, id, p));
+            }
+            Ok((evs, IssueOut::Task(id.clone())))
         }
         IssueOp::CancelTask { id } => {
             let t = task_core(core, id).filter(|_| read).ok_or(TaskErr::NoTask)?;
@@ -571,10 +599,13 @@ pub fn decide(
             if !may {
                 return Err(TaskErr::NotYours);
             }
-            if let Some(d) = derived_final(ctx, id, &t, actor) {
+            if let Some(d) = derived_final(ctx, core, p, id, &t, actor) {
                 return d;
             }
-            Ok((smallvec::smallvec![updated(id, TaskApiState::Cancelled, actor)], IssueOut::Task(id.clone())))
+            // Cancelling a task releases its leases in the same command.
+            let mut evs = smallvec::smallvec![updated(id, TaskApiState::Cancelled, actor)];
+            evs.extend(release(ctx, core, id, p));
+            Ok((evs, IssueOut::Task(id.clone())))
         }
         _ => Err(TaskErr::Invalid("not a task command")),
     }

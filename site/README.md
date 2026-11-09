@@ -12,7 +12,8 @@ npm run build     # static output in dist/
 
 - `src/layouts/Page.astro` is every page's frame: the head, the palette (dark and light), the bar, the footer, the theme button and the film player.
 - `src/pages/index.astro` is the home page: the hero, Clients, GHES tests, Durability, Chaos and Questions.
-- `src/pages/evidence.astro` is the GHES 3.22, chaos and latency results.
+- `src/pages/evidence.astro` is the evidence overview: GHES 3.22, chaos, tokens and latency, with hand-picked figures.
+- `src/pages/evidence/all.astro` is every check, benchmark and baseline. `src/data/evidence.ts` reads it at build time from `tests/RESULTS.md` (every table) and `build/BUILD-PLAN.md` (each milestone's status table and every work package's acceptance table), so it follows those files with no edit here; milestones with no status table and no results yet are listed as not yet run.
 - `src/pages/architecture.astro` is the architecture overview.
 - `src/pages/why-not-artifacts.astro` is the case against Cloudflare Artifacts.
 - `src/components/Logo.astro` is the Graftyard logo (graftyard-option-9.svg). On a dark page its branches take the text colour.

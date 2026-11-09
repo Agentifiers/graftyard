@@ -5,11 +5,11 @@ mod common;
 use common::acct;
 use graftyard_identity::{
     AccountKind, Actor, AuthzEvent, AuthzFold, Credential, Decision, Principal, ReadAction, RepoAccess, RepoPermission,
-    ScopeSet, UserId, Visibility, WriteAction, authorize, authorize_write,
+    RepoScope, ScopeSet, TokenFields, UserId, Visibility, WriteAction, authorize, authorize_read, authorize_write,
 };
 use graftyard_raft::Fold;
 use graftyard_types::{AccountId, DbId, RepoId};
-use smallvec::SmallVec;
+use smallvec::{SmallVec, smallvec};
 
 struct Repo {
     owner: AccountId,
@@ -74,4 +74,51 @@ fn hidden_forbidden_and_the_higher_of_grant_and_collaborator() {
     r.visibility = Visibility::Public;
     assert_eq!(authorize(&anon, ReadAction::Contents, &authz, &r), Decision::Allow);
     assert_eq!(authorize_write(&anon, WriteAction::Participate, &authz, &r), Decision::Forbidden);
+}
+
+/// The edge's read gate: a private repository is hidden from an anonymous caller, an outsider, a fine-grained token
+/// for another repository, and an installation token that does not reach it; it is shown to the owner's admin, a
+/// grantee, an outside collaborator, and an org member through the base permission. A public repository is shown to
+/// everyone, a token outside its reach included, because the token's own limit only binds a write there.
+#[test]
+fn the_read_gate_hides_a_private_repository_from_everyone_who_cannot_read_it() {
+    let (org, admin, grantee, collab, member, outsider) =
+        (acct(0, 9, 1), acct(0, 2, 1), acct(0, 2, 2), acct(0, 2, 3), acct(0, 2, 4), acct(0, 2, 5));
+    let mut a = AuthzFold::new(org);
+    a.apply(&AuthzEvent::Opened { kind: AccountKind::Org, enterprise: None });
+    a.apply(&AuthzEvent::Member { user: UserId(admin), role: Some(graftyard_identity::OrgRole::Admin) });
+    a.apply(&AuthzEvent::Grant { repo: REPO, grantee: UserId(grantee), permission: Some(RepoPermission::Read) });
+    let mut r = Repo {
+        owner: org,
+        visibility: Visibility::Private,
+        collaborators: vec![(UserId(collab), RepoPermission::Read)],
+    };
+    let read = |a: &AuthzFold, p: Option<&Principal>, t: Option<&TokenFields>, r: &Repo| {
+        authorize_read(p, t, &[a as &dyn graftyard_identity::AuthzRead], r)
+    };
+    let elsewhere = TokenFields { repos: Some(RepoScope::Selected(smallvec![RepoId(DbId(8))])), ..Default::default() };
+    let here = TokenFields { repos: Some(RepoScope::Selected(smallvec![REPO])), ..Default::default() };
+
+    assert_eq!(read(&a, None, None, &r), Decision::Hidden, "anonymous");
+    assert_eq!(read(&a, Some(&user(outsider)), None, &r), Decision::Hidden, "an outsider");
+    assert_eq!(read(&a, Some(&user(member)), None, &r), Decision::Hidden, "not yet a member");
+    for (who, why) in [(admin, "the org's admin"), (grantee, "a grantee"), (collab, "an outside collaborator")] {
+        assert_eq!(read(&a, Some(&user(who)), None, &r), Decision::Allow, "{why}");
+    }
+    assert_eq!(read(&a, Some(&user(grantee)), Some(&elsewhere), &r), Decision::Hidden, "a token for another repo");
+    assert_eq!(read(&a, Some(&user(grantee)), Some(&here), &r), Decision::Allow, "a token for this repository");
+    // A member reads only through a grant, a team, or the org's base permission, which this org has not set.
+    a.apply(&AuthzEvent::Member { user: UserId(member), role: Some(graftyard_identity::OrgRole::Member) });
+    assert_eq!(read(&a, Some(&user(member)), None, &r), Decision::Hidden, "a member with no base permission");
+    // No `Authz` fold read: only a collaborator row grants, so nothing is shown by mistake.
+    assert_eq!(authorize_read(Some(&user(admin)), None, &[], &r), Decision::Hidden, "no owner fold");
+    assert_eq!(authorize_read(Some(&user(collab)), None, &[], &r), Decision::Allow, "a collaborator row");
+    let other = AuthzFold::new(acct(0, 9, 2));
+    assert_eq!(read(&other, Some(&user(admin)), None, &r), Decision::Hidden, "another owner's fold");
+
+    r.visibility = Visibility::Internal;
+    assert_eq!(read(&a, None, None, &r), Decision::Hidden, "internal is not public");
+    r.visibility = Visibility::Public;
+    assert_eq!(read(&a, None, None, &r), Decision::Allow, "public, anonymous");
+    assert_eq!(read(&a, Some(&user(outsider)), Some(&elsewhere), &r), Decision::Allow, "public, any token");
 }

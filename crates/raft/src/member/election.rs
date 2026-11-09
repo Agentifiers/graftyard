@@ -66,6 +66,8 @@ impl<C: Command> Member<C> {
         if self.role == Role::Leader {
             return Verdict::Leader;
         }
+        // A stall marker: a follower's first `suspect` report.
+        self.mark_stall();
         if self.now < self.state.promise_until {
             // Only a report about the leader this member promised and has accepted appends from in this term counts:
             // a late report about a deposed leader, or a `NotLeader` from a candidate this member just voted for in
@@ -178,9 +180,24 @@ impl<C: Command> Member<C> {
         }
     }
 
+    /// Records `stalled_since` at now unless a marker is already recorded (the earliest one counts). It is stored with
+    /// the member's next state row, not by a write of its own: a campaign start writes one at once, and the next
+    /// commit does. An extra write per suspect report changed the seeded simulator's crash points, so a marker that a
+    /// crash loses before then lets leases lapse by that stall, which leases accept as advisory.
+    pub(super) fn mark_stall(&mut self) {
+        if self.state.stalled_since.is_none() {
+            self.state.stalled_since = Some(self.now);
+        }
+    }
+
     pub(super) fn start_campaign(&mut self, pre: bool, transfer: Option<TransferId>) {
         let term = Term(self.state.term.0 + 1);
         if !pre {
+            // A stall marker: a candidate's campaign start, unless an earlier one is recorded. A transfer's campaign is
+            // the leader's own hand-off, not a stall.
+            if transfer.is_none() {
+                self.mark_stall();
+            }
             self.state.term = term;
             self.state.voted_for = Some(self.cfg.me);
             self.state.led_term = None;

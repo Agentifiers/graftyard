@@ -183,14 +183,10 @@ pub async fn repo_route(
     if !tail.is_empty() {
         return Ok(None);
     }
+    // `rd` came through `api::read`'s read gate (`authorize_read`), so a caller who cannot read was answered 404, or
+    // 401 or 503, before this route.
     let method = req.method();
-    let view = rd.view_of(host);
-    // A private repository the caller cannot read is 404, as GitHub hides it.
-    let readable =
-        graftyard_identity::Visibility::Public == visibility(rd) || who.is_some_and(|w| permission(rd, w).is_some());
-    if !readable {
-        return Ok(Some(Reply::not_found()));
-    }
+    let view = rd.view(host);
     Ok(Some(match method {
         Method::Get => graftyard_api::repos::get(&view, graftyard_types::Index(index)),
         Method::Patch => {
@@ -216,18 +212,6 @@ pub async fn repo_route(
         }
         _ => Reply::not_found(),
     }))
-}
-
-fn visibility(rd: &Read) -> graftyard_identity::Visibility {
-    use graftyard_identity::RepoAccess;
-    graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core }.visibility()
-}
-
-fn permission(rd: &Read, who: &Principal) -> Option<graftyard_identity::RepoPermission> {
-    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
-    let folds: Vec<&dyn graftyard_identity::AuthzRead> =
-        rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
-    graftyard_identity::permission(who, &folds, &access)
 }
 
 /// `PATCH /repos/{o}/{r}`: the body over the current settings as one `Settings`, after a `RenameRepo` on the owner's

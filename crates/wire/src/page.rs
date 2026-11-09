@@ -26,8 +26,14 @@ impl Page {
         Page { per_page: get("per_page").unwrap_or(30).min(100), page: get("page").unwrap_or(1) }
     }
 
+    /// The items before this page. Saturates, so a huge `page` skips every item rather than wrapping.
     pub fn skip(&self) -> usize {
-        (self.page - 1).saturating_mul(self.per_page)
+        self.page.saturating_sub(1).saturating_mul(self.per_page)
+    }
+
+    /// One past this page's last item: a list longer than this has a next page. Saturates like `skip`.
+    pub fn end(&self) -> usize {
+        self.skip().saturating_add(self.per_page)
     }
 }
 
@@ -53,8 +59,8 @@ pub fn link(
     if page.page > 1 {
         rels.push(format!("{}; rel=\"prev\"", url(page.page - 1)));
     }
-    if more {
-        rels.push(format!("{}; rel=\"next\"", url(page.page + 1)));
+    if more && let Some(next) = page.page.checked_add(1) {
+        rels.push(format!("{}; rel=\"next\"", url(next)));
     }
     if let Some(l) = last.filter(|l| *l > page.page) {
         rels.push(format!("{}; rel=\"last\"", url(l)));
@@ -132,6 +138,19 @@ mod tests {
              <https://h/api/v3/repositories/7/releases?state=all&per_page=2&page=1>; rel=\"first\""
         );
         assert_eq!(link("a", 1, "/x", &[], Page::DEFAULT, false, Some(1)), None, "one page has no link");
+    }
+
+    /// A `page` past every list (on wasm32, `usize` is 32 bits) skips everything and links no next page.
+    #[test]
+    fn a_huge_page_is_empty_and_has_no_next_link() {
+        let p = Page::parse(&format!("per_page=100&page={}", usize::MAX));
+        assert_eq!(p, Page { per_page: 100, page: usize::MAX });
+        assert_eq!((p.skip(), p.end()), (usize::MAX, usize::MAX));
+        let more = 1_000 > p.end();
+        let l = link("a", 1, "/x", &[], p, true, None).unwrap();
+        assert!(!more && !l.contains("rel=\"next\""), "{l}");
+        assert_eq!(Page { per_page: 30, page: 0 }.skip(), 0);
+        assert_eq!(Page::parse("page=3&per_page=10").end(), 30);
     }
 
     #[test]

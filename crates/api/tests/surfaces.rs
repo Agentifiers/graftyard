@@ -10,7 +10,8 @@ mod common;
 use common::*;
 use graftyard_api::exec::Request;
 use graftyard_api::graphql::{
-    Plan, Target, merge_command, merge_request, plan, query, refused, refused_merge, render, render_merge, route,
+    Plan, Planned, PlannedMerge, Target, merge_command, merge_request, plan, query, refused, refused_merge, render,
+    render_merge, route,
 };
 use graftyard_api::rest::list_commit_statuses;
 use graftyard_api::view::Repo;
@@ -433,6 +434,12 @@ fn mutations_commit_then_render_from_acked() {
     assert_eq!(refused(&p, &err)["errors"][0]["type"], "UNPROCESSABLE");
 }
 
+/// The merge inputs of a planned `mergePullRequest`.
+fn merge_of(p: &Planned) -> PlannedMerge {
+    let Plan::Merge(m) = p.plan else { panic!("not a merge plan: {:?}", p.plan) };
+    m
+}
+
 #[test]
 fn merge_commits_the_merge_command_and_renders_its_payload() {
     let mut c = seeded();
@@ -442,17 +449,18 @@ fn merge_commits_the_merge_command_and_renders_its_payload() {
     let vars = with_ids(&d, &r);
     let req = Request::parse(&d.query, vars.clone(), None).unwrap();
     let p = plan(&req, &r).unwrap();
-    assert_eq!(p.plan, Plan::Merge { n: IssueNumber(2), method: MergeMethod::Merge, expected_head: None });
+    let m = merge_of(&p);
+    assert_eq!(m, PlannedMerge { n: IssueNumber(2), method: MergeMethod::Merge, expected_head: None });
     // A method the repository does not allow is refused before any commit.
     let mut rebase = vars.clone().unwrap();
     rebase["input"]["mergeMethod"] = json!("REBASE");
     let rq = Request::parse(&d.query, Some(rebase), None).unwrap();
     assert_eq!(plan(&rq, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
     // The seeded rule requires `ci`, which passed, and conversation resolution, with none open: the merge commits.
-    let mr = merge_request(&p, &r).unwrap();
+    let mr = merge_request(&p.field, &m, &r).unwrap();
     assert_eq!((mr.base_old, mr.head), (oid(1), oid(2)));
     drop(r);
-    let out = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap();
+    let out = c.commit_merge(merge_command(&m, cache_plan(&mr), who(WRITER))).unwrap();
     let reply = render_merge(&req, &ack(out));
     assert_eq!(reply, json!({ "data": { "mergePullRequest": { "clientMutationId": null } } }));
     keep("PullRequestMerge-1", &d, &vars, &reply);
@@ -469,7 +477,7 @@ fn merge_commits_the_merge_command_and_renders_its_payload() {
     );
     assert_eq!(state["data"]["repository"]["pullRequest"]["state"], "MERGED");
     // A second merge of the merged pull request is refused before the git cache is asked.
-    let e = merge_request(&p, &r).unwrap_err();
+    let e = merge_request(&p.field, &m, &r).unwrap_err();
     assert_eq!(e["errors"][0]["message"], "Pull request is not open");
 }
 
@@ -496,26 +504,27 @@ fn a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error() {
     let d = doc("PullRequestMerge-1");
     let req = Request::parse(&d.query, with_ids(&d, &r), None).unwrap();
     let p = plan(&req, &r).unwrap();
-    let mr = merge_request(&p, &r).unwrap();
+    let m = merge_of(&p);
+    let mr = merge_request(&p.field, &m, &r).unwrap();
     drop(r);
     // The base moved after the plan.
     c.push("refs/heads/main", oid(9));
-    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap_err();
+    let e = c.commit_merge(merge_command(&m, cache_plan(&mr), who(WRITER))).unwrap_err();
     let reply = refused_merge(&p, &e);
     assert_eq!(reply["errors"][0]["message"], "Base branch was modified. Review and try the merge again.");
     assert_eq!(reply["errors"][0]["type"], "UNPROCESSABLE");
     // The required check re-run as a new run, queued: refused with the protection text.
     c.commit(WRITER, run(14, 2, "ci", None)).unwrap();
     let r = c.repo(0, &h, &dir);
-    let mr = merge_request(&p, &r).unwrap();
+    let mr = merge_request(&p.field, &m, &r).unwrap();
     drop(r);
-    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(WRITER))).unwrap_err();
+    let e = c.commit_merge(merge_command(&m, cache_plan(&mr), who(WRITER))).unwrap_err();
     assert_eq!(refused_merge(&p, &e)["errors"][0]["message"], "Required status check \"ci\" is in progress.");
     // A reader may not merge.
     let r = c.repo(0, &h, &dir);
-    let mr = merge_request(&p, &r).unwrap();
+    let mr = merge_request(&p.field, &m, &r).unwrap();
     drop(r);
-    let e = c.commit_merge(merge_command(&p, cache_plan(&mr), who(READER))).unwrap_err();
+    let e = c.commit_merge(merge_command(&m, cache_plan(&mr), who(READER))).unwrap_err();
     assert_eq!(refused_merge(&p, &e)["errors"][0]["type"], "FORBIDDEN");
 }
 
@@ -541,6 +550,8 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
         },
     )
     .unwrap();
+    // An outside collaborator (104), who reads the private repository through its row alone.
+    c.collaborator(104, graftyard_identity::RepoPermission::Read);
     let h = host();
     let dir = Dir::new(WRITER);
     let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(WRITER))), ..Default::default() };
@@ -548,7 +559,7 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     let plan_on = |core: &MemStore, meta: &MemStore, vars: &Option<Map<String, Value>>| {
         let r = Repo { host: &h, at: dir.home(), core, meta, dir: &hosted };
         let req = Request::parse(&d.query, vars.clone(), None).unwrap();
-        plan(&req, &r).and_then(|p| merge_request(&p, &r).map(|m| (p, m)))
+        plan(&req, &r).and_then(|p| merge_request(&p.field, &merge_of(&p), &r).map(|m| (p, m)))
     };
     let m = &c.members[0];
     let (vars, id) = {
@@ -561,12 +572,25 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     let small = plan_on(&core, &meta, &vars).unwrap();
     assert_eq!(small, plan_on(&m.core, &m.meta, &vars).unwrap());
     assert_eq!((small.1.n, small.1.base_old, small.1.head), (IssueNumber(2), oid(1), oid(2)));
-    assert!(crossed.core.len() + crossed.meta.as_ref().unwrap().len() <= 6, "{crossed:?}");
+    assert!(crossed.core.len() + crossed.meta.as_ref().unwrap().len() <= 7, "{crossed:?}");
+    // The edge's read gate decides on these rows, and on the access rows alone, as on both tiers: `settings` and the
+    // collaborator row ride along.
+    let (outsider, gate) = (who(103), |core: &MemStore, p: &graftyard_identity::Principal| {
+        let access = graftyard_git::issue_ops::Access { repo: REPO, owner: AccountId(DbId(OWNER)), core };
+        graftyard_identity::authorize_read(Some(p), None, &[], &access)
+    });
+    let access = TierRows::store(&TierRows::access_rows(&m.core));
+    for (p, want) in [(who(104), graftyard_identity::Decision::Allow), (outsider, graftyard_identity::Decision::Hidden)]
+    {
+        assert_eq!(gate(&core, &p), want);
+        assert_eq!(gate(&access, &p), want);
+        assert_eq!(gate(&m.core, &p), want);
+    }
     let mut rebase = vars.clone().unwrap();
     rebase["input"]["mergeMethod"] = json!("REBASE");
     assert_eq!(plan_on(&core, &meta, &Some(rebase.clone())), plan_on(&m.core, &m.meta, &Some(rebase)));
     // Once #2 merged, its rows refuse a second merge as both tiers do.
-    c.commit_merge(merge_command(&small.0, cache_plan(&small.1), who(WRITER))).unwrap();
+    c.commit_merge(merge_command(&merge_of(&small.0), cache_plan(&small.1), who(WRITER))).unwrap();
     let m = &c.members[0];
     let rows = TierRows::merge_rows(&m.core, Some(&m.meta), id);
     let (core, meta) = (TierRows::store(&rows.core), TierRows::store(rows.meta.as_ref().unwrap()));

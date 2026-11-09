@@ -73,7 +73,8 @@ pub enum TransferError {
     Target(SiteId),
 }
 
-/// The recorded stall (`design/DESIGN.md`, Shape, `ExtendLeases`). No leader in M1-WP2 sets one.
+/// The recorded stall (`design/DESIGN.md`, Shape, `ExtendLeases`): a leader stamps it on the next entry it appends
+/// while its `stalled_since` is set (AM1-WP4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtendLeases {
     pub since: Timestamp,
@@ -152,7 +153,9 @@ pub struct MemberState {
     pub cannot_follow: SmallVec<[SiteId; 2]>,
     /// The leader's transfer in progress, or the voter's last accepted one.
     pub transfer: Option<TransferId>,
-    /// Cleared when an entry carrying `extend` commits. Never set yet (`ExtendLeases` is later work).
+    /// Set at the earliest stall marker (a follower's first `suspect`, a campaign start, or the leader's entry in flight
+    /// that no quorum acknowledged within CALL_DEADLINE), and cleared when an entry carrying `extend`, or stamped after
+    /// the marker, commits.
     pub stalled_since: Option<Timestamp>,
     /// The last two boots that interrupted work. A boot more than `BOOT_IDLE` after `saved_at` is an idle eviction
     /// and is not counted.

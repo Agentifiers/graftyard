@@ -51,6 +51,10 @@ pub struct IssueCall {
     /// The session an `OpenPr` names in `X-Graftyard-Agent-Session` (format 32.12): `decide` takes it into
     /// `AgentMeta` only for a task of the opening App.
     pub session: Option<graftyard_identity::SessionId>,
+    /// Format 32.14 (`crate::repo::REPO_FORMAT_LEASES`): the edge enabled it, so the command's entry may carry lease
+    /// events: a draft's plan-block lease, or a task's leases released by its cancel or finish. A lease command is
+    /// always 32.14.
+    pub leases: bool,
     /// What the leader renders from the `&Acked`, opaque here (`graftyard_api::hosted::Render`).
     pub render: Value,
     /// The blob `op` names, rebuilt by the member that admits the command. Never sent.
@@ -65,7 +69,12 @@ pub struct IssueCallOut {
 
 impl IssueCall {
     pub fn format(&self) -> Format {
-        // 32.12 first: a task command, a `task` claim on the token, or a session the client named, none of which an
+        // 32.14 first: a lease command, or a command the edge marked, which may carry lease events. It may carry
+        // 32.8's and 32.12's too.
+        if self.op.is_lease() || self.leases {
+            return crate::repo::REPO_FORMAT_LEASES;
+        }
+        // 32.12 next: a task command, a `task` claim on the token, or a session the client named, none of which an
         // earlier release reads. It may carry 32.8's agent events too.
         if self.op.is_task() || crate::task::claim(&self.actor).is_some() || self.session.is_some() {
             return crate::repo::REPO_FORMAT_TASKS;
@@ -92,7 +101,7 @@ impl IssueCall {
     }
 
     pub fn new(op: IssueOp<BlobRef>, actor: Principal, request: RequestId, render: Value) -> IssueCall {
-        IssueCall { op, actor, request, render, confirmed: None, agent: false, session: None }
+        IssueCall { op, actor, request, render, confirmed: None, agent: false, session: None, leases: false }
     }
 
     /// Records the `DurableBlob` the admitting member rebuilt for the blob `op` names. The blob is its oid and size:
@@ -179,12 +188,15 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_INVITATIONS,
             crate::repo::REPO_FORMAT_TASKS,
             REPO_FORMAT_REPOS,
+            crate::repo::REPO_FORMAT_LEASES,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
         }
         let fmt = |x: Format| f == serde_json::json!([x.family, x.version]);
-        let tasks = fmt(crate::repo::REPO_FORMAT_TASKS);
+        let leases = fmt(crate::repo::REPO_FORMAT_LEASES);
+        // 32.14 is a superset of 32.12: it carries a task claim and a session as 32.12 does.
+        let tasks = fmt(crate::repo::REPO_FORMAT_TASKS) || leases;
         let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
@@ -207,6 +219,9 @@ impl<'de> Deserialize<'de> for IssueCall {
         let mut c = IssueCall::new(w.op, actor, w.request, w.render);
         c.agent = agent;
         c.session = w.agent_session;
+        // In 32.14 the tag carries the mark, and `agent` is implied (`agent_events`).
+        c.leases = leases && !c.op.is_lease();
+        c.agent = agent;
         // One form per command: a format that does not match the command is malformed.
         let got = c.format();
         if !fmt(got) {
@@ -242,22 +257,33 @@ impl IssueCall {
         deps: &[(ChainId, IdentityDep)],
     ) -> Result<(SmallVec<[RepoEvent; 4]>, IssueCallOut), IssueErr> {
         let cmd = self.cmd()?;
-        // A member whose metadata tier is still loading cannot decide on it.
-        let (core, meta) = s.view().ok_or(IssueErr::Unavailable)?;
+        // A member whose metadata tier is still loading cannot decide on it. A lease command reads the core tier
+        // alone (L0-16), so it decides there with an empty metadata view.
+        let empty = graftyard_fold::MemStore::default();
+        let (core, meta) = match s.view() {
+            Some(v) => v,
+            None if self.op.is_lease() => (s.core(), &empty as &dyn graftyard_fold::Read),
+            None => return Err(IssueErr::Unavailable),
+        };
         // The entry's time: an invitation's `expires` is set from it and checked against it.
         let view = RepoView::new(s.fold().tiers(), core, meta, s.at());
+        let leases = self.format() == crate::repo::REPO_FORMAT_LEASES;
         let (evs, out) = if self.op.is_task() {
-            cmd.decide_task(&view, deps, s.at(), s.applied())?
+            cmd.decide_task(&view, deps, s.at(), s.applied(), leases)?
+        } else if self.op.is_lease() {
+            cmd.decide_lease(&view, deps, s.at())?
         } else {
-            cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref())?
+            cmd.decide_in(&view, deps, self.agent_events(), self.session.as_ref(), leases)?
         };
         Ok((evs, IssueCallOut { out, render: self.render.clone() }))
     }
 
-    /// Whether the command's entry may carry the agent events: formats 32.8 and 32.12.
+    /// Whether the command's entry may carry the agent events: formats 32.8, 32.12, and 32.14.
     pub fn agent_events(&self) -> bool {
         let f = self.format();
-        f == crate::repo::REPO_FORMAT_AGENT || f == crate::repo::REPO_FORMAT_TASKS
+        f == crate::repo::REPO_FORMAT_AGENT
+            || f == crate::repo::REPO_FORMAT_TASKS
+            || f == crate::repo::REPO_FORMAT_LEASES
     }
 
     pub fn replay(&self, events: &[RepoEvent]) -> IssueCallOut {
@@ -273,6 +299,9 @@ impl IssueCall {
                 IssueOp::UpdateTask { id: id.clone(), state: *state, pr: *pr, summary: summary.clone() }
             }
             IssueOp::CancelTask { id } => IssueOp::CancelTask { id: id.clone() },
+            IssueOp::AcquireLease(l) => IssueOp::AcquireLease(l.clone()),
+            IssueOp::RenewLease { id, ttl_seconds } => IssueOp::RenewLease { id: *id, ttl_seconds: *ttl_seconds },
+            IssueOp::ReleaseLease { id } => IssueOp::ReleaseLease { id: *id },
             _ => IssueOp::Close { n: crate::issues::IssueNumber(0) },
         };
         let out = IssueCmd { op, actor: self.actor.clone(), request: self.request }.replay(events);

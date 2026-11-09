@@ -324,6 +324,16 @@ fn a_job_resumed_from_its_stored_cursor_streams_what_frame_check_accepts_at_the_
     assert!(check(&bad).is_err());
 }
 
+/// A corrupted R2 object's frame length near `u32::MAX` once overflowed `at + 4 + n` on wasm32 and panicked; it reads
+/// as a frame not yet complete.
+#[test]
+fn a_forged_frame_length_reads_as_incomplete() {
+    let mut buf = vec![0xFF; 4];
+    buf.extend_from_slice(b"abc");
+    let (frames, used) = decode_some(&buf).expect("no frame decoded");
+    assert_eq!((frames.len(), used), (0, 0));
+}
+
 #[test]
 fn snap_undo_keeps_the_first_prior_value_only_and_never_a_later_write() {
     // Row 1 written at 1, then changed at 3 and 4 while a snapshot at 2 runs: the snapshot holds the value of 1.

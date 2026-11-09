@@ -655,6 +655,15 @@ fn branch_patterns_match_as_fnmatch() {
     assert!(!branch_matches("main", &name("refs/tags/main")));
 }
 
+/// A pattern of many stars against a long branch it misses: backtracking tried about n^k splits.
+#[test]
+fn a_many_star_pattern_against_a_long_branch_finishes() {
+    let branch = name(&format!("refs/heads/{}", "a".repeat(880)));
+    assert!(!branch_matches(&format!("{}b", "*a".repeat(12)), &branch));
+    assert!(!branch_matches(&format!("{}b", "**a".repeat(12)), &branch));
+    assert!(branch_matches(&"*a".repeat(12), &branch));
+}
+
 #[test]
 fn a_command_that_touches_no_tier_it_tags_is_impossible() {
     // Every op's events fit the tiers the command declares.
@@ -775,7 +784,7 @@ fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
     let mut ids = BTreeSet::new();
     let mut take = |out: Result<IssueOut, IssueErr>| match out.unwrap() {
         IssueOut::Id(id) => assert!(ids.insert(id), "id {id:?} assigned twice"),
-        IssueOut::Number(_) | IssueOut::Done | IssueOut::Task(_) | IssueOut::TaskFinal(..) => {}
+        IssueOut::Number(_) | IssueOut::Done | IssueOut::Task(_) | IssueOut::TaskFinal(..) | IssueOut::Lease(_) => {}
     };
     // The parent: core-tier commands decided on a view whose metadata tier is empty and never written, as a parent
     // after `MetaDropped` holds none.

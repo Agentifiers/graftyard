@@ -81,6 +81,10 @@ pub trait Scratch {
     fn apply_id_block(&mut self, _block: IdBlock) {}
     /// `verify`'s check of one event against the running state, such as a ref's or register's `expect`.
     fn check(&self, event: &Self::Event) -> Result<(), Box<str>>;
+    /// The entry's own `extend`, applied before its commands decide, as the fold applies it before its events: the
+    /// first entry after a stall judges leases as they stand once the stall is added back. Folds without leases ignore
+    /// it.
+    fn extend(&mut self, _x: crate::types::ExtendLeases) {}
 }
 
 /// The events of a command's fold.

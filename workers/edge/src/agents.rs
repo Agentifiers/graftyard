@@ -2,7 +2,8 @@
 //! an org's agent settings, and a repository's `AgentPolicy`, under `/api/graftyard/v1`. Each write commits one
 //! command on its chain under the caller's credential, and the leader's `decide` checks who may write it. Served only
 //! once `FormatsEnable` enabled the command's format (Authz 0x12.3, Repo 32.8); until then 503. The task API
-//! (AM1-WP3) is routed here too, and served by `crate::api::tasks` once 32.12 is enabled.
+//! (AM1-WP3) is routed here too, and served by `crate::api::tasks` once 32.12 is enabled. The lease API and the activity
+//! feed (AM1-WP4) are served here (`leases`) once 32.14 is enabled.
 
 use graftyard_api::agents::{self, Route};
 use graftyard_identity::{AuthzCmd, AuthzFold, AuthzOp, AuthzRead, Principal};
@@ -52,6 +53,11 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, rest: &str) -> Result<Respons
         Route::Tasks(t) => {
             let query = req.url()?.query().unwrap_or("").to_owned();
             crate::api::tasks(c, t, who, method, &body, &query).await?
+        }
+        Route::Leases(l) => {
+            let query = req.url()?.query().unwrap_or("").to_owned();
+            let session = req.headers().get("x-graftyard-agent-session")?;
+            leases(c, l, who, method, &body, &query, session.as_deref()).await?
         }
         _ => {
             let Some(who) = who else { return respond(c, Reply::error(401, "Requires authentication", "rest")) };
@@ -153,4 +159,77 @@ async fn authz_route(c: &Ctx<'_>, route: Route<'_>, who: &Principal, method: Met
         (Route::Org(o), _) => Reply::json(200, agents::org_json(o, &f.policy())),
         _ => Reply::empty(204),
     })
+}
+
+/// The lease API and the activity feed under `/api/graftyard/v1/repos/{o}/{r}` (AM1-WP4, `graftyard_api::leases`),
+/// served only once `FormatsEnable` enabled 32.14; until then 503. Lease reads render the repository's core tier and
+/// the owner's `Authz` from one read, so an expired or released lease, and one whose holder lost access, is absent
+/// with no sweep; writes commit an `IssueCall` whose leader renders the reply from the `&Acked`. The feed's query is
+/// checked here (422 for a bad `wait` or glob or over 32 `paths`), and a poll is then 503 until followers and learners
+/// serve it: the edge reads only leaders today, and the feed is never the leader's.
+async fn leases(
+    c: &Ctx<'_>,
+    route: graftyard_api::leases::Route<'_>,
+    who: Option<Principal>,
+    method: Method,
+    body: &Value,
+    query: &str,
+    session: Option<&str>,
+) -> Result<Reply> {
+    use graftyard_api::leases::{self as l, Route as R};
+    use graftyard_git::issue_ops::IssueOp;
+    if !c.cfg.enabled.contains(&graftyard_git::repo::REPO_FORMAT_LEASES) {
+        return Ok(unavailable(
+            "leases and the activity feed need record format 32.14, which FormatsEnable has not enabled",
+        ));
+    }
+    let Some(who) = who else { return Ok(Reply::error(401, "Requires authentication", "rest")) };
+    let (R::Leases { owner, repo }
+    | R::Lease { owner, repo, .. }
+    | R::Renew { owner, repo, .. }
+    | R::Activity { owner, repo }) = route;
+    if let R::Activity { .. } = route {
+        if method != Method::Get {
+            return Ok(Reply::error(405, "Method Not Allowed", "graftyard/activity"));
+        }
+        if let Err(r) = l::parse_feed(query) {
+            return Ok(r);
+        }
+        return Ok(unavailable(
+            "the activity feed is served by followers and learners, which this edge does not read yet",
+        ));
+    }
+    let rd = match crate::api::read(c, owner, repo, Some(&who)).await? {
+        Ok(r) => r,
+        Err(r) => return Ok(r),
+    };
+    let Some(authz) = rd.dir.authz.clone() else {
+        return Ok(unavailable("the owner's Authz chain did not answer; retry"));
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let reader = graftyard_api::tasks::Reader::of(Some(&who), &authz, &access);
+    let Ok(host) = graftyard_wire::Host::new(&c.cfg.host, false) else {
+        return Ok(unavailable("the install's host is not valid"));
+    };
+    let view = rd.view(&host);
+    let (op, created) = match (route, method) {
+        (R::Leases { .. }, Method::Get) => {
+            let path = format!("/repos/{owner}/{repo}/leases");
+            return Ok(l::list(&view, &authz, crate::now(), query, reader.contents, &path));
+        }
+        (R::Leases { .. }, Method::Post) => match l::parse_acquire(body, session) {
+            Ok(n) => (IssueOp::AcquireLease(n), true),
+            Err(r) => return Ok(r),
+        },
+        (R::Renew { id, .. }, Method::Post) => match l::parse_renew(id, body) {
+            Ok(op) => (op, false),
+            Err(r) => return Ok(r),
+        },
+        (R::Lease { id, .. }, Method::Delete) => match graftyard_git::lease::LeaseId::parse(id) {
+            Some(id) => (IssueOp::ReleaseLease { id }, false),
+            None => return Ok(Reply::not_found()),
+        },
+        _ => return Ok(Reply::error(405, "Method Not Allowed", "graftyard/leases")),
+    };
+    crate::api::commit_issue(c, &rd, &who, op, graftyard_api::hosted::What::Lease { created }).await
 }

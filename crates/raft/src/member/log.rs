@@ -195,6 +195,13 @@ impl<C: Command> Member<C> {
             let next = self.fold.applied().next();
             let e = &self.log[self.pos(next).expect("unapplied entries are in the window")];
             self.fold.apply(e);
+            // The marker clears when an entry carrying `extend` commits, or one stamped after it: the group committed
+            // past it, and that entry's leader judged the time up to its `at`.
+            if let Some(m) = self.state.stalled_since
+                && (e.extend.is_some() || e.at > m)
+            {
+                self.state.stalled_since = None;
+            }
         }
         self.state.applied = self.fold.applied();
         self.writes.push(Write::Apply(c));
@@ -236,13 +243,14 @@ impl<C: Command> Member<C> {
     }
 
     pub(super) fn view_for(&self, index: Index) -> FoldView<'_, C::Fold> {
-        let base = self.base.index.0 as usize;
-        let applied = self.fold.applied().0 as usize - base;
-        let below = ((index.0 as usize).saturating_sub(1) - base).max(applied);
+        // Positions in u64 until they are clamped to the window: on wasm32 a cast of an absolute index truncates.
+        let base = self.base.index.0;
+        let applied = self.fold.applied().0 - base;
+        let below = (index.0.saturating_sub(1) - base).max(applied);
         FoldView {
             fold: &self.fold.fold,
             id_block: self.fold.id_block(),
-            unapplied: &self.log[applied..below.min(self.log.len())],
+            unapplied: &self.log[applied as usize..below.min(self.log.len() as u64) as usize],
             index,
             prev: self.digest_at(Index(index.0 - 1)).unwrap_or(PREV_ZERO),
             boot: self.boot_digest,

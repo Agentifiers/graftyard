@@ -80,7 +80,7 @@ impl TierRows {
     pub fn merge_rows(core: &dyn Read, meta: Option<&dyn Read>, id: DbId) -> TierRows {
         use graftyard_git::tiers::{get_rec, n_key, pull_head, ref_key};
         let row = |r: &dyn Read, t: &str, k: Key| r.get(t, &k).map(|cols| (t.to_owned(), k, cols));
-        let mut c: Vec<_> = row(core, "settings", Vec::new()).into_iter().collect();
+        let mut c = TierRows::access_rows(core);
         let mut m = Vec::new();
         if let Some(meta) = meta {
             let by_id = vec![Val::Int(id.0)];
@@ -95,6 +95,16 @@ impl TierRows {
             }
         }
         TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true }
+    }
+
+    /// The core rows `graftyard_identity::authorize_read` reads through `graftyard_git::issue_ops::Access`: `settings`
+    /// for the visibility and every `collaborator` row. The member answers them alone to `{"rows": {"access": true}}`,
+    /// which a member built before it answers with every row, so the edge's read gate works on both.
+    pub fn access_rows(core: &dyn Read) -> Vec<(String, Key, Vec<Val>)> {
+        let mut c: Vec<_> =
+            core.get("settings", &[]).map(|cols| ("settings".to_owned(), Vec::new(), cols)).into_iter().collect();
+        c.extend(core.prefix("collaborator", &[]).into_iter().map(|(k, cols)| ("collaborator".to_owned(), k, cols)));
+        c
     }
 
     /// The rows as a store `Repo` reads.
@@ -279,6 +289,11 @@ pub enum What {
         query: String,
         variables: Value,
     },
+    /// A lease command under `/api/graftyard/v1/repos/{o}/{r}/leases` (`crate::leases`): 201 for an acquire, 200 for
+    /// a renew, 204 for a release.
+    Lease {
+        created: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -378,6 +393,19 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
                 Err(e) => graphql(json!({ "errors": [e.json()] })),
             }
         }
+        What::Lease { created } => {
+            let Some(owner) = render.dir.authz.as_ref() else {
+                return WireReply::of(&Reply::error(503, "the owner's Authz was not read", "rest"));
+            };
+            // Rendered at the lease's grant or renewal time, which the command just wrote, so it reads live.
+            let at = match &acked.out {
+                IssueOut::Lease(id) => graftyard_git::lease::lease_row(core, *id).map_or(Timestamp(0), |row| {
+                    if *created { row.lease.granted } else { Timestamp(row.lease.expires.0.saturating_sub(1)) }
+                }),
+                _ => Timestamp(0),
+            };
+            WireReply::of(&crate::leases::render_ok(&r, owner, at, acked, *created))
+        }
     }
 }
 
@@ -394,6 +422,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::Task { .. } => WireReply::of(&crate::tasks::refused(e)),
         What::RepoSaved { .. } => WireReply::of(&crate::repos::refused(e)),
         What::RepoCreatedGraphql { .. } => graphql(crate::graphql::refused_field("createRepository", e)),
+        What::Lease { .. } => WireReply::of(&crate::leases::refused(None, e)),
     }
 }
 

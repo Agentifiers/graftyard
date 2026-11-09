@@ -97,7 +97,7 @@ let acked = match group(ChainId::Repo(repo)).commit(push).await? {
 | DNS | GA | Authoritative DNS, including the DNS-only lifeboat hostname and the CNAME that delegates its `_acme-challenge` name to a validation zone in a separate account |
 | WAF and rate limiting rules | GA | Abuse limits on clone, API, and login at the edge |
 | Queues | GA | Webhook, notification, search-index, and lifeboat-feed fan-out from chain cursors |
-| Workflows | GA | `ReplaceMember` and `RestorePlacement`, imports, repository transfers, network compaction, `MetaSplitter` for child groups, and the `LeaveEvaluation` group moves |
+| Workflows | GA | `ReplaceMember` and `RestorePlacement`, imports, network compaction, `MetaSplitter` for child groups, and the `LeaveEvaluation` group moves |
 | Cron Triggers | GA | In `graft-ops`, every job that calls the Cloudflare API (bucket location, Analytics Engine reads for learners); in site scripts, pack sweeper (including orphan multipart aborts), GC, fold audit; in `graft-runners`, the 5-minute hosted-runner sweep |
 | Secrets Store | beta | `graft-ops` API tokens, the Tunnel token, and the key that wraps the installation-token signing key, which puts it on the minting path; `SecretsWrapKey` for Actions secrets and hook secrets; `HostedRunnersAppKey` in the runner account; rotation without a new script version |
 | Email Routing | GA | Reply-by-email for issues and pull requests |
@@ -173,14 +173,15 @@ pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 1
                        generation: u32 /* highest member generation this group has named */, _private: () }
 /// Where one owner's chains, or one system chain, live. An owner's record is the `NamesEvent::Placement` row on
 /// `account_shard(owner)`. It covers the owner's `Authz`, `Identity`, `Actions`, and repository chains, and the network
-/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it, and
-/// signup's first follow-up copies the install account's record (`placement set default`) as `InitPlacement`. A system
-/// chain's record is in the signed genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes
-/// it. `sites` are logical: `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember`
-/// named. Changing an owner's record bumps `generation` and keeps the old record in `moving_from`. A Workflow then
-/// moves each of the owner's groups, child groups included, through `Joint` (pending BF-30) (`home` alone: one config
-/// change and a transfer), from the old sites' `MemberRegistry` rows after the new record commits, and clears
-/// `moving_from` last. A record's `home` only seeds bootstrap; once a group exists its committed config's wins (BF-11).
+/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it; signup
+/// copies the install account's (`placement set default`) as `InitPlacement`. A system chain's record is in the signed
+/// genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites` are logical:
+/// `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember` named. Changing an owner's
+/// record bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves each of its groups, child
+/// groups included, from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`, then
+/// `Normal`; leadership leaves a site before it is dropped), because `reconfigure` refuses a disjoint `Joint` (BF-30),
+/// and clears `moving_from` last; `home` alone is one change and a transfer. A record's `home` only seeds bootstrap; a
+/// group's committed config then wins (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
@@ -242,16 +243,18 @@ pub enum EntryBody { Events(Vec<Event>) /* <= 1.5 MB with inline packs; DO rows 
                      Config(GroupConfig), Release(ReleaseEntry), Noop /* first entry of every term */,
                      IdBlock { base: DbId, len: u32 } /* <= 2^16 */, Archived(Archived), Promoted(Promoted) /* Packs */,
                      Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
-/// The recorded stall. A member persists `stalled_since` at the earliest durable marker: a follower's first `suspect`
-/// report, a candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE.
-/// Time a command spends queued in admission is not a stall. The next entry the group commits carries `ExtendLeases {
-/// since, by: at - since }`, and every path lease (`Lease`) and Actions job lease with `expires > since` moves
-/// `expires` by `by`. Idle time never counts, because an idle group sets no marker. A leader adds no `extend` while an
-/// unapplied entry in its log already carries one with `since` at or before its own marker, so one stall moves a lease
-/// once, and `since` is at least the `at` of the last entry it holds, so no lease that entry already judged expired is
-/// revived over a newer holder. Without the first rule, one 30-minute stall moved 501 leases by twice the stall
-/// [measured, `tests/m0/results/m0-wp12.md`, L0-12]. `decide` compares `expires` with the entry's `at`, reads compare
-/// it with the leader's leased clock, and expiry needs no command. Clients time expiry themselves from `expires`.
+/// The recorded stall. A member marks `stalled_since` at the earliest of a follower's first `suspect` report, a
+/// candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE, and stores
+/// it with its next state write (a campaign writes at once): a crash before then loses the stall, and leases lapse by
+/// it [measured: a write per marker broke the harsh simulator's floor, AM1-WP4]. Queueing in admission is not a stall.
+/// The next entry the group commits carries `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`)
+/// and Actions job lease with `expires > since` moves `expires` by `by`. Idle time never counts: an idle group sets no
+/// marker. A leader adds no `extend` while an unapplied entry in its log carries one with `since` at or before its own
+/// marker, so one stall moves a lease once, and `since` is at least the `at` of the last entry it holds, so no lease
+/// that entry judged expired is revived over a newer holder. Without the first rule, one 30-minute stall moved 501
+/// leases twice [measured, `tests/m0/results/m0-wp12.md`, L0-12]. The leader applies an entry's `extend` before its
+/// commands decide, so `decide` sees the moved leases and compares `expires` with the entry's `at`; reads compare it
+/// with the leader's leased clock, expiry needs no command, and clients time it from `expires`.
 pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
 /// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
 /// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
@@ -407,20 +410,19 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// retrying 60 s after a failed try [guess, both numbers, `tests/m1/results/m1-wp3.md`].
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
-/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`,
-/// the member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
+/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
+/// member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
 /// promised in this term; else late reports on a transfer's old leader withheld promises from the new one [measured,
-/// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets
-/// reports from two colos within 10 s stops granting promises to a leader that is still renewing, and restores them
-/// after 2 x the SUSPECT window or on a higher term. For the same 2 x SUSPECT window, which a higher term does not end,
-/// its pre-vote refuses that leader as a candidate, so the gray leader cannot win back the next election (Milestone 0
-/// measured a 24 s move without this rule, `tests/m0/results/m0-wp2.md`). A follower whose promise has lapsed campaigns on one report, or when
-/// its own read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven; only a leader's drain check runs from an alarm,
-/// and it starts no campaign (`SiteMode`). A
-/// promise bars votes for a rival of the leader it was given to, not for that leader, and an edge whose call is answered
-/// `NotLeader` with no leader named also reports to that member, so a deposed leader holding the newest log can win the
-/// next term while its followers' promises run. Milestone 0 measured idle groups stalled for about 11 s without this
-/// rule (`tests/m0/results/m0-wp4.md`, "Slow writes").
+/// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets reports from two colos within 10 s stops
+/// granting promises to a leader that is still renewing, and restores them after 2 x the SUSPECT window or on a higher
+/// term. For the same 2 x SUSPECT window, which a higher term does not end, its pre-vote refuses that leader as a
+/// candidate, so the gray leader cannot win back the next election (Milestone 0 measured a 24 s move without this rule,
+/// `tests/m0/results/m0-wp2.md`). A follower whose promise has lapsed campaigns on one report, or when its own
+/// read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven; only a
+/// leader's drain check runs from an alarm, and it starts no campaign (`SiteMode`). A promise bars votes for a rival of
+/// the leader it was given to, not for that leader, and an edge whose call is answered `NotLeader` with no leader named
+/// also reports to that member, so a deposed leader holding the newest log can win the next term while its followers'
+/// promises run. M0 measured idle groups stalled about 11 s without it (`tests/m0/results/m0-wp4.md`, "Slow writes").
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -685,24 +687,25 @@ pub struct AgentActor { pub app: AppId, pub task: Option<SessionId>, pub request
 /// [measured, `tests/m0/results/m0-wp13.md`, L0-09].
 /// An `External` task reports an `AgentApp`'s own work, names the session its App's leases and PRs use, carries the
 /// `requester` that App names, and gets no prefix and no token. Completed, Failed, TimedOut, and Cancelled are final.
-/// Only `POST .../cancel` sets Cancelled, and a task whose `installation` the owner `Authz` read no longer finds active
-/// reads as Cancelled, the same check that releases its leases. Only the host sets TimedOut: `decide` and reads treat a
-/// task with no update for TASK_IDLE as timed out. In both derived cases the task's next command records the state.
-/// The task's App sets the other states with `PATCH`.
+/// Only `POST .../cancel` sets Cancelled, and a task reads as Cancelled, the check that releases its leases, once the
+/// owner `Authz` read finds no row for its App reaching the repository with `not_before` at or before the task's
+/// creation, the token rule. Only the host sets TimedOut: a task with no update for TASK_IDLE reads timed out. In both
+/// cases the next command records the state, answering 409. The task's App sets the other states with `PATCH`.
 /// Cancelling or finishing a task releases its leases in the same command. `state` uses GitHub's agent task states.
-/// Core tier: `session`, `kind`, `state`, `prefix`, `requester`, and `app`, about 100 bytes. Metadata tier: the rest.
+/// Core: `session`, `kind`, `state`, `prefix`, `requester`, `app`, `installation`, and the create and last-update
+/// times. Metadata: the rest. `issue` and `pr` number the task's repository.
 pub struct AgentTask { pub session: SessionId, pub kind: TaskKind, pub state: TaskApiState, pub prefix: Option<RefPattern>,
                        pub requester: Option<UserId>, pub app: AppId, pub installation: InstallationId, pub creator: Actor,
-                       pub issue: Option<IssueRef>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
-                       pub pr: Option<PrNumber>, pub summary: Box<str> }
+                       pub issue: Option<IssueNumber>, pub snapshot: Index, pub prompt: Option<Box<str>> /* <= 64 KiB */,
+                       pub pr: Option<IssueNumber>, pub summary: Box<str> }
 pub enum TaskKind { GraftyardRun, External }
 pub enum TaskApiState { Queued, InProgress, Completed, Failed, Idle, WaitingForUser, TimedOut, Cancelled }
 /// A task's id. For a `GraftyardRun` task the host mints a lowercase hyphenated UUID at create, and `prefix` is
-/// `refs/heads/graftyard/<uuid>/`, matched as the `RefPattern` `refs/heads/graftyard/<uuid>/**`, so a ref needs at least
-/// one segment after the id. For an `External` task the creating App names it: 1 to 64 bytes of `[a-z0-9._-]`,
-/// starting with a letter or digit, with no `..` and no `.lock` suffix, unique among that App's tasks on the repository.
-/// Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is the UUID, or `<app_id>.<name>`. An App may send
-/// its own bare `name`, which the host scopes to the calling App.
+/// `refs/heads/graftyard/<uuid>/`, matched as the `RefPattern` `refs/heads/graftyard/<uuid>/*/**`, because `**` also
+/// matches zero segments, so a ref needs at least one segment after the id. For an `External` task the creating App
+/// names it: 1 to 64 bytes of `[a-z0-9._-]`, starting with a letter or digit, with no `..` and no `.lock` suffix,
+/// unique among that App's tasks on the repository. Its string form in URLs, JSON, and `X-Graftyard-Agent-Session` is
+/// the UUID, or `<app_id>.<name>`. An App may send its own bare `name`, which the host scopes to the calling App.
 pub enum SessionId { Run(Uuid), External { app: AppId, name: Box<str> } }
 /// `POST .../tasks` for a `GraftyardRun` task returns 422 while the org's `OrgPolicy.agents_enabled` is off, its default.
 /// It needs a human user credential with `contents: write`, never an installation token, an `AgentApp`'s user token, or
@@ -795,11 +798,11 @@ pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session
 /// both, found by walking both segment lists. A `RefPattern` uses the same syntax over full ref names.
 pub struct PathGlob(Box<str>);   pub struct RefPattern(Box<str>);
 pub struct LeaseScope { pub paths: SmallVec<[PathGlob; 8]> /* <= 32 globs */, pub refs: SmallVec<[RefPattern; 2]> }
-/// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block and are
-/// returned as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
-/// task, and a literal first segment in every path glob, so `**`, `*`, and `*/...` are refused. Past EXCLUSIVE_MAX after
-/// `granted` it reads as Shared until it expires. Plan-block leases are Shared, held by the editor, who needs push
-/// access, and count toward LEASES_PER_HOLDER and PLAN_LEASES_PER_REPO.
+/// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block; they
+/// return as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
+/// task, and a literal first segment in every path glob, so `**`, `*`, and `*/...` fail. Past EXCLUSIVE_MAX after
+/// `granted` it reads as Shared until it expires. Plan-block leases are Shared, held by an editor with push access,
+/// count toward LEASES_PER_HOLDER and PLAN_LEASES_PER_REPO, and end once their draft is readied, closed, or merged.
 pub enum LeaseMode { Shared, Exclusive }
 pub const LEASE_TTL: Duration = Duration::from_secs(600);        // default; a holder may ask for 60 s to 3,600 s
 pub const EXCLUSIVE_MAX: Duration = Duration::from_secs(4 * 3_600);
@@ -820,12 +823,12 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     IssueEdited { n: IssueNumber, actor: Actor, title: bool, body: bool },                  // Metadata
     TaskCreated(AgentTask),                                       // Core and Metadata, as PrOpened
     TaskUpdated { session: SessionId, state: Option<TaskApiState>, pr: Option<PrNumber>, summary: Option<Box<str>>,
-                  actor: Actor },                                 // Core for state, Metadata for pr and summary
+                  actor: Actor },                                 // Core always; Metadata too for pr and summary
     AgentGate(AgentGate),                                         // Core, in the APPROVE review's entry
     AgentPolicy(AgentPolicy),                                     // Core
     PathSet(PathSet),                                             // Metadata, in the push's entry
     InsightVerdict(InsightVerdict),                               // Core; its check runs and labels are Metadata
-    LeaseAcquire { lease: Lease, plan_block: bool },              // Core
+    LeaseAcquire { lease: Lease, plan: Option<IssueNumber> },     // Core; `plan`: the plan block's draft
     LeaseRenew { id: LeaseId, expires: Timestamp },               // Core
     LeaseRelease { ids: SmallVec<[LeaseId; 4]>, by: Actor },      // Core
 }
@@ -846,10 +849,9 @@ pub enum WorkspaceMode { Fork, InRepo }
 /// follower batches read-index requests to the leader every 10 ms and answers once applied. A learner does the same
 /// with one call in flight, at most one per 50 ms, resent once after HEDGE (500 ms [guess]) (Scale, learners).
 pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
-/// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when that group
-/// cannot commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and
-/// fetches at `applied` for the flag's limit (default 4 hours); every write returns 503. Stale reads break
-/// read-your-writes across clients.
+/// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when it cannot
+/// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at
+/// `applied` for the flag's limit (default 4 h); writes return 503. Stale reads break read-your-writes across clients.
 pub fn stale(&self) -> Result<Stale<'_>, StaleError>;
 pub enum ReadView<'a> { Fresh(Fresh<'a>), Stale(Stale<'a>) }
 
@@ -967,11 +969,11 @@ pub enum Intent { SiteDay { target: DayTarget, release: ReleaseId }, ContainerDa
 /// `graftyard sites add` creates the new sites on the current release, and a site day for the existing site and an
 /// `EdgeRoll` bind them. `graft-ops`'s first step runs the latency check to each new site. The commit adds `sites` to
 /// the `Release` view, swaps each system chain's record (old one in `moving_from`), and clears `evaluation`, so
-/// `Placement::solo` refuses from then. `graft-ops` moves, one `IntentStep` each, through `Joint`: `Release`, then
-/// `Ids`, `Names`, and `Tokens`. It then writes `default` as the install's default record and over each owner record
-/// named `Solo`, one owner at a time [guess], which starts that owner's move Workflow ("Sites and placement"). It
-/// commits `IntentDone` when every owner's `moving_from` is clear.
-/// The Workflows script defines no member class, so its day skips drain and undrain.
+/// `Placement::solo` refuses from then. `graft-ops` moves, one `IntentStep` each, a site per one-site `Joint`
+/// [inference, BF-30]: `Release`, then `Ids`, `Names`, and `Tokens`. It then writes `default` as the install's default
+/// record and over each owner record named `Solo`, one owner at a time [guess], which starts that owner's move Workflow
+/// ("Sites and placement"). It commits `IntentDone` when every owner's `moving_from` is clear. The Workflows script
+/// defines no member class, so its day skips drain and undrain.
 pub enum DayTarget { Site(SiteId), Workflows, Containers(SiteId) /* undo of a `ContainerDay`: shards return to `git_prev` */ }
 /// Each rotatable secret has two Secrets Store slots, both bound at install, so `Rotate` switches slots with no new
 /// script version ("Install operations", Rotation runbook). The agents account's `graft-ops` holds `AgentsAppKey`,
@@ -1206,22 +1208,21 @@ pub fn fingerprint_shard(key: &Fingerprint) -> TokenShard;   // the uniqueness p
 /// Write-class requests check that shard on its leader, reads honor it within READ_CACHE, and the row expires at `exp`.
 pub fn jti_shard(jti: &Jti) -> TokenShard;
 /// Token hashes, SSH keys, `jti` rows, OAuth and sign-in codes, lifeboat token hashes, and installation-token verifying
-/// keys (on `TokenShard(0)`). `Names`, `Tokens`, and `Actions` chains have only a core tier.
-/// In `Stored`, `app` is the App behind a `ghu_` or `ghr_`, and `client` the OAuth client behind a `gho_`, `ghu_`, or
-/// `ghr_`. `resource_owner`, `repos`, and `permissions` belong to a `github_pat_`, and `permissions` also caps a `ghu_`.
-/// `paired` is the other token's hash on a `ghu_` and its `ghr_`: the `ghr_` secret is redrawn until its hash lands on
-/// the `ghu_`'s shard, so both rows commit in one entry and revoking either revokes both.
-/// `grant` and `write` are set only on a `ghu_` from `token/scoped` called by the install's `Graftyard MCP` App with the
-/// additive `graftyard_grant` and `graftyard_write` fields (`design/AGENT-LAYER.md`, "API reference"). The host refuses
-/// approve and merge to a row whose `write` is not `WriteApproveMerge`.
-/// `Code` rows are keyed by the hash of a device code, user code, authorization code, or `graftyard admin bootstrap`
-/// sign-in link, on the `token_shard` of that hash. A device code is redrawn until its hash lands on its user code's
-/// shard, so both rows commit in one entry. A row lapses at `expires` with no command, as a lease does: 900 s for a
-/// device code, 10 minutes for an authorization code [unverified for GHES 3.22], 15 minutes for a sign-in link [guess].
-/// Approving a user code commits `CodeApproved`. An exchange commits `CodeUsed` first, then the new token's `Stored`,
-/// so a code never yields two tokens, and a failed second commit sends the client back to the start. The leader
-/// enforces a device code's polling interval from memory, so a leader change can skip one `slow_down`. `Installation`
-/// tokens are never stored. A `Stored` with fields is encoded `StoredWith` (tag 11) to keep M1's bytes.
+/// keys (on `TokenShard(0)`). `Names`, `Tokens`, and `Actions` chains have only a core tier. In `Stored`, `app` is the
+/// App behind a `ghu_` or `ghr_`, and `client` the OAuth client behind a `gho_`, `ghu_`, or `ghr_`. `resource_owner`,
+/// `repos`, and `permissions` belong to a `github_pat_`, and `permissions` also caps a `ghu_`. `paired` is the other
+/// token's hash on a `ghu_` and its `ghr_`: the `ghr_` secret is redrawn until its hash lands on the `ghu_`'s shard, so
+/// both rows commit in one entry and revoking either revokes both. `grant` and `write` are set only on a `ghu_` from
+/// `token/scoped` called by the install's `Graftyard MCP` App with the additive `graftyard_grant` and `graftyard_write`
+/// fields (`design/AGENT-LAYER.md`, "API reference"). The host refuses approve and merge to a row whose `write` is not
+/// `WriteApproveMerge`. `Code` rows are keyed by the hash of a device code, user code, authorization code, or
+/// `graftyard admin bootstrap` sign-in link, on the `token_shard` of that hash. A device code is redrawn until its hash
+/// lands on its user code's shard, so both rows commit in one entry. A row lapses at `expires` with no command, like a
+/// lease: 900 s for a device code, 10 minutes for an authorization code [unverified for GHES 3.22], 15 minutes for a
+/// sign-in link [guess]. Approving a user code commits `CodeApproved`. An exchange commits `CodeUsed` first, then the
+/// new token's `Stored`, so a code never yields two tokens; a failed second commit sends the client back to the start.
+/// The leader keeps a device code's polling interval in memory, so a leader change can skip one `slow_down`.
+/// `Installation` tokens are never stored. A `Stored` with fields is encoded `StoredWith` (tag 11) to keep M1's bytes.
 pub enum TokensEvent { Stored { hash: [u8; 32], kind: TokenKind, account: AccountId, scopes: ScopeSet,
                                 expires: Option<Timestamp>, sso_orgs: SmallVec<[OrgId; 2]>, app: Option<AppId>,
                                 client: Option<ClientId>, permissions: Option<PermissionSet>,
@@ -1302,10 +1303,9 @@ pub const INBOX_WINDOW: Duration = Duration::from_secs(2 * 86_400);   // [guess]
 /// next `generation` on the domain's next site, from the metadata tiers that `MemberRegistry` lists.
 pub struct SearchShard { pub domain: Domain, pub shard: u8, pub generation: u32 }
 pub enum Domain { Default, Us, Eu, Apac }      // the owner's residency, from its `PlacementRecord` name
-/// The counters behind `x-ratelimit-*`, only where GHES rate limits are on (SHARED, "Public service concerns"). One
-/// object per `RateKey`, defined by `graft-site-a` and created with no hint, so it sits near its first caller. An isolate
-/// awaits it on its first request for a key, then adds its local count every RATE_FLUSH requests or 1 s, and each
-/// reply returns the window total.
+/// The counters behind `x-ratelimit-*`, where GHES rate limits are on (SHARED, "Public service concerns"). One object
+/// per `RateKey`, defined by `graft-site-a` created with no hint, so it is near its first caller. An isolate awaits it
+/// on a key's first request, then adds its count every RATE_FLUSH requests or 1 s; replies return the window total.
 pub struct RateCounter { pub key: RateKey }
 pub enum RateKey { User(AccountId), Installation(InstallationId), JobToken(RepoId), Token([u8; 32]), Ip(IpPrefix) }
 pub const RATE_FLUSH: u32 = 20;                 // requests per isolate and key between flushes [guess]
@@ -1713,7 +1713,7 @@ The lifeboat runs on the same `localDisk` storage and `localDocker` engine, and 
   - for account separation, the acceptance that a proxy failure on the ring hostnames stalls commits.
 
   The install keeps serving indefinitely with the vendor unreachable, because no runtime path calls the vendor. `graft-ops` crons call the Cloudflare API with the customer's read token, and a failed call is a no-op plus an alarm.
-- **Evaluation (`Solo`), any mode, or workerd on customer hardware.** One site and the signed `evaluation` flag (`Genesis.evaluation`). It gets no region-loss guarantee and no availability SLO. A Cloudflare-hosted `Solo` install moves to `Tri` by a customer-signed `LeaveEvaluation` intent, which adds the new sites, swaps the system-chain records, clears the flag, and moves `Release`, `Ids`, `Names`, `Tokens`, and then each owner through `Joint` configs without downtime [inference from joint consensus] (Shape, "Release group").
+- **Evaluation (`Solo`), any mode, or workerd on customer hardware.** One site and the signed `evaluation` flag (`Genesis.evaluation`). It gets no region-loss guarantee and no availability SLO. A Cloudflare-hosted `Solo` install moves to `Tri` by a customer-signed `LeaveEvaluation` intent, which adds the new sites, swaps the system-chain records, clears the flag, and moves `Release`, `Ids`, `Names`, `Tokens`, and then each owner, one voter site per config change (a one-site `Joint`, then `Normal`), without downtime [measured for owner moves, BF-30] (Shape, "Release group" and "Sites and placement").
 
 ### Install operations
 
