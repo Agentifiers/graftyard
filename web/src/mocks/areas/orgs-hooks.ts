@@ -175,6 +175,12 @@ export const handlers = [
     const body = (await request.json()) ?? {};
     const problem = hookProblem(body.config, body.events);
     if (problem) return response.untyped(problem);
+    const url = body.config?.url;
+    if (url && orgDb.hooks.some((o) => o.id !== h.id && o.config.url === url)) {
+      return response.untyped(
+        invalid("Hook", "url", "already_exists", "A hook with this payload URL already exists."),
+      );
+    }
     if (body.config) applyConfig(h, body.config);
     if (body.events) h.events = body.events;
     if (body.active !== undefined) h.active = body.active;

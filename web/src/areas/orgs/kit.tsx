@@ -25,10 +25,11 @@ export function failed(what: string) {
 }
 
 // An optimistic cache edit for every query under `key`, with the rollback a mutation's
-// onError calls.
-export async function optimistic<T>(key: QueryKey, edit: (old: T) => T) {
-  await queryClient.cancelQueries({ queryKey: key });
-  const before = queryClient.getQueriesData<T>({ queryKey: key });
+// onError calls. `exact` limits it to `key` itself, for a list whose key prefixes the
+// keys of its items.
+export async function optimistic<T>(key: QueryKey, edit: (old: T) => T, exact = false) {
+  await queryClient.cancelQueries({ queryKey: key, exact });
+  const before = queryClient.getQueriesData<T>({ queryKey: key, exact });
   for (const [k, v] of before) if (v !== undefined) queryClient.setQueryData<T>(k, edit(v));
   return () => before.forEach(([k, v]) => queryClient.setQueryData(k, v));
 }

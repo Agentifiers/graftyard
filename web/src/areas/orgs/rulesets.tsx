@@ -227,7 +227,7 @@ function Builder({ org, ruleset, initial }: { org: string; ruleset?: Ruleset; in
         }),
       ),
     onMutate: () =>
-      optimistic<Ruleset[]>(listKey, (old) => old.filter((r) => r.id !== ruleset!.id)),
+      optimistic<Ruleset[]>(listKey, (old) => old.filter((r) => r.id !== ruleset!.id), true),
     onError: (e, _v, rollback) => {
       rollback?.();
       failed("Ruleset not deleted")(e);

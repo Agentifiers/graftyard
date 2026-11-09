@@ -213,7 +213,7 @@ function HookForm({ org, hook }: { org: string; hook?: Hook }) {
       send(
         api.DELETE("/orgs/{org}/hooks/{hook_id}", { params: { path: { org, hook_id: hook!.id } } }),
       ),
-    onMutate: () => optimistic<Hook[]>(listKey, (old) => old.filter((h) => h.id !== hook!.id)),
+    onMutate: () => optimistic<Hook[]>(listKey, (old) => old.filter((h) => h.id !== hook!.id), true),
     onError: (e, _v, rollback) => {
       rollback?.();
       failed("Webhook not deleted")(e);
