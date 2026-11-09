@@ -63,11 +63,13 @@ function branch(name) {
 const repoId = (await gql(admin, `query { repository(owner: "m3org", name: "${repo}") { id } }`)).body?.data?.repository?.id;
 const leases = async (glob) => {
   const out = [];
-  for (let p = 1; p <= 20; p++) {
-    const r = await api("GET", `${V1}/leases?per_page=100&page=${p}&paths=${encodeURIComponent(glob)}`, admin);
+  // The lease list pages by `after` (the last id of the page before), not `page`.
+  for (let after = null; ;) {
+    const r = await api("GET", `${V1}/leases?per_page=100${after ? `&after=${after}` : ""}&paths=${encodeURIComponent(glob)}`, admin);
     if (!Array.isArray(r.body)) return { status: r.status, list: out };
     out.push(...r.body);
     if (r.body.length < 100) break;
+    after = r.body[r.body.length - 1].id;
   }
   return { status: 200, list: out };
 };
