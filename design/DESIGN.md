@@ -416,13 +416,14 @@ pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) 
 /// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets reports from two colos within 10 s stops
 /// granting promises to a leader that is still renewing, and restores them after 2 x the SUSPECT window or on a higher
 /// term. For the same 2 x SUSPECT window, which a higher term does not end, its pre-vote refuses that leader as a
-/// candidate, so the gray leader cannot win back the next election (Milestone 0 measured a 24 s move without this rule,
-/// `tests/m0/results/m0-wp2.md`). A follower whose promise has lapsed campaigns on one report, or when its own
-/// read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven; only a
-/// leader's drain check runs from an alarm, and it starts no campaign (`SiteMode`). A promise bars votes for a rival of
-/// the leader it was given to, not for that leader, and an edge whose call is answered `NotLeader` with no leader named
-/// also reports to that member, so a deposed leader holding the newest log can win the next term while its followers'
-/// promises run. M0 measured idle groups stalled about 11 s without it (`tests/m0/results/m0-wp4.md`, "Slow writes").
+/// candidate, so the gray leader cannot win back the next election (M0-WP2 measured a 24 s move without it). A follower
+/// whose promise has lapsed campaigns on one report, or when its own read-index call to the leader fails. Campaigns are
+/// request-driven through this call, never alarm-driven; only a leader's drain check runs from an alarm, and it starts
+/// no campaign (`SiteMode`). Only `home` gets `/campaign`, and pre-vote denies a higher site id with an equal log, so a
+/// far, highest-id site rarely leads; `home` then leads by transfer, as intended [inference, wire-fix]. A promise bars
+/// votes for a rival of the leader it was given to, not for that leader, and an edge whose call is answered `NotLeader`
+/// with no leader named also reports to that member, so a deposed leader holding the newest log can win the next term
+/// while its followers' promises run. M0 measured idle groups stalled about 11 s without it (M0-WP4).
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -770,12 +771,12 @@ pub enum TrailerKey { GraftyardSession, ClaudeSession, AmpThreadId, CoAuthoredBy
 /// Host-owned. `decide` refuses every update under `refs/graftyard/` except a create or fast-forward of its own task's
 /// session ref by `graftyard-workspace` with that task's `task` claim while the task is live, and deletion runs only
 /// through a retention command. Receive-pack never advertises the ref, so a later update must name the current tip,
-/// which `graftyard-workspace` reads by v2 `ls-refs`; plain `git push` can only create it [measured, M0-WP10]. Session
-/// logs are always `PackRef::Stored`. Never in v0 or v1 advertisement, and listed by v2 `ls-refs` only when one
-/// `ref-prefix` begins with `refs/graftyard/sessions/` and the ref begins with that `ref-prefix`. Refs under
-/// `refs/graftyard/` outside it are never advertised or listed. A v2 `fetch` of a session log's object id is served to
-/// any reader of the repository, as for any object; listing is the only gate [inference, as GitHub serves objects]. The vault,
-/// lifeboat, and `RestoredTo` carry it.
+/// which `graftyard-workspace` reads by v2 `ls-refs` with a `ref-prefix`, raw or by `git fetch` with a refspec (git
+/// 2.56's `ls-remote <pattern>` sends none [measured, am1-rest]); plain `git push` only creates it [measured, M0-WP10].
+/// Session logs are always `PackRef::Stored`. Never in v0 or v1 advertisement, and listed by v2 `ls-refs` only when a
+/// `ref-prefix` begins with `refs/graftyard/sessions/` and the ref with that `ref-prefix`; no other `refs/graftyard/`
+/// ref is advertised or listed. A v2 `fetch` of a session log's object id is served to any reader, as for any object;
+/// listing is the only gate [inference, as GitHub serves objects]. The vault, lifeboat, and `RestoredTo` carry it.
 pub const SESSION_REFS: &str = "refs/graftyard/sessions/";
 /// A claim by one holder on paths or refs of one repository: core-tier rows on its group, written by `LeaseAcquire`,
 /// `LeaseRenew`, and `LeaseRelease`. Live while an entry's `at` is before `expires`, checked on read and in `decide`, so
@@ -1011,13 +1012,12 @@ pub const POINTER_TTL: Duration = Duration::from_secs(5);         // compiled [g
 /// only while `until` is in the future and at most STALE_MAX after the flag's arrival.
 pub const STALE_MAX: Duration = Duration::from_secs(24 * 3_600);  // compiled [guess]
 /// `POST /api/graftyard/v1/release/entries` takes one signed entry, encoded as stored (`Bound`, body, signatures), with
-/// no token, because the signatures are the credential. The edge checks them against its cached `Keys` before `commit`,
-/// under a WAF rate rule. 201 returns `{"index": n, "digest": "<hex>"}` after `Acked`. 409 returns
-/// `{"message": "stale prev", "prev": "<hex>", "index": n}` when `prev` is not the current digest, a second genesis
-/// included, with `prev` the held genesis's digest, so a retried install after a lost 201 sees its own, and the signer
-/// re-signs. 422 returns `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours
-/// apart, so an offline signature rarely meets a 409 [inference]. Reads are `GET /api/graftyard/v1/release/entries`
-/// (`design/AGENT-LAYER.md`, "API reference").
+/// no token: the signatures are the credential. The edge checks them against its cached `Keys` before `commit`, under a
+/// WAF rate rule. 201 returns `{"index": n, "digest": "<hex>"}` after `Acked`. 409 returns `{"message": "stale prev",
+/// "prev": "<hex>", "index": n}` when `prev` is not the current digest, a second genesis included, with `prev` the held
+/// genesis's digest, so a retried install after a lost 201 sees its own, and the signer re-signs. 422 returns
+/// `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours apart, so offline
+/// signers rarely meet a 409 [inference]. Reads are `GET` on the same path (`design/AGENT-LAYER.md`, "API reference").
 /// One per (site, shard) on each site script, 64 shards by chain hash [guess]. A voter writes its row before it stores
 /// its first entry, and rewrites it on each config change. `ReplaceMember { lost }` and the owner-placement move find
 /// their groups by reading the surviving or old sites' registries and keeping rows whose `sites` include the site.
@@ -1072,9 +1072,9 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
 /// Before the leader archives a range, the home shard packs the objects of every pack, inline or stored, the range
 /// names into one self-contained `DurablePack`, and the leader commits `Promoted`; `Archived` follows only once
-/// `Promoted` covers the range, and a range that names no pack needs none. `Compacted.consumed` names promoted packs,
-/// never an inline one. Its `produced` may repeat objects of later inline packs, which GC drops [inference]. An inline
-/// pack has no `checksum`, so restore verifies it through its entry's digest chain.
+/// `Promoted` covers the range, so a range naming no pack gets an empty one. `Compacted.consumed` names promoted packs,
+/// never an inline one. `produced` may repeat later inline packs' objects, which GC drops [inference]. An inline pack
+/// has no `checksum`, so restore verifies it through its entry's digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus the packs a `Compacted` consumed, plus the
 /// packs, inline or stored, named in each member chain's entries after its last `Promoted` range's `to`, read from its
@@ -1163,10 +1163,10 @@ pub const HOT_POOL: u16 = 7;
 /// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard read each member chain's
 /// `Refs`, `Merged`, and `Promoted` entries and the network's `Compacted` ones. Each `CoreRefs` a leader hands a shard
 /// carries the chain's applied index. A shard behind it first reads the missing entries from that leader and fetches
-/// their packs (inline, or from its site's bucket or the other copy), so a second warm shard, or another of the k, has
-/// every committed pack before it serves. A cursor names the container's disk id; another disk, or one below an
-/// `Archived` truncation, means a full `rehydrate` (BF-18). Catch-up takes ref changes from the entries it reads, and
-/// only `rehydrate` pages a whole ref set: no member reply may grow with a repository's ref count (F63, `wire-fix`).
+/// their packs (inline, or from its site's bucket or the other copy), so any shard has every committed pack before it
+/// serves. A cursor names the container's disk id; another disk, or one below an `Archived` truncation, means a full
+/// `rehydrate` (BF-18). Catch-up takes ref changes from the entries it reads; only `rehydrate` reads a whole ref set,
+/// in pages of 10,000: no member reply grows with a repository's ref count [measured, `wire-fix`].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or

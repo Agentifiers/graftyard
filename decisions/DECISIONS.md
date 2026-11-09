@@ -2000,7 +2000,7 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 ### `am1-fix`, the stored event layout, and ref-count replies, 2026-11-09
 
-`am1-fix` fixed LM-1's two hosted failures on `graft-m1` site day 7; its run found that main's 32.13 merge moved `RepoEvent`'s stored lease variants; and another thread found `repo:65536` resetting its leader on whole-ref reads (`tests/am1/results/am1-fix.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, F63).
+`am1-fix` fixed LM-1's two hosted failures on `graft-m1` site day 7; its run found that main's 32.13 merge moved `RepoEvent`'s stored lease variants; and another thread found `repo:65536` resetting its leader on whole-ref reads (`tests/am1/results/am1-fix.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, F63, since closed by `wire-fix`).
 
 #### `am1-fix`: the stall crosses a leader change, and the feed shares one owner read
 
@@ -2019,19 +2019,19 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 #### Released wire positions are pinned, and `RepoEvent` keeps leases at 35 to 38
 
-**Decision.** The lead's: `RepoEvent` keeps its current layout, with 32.13's `Created` and `Deleted` at 33 and 34 and the lease events at 35 to 38. Every stored or member-sent enum gets explicit, pinned wire tags, with a test that fails when a variant is inserted mid-enum, so a variant's wire position never changes once released; this is being built on `wire-fix`. SHARED's "Record formats and the two-release rule" and DESIGN's message rule (Shape, `Unsupported`) state the invariant. The `graft-m1` groups holding lease entries stored under `9fb5032` (j4, lf1-2, lf1-3) are lost to the test install: they are recreated or left out, and LM-1's rows rerun on other groups.
+**Decision.** The lead's: `RepoEvent` keeps its current layout, with 32.13's `Created` and `Deleted` at 33 and 34 and the lease events at 35 to 38. Every stored or member-sent enum gets explicit, pinned wire tags, with a test that fails when a variant is inserted mid-enum, so a variant's wire position never changes once released; `wire-fix` built it as `crates/git/tests/wire_tags.rs` and `wire_tags.golden`. SHARED's "Record formats and the two-release rule" and DESIGN's message rule (Shape, `Unsupported`) state the invariant. The `graft-m1` groups holding lease entries stored under `9fb5032` (j4, lf1-2, lf1-3) lost their history: they were recreated, empty, under the same ids, by clearing every member with `/retire` and creating the group on first use, because a plain reset cannot repair stored rows; LM-1's rows that used them need their seed again.
 
 **Why.** Postcard numbers variants by position, while the digest encoding already used explicit tags, so inserting `Created` and `Deleted` ahead of the lease events in the `m3-repos` merge moved every stored lease variant by two and nothing caught it. 32.13 events are stored on `graft-m2b`, and every document already records leases at 35 to 38, so moving leases back would break `graft-m2b` and rewrite the records. The broken groups are test data on one install. In a rolling site day the same shift would make two releases misread each other's AppendEntries, so the rule has to be structural.
 
 **Beat.** Moving the lease events back to 33 to 36, which breaks the stored 32.13 events. A decoder that tries both layouts, which hides the next shift. A review checklist instead of a failing test.
 
-**Evidence.** `tests/am1/results/am1-fix.md`, "A finding: main's 32.13 merge renumbered the stored lease events": after site day 7, j4, lf1-2, and lf1-3 fail to restore with "Serde Deserialization Error" on every member, while the groups without lease entries restore; lease events were serde variants 33 to 36 at `9fb5032` and 35 to 38 at `6042f3e`; the digest tags were 35 to 38 at both [measured].
+**Evidence.** `tests/am1/results/am1-fix.md`, "A finding: main's 32.13 merge renumbered the stored lease events": after site day 7, j4, lf1-2, and lf1-3 fail to restore with "Serde Deserialization Error" on every member, while the groups without lease entries restore; lease events were serde variants 33 to 36 at `9fb5032` and 35 to 38 at `6042f3e`; the digest tags were 35 to 38 at both [measured]. `tests/m3/results/wire-fix.md`: the pinning test covers 655 variants in 120 enums, its golden file generated from unchanged `f3fa02b` code, so today's bytes are unchanged; a swap fails it, an insert fails it or fails to compile on exhaustive matches; the three groups were recreated, empty [measured].
 
 **Flip.** A real install's stored data in the old layout, which would need a one-time migration for it; or a stored encoding chosen for another reason that carries its own explicit tags, which would make the pinning test redundant.
 
 #### No member reply grows with a repository's ref count
 
-**Decision.** A design rule, with F63 for the remaining replies: catch-up takes ref changes from the log entries it already reads, only `rehydrate` reads a chain's whole ref set, and it reads in pages; info/refs pages too. DESIGN, Shape, "Git cache shards (derived)" (`IngestCursor`), says so. The fix is on `wire-fix`, and `repo:65536` (bf20) on `graft-m2b` stays out of runs until it lands.
+**Decision.** A design rule: catch-up takes ref changes from the log entries it already reads, only `rehydrate` reads a chain's whole ref set, and it reads in pages; info/refs pages too. DESIGN, Shape, "Git cache shards (derived)" (`IngestCursor`), says so. `wire-fix` built it and F63 closed ("F63 closes: ref reads are paged", below).
 
 **Why.** A leader that serializes every ref in one JSON reply burns seconds of CPU and runs out of memory, which resets its isolate and every member in it. M2-WP1's defect (c) was the same class on a lookup probe, so a fix to one call site did not prevent the next.
 
@@ -2040,6 +2040,51 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 **Evidence.** Workers Logs, reported by another thread: on `repo:65536`, a site-a or site-b member that wins leadership runs `prsync::warm` from its alarm (`1c84ac6`), which calls `/catchup`, whose `core_refs` sends `/read {"q":{}}`; the leader burns 5 to 6 s of CPU and dies in `handle_alloc_error`, 41 times in 26 h from 2026-11-07 14:31Z [measured]. `tests/m2/results/m2-wp1.md`, defect (c): 303,144 refs on `repo:196628` in one `/read` [measured].
 
 **Flip.** A page size measured too small to serve a clone's ref advertisement within its deadline, which would need a streamed reply instead of pages.
+
+### `wire-fix` and `am1-rest`, 2026-11-09
+
+`wire-fix` pinned every stored or member-sent enum's wire tags and fixed `repo:65536`'s whole-ref reads; `am1-rest` built in memory what LM-1's remaining hosted rows need (`tests/m3/results/wire-fix.md`; `tests/am1/results/am1-rest.md`; `build/BUILD-PLAN.md`, AM1-WP6).
+
+#### F63 closes: ref reads are paged
+
+**Decision.** No member reply carries more than one page of refs. A ref read answers at most `REFS_PAGE_MAX` (10,000) refs plus a `next` cursor, and `{"q":{}}` answers the whole set only while it fits one page, past which it answers `{"paged":10000}`, so no older caller can ask for everything. Routine catch-up applies the net ref changes that `/entries` now carries with each entry and never reads the ref set; only `rehydrate` pages the full set, and an entry without ref changes or a cursor below the log's first index means a rehydrate. The edge's receive-pack advertisement streams page by page with bytes identical to the whole one. The container's `/refs` skips and counts a ref whose object is missing instead of failing the set. Two defects found on the way are fixed with it: `/entries` reads one row at a time up to its page bound instead of loading 2,000 rows first, and two catch-ups of one network take turns (`CatchUps::turn`). DESIGN, Shape, "Git cache shards (derived)" (`IngestCursor`), states the rule; F64 keeps the advertisement's cost open.
+
+**Why.** A reply that scales with the ref count runs the leader's isolate out of memory at a size real repositories reach, and that resets every member in the isolate, so the group loses its leader and the next winner repeats the read. Pages bound each reply whatever the ref count, and applying the entries' own ref changes makes catch-up's cost scale with what changed.
+
+**Beat.** One larger reply under a higher memory limit, which the platform does not offer. A streamed member reply, which still makes the leader walk every ref on each catch-up. Reading the ref set on every catch-up but in pages, which keeps the cost scaling with the repository instead of the change.
+
+**Evidence.** `tests/m3/results/wire-fix.md` [measured]. bf20 holds 571,872 refs; the old `{"q":{}}` reply at that size is 43,095,634 bytes. `crates/git/tests/refs_paging.rs` builds 571,872 refs and keeps every reply at most 1 MB, reassembles the set from 58 pages, and checks the streamed advertisement byte for byte; with the paged guard removed it fails. `/entries` leader CPU per page fell from about 160 ms to about 10 ms. Hosted on `graft-m2b`: before, 87 `handle_alloc_error` and 307 "exceeded its memory" on sites a and b over 50 h and no leader since 2026-11-07 14:31Z; after site day 1, 0 of each on all three sites from 10:00Z to 11:50Z, 5 cron wakes ok on each of the 3 sites, and a leader (site a, term 24) at 58 of 58 one-minute checks; `ls-remote` over v0 and v2 and `clone` work. `graft-m2b` runs `3fc2397`, whose catch-up waits for idle and then starts, not the final `6eb3433`, whose `turn` takes the slot in the same poll; `graft-m1` runs `6eb3433`.
+
+**Flip.** A page size measured too small to serve a clone's ref advertisement within its deadline, which would need a streamed member reply instead of pages; or a catch-up whose entries' ref changes are measured to diverge from a paged rehydrate, which would make rehydrate the only path.
+
+#### Site c rarely leads, and that matches the design's intent
+
+**Decision.** No change. Only a group's record `home` receives `/campaign`; every site gets `suspect` reports and may start a pre-vote, and with equal logs pre-vote's tie-break denies the candidate with the higher site id, while the farthest site's vote requests arrive last. So a far site with the highest id, such as `graft-m2b`'s site c (apac), effectively never leads. DESIGN means `home` to lead and other sites to lead only after a loss, with `home` taking leadership back by transfer, so this matches. DESIGN, Shape, Leadership (`suspect`), says so.
+
+**Why.** A leader on the far site costs every commit the longest round, so a bias against it is wanted.
+
+**Beat.** Recording it as a defect and randomizing the tie-break, which would sometimes put the leader on the farthest site.
+
+**Evidence.** `tests/m3/results/wire-fix.md`, "Why site c never leads" [inference, from the code and the call counts]: over 24 h on bf20, site a got 204 `/campaign` calls and sites b and c none, while `/suspect` reached a 586, b 909, and c 957 times; `election.rs` denies when `req.candidate > self.cfg.me && !newer`. No trace of one election's vote messages was taken.
+
+**Flip.** A trace showing site c never leads even when sites a and b are both lost, or a placement whose `home` has the highest site id and is measured not to lead.
+
+#### `am1-rest`'s design corrections
+
+**Decision.** Four corrections from `am1-rest`, in the text that owns each:
+
+- An `Archived` follows only once `Promoted` covers its range, so a range that names no pack gets an empty promotion (DESIGN, the `Promoted` paragraph), as `check_archived` refuses an `Archived` past the last `Promoted`.
+- LF-13's fault is named: a leadership change while the follower is behind, or a log truncated past the follower, either of which makes the follower take `InstallSnapshot`. One dropped AppendEntries cannot leave a gap under one leader, which re-sends from the follower's match index (AGENT-LAYER and BUILD-PLAN, LF-13).
+- `graftyard-workspace` reads a session tip by v2 `ls-refs` with a `ref-prefix`, raw, or by `git fetch` with a refspec, because git 2.56's `ls-remote <pattern>` sends no `ref-prefix` (the agent block, both files).
+- LF-4 hosted reaches only issues and releases, 2 of the 8 trust resources, because the edge serves REST reads for no others; `crates/api/tests/trust.rs` covers all 8 in memory. Recorded as a gap in BUILD-PLAN, AM1-WP6.
+
+**Why.** Each is the code's behavior, and the design text said otherwise or named a fault that cannot happen.
+
+**Beat.** Making the code match the old text: relaxing `check_archived` for empty ranges saves one shard call and one empty pack per such range at the price of a weaker check, and a single dropped message cannot be made to leave a gap without breaking Raft's re-send.
+
+**Evidence.** `tests/am1/results/am1-rest.md`, its contradictions 1 to 4 [measured, in memory]; `crates/raft/tests/lf13.rs`; `crates/api/tests/trust.rs`.
+
+**Flip.** A REST read route for the other six trust resources, which closes the LF-4 gap; or a git release whose `ls-remote <pattern>` sends `ref-prefix`, which would let the controller use it.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
