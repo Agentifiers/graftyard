@@ -70,6 +70,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -401,9 +402,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
+	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
+	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
+	// `aside` (finishValidate).
 	l := lock(net)
-	l.Lock()
-	defer l.Unlock()
+	l.RLock()
+	defer l.RUnlock()
+	validating.Add(1)
+	defer validating.Add(-1)
 	sweepValidated(rp)
 	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
 	if err != nil {
@@ -479,15 +486,31 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Kept aside under the pack's SHA-256 until /ingest names it.
 	os.Remove(file)
-	dst := filepath.Join(rp, "graft", "validated-"+sum)
-	os.RemoveAll(dst)
-	if err := os.Rename(q, dst); err != nil {
+	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	keep = true
 	jsonOut(w, out)
 }
+
+// aside serializes, per network, the one write two validates share: replacing graft/validated-<sum>. Two pushes of
+// the same pack bytes validate to the same name, and a rename onto a directory another validate just put there fails.
+var aside sync.Map
+
+// finishValidate sets quarantine q aside as graft/validated-<sum>, replacing an earlier one of the same bytes.
+func finishValidate(net, rp, q, sum string) error {
+	m, _ := aside.LoadOrStore(net, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	dst := filepath.Join(rp, "graft", "validated-"+sum)
+	os.RemoveAll(dst)
+	return os.Rename(q, dst)
+}
+
+// validating counts the validates running on this container, for /load's queue depth.
+var validating atomic.Int64
 
 // update is one ref update of a detail request: its new and old tips (all zeros for a create or a delete) and name.
 type update struct{ New, Old, Ref string }
