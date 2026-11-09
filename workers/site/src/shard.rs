@@ -27,6 +27,8 @@ thread_local! {
     /// (`merge_then_catch_up`'s `in_flight`). An object's requests share its isolate.
     static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<i64, graftyard_git::merge_cache::CatchUps>> =
         Default::default();
+    /// Per network, the log index the latest shared catch-up (`CatchUps::fresh`) reached, for `x-graft-cursor`.
+    static CURSORS: std::cell::RefCell<std::collections::HashMap<i64, u64>> = Default::default();
 }
 
 /// This isolate's catch-up gate for network `net`.
@@ -184,9 +186,21 @@ impl DurableObject for GitShard {
             let _running = catch_ups(net).turn().await;
             host.catch_up(net, &[chain], &bs, &log).await
         };
+        // A validate, clone, or fetch needs only every commit made before it arrived, so requests that arrive while a
+        // catch-up runs share the next one (`CatchUps::fresh`): hosted, each catch-up reads the leader, and one each
+        // held a network to about 2.7 validates/s (`tests/am1/results/am1-runs.md`, "Diagnosis").
+        let fresh = || async {
+            catch_ups(net)
+                .fresh(|| async {
+                    let c = host.catch_up(net, &[chain], &bs, &log).await?;
+                    CURSORS.with(|m| m.borrow_mut().insert(net.0.0, c.cursor.at(chain).0));
+                    Ok(())
+                })
+                .await
+        };
         match path.as_str() {
             "/validate" => {
-                caught_up().await.map_err(se)?;
+                fresh().await.map_err(se)?;
                 let body = req.bytes().await?;
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let tips: Vec<String> =
@@ -208,7 +222,8 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
-                let c = caught_up().await.map_err(se)?;
+                fresh().await.map_err(se)?;
+                let at = CURSORS.with(|m| m.borrow().get(&net.0.0).copied().unwrap_or(0));
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -217,8 +232,7 @@ impl DurableObject for GitShard {
                 for (k, v) in r.headers().entries() {
                     h.set(&k, &v)?;
                 }
-                h.set("x-graft-cursor", &c.cursor.at(chain).0.to_string())?;
-                h.set("x-graft-rehydrated", if c.rehydrated.is_some() { "1" } else { "0" })?;
+                h.set("x-graft-cursor", &at.to_string())?;
                 Ok(r.with_headers(h))
             }
             // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
