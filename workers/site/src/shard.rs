@@ -177,12 +177,11 @@ impl DurableObject for GitShard {
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
         host.touch(Timestamp(now_ms())).await.map_err(se)?;
         // Every catch-up is marked running while it runs, so a merge waits for it rather than racing it. A catch-up
-        // also waits for one in flight on the same network, then goes on from the cursor that one saved: two at once
-        // each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one hung until
-        // the runtime ended it at 884 s ("Promise will never complete", `tests/m3/results/wire-fix.md`).
+        // also waits its turn behind one in flight on the same network, then goes on from the cursor that one saved:
+        // two at once each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one
+        // hung until the runtime ended it at 884 s ("Promise will never complete", `tests/m3/results/wire-fix.md`).
         let caught_up = || async {
-            catch_ups(net).idle().await;
-            let _running = catch_ups(net).start();
+            let _running = catch_ups(net).turn().await;
             host.catch_up(net, &[chain], &bs, &log).await
         };
         match path.as_str() {

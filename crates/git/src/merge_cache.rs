@@ -223,6 +223,22 @@ impl CatchUps {
         Running(self.clone())
     }
 
+    /// Waits until no catch-up runs, then starts one, in the same poll, so catch-ups on one network run one at a time
+    /// and each goes on from the cursor the one before saved. Two at once on `repo:65536` each rehydrated its 571,872
+    /// refs from nothing, and the later one never finished (`tests/m3/results/wire-fix.md`).
+    pub fn turn(&self) -> impl std::future::Future<Output = Running> + use<> {
+        let me = self.clone();
+        std::future::poll_fn(move |cx| {
+            let mut s = me.0.borrow_mut();
+            if s.0 == 0 {
+                s.0 = 1;
+                return std::task::Poll::Ready(Running(me.clone()));
+            }
+            s.1.push(cx.waker().clone());
+            std::task::Poll::Pending
+        })
+    }
+
     /// Ends once no catch-up runs; at once if none does.
     pub fn idle(&self) -> impl std::future::Future<Output = ()> + use<> {
         let me = self.clone();
@@ -451,6 +467,36 @@ mod tests {
         // No catch-up running: the merge does not wait.
         let idle = CatchUps::default().idle();
         assert_eq!(futures_executor::block_on(idle), ());
+    }
+
+    /// Three catch-ups on one network, the first running when the other two arrive: they run one at a time, each after
+    /// the one before ends, never two at once (`repo:65536`'s two concurrent rehydrates).
+    #[test]
+    fn catch_ups_on_one_network_take_turns() {
+        use futures_util::task::LocalSpawnExt;
+        let mut pool = futures_executor::LocalPool::new();
+        let sp = pool.spawner();
+        let gate = CatchUps::default();
+        let (now, most) = (std::rc::Rc::new(std::cell::Cell::new(0)), std::rc::Rc::new(std::cell::Cell::new(0)));
+        let order = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        for i in 0..3 {
+            let (g, now, most, order) = (gate.clone(), now.clone(), most.clone(), order.clone());
+            sp.spawn_local(async move {
+                let _running = g.turn().await;
+                now.set(now.get() + 1);
+                most.set(most.get().max(now.get()));
+                order.borrow_mut().push(i);
+                for _ in 0..3 {
+                    yield_once().await;
+                }
+                now.set(now.get() - 1);
+            })
+            .unwrap();
+        }
+        pool.run();
+        assert_eq!(most.get(), 1, "two catch-ups ran at once");
+        assert_eq!(*order.borrow(), vec![0, 1, 2]);
+        assert_eq!(futures_executor::block_on(gate.idle()), ());
     }
 
     /// Pending once, then ready: lets the other task run.
