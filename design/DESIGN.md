@@ -244,17 +244,17 @@ pub enum EntryBody { Events(Vec<Event>) /* <= 1.5 MB with inline packs; DO rows 
                      IdBlock { base: DbId, len: u32 } /* <= 2^16 */, Archived(Archived), Promoted(Promoted) /* Packs */,
                      Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
 /// The recorded stall. A member marks `stalled_since` at the earliest of a follower's first `suspect` report, a
-/// candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE, and stores
-/// it with its next state write (a campaign writes at once): a crash before then loses it, and leases lapse by the
-/// stall [measured: a write per marker broke the harsh simulator, AM1-WP4]; a new leader writes no `extend` for an old
-/// leader's marker (F60). Queueing in admission is not a stall. The next entry the group commits carries `ExtendLeases
-/// { since, by: at - since }`, and every path lease (`Lease`) and Actions job lease with `expires > since` moves
-/// `expires` by `by`. An idle group sets no marker. A leader adds no `extend` while an unapplied entry in its log
-/// carries one with `since` at or before its own marker, so one stall moves a lease once, and `since` is at least the
-/// `at` of the last entry it holds, so no lease that entry judged expired is revived over a newer holder. Without the
-/// first rule, one 30-minute stall moved 501 leases twice [measured, M0-WP12, L0-12]. The leader applies an entry's
-/// `extend` before its commands decide, so `decide` sees the moved leases and compares `expires` with the entry's `at`;
-/// reads compare it with the leader's leased clock, expiry needs no command, and clients time it from `expires`.
+/// candidate's campaign start, the leader's first entry that no quorum acknowledged within CALL_DEADLINE, or a
+/// follower's store of that entry's re-send, sent CALL_DEADLINE or more after its `at`, which carries it to the next
+/// leader [measured, AM1 fix]. It rides the next state write (a campaign writes at once) [measured, AM1-WP4]; a crash
+/// before then, or an old leader that never reaches the winner, loses it, and leases lapse by the stall. The group's
+/// next entry carries `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`) and Actions job lease
+/// with `expires > since` moves `expires` by `by`. An idle group, a prompt append, or admission queueing marks nothing.
+/// A leader adds no `extend` while an unapplied entry carries one with `since` at or before its marker, so one stall
+/// moves a lease once, and `since` is at least the `at` of the last entry it holds, so no lease that entry judged
+/// expired revives over a newer holder. Without the first rule a 30-minute stall moved 501 leases twice [measured,
+/// M0-WP12]. The leader applies an entry's `extend` before its commands decide, so `decide` sees moved leases and
+/// compares `expires` with the entry's `at`; reads use the leader's leased clock, and expiry needs no command.
 pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
 /// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
 /// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
@@ -483,10 +483,10 @@ pub struct Ticket { pub term: Term, pub boot: u64, pub seq: u64 }
 /// Any reply a member gives when it cannot lead the call. `config` is its latest committed config with full member
 /// names, or `None` when it has none, so callers follow moves, regenerations, and learners without a lookup.
 pub struct NotLeader { pub term: Term, pub leader: Option<SiteId>, pub config: Option<(Index, GroupConfig)> }
-/// Every edge-to-member and member-to-member message is a stored-format record under SHARED's two-release rule. A
-/// caller sends a new command, message kind, or field only after `FormatsEnable` has enabled its format, so an edge on
-/// N+1 talks format k to leaders on N. A member that cannot decode a message answers `Unsupported` and changes nothing.
-/// The edge renders it as 503 with `Retry-After: 5` [guess] and counts it as a retryable error, never as a refusal.
+/// Every edge-to-member and member-to-member message is a stored-format record under SHARED's two-release rule, and a
+/// caller sends a new command, message kind, or field only once `FormatsEnable` enables its format, so an edge on N+1
+/// talks k to leaders on N. A released wire tag never moves (SHARED). A member that cannot decode one answers
+/// `Unsupported`, changing nothing. The edge renders it as a retryable 503 (`Retry-After: 5` [guess]), never a refusal.
 pub struct Unsupported { pub release: ReleaseId, pub format: Format }
 /// `TooLarge`: the member's own `COMMAND_MAX` check, never decided, rendered as the edge's refusal [inference].
 pub enum CallError { NotLeader(NotLeader), Unsupported(Unsupported), TooLarge { len: usize, max: usize } }
@@ -1160,12 +1160,13 @@ pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cos
 /// first byte p99 at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A
 /// pool warm only for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
 pub const HOT_POOL: u16 = 7;
-/// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard has read each member
-/// chain's `Refs`, `Merged`, and `Promoted` entries and the network chain's `Compacted` entries. Every `CoreRefs` a
-/// leader hands a shard carries the chain's applied index. A shard behind it first reads the missing entries from that
-/// leader and fetches their packs, inline from the entry and stored from its own site's bucket or the other copy, so a
-/// second warm shard, or another of the k, learns every committed pack before it serves the network. A cursor names the
-/// container's disk id; one for another disk, or below an `Archived` truncation, means a full `rehydrate` (BF-18).
+/// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard read each member chain's
+/// `Refs`, `Merged`, and `Promoted` entries and the network's `Compacted` ones. Each `CoreRefs` a leader hands a shard
+/// carries the chain's applied index. A shard behind it first reads the missing entries from that leader and fetches
+/// their packs (inline, or from its site's bucket or the other copy), so a second warm shard, or another of the k, has
+/// every committed pack before it serves. A cursor names the container's disk id; another disk, or one below an
+/// `Archived` truncation, means a full `rehydrate` (BF-18). Catch-up takes ref changes from the entries it reads, and
+/// only `rehydrate` pages a whole ref set: no member reply may grow with a repository's ref count (F63, `wire-fix`).
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
@@ -1344,8 +1345,7 @@ pub struct ExportCursor { pub chain: ChainId, pub index: Index }
 /// `.`, and the customer key's signature, sent as a bearer token. The edge verifies it against its cached `Keys` and
 /// refuses any chain outside `scope`. It is revoked like an installation token, by `JtiRevoked` on `jti_shard(jti)`
 /// through `DELETE /api/graftyard/v1/export/token`, and export reads honor that row within READ_CACHE. `graftyard vault
-/// init` mints the install-scoped one. A managed tenant's per-org token has `scope: Owner(org)` and is signed by the
-/// cell's customer key.
+/// init` mints the install-scoped one. A managed tenant's org token (`scope: Owner(org)`) uses the cell's customer key.
 pub struct ExportClaims { pub install: InstallId, pub scope: Scope, pub holder: Box<str> /* "vault", or the org */,
                           pub jti: Ulid, pub iat: Timestamp, pub exp: Timestamp /* <= 400 days [guess] */ }
 /// A `lifeboat:read` token is an `OpaqueToken` of kind `Pat` (`ghp_`), so gh and git accept it. Its only claim is the
