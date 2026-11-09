@@ -169,8 +169,13 @@ function repoState(repo: Repository): RepoAgents {
 }
 for (const r of [edge, raft, web]) states.set(r.full_name, repoState(r));
 
+// Repositories added after load (created, or seeded by another area) start with no tasks.
 export function agentsState(owner: string, repo: string): RepoAgents | undefined {
-  return states.get(`${owner}/${repo}`.toLowerCase());
+  const key = `${owner}/${repo}`.toLowerCase();
+  let s = states.get(key);
+  const known = s ? undefined : core.state(owner, repo)?.repo;
+  if (known) states.set(key, (s = repoState(known)));
+  return s;
 }
 
 // ---- The activity ring ----
