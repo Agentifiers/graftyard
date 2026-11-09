@@ -31,6 +31,7 @@ pub mod queue;
 pub mod queue_consumer;
 pub mod refs;
 pub mod repo;
+pub mod sequencer;
 pub mod shard;
 pub mod smart;
 pub mod standin;

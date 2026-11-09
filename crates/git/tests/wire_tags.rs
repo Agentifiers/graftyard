@@ -335,6 +335,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         git::transfer::TransferErr,
         // M4-WP1: inside `RepoEvent::Hook`'s record.
         git::hooks::HookContentType,
+        // M4-WP1: a `HookSequencer`'s stored attempt rows.
+        git::sequencer::Outcome,
     }
 }
 

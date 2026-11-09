@@ -662,3 +662,6 @@ git::transfer::TransferErr 1 WrongEnterprise 01
 git::transfer::TransferErr 2 NotRead 02
 git::hooks::HookContentType 0 Json 00
 git::hooks::HookContentType 1 Form 01
+git::sequencer::Outcome 0 Ok 00
+git::sequencer::Outcome 1 Failed 01
+git::sequencer::Outcome 2 TimedOut 02
