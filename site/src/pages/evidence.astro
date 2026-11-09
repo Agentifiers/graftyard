@@ -1,7 +1,7 @@
 ---
 // Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
-// tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-wp5.md, tests/am1/results/am1-wp2.md, am1-wp5.md and
-// design/DESIGN.md ("Scale"), as of 2026-11-07. Update this page when those files change.
+// tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-rows.md, m3-repos.md, m3-wp5.md, tests/am1/results/am1-wp2.md,
+// am1-wp5.md, am1-rest.md and design/DESIGN.md ("Scale"), as of 2026-11-09. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -15,6 +15,8 @@ const clientRows = [
   ['gh 2.102.1: <code>pr list / create --draft / view</code>', 'Hosted edge', ok('Pass') + ', 3 of 3 exit 0'],
   ['gh 2.102.1: <code>release create / upload / view / download</code>, <code>--archive=tar.gz</code>', 'Hosted edge', ok('Pass') + ', the asset round-trips byte for byte'],
   ['git-lfs 3.8.0: push, clone, pull, lock, locks, unlock', 'Hosted edge', ok('Pass') + ', pulled bytes equal pushed bytes'],
+  ['gh 2.102.1: <code>repo create</code>, org and user, private and public, with and without a README', 'Hosted edge, 2026-11-09', ok('20 of 20') + ', each read back and deleted'],
+  ['Terraform 1.17.1, <code>TestAccGithubRepositoryCollaborator</code> from terraform-provider-github, as written', 'Hosted edge, 2026-11-09', ok('6 of 6') + ' runs pass'],
   ['<code>clients.sh</code>, 29 checks per client', 'git 2.39.5, 2.51.0, 2.56.0; 12 runs', ok('348 of 348') + ' rows, with and without a site failing'],
   ['git\'s own smart-HTTP tests, <code>t/t55xx</code> to <code>t/t58xx</code>', 'git 2.51.0 and 2.56.0, site 0 failing', ok('0') + ' baseline passes lost on 2.51.0; 1 on 2.56.0 (t5549 #2, a server-side <code>receive.hiderefs</code>)'],
 ];
@@ -45,7 +47,10 @@ const identityRows = [
   ['A member removed from the org mid-run (BM-3)', 'Round 50: the member\'s live PAT pushes', ok('Refused') + ' 403, ref not moved'],
   ['GitHub App installation tokens, <code>@octokit/app</code> 16.1.4 (BF-32)', 'Mint, read, narrow, wrong key, revoke, OAuth web flow', ok('12 of 12') + ', twice'],
   ['<code>gh auth login</code> device flow, 24 flows as gh\'s client', 'Device-code request, then the token exchange', ok('0.83 s') + ' median request (was 13.0 s); exchange ' + ok('1.9 s') + ' (was about 15 s)'],
-  ['Device flow with the code shard\'s leader killed (BF-33)', '120 runs, three kill points', ok('120 of 120') + ' restarted cleanly; no token from a spent code'],
+  ['Device flow with the leader killed mid-sign-in (BF-33)', '100 runs, the new token\'s shard leader killed after the code is spent', ok('99 of 100') + ' complete with exactly one token and 1 restarts cleanly; a replayed code is refused 100 of 100'],
+  ['Pushes queued behind a revocation (BF-2)', '9 runs, 600 pushes waiting in admission', ok('600 of 600') + ' refused 401; none acknowledged at or after the revocation'],
+  ['Fine-grained and refreshable tokens (BF-31)', 'A <code>github_pat_</code> for one repository, read only; a <code>ghu_</code> and <code>ghr_</code> pair', ok('10 of 10') + ': refused outside its scope; revoking either of the pair refuses the other'],
+  ['Switch sign-in to OIDC (BF-36)', 'A real OIDC provider, code flow with PKCE', ok('10 of 10') + ': the next sign-in uses OIDC and a password sign-in is refused'],
   ['A suspended user\'s pushes (BF-3)', '200 pushes after the suspension', ok('200 of 200') + ' refused'],
 ];
 const latencyRows = [
@@ -68,7 +73,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 7 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 9 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -77,7 +82,7 @@ const latencyRows = [
         <li><b>104.6 h</b><span>of chaos on Cloudflare, 12,304,207 operations checked</span></li>
         <li><b>172 to 370 ms</b><span>median commit across two continents</span></li>
         <li><b>200 of 200</b><span>revoked tokens refused on the next push, over HTTPS</span></li>
-        <li><b>486</b><span>Rust tests in the workspace, 0 failing</span></li>
+        <li><b>591</b><span>Rust tests in the workspace, 0 failing</span></li>
       </ul>
     </div>
   </section>
@@ -96,7 +101,7 @@ const latencyRows = [
       <Table head={['Client and commands', 'Where', 'Result']} rows={clientRows} />
       <h3 style="margin-top: var(--s-8)">Schemas</h3>
       <Table head={['Check', 'Scope', 'Result']} rows={schemaRows} />
-      <p class="note">The GraphQL schema is generated from the GHES 3.22 SDL (1,626 types). <code>gh pr checks</code> exits 1 on a pull request with no checks, which is gh's own answer for that case; every request in it returned 200. VS Code, JetBrains, Terraform, Jenkins and Argo CD are covered by reading their source for the GHES paths they call, not yet by a live run.</p>
+      <p class="note">The GraphQL schema is generated from the GHES 3.22 SDL (1,626 types). <code>gh pr checks</code> exits 1 on a pull request with no checks, which is gh's own answer for that case; every request in it returned 200. Terraform runs live through the provider's own acceptance test. VS Code, JetBrains, Jenkins and Argo CD are covered by reading their source for the GHES paths they call, not yet by a live run.</p>
     </div>
   </section>
 
@@ -155,8 +160,8 @@ const latencyRows = [
         <div class="prose span-7 start-6">
           <ul>
             <li>SSH git sessions held at 99.59% to 99.89% through container kills, between the 99% and 99.9% lines. SSH is opt-in, and its gate is carried to Milestone 6.</li>
-            <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Milestone 3's close caught 8 of 8, and the agent rules 19 of 19 in memory.</li>
-            <li>Milestone 3 (identity and authorization) passed its gate but is not closed: repository transfer, outside collaborators, OIDC sign-in, and the SSH-key and scoped-token routes have not run hosted yet.</li>
+            <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Later rounds catch every plant, though some needed a new test after a first run missed one; each results file records which.</li>
+            <li>The agent layer's first gate (LM-1) is not closed. Its two hosted failures, a lease stall across a leader change and a slow commit tail under held polls, are fixed and pass hosted; the agent load rows and the Graftyard-run agent kinds have not run hosted yet.</li>
           </ul>
           <p class="muted">Sources: <code>tests/RESULTS.md</code>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code> and <code>tests/am1</code>'s results, in the Graftyard repository. <a href="/evidence/all/">All results</a> lists every row of the ledger and every gate.</p>
         </div>
