@@ -180,3 +180,17 @@ impl Command for RegCmd {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wire tags: the register's events are stored and sent by variant position (`crates/git/tests/wire_tags.rs`).
+    #[test]
+    fn reg_events_keep_their_wire_tags() {
+        let set = RegEvent::Set { key: "k".into(), value: "v".into(), expect: Some(None) };
+        let push = RegEvent::Push { key: "k".into(), s: "s".into() };
+        assert_eq!(postcard::to_allocvec(&set).unwrap(), [0, 1, b'k', 1, b'v', 1, 0]);
+        assert_eq!(postcard::to_allocvec(&push).unwrap(), [1, 1, b'k', 1, b's']);
+    }
+}
