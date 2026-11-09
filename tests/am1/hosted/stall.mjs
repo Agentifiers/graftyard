@@ -44,7 +44,7 @@ for (let i = 0; i < N; i++) {
   const t = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-${i}`, summary: "L0-12 stall" });
   const l = await api("POST", `${V1}/leases`, app, { paths: [`stall/${tag}/${i}/**`], mode: ex ? "exclusive" : "shared", ttl_seconds: 3600, intent: "L0-12" },
     { "x-graftyard-agent-session": t.body?.id ?? "" });
-  if (l.status === 201) leases.push({ id: l.body.lease.id, expires: l.body.lease.expires, mode: l.body.lease.mode, task: t.body.id });
+  if (l.status === 201) leases.push({ id: l.body.lease.id, expires: l.body.lease.expires_at, mode: l.body.lease.mode, task: t.body.id });
   else step("acquire refused", { i, status: l.status, body: l.body });
 }
 step("leases before", { n: leases.length, sample: leases.slice(0, 2) });
@@ -105,7 +105,8 @@ const after = await api("GET", `${V1}/leases?per_page=100&paths=stall/${tag}/**`
 const byId = new Map((Array.isArray(after.body) ? after.body : []).map((l) => [l.id, l]));
 const moved = leases.map((l) => {
   const a = byId.get(l.id);
-  return { id: l.id, live: !!a, movedMs: a ? Date.parse(a.expires) - Date.parse(l.expires) : null, mode: a?.mode };
+  // The API's fields are `expires_at` and `granted_at` (whole seconds); each lease's TTL was 3,600 s.
+  return { id: l.id, live: !!a, movedMs: a ? Date.parse(a.expires_at) - Date.parse(a.granted_at) - 3_600_000 : null, mode: a?.mode };
 });
 step("leases after", { status: after.status, live: moved.filter((m) => m.live).length, of: leases.length, moved: moved.map((m) => m.movedMs) });
 step("status after write", { members: (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, term: s.term, stalledSince: s.stalledSince })) });
@@ -118,7 +119,7 @@ step("clock offsets after", { offsets: await offsets() });
 // The idle 60 s lease, then 10 minutes later an overlapping Exclusive acquire by another task.
 const t1 = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-idle`, summary: "idle" });
 const idle = await api("POST", `${V1}/leases`, app, { paths: [`idle/${tag}/**`], mode: "exclusive", ttl_seconds: 60 }, { "x-graftyard-agent-session": t1.body?.id ?? "" });
-step("idle 60 s exclusive", { status: idle.status, expires: idle.body?.lease?.expires });
+step("idle 60 s exclusive", { status: idle.status, expires: idle.body?.lease?.expires_at });
 await sleep(10 * 60_000);
 app = (await ghs({})).body.token;
 const t2 = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `stall-${tag}-late`, summary: "late" });
