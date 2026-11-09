@@ -389,10 +389,22 @@ impl Ring {
         if index <= self.through && self.first.is_some() {
             return;
         }
-        self.first.get_or_insert(index);
         let view = LeaseView { core, owner, repo, at };
         let now: std::collections::BTreeMap<LeaseId, Lease> =
             view.live().into_iter().map(|r| (r.lease.id, r.lease)).collect();
+        // An index past `through + 1` means the entries between never reached the ring (an `InstallSnapshot` moved
+        // the member's base past them). The ring starts again after this entry, which only sets the live lease set:
+        // a cursor from before gets `gone` rather than a poll that skips the hole, and no lease that went in the hole
+        // reads as expired here.
+        if self.first.is_some() && index.0 > self.through.0 + 1 {
+            self.events.clear();
+            self.held.clear();
+            self.live = now;
+            self.through = index;
+            self.first = Some(Index(index.0 + 1));
+            return;
+        }
+        self.first.get_or_insert(index);
         let mut out = Vec::new();
         let released: Vec<LeaseId> = evs
             .iter()

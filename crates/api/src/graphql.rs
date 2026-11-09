@@ -51,7 +51,7 @@ pub fn route(req: &Request<'_>) -> Result<Option<Target>, GqlError> {
             // GHES names `dequeuePullRequest`'s pull request `id`.
             "dequeuePullRequest" => a.get("input").and_then(|i| i.get("id")).and_then(Value::as_str).and_then(route_id),
             _ => a.get("input").and_then(|i| {
-                ["repositoryId", "subjectId", "pullRequestId"]
+                ["repositoryId", "subjectId", "pullRequestId", "labelableId"]
                     .iter()
                     .find_map(|k| i.get(*k).and_then(Value::as_str))
                     .and_then(route_id)
