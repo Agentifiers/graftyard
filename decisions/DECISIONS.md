@@ -2086,6 +2086,34 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** A REST read route for the other six trust resources, which closes the LF-4 gap; or a git release whose `ls-remote <pattern>` sends `ref-prefix`, which would let the controller use it.
 
+### `am1-runs`: LM-1's hosted rows on `graft-m2b`, 2026-11-09
+
+`am1-runs` ran AM1's remaining hosted rows on `graft-m2b`. L0-12's refusal counts, L0-13, B0-36, B0-37's push half, and LF-4 on issues and releases pass; every 500-agent load row and LF-13 fail (`tests/am1/results/am1-runs.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, A25).
+
+#### A cursor inside an `InstallSnapshot` hole gets 410, as one older than the ring
+
+**Decision.** A follower's feed ring that is fed an entry past a hole, as after an `InstallSnapshot`, restarts after that entry, so a cursor from before the hole gets 410 with the oldest cursor the ring can serve, the same answer as a cursor older than the ring. AGENT-LAYER, Shape, "Activity feed" (outside the agent block, so in AGENT-LAYER only), and its API table say so. Built in `dfa5410`; not yet deployed.
+
+**Why.** The ring took each fed entry as contiguous, so after an install its floor stayed below the hole and a hold from an earlier cursor skipped every event the snapshot covered. 410 makes the client reload leases and tasks, which is the design's existing answer to a cursor it cannot serve.
+
+**Beat.** Filling the hole from the snapshot's fold, which holds state, not the events a feed returns. Refusing the cursor as `lagging`, which a client would retry against the same hole.
+
+**Evidence.** `tests/am1/results/am1-runs.md`, LF-13 install mode: three runs lost 6, 41, and 39 events on F across the hole [measured]. The test `a_ring_fed_past_a_hole_refuses_cursors_from_before_it` fails on the deployed code ("oldest Index(7), cursor Index(8)") and passes with `dfa5410`; 2 of 2 plants caught.
+
+**Flip.** A feed that can serve the hole's events from somewhere else, such as the archived log, cheaply enough that a reload costs more than the read.
+
+#### LM-1's load rows fail on the validate lock, and the agent cost lines wait for `fanout`'s rerun
+
+**Decision.** The lead's: B0-29, B0-31 to B0-35, and L0-12's A1 replay fail as written, and their gates stay. The cause is recorded as A25, owned by AM1-WP1: the git shard's `/validate` holds the network's exclusive lock, so with k = 1 one network validates about 2 pushes/s against journey 9's 4.17/s. Branch `fanout` builds concurrent validates inside one shard, `fanout`, and the `NetworkLoad` report, then reruns the rows hosted. The cost figures for extra warm shards ($0 at journey 9) stay unchanged until that rerun measures them; DESIGN's Cost and Scale lines and AGENT-LAYER's accepted risk now say that k counts git CPU only. LF-13's gap fault stays unproven hosted, because even a leader change during the fault left no gap, and is retried on `fanout`.
+
+**Why.** The failure is a missing build piece, `fanout` and in-shard concurrency, not a gate set too tight: at 100 and 250 agents the same driver passes its latency lines. Moving the cost figures before a measurement would replace one unmeasured number with another.
+
+**Beat.** Raising k in the cost scripts now, from the lock's 2 pushes/s, which prices a fix not yet chosen. Relaxing the gates to what one locked shard holds.
+
+**Evidence.** `tests/am1/results/am1-runs.md`, "Diagnosis" [measured]: 100 agents pushed 148 of 148 (commit p99 933 ms) and 250 pushed 379 of 379 (992 ms) with no leader change; at 500 the validate queue reached p90 17.7 s and max 58 s, and B0-29 acknowledged 5 of 2,500 agent pushes. Validates took 405 ms (100 agents) to 515 ms (250 agents) unloaded. LF-13 gap runs 2 and 3 moved the leader during the fault and showed 0 `lagging`.
+
+**Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
