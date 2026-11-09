@@ -17,7 +17,7 @@ for k in m3-ci graftyard-agent graftyard-agent-wide graftyard-mcp; do
   mv tests/am1/raw/rows-b036.jsonl $O/rows-b036-$k.jsonl 2>/dev/null
   [ $k = graftyard-agent-wide ] && node tests/am1/runs/widen.mjs shipped >> $O/widen.log 2>&1
 done
-ROWS_REPO=rows-b037 ROWS_B037_REPO=rows-b037 ROWS_B037_CHAIN=repo:$(id rows-b037) node tests/am1/hosted/rows.mjs b037 100 > $O/rows-b037.log 2>&1; echo "exit $?" >> $O/rows-b037.log
+ROWS_REPO=rows-j ROWS_B037_REPO=rows-b037 ROWS_B037_CHAIN=repo:$(id rows-b037) node tests/am1/hosted/rows.mjs b037 100 > $O/rows-b037.log 2>&1; echo "exit $?" >> $O/rows-b037.log
 mv tests/am1/raw/rows-b037.jsonl $O/ 2>/dev/null
 for m in gap install; do for r in 1 2 3; do
   repo=lf13-g; [ $m = install ] && repo=lf13-i

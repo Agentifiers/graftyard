@@ -456,7 +456,10 @@ if (which === "b037") {
   const out = {};
   const pushed = {};
   const before = (await member(CH, 0, "/status")).v?.applied ?? 1;
+  // ROWS_B037_ONLY names one kind to run alone (its forged-origin kind needs ROWS_REPO to differ from ROWS_B037_REPO).
+  const onlyKind = process.env.ROWS_B037_ONLY;
   for (const [kind, msg] of Object.entries(msgs)) {
+    if (onlyKind && kind !== onlyKind) continue;
     const st = [];
     for (let i = 0; i < N; i++) {
       g.as(app);
@@ -476,7 +479,7 @@ if (which === "b037") {
     log(`${kind}: ${JSON.stringify(out[kind])}`);
   }
   // Writer pushes to refs/graftyard/ (m3-admin, a repository admin).
-  {
+  if (!onlyKind) {
     const st = [];
     for (let i = 0; i < N; i++) {
       g.as(admin);
