@@ -112,12 +112,27 @@ pub fn receive_pack_caps(agent: &str, session: &str) -> String {
 /// `# service=` preamble, then refs sorted by name with the capabilities on the first line (or on
 /// `capabilities^{}` for an empty repository), then a flush.
 pub fn receive_pack_advertisement(refs: &[(RefName, ObjectId)], caps: &str) -> Vec<u8> {
+    let mut sorted: Vec<(RefName, ObjectId)> = refs.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut out = receive_pack_head();
+    out.extend(receive_pack_lines(&sorted, caps, true));
+    out.extend(receive_pack_tail());
+    out
+}
+
+/// The advertisement's preamble: `# service=git-receive-pack` and a flush.
+pub fn receive_pack_head() -> Vec<u8> {
     let mut out = Vec::new();
     pkt::line(&mut out, "# service=git-receive-pack");
     pkt::flush(&mut out);
-    let mut sorted: Vec<&(RefName, ObjectId)> = refs.iter().collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
-    let mut first = true;
+    out
+}
+
+/// One run of the advertisement's ref lines, `refs` already in name order (a page of a paged ref read, which is). The
+/// capabilities ride on the first line of the run that is `first`, and an empty first run is `capabilities^{}`, so the
+/// runs of every page in order, between `receive_pack_head` and `receive_pack_tail`, are the whole advertisement.
+pub fn receive_pack_lines(refs: &[(RefName, ObjectId)], caps: &str, first: bool) -> Vec<u8> {
+    let mut out = Vec::new();
     let line = |out: &mut Vec<u8>, oid: &ObjectId, name: &[u8], first: bool| {
         let mut p = Vec::with_capacity(48 + name.len() + caps.len());
         p.extend_from_slice(oid.hex().as_bytes());
@@ -130,13 +145,20 @@ pub fn receive_pack_advertisement(refs: &[(RefName, ObjectId)], caps: &str) -> V
         p.push(b'\n');
         pkt::data(out, &p);
     };
-    for (name, oid) in sorted {
+    let mut first = first;
+    for (name, oid) in refs {
         line(&mut out, oid, name.as_bytes(), first);
         first = false;
     }
     if first {
         line(&mut out, &ObjectId::ZERO, b"capabilities^{}", true);
     }
+    out
+}
+
+/// The advertisement's closing flush.
+pub fn receive_pack_tail() -> Vec<u8> {
+    let mut out = Vec::new();
     pkt::flush(&mut out);
     out
 }

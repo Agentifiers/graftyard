@@ -12,8 +12,9 @@
 
 use std::collections::BTreeSet;
 
+use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
-use graftyard_git::{ChainLog, CoreRefs, LogPacks, PackId, Promoted, StoreError};
+use graftyard_git::{ChainLog, Head, LogPacks, PackId, Promoted, StoreError};
 use graftyard_lookup::Bindings;
 use graftyard_types::{ChainId, DbId, Index, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp};
 use serde_json::{Value, json};
@@ -66,16 +67,26 @@ impl GroupLog<'_> {
 }
 
 impl ChainLog for GroupLog<'_> {
-    async fn core_refs(&self, chain: ChainId) -> std::result::Result<CoreRefs, StoreError> {
-        let v = self.call("/read", &json!({ "q": {} })).await?;
-        let refs: Vec<(String, String)> =
-            serde_json::from_value(v["value"].clone()).map_err(|e| StoreError(e.to_string()))?;
-        Ok(CoreRefs { chain, applied: Index(v["index"].as_u64().unwrap_or(0)), refs })
-    }
-    /// The fold's last `Archived` raises it (`RepoFold::first_index`).
-    async fn first_index(&self, _chain: ChainId) -> std::result::Result<Index, StoreError> {
+    /// The fold's last `Archived` raises `first` (`RepoFold::first_index`); `applied` is the read's index.
+    async fn head(&self, _chain: ChainId) -> std::result::Result<Head, StoreError> {
         let v = self.ranges().await?;
-        Ok(Index(v["first"].as_u64().unwrap_or(1)))
+        Ok(Head { first: Index(v["first"].as_u64().unwrap_or(1)), applied: Index(v["index"].as_u64().unwrap_or(0)) })
+    }
+    async fn refs_page(
+        &self,
+        _c: ChainId,
+        after: Option<String>,
+    ) -> std::result::Result<(RefsPage, Index), StoreError> {
+        let q = graftyard_git::group::refs_query(b"", after.as_deref(), graftyard_git::repo::REFS_PAGE_MAX);
+        let v = self.call("/read", &q).await?;
+        let page: RefsPage = serde_json::from_value(v["value"].clone()).map_err(|e| {
+            StoreError(format!(
+                "{}: refs page: {e}: {}",
+                self.chain,
+                v.to_string().chars().take(200).collect::<String>()
+            ))
+        })?;
+        Ok((page, Index(v["index"].as_u64().unwrap_or(0))))
     }
     async fn entries(&self, _c: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
         let mut out: Vec<LogPacks> = Vec::new();
@@ -92,6 +103,8 @@ impl ChainLog for GroupLog<'_> {
                     packs: serde_json::from_value(e["packs"].clone()).map_err(|e| StoreError(e.to_string()))?,
                     promoted: serde_json::from_value(promoted).map_err(|e| StoreError(e.to_string()))?,
                     consumed: Vec::new(),
+                    refs: serde_json::from_value(e.get("refs").cloned().unwrap_or(Value::Null))
+                        .map_err(|e| StoreError(e.to_string()))?,
                 });
             }
             at = last + 1;
@@ -163,9 +176,12 @@ impl DurableObject for GitShard {
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
         host.touch(Timestamp(now_ms())).await.map_err(se)?;
-        // Every catch-up is marked running while it runs, so a merge waits for it rather than racing it.
+        // Every catch-up is marked running while it runs, so a merge waits for it rather than racing it. A catch-up
+        // also waits its turn behind one in flight on the same network, then goes on from the cursor that one saved:
+        // two at once each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one
+        // hung until the runtime ended it at 884 s ("Promise will never complete", `tests/m3/results/wire-fix.md`).
         let caught_up = || async {
-            let _running = catch_ups(net).start();
+            let _running = catch_ups(net).turn().await;
             host.catch_up(net, &[chain], &bs, &log).await
         };
         match path.as_str() {

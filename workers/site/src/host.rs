@@ -2323,27 +2323,31 @@ impl<F: Family> Host<F> {
         let commit = self.core.borrow().as_ref().map_or(0, |c| c.m.state().commit.0);
         let to = to.min(commit);
         let sql = self.state.storage().sql();
-        let r = rows(
+        let mut out = Vec::new();
+        let mut bytes = 0;
+        // Rows are read one at a time and the read stops at the page's end: collecting all 2,000 first held up to
+        // 2,000 rows (about 47 MB of repo:65536's 23.5 KB entries) per call and cost its leader about 160 ms of CPU a
+        // page through a rehydrate's 420 pages (`tests/m3/results/wire-fix.md`).
+        each_row(
             &sql,
             "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 2000",
             vec![i(from.max(1)), i(to)],
+            |r| {
+                // A page stops past ENTRIES_PAGE_BYTES (and always holds one entry), so a log of inline packs answers
+                // well within the lookup's CALL; the shard asks again from the next index.
+                let row = blob(&r[0])?;
+                bytes += row.len();
+                if !out.is_empty() && bytes > ENTRIES_PAGE_BYTES {
+                    return Ok(false);
+                }
+                let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
+                let mut m = F::entry_json(&e);
+                m.insert("index".into(), json!(e.index.0));
+                m.insert("at".into(), json!(e.at.0));
+                out.push(Value::Object(m));
+                Ok(true)
+            },
         )?;
-        let mut out = Vec::with_capacity(r.len());
-        let mut bytes = 0;
-        for r in r {
-            // A page stops past ENTRIES_PAGE_BYTES (and always holds one entry), so a log of inline packs answers
-            // well within the lookup's CALL; the shard asks again from the next index.
-            let row = blob(&r[0])?;
-            bytes += row.len();
-            if !out.is_empty() && bytes > ENTRIES_PAGE_BYTES {
-                break;
-            }
-            let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
-            let mut m = F::entry_json(&e);
-            m.insert("index".into(), json!(e.index.0));
-            m.insert("at".into(), json!(e.at.0));
-            out.push(Value::Object(m));
-        }
         Ok(json!(out))
     }
 

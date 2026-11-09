@@ -10,21 +10,21 @@ use graftyard_types::{ChainId, Index, NetworkId};
 use serde::{Deserialize, Serialize};
 
 use crate::bucket::StoreError;
+use crate::group::RefsPage;
 use crate::pack::{Marker, PackId, PackRef, Promoted};
 use crate::shard::IngestCursor;
 
 /// A git object id in hex (SHA-1 or SHA-256).
 pub type Oid = String;
 
-/// The refs a leader hands a shard, with the chain's applied index (`design/DESIGN.md`, Shape, `CoreRefs`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoreRefs {
-    pub chain: ChainId,
+/// A chain's first log index and its leader's applied index, from one read (`ChainLog::head`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Head {
+    pub first: Index,
     pub applied: Index,
-    pub refs: Vec<(String, Oid)>,
 }
 
-/// What one committed entry of a member chain says about packs.
+/// What one committed entry of a member chain says about packs and refs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogPacks {
     pub index: Index,
@@ -33,14 +33,20 @@ pub struct LogPacks {
     pub promoted: Option<Promoted>,
     /// Stored packs a `Compacted` on the network chain consumed.
     pub consumed: Vec<PackId>,
+    /// Every ref the entry sets (`Some`) or deletes (`None`), in order (`RepoEvent::ref_changes`). `None` from a member
+    /// whose release does not send them, so a catch-up over such an entry rehydrates instead.
+    #[serde(default)]
+    pub refs: Option<Vec<(String, Option<Oid>)>>,
 }
 
-/// A member chain's leader, read through `fresh`. Hosted by the network's Raft group later; a stub until then.
+/// A member chain's leader, read through `fresh`. No read answers a chain's whole ref set at once: catch-up takes ref
+/// changes from the entries it reads, and only `rehydrate` reads the refs, a page at a time (`crate::group::refs_read`).
 pub trait ChainLog {
-    async fn core_refs(&self, chain: ChainId) -> Result<CoreRefs, StoreError>;
-    /// The first index still in the leader's log. Entries below it are archived and truncated, so a shard whose cursor
-    /// is below it cannot catch up from the log and rehydrates instead.
-    async fn first_index(&self, chain: ChainId) -> Result<Index, StoreError>;
+    /// The first index still in the leader's log, and its applied index. Entries below the first are archived and
+    /// truncated, so a shard whose cursor is below it cannot catch up from the log and rehydrates instead.
+    async fn head(&self, chain: ChainId) -> Result<Head, StoreError>;
+    /// One page of the chain's refs after `after` (`RefsPage::next` of the page before), with the index it was read at.
+    async fn refs_page(&self, chain: ChainId, after: Option<String>) -> Result<(RefsPage, Index), StoreError>;
     /// Committed entries with index in `from..=to`. Fails for an index the leader has archived and truncated.
     async fn entries(&self, chain: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError>;
     /// The chain's last committed `Promoted`, with the index of its entry.
@@ -49,17 +55,27 @@ pub trait ChainLog {
     async fn consumed(&self, network: NetworkId) -> Result<BTreeSet<PackId>, StoreError>;
 }
 
-/// Each chain's first log index and its refs, every read sent to its leader at once and awaited together, in `chains`
-/// order. A catch-up needs both before it can tell whether to rehydrate; read one after another, they cost two leader
-/// round trips per chain, across regions once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency").
-pub async fn heads<L: ChainLog>(
-    log: &L,
-    chains: &[ChainId],
-) -> Vec<(Result<Index, StoreError>, Result<CoreRefs, StoreError>)> {
-    futures_util::future::join_all(
-        chains.iter().map(|c| futures_util::future::join(log.first_index(*c), log.core_refs(*c))),
-    )
-    .await
+/// Each chain's head, every read sent to its leader at once and awaited together, in `chains` order. A catch-up needs
+/// them all before it can tell whether to rehydrate; read one after another, they cost a leader round trip per chain,
+/// across regions once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency").
+pub async fn heads<L: ChainLog>(log: &L, chains: &[ChainId]) -> Vec<Result<Head, StoreError>> {
+    futures_util::future::join_all(chains.iter().map(|c| log.head(*c))).await
+}
+
+/// The net ref changes of the entries in `after + 1 ..= through`, applied in index order: each ref changed there once,
+/// with its last value, deletes first and then sets, each in name order. `None` when such an entry does not carry its
+/// ref changes, so the caller rehydrates.
+pub fn ref_changes(entries: &[LogPacks], after: Index, through: Index) -> Option<Vec<(String, Option<Oid>)>> {
+    let mut es: Vec<&LogPacks> = entries.iter().filter(|e| e.index > after && e.index <= through).collect();
+    es.sort_by_key(|e| e.index);
+    let mut net: std::collections::BTreeMap<&str, Option<&Oid>> = std::collections::BTreeMap::new();
+    for e in es {
+        for (name, oid) in e.refs.as_ref()? {
+            net.insert(name, oid.as_ref());
+        }
+    }
+    let (dels, sets): (Vec<_>, Vec<_>) = net.into_iter().partition(|(_, o)| o.is_none());
+    Some(dels.into_iter().chain(sets).map(|(n, o)| (n.to_owned(), o.cloned())).collect())
 }
 
 /// One pack to load. `order` sorts the load: markers by the index that named them, then the log tail in index order.
@@ -164,7 +180,7 @@ mod tests {
     }
 
     fn entry(index: u64, packs: Vec<PackRef>) -> LogPacks {
-        LogPacks { index: Index(index), packs, promoted: None, consumed: vec![] }
+        LogPacks { index: Index(index), packs, promoted: None, consumed: vec![], refs: None }
     }
 
     /// A log whose reads end only once every read of one `heads` call has started.
@@ -184,13 +200,12 @@ mod tests {
     }
 
     impl ChainLog for Gate {
-        async fn core_refs(&self, chain: ChainId) -> Result<CoreRefs, StoreError> {
+        async fn head(&self, _: ChainId) -> Result<Head, StoreError> {
             self.wait().await;
-            Ok(CoreRefs { chain, applied: Index(7), refs: vec![] })
+            Ok(Head { first: Index(1), applied: Index(7) })
         }
-        async fn first_index(&self, _: ChainId) -> Result<Index, StoreError> {
-            self.wait().await;
-            Ok(Index(1))
+        async fn refs_page(&self, _: ChainId, _: Option<String>) -> Result<(RefsPage, Index), StoreError> {
+            unreachable!()
         }
         async fn entries(&self, _: ChainId, _: Index, _: Index) -> Result<Vec<LogPacks>, StoreError> {
             unreachable!()
@@ -203,26 +218,52 @@ mod tests {
         }
     }
 
-    /// A catch-up's reads of its chains' first index and refs are all in flight together: here no read ends until
-    /// all four started, so reads made one after another never end.
+    /// A catch-up's reads of its chains' heads are all in flight together: here no read ends until both started, so
+    /// reads made one after another never end.
     #[test]
-    fn a_catch_up_reads_first_index_and_refs_at_once() {
+    fn a_catch_up_reads_every_head_at_once() {
         let other = ChainId::Repo(RepoId(DbId(2)));
-        let log = Gate { started: std::cell::Cell::new(0), want: 4 };
+        let log = Gate { started: std::cell::Cell::new(0), want: 2 };
         let chains = [CHAIN, other];
         let mut f = std::pin::pin!(heads(&log, &chains));
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         let mut out = None;
-        for _ in 0..4 {
+        for _ in 0..2 {
             if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
                 out = Some(v);
                 break;
             }
         }
-        let out = out.expect("all four reads were in flight together");
-        let chains: Vec<ChainId> = out.iter().map(|(_, r)| r.as_ref().map(|r| r.chain).unwrap()).collect();
-        assert_eq!(chains, vec![CHAIN, other]);
-        assert!(out.iter().all(|(f, _)| *f.as_ref().unwrap() == Index(1)));
+        let out = out.expect("both reads were in flight together");
+        assert!(out.iter().all(|h| *h.as_ref().unwrap() == Head { first: Index(1), applied: Index(7) }));
+    }
+
+    #[test]
+    fn ref_changes_are_the_net_change_of_the_entries_in_range() {
+        let oid = |c: char| c.to_string().repeat(40);
+        let e = |i: u64, refs: Vec<(&str, Option<String>)>| LogPacks {
+            refs: Some(refs.into_iter().map(|(n, o)| (n.to_owned(), o)).collect()),
+            ..entry(i, vec![])
+        };
+        let entries = [
+            e(3, vec![("refs/heads/old", Some(oid('1')))]),
+            e(4, vec![("refs/heads/a", Some(oid('1'))), ("refs/heads/b", Some(oid('2')))]),
+            e(5, vec![("refs/heads/a", Some(oid('3'))), ("refs/heads/b", None), ("refs/heads/c", None)]),
+        ];
+        // 3 is at or below the cursor; a's last value wins; b and c are deleted, before any set.
+        assert_eq!(
+            ref_changes(&entries, Index(3), Index(5)).unwrap(),
+            vec![
+                ("refs/heads/b".to_owned(), None),
+                ("refs/heads/c".to_owned(), None),
+                ("refs/heads/a".to_owned(), Some(oid('3')))
+            ]
+        );
+        // An entry from a release that sends no ref changes: the caller rehydrates.
+        let mut old = entries.to_vec();
+        old[1].refs = None;
+        assert_eq!(ref_changes(&old, Index(3), Index(5)), None);
+        assert_eq!(ref_changes(&old, Index(4), Index(5)).map(|v| v.len()), Some(3));
     }
 
     #[test]
@@ -246,7 +287,7 @@ mod tests {
         assert_eq!(tail_start(None), Index(1));
         // The promoted entry itself (at 14) names the promoted pack, which a rehydrate must load even if its marker
         // never landed.
-        let tail = [LogPacks { index: Index(14), packs: vec![], promoted: Some(p), consumed: vec![] }];
+        let tail = [LogPacks { index: Index(14), packs: vec![], promoted: Some(p), consumed: vec![], refs: None }];
         let plan = rehydrate_plan(&[], &BTreeSet::new(), &tail);
         assert_eq!(plan.iter().filter_map(Load::stored_id).map(|p| p.0.0).collect::<Vec<_>>(), vec![50]);
     }

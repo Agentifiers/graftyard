@@ -14,6 +14,7 @@ use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
 use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
 use crate::store::marker_from_meta;
+use graftyard_types::Index;
 
 fn err(e: impl std::fmt::Display) -> StoreError {
     StoreError(e.to_string())
@@ -491,9 +492,29 @@ impl ShardHost<'_> {
     }
 
     /// The whole ref set of the network's member chains, as their leaders gave it.
-    pub async fn set_refs(&self, network: NetworkId, refs: &[(String, String)]) -> Result<(), StoreError> {
+    /// Replaces the container's whole ref set with `refs`, one `PUT /refs` of at most a page of lines, the first
+    /// page with `start=1` and the last with `done=1` (`containers/git/server`), so the edge's memory holds one page.
+    pub async fn put_refs_page(
+        &self,
+        network: NetworkId,
+        refs: &[(String, String)],
+        start: bool,
+        done: bool,
+    ) -> Result<(), StoreError> {
         let body: String = refs.iter().map(|(r, o)| format!("{o} {r}\n")).collect();
-        self.ok(Method::Put, &format!("/refs?net={}", network.0.0), Some(body.into_bytes())).await.map(|_| ())
+        let path = format!("/refs?net={}&start={}&done={}", network.0.0, u8::from(start), u8::from(done));
+        self.ok(Method::Put, &path, Some(body.into_bytes())).await.map(|_| ())
+    }
+
+    /// Applies ref changes (`crate::ingest::ref_changes`) to the container's refs: `POST /refs`, deletes then sets.
+    /// An update to an object the shard does not hold is skipped by the container, as a rehydrate's is.
+    pub async fn apply_refs(&self, network: NetworkId, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
+        if changes.is_empty() {
+            return Ok(());
+        }
+        let zero = "0".repeat(40);
+        let body: String = changes.iter().map(|(r, o)| format!("{} {r}\n", o.as_deref().unwrap_or(&zero))).collect();
+        self.ok(Method::Post, &format!("/refs?net={}", network.0.0), Some(body.into_bytes())).await.map(|_| ())
     }
 
     pub async fn fsck(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
@@ -679,8 +700,8 @@ impl ShardHost<'_> {
     }
 
     /// `rehydrate`: every stored pack with a marker, minus consumed packs, plus the packs each member chain names
-    /// after its last `Promoted`, read from its leader. Rebuilds the repository from nothing, sets the leader's refs,
-    /// and saves the cursor at each chain's applied index.
+    /// after its last `Promoted`, read from its leader. Rebuilds the repository from nothing, sets the leader's refs a
+    /// page at a time, and saves the cursor at the index the last page was read at, after catching up to it.
     pub async fn rehydrate<B: Bucket, L: ChainLog>(
         &self,
         network: NetworkId,
@@ -699,18 +720,16 @@ impl ShardHost<'_> {
         }
         let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
         let consumed = log.consumed(network).await?;
-        let mut cursor = IngestCursor::new(network);
         let mut tail: Vec<LogPacks> = Vec::new();
-        let mut all_refs: Vec<(String, String)> = Vec::new();
+        let mut heads = Vec::with_capacity(chains.len());
         for chain in chains {
-            let refs = log.core_refs(*chain).await?;
+            let head = log.head(*chain).await?;
             let last = log.last_promoted(*chain).await?.map(|(_, p)| p);
             let from = tail_start(last.as_ref());
-            if refs.applied >= from {
-                tail.extend(log.entries(*chain, from, refs.applied).await?);
+            if head.applied >= from {
+                tail.extend(log.entries(*chain, from, head.applied).await?);
             }
-            cursor.advance(*chain, refs.applied);
-            all_refs.extend(refs.refs);
+            heads.push(head.applied);
         }
         let plan = rehydrate_plan(&marks, &consumed, &tail);
         let incoming: u64 = plan
@@ -728,8 +747,43 @@ impl ShardHost<'_> {
             bytes += p.1.len();
             packs.push(p);
         }
-        let ingested = self.ingest(network, packs).await?;
-        self.set_refs(network, &all_refs).await?;
+        let mut ingested = self.ingest(network, packs).await?;
+        // The refs, a page at a time. Pages read while the chain moves are each at their own index, so the cursor is
+        // the last page's index, and the entries from the first page's index on are caught up after: their changes
+        // apply again, the same values in the same order, and their packs arrive before the refs that need them.
+        let mut cursor = IngestCursor::new(network);
+        let mut pages = 0;
+        let mut refs = 0;
+        for (i, chain) in chains.iter().enumerate() {
+            // The first page's index bounds what the pages may miss; the last page's is where they end.
+            let (mut after, mut first) = (None, None);
+            let last = loop {
+                let (page, index) = log.refs_page(*chain, after.take()).await?;
+                let done = page.next.is_none() && i + 1 == chains.len();
+                refs += page.refs.len();
+                self.put_refs_page(network, &page.refs, pages == 0, done).await?;
+                pages += 1;
+                first.get_or_insert(index);
+                match page.next {
+                    Some(n) => after = Some(n),
+                    None => break index,
+                }
+            };
+            cursor.advance(*chain, heads[i].min(first.unwrap_or(last)));
+            if last > cursor.at(*chain) {
+                let es = log.entries(*chain, Index(cursor.at(*chain).0 + 1), last).await?;
+                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, last);
+                let mut bodies = Vec::new();
+                for l in &plan {
+                    bodies.push(fetch_load(buckets, network, l).await?);
+                }
+                ingested += self.ingest(network, bodies).await?;
+                let changes = crate::ingest::ref_changes(&es, cursor.at(*chain), last)
+                    .ok_or_else(|| StoreError("an entry carries no ref changes (an older member release)".into()))?;
+                self.apply_refs(network, &changes).await?;
+                cursor.advance(*chain, last);
+            }
+        }
         self.save_cursor(&cursor, &started.health.disk).await?;
         let stored = plan.iter().filter(|l| l.stored_id().is_some()).count();
         Ok((
@@ -740,6 +794,8 @@ impl ShardHost<'_> {
                 inline: plan.len() - stored,
                 ingested,
                 bytes,
+                refs,
+                pages,
                 disk: started.health.disk,
                 region: started.health.region,
                 location: started.health.location,
@@ -750,8 +806,9 @@ impl ShardHost<'_> {
     }
 
     /// Catch-up before serving: for each chain whose leader's applied index is past the cursor, read the missing
-    /// entries, fetch their packs, ingest them, set the refs, and advance the cursor. A cursor for another disk
-    /// (the container restarted) means a full rehydrate.
+    /// entries, fetch their packs, ingest them, apply the entries' ref changes, and advance the cursor. It never reads
+    /// the whole ref set. A cursor for another disk (the container restarted), below the chain's first log index, or
+    /// an entry from a member release that sends no ref changes, means a full rehydrate.
     pub async fn catch_up<B: Bucket, L: ChainLog>(
         &self,
         network: NetworkId,
@@ -769,30 +826,39 @@ impl ShardHost<'_> {
         let mut cursor = self.cursor(network, &started.health.disk).await?;
         lap("cursor");
         // A cursor below a chain's first log index needs entries the leader has archived and truncated.
-        let reads = crate::ingest::heads(log, chains).await;
-        let mut core = Vec::with_capacity(chains.len());
-        for (chain, (first, refs)) in chains.iter().zip(reads) {
-            let first = first?;
-            if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < first.0) {
+        let mut heads = Vec::with_capacity(chains.len());
+        for (chain, head) in chains.iter().zip(crate::ingest::heads(log, chains).await) {
+            let head = head?;
+            if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
                 cursor = None;
             }
-            core.push(refs);
+            heads.push(head);
         }
-        lap("first_index_core_refs");
-        let Some(mut cursor) = cursor else {
+        lap("heads");
+        let rehydrate = |ms: Vec<(&'static str, u64)>| async move {
             let (cursor, r) = self.rehydrate(network, chains, buckets, log).await?;
-            return Ok(CatchUp { rehydrated: Some(r), entries: 0, packs: 0, cursor, evicted: Vec::new(), ms });
+            Ok::<_, StoreError>(CatchUp {
+                rehydrated: Some(r),
+                entries: 0,
+                packs: 0,
+                refs: 0,
+                cursor,
+                evicted: Vec::new(),
+                ms,
+            })
         };
-        let mut all_refs = Vec::new();
-        let (mut entries, mut packs) = (0, 0);
+        let Some(mut cursor) = cursor else { return rehydrate(ms).await };
+        let (mut entries, mut packs, mut refs) = (0, 0, 0);
         let mut evicted = Vec::new();
         let mut seen = BTreeSet::new();
-        for (chain, refs) in chains.iter().zip(core) {
-            let refs = refs?;
-            if let Some(range) = cursor.behind(*chain, refs.applied) {
+        for (chain, head) in chains.iter().zip(heads) {
+            if let Some(range) = cursor.behind(*chain, head.applied) {
                 let es = log.entries(*chain, *range.start(), *range.end()).await?;
                 entries += es.len();
-                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, refs.applied);
+                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), head.applied) else {
+                    return rehydrate(ms).await;
+                };
+                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, head.applied);
                 let mut bodies = Vec::new();
                 for l in plan.iter().filter(|l| l.stored_id().is_none_or(|id| seen.insert(id))) {
                     bodies.push(fetch_load(buckets, network, l).await?);
@@ -803,16 +869,16 @@ impl ShardHost<'_> {
                     evicted.extend(r.evicted);
                 }
                 packs += self.ingest(network, bodies).await?;
+                lap("ingest");
+                refs += changes.len();
+                self.apply_refs(network, &changes).await?;
+                lap("refs");
             }
-            lap("ingest");
-            all_refs.extend(refs.refs);
-            cursor.advance(*chain, refs.applied);
+            cursor.advance(*chain, head.applied);
         }
-        self.set_refs(network, &all_refs).await?;
-        lap("set_refs");
         self.save_cursor(&cursor, &started.health.disk).await?;
         lap("save_cursor");
-        Ok(CatchUp { rehydrated: None, entries, packs, cursor, evicted, ms })
+        Ok(CatchUp { rehydrated: None, entries, packs, refs, cursor, evicted, ms })
     }
 }
 
@@ -823,6 +889,9 @@ pub struct RehydrateReport {
     pub inline: usize,
     pub ingested: usize,
     pub bytes: usize,
+    /// The refs set, and the pages they were read in.
+    pub refs: usize,
+    pub pages: usize,
     pub disk: String,
     pub region: String,
     pub location: String,
@@ -835,6 +904,8 @@ pub struct CatchUp {
     pub rehydrated: Option<RehydrateReport>,
     pub entries: usize,
     pub packs: usize,
+    /// The ref changes applied from those entries.
+    pub refs: usize,
     pub cursor: IngestCursor,
     /// Networks the LRU evicted to make room for this catch-up's packs.
     pub evicted: Vec<i64>,

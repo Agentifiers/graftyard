@@ -81,6 +81,8 @@ impl Default for IdsFold {
     }
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdsEvent {
     /// `block`, a whole block of this cell, now belongs to the group of `to`.

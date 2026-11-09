@@ -491,6 +491,10 @@ impl StandIn {
                 },
                 promoted: None,
                 consumed: Vec::new(),
+                refs: Some(match &e.body {
+                    EntryBody::Events(evs) => crate::repo::entry_ref_changes(evs),
+                    _ => Vec::new(),
+                }),
             })
             .collect()
     }

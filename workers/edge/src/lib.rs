@@ -22,7 +22,7 @@
 
 use futures_util::StreamExt;
 use graftyard_git::clone::{CloneKey, cacheable_response, tags_digest};
-use graftyard_git::group::{CallErrorWire, CommitReq, PushOutcome, ReadReply};
+use graftyard_git::group::{CallErrorWire, CommitReq, PushOutcome, RefsPage, RefsReply};
 use graftyard_git::host::R2;
 use graftyard_git::refs::{Atomicity, ObjectId, RefName};
 use graftyard_git::repo::{ATOMIC_REFS_MAX, Push, REPO_FORMAT_V1, REPO_FORMAT_V2};
@@ -455,18 +455,24 @@ async fn ensure_group(c: &Ctx<'_>, repo: &Repo) -> std::result::Result<(), Strin
     graftyard_lookup::create(&c.bindings(), ChainId::Repo(repo.id), &repo.record, &json!({ "owner": repo.owner })).await
 }
 
-async fn read_refs(
+/// One page of the repository's refs whose names start with `prefix`, after `after` (`RefsPage::next`), from its
+/// leader through `fresh` (`graftyard_git::group::refs_read`). No read answers every ref at once, so neither the
+/// leader nor the edge holds a whole ref set of a large repository (`repo:65536`, 571,872 refs).
+async fn refs_page(
     c: &Ctx<'_>,
     repo: &Repo,
-) -> Result<std::result::Result<(u64, Vec<(String, String)>), CallErrorWire>> {
+    prefix: &[u8],
+    after: Option<&str>,
+) -> Result<std::result::Result<(u64, RefsPage), CallErrorWire>> {
     let chain = ChainId::Repo(repo.id);
+    let q = graftyard_git::group::refs_query(prefix, after, graftyard_git::repo::REFS_PAGE_MAX);
     let mut tried_create = false;
     loop {
-        match graftyard_lookup::call(&c.bindings(), chain, &repo.record, "/read", &json!({ "q": {} })).await {
+        match graftyard_lookup::call(&c.bindings(), chain, &repo.record, "/read", &q).await {
             Ok((v, _)) => {
-                return Ok(match serde_json::from_value::<ReadReply>(v)? {
-                    ReadReply::Refs(r) => Ok((r.index, r.value)),
-                    ReadReply::Error { error } => Err(error),
+                return Ok(match serde_json::from_value::<RefsReply>(v)? {
+                    RefsReply::Page { value, index } => Ok((index, value)),
+                    RefsReply::Error { error } => Err(error),
                 });
             }
             Err(_) if !tried_create => {
@@ -476,6 +482,79 @@ async fn read_refs(
             Err(e) => return Err(Error::RustError(e)),
         }
     }
+}
+
+/// Every ref whose name starts with `prefix`, read a page at a time, with the last page's index. For a ref set the
+/// caller needs whole and that stays small (`refs/tags/` for the clone cache key, the test driver's routes).
+async fn read_refs(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    prefix: &[u8],
+) -> Result<std::result::Result<(u64, Vec<(String, String)>), CallErrorWire>> {
+    let (mut out, mut after, mut index) = (Vec::new(), None, 0);
+    loop {
+        let (i, page) = match refs_page(c, repo, prefix, after.as_deref()).await? {
+            Ok(p) => p,
+            Err(e) => return Ok(Err(e)),
+        };
+        index = index.max(i);
+        out.extend(page.refs);
+        match page.next {
+            Some(n) => after = Some(n),
+            None => return Ok(Ok((index, out))),
+        }
+    }
+}
+
+/// receive-pack's advertisement for every ref, streamed a page of refs at a time as the leader answers them
+/// (`graftyard_git::smart::receive_pack_advertisement` in pieces), so the edge never holds the whole ref set. The
+/// first page is read before the response starts, so a group with no leader still answers 503.
+async fn receive_pack_stream(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    caps: String,
+) -> Result<std::result::Result<Response, Response>> {
+    use graftyard_git::smart::{receive_pack_head, receive_pack_lines, receive_pack_tail};
+    let first = match refs_page(c, repo, b"", None).await? {
+        Ok((_, p)) => p,
+        Err(CallErrorWire::Unsupported(u)) => return Ok(Err(unsupported(c.rid, u.family, u.version)?)),
+        Err(_) => return Ok(Err(text(c.rid, 503, "the repository's group has no leader; retry\n")?)),
+    };
+    let parse = |refs: Vec<(String, String)>| -> Vec<(RefName, ObjectId)> {
+        refs.iter()
+            .filter_map(|(n, o)| Some((RefName::parse(n.as_bytes()).ok()?, ObjectId::parse_hex(o.as_bytes())?)))
+            .collect()
+    };
+    if first.next.is_none() {
+        let refs = parse(first.refs);
+        return Ok(Ok(Response::from_bytes(receive_pack_advertisement(&refs, &caps))?));
+    }
+    let (env, sites, record, id) = (c.env.clone(), c.sites.clone(), repo.record.clone(), repo.id);
+    let state = Some((parse(first.refs), first.next, true));
+    let pages = futures_util::stream::unfold(state, move |st| {
+        let (env, sites, record, caps) = (env.clone(), sites.clone(), record.clone(), caps.clone());
+        async move {
+            let (refs, next, first) = st?;
+            let mut out = if first { receive_pack_head() } else { Vec::new() };
+            out.extend(receive_pack_lines(&refs, &caps, first));
+            let Some(after) = next else {
+                out.extend(receive_pack_tail());
+                return Some((Ok::<Vec<u8>, Error>(out), None));
+            };
+            let b = graftyard_lookup::Bindings { env: &env, sites: &sites };
+            let q = graftyard_git::group::refs_query(b"", Some(&after), graftyard_git::repo::REFS_PAGE_MAX);
+            let next = match graftyard_lookup::call(&b, ChainId::Repo(id), &record, "/read", &q).await {
+                Ok((v, _)) => match serde_json::from_value::<RefsReply>(v) {
+                    Ok(RefsReply::Page { value, .. }) => Some((parse(value.refs), value.next, false)),
+                    // The stream ends without its flush, so the client sees a cut advertisement, not a short one.
+                    _ => None,
+                },
+                Err(_) => None,
+            };
+            Some((Ok(out), next))
+        }
+    });
+    Ok(Ok(Response::from_stream(pages)?))
 }
 
 /// The edge's `commit` (`graftyard_lookup::commit_hedged`): under one request id, to the leader only, a missed
@@ -933,7 +1012,7 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
     let key = if cache_ok && wants_v2(Some(&proto)) {
         match parse_v2(&body) {
             Ok(v) => {
-                let tags = match read_refs(c, repo).await {
+                let tags = match read_refs(c, repo, b"refs/tags/").await {
                     Ok(Ok((_, refs))) => tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))),
                     _ => return text(c.rid, 503, "the repository's group has no leader; retry\n"),
                 };
@@ -1022,18 +1101,11 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
             if !signed_in {
                 return unauthorized(c.rid, "No anonymous write access.");
             }
-            let refs = match read_refs(c, repo).await? {
-                Ok((_, r)) => r,
-                Err(CallErrorWire::Unsupported(u)) => return unsupported(c.rid, u.family, u.version),
-                Err(_) => return text(c.rid, 503, "the repository's group has no leader; retry\n"),
-            };
-            let refs: Vec<(RefName, ObjectId)> = refs
-                .iter()
-                .filter_map(|(n, o)| Some((RefName::parse(n.as_bytes()).ok()?, ObjectId::parse_hex(o.as_bytes())?)))
-                .collect();
             let caps = receive_pack_caps(AGENT, &graftyard_wire::request_id_header(c.rid));
-            Ok(Response::from_bytes(receive_pack_advertisement(&refs, &caps))?
-                .with_headers(git_headers(c.rid, &service.advertisement_type())?))
+            match receive_pack_stream(c, repo, caps).await? {
+                Ok(r) => Ok(r.with_headers(git_headers(c.rid, &service.advertisement_type())?)),
+                Err(r) => Ok(r),
+            }
         }
     }
 }
@@ -1118,6 +1190,7 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
                 packs: serde_json::from_value(e["packs"].clone())?,
                 promoted: None,
                 consumed: Vec::new(),
+                refs: None,
             })
         })
         .collect::<Result<_>>()?;
@@ -1437,7 +1510,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
         "/_bed/log" => {
             let from = qp("from").unwrap_or_else(|| "1".into());
             let stub = {
-                read_refs(c, &repo).await?.map_err(|e| Error::RustError(format!("{e:?}")))?;
+                refs_page(c, &repo, b"", None).await?.map_err(|e| Error::RustError(format!("{e:?}")))?;
                 let lead = each_member(c, &repo, "/status").await.into_iter().find(|(_, _, s)| s["role"] == "leader");
                 let (site, name, _) = lead.ok_or("no leader")?;
                 c.bindings().member(SiteId(site), &name)?
@@ -1456,7 +1529,7 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             Response::from_json(&json!({ "received": received }))
         }
         "/_bed/refs" => {
-            let refs = read_refs(c, &repo).await?.map_err(|e| Error::RustError(format!("{e:?}")))?.1;
+            let refs = read_refs(c, &repo, b"").await?.map_err(|e| Error::RustError(format!("{e:?}")))?.1;
             Response::from_json(&refs)
         }
         "/_bed/markers" => {

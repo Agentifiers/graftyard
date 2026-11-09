@@ -294,6 +294,8 @@ pub struct ClientRoute {
 }
 
 /// The `NamesEvent` variants. Id blocks arrive as `EntryBody::IdBlock` entries (`Fold::apply_id_block`).
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamesEvent {
     LoginClaimed {
@@ -906,6 +908,8 @@ pub struct NamesCmd {
     pub op: NamesOp,
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NamesOp {
     /// Claim `login` on its shard. `account: None` is a signup: the account takes the next id of the group's block.

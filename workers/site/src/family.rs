@@ -642,7 +642,8 @@ impl Family for Repo {
             Err(e) => worker::console_log!("blob {} of {repo:?} not confirmed: {e:?}", b.oid.hex()),
         }
     }
-    /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier; with `{"q":
+    /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier, while they fit one
+    /// page, and with `{"q": {"refs": {..}}}` one page of them (`graftyard_git::group::refs_read`); with `{"q":
     /// {"rows": true}}`, both tiers' rows at this index, at most `graftyard_api::hosted::ROWS_MAX`
     /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads; with `{"q": {"rows": {"access":
     /// true}}}`, only the core rows the edge's read gate reads (`TierRows::access_rows`); with `{"q":
@@ -689,7 +690,9 @@ impl Family for Repo {
         if q.get("tiers").is_some() {
             return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));
         }
-        json!(fold.refs().iter().map(|(n, o)| (n.display(), o.hex())).collect::<Vec<_>>())
+        // The refs: `{"refs": {..}}` one page of them, `{}` all of them only while they fit one page
+        // (`graftyard_git::group::refs_read`), so no reply grows with the ref count.
+        git::group::refs_read(fold, q)
     }
     fn fold_bytes(_fold: &git::repo::RepoFold) -> Vec<u8> {
         Vec::new()
@@ -788,6 +791,8 @@ impl Family for Repo {
             m.insert("promoted".into(), json!(p));
         }
         m.insert("ref_updates".into(), json!(evs.iter().map(|ev| ev.updates().len()).sum::<usize>()));
+        // `LogPacks.refs`: a shard's catch-up applies these instead of reading the whole ref set.
+        m.insert("refs".into(), json!(git::repo::entry_ref_changes(evs)));
         m.insert("bytes".into(), json!(raft::encode_entry(e).len()));
         m
     }

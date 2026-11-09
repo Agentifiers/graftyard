@@ -106,6 +106,8 @@ impl<'a> RepoView<'a> {
 
 /// What one command asks for. `B` is `DurableBlob` where a command is decided, and `BlobRef` on the wire to a member,
 /// which rebuilds the `DurableBlob` with `BlobStore::confirm` before it admits the command (`map_blob`).
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum IssueOp<B = DurableBlob> {
     OpenIssue {

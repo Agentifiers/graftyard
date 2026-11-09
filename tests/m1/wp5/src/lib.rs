@@ -18,9 +18,10 @@
 
 use std::collections::BTreeSet;
 
+use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
 use graftyard_git::{
-    Bucket, ChainLog, Copies, CoreRefs, INLINE_MAX, LogPacks, ObjectMeta, PackId, PackIndex, PackRef, PackStore, Place,
+    Bucket, ChainLog, Copies, Head, INLINE_MAX, LogPacks, ObjectMeta, PackId, PackIndex, PackRef, PackStore, Place,
     Promoted, R2Key, StoreError, mark_committed, promotion_inputs,
 };
 use graftyard_types::{
@@ -190,8 +191,15 @@ impl DurableObject for Chain {
                     }
                 }
                 let index = self.applied()? + 1;
-                let entry =
-                    LogPacks { index: Index(index), packs: a.packs, promoted: a.promoted.clone(), consumed: vec![] };
+                let changes =
+                    a.updates.iter().map(|(name, _, new)| (name.clone(), (new != ZERO).then(|| new.clone()))).collect();
+                let entry = LogPacks {
+                    index: Index(index),
+                    packs: a.packs,
+                    promoted: a.promoted.clone(),
+                    consumed: vec![],
+                    refs: Some(changes),
+                };
                 sql.exec(
                     "INSERT INTO log (idx, body) VALUES (?, ?)",
                     vec![(index as i64).into(), serde_json::to_string(&entry)?.into()],
@@ -217,9 +225,8 @@ impl DurableObject for Chain {
                 self.set("applied", &index.to_string())?;
                 Response::from_json(&index)
             }
-            "/refs" => {
-                Response::from_json(&CoreRefs { chain: CHAIN, applied: Index(self.applied()?), refs: self.refs()? })
-            }
+            // The test driver's view of the chain (`bf18.sh`), and the shard's paged read: its few refs are one page.
+            "/refs" => Response::from_json(&serde_json::json!({ "applied": self.applied()?, "refs": self.refs()? })),
             "/first" => Response::from_json(&self.get("first")?.map_or(1, |v| v.parse::<u64>().unwrap_or(1))),
             "/promoted" => {
                 let p: Option<(u64, Promoted)> = self.get("promoted")?.map(|v| serde_json::from_str(&v)).transpose()?;
@@ -256,11 +263,22 @@ struct StubChain {
 }
 
 impl ChainLog for StubChain {
-    async fn core_refs(&self, _chain: ChainId) -> std::result::Result<CoreRefs, StoreError> {
-        ok_json(call(&self.stub, Method::Get, "/refs", None).await.map_err(ws)?).await.map_err(ws)
+    async fn head(&self, _chain: ChainId) -> std::result::Result<Head, StoreError> {
+        let v: serde_json::Value =
+            ok_json(call(&self.stub, Method::Get, "/refs", None).await.map_err(ws)?).await.map_err(ws)?;
+        let first =
+            ok_json::<u64>(call(&self.stub, Method::Get, "/first", None).await.map_err(ws)?).await.map_err(ws)?;
+        Ok(Head { first: Index(first), applied: Index(v["applied"].as_u64().unwrap_or(0)) })
     }
-    async fn first_index(&self, _chain: ChainId) -> std::result::Result<Index, StoreError> {
-        ok_json::<u64>(call(&self.stub, Method::Get, "/first", None).await.map_err(ws)?).await.map(Index).map_err(ws)
+    async fn refs_page(
+        &self,
+        _c: ChainId,
+        _after: Option<String>,
+    ) -> std::result::Result<(RefsPage, Index), StoreError> {
+        let v: serde_json::Value =
+            ok_json(call(&self.stub, Method::Get, "/refs", None).await.map_err(ws)?).await.map_err(ws)?;
+        let refs = serde_json::from_value(v["refs"].clone()).map_err(|e| StoreError(e.to_string()))?;
+        Ok((RefsPage { refs, next: None }, Index(v["applied"].as_u64().unwrap_or(0))))
     }
     async fn entries(&self, _chain: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
         let path = format!("/entries?from={}&to={}", from.0, to.0);
@@ -375,7 +393,7 @@ impl DurableObject for GitShard {
                     Some(h) => host.cursor(NET, &h.disk).await.map_err(se)?,
                     None => None,
                 };
-                let applied = log.core_refs(CHAIN).await.map_err(se)?.applied;
+                let applied = log.head(CHAIN).await.map_err(se)?.applied;
                 Response::from_json(&serde_json::json!({
                     "running": running, "site": site, "applied": applied.0,
                     "cursor": cursor.map(|c| c.at(CHAIN).0),

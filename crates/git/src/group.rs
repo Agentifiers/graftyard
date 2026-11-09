@@ -272,6 +272,51 @@ pub enum ReadReply {
     Error { error: CallErrorWire },
 }
 
+/// One page of a repository's refs (`refs_read`): the refs as `[name, oid]` pairs in name order, and the name to read
+/// the next page after, as base64 of its bytes, when more follow.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefsPage {
+    pub refs: Vec<(String, String)>,
+    pub next: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RefsReply {
+    Page { value: RefsPage, index: u64 },
+    Error { error: CallErrorWire },
+}
+
+/// A paged ref read's query, `{"q": {"refs": {"after": b64, "prefix": b64, "limit": n}}}`: names start with `prefix`
+/// and sort after `after`, each the base64 of a name's bytes, and `limit` is capped at `REFS_PAGE_MAX`.
+pub fn refs_query(prefix: &[u8], after: Option<&str>, limit: usize) -> serde_json::Value {
+    serde_json::json!({ "q": { "refs": { "prefix": b64::encode(prefix), "after": after, "limit": limit } } })
+}
+
+/// The member's answer to `refs_query` (`RefsPage`), and to `{"q": {}}`, which asks for every ref at once: the refs
+/// when there are at most `REFS_PAGE_MAX`, else `{"paged": REFS_PAGE_MAX}`, so no reply grows with the ref count
+/// (`repo:65536`, `tests/m3/results/wire-fix.md`).
+pub fn refs_read(fold: &crate::repo::RepoFold, q: &serde_json::Value) -> serde_json::Value {
+    use crate::repo::REFS_PAGE_MAX;
+    let Some(r) = q.get("refs") else {
+        if fold.refs_over(REFS_PAGE_MAX) {
+            return serde_json::json!({ "paged": REFS_PAGE_MAX });
+        }
+        return serde_json::json!(fold.refs().iter().map(|(n, o)| (n.display(), o.hex())).collect::<Vec<_>>());
+    };
+    let bytes = |k: &str| r.get(k).and_then(serde_json::Value::as_str).and_then(b64::decode);
+    let prefix = bytes("prefix").unwrap_or_default();
+    let after = bytes("after");
+    let limit = r
+        .get("limit")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(REFS_PAGE_MAX, |l| (l as usize).clamp(1, REFS_PAGE_MAX));
+    let (page, more) = fold.refs_page(&prefix, after.as_deref(), limit);
+    let next = more.then(|| page.last().map(|(n, _)| b64::encode(n.as_bytes()))).flatten();
+    let refs = page.iter().map(|(n, o)| (n.display(), o.hex())).collect();
+    serde_json::to_value(RefsPage { refs, next }).unwrap_or(serde_json::Value::Null)
+}
+
 /// The member host's half of `POST /commit`: the bytes that do not decode under a format this release reads answer
 /// `Unsupported`, and nothing changes. The member's own JSON decode of `cmd` fails the same way; a host that catches
 /// that failure answers with this.

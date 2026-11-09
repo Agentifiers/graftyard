@@ -154,6 +154,8 @@ pub enum PushErr {
     Agent(AgentRefusal),
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RepoEvent {
     /// SHARED's `Refs { push, actor, updates, pack }`: one push's applied updates and the pack that carries their
@@ -358,7 +360,33 @@ impl RepoEvent {
             _ => Vec::new(),
         }
     }
+
+    /// Every ref the event sets (`Some`) or deletes (`None`) in the core tier's `ref` table, in the order `apply`
+    /// writes them: `updates`, and a `TestMerged`'s `refs/pull/{n}/merge`. What a git cache shard's catch-up applies
+    /// from the entries it reads, so it never reads the whole ref set to stay current.
+    pub fn ref_changes(&self) -> Vec<(RefName, Option<ObjectId>)> {
+        match self {
+            RepoEvent::TestMerged { n, result, .. } => vec![(
+                crate::tiers::merge_ref(*n),
+                match result {
+                    crate::issues::MergeabilityResult::Clean { merge } => Some(*merge),
+                    crate::issues::MergeabilityResult::Conflict { .. } => None,
+                },
+            )],
+            _ => self.updates().into_iter().map(|u| (u.name.clone(), u.new)).collect(),
+        }
+    }
 }
+
+/// An entry's ref changes in order, as `LogPacks::refs` carries them: name and new oid in hex, `None` for a delete.
+pub fn entry_ref_changes(evs: &[RepoEvent]) -> Vec<(String, Option<String>)> {
+    evs.iter().flat_map(RepoEvent::ref_changes).map(|(n, o)| (n.display(), o.map(|o| o.hex()))).collect()
+}
+
+/// The most refs one paged ref read answers (`RepoFold::refs_page`, `crate::group::refs_read`): about 80 bytes of JSON
+/// a ref, so a page stays under 1 MB whatever the repository's ref count. `repo:65536` holds 571,872 refs, and its
+/// whole set in one reply ran the leader out of memory (`tests/m3/results/wire-fix.md`).
+pub const REFS_PAGE_MAX: usize = 10_000;
 
 /// The repository chain's fold: its two tiers (`design/SHARED.md`, "Folds"; `crate::tiers`). The core tier's `ref`
 /// table is the only copy of the refs: `Push` decides on it and a `fresh` read answers from it, so a push and a pull
@@ -431,6 +459,33 @@ impl RepoFold {
                 _ => None,
             })
             .collect()
+    }
+
+    /// One page of a paged ref read: at most `limit` refs whose names start with `prefix`, in name order, after the
+    /// name `after` (from the first when `None`), and whether more follow. It reads at most `limit + 2` rows of the
+    /// core tier, so its cost does not grow with the repository's ref count.
+    pub fn refs_page(&self, prefix: &[u8], after: Option<&[u8]>, limit: usize) -> (Vec<(RefName, ObjectId)>, bool) {
+        let start = match after {
+            Some(a) if a >= prefix => a,
+            _ => prefix,
+        };
+        let rows = self.core.scan("ref", &[Val::Blob(start.into())], limit + 2);
+        let mut refs = rows
+            .into_iter()
+            .filter_map(|(k, v)| match (k.first(), v.first()) {
+                (Some(Val::Blob(n)), Some(Val::Blob(o))) => Some((n.clone(), o.clone())),
+                _ => None,
+            })
+            .filter(|(n, _)| Some(&**n) != after)
+            .take_while(|(n, _)| n.starts_with(prefix))
+            .filter_map(|(n, o)| Some((RefName::parse(&n).ok()?, postcard::from_bytes(&o).ok()?)));
+        let page: Vec<(RefName, ObjectId)> = refs.by_ref().take(limit).collect();
+        (page, refs.next().is_some())
+    }
+
+    /// Whether the core tier holds more than `max` refs, read in at most `max + 1` rows.
+    pub fn refs_over(&self, max: usize) -> bool {
+        self.core.scan("ref", &[], max + 1).len() > max
     }
 
     pub fn promoted(&self) -> Option<Promoted> {
