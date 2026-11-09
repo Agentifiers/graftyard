@@ -1196,6 +1196,11 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
     let tail = segs.as_slice();
     let who = authenticate(c, req).await?;
+    // A credential the edge refuses (revoked, lapsed, unknown) is 401, as on GitHub, not an anonymous caller whom the
+    // read gate would answer 404 on a private repository.
+    if who.is_none() && crate::token_of(req)?.is_some() {
+        return Ok(Reply::error(401, "Bad credentials", "rest"));
+    }
     timing::mark("auth");
     let method = req.method();
     let rd = match at {
