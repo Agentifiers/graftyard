@@ -12,6 +12,8 @@ that operation's response schema in `ghes-3.22.json`, with OpenAPI 3.0's `nullab
 the operation documents; a response the description gives no JSON body (a 204, a 302) is checked for an empty body
 and, for a 302, a `location` header. A response whose JSON schema is a string (raw content) is skipped.
 
+Webhooks: each `<case>.webhook.json` holds an `x-webhooks` key and a payload (below).
+
 LFS: each `<case>.lfs.json` names one of git-lfs 3.8.0's JSON schemas in `crates/api/lfs/schemas/` and holds a body,
 checked with jsonschema (draft 4).
 
@@ -69,7 +71,7 @@ def type_resolver(value, info, abstract):
 
 
 for f in sorted(glob.glob(os.path.join(replies, '*.json'))):
-    if f.endswith('.rest.json') or f.endswith('.lfs.json'):
+    if f.endswith('.rest.json') or f.endswith('.lfs.json') or f.endswith('.webhook.json'):
         continue
     case = json.load(open(f))
     doc = parse(case['query'])
@@ -152,7 +154,30 @@ for f in sorted(glob.glob(os.path.join(replies, '*.lfs.json'))):
     except jsonschema.ValidationError as e:
         fails.append((f, 'lfs', f'{e.message} at {list(e.absolute_path)}'))
 
+# Webhooks: each `<case>.webhook.json` holds a `key` of the `x-webhooks` section (`push`, `pull-request-opened`) and a
+# payload, checked against that key's request body schema. A key GHES 3.22 lacks (`merge-group-*`) is checked against
+# dotcom's description at the same pinned commit, when `$DOTCOM_OPENAPI` names it; otherwise it fails.
+n_hooks = 0
+dotcom = json.load(open(os.environ['DOTCOM_OPENAPI'])) if os.environ.get('DOTCOM_OPENAPI') else None
+for f in sorted(glob.glob(os.path.join(replies, '*.webhook.json'))):
+    case = json.load(open(f))
+    n_hooks += 1
+    src, key = spec, case['key']
+    if key not in spec['x-webhooks']:
+        if dotcom is None or key not in dotcom['x-webhooks']:
+            fails.append((f, 'webhook', f'{key} is in no description'))
+            continue
+        src = dotcom
+    saved, spec = spec, src
+    schema = deref(src['x-webhooks'][key]['post']['requestBody']['content']['application/json']['schema'])
+    spec = saved
+    try:
+        jsonschema.Draft4Validator(schema).validate(case['body'])
+    except jsonschema.ValidationError as e:
+        fails.append((f, 'webhook', f'{e.message[:200]} at {list(e.absolute_path)}'))
+
 for f, kind, why in fails:
     print('FAIL', os.path.basename(f), kind, why)
-print(f'{n_gql} GraphQL replies, {n_rest} REST replies, and {n_lfs} LFS replies checked, {len(fails)} failed')
+print(f'{n_gql} GraphQL replies, {n_rest} REST replies, {n_lfs} LFS replies, and {n_hooks} webhook payloads checked, '
+      f'{len(fails)} failed')
 sys.exit(1 if fails else 0)

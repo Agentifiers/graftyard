@@ -20,7 +20,7 @@ use graftyard_fold::{Read, Rows};
 use graftyard_identity::EventKind;
 use graftyard_identity::sealed::Wrapped;
 use graftyard_raft::{EntryBody, Format, LogEntry, Record, TierSet};
-use graftyard_types::{ChainId, DbId, Index, RepoId, RequestId};
+use graftyard_types::{ChainId, DbId, Index, RepoId, RequestId, Timestamp};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use smallvec::SmallVec;
@@ -87,21 +87,85 @@ pub struct HookCursor {
 /// dashes as underscores), plus the three `merge_group` and queue names the build plan asks for at T0 that GHES 3.22's
 /// description lacks (`merge_group`; `pull_request`'s `enqueued` and `dequeued` are actions of an existing event).
 pub const EVENTS: &[&str] = &[
-    "branch_protection_configuration", "branch_protection_rule", "cache_sync", "check_run", "check_suite",
-    "code_scanning_alert", "commit_comment", "create", "custom_property", "custom_property_values", "delete",
-    "dependabot_alert", "deploy_key", "deployment", "deployment_protection_rule", "deployment_review",
-    "deployment_status", "discussion", "discussion_comment", "dismissal_request_code_scanning",
-    "dismissal_request_dependabot", "dismissal_request_secret_scanning", "enterprise", "exemption_request_push_ruleset",
-    "exemption_request_secret_scanning", "fork", "github_app_authorization", "gollum", "installation",
-    "installation_repositories", "installation_target", "issue_comment", "issue_dependencies", "issues", "label",
-    "member", "membership", "meta", "milestone", "organization", "organization_custom_property",
-    "organization_custom_property_values", "package", "page_build", "personal_access_token_request", "ping", "project",
-    "project_card", "project_column", "projects_v2", "projects_v2_item", "public", "pull_request",
-    "pull_request_review", "pull_request_review_comment", "pull_request_review_thread", "push", "registry_package",
-    "release", "repository", "repository_dispatch", "repository_ruleset", "repository_vulnerability_alert",
-    "secret_scanning_alert", "secret_scanning_alert_location", "secret_scanning_scan", "security_advisory",
-    "security_and_analysis", "sponsorship", "star", "status", "team", "team_add", "user", "watch", "workflow_dispatch",
-    "workflow_job", "workflow_run", "merge_group",
+    "branch_protection_configuration",
+    "branch_protection_rule",
+    "cache_sync",
+    "check_run",
+    "check_suite",
+    "code_scanning_alert",
+    "commit_comment",
+    "create",
+    "custom_property",
+    "custom_property_values",
+    "delete",
+    "dependabot_alert",
+    "deploy_key",
+    "deployment",
+    "deployment_protection_rule",
+    "deployment_review",
+    "deployment_status",
+    "discussion",
+    "discussion_comment",
+    "dismissal_request_code_scanning",
+    "dismissal_request_dependabot",
+    "dismissal_request_secret_scanning",
+    "enterprise",
+    "exemption_request_push_ruleset",
+    "exemption_request_secret_scanning",
+    "fork",
+    "github_app_authorization",
+    "gollum",
+    "installation",
+    "installation_repositories",
+    "installation_target",
+    "issue_comment",
+    "issue_dependencies",
+    "issues",
+    "label",
+    "member",
+    "membership",
+    "meta",
+    "milestone",
+    "organization",
+    "organization_custom_property",
+    "organization_custom_property_values",
+    "package",
+    "page_build",
+    "personal_access_token_request",
+    "ping",
+    "project",
+    "project_card",
+    "project_column",
+    "projects_v2",
+    "projects_v2_item",
+    "public",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment",
+    "pull_request_review_thread",
+    "push",
+    "registry_package",
+    "release",
+    "repository",
+    "repository_dispatch",
+    "repository_ruleset",
+    "repository_vulnerability_alert",
+    "secret_scanning_alert",
+    "secret_scanning_alert_location",
+    "secret_scanning_scan",
+    "security_advisory",
+    "security_and_analysis",
+    "sponsorship",
+    "star",
+    "status",
+    "team",
+    "team_add",
+    "user",
+    "watch",
+    "workflow_dispatch",
+    "workflow_job",
+    "workflow_run",
+    "merge_group",
 ];
 
 /// SHARED's `SUBSCRIPTIONS`, for what this release deploys: the webhook events the `Webhooks` consumer renders from
@@ -124,9 +188,22 @@ pub static SUBSCRIPTIONS: &[(&str, &[crate::issues::Consumer])] = {
 
 // ---- the fold ----
 
+/// The core `hook` row: the record, and the times of the entries that created and last changed it, which the REST
+/// `hook` object renders.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HookRow {
+    pub record: HookRecord,
+    pub created: Timestamp,
+    pub updated: Timestamp,
+}
+
+pub fn hook_row(core: &(impl Read + ?Sized), id: HookId) -> Option<HookRow> {
+    get_rec(core, "hook", &[int(id.0.0)])
+}
+
 /// The core `hook` row's record by id.
 pub fn hook(core: &(impl Read + ?Sized), id: HookId) -> Option<HookRecord> {
-    get_rec(core, "hook", &[int(id.0.0)])
+    hook_row(core, id).map(|r| r.record)
 }
 
 /// Every hook of the repository, by id.
@@ -145,9 +222,12 @@ pub fn hook_cursor(core: &(impl Read + ?Sized)) -> HookCursor {
     get_rec(core, "hook_cursor", &[]).unwrap_or_default()
 }
 
-pub(crate) fn write_core(w: &mut dyn Rows, ev: &RepoEvent) {
+pub(crate) fn write_core(w: &mut dyn Rows, ev: &RepoEvent, at: Timestamp) {
     match ev {
-        RepoEvent::Hook { id, record: Some(r), .. } => put_rec(w, "hook", vec![int(id.0.0)], r),
+        RepoEvent::Hook { id, record: Some(r), .. } => {
+            let created = hook_row(w, *id).map_or(at, |old| old.created);
+            put_rec(w, "hook", vec![int(id.0.0)], &HookRow { record: r.clone(), created, updated: at })
+        }
         RepoEvent::Hook { id, record: None, .. } => w.delete("hook", &[int(id.0.0)]),
         RepoEvent::HookCursor(c) => put_rec(w, "hook_cursor", Vec::new(), c),
         _ => {}
@@ -217,19 +297,51 @@ pub struct Webhook {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Subject {
     /// A `push`: one ref's move. `created` and `deleted` as GitHub's payload has them.
-    Push { r#ref: RefName, before: ObjectId, after: ObjectId, pusher: Option<graftyard_types::AccountId> },
+    Push {
+        r#ref: RefName,
+        before: ObjectId,
+        after: ObjectId,
+        pusher: Option<graftyard_types::AccountId>,
+    },
     /// A `create` or `delete` of a branch or tag.
-    Ref { r#ref: RefName, pusher: Option<graftyard_types::AccountId> },
-    Pull { n: IssueNumber, before: Option<ObjectId>, after: Option<ObjectId>, actor: Option<graftyard_types::AccountId> },
-    Issue { n: IssueNumber, actor: Option<graftyard_types::AccountId> },
-    Comment { n: IssueNumber, id: crate::issues::CommentId, actor: Option<graftyard_types::AccountId> },
+    Ref {
+        r#ref: RefName,
+        pusher: Option<graftyard_types::AccountId>,
+    },
+    Pull {
+        n: IssueNumber,
+        before: Option<ObjectId>,
+        after: Option<ObjectId>,
+        actor: Option<graftyard_types::AccountId>,
+    },
+    Issue {
+        n: IssueNumber,
+        actor: Option<graftyard_types::AccountId>,
+    },
+    Comment {
+        n: IssueNumber,
+        id: crate::issues::CommentId,
+        actor: Option<graftyard_types::AccountId>,
+    },
     Status(StatusUpdate),
     CheckRun(CheckRunUpdate),
     /// A queue entry's group (`merge_group`): the base, the queue ref, and its tips.
-    MergeGroup { base: RefName, head_ref: RefName, head: ObjectId, base_sha: ObjectId, reason: Option<&'static str> },
+    MergeGroup {
+        base: RefName,
+        head_ref: RefName,
+        head: ObjectId,
+        base_sha: ObjectId,
+        reason: Option<&'static str>,
+    },
     /// The pull request a queue event names, with `reason` for `dequeued`.
-    Queue { n: IssueNumber, reason: Option<&'static str>, actor: Option<graftyard_types::AccountId> },
-    Ping { hook: HookId },
+    Queue {
+        n: IssueNumber,
+        reason: Option<&'static str>,
+        actor: Option<graftyard_types::AccountId>,
+    },
+    Ping {
+        hook: HookId,
+    },
 }
 
 fn tag_or_branch(r: &RefName) -> bool {
@@ -268,9 +380,11 @@ pub fn webhooks(core: &dyn Read, repo: RepoId, e: &LogEntry<RepoEvent>) -> Vec<W
                 let s = Subject::Pull { n: *n, before: None, after: None, actor: capture.issue.author };
                 out.push(w("pull_request", Some("opened"), s));
             }
-            RepoEvent::PrClosed { n, .. } => {
-                out.push(w("pull_request", Some("closed"), Subject::Pull { n: *n, before: None, after: None, actor: None }))
-            }
+            RepoEvent::PrClosed { n, .. } => out.push(w(
+                "pull_request",
+                Some("closed"),
+                Subject::Pull { n: *n, before: None, after: None, actor: None },
+            )),
             RepoEvent::Merged { n, by, .. } => {
                 let s = Subject::Pull { n: *n, before: None, after: None, actor: Some(by.0) };
                 out.push(w("pull_request", Some("closed"), s));
@@ -360,7 +474,16 @@ fn queue_webhooks(q: &QueueEvent, out: &mut Vec<Webhook>) {
                     out.push(destroyed(u.name.clone(), head, why));
                 }
             }
-            out.push(w("pull_request", Some("dequeued"), Subject::Queue { n: *n, reason: Some(why), actor: None }));
+            // `pull_request.dequeued`'s reason is dotcom's upper-case enum, not `merge_group.destroyed`'s.
+            let removal = match reason {
+                crate::queue::EjectReason::Dequeued | crate::queue::EjectReason::Closed => "MANUAL",
+                crate::queue::EjectReason::CheckFailed { .. } => "CI_FAILURE",
+                crate::queue::EjectReason::CheckTimeout { .. } => "CI_TIMEOUT",
+                crate::queue::EjectReason::Conflict => "MERGE_CONFLICT",
+                crate::queue::EjectReason::Protection(_) => "BRANCH_PROTECTIONS",
+                crate::queue::EjectReason::HeadMoved => "UNKNOWN_REMOVAL_REASON",
+            };
+            out.push(w("pull_request", Some("dequeued"), Subject::Queue { n: *n, reason: Some(removal), actor: None }));
         }
         QueueEvent::Landed { refs, .. } => {
             for u in refs.iter().filter(|u| u.new.is_none()) {
