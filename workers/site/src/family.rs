@@ -796,6 +796,10 @@ impl Family for Repo {
     #[cfg(feature = "test-faults")]
     fn log_fields(e: &raft::LogEntry<Self::Ev>) -> serde_json::Map<String, Value> {
         let mut m = serde_json::Map::new();
+        // L0-12's hosted stall reads which entry carried the recorded stall, of any body (a term's `Noop` too).
+        if let Some(x) = e.extend {
+            m.insert("extend".into(), json!({ "since": x.since.0, "byMs": x.by.as_millis() as u64 }));
+        }
         let raft::EntryBody::Events(evs) = &e.body else { return m };
         let refs: Vec<Value> = evs
             .iter()
