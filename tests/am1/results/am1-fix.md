@@ -122,16 +122,18 @@ Not run. It is not cheap on this install:
 
 I judged that more than cheap and left it.
 
-## A finding that blocks reruns on three groups: day 6's 32.14 tags
+## A finding: main's 32.13 merge renumbered the stored lease events
 
-After site day 7, j4 (`repo:1048576`), lf1-2 (`repo:1048579`) and lf1-3 (`repo:1048580`) do not restore on any member: `restoreError` "log row 3838 / 26 / 34: Serde Deserialization Error".
+After site day 7, j4 (`repo:1048576`), lf1-2 (`repo:1048579`) and lf1-3 (`repo:1048580`) do not restore on any member. Each reports `restoreError` "log row 3838 / 26 / 34: Serde Deserialization Error". These are the groups that hold lease entries.
 
-- Day 6 ran `04e4f22` (am1-hosted before its final merge with main), whose `RepoEvent` has no `Created`/`Deleted`. Its `LeaseAcquire`, `LeaseRenew`, `LeaseRelease` and `PathSet` were variants 33 to 36.
-- Main (`6042f3e`, after the `m3-repos` merge `3160687` put 32.13's `Created` and `Deleted` before the lease events) has `Created` 33, `Deleted` 34, then the lease events at 35 to 38.
-- These three groups hold lease entries that day 6 wrote under the old numbering. Today's code reads variant 33 as `Created { actor }`, and the bytes do not decode, so the members refuse to restore.
+- `RepoEvent` has two encodings. The digest encoding (`crates/git/src/repo.rs`, `tagged(out, …)`) uses explicit tags, and lease events are 35 to 38 both at `9fb5032` and at `6042f3e`. The stored and member-to-member encoding (`graftyard_raft::codec`, postcard through `#[derive(Serialize, Deserialize)]`) numbers variants by their position in the enum.
+- At `9fb5032` (main after AM1-WP4) and on day 6 (`04e4f22`), `RepoEvent` had 37 variants, and `LeaseAcquire`, `LeaseRenew`, `LeaseRelease` and `PathSet` were serde variants 33 to 36.
+- At `6042f3e`, the `m3-repos` merge (`3160687`) put `Created` and `Deleted` before them in the enum. They became serde variants 33 and 34, and the lease events moved to 35 to 38. A stored `LeaseAcquire` now decodes as `Created { actor }`, and the row fails.
 - The groups with no lease entries (lf1-0, lf1-1, lf1-4 to lf1-8, and the Authz chains) restore fine.
 
-This is a test-install artifact of deploying a pre-merge branch, not a code bug in main. But it means LM-1's j4 rows (L0-12 refusal counts, B0-36, B0-37) and L0-16's lf1-2 cannot rerun on this install without new groups. Today's runs used lf1-4, lf1-5 and lf1-6. Repairing these groups needs an operator decision: delete and recreate them, or restore from the vault. I did neither.
+This breaks more than this install. Any member that stored a lease event under `9fb5032` cannot restore under `6042f3e`. In a site day that rolls one site at a time, a member on the old release and one on the new would also misread each other's entries in AppendEntries. Fixing it means choosing which stored layout wins: lease events back at 33 to 36 (which breaks whatever stored 32.13 events under `m3-repos`, on graft-m2b), or `Created`/`Deleted` at 33 and 34 (which breaks lease events stored under `9fb5032`, like these three groups). An explicit serde variant index on each `RepoEvent` variant would stop it from happening again. Both are changes to main outside this task, so I made neither; they need a decision.
+
+Here, it means LM-1's j4 rows (the L0-12 refusal counts, B0-36 and B0-37) and L0-16's lf1-2 cannot rerun on this install until those groups are recreated or the layout is fixed. Today's runs used lf1-4, lf1-5 and lf1-6.
 
 ## Deployed versions (site day 7)
 
