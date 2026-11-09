@@ -731,6 +731,9 @@ pub(crate) async fn push_init(
     who: &Principal,
     init: &graftyard_git::init::InitCommit,
 ) -> std::result::Result<bool, String> {
+    // Its own request id: under the create's, the leader would answer the later `InitRepo` as a re-send of this push
+    // (`/outcome_by_request`), and the settings would never commit.
+    let rid = RequestId(Ulid::new(now(), rand10()));
     let main = RefName::parse(b"refs/heads/main").map_err(|e| format!("{e:?}"))?;
     let tips = vec![init.commit.hex()];
     let raw = buckets(c.env, c.sites).map_err(|e| e.to_string())?;
@@ -740,7 +743,7 @@ pub(crate) async fn push_init(
     let stage = Stage {
         network: NetworkId(repo.id.0),
         id: PackId(Ulid::new(now(), rand10())),
-        meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: c.rid },
+        meta: ObjectMeta { chain: ChainId::Repo(repo.id), request: rid },
         bytes: &init.pack,
         inline: init.pack.len() <= INLINE_MAX,
         part: c.cfg.part,
@@ -753,13 +756,13 @@ pub(crate) async fn push_init(
         pack: Some(d.into_pack()),
         actor: who.clone(),
         options: Vec::new(),
-        request: c.rid,
+        request: rid,
         agent: None,
         provenance: Vec::new(),
         protected: Vec::new(),
         changed: Vec::new(),
     };
-    let body = serde_json::to_value(CommitReq { rid: c.rid.to_string(), cmd: push }).map_err(|e| e.to_string())?;
+    let body = serde_json::to_value(CommitReq { rid: rid.to_string(), cmd: push }).map_err(|e| e.to_string())?;
     match commit(c, repo, &body, None, None).await.map_err(|e| e.to_string())? {
         Ok(PushOutcome::Ok(ok)) => Ok(ok.out.refs.iter().all(|r| *r == graftyard_git::repo::RefOutcome::Ok)),
         Ok(PushOutcome::Refused(_)) => Ok(false),
