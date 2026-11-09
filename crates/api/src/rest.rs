@@ -487,3 +487,127 @@ pub fn label_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
         _ => Reply::error(422, "Validation Failed", LABELS_DOC),
     }
 }
+
+// ---- issue labels (B0-36's labels write) ----
+
+const ISSUE_LABELS_DOC: &str = "rest/issues/labels#add-labels-to-an-issue";
+
+/// A path segment percent-decoded (a label name such as `good first issue` arrives as `good%20first%20issue`).
+fn unpercent(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && let (Some(h), Some(l)) = (b.get(i + 1).and_then(|c| hex(*c)), b.get(i + 2).and_then(|c| hex(*c)))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The label names of a `POST` or `PUT /repos/{o}/{r}/issues/{n}/labels` body: `{"labels": [..]}`, a bare array, or
+/// one string, each name or `{"name": ..}`, as GHES 3.22's description allows.
+fn label_names(body: &Value) -> Option<Vec<String>> {
+    let list = match body {
+        Value::Object(m) => m.get("labels")?,
+        other => other,
+    };
+    let one = |v: &Value| match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(o) => o.get("name").and_then(Value::as_str).map(str::to_owned),
+        _ => None,
+    };
+    match list {
+        Value::Array(a) => a.iter().map(one).collect(),
+        Value::String(s) => Some(vec![s.clone()]),
+        _ => None,
+    }
+}
+
+/// `POST`, `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/labels`, and `DELETE .../labels/{name}`: one `ApplyLabels`. `POST`
+/// adds, `PUT` replaces (removes every label the issue has that the body does not name), `DELETE` removes all or
+/// one. A name with no label is 422 for `POST` and `PUT`, as GHES answers when it cannot create the label, and 404
+/// for a `DELETE` of one name. `None` with nothing to change.
+pub fn plan_issue_labels(
+    r: &Repo<'_>,
+    method: &str,
+    n: &str,
+    name: Option<&str>,
+    body: &Value,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    use graftyard_git::issues::LabelId;
+    let n = n
+        .parse::<u32>()
+        .ok()
+        .map(graftyard_git::issues::IssueNumber)
+        .filter(|n| r.item(*n).is_some())
+        .ok_or_else(Reply::not_found)?;
+    let all = r.labels();
+    let id_of = |name: &str| all.iter().find(|(_, l)| l.name.0.eq_ignore_ascii_case(name)).map(|(id, _)| LabelId(*id));
+    let have: Vec<LabelId> = r.labels_of(n).iter().map(|(id, _)| LabelId(*id)).collect();
+    let invalid = || Reply::error(422, "Validation Failed", ISSUE_LABELS_DOC);
+    let named = |body: &Value| -> Result<Vec<LabelId>, Reply> {
+        label_names(body).ok_or_else(invalid)?.iter().map(|x| id_of(x).ok_or_else(invalid)).collect()
+    };
+    let (add, remove): (Vec<LabelId>, Vec<LabelId>) = match (method, name) {
+        ("POST", None) => {
+            let want = named(body)?;
+            if want.is_empty() {
+                return Err(invalid());
+            }
+            (want.into_iter().filter(|l| !have.contains(l)).collect(), Vec::new())
+        }
+        ("PUT", None) => {
+            let want = named(body)?;
+            let add = want.iter().filter(|l| !have.contains(l)).copied().collect();
+            (add, have.iter().filter(|l| !want.contains(l)).copied().collect())
+        }
+        ("DELETE", None) => (Vec::new(), have.clone()),
+        ("DELETE", Some(x)) => {
+            let id = id_of(&unpercent(x)).filter(|id| have.contains(id)).ok_or_else(|| {
+                Reply::error(404, "Label does not exist", "rest/issues/labels#remove-a-label-from-an-issue")
+            })?;
+            (Vec::new(), vec![id])
+        }
+        _ => return Err(Reply::error(405, "Method Not Allowed", ISSUE_LABELS_DOC)),
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::ApplyLabels {
+        n,
+        add: add.into_iter().collect(),
+        remove: remove.into_iter().collect(),
+    })
+}
+
+/// The reply of a committed `ApplyLabels`: the issue's labels after the entry applied, 200, or 204 for `DELETE` of
+/// every label.
+pub fn issue_labels_ok(after: &Repo<'_>, n: u32, empty: bool) -> Reply {
+    if empty {
+        return Reply::empty(204);
+    }
+    let labels: Vec<Value> = after
+        .labels_of(graftyard_git::issues::IssueNumber(n))
+        .iter()
+        .map(|(id, l)| label_json(after, *id, l))
+        .collect();
+    Reply::json(200, Value::Array(labels))
+}
+
+/// A refused `ApplyLabels`: an agent rule is 403 with its text, a missing permission 403, an unknown label 422.
+pub fn issue_labels_refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    use graftyard_git::issue_ops::IssueErr as E;
+    match e {
+        E::Forbidden | E::Unauthorized(_) => {
+            Reply::error(403, "Resource not accessible by integration", ISSUE_LABELS_DOC)
+        }
+        E::Agent(a) => Reply::error(403, &a.text, ISSUE_LABELS_DOC),
+        E::NotFound => Reply::not_found(),
+        _ => Reply::error(422, "Validation Failed", ISSUE_LABELS_DOC),
+    }
+}

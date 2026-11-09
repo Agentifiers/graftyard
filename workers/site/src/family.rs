@@ -428,6 +428,7 @@ impl Family for Repo {
         crate::prsync::on_alarm(host).await;
         crate::merge_queue::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
+        crate::archive::on_alarm(host);
     }
     fn schema() -> &'static [&'static str] {
         crate::snap::SCHEMA
@@ -499,6 +500,12 @@ impl Family for Repo {
                     crate::load::archive_put(host, a["from"].as_u64().unwrap_or(0), a["to"].as_u64().unwrap_or(0))
                         .await,
                 )
+            }
+            // Test installs: this isolate's archive cap in place of `LOG_MAX_BYTES` (`crate::archive`).
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("archiveCap").is_some() => {
+                host.arm_in(0);
+                Some(Ok(crate::archive::set_cap(&body["archiveCap"])))
             }
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("openPr").is_some() => Some(crate::prsync::open_pr(host, &body["openPr"]).await),
@@ -749,8 +756,13 @@ impl Family for Repo {
             Err(b) => git::blob::mark_blob(&refs, repo, &b, chain, acked.index).await,
         }
     }
+    /// A `Promoted` names its pack too, so the sweeper repairs its marker as any other (`crate::archive`).
     fn row_packs(events: &[git::repo::RepoEvent]) -> Value {
-        json!(git::repo::packs_of(events))
+        let promoted = events.iter().filter_map(|ev| match ev {
+            git::repo::RepoEvent::Promoted(p) => Some(p.pack.clone()),
+            _ => None,
+        });
+        json!(git::repo::packs_of(events).into_iter().chain(promoted).collect::<Vec<_>>())
     }
     fn archived(e: &raft::LogEntry<Self::Ev>) -> Option<ArchivedRange> {
         let raft::EntryBody::Events(evs) = &e.body else { return None };

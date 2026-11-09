@@ -107,24 +107,42 @@ pub fn archive_due(
     committed: Index,
     max_bytes: u64,
 ) -> Option<(Index, Index)> {
-    let first = log.first()?.0;
+    let total = log.iter().map(|e| e.2).sum::<u64>();
+    archive_due_walk(total, log.iter().copied(), now, snapshotted, committed, max_bytes, u64::MAX)
+}
+
+/// `archive_due` for a host that reads its stored log in index order and knows the log's total bytes without
+/// reading every entry (`SUM(length(row))`): `log` is consumed only as far as the range reaches, plus one entry. With
+/// `range_max`, the range stops before the entry that would take it past that many bytes (it always holds at least
+/// one entry), so a host that builds the archive object in memory archives a due range in pieces.
+pub fn archive_due_walk(
+    total_bytes: u64,
+    log: impl IntoIterator<Item = (Index, Timestamp, u64)>,
+    now: Timestamp,
+    snapshotted: bool,
+    committed: Index,
+    max_bytes: u64,
+    range_max: u64,
+) -> Option<(Index, Index)> {
     if !snapshotted {
         return None;
     }
     let cut = now.0.saturating_sub(LOG_KEEP.as_millis() as u64);
-    let mut over = log.iter().map(|e| e.2).sum::<u64>().saturating_sub(max_bytes);
-    let mut through = None;
+    let mut over = total_bytes.saturating_sub(max_bytes);
+    let (mut first, mut through, mut taken) = (None, None, 0u64);
     for (i, at, bytes) in log {
+        first.get_or_insert(i);
         if at.0 >= cut && over == 0 {
             break;
         }
-        if *i > committed {
+        if i > committed || (through.is_some() && taken.saturating_add(bytes) > range_max) {
             break;
         }
-        over = over.saturating_sub(*bytes);
-        through = Some(*i);
+        over = over.saturating_sub(bytes);
+        taken += bytes;
+        through = Some(i);
     }
-    through.map(|t| (first, t))
+    Some((first?, through?))
 }
 
 /// Of a tier's committed snapshots as `(to, to_at)`, those to keep when the newest entry has time `now`: every

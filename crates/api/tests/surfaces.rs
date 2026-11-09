@@ -1016,3 +1016,128 @@ fn update_pull_request_edits_the_body_and_refuses_what_it_does_not_serve() {
     let reply = render(&req, &planned, &ack(out), &r);
     assert_eq!(reply["data"]["updatePullRequest"]["pullRequest"]["body"], "edited", "{reply}");
 }
+
+/// B0-36's two missing write surfaces, on the seeded chain: `markPullRequestReadyForReview` and
+/// `convertPullRequestToDraft` (gh's `pr ready` and `pr ready --undo`), `addLabelsToLabelable` and
+/// `removeLabelsFromLabelable` (gh's `issue edit --add-label` / `--remove-label`), and REST
+/// `POST`/`PUT`/`DELETE /repos/{o}/{r}/issues/{n}/labels[/{name}]`. Each commits its existing `IssueOp` and renders
+/// from `&Acked`; the replies go to `validate.py`.
+#[test]
+fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
+    use graftyard_api::rest::{issue_labels_ok, plan_issue_labels};
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let wip = match c
+        .commit(
+            WRITER,
+            IssueOp::DefineLabel { id: None, name: LabelName("wip".into()), color: [1, 2, 3], description: None },
+        )
+        .unwrap()
+    {
+        IssueOut::Id(id) => id,
+        o => panic!("{o:?}"),
+    };
+    c.push("refs/heads/d", oid(5));
+    let draft = IssueOp::OpenPr {
+        head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name("refs/heads/d") },
+        base: name("refs/heads/main"),
+        title: "draft".into(),
+        body: "".into(),
+        draft: true,
+        head_sha: oid(5),
+        base_sha: oid(1),
+    };
+    let IssueOut::Number(pr) = c.commit(WRITER, draft).unwrap() else { panic!() };
+    let gql = |c: &mut Chain, field: &str, input: Value, select: &str| -> Value {
+        let q = format!("mutation($input: {}Input!) {{ {field}(input: $input) {{ clientMutationId {select} }} }}", {
+            let mut s = field.to_owned();
+            s[..1].make_ascii_uppercase();
+            s
+        });
+        let vars = json!({ "input": input }).as_object().cloned();
+        let p = {
+            let r = c.repo(0, &h, &dir);
+            plan(&Request::parse(&q, vars.clone(), None).unwrap(), &r).unwrap()
+        };
+        let Plan::Issue(op) = p.plan.clone() else { panic!("{field}") };
+        let acked = ack(c.commit(WRITER, *op).unwrap());
+        let r = c.repo(0, &h, &dir);
+        let reply = render(&Request::parse(&q, vars.clone(), None).unwrap(), &p, &acked, &r);
+        assert!(reply.get("errors").is_none(), "{field}: {reply}");
+        let d = Doc { name: field.into(), query: q, variables: vars.clone() };
+        keep(&format!("b036-{field}"), &d, &vars, &reply);
+        reply
+    };
+    let pr_id = {
+        let r = c.repo(0, &h, &dir);
+        NodeId::scoped(NodeType::PullRequest, REPO, r.item(pr).unwrap().row.id.0).encode()
+    };
+    let ready = gql(
+        &mut c,
+        "markPullRequestReadyForReview",
+        json!({ "pullRequestId": pr_id }),
+        "pullRequest { isDraft number }",
+    );
+    assert_eq!(ready["data"]["markPullRequestReadyForReview"]["pullRequest"]["isDraft"], json!(false));
+    let back = gql(&mut c, "convertPullRequestToDraft", json!({ "pullRequestId": pr_id }), "pullRequest { isDraft }");
+    assert_eq!(back["data"]["convertPullRequestToDraft"]["pullRequest"]["isDraft"], json!(true));
+    let issue_id = {
+        let r = c.repo(0, &h, &dir);
+        NodeId::scoped(NodeType::Issue, REPO, r.item(IssueNumber(1)).unwrap().row.id.0).encode()
+    };
+    let label_id = NodeId::scoped(NodeType::Label, REPO, wip.0).encode();
+    let sel = "labelable { ... on Issue { labels(first: 10) { nodes { name } } } }";
+    let added = gql(&mut c, "addLabelsToLabelable", json!({ "labelableId": issue_id, "labelIds": [label_id] }), sel);
+    let names = |v: &Value, f: &str| -> Vec<String> {
+        v["data"][f]["labelable"]["labels"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(names(&added, "addLabelsToLabelable"), ["bug", "wip"]);
+    let removed =
+        gql(&mut c, "removeLabelsFromLabelable", json!({ "labelableId": issue_id, "labelIds": [label_id] }), sel);
+    assert_eq!(names(&removed, "removeLabelsFromLabelable"), ["bug"]);
+
+    // REST: add, replace, remove one, remove all.
+    let path = "/repos/{owner}/{repo}/issues/{issue_number}/labels";
+    let rest = |c: &mut Chain, m: &str, name: Option<&str>, body: Value| -> graftyard_api::wire::Reply {
+        let op = {
+            let r = c.repo(0, &h, &dir);
+            plan_issue_labels(&r, m, "1", name, &body)
+        };
+        let op = match op {
+            Ok(op) => op,
+            Err(x) => return x,
+        };
+        c.commit(WRITER, op).unwrap();
+        let r = c.repo(0, &h, &dir);
+        issue_labels_ok(&r, 1, m == "DELETE" && name.is_none())
+    };
+    let label_names = |x: &graftyard_api::wire::Reply| -> Vec<String> {
+        x.value().as_array().unwrap().iter().map(|l| l["name"].as_str().unwrap().to_owned()).collect()
+    };
+    let a = rest(&mut c, "POST", None, json!({ "labels": ["wip"] }));
+    assert_eq!((a.status, label_names(&a)), (200, vec!["bug".to_owned(), "wip".to_owned()]));
+    keep_rest_as("b036-issue-labels-post", "POST", path, &a);
+    let p = rest(&mut c, "PUT", None, json!(["wip"]));
+    assert_eq!((p.status, label_names(&p)), (200, vec!["wip".to_owned()]));
+    keep_rest_as("b036-issue-labels-put", "PUT", path, &p);
+    let one = rest(&mut c, "DELETE", Some("wip"), Value::Null);
+    assert_eq!((one.status, label_names(&one)), (200, Vec::<String>::new()));
+    keep_rest_as("b036-issue-labels-delete-one", "DELETE", &format!("{path}/{{name}}"), &one);
+    rest(&mut c, "POST", None, json!(["bug", { "name": "wip" }]));
+    let all = rest(&mut c, "DELETE", None, Value::Null);
+    assert_eq!(all.status, 204);
+    keep_rest_as("b036-issue-labels-delete-all", "DELETE", path, &all);
+    // An unknown name is 422 for POST, and 404 for removing a label the issue does not have.
+    assert_eq!(rest(&mut c, "POST", None, json!(["nope"])).status, 422);
+    // One unknown name refuses the whole request, beside a known one.
+    assert_eq!(rest(&mut c, "POST", None, json!(["bug", "nope"])).status, 422);
+    assert_eq!(rest(&mut c, "DELETE", Some("bug"), Value::Null).status, 404);
+    assert_eq!(rest(&mut c, "POST", None, json!({ "labels": [] })).status, 422);
+    let r = c.repo(0, &h, &dir);
+    assert!(plan_issue_labels(&r, "POST", "99", None, &json!(["bug"])).is_err_and(|x| x.status == 404));
+}

@@ -17,8 +17,8 @@ pub use archive::{
 pub use snapshot::{
     FrameCheck, LOG_KEEP, LOG_MAX_BYTES, RESTORE_WINDOW, RefoldError, Restore, RestoreCursor, Row, SNAPSHOT_BYTES,
     SNAPSHOT_EVERY, SnapshotCursor, SnapshotError, SnapshotFrame, SnapshotJob, SnapshotTrailer, archive_due,
-    decode_frames, decode_some, encode_frame, encode_frames, end_snapshot, frames_header, refold_segment, restore,
-    snapshot_due, snapshot_writer, snapshots_to_keep,
+    archive_due_walk, decode_frames, decode_some, encode_frame, encode_frames, end_snapshot, frames_header,
+    refold_segment, restore, snapshot_due, snapshot_writer, snapshots_to_keep,
 };
 pub use store::{
     Key, META, MemStore, Overlay, Read, Rows, Schema, Store, Stored, TableDef, TierStore, Val, undo_table,
