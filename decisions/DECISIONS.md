@@ -1998,6 +1998,18 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** For the feed: a GHES client that branches on 403 for a visible repository. For external tasks: a vendor that needs its tasks to bind each other, which would need a claim for external tasks. For core rows: a merge built from core rows alone. For F60 and A24: `am1-fix`'s measurements settle them.
 
+### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
+
+**Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
+
+**Why.** The operator chose the stack. SPA mode keeps the design's rule of no Node rendering tier, because the build is static assets and a prerendered shell, which the edge can serve and later fill with the first route's data. Generating both the client's and the mock's types from the oracle the edge is already checked against keeps the mock from drifting into shapes GHES never sends, so moving a page from the mock to the edge changes the base URL, not the code.
+
+**Beat.** Primer React, the stack GitHub ships (`research/clients.md#62`-`#64`). Waiting for M4-WP3 before any page exists. Hand-written fixture types, which nothing checks against GHES 3.22.
+
+**Evidence.** The operator's request of 2026-11-08. TanStack Start's SPA mode documentation (https://tanstack.com/start/latest/docs/framework/react/guide/spa-mode) [doc]. ReUI's free tier covers all component examples and primitives, and its Pro blocks and icons need a license (https://reui.io/llms.txt) [doc].
+
+**Flip.** A Start release whose SPA build needs a server at run time; a page whose first paint misses BF-38 because the shell cannot carry the inlined data; or a ReUI free component relicensed as Pro.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.

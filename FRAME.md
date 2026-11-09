@@ -21,7 +21,7 @@ The last request was to clean the notes into "a single comprehensive folder of n
 The stack choices that came out of the request are these:
 
 - Service code is Rust compiled to WebAssembly through workers-rs [inference] (`design/DESIGN.md`, "Usage (caller's view)").
-- The web app is React 19 with Primer React (`design/SHARED.md`, "Frontend and native app").
+- The web app is React 19 on TanStack Start in SPA mode, with ReUI's free components and HugeIcons' free icons (`design/SHARED.md`, "Frontend and native app"; "Operator decision, 2026-11-08, web stack" below).
 - A GPUI native app does not earn a place at launch (same section).
 
 ## Goals and quality attributes in priority order
@@ -181,6 +181,12 @@ This refines the SSH ingress decision of 2026-10-31 for the operator's own insta
 ### Operator decision, 2026-11-06, BM-2 latency
 
 The operator, Ben Kraus, chose to reword BM-2's latency clause rather than chase it with more code or move identity leaders. The clause becomes: the merge p99 on a freshly elected leader on the group's home site, with the client in that region, is at most 2 s, and on a freshly elected leader off the home site at most 3 s. BM-2's other clauses are unchanged: `gh pr` and `gh issue` journeys 2 and 3 pass, and a queue entry with a stale `parent_tip` is refused 100 times out of 100. The 2 s had been budgeted against nothing in the design, which assumes a client near the leader and moves leaders home by preferred-site transfer, and after the shard repack what remained off home was cross-region identity reads (`decisions/DECISIONS.md`, "BM-2's latency clause measures a home-site leader, with a looser bound off home"; `build/BUILD-PLAN.md`, M2-WP6).
+
+### Operator decision, 2026-11-08, web stack
+
+> "I want to use Tanstack Start, tanstack query, tanstack db, basically everything from tanstack. For ui components I want to use all components that are free from ReUI. And I want to use the free HugeIcons icons."
+
+The operator also asked to start the web app (M4-WP5) now against a mocked API. This replaces Primer React. The web app is React 19 on TanStack Start, Router, Query, and DB, with TanStack Form, Table, and Virtual where a page needs them. Its components are shadcn/ui on Base UI plus ReUI's free primitives and examples, installed from the `@reui` registry with no license key. Its icons are the free HugeIcons set. Start runs in SPA mode, so the build is static assets and an HTML shell, and the design's rule of no Node server-side rendering tier holds [inference: SPA mode prerenders only the shell at build time]. Until the edge serves a page's routes, the app reads a mock that answers the pinned GHES 3.22 REST description (`decisions/DECISIONS.md`, "The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)").
 
 ## Four Cloudflare questions still carry the run's defaults
 
