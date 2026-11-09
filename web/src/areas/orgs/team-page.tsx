@@ -156,6 +156,9 @@ function AddMember({ org, team, current }: TeamParams & { current: Member[] }) {
         e.preventDefault();
         const v = login.trim();
         if (!v) return setError("Choose an organization member.");
+        if (!candidates.some((c) => c.login === v)) {
+          return setError(`Choose a member of ${org} who is not on this team yet.`);
+        }
         add.mutate({ login: v, role });
       }}
     >

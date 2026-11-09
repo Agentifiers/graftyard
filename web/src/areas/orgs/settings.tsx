@@ -265,12 +265,16 @@ export function OrgProfileForm({ org }: { org: string }) {
 
 export function DangerZone({ org }: { org: string }) {
   return (
-    <Panel title="Danger zone" className="border-destructive/40" flush>
-      <div className="divide-y" data-testid="danger-zone">
+    <section className="flex flex-col gap-2">
+      <h2 className="text-sm font-semibold">Danger zone</h2>
+      <div
+        className="border-destructive/50 divide-destructive/30 divide-y rounded-sm border"
+        data-testid="danger-zone"
+      >
         <RenameRow org={org} />
         <DeleteRow org={org} />
       </div>
-    </Panel>
+    </section>
   );
 }
 
@@ -316,11 +320,11 @@ function RenameRow({ org }: { org: string }) {
       description={
         pending.login ? (
           <span data-pending-rename={pending.login}>
-            Becomes <strong>{pending.login}</strong>. Queued{" "}
-            {pending.queued_at && <Ago at={pending.queued_at} />}. {pending.message}
+            Becomes <strong>{pending.login}</strong> in the next maintenance window. Queued{" "}
+            {pending.queued_at && <Ago at={pending.queued_at} />}.
           </span>
         ) : (
-          "Renaming changes every URL. GitHub redirects the old ones, but a new org can claim the old name."
+          "Renaming changes every URL. Graftyard redirects the old ones, but a new org can claim the old name."
         )
       }
       control={
