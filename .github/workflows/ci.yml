@@ -28,6 +28,23 @@ jobs:
       - run: python3 scripts/check_names.py
       - run: python3 scripts/check_links.py
 
+  web:
+    name: Web format, typecheck, build
+    runs-on: [self-hosted, srv]
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run check
+
   rust:
     name: Rust fmt, clippy, tests
     runs-on: [self-hosted, srv]

@@ -907,3 +907,48 @@ fn the_ring_a_serving_member_keeps_matches_the_pure_feed() {
     assert_eq!(feed::learners_for_feed(&[(900, 0), (1_000, 300)]), 5);
     assert_eq!(feed::learners_for_feed(&[(0, 0)]), 0);
 }
+
+/// LF-13 hosted, install mode (`tests/am1/results/am1-runs.md`): a follower sent `InstallSnapshot` never feeds its ring
+/// the entries the snapshot covered. A cursor from before that hole must get `gone` (410 with the oldest cursor it can
+/// serve), never a `hold` past it that skips the events in between.
+#[test]
+fn a_ring_fed_past_a_hole_refuses_cursors_from_before_it() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "hole", Some(WRITER));
+    let mut ring = feed::Ring::default();
+    let mut fed = Vec::new();
+    for k in 0..3 {
+        let c = issue(app(CLAUDE), shared(&[&format!("hole/{k}/**")], Some("hole")));
+        w.commit(c).unwrap();
+        let after = w.fold();
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = &e.body else { unreachable!() };
+        fed.push((e.index, e.at, evs.clone(), after));
+    }
+    // The first entry reaches the ring; the second does not (installed); the third does.
+    let (i0, at0, evs0, f0) = &fed[0];
+    ring.feed(REPO, &w.ident.owner, &f0.core, &f0.meta, (*i0, *at0, evs0));
+    let cursor = ring.through;
+    let (i2, at2, evs2, f2) = &fed[2];
+    assert!(i2.0 > cursor.0 + 1, "the third entry is past a hole");
+    ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (*i2, *at2, evs2));
+    let (oldest, newest) = ring.bounds();
+    let c = feed::FeedCursor { group: REPO, index: cursor }.encode();
+    assert!(
+        matches!(feed::start(REPO, Some(&c), oldest, newest), feed::Start::Gone { .. }),
+        "a cursor from before the hole is gone, not served past it: oldest {oldest:?}, cursor {cursor:?}"
+    );
+    // A cursor inside the hole, just before the first entry fed after it, would skip that entry's events too.
+    let inside = feed::FeedCursor { group: REPO, index: Index(i2.0 - 1) }.encode();
+    assert!(matches!(feed::start(REPO, Some(&inside), oldest, newest), feed::Start::Gone { .. }), "{oldest:?}");
+    assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the hole, or of the baseline entry, is kept");
+    let c2 = feed::FeedCursor { group: REPO, index: *i2 }.encode();
+    assert_eq!(feed::start(REPO, Some(&c2), oldest, newest), feed::Start::After(*i2), "the new floor serves");
+}
