@@ -1112,3 +1112,44 @@ fn the_in_memory_log_is_bounded_by_bytes() {
     assert!(held <= budget, "restored B holds {held} bytes of applied entries");
     assert!(b.log_base().index.0 > 0, "restore compacted");
 }
+
+/// L0-12: a follower learns a stall from the leader's re-send of an entry no quorum acknowledged within CALL_DEADLINE,
+/// and marks the entry's `at`, so it can stamp `extend` if it wins the next term. A late copy of an append the group
+/// already committed past marks nothing, and neither does a prompt one.
+#[test]
+fn a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry() {
+    let mut c = Cluster::new(17);
+    c.elect(A);
+    c.sync(A);
+    let id = RequestId(graftyard_raft::Ulid(7_000));
+    c.on(A, |m, now| m.commit(now, id, put("k", "v"))).expect("leader admits");
+    let at = c.m(A).log().last().unwrap().at;
+    // The first append and its answers are lost, both ways.
+    let first: Vec<_> =
+        std::mem::take(&mut c.inbox).into_iter().filter(|e| matches!(e.msg, Message::Append(_))).collect();
+    for s in [B, C] {
+        assert_eq!(c.m(s).state().stalled_since, None, "{s:?} holds no marker before the stall");
+    }
+    // A prompt delivery of that append marks nothing.
+    let prompt = first.iter().find(|e| e.to == B).cloned().unwrap();
+    c.on(B, |m, now| m.step(now, prompt.from, prompt.msg));
+    c.inbox.clear();
+    assert_eq!(c.m(B).state().stalled_since, None, "an append sent in time is no stall");
+    // CALL_DEADLINE later the leader re-sends: B and C mark the entry's `at`.
+    c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+    let resent: Vec<_> =
+        std::mem::take(&mut c.inbox).into_iter().filter(|e| matches!(e.msg, Message::Append(_))).collect();
+    for e in resent.iter().filter(|e| e.to == C) {
+        let (from, msg) = (e.from, e.msg.clone());
+        c.on(C, |m, now| m.step(now, from, msg));
+    }
+    assert_eq!(c.m(C).state().stalled_since, Some(at), "the late re-send marks the entry's at");
+    // Everything settles and commits; then a delayed copy of the re-send reaches B, which has committed past it.
+    c.inbox.clear();
+    c.deliver_all();
+    c.sync(A);
+    assert!(c.m(B).state().commit.0 >= c.m(A).log().iter().find(|e| e.at == at).unwrap().index.0);
+    let late = resent.into_iter().find(|e| e.to == B).unwrap();
+    c.on(B, |m, now| m.step(now, late.from, late.msg));
+    assert_eq!(c.m(B).state().stalled_since, None, "a delayed append past the commit marks nothing");
+}

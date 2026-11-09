@@ -658,6 +658,11 @@ fn l0_12_a_stall_ended_by_a_leader_change_moves_every_live_lease() {
     // it, and their answers are lost. Then the old leader is cut off for good.
     w.repo.on(old, now, |m, t| m.tick(t));
     assert_eq!(w.repo.members[old.0 as usize].state().stalled_since, Some(stalled_at));
+    // An edge's `suspect` report reaches the follower that will win before the re-send does: it marks the end of the
+    // stall, and the re-send's earlier entry must still win.
+    let new = *SITES.iter().find(|s| **s != old).unwrap();
+    w.repo.on(new, now, |m, t| m.suspect(t, graftyard_raft::Colo(1), old, m.term()));
+    assert_eq!(w.repo.members[new.0 as usize].state().stalled_since, Some(now));
     let resent: Vec<_> = std::mem::take(&mut w.repo.inbox).into_iter().filter(|e| e.from == old).collect();
     assert!(!resent.is_empty(), "the old leader re-sends its entry");
     for e in resent {
@@ -667,7 +672,6 @@ fn l0_12_a_stall_ended_by_a_leader_change_moves_every_live_lease() {
     // Once the followers' promises lapse, a `suspect` report starts a campaign on one of them, which wins.
     w.now = Timestamp(w.now.0 + graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1_000);
     let now = w.now;
-    let new = *SITES.iter().find(|s| **s != old).unwrap();
     w.repo.on(new, now, |m, t| m.suspect(t, graftyard_raft::Colo(1), old, m.term()));
     w.repo.deliver(now);
     assert_eq!(w.repo.leader(), new, "a follower took over");
