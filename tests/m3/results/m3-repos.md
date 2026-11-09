@@ -140,6 +140,71 @@ Each subtest's lifecycle on the edge is:
 
 The `auto_init` request-id bug has no plant: the in-process raft harness (`crates/git/tests/transfer.rs`) does not replay by request id the way the site's leader does, and a probe test there passed with the shared id. The hosted smoke check `GET is 200 with the same id` (description and settings) is its check.
 
+## Edge read gate, after 932cc33
+
+Run 01:19Z to 01:40Z on 2026-11-09, from main's checkout at **`6042f3e`**. That commit includes `932cc33` (a REST repository route that gets a credential the edge refuses answers 401 "Bad credentials" before the read gate) and `6b3fee5` (the create path calls the edge's new `validate` with an empty `detail`). Only the edge was redeployed. `932cc33` changes only `workers/edge`, so the sites stayed on `14a74047`, `d053ae58`, and `acab4d3e` from `3160687`.
+
+| Script | Version | From |
+| --- | --- | --- |
+| `graft-m2b-edge` | `c23944de-4cf7-44d8-932c-15fa58937e00` | `6042f3e`, 01:19:42Z, `tests/m3/rows/deploy-edge.sh`, `FORMATS_ENABLED` the same as before (the earlier set plus 32.13) |
+
+[measured, `wrangler deployments list` at 100%, `tests/m3/raw/gate2/edge-6042f3e.log`]
+
+### The create path after `6b3fee5`
+
+| Check | Runs | Result |
+| --- | --- | --- |
+| `gh repo create --public --add-readme` (REST `auto_init`, the path `6b3fee5` changed), org and user | 6 (3 each) | 6 of 6: exit 0, the right URL, `GET` 200 public, `main` present, `DELETE` 204 |
+| `gh repo create --private`, plain (GraphQL `createRepository`, no README), org and user | 6 (3 each) | 6 of 6: exit 0, `GET` 200 private, no `main`, `DELETE` 204 |
+| REST smoke (`smoke.mjs`: `auto_init` create, clone with README, `fsck --strict`, push, `PATCH`, refusals, `DELETE`, user create and rename) | 1 | 23 of 23. Its 14 replies are valid against GHES 3.22 (0 failed) |
+
+[measured, `tests/m3/raw/gate2/ghcreate.jsonl`, `smoke.jsonl`]
+
+### Refused credentials
+
+`tests/m3/repos/gate2.mjs 12`, run as the orb service `m3gate2-gate`, 01:22Z to 01:26Z. It made two fresh repositories, `m3org/gate2-priv-mw8ksrgo` (private) and `m3org/gate2-pub-mw8ksrgo` (public). Each round minted a new PAT for m3-member, who can read both, revoked it, and waited 11 s.
+
+| Case | Runs | Status codes |
+| --- | --- | --- |
+| The PAT before revocation: `GET /repos/m3org/gate2-priv-…`, git `info/refs` | 12 | 12 of 12: **200**, **200** |
+| `DELETE /applications/{gh}/token` | 12 | 12 of 12: **204** |
+| Revoked, 11 s later: `GET /repos/m3org/gate2-priv-…` | 12 | 12 of 12: **401 "Bad credentials"** (404 before `932cc33`) |
+| Revoked, 11 s later: git `info/refs?service=git-upload-pack` on the private repository | 12 | 12 of 12: **401** |
+| Revoked, on the **public** repository: `GET /repos/m3org/gate2-pub-…` | 12 | 12 of 12: **401 "Bad credentials"** (200 as anonymous before `932cc33`) |
+| A well-formed token no account holds, private repository | 12 | 12 of 12: **401 "Bad credentials"** |
+| The same unknown token, public repository | 12 | 12 of 12: **401 "Bad credentials"** |
+| Control: anonymous, public repository | 12 | 12 of 12: **200** |
+| Control: anonymous, private repository | 12 | 12 of 12: **404** |
+
+[measured, `tests/m3/raw/gate2/gate2.jsonl`, `gate2.log`]
+
+So the side effect is as expected: a bad or revoked token on a public repository's REST route is now 401, not served as anonymous. An anonymous request to the same route is still served.
+
+### The existing drivers on edge `c23944de`
+
+| Driver | Runs | Result |
+| --- | --- | --- |
+| `tests/m3/repos/seeded.sh bf24 10`: owner `m2b` | 10 | 10 of 10: `gh api` 200 (admin, push, pull), `gh issue list` rc 0, REST `commits/main/statuses` 200, clone rc 0, push accepted |
+| writer `m2b-writer` | 10 | 10 of 10: the same with push and pull only; push accepted |
+| reader `m2b-reader` | 10 | 10 of 10: the same with pull only; push refused **403** |
+| the seed's revoked token (git) | 10 | 10 of 10: `info/refs` **401**, clone exits 128 |
+| `tests/m3/rows/bf34.mjs 3 h` (collaborators, repository and org invitations, teams) | 3 | 3 of 3 pass; 51 REST replies valid against GHES 3.22, 0 failed |
+| `tests/m3/rows/bf35.mjs 10` (`POST`/`GET /user/keys`, `gh ssh-key list`) | 10 | 10 of 10 |
+| `tests/m3/rows/bf31.mjs 3` (scoped `github_pat_`, `ghu_`/`ghr_` pairs, `DELETE /applications/{client}/token`), rerun because it sends revoked tokens | 3 | 3 of 3: scope, pair, and delete pass; 0 uses after revocation |
+| `smoke.mjs`'s bad-token case (`POST /orgs/m3org/repos` with an unknown token) | 1 | 401, as before (not a repository route) |
+
+[measured, `tests/m3/raw/gate2/seeded-bf24.tsv`, `bf34.jsonl`, `bf35.jsonl`, `bf31.jsonl`, `smoke.jsonl`]
+
+**No driver relied on a bad token being treated as anonymous.** The drivers that send revoked or unknown tokens all expect a refusal:
+- `seeded.sh`: the seed's revoked token, over git only.
+- `gate.mjs`: on the 3160687 edge it recorded the old 404, and `gate2.mjs` supersedes it.
+- `bf31.mjs`: `/user` and `/_bed/push`, both already 401.
+- `smoke.mjs`: a non-repository route, already 401.
+
+None of them sends a bad token to a public repository's REST route and expects it to be served. `gate.mjs`'s `revoked-read` case would now record `after11s=401` in place of 404.
+
+A scan of every file in `tests/m3/raw/gate2/` and the smoke replies (79 files) checked for each m2b and m3r token, the bed token, the tools token, the App's client secret, and the token, key, JWT, and PEM shapes: 0 hits. The new driver `tests/m3/repos/gate2.mjs` sends tokens in headers only.
+
 ## Checks
 
 On `85f626e`:
@@ -161,7 +226,7 @@ On `85f626e`:
 - `design/SHARED.md`, "Multi-chain operations", says: "Every multi-chain operation names its commit point, its finisher, and its abort path." It lists transfer, enterprise change, fork, signup, credentials, and workflow run, but not a repository's create or delete. The create here is `CreateRepo` (the commit point), then `RepoOwner`, the README push, and `InitRepo`, all in band. No finisher owes the rest: `Audit`'s `authz_owed` owes only `Reserved` names and enterprise changes. So an edge crash between `CreateRepo` and `RepoOwner` strands a `Live` name whose group cannot be built [inference]. The delete has the same gap: an edge crash between the chain's `Deleted` and the name's `Deleted` leaves the name resolving to a chain that answers `NotFound`.
 - `design/SHARED.md`'s `RepoEvent` list has no creation event and no creation time. GHES's `full-repository` requires `created_at`, `updated_at`, and `pushed_at`. 32.13's `Created` writes `created_at`. `updated_at` and `pushed_at` render as the creation time [inference], since nothing records them yet.
 - `design/SHARED.md`, `RepoEvent`: "`Deleted { retain_until: Timestamp, actor: Actor }`". The code's `Deleted` carries `actor: Option<AccountId>`, the shape the other 32.x events use. SHARED, "Repository repair, tombstones, and retention": "Deleting a repository appends `Deleted { retain_until }` to its chain, 90 days by default, and turns its name entry `Deleted`." That is what is built, in that order.
-- The read gate answers a REST read made with a revoked or unknown token as anonymous: 404 on a private repository, 200 on a public one. GitHub answers 401 "Bad credentials" (see "Edge read gate").
+- The read gate answers a REST read made with a revoked or unknown token as anonymous: 404 on a private repository, 200 on a public one. GitHub answers 401 "Bad credentials" (see "Edge read gate"). Fixed on main by `932cc33`; measured again in "Edge read gate, after 932cc33".
 
 ## Not done
 
