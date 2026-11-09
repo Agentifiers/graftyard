@@ -10,6 +10,7 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
+mod archive;
 mod audit;
 mod callers;
 mod family;

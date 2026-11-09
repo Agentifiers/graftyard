@@ -1000,6 +1000,7 @@ impl<F: Family> Routes<F> {
             "leases": s.leases,
             "markerFailures": s.marker_failures,
             "truncatedTo": s.truncated_to,
+            "archiveSteps": s.archive_steps,
             "received": s.received,
             "alarms": s.alarms,
             "alarmRuns": s.alarm_runs,

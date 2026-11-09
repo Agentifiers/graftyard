@@ -125,6 +125,8 @@ pub struct Stats {
     pub marker_failures: u32,
     /// The stored log's first row after the last truncation (`truncate`).
     pub truncated_to: u64,
+    /// Leader: archive alarm runs that promoted or archived a range (`crate::archive`).
+    pub archive_steps: u32,
     /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
     /// command it could not decode.
     pub received: BTreeMap<String, u32>,
