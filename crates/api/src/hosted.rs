@@ -294,6 +294,12 @@ pub enum What {
     Lease {
         created: bool,
     },
+    /// `POST`, `PUT`, `DELETE /repos/{o}/{r}/issues/{n}/labels[/{name}]` (`crate::rest::plan_issue_labels`): the
+    /// issue's labels, or 204 when `empty` (a `DELETE` of every label).
+    IssueLabels {
+        n: u32,
+        empty: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -406,6 +412,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
             };
             WireReply::of(&crate::leases::render_ok(&r, owner, at, acked, *created))
         }
+        What::IssueLabels { n, empty } => WireReply::of(&crate::rest::issue_labels_ok(&r, *n, *empty)),
     }
 }
 
@@ -423,6 +430,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::RepoSaved { .. } => WireReply::of(&crate::repos::refused(e)),
         What::RepoCreatedGraphql { .. } => graphql(crate::graphql::refused_field("createRepository", e)),
         What::Lease { .. } => WireReply::of(&crate::leases::refused(None, e)),
+        What::IssueLabels { .. } => WireReply::of(&crate::rest::issue_labels_refused(e)),
     }
 }
 

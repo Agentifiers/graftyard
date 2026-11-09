@@ -1254,6 +1254,27 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                 Err(x) => x,
             }
         }
+        // B0-36's labels write: `issues/{n}/labels`, add, replace, remove all, and remove one.
+        (m @ (Method::Post | Method::Put | Method::Delete), ["issues", n, "labels", rest @ ..]) if rest.len() <= 1 => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let m = match m {
+                Method::Post => "POST",
+                Method::Put => "PUT",
+                _ => "DELETE",
+            };
+            let name = rest.first().copied();
+            let b = if m == "DELETE" { Value::Null } else { body(req.bytes().await?) };
+            match rest::plan_issue_labels(&r, m, n, name, &b) {
+                Ok(op) => {
+                    let what = What::IssueLabels { n: n.parse().unwrap_or(0), empty: m == "DELETE" && name.is_none() };
+                    commit_issue(c, &rd, &who, to_wire(op), what).await?
+                }
+                Err(x) => x,
+            }
+        }
         (Method::Get | Method::Head, ["releases", "tags", tag]) => release::get_by_tag(&r, tag),
         (Method::Get, ["releases", n]) if id(n).is_some() => release::get(&r, id(n).unwrap_or(0)),
         (Method::Get, ["releases", "assets", n]) => {

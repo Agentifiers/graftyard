@@ -315,6 +315,37 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
             };
             planned(Plan::Issue(Box::new(IssueOp::Change { n, change })), Some(n))
         }
+        // `gh pr ready` and `gh pr ready --undo` (B0-36's ready-for-review): the draft flag, which `decide` refuses an
+        // `Agent` to clear (`AgentRule::ReadyForReview`).
+        "markPullRequestReadyForReview" | "convertPullRequestToDraft" => {
+            let n = s("pullRequestId")
+                .and_then(|id| item_of(r, id))
+                .filter(|n| r.item(*n).is_some_and(|it| it.is_pull()))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let draft = field == "convertPullRequestToDraft";
+            planned(
+                Plan::Issue(Box::new(IssueOp::Change { n, change: graftyard_git::issues::IssueChange::Draft(draft) })),
+                Some(n),
+            )
+        }
+        // `gh issue edit --add-label` and `--remove-label` (B0-36's labels): `ApplyLabels`, which `decide` refuses an
+        // `Agent` for a label outside the repository's allowlist.
+        "addLabelsToLabelable" | "removeLabelsFromLabelable" => {
+            let n = s("labelableId")
+                .and_then(|id| item_of(r, id))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            let labels: SmallVec<[LabelId; 4]> = ids(&input, "labelIds", NodeType::Label, r)
+                .map_err(|m| not_found(field, m))?
+                .into_iter()
+                .map(|i| LabelId(DbId(i)))
+                .collect();
+            if labels.is_empty() {
+                return Err(unprocessable(field, "labelIds can't be blank"));
+            }
+            let (add, remove) =
+                if field == "addLabelsToLabelable" { (labels, SmallVec::new()) } else { (SmallVec::new(), labels) };
+            planned(Plan::Issue(Box::new(IssueOp::ApplyLabels { n, add, remove })), Some(n))
+        }
         // `gh pr review`: `PullRequestReviewAdd` with `event` and `body`, a review at the pull request's head.
         "addPullRequestReview" => {
             let n = s("pullRequestId")
@@ -500,6 +531,10 @@ impl Obj for Payload<'_> {
             "createPullRequest" => "CreatePullRequestPayload",
             "addPullRequestReview" => "AddPullRequestReviewPayload",
             "updatePullRequest" => "UpdatePullRequestPayload",
+            "markPullRequestReadyForReview" => "MarkPullRequestReadyForReviewPayload",
+            "convertPullRequestToDraft" => "ConvertPullRequestToDraftPayload",
+            "addLabelsToLabelable" => "AddLabelsToLabelablePayload",
+            "removeLabelsFromLabelable" => "RemoveLabelsFromLabelablePayload",
             _ => "AddCommentPayload",
         }
     }
@@ -510,7 +545,19 @@ impl Obj for Payload<'_> {
         Some(match (f, self.root.out) {
             ("clientMutationId", _) => leaf(Value::Null),
             ("issue" | "pullRequest", IssueOut::Number(n)) => node(*n),
-            ("pullRequest", IssueOut::Done) if self.root.p.field == "updatePullRequest" => node(self.root.p.subject?),
+            ("pullRequest", IssueOut::Done)
+                if matches!(
+                    self.root.p.field.as_str(),
+                    "updatePullRequest" | "markPullRequestReadyForReview" | "convertPullRequestToDraft"
+                ) =>
+            {
+                node(self.root.p.subject?)
+            }
+            ("labelable", IssueOut::Done)
+                if matches!(self.root.p.field.as_str(), "addLabelsToLabelable" | "removeLabelsFromLabelable") =>
+            {
+                node(self.root.p.subject?)
+            }
             ("actor", _) if self.root.p.field == "updatePullRequest" => Out::Null,
             ("commentEdge", IssueOut::Id(id)) => obj(Edge { r, n: self.root.p.subject?, id: *id }),
             ("pullRequestReview", IssueOut::Id(id)) => obj(crate::gql::review(r, self.root.p.subject?, *id)?),
