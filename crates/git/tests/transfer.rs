@@ -49,7 +49,12 @@ fn config(me: SiteId) -> MemberConfig {
         },
         regions: vec![(SITES[0], Region::Enam), (SITES[1], Region::Weur), (SITES[2], Region::Apac)],
         release: ReleaseTag { id: ReleaseId([3; 32]), seq: 1 },
-        reads: vec![REPO_FORMAT_V1, graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES, REPO_FORMAT_TRANSFER],
+        reads: vec![
+            REPO_FORMAT_V1,
+            graftyard_git::issue_ops::call::REPO_FORMAT_ISSUES,
+            REPO_FORMAT_TRANSFER,
+            graftyard_git::repo::REPO_FORMAT_REPOS,
+        ],
     }
 }
 
@@ -410,4 +415,55 @@ fn the_transfer_settings_wire_form_names_its_format_first() {
     let mut old = v;
     old["transfer"]["format"] = serde_json::json!([32, 9]);
     assert!(serde_json::from_value::<RepoCmd>(old).is_err());
+}
+
+/// `rest:repos` (format 32.13) on real members: the create's `InitRepo` names the chain's owner and its enterprise
+/// once, a delete's `Deleted` tombstone then refuses every push and issue command, and the wire form names 32.13.
+#[test]
+fn a_created_then_deleted_repository_refuses_every_write() {
+    use graftyard_git::issue_ops::IssueOp;
+    let mut g = G::new();
+    let mut s = defaults();
+    let call = |op: IssueOp<graftyard_git::blob::BlobRef>, g: &mut G| {
+        let rid = g.rid();
+        RepoCmd::Issue(Box::new(IssueCall::new(op, who(OLD_ADMIN), rid, serde_json::Value::Null)))
+    };
+    // alpha is in E1, so a create that names no enterprise is refused, and one that names E1 commits.
+    let c = call(IssueOp::InitRepo(s.clone()), &mut g);
+    assert!(matches!(g.commit(c), Err(RepoErr::Issue { err: IssueErr::OwnerChange, .. })));
+    s.enterprise = Some(E1);
+    let c = call(IssueOp::InitRepo(s.clone()), &mut g);
+    let v = serde_json::to_value(&c).unwrap();
+    assert_eq!(v["issue"]["format"], serde_json::json!([32, 13]));
+    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), c);
+    assert!(g.commit(c).is_ok());
+    assert_eq!(g.settings().map(|s| (s.owner, s.enterprise)), Some((ALPHA, Some(E1))));
+    assert!(pushed(&g.push(OLD_ADMIN, 1)));
+    let c = call(IssueOp::DeleteRepo { retain_until: Timestamp(g.now.0 + 90 * 86_400_000) }, &mut g);
+    assert!(g.commit(c).is_ok());
+    assert!(refused(&g.push(OLD_ADMIN, 2)), "a deleted repository takes no push");
+    let c = call(IssueOp::Settings(s), &mut g);
+    assert!(matches!(g.commit(c), Err(RepoErr::Issue { err: IssueErr::NotFound, .. })));
+    g.agree();
+}
+
+fn defaults() -> RepoSettings {
+    RepoSettings {
+        owner: ALPHA,
+        enterprise: None,
+        visibility: graftyard_git::issues::Visibility::Private,
+        default_branch: RefName::parse(b"refs/heads/main").unwrap(),
+        archived: false,
+        description: None,
+        homepage: None,
+        topics: SmallVec::new(),
+        has_issues: true,
+        has_wiki: false,
+        has_projects: false,
+        merge_methods: smallvec::smallvec![graftyard_git::issues::MergeMethod::Merge],
+        delete_branch_on_merge: false,
+        allow_auto_merge: false,
+        allow_update_branch: false,
+        check_retention_days: 90,
+    }
 }

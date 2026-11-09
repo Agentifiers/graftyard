@@ -18,6 +18,7 @@ pub mod hosted;
 pub mod leases;
 pub mod lfs;
 pub mod release;
+pub mod repos;
 pub mod rest;
 pub mod schema;
 pub mod tasks;

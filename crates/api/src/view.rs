@@ -125,6 +125,14 @@ impl Repo<'_> {
         Some(Item { n, row, pull })
     }
 
+    /// Open issues and pull requests, as GitHub's `open_issues_count` counts them.
+    pub fn issue_count(&self) -> usize {
+        [IssueKind::Issue, IssueKind::PullRequest]
+            .iter()
+            .map(|k| self.meta.prefix("issue_order", &order_key(*k, true, IssueNumber(0))[..2]).len())
+            .sum()
+    }
+
     pub fn item_by_id(&self, id: DbId) -> Option<Item> {
         let n: u32 = get_rec(self.meta, "issue_by_id", &[int(id.0)])?;
         self.item(IssueNumber(n))

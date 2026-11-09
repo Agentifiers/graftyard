@@ -26,6 +26,8 @@ thiserror.workspace = true
 worker = { workspace = true, optional = true }
 js-sys = { version = "0.3", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
+sha1 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
 [dev-dependencies]
 futures-executor = "0.3"

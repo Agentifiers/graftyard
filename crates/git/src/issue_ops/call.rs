@@ -37,6 +37,8 @@ pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 9 };
 /// `CancelInvitation` (BF-34's `DELETE /repos/{o}/{r}/invitations/{id}`): a release that reads only up to 32.9 has no
 /// such command. Version 10 is taken by BF-30's transfer `Settings` (branch of the BF-30 work), so this is 32.11.
 pub const REPO_FORMAT_INVITATIONS: Format = Format { family: 0x20, version: 11 };
+/// `InitRepo` and `DeleteRepo` (`rest:repos`' create and delete) and their events `Created` and `Deleted`.
+pub use crate::repo::REPO_FORMAT_REPOS;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -80,6 +82,11 @@ impl IssueCall {
         // 32.8 next: only it may carry agent events, so an App's 32.8 command carries its claims as 32.9 does.
         if self.agent || matches!(self.op, IssueOp::SetAgentPolicy(_)) {
             return crate::repo::REPO_FORMAT_AGENT;
+        }
+        // A repository's create and delete, under a user's credential only: the edge sends neither under an
+        // installation token, whose claims 32.13 does not carry.
+        if matches!(self.op, IssueOp::InitRepo(_) | IssueOp::DeleteRepo { .. }) {
+            return REPO_FORMAT_REPOS;
         }
         if matches!(self.actor.credential, Credential::Stateless(_)) {
             return REPO_FORMAT_APP_CALLS;
@@ -180,6 +187,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_APP_CALLS,
             REPO_FORMAT_INVITATIONS,
             crate::repo::REPO_FORMAT_TASKS,
+            REPO_FORMAT_REPOS,
             crate::repo::REPO_FORMAT_LEASES,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {

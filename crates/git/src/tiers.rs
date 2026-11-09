@@ -80,6 +80,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::TaskCreated(_) => both,
         RepoEvent::TaskUpdated { pr: None, summary: None, .. } => TierSet::CORE,
         RepoEvent::TaskUpdated { .. } => both,
+        RepoEvent::Created { .. } | RepoEvent::Deleted { .. } => TierSet::CORE,
         RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
         RepoEvent::PathSet(_) => TierSet::METADATA,
     }
@@ -140,6 +141,10 @@ pub const CORE: Schema = Schema {
         t("lease_expiry", &["expires", "id"]),
         t("lease_plan", &["n", "holder", "id"]),
         t("lease_exclusive", &["prefix", "id"]),
+        // Format 32.13: when the repository was created over the API, and its `Deleted` tombstone. After AM1-WP4's lease
+        // tables, so the schema keeps main's order and appends.
+        t("created", &[]),
+        t("deleted", &[]),
     ],
 };
 
@@ -207,6 +212,16 @@ pub(crate) fn source_key(s: &CheckSource) -> Val {
         CheckSource::Run { app, .. } => Val::Text(format!("app:{}", app.0.0).into()),
         CheckSource::Status { creator } => Val::Text(format!("status:{}", creator.0.0).into()),
     }
+}
+
+/// When the repository was created over the API (format 32.13), if it was.
+pub fn created(core: &(impl Read + ?Sized)) -> Option<Timestamp> {
+    get_rec(core, "created", &[])
+}
+
+/// The repository's `Deleted` tombstone: kept until this time, and who deleted it.
+pub fn deleted(core: &(impl Read + ?Sized)) -> Option<(Timestamp, Option<AccountId>)> {
+    get_rec(core, "deleted", &[])
 }
 
 pub fn get_rec<T: DeserializeOwned>(r: &(impl Read + ?Sized), table: &str, key: &[Val]) -> Option<T> {
@@ -789,6 +804,12 @@ impl RepoTiers {
             RepoEvent::AgentPolicy(p) => put_rec(w, "agent_policy", Vec::new(), p),
             RepoEvent::TaskCreated(t) => crate::task::write_created_core(w, t, at),
             RepoEvent::TaskUpdated { session, state, .. } => crate::task::write_updated_core(w, session, *state, at),
+            RepoEvent::Created { .. } => {
+                if get_rec::<Timestamp>(w, "created", &[]).is_none() {
+                    put_rec(w, "created", Vec::new(), &at);
+                }
+            }
+            RepoEvent::Deleted { retain_until, actor } => put_rec(w, "deleted", Vec::new(), &(*retain_until, *actor)),
             RepoEvent::LeaseAcquire { lease, plan } => crate::lease::write_acquire(w, lease, *plan),
             RepoEvent::LeaseRenew { id, expires } => crate::lease::write_renew(w, *id, *expires),
             RepoEvent::LeaseRelease { ids, .. } => {
