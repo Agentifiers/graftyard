@@ -346,6 +346,17 @@ pub enum RepoEvent {
     },
     /// Metadata, in the push's entry: one row per ref, deleted when the ref's pull request closes.
     PathSet(crate::agent::PathSet),
+    // M4-WP1, format 32.16 (`crate::hooks::REPO_FORMAT_HOOKS`): tags 39 and 40.
+    /// Core. SHARED's `Hook { id, record, actor }`, plus `created`, which `decide` sets for a hook that had no row,
+    /// so the `Webhooks` consumer pings a new hook and not an edited one. `record: None` deletes it.
+    Hook {
+        id: crate::hooks::HookId,
+        record: Option<crate::hooks::HookRecord>,
+        actor: Option<AccountId>,
+        created: bool,
+    },
+    /// Core. The `Webhooks` consumer's `HookCursor` on this chain, written only by `HookCursorCmd`.
+    HookCursor(crate::hooks::HookCursor),
 }
 
 impl RepoEvent {
@@ -1701,6 +1712,9 @@ impl Record for RepoEvent {
             RepoEvent::LeaseRenew { id, expires } => return tagged(out, 36, &(id, expires)),
             RepoEvent::LeaseRelease { ids, by } => return tagged(out, 37, &(ids, by)),
             RepoEvent::PathSet(p) => return tagged(out, 38, p),
+            // M4-WP1, 32.16: tags 39 and 40.
+            RepoEvent::Hook { id, record, actor, created } => return tagged(out, 39, &(id, record, actor, created)),
+            RepoEvent::HookCursor(c) => return tagged(out, 40, c),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1871,6 +1885,8 @@ pub enum RepoCmd {
     Merge(Box<crate::merge_call::MergeCall>),
     /// The transfer's own `Settings` (`crate::transfer`), `{"transfer": ..}`, format 32.10: only a finisher sends it.
     Transfer(crate::transfer::TransferSettings),
+    /// The `Webhooks` consumer's cursor (`crate::hooks`), `{"hookCursor": ..}`, format 32.16.
+    HookCursor(crate::hooks::HookCursorCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1880,6 +1896,7 @@ pub enum RepoOut {
     Issue(crate::issue_ops::call::IssueCallOut),
     Merge(crate::merge_call::MergeCallOut),
     Transfer(crate::transfer::TransferOut),
+    HookCursor(crate::hooks::HookCursorOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -1895,7 +1912,11 @@ impl crate::smart::PushOutOf for RepoOut {
     fn push_out(&self) -> Option<&PushOut> {
         match self {
             RepoOut::Push(p) => Some(p),
-            RepoOut::Sync(_) | RepoOut::Issue(_) | RepoOut::Merge(_) | RepoOut::Transfer(_) => None,
+            RepoOut::Sync(_)
+            | RepoOut::Issue(_)
+            | RepoOut::Merge(_)
+            | RepoOut::Transfer(_)
+            | RepoOut::HookCursor(_) => None,
         }
     }
 }
@@ -1909,6 +1930,7 @@ impl Serialize for RepoCmd {
             Issue(&'a crate::issue_ops::call::IssueCall),
             Merge(&'a crate::merge_call::MergeCall),
             Transfer(&'a crate::transfer::TransferSettings),
+            HookCursor(&'a crate::hooks::HookCursorCmd),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -1916,6 +1938,7 @@ impl Serialize for RepoCmd {
             RepoCmd::Issue(c) => Tagged::Issue(c).serialize(s),
             RepoCmd::Merge(c) => Tagged::Merge(c).serialize(s),
             RepoCmd::Transfer(c) => Tagged::Transfer(c).serialize(s),
+            RepoCmd::HookCursor(c) => Tagged::HookCursor(c).serialize(s),
         }
     }
 }
@@ -1936,6 +1959,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(|c| RepoCmd::Merge(Box::new(c))).map_err(D::Error::custom)
         } else if let Some(c) = one("transfer") {
             serde_json::from_value(c).map(RepoCmd::Transfer).map_err(D::Error::custom)
+        } else if let Some(c) = one("hookCursor") {
+            serde_json::from_value(c).map(RepoCmd::HookCursor).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -1950,6 +1975,7 @@ impl Record for RepoCmd {
             RepoCmd::Issue(c) => out.extend(serde_json::to_vec(c).expect("an issue command encodes")),
             RepoCmd::Merge(c) => c.cmd.encode(out),
             RepoCmd::Transfer(c) => c.encode(out),
+            RepoCmd::HookCursor(c) => c.encode(out),
         }
     }
 }
@@ -1967,6 +1993,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.format(),
             RepoCmd::Merge(c) => c.cmd.format(),
             RepoCmd::Transfer(c) => c.format(),
+            RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
         }
     }
     fn tiers(&self) -> TierSet {
@@ -1976,6 +2003,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.tiers(),
             RepoCmd::Merge(c) => c.cmd.tiers(),
             RepoCmd::Transfer(c) => c.tiers(),
+            RepoCmd::HookCursor(c) => c.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -1985,6 +2013,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.deps(fold),
             RepoCmd::Merge(c) => c.cmd.deps(fold),
             RepoCmd::Transfer(c) => c.deps(),
+            RepoCmd::HookCursor(_) => SmallVec::new(),
         }
     }
     fn decide(
@@ -2010,6 +2039,10 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => {
                 c.decide(s, deps).map(|(e, o)| (e, RepoOut::Transfer(o))).map_err(RepoErr::Transfer)
             }
+            RepoCmd::HookCursor(c) => {
+                let (e, o) = c.decide(s);
+                Ok((e, RepoOut::HookCursor(o)))
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2021,6 +2054,7 @@ impl Command for RepoCmd {
                 RepoOut::Merge(crate::merge_call::MergeCallOut { out: c.cmd.replay(events), render: c.render.clone() })
             }
             RepoCmd::Transfer(c) => RepoOut::Transfer(c.replay(events)),
+            RepoCmd::HookCursor(c) => RepoOut::HookCursor(c.replay(events)),
         }
     }
 }

@@ -12,6 +12,7 @@ pub mod bucket;
 pub mod clone;
 pub mod feed;
 pub mod group;
+pub mod hooks;
 pub mod ingest;
 pub mod init;
 pub mod issue_ops;

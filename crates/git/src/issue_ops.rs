@@ -289,6 +289,17 @@ pub enum IssueOp<B = DurableBlob> {
     ReleaseLease {
         id: crate::lease::LeaseId,
     },
+    // ---- M4-WP1, format 32.16 (`crate::hooks`) ----
+    /// `POST /repos/{o}/{r}/hooks` (`id: None`) and `PATCH .../hooks/{id}`: the whole record, its secret already
+    /// wrapped by `graft-ops`. Admin only.
+    PutHook {
+        id: Option<crate::hooks::HookId>,
+        record: crate::hooks::HookRecord,
+    },
+    /// `DELETE /repos/{o}/{r}/hooks/{id}`.
+    DeleteHook {
+        id: crate::hooks::HookId,
+    },
 }
 
 impl<B> IssueOp<B> {
@@ -348,6 +359,8 @@ impl<B> IssueOp<B> {
             O::AcquireLease(l) => O::AcquireLease(l),
             O::RenewLease { id, ttl_seconds } => O::RenewLease { id, ttl_seconds },
             O::ReleaseLease { id } => O::ReleaseLease { id },
+            O::PutHook { id, record } => O::PutHook { id, record },
+            O::DeleteHook { id } => O::DeleteHook { id },
         })
     }
 
@@ -357,6 +370,11 @@ impl<B> IssueOp<B> {
     }
 
     /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
+    /// Whether this is a hook command, format 32.16.
+    pub fn is_hook(&self) -> bool {
+        matches!(self, IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. })
+    }
+
     pub fn is_task(&self) -> bool {
         matches!(self, IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. })
     }
@@ -448,6 +466,7 @@ impl IssueCmd {
             | IssueOp::RemoveCollaborator { .. }
             | IssueOp::CancelInvitation { .. } => TierSet::CORE,
             IssueOp::SetAgentPolicy(_) | IssueOp::DeleteRepo { .. } => TierSet::CORE,
+            IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => TierSet::CORE,
             // `Settings` writes the metadata tier's `retention` too.
             IssueOp::InitRepo(_) => both,
             // A task's core row changes on every task command, and its metadata row on a create, a `pr`, or a summary.
@@ -1122,6 +1141,36 @@ impl IssueCmd {
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
                 Err(IssueErr::Invalid("a lease command is decided by crate::lease::decide"))
             }
+            IssueOp::PutHook { id, record } => {
+                need(RepoPermission::Admin)?;
+                hook_ok(record)?;
+                let existing = crate::hooks::hooks(v.core());
+                let (id, created) = match id {
+                    Some(i) => {
+                        let old = crate::hooks::hook(v.core(), *i).ok_or(IssueErr::NotFound)?;
+                        if old == *record {
+                            return Ok((SmallVec::new(), IssueOut::Id(i.0)));
+                        }
+                        (*i, false)
+                    }
+                    None => {
+                        if existing.len() >= crate::hooks::HOOKS_PER_REPO_MAX {
+                            return Err(IssueErr::Invalid("a repository has at most 20 hooks"));
+                        }
+                        if existing.iter().any(|(_, h)| h.url == record.url) {
+                            return Err(IssueErr::Exists);
+                        }
+                        (crate::hooks::HookId(v.next_id(Tier::Core)?), true)
+                    }
+                };
+                let ev = RepoEvent::Hook { id, record: Some(record.clone()), actor: me, created };
+                Ok((one(ev), IssueOut::Id(id.0)))
+            }
+            IssueOp::DeleteHook { id } => {
+                need(RepoPermission::Admin)?;
+                crate::hooks::hook(v.core(), *id).ok_or(IssueErr::NotFound)?;
+                Ok((one(RepoEvent::Hook { id: *id, record: None, actor: me, created: false }), IssueOut::Done))
+            }
         }
     }
 
@@ -1282,6 +1331,8 @@ impl IssueCmd {
             IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. } => {
                 smallvec![w("contents")]
             }
+            // GitHub's App permission for repository webhooks.
+            IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => smallvec![w("repository_hooks")],
         }
     }
 
@@ -1307,6 +1358,7 @@ impl IssueCmd {
                 RepoEvent::TaskUpdated { session, state, .. } => return crate::task::replay(&self.op, session, *state),
                 RepoEvent::LeaseAcquire { lease, .. } if self.op.is_lease() => return IssueOut::Lease(lease.id),
                 RepoEvent::LeaseRenew { id, .. } if self.op.is_lease() => return IssueOut::Lease(*id),
+                RepoEvent::Hook { id, record: Some(_), .. } => return IssueOut::Id(id.0),
                 _ => {}
             }
         }
@@ -1331,6 +1383,10 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
         | IssueOp::SetAgentPolicy(_)
         | IssueOp::InitRepo(_)
         | IssueOp::DeleteRepo { .. } => Some(AgentRefusal::of(AgentRule::Rules)),
+        // DESIGN, Shape, "Agent load and agent safety": an `Agent` may not edit webhooks.
+        IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. } => {
+            Some(AgentRefusal::new(AgentRule::Rules, "refused: agents may not edit webhooks"))
+        }
         IssueOp::PutRelease { .. } | IssueOp::DeleteRelease { .. } | IssueOp::PutAsset { .. } => {
             Some(AgentRefusal::of(AgentRule::Release))
         }
@@ -1348,6 +1404,19 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
         }
         _ => None,
     }
+}
+
+/// A hook record the chain accepts: an `http` or `https` URL, and at least one event, each GHES 3.22's or `*`.
+fn hook_ok(r: &crate::hooks::HookRecord) -> Result<(), IssueErr> {
+    let url = &*r.url.0;
+    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    if !host.is_some_and(|h| !h.is_empty() && !h.starts_with('/')) || url.len() > 2_048 {
+        return Err(IssueErr::Invalid("a hook URL is http or https"));
+    }
+    if r.events.is_empty() || r.events.iter().any(|e| &*e.0 != "*" && !crate::hooks::EVENTS.contains(&&*e.0)) {
+        return Err(IssueErr::Invalid("a hook's events are GHES 3.22 event names"));
+    }
+    Ok(())
 }
 
 fn text_ok(title: &str, body: &str) -> Result<(), IssueErr> {
