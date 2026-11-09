@@ -1977,7 +1977,7 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Beat.** Leaving the gate to answer for anonymous callers, which serves public repositories to a dead token. Answering 404 for every refused credential, which hides the cause from gh and Octokit.
 
-**Evidence.** `tests/m3/results/m3-repos.md`, "Edge read gate": 12 of 12 per case, with the revoked token's REST read 404 and its git read 401 before the fix; `932cc33`. The rerun after it is on `m3-gate2`, on `graft-m2b` [measured before the fix; the fix pending that rerun].
+**Evidence.** `tests/m3/results/m3-repos.md`, "Edge read gate": 12 of 12 per case, with the revoked token's REST read 404 and its git read 401 before `932cc33` [measured]. "Edge read gate, after 932cc33", edge `c23944de` on `graft-m2b`, 12 of 12 per case: a revoked token 401 "Bad credentials" on REST for the private and the public repository and 401 on git; an unknown token 401 on both; anonymous 200 on the public repository and 404 on the private one; and no driver relied on a bad token being served as anonymous (`seeded.sh`, BF-31, BF-34, BF-35, and the smoke rerun) [measured].
 
 **Flip.** A GHES 3.22 capture that answers a bad token on a public repository as anonymous, or a client that breaks on 401 where it expected public data.
 
@@ -1988,7 +1988,7 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 - **External tasks:** a `graftyard_task` claim binds only a live `GraftyardRun` task, so an `External` task links pushes only by trailer and sends its session on lease calls. The agent block says so.
 - **`LeaseEnforce`:** for a pusher with no task, another holder is one whose actor differs, so a vendor App with only external tasks is never bound by its own leases. The agent block says so, and hosted L0-12 holds the lease with another actor.
 - **Core rows:** they are what pushes, minting, and lease checks read; a merge reads its pull row and writes `Merged`, both Metadata, so L0-16 no longer lists merges.
-- **Pending `am1-fix`, not settled:** LF-12's commit p99 (A24), and a recorded stall lost when leadership moves (F60). The lead authorized a raft change for F60. Both gates stay as written.
+- **Pending `am1-fix`, not settled:** LF-12's commit p99 (A24), and a recorded stall lost when leadership moves (F60). The lead authorized a raft change for F60. Both gates stay as written. Both since settled ("`am1-fix`: the stall crosses a leader change, and the feed shares one owner read", below).
 
 **Why.** The edge's 404 for a reader who cannot see a field is the rule every other agent read follows, and 403 would confirm what the reader may not see. `graftyard_task` is how first-party sandboxes bind tokens; an external App reports its own work and gets no prefix. Binding a vendor App's tasks to each other needs a claim external tasks cannot carry. `tier_of` puts `Merged` and the pull row in Metadata.
 
@@ -1997,6 +1997,49 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 **Evidence.** `tests/am1/results/am1-hosted.md`, "LM-1 rows" and contradictions 1 to 6: base journeys j2 and j3 20 of 20 and journey 4 10 of 10; L0-11's diffs only j3's new issues and the read gate's anonymous 404s; L0-12's refusals 100 of 100 for the confined vendor App and 0 for the three other kinds present; L0-13 for what ran; L0-16 0 metadata reads on 3 members for 8 checks; LF-1 100 of 100; LF-2, LF-3, LF-5 pass; B0-36 100 of 100 for the confined vendor App; B0-37's push half; L0-12's stall 0 ms of extension on 20 leases after 1,814,090 ms; LF-12 leader commit p99 3,414 ms; 25 of 25 planted bugs [measured].
 
 **Flip.** For the feed: a GHES client that branches on 403 for a visible repository. For external tasks: a vendor that needs its tasks to bind each other, which would need a claim for external tasks. For core rows: a merge built from core rows alone. For F60 and A24: `am1-fix`'s measurements settle them.
+
+### `am1-fix`, the stored event layout, and ref-count replies, 2026-11-09
+
+`am1-fix` fixed LM-1's two hosted failures on `graft-m1` site day 7; its run found that main's 32.13 merge moved `RepoEvent`'s stored lease variants; and another thread found `repo:65536` resetting its leader on whole-ref reads (`tests/am1/results/am1-fix.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, F63).
+
+#### `am1-fix`: the stall crosses a leader change, and the feed shares one owner read
+
+**Decision.**
+- F60 closes. A follower that stores a re-send of an entry above its commit, of the leader's own term, sent CALL_DEADLINE or more after the entry's `at`, marks `stalled_since` at that `at` (`96dc541`, `crates/raft/src/member/follower.rs`), the leader's own `tick_leader` condition. The follower that wins the next term stamps `extend` from it. DESIGN, Shape, "Chains" (`ExtendLeases`), lists it as the fourth source, and AGENT-LAYER's A8 says so.
+- The uncovered path is accepted: an old leader that never reaches the winner after CALL_DEADLINE leaves no re-send, so the winner's first entry carries no `extend`, the same loss the design already accepts for a marker a crash loses.
+- A24 closes. Each member keeps one owner-`Authz` read in flight for its feed, shared by the polls that wait on it (`760f9c0`). LF-12's commit p99 is measured at the group's leader; the client's latency through the edge is the client path, not the commit.
+
+**Why.** With every member call blackholed, no `suspect` report reaches a follower and no campaign can win, so the old leader held the only marker; the winner's campaign marker was from the fault's end, `by` was about 0, and its term-start noop cleared the old marker everywhere. The re-send is what every working replication path sends after a missed CALL_DEADLINE, so it carries the stall to every follower that stores it. On LF-12 the leader was not CPU-bound and held no polls: its dep read of the owner's `Authz` waited behind one read per poll from every stale learner. A gate on the client's path from the orb would fail with no polls at all, so it would not measure the feed.
+
+**Beat.** Sending the marker in the vote or the first AppendEntries reply, which changes two message formats for the case the re-send already covers. Having a new leader take the earliest marker a quorum reports, which needs a round before the first entry. Inferring a stall from the winner's own log, which cannot tell an uncommitted last entry from an idle group's last write. Caching the owner on the learner for longer, which lets a revocation reach the feed later.
+
+**Evidence.** `tests/am1/results/am1-fix.md`: in memory, `l0_12_a_stall_ended_by_a_leader_change_moves_every_live_lease` fails on `6042f3e` and passes with the fix; `a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry`; the long sweep passed in 335.75 s (HARSH 0 step-downs, GRAY 1,534 `STEP_DOWN` transfers) and Porcupine was Ok on 156,742 and 2,226,521 operations. Hosted day 7, lf1-5: a 30-minute stall with every member call failing, then a leader change; term 3's first entry carried `extend { since: 1794196661447, by: 1,761,355 ms }`, all 20 leases moved by 1,761 or 1,762 s (0 on day 5). LF-12 on lf1-6: leader commit p99 after `place_learners` 474 ms against 6,481 ms before the fix, 5,000 of 5,000 polls held against 1,421; 300 polls on a stale learner had sent 300 owner reads; with no polls, client p50 994 ms and p99 2,708 ms through the edge against the leader's 196 and 513 ms. 9 of 9 planted bugs [measured].
+
+**Flip.** A hosted stall where the old leader stays cut off from the winner, measured losing leases that matter, which would need the marker carried in the vote; a re-send marker set on an idle group (a false extension); or a feed whose shared read holds a revocation past READ_CACHE.
+
+#### Released wire positions are pinned, and `RepoEvent` keeps leases at 35 to 38
+
+**Decision.** The lead's: `RepoEvent` keeps its current layout, with 32.13's `Created` and `Deleted` at 33 and 34 and the lease events at 35 to 38. Every stored or member-sent enum gets explicit, pinned wire tags, with a test that fails when a variant is inserted mid-enum, so a variant's wire position never changes once released; this is being built on `wire-fix`. SHARED's "Record formats and the two-release rule" and DESIGN's message rule (Shape, `Unsupported`) state the invariant. The `graft-m1` groups holding lease entries stored under `9fb5032` (j4, lf1-2, lf1-3) are lost to the test install: they are recreated or left out, and LM-1's rows rerun on other groups.
+
+**Why.** Postcard numbers variants by position, while the digest encoding already used explicit tags, so inserting `Created` and `Deleted` ahead of the lease events in the `m3-repos` merge moved every stored lease variant by two and nothing caught it. 32.13 events are stored on `graft-m2b`, and every document already records leases at 35 to 38, so moving leases back would break `graft-m2b` and rewrite the records. The broken groups are test data on one install. In a rolling site day the same shift would make two releases misread each other's AppendEntries, so the rule has to be structural.
+
+**Beat.** Moving the lease events back to 33 to 36, which breaks the stored 32.13 events. A decoder that tries both layouts, which hides the next shift. A review checklist instead of a failing test.
+
+**Evidence.** `tests/am1/results/am1-fix.md`, "A finding: main's 32.13 merge renumbered the stored lease events": after site day 7, j4, lf1-2, and lf1-3 fail to restore with "Serde Deserialization Error" on every member, while the groups without lease entries restore; lease events were serde variants 33 to 36 at `9fb5032` and 35 to 38 at `6042f3e`; the digest tags were 35 to 38 at both [measured].
+
+**Flip.** A real install's stored data in the old layout, which would need a one-time migration for it; or a stored encoding chosen for another reason that carries its own explicit tags, which would make the pinning test redundant.
+
+#### No member reply grows with a repository's ref count
+
+**Decision.** A design rule, with F63 for the remaining replies: catch-up takes ref changes from the log entries it already reads, only `rehydrate` reads a chain's whole ref set, and it reads in pages; info/refs pages too. DESIGN, Shape, "Git cache shards (derived)" (`IngestCursor`), says so. The fix is on `wire-fix`, and `repo:65536` (bf20) on `graft-m2b` stays out of runs until it lands.
+
+**Why.** A leader that serializes every ref in one JSON reply burns seconds of CPU and runs out of memory, which resets its isolate and every member in it. M2-WP1's defect (c) was the same class on a lookup probe, so a fix to one call site did not prevent the next.
+
+**Beat.** Raising the isolate's memory headroom, which the platform does not offer. Fixing `prsync::warm`'s call alone, which leaves `/catchup` and info/refs with the same shape.
+
+**Evidence.** Workers Logs, reported by another thread: on `repo:65536`, a site-a or site-b member that wins leadership runs `prsync::warm` from its alarm (`1c84ac6`), which calls `/catchup`, whose `core_refs` sends `/read {"q":{}}`; the leader burns 5 to 6 s of CPU and dies in `handle_alloc_error`, 41 times in 26 h from 2026-11-07 14:31Z [measured]. `tests/m2/results/m2-wp1.md`, defect (c): 303,144 refs on `repo:196628` in one `/read` [measured].
+
+**Flip.** A page size measured too small to serve a clone's ref advertisement within its deadline, which would need a streamed reply instead of pages.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
