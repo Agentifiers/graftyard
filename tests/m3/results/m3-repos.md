@@ -179,5 +179,7 @@ On `85f626e`:
 | `cb98c9d` | `auto_init`'s README push takes its own request id; the smoke driver and the plants |
 | `3160687` | Merge of `origin/main` `5d18dda` (the read gate, AM1-WP4); the `rest:repos` routes behind the gate |
 | `85f626e` | The read-gate, seeded-role, `gh repo create`, and Terraform drivers; the `created-overwritten` assertion |
+| `c141f88` | This file |
+| `e2a69da` | `tf.sh` reads repository names from the kept working directories |
 
 Nothing is pushed or merged.
