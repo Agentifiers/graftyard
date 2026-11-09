@@ -114,19 +114,21 @@ if (which === "l012") {
     ] : []),
   ];
   const summary = {};
-  for (const [kind, tokenOf, ref] of kinds) {
+  const only = process.env.ROWS_L012_ONLY;
+  for (const [ki, [kind, tokenOf, ref]] of kinds.entries()) {
+    if (only && kind !== only) continue;
     const tok = await tokenOf();
     await sleep(2000);
     const pushes = [], writes = [];
     for (let i = 0; i < N; i++) {
       // A REST ref write needs a commit the repository holds: one pushed by the admin under a scratch ref first.
       g.as(admin);
-      const sha = commitTouching(`${kind.length}-${i}`);
-      g.run(["push", "-q", "origin", `HEAD:refs/heads/l012s-${tag}-${kind.length}-${i}`]);
+      const sha = commitTouching(`${ki}-${i}`);
+      g.run(["push", "-q", "origin", `HEAD:refs/heads/l012s-${tag}-${ki}-${i}`]);
       const w = await api("POST", `/api/v3/repos/${R}/git/refs`, tok, { ref: `${ref(i)}-rest`, sha });
       writes.push(w.status === 201 ? "accepted" : `${w.status} ${String(w.body?.message).replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 60)}`);
       g.as(tok);
-      const sha2 = commitTouching(`${kind.length}-p${i}`);
+      const sha2 = commitTouching(`${ki}-p${i}`);
       void sha2;
       const r = g.run(["push", "-q", "origin", `HEAD:${ref(i)}`]);
       pushes.push(r.ok ? "accepted" : (r.out.match(/refused: ([^)\n|]*)/)?.[1]?.replace(/[0-9A-Z]{26}/g, "<id>").slice(0, 60) ?? "rejected"));
