@@ -357,3 +357,123 @@ fn the_rest_hook_object_matches_ghes_hook() {
         std::fs::write(format!("{dir}/hook-get.rest.json"), serde_json::to_vec_pretty(&k).unwrap()).unwrap();
     }
 }
+
+fn keep_rest(case: &str, method: &str, path: &str, r: &graftyard_api::wire::Reply) {
+    if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
+        let v = json!({ "method": method, "path": path, "status": r.status, "body": r.value() });
+        std::fs::write(format!("{dir}/{case}.rest.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn a_rest_body_becomes_a_record_and_a_patch_keeps_what_it_omits() {
+    use graftyard_api::webhooks::hook_body;
+    let body = json!({ "name": "web", "events": ["push", "pull_request"], "config": {
+        "url": "https://ci.example/h", "content_type": "json", "secret": "s3", "insecure_ssl": "0" } });
+    let (r, secret) = hook_body(None, &body).unwrap();
+    assert_eq!(r.events.iter().map(|e| &*e.0).collect::<Vec<_>>(), ["push", "pull_request"]);
+    assert_eq!((r.content_type, r.active, r.retry), (HookContentType::Json, true, false));
+    assert_eq!(secret, Some(Some("s3".into())));
+    // GHES's defaults: `push` only, `form`.
+    let (d, s) = hook_body(None, &json!({ "config": { "url": "http://x.example/" } })).unwrap();
+    assert_eq!((d.events[0].0.as_ref(), d.content_type, s), ("push", HookContentType::Form, None));
+    let cur = HookRecord { secret: Some(Ops.wrap(b"k", [0; 12]).unwrap()), ..r.clone() };
+    let (p, s) =
+        hook_body(Some(&cur), &json!({ "add_events": ["issues"], "remove_events": ["push"], "active": false }))
+            .unwrap();
+    assert_eq!(p.events.iter().map(|e| &*e.0).collect::<Vec<_>>(), ["pull_request", "issues"]);
+    assert_eq!((p.url.0.as_ref(), p.active, p.secret.is_some(), s), ("https://ci.example/h", false, true, None));
+    for bad in [
+        json!({ "config": {} }),
+        json!({ "config": { "url": "ftp://x" } }),
+        json!({ "config": { "url": "https://x" }, "events": ["no_such_event"] }),
+        json!({ "config": { "url": "https://x" }, "events": [] }),
+        json!({ "name": "email", "config": { "url": "https://x" } }),
+    ] {
+        assert_eq!(hook_body(None, &bad).unwrap_err().status, 422, "{bad}");
+    }
+    let (opt, _) = hook_body(None, &json!({ "config": { "url": "https://x.example", "retry": true } })).unwrap();
+    assert!(opt.retry, "the retry opt-in");
+}
+
+#[test]
+fn ping_deliveries_and_redelivery_through_the_sequencer() {
+    use graftyard_api::webhooks::sequencer_route;
+    let (c, _) = seeded();
+    let (h, d) = (host(), Dir::new(OWNER));
+    let r = c.repo(0, &h, &d);
+    let row = hook_row(r.core, HOOK).unwrap();
+    let mut seq = Sequencer::new(AccountId(DbId(OWNER)), c.now);
+    let now = c.now;
+    let ping = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["pings"], "", now, [7; 16]).unwrap();
+    assert_eq!(ping.status, 204);
+    keep_rest("hook-ping", "POST", "/repos/{owner}/{repo}/hooks/{hook_id}/pings", &ping);
+    // Three attempts: the ping fails, a second ping succeeds, then the first is redelivered.
+    let a = seq.start(now).remove(0);
+    seq.report(a.attempt, Timestamp(now.0 + 120), Some(500), false, Some("boom"));
+    sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["pings"], "", now, [8; 16]).unwrap();
+    let b = seq.start(Timestamp(now.0 + 200)).remove(0);
+    seq.report(b.attempt, Timestamp(now.0 + 260), Some(200), false, Some("ok"));
+    let path = format!("{}", a.attempt);
+    let red = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["deliveries", &path, "attempts"], "", now, [0; 16]);
+    let red = red.unwrap();
+    assert_eq!(red.status, 202);
+    keep_rest(
+        "hook-redeliver",
+        "POST",
+        "/repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}/attempts",
+        &red,
+    );
+    let again = seq.start(Timestamp(now.0 + 300)).remove(0);
+    assert!(again.redelivery && again.guid == a.guid, "a redelivery keeps its GUID");
+    seq.report(again.attempt, Timestamp(now.0 + 330), Some(200), false, None);
+    // The list, newest first, two to a page with a `Link` to the rest.
+    let list = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries"], "per_page=2", now, [0; 16]).unwrap();
+    keep_rest("hook-deliveries", "GET", "/repos/{owner}/{repo}/hooks/{hook_id}/deliveries", &list);
+    let items = list.value();
+    let ids: Vec<u64> = items.as_array().unwrap().iter().map(|i| i["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [again.attempt, b.attempt]);
+    assert_eq!(items[0]["redelivery"], true);
+    assert_eq!(items[0]["guid"], a.guid.to_string());
+    let link = list.header("link").unwrap();
+    let cursor = link.split("cursor=").nth(1).unwrap().split('>').next().unwrap();
+    let q = format!("per_page=2&cursor={cursor}");
+    let rest = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries"], &q, now, [0; 16]).unwrap();
+    let ids: Vec<u64> = rest.value().as_array().unwrap().iter().map(|i| i["id"].as_u64().unwrap()).collect();
+    assert_eq!(ids, [a.attempt]);
+    assert!(rest.header("link").is_none());
+    let one = format!("{}", a.attempt);
+    let get = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap();
+    keep_rest("hook-delivery", "GET", "/repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}", &get);
+    let v = get.value();
+    assert_eq!((v["status_code"].as_u64(), v["status"].as_str()), (Some(500), Some("Invalid HTTP Response: 500")));
+    assert_eq!(v["request"]["payload"]["hook_id"], HOOK.0.0);
+    assert!(!serde_json::to_string(&v).unwrap().contains("Secret to Everybody"));
+    // Another hook's delivery is not this hook's; past 3 days a redelivery is refused.
+    let other = HookId(DbId(1));
+    assert_eq!(
+        sequencer_route(&mut seq, &r, other, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap().status,
+        404
+    );
+    let late = Timestamp(now.0 + graftyard_git::hooks::DELIVERY_KEEP_MS + 1_000);
+    let exp = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["deliveries", &one, "attempts"], "", late, [0; 16]);
+    assert_eq!(exp.unwrap().status, 422);
+}
+
+#[test]
+fn a_committed_put_hook_renders_ghes_hook_with_location() {
+    use graftyard_api::hosted::{Render, What, render_ok};
+    let (mut c, _) = seeded();
+    let out = c.commit(OWNER, IssueOp::PutHook { id: None, record: record("https://two.example/h", None) }).unwrap();
+    let (h, d) = (host(), Dir::new(OWNER));
+    let r = c.repo(0, &h, &d);
+    let dir = graftyard_api::hosted::HostedDir { home: Some(d.home()), ..Default::default() };
+    let render = Render { host: "ghes.example.com".into(), isolation: false, dir, what: What::Hook { created: true } };
+    let reply = render_ok(&render, &ack(out), r.core, r.meta).reply();
+    assert_eq!(reply.status, 201);
+    assert!(reply.header("location").unwrap().starts_with("https://ghes.example.com/api/v3/repos/o/r/hooks/"));
+    keep_rest("hook-create", "POST", "/repos/{owner}/{repo}/hooks", &reply);
+    let refused = graftyard_api::hosted::render_err(&render, &graftyard_git::issue_ops::IssueErr::Exists).reply();
+    assert_eq!(refused.status, 422);
+    keep_rest("hook-create-taken", "POST", "/repos/{owner}/{repo}/hooks", &refused);
+}

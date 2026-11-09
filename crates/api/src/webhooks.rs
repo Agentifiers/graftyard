@@ -22,7 +22,7 @@ use graftyard_types::{AccountId, Timestamp};
 use serde_json::{Map, Value, json};
 
 use crate::view::{Item, Repo};
-use crate::wire::{NodeId, NodeType, iso, scoped, simple_user};
+use crate::wire::{NodeId, NodeType, Reply, iso, scoped, simple_user};
 
 /// The `User-Agent` GHES sends (`research/wire-census.md` #36: "prefixed `GitHub-Hookshot/`") [unverified suffix].
 pub const USER_AGENT: &str = "GitHub-Hookshot/graftyard";
@@ -541,4 +541,198 @@ pub fn deliveries_link(r: &Repo<'_>, hook: HookId, last: Option<u64>, per_page: 
 /// The GUID a ping without a chain entry takes, from the host's random bytes.
 pub fn ping_guid(random: [u8; 16]) -> Guid {
     Guid::from_bytes(random)
+}
+
+// ---- REST bodies ----
+
+/// The REST docs URL GHES names in a hook route's errors.
+pub const DOC: &str = "rest/repos/webhooks";
+
+/// What a `POST .../hooks` or `PATCH .../hooks/{id}` body sets, over `cur` (`None` for a create): the record without
+/// its secret, and the secret the edge asks `graft-ops` to wrap. `Some(None)` clears it; `None` keeps it. `retry` is
+/// Graftyard's opt-in (`design/SHARED.md`, "Known deviations from GitHub"), a `config` key GHES ignores.
+pub fn hook_body(cur: Option<&HookRecord>, body: &Value) -> Result<(HookRecord, Option<Option<String>>), Reply> {
+    use graftyard_git::hooks::{EVENTS, HookContentType};
+    use graftyard_identity::{EventKind, Url};
+    let bad = |field: &'static str, code: &'static str| {
+        let e = crate::wire::FieldError { resource: "Hook", field, code };
+        Reply::json(422, crate::wire::validation_error("Validation Failed", DOC, &[e]))
+    };
+    if body.get("name").is_some_and(|n| n != "web") {
+        return Err(bad("name", "invalid"));
+    }
+    let config = body.get("config");
+    let url = match (config.and_then(|c| c.get("url")).and_then(Value::as_str), cur) {
+        (Some(u), _) => u.to_owned(),
+        (None, Some(c)) => c.url.0.to_string(),
+        (None, None) => return Err(bad("url", "missing_field")),
+    };
+    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"));
+    if !host.is_some_and(|h| !h.is_empty() && !h.starts_with('/')) || url.len() > 2_048 {
+        return Err(bad("url", "invalid"));
+    }
+    let content_type = match config.and_then(|c| c.get("content_type")).and_then(Value::as_str) {
+        Some("json") => HookContentType::Json,
+        Some("form") => HookContentType::Form,
+        Some(_) => return Err(bad("content_type", "invalid")),
+        None => cur.map_or(HookContentType::Form, |c| c.content_type),
+    };
+    let insecure_ssl = match config.and_then(|c| c.get("insecure_ssl")) {
+        Some(Value::String(s)) => s == "1",
+        Some(Value::Number(n)) => n.as_i64() == Some(1),
+        Some(_) => return Err(bad("insecure_ssl", "invalid")),
+        None => cur.is_some_and(|c| c.insecure_ssl),
+    };
+    let retry = match config.and_then(|c| c.get("retry")) {
+        Some(Value::Bool(b)) => *b,
+        Some(Value::String(s)) => s == "1",
+        _ => cur.is_some_and(|c| c.retry),
+    };
+    let strings = |k: &str| -> Option<Result<Vec<String>, Reply>> {
+        let a = body.get(k)?.as_array();
+        Some(
+            a.map(|a| a.iter().filter_map(|e| e.as_str().map(str::to_owned)).collect())
+                .ok_or_else(|| bad("events", "invalid")),
+        )
+    };
+    let mut events: Vec<String> = match strings("events").transpose()? {
+        Some(e) => e,
+        None => cur.map_or_else(|| vec!["push".into()], |c| c.events.iter().map(|e| e.0.to_string()).collect()),
+    };
+    if let Some(add) = strings("add_events").transpose()? {
+        events.extend(add);
+    }
+    if let Some(rm) = strings("remove_events").transpose()? {
+        events.retain(|e| !rm.contains(e));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    events.retain(|e| seen.insert(e.clone()));
+    if events.is_empty() || events.iter().any(|e| e != "*" && !EVENTS.contains(&e.as_str())) {
+        return Err(bad("events", "invalid"));
+    }
+    let active = body.get("active").and_then(Value::as_bool).unwrap_or(cur.is_none_or(|c| c.active));
+    let secret = match config.and_then(|c| c.get("secret")) {
+        Some(Value::String(s)) if s.is_empty() => Some(None),
+        Some(Value::String(s)) => Some(Some(s.clone())),
+        Some(Value::Null) => Some(None),
+        _ => None,
+    };
+    let record = HookRecord {
+        url: Url(url.into()),
+        events: events.into_iter().map(|e| EventKind(e.into())).collect(),
+        content_type,
+        active,
+        insecure_ssl,
+        secret: cur.and_then(|c| c.secret.clone()),
+        retry,
+    };
+    Ok((record, secret))
+}
+
+/// A committed `PutHook`'s reply, from its `&Acked`: 201 with `Location` for a create, else 200.
+pub fn saved(acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>, r: &Repo<'_>, created: bool) -> Reply {
+    let graftyard_git::issue_ops::IssueOut::Id(id) = acked.out else {
+        return Reply::error(500, "a hook command answered no id", "rest");
+    };
+    let id = HookId(id);
+    let Some(row) = graftyard_git::hooks::hook_row(r.core, id) else { return Reply::not_found() };
+    let v = hook_json(r, id, &row);
+    if created {
+        let loc = v["url"].as_str().unwrap_or_default().to_owned();
+        Reply::json(201, v).with("location", loc)
+    } else {
+        Reply::json(200, v)
+    }
+}
+
+/// A refused hook command's reply.
+pub fn refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
+    use graftyard_git::issue_ops::IssueErr;
+    match e {
+        IssueErr::Unauthorized(_) => Reply::error(401, "Bad credentials", "rest"),
+        IssueErr::Forbidden | IssueErr::Agent(_) => Reply::not_found(),
+        IssueErr::NotFound => Reply::not_found(),
+        IssueErr::Exists => {
+            let e = crate::wire::FieldError { resource: "Hook", field: "url", code: "custom" };
+            Reply::json(422, crate::wire::validation_error("Validation Failed", DOC, &[e]))
+        }
+        IssueErr::NeedIdBlock | IssueErr::Unavailable => Reply::error(503, "Service Unavailable", "rest"),
+        _ => Reply::error(422, "Validation Failed", DOC),
+    }
+}
+
+// ---- the sequencer's routes ----
+
+/// `POST .../hooks/{id}/pings`, `GET .../deliveries`, `GET .../deliveries/{id}`, and `POST .../deliveries/{id}/attempts`
+/// on the owner's `HookSequencer` (`seq`), for hook `id` whose row the edge read. `tail` is the path after
+/// `hooks/{id}`; `query` the raw query string; `random` the host's bytes for a ping's GUID. `None` for a route this
+/// does not serve.
+#[allow(clippy::too_many_arguments)]
+pub fn sequencer_route(
+    seq: &mut graftyard_git::sequencer::Sequencer,
+    r: &Repo<'_>,
+    id: HookId,
+    row: &HookRow,
+    method: &str,
+    tail: &[&str],
+    query: &str,
+    now: Timestamp,
+    random: [u8; 16],
+) -> Option<Reply> {
+    use graftyard_git::sequencer::{NewDelivery, RedeliverErr};
+    let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')).map(str::to_owned);
+    Some(match (method, tail) {
+        ("POST", ["pings"]) => {
+            let body = serde_json::to_vec(&ping(r, id, row)).unwrap_or_default();
+            let d = NewDelivery {
+                guid: ping_guid(random),
+                hook: id,
+                entry: None,
+                event: "ping",
+                action: None,
+                repo: Some(r.at.id),
+                body,
+            };
+            seq.set_targets(&[(id, row.record.clone())]);
+            seq.ping(d, now);
+            Reply::empty(204)
+        }
+        ("GET", ["deliveries"]) => {
+            let per_page = param("per_page").and_then(|p| p.parse::<usize>().ok()).unwrap_or(30).clamp(1, 100);
+            let before = match param("cursor") {
+                Some(c) => match graftyard_wire::parse_cursor(&c) {
+                    Some(n) => Some(n as u64),
+                    None => return Some(Reply::error(400, "Bad Request", DOC)),
+                },
+                None => None,
+            };
+            let mut rows = seq.list(id, before, per_page + 1);
+            let more = rows.len() > per_page;
+            rows.truncate(per_page);
+            let last = rows.last().map(|(_, a)| a.id);
+            let v: Vec<Value> = rows.iter().map(|(d, a)| delivery_item(d, a)).collect();
+            let reply = Reply::json(200, Value::Array(v));
+            match deliveries_link(r, id, last, per_page, more) {
+                Some(l) => reply.with("link", l),
+                None => reply,
+            }
+        }
+        ("GET", ["deliveries", n]) => match n.parse::<u64>().ok().and_then(|n| seq.get(id, n)) {
+            Some((d, a)) => Reply::json(200, delivery(d, a, &row.record.url.0)),
+            None => Reply::not_found(),
+        },
+        ("POST", ["deliveries", n, "attempts"]) => {
+            let Ok(n) = n.parse::<u64>() else { return Some(Reply::not_found()) };
+            seq.set_targets(&[(id, row.record.clone())]);
+            match seq.redeliver(id, n, now) {
+                Ok(_) => Reply::json(202, json!({})),
+                Err(RedeliverErr::NotFound) => Reply::not_found(),
+                Err(RedeliverErr::Expired) => {
+                    let e = crate::wire::FieldError { resource: "HookDelivery", field: "delivery_id", code: "expired" };
+                    Reply::json(422, crate::wire::validation_error("Validation Failed", DOC, &[e]))
+                }
+            }
+        }
+        _ => return None,
+    })
 }
