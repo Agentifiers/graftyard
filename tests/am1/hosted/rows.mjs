@@ -353,7 +353,13 @@ if (which === "b036") {
   const kindApp = process.env.ROWS_B036_APP;
   const minted = kindApp ? await agentToken(kindApp) : await ghs({});
   row(OUT, { step: "token", app: kindApp ?? "m3-ci", status: minted.status, permissions: minted.body?.permissions });
-  const app = minted.body.token;
+  let app = minted.body.token;
+  // A run of N per action outlasts an installation token's hour: mint a fresh one every 45 min.
+  setInterval(async () => {
+    const m = kindApp ? await agentToken(kindApp) : await ghs({});
+    if (m.status === 201) app = m.body.token;
+    row(OUT, { step: "token refresh", status: m.status });
+  }, 45 * 60_000).unref();
   const repoId = (await gql(admin, `query { repository(owner: "m3org", name: "${RN}") { id } }`)).body?.data?.repository?.id;
   const g = new Git(R).as(admin);
   g.clone();
