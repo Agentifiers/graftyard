@@ -6,8 +6,8 @@ These results are from 2026-11-09, on branch `am1-fix` (worktree `.worktrees/am1
 
 | Failure | Root cause | Fix | Before | After |
 | --- | --- | --- | --- | --- |
-| L0-12: a stall ended by a leader change moved no lease | Only the old leader knew when the stall began. Followers recorded no marker, because the blackhole also blocked `suspect` reports. The winner's campaign marker was from about the time the fault cleared, so `by` was about 0 and its term-start noop had no `extend`. That noop's `at` was after the old leader's marker, so applying it cleared that marker everywhere (`member/log.rs`) | `crates/raft/src/member/follower.rs`: a follower that stores a re-send of an entry still above the commit, sent at least CALL_DEADLINE after the entry's `at`, marks `stalled_since` at that `at`. This is the condition `tick_leader` uses on the leader. The follower that wins the next term then stamps `extend` from it | In memory: the new gate fails (no `extend` on the new leader's first entry). Hosted (day 5): 30.2 min of stall, 20 leases moved 0 ms | In memory: `extend { since ≤ stall start, by ≥ 30 min }` on the first entry of the new term, and 3 of 3 leases moved by `by`. Hosted: STALL_RESULT |
-| LF-12: leader commit p99 3.4 s in the hold bursts | Not the leader's CPU, and not held polls in the leader's isolate (it holds none). The leader waited on a member call: its dep read of the owner's `Authz` chain. Every poll on a learner whose cached owner `Authz` was stale (the first poll, then once a minute) sent its own `/read` to the owner's `Authz` leader. When 5,000 polls landed on 11 fresh learners at once, that leader took thousands of reads, and the repository leader's next dep read came back 6.3 s late | `workers/site/src/feed.rs`: one owner read per member at a time. The first poll reads, and the polls that arrive meanwhile wait for that read (`Feed::refresh`, `Refreshed`) | Phase C on lf1-4: leader `commitMs` p99 **6,481 ms**, and one dep read of `authz:7100001` took 6,330 ms. 3,579 of 5,000 polls failed (`status null`: no answer from the member) | Phase C on lf1-6: leader `commitMs` p99 **474 ms** (n 50). 5,000 of 5,000 polls held, 0 failed. Target ≤ 600 ms met on the member's own number. The client p99 through the edge is above 600 ms in every phase, polls or none (see below) |
+| L0-12: a stall ended by a leader change moved no lease | Only the old leader knew when the stall began. Followers recorded no marker, because the blackhole also blocked `suspect` reports. The winner's campaign marker was from about the time the fault cleared, so `by` was about 0 and its term-start noop had no `extend`. That noop's `at` was after the old leader's marker, so applying it cleared that marker everywhere (`member/log.rs`) | `crates/raft/src/member/follower.rs`: a follower that stores a re-send of an entry still above the commit, sent at least CALL_DEADLINE after the entry's `at`, marks `stalled_since` at that `at`. This is the condition `tick_leader` uses on the leader. The follower that wins the next term then stamps `extend` from it | In memory: the new gate fails (no `extend` on the new leader's first entry). Hosted (day 5): 30.2 min of stall, 20 leases moved 0 ms | In memory: `extend { since ≤ stall start, by ≥ 30 min }` on the first entry of the new term, and 3 of 3 leases moved by `by`. Hosted (day 7): 30-minute stall, then a leader change to site 1 (by `/transfer` from the old leader once site 1 held its re-send). The first entry of term 3 carried `extend { by: 1,761,355 ms }`, and all 20 leases moved by 1,761 or 1,762 s |
+| LF-12: leader commit p99 3.4 s in the hold bursts | Not the leader's CPU, and not held polls in the leader's isolate (it holds none). The leader waited on a member call: its dep read of the owner's `Authz` chain. Every poll on a learner whose cached owner `Authz` was stale (the first poll, then once a minute) sent its own `/read` to the owner's `Authz` leader. Measured: 300 polls on a stale learner sent 300 reads. When 5,000 polls landed on 11 new learners at once (phase C), the repository leader's dep read of that owner came back 6.3 s late | `workers/site/src/feed.rs`: one owner read per member at a time. The first poll reads, and the polls that arrive meanwhile wait for that read (`Feed::refresh`, `Refreshed`) | Phase C on lf1-4: leader `commitMs` p99 **6,481 ms**, and one dep read of `authz:7100001` took 6,330 ms. 3,579 of 5,000 polls failed (`status null`: no answer from the member) | Phase C on lf1-6: leader `commitMs` p99 **474 ms** (n 50). 5,000 of 5,000 polls held, 0 failed. Target ≤ 600 ms met on the member's own number. The client p99 through the edge is above 600 ms in every phase, polls or none (see below) |
 
 ## L0-12: the stall after a leader change
 
@@ -51,7 +51,20 @@ A path the fix does not cover: the old leader never reaches the winner again aft
 
 ### Hosted: the 30-minute stall with a leader change
 
-STALL_SECTION
+`STALL_REPO=lf1-5 STALL_REPO_ID=1048582 node tests/am1/hosted/stall.mjs 30 20 change` on site day 7 (`raw/stall-change.log`, `raw/stall.jsonl`). It ran on lf1-5 because j4 no longer restores (below).
+
+- 20 leases with a TTL of 3,600 s (10 Exclusive on distinct tasks, 10 Shared). The every-site fault (`/_bed/fault?site=255`) was armed for 03:57:01.086Z to 04:27:01.086Z, with task writes every 250 ms across the cutover.
+- During the stall: the leader (site 0, term 2) held entry 71 in flight and recorded `stalledSince` = 1794196661447 (03:57:41.447Z, entry 71's `at`). The followers recorded none, as on day 5.
+- After the fault lapsed, the old leader re-sent entry 71, and both followers stored it and committed through 70. The minute-30 status, taken then, shows `stalledSince` = 1794196661447 on all three members: the two followers learned it from the re-send. That is the fix at work. On day 5 the followers held none at the same point.
+- No election started before then, because the old leader was alive and renewing. The driver had site 0 transfer to site 1 (`/transfer`, `Ok`), and site 1 led term 3. A transfer's campaign records no marker (`start_campaign` skips `mark_stall` for a transfer), so site 1's marker could only have come from the re-send. Day 5's leader change was an election (site 2 won term 3); that path uses the same marker and is the in-memory gate's scenario.
+- Term 3's first entry: noop 72, `at` 1794198422802 (04:27:02.802Z), `extend { since: 1794196661447, by: 1,761,355 ms }`. Exactly one entry carries `extend`: entries 68 to 71 (term 2) and 73 have none.
+- After the stall: 20 of 20 leases live. For every lease, `expires_at − granted_at − 3,600 s` = 1,761 s or 1,762 s, which is `by` rounded to the API's whole seconds. Every lease moved by the recorded stall, against 0 on day 5.
+- `by` runs from the in-flight entry's `at` (03:57:41) to the new term's first entry (04:27:02). The every-site fault began at 03:57:01. Nothing was in flight in the 40 s before the marker: the leader had committed through 70, and entry 71, the one cutover write that reached `decide` during the fault, was appended 40 s in. The design counts no idle time, so `by` is 1,761 s rather than the fault's 1,800 s.
+- Every marker cleared on every member after the first write in term 3.
+- Member clocks against each other: spread at most 65 ms before and 55 ms after, with half round trips at most 136 ms. (The absolute offset of about 6.3 s is this orb's own clock, as on day 5.)
+- Cutover writes: 6 × 201, 14 × 500, 4 × 503. The first write after the stall got 201. An idle 60 s Exclusive (201), then 10 minutes later an overlapping Exclusive from another task: 201 with 0 conflicts.
+
+The driver read the lease API's `expires`, but the API's field is `expires_at`, so its `moved` column read null for all 20 leases, on day 5 (the main checkout's `tests/am1/raw/stall.jsonl`) and in this run's first readout. Day 5's "moved by 0" was read by hand from `expires_at − granted_at` = 3,600 s exactly, and its `/log` showed no `extend` on noop 4328, so that finding stands. The driver now computes `expires_at − granted_at − TTL` (`2e7447c`). This run's numbers above come from a one-off read of the same list with that formula.
 
 ## LF-12: commit p99 in the hold bursts
 
@@ -69,9 +82,9 @@ The 3.4 s from am1-hosted was the leader member's `commitMs` (admission to resol
 | --- | --- | --- |
 | Leader CPU-bound | Leader `applySteps` (synchronous ms per input that applied entries) were 0 ms at p99 in every phase. Storage `confirmMs` p99 was 21 to 71 ms. `roundMs` (append to apply) p99 was 136 to 178 ms throughout | No |
 | Blocked behind held polls in the same isolate | The leader holds none (`leaderPolls` 0; the edge skips the leading voter). Holding 2,000 polls on the followers, or 5,000 on the learners from a steady state, left the leader's commit p99 at 430 to 507 ms, against 513 ms with no polls (lf1-0) | No |
-| Waiting on member calls | Phase C on lf1-4 (before the fix): every slow commit had a dep read. Entry 101 waited 6,330 ms on `authz:7100001` while `tokens` and `authz:1` answered in 43 and 70 ms. The day 5 run's leader on lf1-0 shows the same pattern in `/deps_log`: 2,702 ms and 1,504 ms on `authz:7100001` at 20:31:10 to 20:31:14Z, the second phase C. The owner's `Authz` leader took one `/read` per poll: 300 polls on a stale learner gave 300 reads, and a 5,000-poll burst gave 631 | **Yes**: the leader's dep read of the owner's `Authz`, slowed by the feed's own owner refreshes on the learners |
+| Waiting on member calls | Phase C on lf1-4 (before the fix): every slow commit had a dep read. Entry 101 waited 6,330 ms on `authz:7100001` while `tokens` and `authz:1` answered in 43 and 70 ms. The day 5 run's leader on lf1-0 shows the same pattern in `/deps_log`: 2,702 ms and 1,504 ms on `authz:7100001` at 20:31:10 to 20:31:14Z, the second phase C. The owner's `Authz` leader took one `/read` per poll: 300 polls on one stale learner gave 300 reads. A 5,000-poll burst spread over 11 learners gave 631, because most polls queued behind the first poll's read in the same object and found the owner fresh | **Yes**: the leader's dep read of the owner's `Authz`, slowed by the feed's own owner refreshes on the learners |
 
-Why the burst on fresh learners was the worst case: a new learner's feed has no owner yet (`owner_at` 0), so every one of its first polls is stale. Phase C sent 5,000 polls to 11 new learners within 3 s, so up to 5,000 `/read`s went to `authz:7100001`'s leader at once, while the repository leader's commits needed a dep read from the same leader. A steady-state burst (owner refreshed in the last minute) sent fewer, and the herd runs show it:
+Why the burst on fresh learners was the worst case: a new learner's feed has no owner yet (`owner_at` 0), so every one of its first polls is stale. Phase C sent 5,000 polls to 11 new learners within 3 s, so each stale learner's polls sent their reads to `authz:7100001`'s leader at once, while the repository leader's commits needed a dep read from the same leader. A steady-state burst (owner refreshed in the last minute) sent fewer, and the herd runs show it:
 
 | Run (lf1-4, 11 learners) | Owner `/read`s taken by its leader | Leader `commitMs` p99 |
 | --- | --- | --- |
@@ -104,7 +117,7 @@ Against the gate (`build/BUILD-PLAN.md`, LF-12: "Commit p99 at most 600 ms once 
 Not run. It is not cheap on this install:
 
 - `PutAgentApp` with `GraftyardRun` or `Mcp` must run on `Authz(Genesis.account)` (`install_account()`, account 1), and the App must be one the install owns, registered there (`AuthzErr::NotOwnApp`).
-- m3-ci and the triage App are owned by m3-admin (7100003). A new App owned by account 1 needs its `PutApp` on `authz:1`, its `Names` rows (`RegisterApp`, `RegisterClient`, the slug), an installation on m3org with its own `RegisterInstallation`, and a key, as `tests/m3/hosted/triage.ts` does for an admin-owned App.
+- m3-ci and the triage App are owned by m3-admin (7100003). An App the install owns needs its `PutApp` on `authz:1`, its `Names` rows (`RegisterApp`, `RegisterClient`, the slug), an installation on m3org with its own `RegisterInstallation`, and a key, as `tests/m3/hosted/triage.ts` does for an admin-owned App.
 - Then `rows.mjs l012` needs a third token source for each kind, and it runs on j4, which no longer restores (below).
 
 I judged that more than cheap and left it.
@@ -113,8 +126,8 @@ I judged that more than cheap and left it.
 
 After site day 7, j4 (`repo:1048576`), lf1-2 (`repo:1048579`) and lf1-3 (`repo:1048580`) do not restore on any member: `restoreError` "log row 3838 / 26 / 34: Serde Deserialization Error".
 
-- Day 6 ran `04e4f22` (am1-hosted before its final merge), whose `RepoEvent` has no `Created`/`Deleted`. Its `LeaseAcquire`, `LeaseRenew`, `LeaseRelease` and `PathSet` were variants 33 to 36.
-- Main (`6042f3e`, from the `am1-wp4` tag move `0477a8b` and the `m3-repos` merge) has `Created` 33, `Deleted` 34, then the lease events at 35 to 38.
+- Day 6 ran `04e4f22` (am1-hosted before its final merge with main), whose `RepoEvent` has no `Created`/`Deleted`. Its `LeaseAcquire`, `LeaseRenew`, `LeaseRelease` and `PathSet` were variants 33 to 36.
+- Main (`6042f3e`, after the `m3-repos` merge `3160687` put 32.13's `Created` and `Deleted` before the lease events) has `Created` 33, `Deleted` 34, then the lease events at 35 to 38.
 - These three groups hold lease entries that day 6 wrote under the old numbering. Today's code reads variant 33 as `Created { actor }`, and the bytes do not decode, so the members refuse to restore.
 - The groups with no lease entries (lf1-0, lf1-1, lf1-4 to lf1-8, and the Authz chains) restore fine.
 
@@ -163,7 +176,17 @@ Token scan of `tests/am1/raw` and `/tmp/am1fix` (41 files): 0 matches for `gh[po
 
 ## Commits (on `am1-fix`, oldest first)
 
-COMMITS
+- `96dc541` raft: a follower marks the stall from the leader's re-sent unacknowledged entry (L0-12), with the new lease gate.
+- `760f9c0` feed: one owner `Authz` read per member at a time (LF-12), with the drivers `lf12why`, `lf12watch` and `lf12herd`.
+- `1117d4b` site: test-faults `/log` shows each entry's `extend`.
+- `c7384ec` site day 7 script (the deployed commit).
+- `55f5854` raft scenario for the follower's marker; the lease gate's winner gets a `suspect` report before the re-send; the stall driver's leader change; plants.
+- `c9ab1fb` the stall driver takes `STALL_REPO`.
+- `b7db630` results draft.
+- `2e7447c` the stall driver reads `expires_at` and `granted_at`.
+- This file.
+
+`crates/raft` changed only in `96dc541`. The sweep and Porcupine above ran on it, and the commits after it change no raft source.
 
 ## Design contradictions
 
