@@ -369,12 +369,12 @@ impl<B> IssueOp<B> {
         matches!(self, IssueOp::AcquireLease(_) | IssueOp::RenewLease { .. } | IssueOp::ReleaseLease { .. })
     }
 
-    /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
     /// Whether this is a hook command, format 32.16.
     pub fn is_hook(&self) -> bool {
         matches!(self, IssueOp::PutHook { .. } | IssueOp::DeleteHook { .. })
     }
 
+    /// Whether this is a task command (`crate::task::decide`), which never counts toward DEMOTE_PER_MIN.
     pub fn is_task(&self) -> bool {
         matches!(self, IssueOp::CreateTask(_) | IssueOp::UpdateTask { .. } | IssueOp::CancelTask { .. })
     }

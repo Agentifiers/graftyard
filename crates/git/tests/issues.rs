@@ -1314,3 +1314,51 @@ fn delete_repo_tombstones_the_chain_and_refuses_every_later_write() {
     assert_eq!(c.ref_of(&name("refs/heads/main")), Some(oid(1)));
     c.agree();
 }
+
+/// M4-WP1's hook commands: admin only; a create takes the next core id and is flagged `created` (so the consumer
+/// pings it) while an edit is not; an identical edit commits nothing; a second hook on the same URL is refused; at
+/// most 20 per repository; a delete removes the row. Every member reaches the same digests.
+#[test]
+fn hook_commands_are_admin_only_and_a_create_alone_is_pinged() {
+    use graftyard_git::hooks::{HOOKS_PER_REPO_MAX, HookContentType, HookId, HookRecord, hook, hooks, webhooks};
+    let rec = |url: &str| HookRecord {
+        url: graftyard_identity::Url(url.into()),
+        events: smallvec![graftyard_identity::EventKind("*".into())],
+        content_type: HookContentType::Json,
+        active: true,
+        insecure_ssl: false,
+        secret: None,
+        retry: false,
+    };
+    let mut c = Chain::new(3);
+    let put = |id, r: HookRecord| IssueOp::PutHook { id, record: r };
+    assert_eq!(c.commit(WRITER, put(None, rec("https://a.example/"))), Err(IssueErr::Forbidden));
+    let id = match c.commit(OWNER, put(None, rec("https://a.example/"))) {
+        Ok(IssueOut::Id(i)) => HookId(i),
+        o => panic!("{o:?}"),
+    };
+    let pings = |c: &Chain| {
+        c.log.iter().flat_map(|e| webhooks(&c.members[0].core, REPO, e)).filter(|w| w.event == "ping").count()
+    };
+    assert_eq!(pings(&c), 1, "a create pings its hook");
+    assert_eq!(c.commit(OWNER, put(None, rec("https://a.example/"))), Err(IssueErr::Exists));
+    let edited = HookRecord { active: false, ..rec("https://a.example/") };
+    let len = c.log.len();
+    assert_eq!(c.commit(OWNER, put(Some(id), edited.clone())), Ok(IssueOut::Id(id.0)));
+    assert_eq!(c.log.len(), len + 1);
+    assert_eq!(c.commit(OWNER, put(Some(id), edited.clone())), Ok(IssueOut::Id(id.0)));
+    assert_eq!(c.log.len(), len + 1, "an identical edit commits nothing");
+    assert_eq!(pings(&c), 1, "an edit does not ping");
+    assert_eq!(hook(&c.members[2].core, id), Some(edited));
+    assert_eq!(c.commit(READER, IssueOp::DeleteHook { id }), Err(IssueErr::Forbidden));
+    for i in 1..HOOKS_PER_REPO_MAX {
+        c.commit(OWNER, put(None, rec(&format!("https://h{i}.example/")))).unwrap();
+    }
+    let full = c.commit(OWNER, put(None, rec("https://full.example/")));
+    assert!(matches!(full, Err(IssueErr::Invalid(_))), "{full:?} with {} hooks", hooks(&c.members[0].core).len());
+    assert_eq!(c.commit(OWNER, IssueOp::DeleteHook { id }), Ok(IssueOut::Done));
+    assert_eq!(hook(&c.members[1].core, id), None);
+    assert_eq!(hooks(&c.members[1].core).len(), HOOKS_PER_REPO_MAX - 1);
+    assert_eq!(c.commit(OWNER, IssueOp::DeleteHook { id }), Err(IssueErr::NotFound));
+    c.agree();
+}

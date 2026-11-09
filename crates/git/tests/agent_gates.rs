@@ -734,3 +734,32 @@ fn b0_37_hostile_provenance_and_host_refs() {
     assert_eq!(hidden_refused, hidden_tried);
     assert_eq!(host_refs, 0);
 }
+
+/// M4-WP1: an `Agent` may not create, edit, or delete a webhook, and the repository's admin may.
+#[test]
+fn an_agent_may_not_edit_webhooks() {
+    use graftyard_git::hooks::{HookContentType, HookId, HookRecord};
+    let mut w = World::new();
+    w.flag(claude_row());
+    let rec = HookRecord {
+        url: graftyard_identity::Url("https://hooks.example/a".into()),
+        events: smallvec![graftyard_identity::EventKind("push".into())],
+        content_type: HookContentType::Json,
+        active: true,
+        insecure_ssl: false,
+        secret: None,
+        retry: false,
+    };
+    let put = |id| IssueOp::PutHook { id, record: rec.clone() };
+    let o = w.commit(issue(app(CLAUDE), put(None)));
+    assert_eq!(agent_rule(&o), Some(AgentRule::Rules), "{o:?}");
+    let id = match w.commit(issue(user(OWNER), put(None))) {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Id(id) => HookId(id),
+            x => panic!("{x:?}"),
+        },
+        o => panic!("{o:?}"),
+    };
+    assert_eq!(agent_rule(&w.commit(issue(app(CLAUDE), IssueOp::DeleteHook { id }))), Some(AgentRule::Rules));
+    assert!(graftyard_git::hooks::hook(&*w.fold().core, id).is_some(), "the agent deleted nothing");
+}

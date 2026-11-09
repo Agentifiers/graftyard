@@ -814,7 +814,14 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Deleted { retain_until, actor } => put_rec(w, "deleted", Vec::new(), &(*retain_until, *actor)),
-            RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => crate::hooks::write_core(w, ev, at),
+            RepoEvent::Hook { id, record, .. } => {
+                // A create's id is the core tier's next one, which the tier's cursor passes, as a release's does.
+                if record.is_some() {
+                    assigned(w, ev, Tier::Core, id.0);
+                }
+                crate::hooks::write_core(w, ev, at)
+            }
+            RepoEvent::HookCursor(_) => crate::hooks::write_core(w, ev, at),
             RepoEvent::LeaseAcquire { lease, plan } => crate::lease::write_acquire(w, lease, *plan),
             RepoEvent::LeaseRenew { id, expires } => crate::lease::write_renew(w, *id, *expires),
             RepoEvent::LeaseRelease { ids, .. } => {
