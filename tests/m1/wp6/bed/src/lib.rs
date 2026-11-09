@@ -13,12 +13,12 @@
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 
-use graftyard_git::group::{CommitReply, CommitReq, OutcomeReply, OutcomeReq, PushOutcome, ReadReply, decode_commit};
+use graftyard_git::group::{
+    CommitReply, CommitReq, OutcomeReply, OutcomeReq, PushOutcome, ReadReply, RefsPage, decode_commit,
+};
 use graftyard_git::host::{R2, ShardHost};
 use graftyard_git::standin::{MemberRows, Seed, StandIn};
-use graftyard_git::{
-    Bucket, ChainLog, CoreRefs, LogPacks, PackId, PackRef, Promoted, R2Key, StoreError, mark_committed,
-};
+use graftyard_git::{Bucket, ChainLog, Head, LogPacks, PackId, PackRef, Promoted, R2Key, StoreError, mark_committed};
 use graftyard_raft::{Write, codec};
 use graftyard_types::{ChainId, DbId, Index, NetworkId, Region, ReleaseId, RepoId, SiteId, Timestamp};
 use serde::Deserialize;
@@ -311,15 +311,23 @@ async fn get_json<T: for<'de> Deserialize<'de>>(stub: &Stub, path: &str) -> std:
     r.json().await.map_err(ws)
 }
 
+/// The stand-in's refs are a few test refs, so its `/read` answers them as one page.
 impl ChainLog for GroupLog {
-    async fn core_refs(&self, chain: ChainId) -> std::result::Result<CoreRefs, StoreError> {
+    async fn head(&self, _chain: ChainId) -> std::result::Result<Head, StoreError> {
         match get_json::<ReadReply>(&self.stub, "/read").await? {
-            ReadReply::Refs(r) => Ok(CoreRefs { chain, applied: Index(r.index), refs: r.value }),
+            ReadReply::Refs(r) => Ok(Head { first: Index(1), applied: Index(r.index) }),
             ReadReply::Error { error } => Err(StoreError(format!("read: {error:?}"))),
         }
     }
-    async fn first_index(&self, _chain: ChainId) -> std::result::Result<Index, StoreError> {
-        Ok(Index(1))
+    async fn refs_page(
+        &self,
+        _c: ChainId,
+        _after: Option<String>,
+    ) -> std::result::Result<(RefsPage, Index), StoreError> {
+        match get_json::<ReadReply>(&self.stub, "/read").await? {
+            ReadReply::Refs(r) => Ok((RefsPage { refs: r.value, next: None }, Index(r.index))),
+            ReadReply::Error { error } => Err(StoreError(format!("read: {error:?}"))),
+        }
     }
     async fn entries(&self, _c: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
         get_json(&self.stub, &format!("/entries?from={}&to={}", from.0, to.0)).await

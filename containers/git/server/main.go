@@ -25,8 +25,12 @@
 //	                                 second index-pack; otherwise verifies H while writing, then index-pack --strict
 //	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet,
 //	                                 422 on a checksum mismatch. Idempotent per H
-//	PUT  /refs?net=N                 body: "<oid> <ref>" lines, the whole ref set; refs not listed are deleted
-//	GET  /refs?net=N                 the same lines
+//	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
+//	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
+//	                                 neither is one page that is the whole set. Refs naming objects not here are
+//	                                 skipped and counted ("skipped"), not fatal
+//	POST /refs?net=N                 a catch-up's ref changes, the same lines, the zero oid a delete
+//	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
 //	                                 pack of every object those packs brought
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
@@ -747,6 +751,66 @@ func listRefs(rp string) (map[string]string, error) {
 	return refs, nil
 }
 
+// readRefLines reads "<oid> <ref>" lines; an all-zero oid is a delete ("" in the map). The zero oid is accepted only
+// when zeroOK.
+func readRefLines(r io.Reader, zeroOK bool) (map[string]string, []string, error) {
+	want := map[string]string{}
+	var order []string
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 64*1024)
+	for sc.Scan() {
+		f := strings.Fields(sc.Text())
+		if len(f) != 2 || !hexRe.MatchString(f[0]) || !strings.HasPrefix(f[1], "refs/") || strings.Contains(f[1], "..") {
+			return nil, nil, fmt.Errorf("bad ref line %q", sc.Text())
+		}
+		oid := f[0]
+		if strings.Trim(oid, "0") == "" {
+			if !zeroOK {
+				return nil, nil, fmt.Errorf("bad ref line %q", sc.Text())
+			}
+			oid = ""
+		}
+		if _, seen := want[f[1]]; !seen {
+			order = append(order, f[1])
+		}
+		want[f[1]] = oid
+	}
+	return want, order, sc.Err()
+}
+
+// applyRefs runs the deletes, then the updates, each as `update-ref --stdin --batch-updates`, so a ref that names an
+// object the shard does not hold, or that conflicts with another name, is rejected alone and the rest apply. Answers
+// how many updates were skipped. Deletes commit before updates: a set may move a name from a file to a directory
+// (refs/heads/a deleted, refs/heads/a/b created).
+func applyRefs(rp string, dels, ups []string) (int, error) {
+	skipped := 0
+	for _, lines := range [][]string{dels, ups} {
+		if len(lines) == 0 {
+			continue
+		}
+		out, err := git(rp, nil, strings.NewReader(strings.Join(lines, "")), "update-ref", "--stdin", "--batch-updates")
+		if err != nil {
+			return skipped, err
+		}
+		skipped += strings.Count(string(out), "rejected ")
+	}
+	return skipped, nil
+}
+
+// setHead points HEAD at refs/heads/main when it exists, else at the first ref given, and writes it only when it
+// changes.
+func setHead(rp, head string) {
+	if head == "" {
+		return
+	}
+	if cur, _ := git(rp, nil, nil, "symbolic-ref", "HEAD"); strings.TrimSpace(string(cur)) != head {
+		git(rp, nil, nil, "symbolic-ref", "HEAD", head)
+	}
+}
+
+// handleRefs serves GET (every ref), PUT (a whole ref set, in pages: start=1 on the first page clears the refs, done=1
+// on the last sets HEAD and may start a repack), and POST (a catch-up's ref changes, deletes as the zero oid). Refs
+// naming objects the shard does not hold are skipped and counted, never fatal, so one bad ref leaves the others served.
 func handleRefs(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
@@ -766,52 +830,61 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	l := lock(net)
 	l.Lock()
 	defer l.Unlock()
-	want := map[string]string{}
-	head := ""
-	sc := bufio.NewScanner(r.Body)
-	for sc.Scan() {
-		f := strings.Fields(sc.Text())
-		if len(f) != 2 || !hexRe.MatchString(f[0]) || !strings.HasPrefix(f[1], "refs/") || strings.Contains(f[1], "..") {
-			fail(w, 400, "bad ref line %q", sc.Text())
-			return
-		}
-		want[f[1]] = f[0]
-		if f[1] == "refs/heads/main" || head == "" {
-			head = f[1]
-		}
-	}
-	have, err := listRefs(rp)
+	q := r.URL.Query()
+	put := r.Method == http.MethodPut
+	// A PUT with neither flag is the whole set in one body, as before.
+	start, done := !put || q.Get("start") == "1" || (q.Get("start") == "" && q.Get("done") == ""),
+		!put || q.Get("done") == "1" || (q.Get("start") == "" && q.Get("done") == "")
+	want, order, err := readRefLines(r.Body, !put)
 	if err != nil {
-		fail(w, 500, "%v", err)
+		fail(w, 400, "%v", err)
 		return
 	}
-	// Deletes commit before updates, in their own transaction: a ref set may move a name from a file to a directory
-	// (refs/heads/a deleted, refs/heads/a/b created), which one update-ref transaction refuses, with reftable even
-	// when the delete comes first.
-	var dels, ups strings.Builder
-	for ref := range have {
-		if _, ok := want[ref]; !ok {
-			fmt.Fprintf(&dels, "delete %s\n", ref)
-		}
-	}
-	for ref, oid := range want {
-		if have[ref] != oid {
-			fmt.Fprintf(&ups, "update %s %s\n", ref, oid)
-		}
-	}
-	for _, script := range []string{dels.String(), ups.String()} {
-		if script == "" {
-			continue
-		}
-		if _, err := git(rp, nil, strings.NewReader("start\n"+script+"commit\n"), "update-ref", "--stdin"); err != nil {
-			fail(w, 422, "%v", err)
+	var dels, ups []string
+	if put && start {
+		have, err := listRefs(rp)
+		if err != nil {
+			fail(w, 500, "%v", err)
 			return
 		}
+		for ref := range have {
+			if _, ok := want[ref]; !ok {
+				dels = append(dels, "delete "+ref+"\n")
+			}
+		}
+		for _, ref := range order {
+			if have[ref] != want[ref] {
+				ups = append(ups, "update "+ref+" "+want[ref]+"\n")
+			}
+		}
+	} else {
+		for _, ref := range order {
+			if want[ref] == "" {
+				dels = append(dels, "delete "+ref+"\n")
+			} else {
+				ups = append(ups, "update "+ref+" "+want[ref]+"\n")
+			}
+		}
 	}
-	if cur, _ := git(rp, nil, nil, "symbolic-ref", "HEAD"); head != "" && strings.TrimSpace(string(cur)) != head {
-		git(rp, nil, nil, "symbolic-ref", "HEAD", head)
+	skipped, err := applyRefs(rp, dels, ups)
+	if err != nil {
+		fail(w, 422, "%v", err)
+		return
 	}
-	jsonOut(w, map[string]any{"refs": len(want), "repack": startRepack(net, rp)})
+	repack := false
+	if done {
+		head := ""
+		if put {
+			if _, err := git(rp, nil, nil, "rev-parse", "-q", "--verify", "refs/heads/main"); err == nil {
+				head = "refs/heads/main"
+			} else if len(order) > 0 && want[order[0]] != "" {
+				head = order[0]
+			}
+		}
+		setHead(rp, head)
+		repack = startRepack(net, rp)
+	}
+	jsonOut(w, map[string]any{"refs": len(want), "skipped": skipped, "repack": repack})
 }
 
 // REPACK_AT: the pack count past which a catch-up starts a geometric repack [guess]. Every ingested pack stays its

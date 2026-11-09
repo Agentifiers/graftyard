@@ -43,7 +43,7 @@ pub mod host;
 
 pub use bucket::{Bucket, ObjectInfo, PutNew, StoreError};
 pub use ingest::{
-    ChainLog, CoreRefs, Load, LogPacks, Oid, catch_up_plan, promotion_inputs, rehydrate_plan, tail_start,
+    ChainLog, Head, Load, LogPacks, Oid, catch_up_plan, promotion_inputs, ref_changes, rehydrate_plan, tail_start,
 };
 pub use key::{ParseKeyError, R2Key};
 pub use pack::{
