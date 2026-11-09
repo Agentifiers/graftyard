@@ -18,9 +18,10 @@ const STALL = Number(process.argv[2] ?? 30);
 const N = Number(process.argv[3] ?? 20);
 const CHANGE = process.argv[4] === "change";
 const OUT = new URL("../raw/stall.jsonl", import.meta.url).pathname;
-const R = "m3org/j4";
+// j4 by default; `STALL_REPO`/`STALL_REPO_ID` name another m3org repository the m3-ci installation covers.
+const R = `m3org/${process.env.STALL_REPO ?? "j4"}`;
 const V1 = `/api/graftyard/v1/repos/${R}`;
-const CHAIN = `repo:${state.repo}`;
+const CHAIN = `repo:${process.env.STALL_REPO_ID ?? state.repo}`;
 const tag = Date.now().toString(36);
 const step = (name, v) => { row(OUT, { step: name, at: Date.now(), ...v }); log(`${name} ${JSON.stringify(v).slice(0, 400)}`); };
 
