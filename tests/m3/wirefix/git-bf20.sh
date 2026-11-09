@@ -14,10 +14,10 @@ W=$(mktemp -d); trap 'rm -rf $W' EXIT
 (umask 077; printf '%s\n' "$GIT_CONFIG_VALUE_0" > $W/hdr)
 run() {
   local name=$1; shift
-  local t0=$(date +%s.%N)
+  local t0=$(date +%s%N)
   "$@" > $W/out 2> $W/err; local rc=$?
-  local t1=$(date +%s.%N)
-  printf '%s %s rc=%s %.1fs lines=%s bytes=%s %s\n' "$(date -u +%T)" "$name" "$rc" "$(echo "$t1 - $t0" | bc)" \
+  local t1=$(date +%s%N)
+  printf '%s %s rc=%s %sms lines=%s bytes=%s %s\n' "$(date -u +%T)" "$name" "$rc" "$(( (t1 - t0) / 1000000 ))" \
     "$(wc -l < $W/out)" "$(wc -c < $W/out)" "$(tail -c 300 $W/err | tr '\n' ' ')"
   head -3 $W/out | cut -c1-120
 }

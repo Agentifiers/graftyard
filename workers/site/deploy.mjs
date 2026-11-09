@@ -162,8 +162,16 @@ if (ri >= 0) {
       const m = i.name.match(/^git#(\d+)#net:(\d+)$/);
       if (!m || i.status.state !== "running" || i.image === image) continue;
       const q = `repo=${m[2]}&shard=${m[1]}`;
-      const call = (route) => execFileSync("curl", ["-s", "-m", "300", "-X", "POST", "-H", "@-",
-        "-o", "/dev/null", "-w", "%{http_code}", `${edge}/_bed/${route}?${q}`], { input: `x-bed-token: ${bed}\n` }).toString();
+      // A slow catchup (repo:65536's rehydrate took 140 s, and over 300 s while another ran) is reported and the roll
+      // goes on, so one repository does not leave every later instance on the old image.
+      const call = (route) => {
+        try {
+          return execFileSync("curl", ["-s", "-m", "600", "-X", "POST", "-H", "@-", "-o", "/dev/null", "-w", "%{http_code}",
+            `${edge}/_bed/${route}?${q}`], { input: `x-bed-token: ${bed}\n` }).toString();
+        } catch (e) {
+          return `fail(${e.status})`;
+        }
+      };
       console.log(`roll ${i.name} from ${i.image.slice(-12)}: kill ${call("kill")}, catchup ${call("catchup")}`);
     }
   }
