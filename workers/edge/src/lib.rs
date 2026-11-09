@@ -887,7 +887,12 @@ pub(crate) async fn push_init(
         part: c.cfg.part,
     };
     ensure_group(c, repo).await?;
-    let (d, _) = store.place_teed(stage, validate(c, repo, &init.pack, &tips)).await.map_err(|e| e.to_string())?;
+    // A default push's validate: no agent detail, so the shard answers only the pack's index.
+    let check = async {
+        let (ix, _) = validate(c, repo, &init.pack, &tips, "").await?;
+        ix.ok_or_else(|| "validate gave no index".to_owned())
+    };
+    let (d, _) = store.place_teed(stage, check).await.map_err(|e| e.to_string())?;
     let push = Push {
         updates: vec![graftyard_git::refs::RefUpdate { name: main, expect: None, new: Some(init.commit) }],
         atomicity: Atomicity::AllOrNothing,
