@@ -16,13 +16,16 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { OP, api, ghs, Git, log, member, must, pat, row, sleep, state, tokens } from "./lib.mjs";
+import { agentToken } from "../rest/apps.mjs";
 
 const [which, nArg] = process.argv.slice(2);
 const N = Number(nArg ?? 100);
 const RAW = new URL("../raw/", import.meta.url).pathname;
 mkdirSync(RAW, { recursive: true });
 const OUT = `${RAW}rows-${which}.jsonl`;
-const R = "m3org/j4";
+// ROWS_REPO overrides j4 (graft-m2b runs these on fresh repositories); ROWS_B037_REPO and ROWS_B037_CHAIN, b037's.
+const R = `m3org/${process.env.ROWS_REPO ?? "j4"}`;
+const RN = R.split("/")[1];
 const V1 = `/api/graftyard/v1/repos/${R}`;
 const tag = Date.now().toString(36);
 const count = (xs) => xs.reduce((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {});
@@ -103,6 +106,12 @@ if (which === "l012") {
     ["flagged App without confine", async () => { await flag(null); return (await ghs({})).body.token; }, (k) => `refs/heads/l012-${tag}-u${k}`],
     ["unflagged App", async () => { await api("DELETE", `/api/graftyard/v1/agents/apps/${state.app}`, admin); return (await ghs({})).body.token; }, (k) => `refs/heads/l012-${tag}-b${k}`],
     ["human PAT", async () => admin, (k) => `refs/heads/l012-${tag}-h${k}`],
+    // The install's own Apps (tests/am1/rest/apps.mjs): `graftyard-workspace`, a Graftyard-run App (ActorKind::Agent;
+    // with no task it is refused before the lease, by NoLiveTask), and `Graftyard MCP` (never ActorKind::Agent).
+    ...(process.env.ROWS_INSTALL_APPS ? [
+      ["Graftyard-run App (graftyard-workspace)", async () => (await agentToken("graftyard-workspace")).body.token, (k) => `refs/heads/l012-${tag}-w${k}`],
+      ["Graftyard MCP", async () => (await agentToken("graftyard-mcp")).body.token, (k) => `refs/heads/l012-${tag}-m${k}`],
+    ] : []),
   ];
   const summary = {};
   for (const [kind, tokenOf, ref] of kinds) {
@@ -337,8 +346,13 @@ if (which === "b036") {
   const flag = (confine) => api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine });
   row(OUT, { step: "flag confined", status: (await flag("refs/heads/claude/**")).status });
   await sleep(2000);
-  const app = (await ghs({})).body.token;
-  const repoId = (await gql(admin, 'query { repository(owner: "m3org", name: "j4") { id } }')).body?.data?.repository?.id;
+  // ROWS_B036_APP names one of the install's own Apps (tests/am1/rest/apps.mjs) to run the actions under instead of
+  // m3-ci; a Graftyard-run App has no task here (the edge creates only external tasks), so its pushes meet NoLiveTask.
+  const kindApp = process.env.ROWS_B036_APP;
+  const minted = kindApp ? await agentToken(kindApp) : await ghs({});
+  row(OUT, { step: "token", app: kindApp ?? "m3-ci", status: minted.status, permissions: minted.body?.permissions });
+  const app = minted.body.token;
+  const repoId = (await gql(admin, `query { repository(owner: "m3org", name: "${RN}") { id } }`)).body?.data?.repository?.id;
   const g = new Git(R).as(admin);
   g.clone();
   const main = g.run(["rev-parse", "HEAD"]).out.trim();
@@ -358,7 +372,8 @@ if (which === "b036") {
   const prAdm = await open(admin, `b036-${tag}-h`, false);
   row(OUT, { step: "prs", app: prApp?.number, admin: prAdm?.number });
   const lbl = await api("POST", `/api/v3/repos/${R}/labels`, admin, { name: `b036-${tag}`, color: "ededed" });
-  row(OUT, { step: "label", status: lbl.status });
+  const labelId = lbl.body?.node_id;
+  row(OUT, { step: "label", status: lbl.status, nodeId: !!labelId });
   const out = {};
   const run = async (name, f) => {
     const st = [];
@@ -377,10 +392,11 @@ if (which === "b036") {
   await run("merge (REST PUT pulls/n/merge)", async () => rest(await api("PUT", `/api/v3/repos/${R}/pulls/${n1}/merge`, app, { merge_method: "merge" })));
   await run("merge (GraphQL mergePullRequest)", async () => gq(await gql(app, "mutation($i: MergePullRequestInput!) { mergePullRequest(input: $i) { pullRequest { number } } }", { i: { pullRequestId: id1 } }), "mergePullRequest"));
   await run("merge (GraphQL enablePullRequestAutoMerge)", async () => gq(await gql(app, "mutation($i: EnablePullRequestAutoMergeInput!) { enablePullRequestAutoMerge(input: $i) { pullRequest { number } } }", { i: { pullRequestId: id1 } }), "enablePullRequestAutoMerge"));
-  await run("ready for review (GraphQL updatePullRequest draft:false is not served; REST none)", async () => "not served by the edge");
+  await run("ready for review (GraphQL markPullRequestReadyForReview)", async () => gq(await gql(app, "mutation($i: MarkPullRequestReadyForReviewInput!) { markPullRequestReadyForReview(input: $i) { pullRequest { number } } }", { i: { pullRequestId: id2 ?? id1 } }), "markPullRequestReadyForReview"));
   await run("release (REST POST releases)", async (i) => rest(await api("POST", `/api/v3/repos/${R}/releases`, app, { tag_name: `b036-${tag}-${i}`, target_commitish: main })));
   await run("tag push (git)", async (i) => { g.as(app); g.run(["checkout", "-q", "--detach", main]); return push(g.run(["push", "origin", `${main}:refs/tags/b036-${tag}-${i}`])); });
-  await run("label outside the allowlist (REST POST issues/n/labels is not served)", async () => "not served by the edge");
+  await run("label outside the allowlist (REST POST issues/n/labels)", async () => rest(await api("POST", `/api/v3/repos/${R}/issues/${n1}/labels`, app, [`b036-${tag}`])));
+  await run("label outside the allowlist (GraphQL addLabelsToLabelable)", async () => gq(await gql(app, "mutation($i: AddLabelsToLabelableInput!) { addLabelsToLabelable(input: $i) { labelable { __typename } } }", { i: { labelableId: id1, labelIds: [labelId] } }), "addLabelsToLabelable"));
   await run("graftyard/ status (REST POST statuses)", async () => rest(await api("POST", `/api/v3/repos/${R}/statuses/${main}`, app, { state: "success", context: "graftyard/agent-gate" })));
   await run("push outside its prefix (git)", async (i) => { const sha = commitAt(`b036/${tag}/o${i}.txt`, i); void sha; g.as(app); return push(g.run(["push", "origin", `HEAD:refs/heads/b036-${tag}-o${i}`])); });
   await run("REST ref write outside its prefix (POST git/refs)", async (i) => rest(await api("POST", `/api/v3/repos/${R}/git/refs`, app, { ref: `refs/heads/b036-${tag}-r${i}`, sha: main })));
@@ -399,8 +415,8 @@ if (which === "b037") {
   // repeated key, a trailer block with no blank line), a forged `Graftyard-Session` (another App's id, an unknown
   // task, another repository's origin), and writer pushes to `refs/graftyard/` (m3-admin). Then a user token's commit
   // whose only trailer is `Co-authored-by`. Provenance is read from the leader's stored entries (`/log`).
-  const RR = "m3org/lf1-3";
-  const CH = "repo:1048580";
+  const RR = `m3org/${process.env.ROWS_B037_REPO ?? "lf1-3"}`;
+  const CH = process.env.ROWS_B037_CHAIN ?? "repo:1048580";
   const W1 = `/api/graftyard/v1/repos/${RR}`;
   const admin = tokens.admin;
   await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
@@ -426,7 +442,7 @@ if (which === "b037") {
     "malformed: no blank line": (k) => `b037 ${k}\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}`,
     "forged: another App's task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/999.b037-${k}\n`,
     "forged: unknown task": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${state.app}.nope-${tag}-${k}\n`,
-    "forged: another repository": (k) => `b037 ${k}\n\nGraftyard-Session: https://graft-m1-edge.<workers-subdomain>.workers.dev/m3org/j4/_graftyard/sessions/${t.body?.id}\n`,
+    "forged: another repository": (k) => `b037 ${k}\n\nGraftyard-Session: https://${process.env.GRAFT_HOST ?? "graft-m1-edge.<workers-subdomain>.workers.dev"}/${R}/_graftyard/sessions/${t.body?.id}\n`,
     "linked (control)": (k) => `b037 ${k}\n\nGraftyard-Session: ${origin}/_graftyard/sessions/${t.body?.id}\n`,
   };
   const out = {};

@@ -41,7 +41,7 @@ import { parseArgs } from "node:util";
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
-  run: { type: "string" } } });
+  run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" } } });
 
 // ---- the plan, from the rows ----
 
@@ -64,8 +64,8 @@ export function journey9(agents) {
   };
 }
 
-export function planFor(row, { agents, seconds }) {
-  const base = { row, seconds, ...journey9(agents ?? 500) };
+export function planFor(row, { agents, seconds, apiReads, refReads }) {
+  const base = { row, seconds, ...journey9(agents ?? 500), ...(apiReads !== undefined ? { apiReads } : {}), ...(refReads !== undefined ? { refReads } : {}) };
   switch (row) {
     case "b0-29": return base;
     case "b0-31": return { ...base, packFixed: 1 << 20 };
@@ -162,8 +162,11 @@ if (opt.selftest) {
 
 const row = positionals[0];
 const seconds = Number(opt.seconds ?? 600);
-const plan = planFor(row, { agents: opt.agents ? Number(opt.agents) : undefined, seconds });
+// `--api-reads` and `--ref-reads` override the row's read rates (a diagnostic run; the gate runs at the row's).
+const plan = planFor(row, { agents: opt.agents ? Number(opt.agents) : undefined, seconds,
+  apiReads: opt["api-reads"] !== undefined ? Number(opt["api-reads"]) : undefined, refReads: opt["ref-reads"] !== undefined ? Number(opt["ref-reads"]) : undefined });
 if (opt["kill-every"]) plan.killEvery = Number(opt["kill-every"]);
+if (opt.pollers !== undefined) plan.pollers = Number(opt.pollers);
 
 if (opt.dry) {
   const o = offered(plan);
