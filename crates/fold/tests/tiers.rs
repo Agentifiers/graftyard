@@ -412,3 +412,69 @@ fn snapshot_cadence_and_retention_use_entry_times() {
     let snaps: Vec<(Index, Timestamp)> = (0..5).map(|i| (Index(i * 100), Timestamp(i * 10 * day))).collect();
     assert_eq!(snapshots_to_keep(&snaps, Timestamp(50 * day)), vec![Index(100), Index(200), Index(300), Index(400)]);
 }
+
+/// `archive_due_walk`, what the hosted archive alarm calls: it answers as `archive_due` over the same log, reads the
+/// log only as far as the range plus one entry, and with `range_max` cuts a due range into pieces that each hold at
+/// least one entry.
+#[test]
+fn archive_due_walk_matches_archive_due_and_cuts_a_due_range_into_pieces() {
+    use graftyard_fold::{LOG_KEEP, archive_due, archive_due_walk};
+    let day = 86_400_000u64;
+    let keep = LOG_KEEP.as_millis() as u64;
+    // 100 entries of 10 bytes, one an hour from day 0; the newest is entry 100.
+    let log: Vec<(Index, Timestamp, u64)> = (1..=100).map(|i| (Index(i), Timestamp(i * 3_600_000), 10)).collect();
+    let total = 1_000;
+    let cases = [
+        (Timestamp(log[99].1.0), true, Index(100), 600),
+        (Timestamp(log[99].1.0), true, Index(30), 600),
+        (Timestamp(log[99].1.0), false, Index(100), 600),
+        (Timestamp(keep + 50 * 3_600_000), true, Index(100), 10_000),
+        (Timestamp(log[99].1.0), true, Index(100), 10_000),
+    ];
+    for (now, snap, committed, max) in cases {
+        assert_eq!(
+            archive_due_walk(total, log.iter().copied(), now, snap, committed, max, u64::MAX),
+            archive_due(&log, now, snap, committed, max),
+            "{now:?} {snap} {committed:?} {max}"
+        );
+    }
+    // Over the cap by 400 bytes: entries 1..=40 are due.
+    assert_eq!(archive_due(&log, log[99].1, true, Index(100), 600), Some((Index(1), Index(40))));
+    // Only up to the commit index.
+    assert_eq!(archive_due(&log, log[99].1, true, Index(30), 600), Some((Index(1), Index(30))));
+    // No snapshot, nothing; under the cap and young, nothing.
+    assert_eq!(archive_due(&log, log[99].1, false, Index(100), 600), None);
+    assert_eq!(archive_due(&log, log[99].1, true, Index(100), 10_000), None);
+    // Older than LOG_KEEP: entries 1..=50 have `at` below the cut.
+    assert_eq!(
+        archive_due(&log, Timestamp(keep + 50 * 3_600_000), true, Index(100), 10_000),
+        Some((Index(1), Index(49)))
+    );
+    // The walk stops one entry past the range.
+    let mut read = 0;
+    let walked = log.iter().copied().inspect(|_| read += 1);
+    assert_eq!(
+        archive_due_walk(total, walked, log[99].1, true, Index(100), 600, u64::MAX),
+        Some((Index(1), Index(40)))
+    );
+    assert_eq!(read, 41);
+    // `range_max` of 125 bytes: the due range 1..=40 goes in pieces of 12 entries, the last of 4.
+    let mut from = 0;
+    let mut pieces = Vec::new();
+    while let Some((lo, hi)) = archive_due_walk(
+        total - from as u64 * 10,
+        log.iter().copied().skip(from),
+        log[99].1,
+        true,
+        Index(100),
+        600,
+        125,
+    ) {
+        pieces.push((lo.0, hi.0));
+        from = hi.0 as usize;
+    }
+    assert_eq!(pieces, vec![(1, 12), (13, 24), (25, 36), (37, 40)]);
+    // A single entry over `range_max` still goes alone.
+    let big = [(Index(1), Timestamp(1), 900), (Index(2), Timestamp(2), 900)];
+    assert_eq!(archive_due_walk(1_800, big, Timestamp(day), true, Index(2), 1_000, 100), Some((Index(1), Index(1))));
+}
