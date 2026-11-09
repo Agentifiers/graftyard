@@ -813,6 +813,11 @@ const OPERATION: Record<string, string> = {
   const r = rng(42);
   const actors = ["mira", "devi", "tomas", "lin", "kenji", "priya", "olu", "rhea"];
   const repoNames = ["graftyard/edge", "graftyard/raft", "graftyard/web"];
+  // Someone other than the actor, for events that act on a person.
+  const other = (who: string) => {
+    const rest = actors.filter((a) => a !== who);
+    return rest[Math.floor(r() * rest.length)];
+  };
   const kinds: [string, (who: string) => Partial<AuditEvent>, number][] = [
     ["git.clone", () => ({ repo: repoNames[Math.floor(r() * 3)] }), 30],
     ["git.push", () => ({ repo: repoNames[Math.floor(r() * 3)] }), 22],
@@ -829,9 +834,9 @@ const OPERATION: Record<string, string> = {
     ],
     [
       "team.remove_member",
-      () => ({
+      (who) => ({
         team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`,
-        user: actors[Math.floor(r() * actors.length)],
+        user: other(who),
       }),
       1,
     ],
@@ -845,8 +850,8 @@ const OPERATION: Record<string, string> = {
     ],
     ["hook.create", () => ({ hook_id: hooks[Math.floor(r() * hooks.length)].id }), 1],
     ["hook.config_changed", () => ({ hook_id: hooks[Math.floor(r() * hooks.length)].id }), 1],
-    ["org.update_member", () => ({ user: actors[Math.floor(r() * actors.length)] }), 1],
-    ["org.invite_member", () => ({ user: actors[Math.floor(r() * actors.length)] }), 1],
+    ["org.update_member", (who) => ({ user: other(who) }), 1],
+    ["org.invite_member", (who) => ({ user: other(who) }), 1],
     ["repository_ruleset.update", () => ({ name: "Protect default branches" }), 1],
     ["pre_receive_hook.enforcement", () => ({ name: "require-signed-off-by" }), 1],
   ];

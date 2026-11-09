@@ -37,6 +37,7 @@ import {
   rulesetQuery,
   rulesetsQuery,
   teamsQuery,
+  usersDirectoryQuery,
 } from "./queries";
 
 // Organization rulesets: the same rules a repository ruleset has, aimed at repositories by
@@ -653,6 +654,7 @@ function PatternList({
 export function RulesetHistory({ org, id }: { org: string; id: number }) {
   const { data } = useSuspenseQuery(rulesetHistoryQuery(org, id));
   const { data: ruleset } = useSuspenseQuery(rulesetQuery(org, id));
+  const { data: people } = useSuspenseQuery(usersDirectoryQuery());
   return (
     <ol className="divide-y" data-testid="ruleset-history">
       {data.map((v) => (
@@ -661,7 +663,8 @@ export function RulesetHistory({ org, id }: { org: string; id: number }) {
             v{v.version_id}
           </Badge>
           <span className="text-muted-foreground">
-            {v.actor.type ?? "User"} {v.actor.id} saved it <Ago at={v.updated_at} />
+            {people.find((p) => p.id === v.actor.id)?.login ?? `User ${v.actor.id}`} saved it{" "}
+            <Ago at={v.updated_at} />
           </span>
         </li>
       ))}
