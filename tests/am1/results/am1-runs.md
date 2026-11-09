@@ -12,8 +12,15 @@ Two rounds:
 
 **Short version.**
 
-- **Pass:** LF-4 (two resources), L0-12's refusal counts for all six kinds, L0-13's 5 h renew, B0-36 for the confined
-  vendor App and the Graftyard-run App on every surface the deployed edge routes, and the B0-37 rows listed below.
+- **Pass:**
+  - LF-4 (two resources);
+  - L0-12's refusal counts for all six kinds;
+  - L0-13's plan blocks, removed holder, and 5 h renew;
+  - B0-36 for the confined vendor App and the Graftyard-run App (shipped and widened) on every surface the deployed
+    edge routes, with MCP as the control;
+  - B0-37's push half.
+- **Fail, with a code fix not deployed:** LF-13. Install mode lost 6, 41 and 39 events across the snapshot's hole
+  (`dfa5410` fixes it, and needs a site day). Gap mode never made a gap.
 - **Fail:** every 500-agent load row (B0-29, B0-31, B0-32, B0-33, B0-34, B0-35, and L0-12's A1 replay). All of them fail
   for one cause, a missing build piece rather than a tuning miss. The git shard serializes `/validate` per network, and
   `fanout` (k shards per hot network) is not wired. One network therefore validates about 2 pushes/s, against journey
@@ -157,11 +164,11 @@ Also seen in these runs: `prsync 131171` ingest answers 422 "did not receive exp
 | B0-36, Graftyard-run App (`graftyard-agent`, shipped permissions) | same | See the B0-36 table | **Pass**, same caveat |
 | B0-36, Graftyard-run App widened to every permission (`widen.mjs wide`: actions, administration, checks, contents, issues, metadata, pull_requests, statuses, workflows; put back to shipped at 19:05Z) | "The Graftyard-run token runs once with its shipped permissions and once on an installation widened to every permission, and a refusal from either counts" | approve, ready for review: 100/100 refused by the agent rule. Release and tag push: 100/100 "agents may not create releases or tags". REST label: 100/100 "not in this repository's agent label allowlist". Merge: REST and GraphQL 100 × 403; auto-merge "not allowed". `PUT agents/policy`: 100 × 403 "agents may not edit rulesets…". Pushes and REST ref writes outside the prefix, and protected paths over git and REST: 100/100 refused, "push needs a live task; the token names no task". `graftyard/` status: 100 × 401. Controls: ordinary push 71 refused (`NoLiveTask`) + 29 rejected (token expired); draft PR 100 × 401 (token expired; this run started before `40eb192`) | **Pass**; the git-surface refusals come from `NoLiveTask`, as in L0-12 |
 | B0-36, `graftyard-mcp` | `Graftyard MCP` is never `ActorKind::Agent`, so no agent refusal should apply | approve, ready for review, release, tag push, REST label, pushes and REST ref writes outside `claude/**`, protected paths over git and REST, the ordinary push, and the draft PR: **100/100 accepted each**. Merge (REST and GraphQL) and `PUT agents/policy`: 403 "Resource not accessible by integration" (permission, not an agent rule). `graftyard/` status: 401 (its `statuses: read`). Auto-merge: "not allowed for this repository". GraphQL label: not routed, as for every kind | **As expected**: no agent refusal hit the MCP kind |
-| B0-37 push half (`rows-b037`) | "Zero pushes fail on parsing, every forged trailer stays `Claimed`, every `refs/graftyard/` update not by `graftyard-workspace` is refused" | PENDING | PENDING |
+| B0-37 push half (`rows-b037` 131181, m3-ci confined, 100 per kind) | "Zero pushes fail on parsing, every forged trailer stays `Claimed`, every `refs/graftyard/` update not by `graftyard-workspace` is refused" | **0 pushes failed on parsing**: 899 of 900 trailer pushes accepted, and the one other was a transport error ("unable to access", linked control). Stored provenance from the leader's log (1,009 entries): bad URL, control chars, 4 KiB line, another App's task, and unknown task: **100 `Claimed`** each, 0 linked. Repeated key: 100 with the first value `Session` and the second `Claimed`. No blank line: no trailer block, so no row. Linked control: 99 `Session`. Writer pushes to `refs/graftyard/` by m3-admin: **100/100 refused** ("deny updating a hidden ref"). The `Co-authored-by` user push was accepted with no provenance row, so it stays Human. "Forged: another repository": see the note below | **Pass** (scaled: 100 per kind, about 1,000 pushes, not 10,000) |
 | B0-37 fetch half | "session refs appear only to a v2 `ref-prefix` that starts with it" | Round 1, 10 of 10 rounds (`b037-fetch.tsv`): a writer's push to `refs/graftyard/sessions/…` was `[remote rejected]`; v0 `ls-remote` 2 refs with 0 `refs/graftyard/`, v2 the same, `clone --mirror` 1 ref with 0; a raw v2 `ls-refs` with `ref-prefix refs/graftyard/sessions/` got 200 with 0 lines. No session ref exists to list, because only `graftyard-workspace` under a live Graftyard-run task writes one, and the edge creates only `external` tasks (AM3-WP3) | **Partial**: hiding and refusal shown; listing not reachable hosted (`containers/git/server/sessions_test.go` covers it) |
-| LF-13 gap × 3, install × 3 | "Every held poll returns within 1 s with its cursor and no events, new polls are refused until it catches up, and no event is lost" | PENDING | PENDING |
+| LF-13 gap × 3 (`lf13-g` 131178), install × 3 (`lf13-i` 131179) | "Every held poll returns within 1 s with its cursor and no events, new polls are refused until it catches up, and no event is lost" | See the LF-13 table below | **FAIL** in both modes. Gap: the fault never made F refuse an AppendEntries, so no gap was shown. Install: F served `hold` from a cursor across the snapshot's hole and lost 6, 41 and 39 events. Fixed in code (`dfa5410`), not deployed |
 | L0-13, holder loses push access (`l013-d` 131187) | "The removed holder's lease refuses nothing at the next `decide`" | A fresh org member held an Exclusive lease (201) under `AgentsExclusive`. Before removal: m3-ci's 2 of 2 pushes into the scope refused ("is leased Exclusive by user …", the holder 7100105); the lease listed (1). After `SetMember role: null`: 2 of 2 pushes accepted at once, and the list shows 0 | **Pass** (2 pushes each side; the line asks for the next `decide`) |
-| L0-13, 600 + 600 plan blocks | "Zero plan leases from non-writers and at most 500 from writers" | PENDING | PENDING |
+| L0-13, 600 + 600 plan blocks (`l013-p` 131186) | "Zero plan leases from non-writers and at most 500 from writers" | Non-writers (3 fresh users, no membership): 600 of 600 drafts opened, **0 plan leases**. Writers (75 fresh org members, 8 drafts each): 600 of 600 opened, **500 plan leases** (counted by a recount through `after` paging), from 63 holders, at most 8 each (`LEASES_PER_HOLDER`). The driver's own count read 2,000 because it paged with `page=`, which the list ignores, so it counted the first page 20 times. Fixed in `925a8f0` | **Pass** |
 | L0-13, 5 h renew (`l013-r` 131185, acquired 14:13:59Z) | "The lease reads as Shared after 4 h" | Exclusive through 151 min in both the reply and the list; `shared` in both at 251 and 301 min; every renewal 200 | **Pass** |
 
 **L0-12, 100 pushes and 100 REST ref writes into another holder's Exclusive scope under `AgentsExclusive`, per kind:**
@@ -241,6 +248,48 @@ The run ended after the 301-min renewal (stopped at 19:17Z, five hours after the
   list, read at 201 min, still reads `exclusive`. Both are right for the instant they render.
 - **After 4 h.** Every read after 240 min reads `shared`, which is the pass line.
 
+**B0-37, the forged-origin kind.** In the main run, "forged: another repository" stored `Session` (linked) for 100 of
+100, which looks like a forged trailer that linked. It was a driver error, not a gate result. The runner set
+`ROWS_REPO` and `ROWS_B037_REPO` to the same repository, so that kind's "another repository" origin named the push's
+own repository and its own live task: a valid trailer. Rerun on its own with `ROWS_REPO=rows-j` (the trailer names
+`m3org/rows-j` while the push goes to `rows-b037`; `7a7574d`): **100 of 100 accepted, 100 of 100 stored `Claimed`**,
+0 linked.
+
+**LF-13, per run** (`tests/am1/rest/lf13.mjs`; F is the follower under the fault; 1,000 polls held on F before it):
+
+| Run | Fault on F | Leader after | Held polls | New polls to F after the lift | Events: committed / on the reference / missing on F |
+| --- | --- | --- | --- | --- | --- |
+| gap 1 | 11.6 s, no transfer took effect | 0 (unchanged) | 1,000 `hold`, all returned **before** the lift, each with a cursor and events | 2 × 503, then `hold` from 1.0 s; **0 `lagging`** | 8 / 2 / 0 |
+| gap 2 | 8.1 s, leader moved 0 → 2 | 2 | same | 1 × 503, then `hold` from 0.66 s; 0 `lagging` | 8 / 0 / 0 |
+| gap 3 | 23.6 s, leader moved 2 → 1 | 1 | same | 1 × 503, then `hold` from 0.56 s; 0 `lagging` | 4 / 2 / 0 |
+| install 1 | 64.2 s; leader archived and truncated to 18 with F at 11 | 0 | same | 3 × 503, 1 `hold`, then **10 `lagging`** | 34 / 16 / **6** |
+| install 2 | 62.3 s; truncated to 63, F at 60 | 0 | same | 1 × 503, then **45 `lagging`** | 48 / 45 / **41** |
+| install 3 | 60.7 s; truncated to 165, F at 161 | 0 | same | **48 `lagging`** | 46 / 43 / **39** |
+
+What the runs show:
+
+1. **Held polls.** "Every held poll returns within 1 s with its cursor and no events" fails as written in all six
+   runs. The held polls did not wait for the fault: all 1,000 returned before it lifted, with a cursor and with
+   events. They had been held with a 25 s wait on `lf13/**`, and the lease commits that drive the fault themselves
+   are `lf13/**` events. So the driver's own writes woke them. The run cannot tell "returned within 1 s of the lift"
+   apart from "returned because an event arrived".
+2. **Gap mode.** No new poll was refused (0 `lagging` in 50 probes over 10 s from the lift). The site marks a gap only
+   when F answers an AppendEntries with `ok: false` (`workers/site/src/family.rs`, `stepped`), so by the time of the
+   first probe no gap was marked. Moving the leader while F's calls fail did not leave F a gap that the probes could
+   see. So this mode does not make the row's fault. That agrees with
+   `crates/raft/tests/lf13.rs` (see "Design contradictions").
+3. **Install mode.** It reached `InstallSnapshot`, and new polls were refused (`lagging`) while F caught up, which
+   passes that half of the line. But afterwards F served a `hold` from the cursor taken before the fault, and that
+   hold was missing the events of every entry the snapshot covered: 6, 41 and 39. That is "any event skipped", the
+   fail line.
+4. **Cause and fix.** The site feeds F's ring each applied entry. An install moves F's base past entries the ring
+   never saw, but `Ring::feed` (`crates/git/src/feed.rs`) still took the next entry as contiguous. So its floor stayed
+   below the hole, and a cursor from before the hole was served past it. Fixed in `dfa5410`: the ring restarts after
+   the first entry fed past a hole, so such a cursor gets `gone` (410 with the oldest cursor it can serve, the design's
+   ring rule). There is a test (`a_ring_fed_past_a_hole_refuses_cursors_from_before_it`) and two plants
+   (`tests/am1/runs/plant.py` 1 and 2), both caught. **Not deployed**: it is a site-script change, so it needs a site
+   day, which this task did not include.
+
 ## What LM-1 still lacks (besides B0-30)
 
 1. **A git shard path that holds journey 9 on one network.** B0-29, B0-31 to B0-35, and L0-12's A1 replay all fail at
@@ -251,10 +300,22 @@ The run ended after the 301-min renewal (stopped at 19:17Z, five hours after the
    - the Graftyard-run kind's lease refusal in L0-12 and B0-36 (today it is refused earlier, by `NoLiveTask`);
    - B0-36's "push with no live task and a fork push after its task is cancelled" for that kind;
    - B0-37's session-ref listing through a v2 `ref-prefix`.
-3. **An edge deploy of `89cf205`**, for B0-36's GraphQL label surface.
-4. **LF-4's other six resources** (pull requests, comments, reviews, review comments, commits, check runs), which need
+3. **LF-13.** It needs:
+   - a site day with `dfa5410` (the feed ring's hole), then a rerun of install mode;
+   - a fault that actually leaves a gap, for gap mode;
+   - a driver whose held polls cannot be woken by its own writes, for the "returns within 1 s with no events" half.
+     For example, the polls could hold on a path the fault's commits do not touch.
+4. **An edge deploy of `89cf205`**, for B0-36's GraphQL label surface.
+5. **LF-4's other six resources** (pull requests, comments, reviews, review comments, commits, check runs), which need
    REST GETs on the edge.
-5. PENDING: anything LF-13 or L0-13's remaining halves show.
+
+What passed and closes its part of LM-1:
+
+- L0-12's refusal counts;
+- L0-13's plan blocks, removed holder, and 5 h renew (with the six bad acquires from `am1-hosted`);
+- B0-36 for the confined vendor App and the Graftyard-run App (shipped and widened), with MCP as the control;
+- B0-37's push half;
+- LF-4 for issues and releases.
 
 ## Costs incurred
 
@@ -265,7 +326,12 @@ Containers are excluded, because Analytics does not report them here.
 | --- | --- | --- | --- | --- | --- | --- |
 | 12:00–12:50 (round 1) | 473 | 9.1 s | 26,874 | 28,012 | 11,660 | about $0.05 |
 | 12:50–18:06 (round 2, through B0-33) | 1,132,133 | 10,892 s | 9,070,037 | 1,526,430 | 442,859 | about $4.15 |
-| PENDING (to the end) | | | | | | |
+| 18:06–21:35 (B0-36 reruns, B0-37, LF-13, L0-13) | 22,394 | 565 s | 641,064 | 1,972,466 | 454,721 | about $2.81 |
+| **Total** | | | | | | **about $7.0** |
+
+Prices: Workers $0.30 per million requests and $0.02 per million CPU-ms, DO $0.15 per million requests, $1.00 per
+million rows written, and $12.50 per million GB-s at 128 MB. The last window's rows and active time are mostly
+account-wide, not graft-m2b's (it made only 641 k DO requests). The plan estimated about $5.44.
 
 The account-wide figures include anything else running on the account, so they are an upper bound for graft-m2b. No
 row came near the $15 stop line. B0-33's window (17:56Z–18:05Z) cost about $0.27 by the same rates; a 500-agent row
@@ -282,9 +348,17 @@ about $0.2 to $0.3.
    - So either k must exceed 1 at journey 9, which contradicts the $0 line, or the shard must validate one network's
      pushes concurrently, which the code does not do and the design does not say. The design sizes k from git CPU
      (2.68 vCPU, 67% of one `standard-4`), not from this lock.
-2. **LF-13's wording.** As in `am1-rest.md`, the row's fault ("its AppendEntries dropped for 5 s so the next one leaves
-   a gap") cannot leave a gap under one leader. The hosted driver forces it by a leader change (gap mode) or by
-   truncation (install mode).
+2. **LF-13's wording.**
+   - As in `am1-rest.md`, the row's fault ("its AppendEntries dropped for 5 s so the next one leaves a gap",
+     `design/AGENT-LAYER.md`, Milestone 0 row LF-13) cannot leave a gap under one leader.
+   - Hosted, a leader change during the fault did not leave one either (gap runs 2 and 3: 0 `lagging`).
+   - Only truncation, which forces `InstallSnapshot`, put F behind.
+3. **The feed ring and `InstallSnapshot`.**
+   - `design/AGENT-LAYER.md`, Shape: "A cursor older than the ring gets 410 with the oldest".
+   - A follower that installed a snapshot has a ring with a hole in it. The design does not say what a cursor inside
+     that hole gets.
+   - The code served it as if the ring were whole, and lost events. `dfa5410` gives such a cursor 410, as for a
+     cursor older than the ring. That reading is mine, not the design's.
 
 ## Bf20 numbers, kept for reference (not loaded)
 
@@ -299,8 +373,54 @@ In this site day's roll, bf20 answered `kill 200, catchup 200` on shards 0 and 1
 
 ## Commits on `am1-runs`
 
-PENDING final list.
+From `0172f55`, oldest first. Nothing pushed or merged.
+
+| Commit | What |
+| --- | --- |
+| `bba90cb` | token rotation through the install's API |
+| `612c5f4` | image, site day, and edge drivers |
+| `3f90259` | round 1 results |
+| `b5ce9ba` | `graft-m2b-ops` and agent-format deploy drivers; mint check |
+| `288c4c0`, `3cb2f41`, `bd20257`, `d2d59a9`, `5f366be`, `fd7c6f5` | load and row drivers (A1 window and diagnosis flags, transfer, L0-13, B0-36 widened, runners) |
+| `89cf205` | **code:** GraphQL label mutations route by `labelableId`, with a test (not deployed) |
+| `ee97b23` | checks driver |
+| `356cf40`, `40eb192`, `7a7574d`, `925a8f0` | driver fixes found by the runs (L0-12 scratch refs, B0-36 token re-mint, B0-37 forged origin, L0-13 lease paging) |
+| `0b873f5` | results so far |
+| `dfa5410` | **code:** the feed ring restarts after a hole, with a test and `tests/am1/runs/plant.py` (not deployed) |
+| (this commit) | results |
+
+**Plants** (`tests/am1/runs/plant.py`): 3 of 3 caught.
+
+| # | Mutant | Caught by |
+| --- | --- | --- |
+| 0 | `addLabelsToLabelable` not routed by `labelableId` | `ready_for_review_and_issue_labels_commit_and_render_as_ghes_does` |
+| 1 | a ring fed past a hole serves cursors from before it | `a_ring_fed_past_a_hole_refuses_cursors_from_before_it` |
+| 2 | the ring restarts at the entry past the hole, not after it | the same test |
+
+The new test fails on the code as deployed (a cursor from before the hole is served: "oldest Index(7), cursor
+Index(8)") and passes with `dfa5410`.
+
+**Full checks at `dfa5410`** (`tests/am1/runs/checks.sh`, log `tests/am1/raw/runs/checks.log`): every step `RC=0`.
+That covers `cargo fmt --check`, workspace clippy, wasm32 clippy for site and edge with and without `test-faults` and
+for ops, `cargo test --workspace` (70 suites, **599 passed**, 0 failed, 3 ignored), the three `scripts/check_*.py`,
+and the shard's `go test`.
 
 ## Token scan
 
-PENDING.
+**What was checked.** A Python scan (kept outside the repository, printing file names and counts only) read 136 files:
+every file under `tests/am1/raw/` (raw logs and JSONL of both rounds), `tests/am1/runs/`, `tests/am1/hosted/`,
+`tests/am1/rest/`, this file, and `crates/git/tests/lease_gates.rs`. It looked for:
+
+- the exact text and the first 12 characters of every token in `~/.graft-m2b/tokens.txt` (rotated) and
+  `~/.graft-m3r/m3-tokens.txt`;
+- the bed token, the App client secret, and the account API token;
+- 40-character slices of every private key on disk: the App key, the three agent-App keys, and the install's customer
+  and release keys;
+- any `gh[pousr]_…`, `github_pat_…`, JWT, or `BEGIN … PRIVATE KEY` shape.
+
+**Result.** 1 hit, a false positive: in `checks.log`, `cargo test` prints the test name
+`stateless::tests::a_token_is_ghs_appid_then_a_jws_of_varying_length_and_verifies`, whose tail matches the `ghs_`
+shape. No token, key, or secret text appears.
+
+**Mint wrap key.** The key file was deleted after its secret was stored. Only its public half
+(`~/.graft-m2b/ops/putvk-kid1.json`) is kept, outside the repository.
