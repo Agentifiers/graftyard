@@ -1282,6 +1282,9 @@ fn init_repo_writes_the_first_settings_once_and_needs_an_admin() {
     assert_eq!(c.commit(OWNER, IssueOp::InitRepo(later)), Ok(IssueOut::Done));
     assert_eq!(c.log.len(), n + 1, "no entry");
     assert_eq!(graftyard_git::tiers::created(&c.members[0].core), created);
+    // The tier keeps the first `Created`'s time even if a later entry carries another (`decide` never sends one).
+    c.entry(EntryBody::Events(vec![RepoEvent::Created { actor: None }]), TierSet::CORE);
+    assert_eq!(graftyard_git::tiers::created(&c.members[0].core), created, "created_at does not move");
     c.agree();
 }
 
