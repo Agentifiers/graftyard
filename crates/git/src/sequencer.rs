@@ -623,6 +623,15 @@ mod tests {
     }
 
     #[test]
+    fn at_most_hook_owner_concurrency_attempts_at_once() {
+        let hooks: Vec<(i64, bool)> = (1..=80).map(|h| (h, false)).collect();
+        let mut s = seq(&hooks);
+        s.record(CHAIN, Index(1), (1..=80).map(|h| row(1, h)).collect(), Timestamp(0));
+        assert_eq!(s.start(Timestamp(0)).len(), usize::from(HOOK_OWNER_CONCURRENCY));
+        assert!(s.start(Timestamp(1)).is_empty(), "every slot is taken");
+    }
+
+    #[test]
     fn failing_hooks_share_at_most_half_the_slots() {
         let hooks: Vec<(i64, bool)> = (1..=80).map(|h| (h, false)).collect();
         let mut s = seq(&hooks);
