@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { createFileRoute, Link, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, notFound, redirect, useNavigate } from "@tanstack/react-router";
+import { ApiError } from "@/api/client";
 import { useSuspenseQuery } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -60,11 +61,14 @@ export const Route = createFileRoute("/$owner/")({
     sort: pick(SORTS, s.sort),
   }),
   beforeLoad: async ({ context, params }) => {
-    // Only the redirect waits on this read; a failure falls through to the page, whose
-    // regions show their own errors.
+    // Only the redirect waits on this read. A 404 is the not-found page; any other failure
+    // falls through to the page, whose regions show their own errors.
     const user = await context.queryClient
       .ensureQueryData(profileUserQuery(params.owner))
-      .catch(() => undefined);
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) throw notFound();
+        return undefined;
+      });
     if (user?.type === "Organization") {
       throw redirect({ to: "/orgs/$org", params: { org: user.login }, replace: true });
     }

@@ -918,13 +918,13 @@ export function searchAudit(phrase: string, order: "asc" | "desc", include: stri
 const readmes = new Map<string, string>([
   [
     "mira",
-    `### Hi, I'm Mira 👋
+    `### Hi, I'm Mira
 
 I work on the **edge Worker** and the **storage** groups at Graftyard.
 
-- 🔭 Now: idempotent retries on the write path
-- 🌱 Learning: Iceberg tables for audit retention
-- 📫 Reach me in \`#edge\` or at mira@graftyard.test`,
+- **Now:** idempotent retries on the write path
+- **Learning:** Iceberg tables for audit retention
+- **Reach me** in \`#edge\` or at mira@graftyard.test`,
   ],
   [
     "graftyard",
