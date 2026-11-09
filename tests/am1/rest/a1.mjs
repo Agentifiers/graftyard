@@ -190,8 +190,9 @@ const EDGE = process.env.GRAFT_EDGE;
 const RAW = new URL("../raw/", import.meta.url).pathname;
 mkdirSync(RAW, { recursive: true });
 const OUT = `${RAW}a1-${row}-${RUN}.jsonl`;
-const t0 = Date.now() + 15_000;
-const end = t0 + seconds * 1000;
+// Set again once setup (tasks, leases, open PRs) is done, so setup never eats the load window.
+let t0 = Date.now() + 15_000;
+let end = t0 + seconds * 1000;
 const lat = {};
 const codes = {};
 const note = (k, ms, code) => { (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1; };
@@ -302,6 +303,9 @@ if (plan.openPrs) {
   writeRow(OUT, { step: "open PRs", opened: openPrs.length });
 }
 
+t0 = Date.now() + 5_000;
+end = t0 + seconds * 1000;
+
 // The scheduler: each kind at its rate, Poisson, with at most `cap` in flight per kind.
 const inflight = {};
 function every(kind, perS, f, cap = 400) {
@@ -333,7 +337,7 @@ const jobs = [
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
       a.tip = nu;
       note(kill ? "push:killed" : "push:agent", ms, res);
-      await sleep(Math.max(0, plan.pushEvery * 1000 - (Date.now() - s)));
+      await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
     }
   })()),
   every("side:taskEdit", plan.side.taskEdit, async () => { const a = pick(agents.filter((x) => x.task)); return a ? st(await api("PATCH", `${V1}/tasks/${a.task}`, app, { summary: `a1 ${Date.now()}` })) : "no task"; }),
@@ -403,7 +407,7 @@ const jobs = [
     const r = await api("POST", "/api/graphql", app, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequest(number: ${pr.number}) { mergeable } } }` });
     return r.body?.data?.repository?.pullRequest?.mergeable ?? `http ${r.status}`;
   }),
-  (async () => { while (Date.now() < end) { await sleep(40 * 60_000); if (Date.now() < end) await refreshApp(); } })(),
+  (async () => { while (Date.now() < end) { await sleep(Math.min(40 * 60_000, end - Date.now())); if (Date.now() < end) await refreshApp(); } })(),
 ];
 if (plan.burst) jobs.push((async () => {
   await sleep(Math.max(0, t0 + plan.burst.at * 1000 - Date.now()));
