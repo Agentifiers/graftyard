@@ -152,7 +152,9 @@ pub struct Sequencer {
 }
 
 impl Sequencer {
-    pub fn new(owner: AccountId) -> Sequencer {
+    /// A new or rebuilt store at `now`. Attempt ids start from the time, so a rebuilt store never hands out an id a
+    /// client saw from the lost one [inference: GitHub's delivery ids are large and only increase].
+    pub fn new(owner: AccountId, now: Timestamp) -> Sequencer {
         Sequencer {
             owner,
             targets: BTreeMap::new(),
@@ -163,7 +165,7 @@ impl Sequencer {
             failing: BTreeSet::new(),
             recorded: BTreeMap::new(),
             pending: BTreeMap::new(),
-            next_attempt: 1,
+            next_attempt: now.0.saturating_mul(1_000).max(1),
         }
     }
 
@@ -267,7 +269,12 @@ impl Sequencer {
         let cap = usize::from(HOOK_OWNER_CONCURRENCY);
         let (mut total, mut failing) = self.in_flight();
         let keys: Vec<QueueKey> = match self.last {
-            Some(l) => self.queues.range(l..).skip(1).chain(self.queues.range(..=l)).map(|(k, _)| *k).collect(),
+            // After `l`, then from the start through it; `l` may be gone (its queue emptied), so exclude it by bound.
+            Some(l) => {
+                use std::ops::Bound::{Excluded, Unbounded};
+                let after = self.queues.range((Excluded(l), Unbounded));
+                after.chain(self.queues.range(..=l)).map(|(k, _)| *k).collect()
+            }
             None => self.queues.keys().copied().collect(),
         };
         let mut out = Vec::new();
@@ -460,6 +467,65 @@ pub fn consumer_start(cursor: HookCursor, recorded: Option<Index>) -> Index {
     }
 }
 
+/// The cursor the consumer commits after recording, or `None`. A cursor entry is itself an entry, so moving `read`
+/// past each one would chase its own tail: it commits when the batch recorded rows (`HookCursor.read` passes them
+/// only so), when `replay_from` moved within what the committed cursor covers, or every `CURSOR_STRIDE` entries
+/// (`crate::hooks::CURSOR_STRIDE`). The host also commits at most one per chain per round.
+pub fn cursor_to_commit(committed: HookCursor, want: HookCursor, recorded_rows: bool) -> Option<HookCursor> {
+    let replay_moved = want.replay_from.min(Index(committed.read.0 + 1)) != committed.replay_from;
+    let stride = want.read.0 >= committed.read.0 + crate::hooks::CURSOR_STRIDE;
+    (want != committed && (recorded_rows || replay_moved || stride)).then_some(want)
+}
+
+/// The `Webhooks` consumer's rows for one committed entry `e` of `repo`'s chain: one per (webhook, hook that takes
+/// it), with the GUID `delivery_guid` derives from (`generation`, chain, index, slot, hook), so a replay derives the
+/// same ones. A ping goes to its own hook only. `core` is the fold the consumer reads with the entry, whose hooks get
+/// the rows; `render` is the payload renderer (`graftyard_api::webhooks::payload`), called once per webhook some hook
+/// takes, and a webhook it renders as `None` is skipped.
+pub fn plan(
+    core: &dyn graftyard_fold::Read,
+    repo: RepoId,
+    generation: u64,
+    e: &graftyard_raft::LogEntry<crate::repo::RepoEvent>,
+    mut render: impl FnMut(&crate::hooks::Webhook) -> Option<Vec<u8>>,
+) -> Vec<NewDelivery> {
+    let chain = ChainId::Repo(repo);
+    // A hook gets the entries from its own creation on: the consumer reads behind the log, so the fold may already
+    // hold a hook an older entry never saw [inference: GitHub sends an event to the hooks it had then].
+    let hooks: Vec<(HookId, HookRecord)> = crate::hooks::hooks(core)
+        .into_iter()
+        .filter(|(id, _)| crate::hooks::hook_row(core, *id).is_some_and(|r| r.created <= e.at))
+        .collect();
+    let mut out = Vec::new();
+    for (slot, w) in crate::hooks::webhooks(core, repo, e).iter().enumerate() {
+        let slot = u16::try_from(slot).unwrap_or(u16::MAX);
+        let to: Vec<HookId> = hooks
+            .iter()
+            .filter(|(id, r)| match w.target {
+                Some(t) => t == *id && r.active,
+                None => r.takes(w.event),
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if to.is_empty() {
+            continue;
+        }
+        let Some(body) = render(w) else { continue };
+        for hook in to {
+            out.push(NewDelivery {
+                guid: crate::hooks::delivery_guid(generation, chain, e.index, slot, hook),
+                hook,
+                entry: Some((chain, e.index, slot)),
+                event: w.event,
+                action: w.action,
+                repo: Some(repo),
+                body: body.clone(),
+            });
+        }
+    }
+    out
+}
+
 /// The deadline every attempt runs under.
 pub const fn deadline_ms() -> u64 {
     ATTEMPT_DEADLINE_MS
@@ -500,7 +566,7 @@ mod tests {
     }
 
     fn seq(hooks: &[(i64, bool)]) -> Sequencer {
-        let mut s = Sequencer::new(AccountId(DbId(1)));
+        let mut s = Sequencer::new(AccountId(DbId(1)), Timestamp(0));
         s.set_targets(&hooks.iter().map(|(h, r)| (HookId(DbId(*h)), rec(*r))).collect::<Vec<_>>());
         s
     }
@@ -541,6 +607,19 @@ mod tests {
         let d = s.delivery(&a[0].guid).unwrap();
         assert_eq!(d.attempts.len(), 2);
         assert!(d.done);
+    }
+
+    #[test]
+    fn round_robin_resumes_after_a_queue_that_emptied() {
+        // Hook 1's queue empties and is dropped while it was the last served; hook 2's must still be served.
+        let mut s = seq(&[(1, false), (2, false)]);
+        s.record(CHAIN, Index(1), vec![row(1, 1)], Timestamp(0));
+        let a = s.start(Timestamp(0));
+        s.report(a[0].attempt, Timestamp(1), Some(200), false, None);
+        s.start(Timestamp(1));
+        s.record(CHAIN, Index(2), vec![row(2, 2), row(2, 1)], Timestamp(2));
+        let b = s.start(Timestamp(2));
+        assert_eq!(b.len(), 2, "both queues start: {b:?}");
     }
 
     #[test]

@@ -303,7 +303,7 @@ fn the_request_is_signed_over_the_body_it_sends_and_the_rest_object_hides_the_se
     let body = serde_json::to_vec(&ping(&r, id, &row)).unwrap();
     let chain = ChainId::Repo(REPO);
     let guid = delivery_guid(1, chain, Index(4), 0, id);
-    let mut seq = Sequencer::new(AccountId(DbId(OWNER)));
+    let mut seq = Sequencer::new(AccountId(DbId(OWNER)), c.now);
     seq.record(
         chain,
         Index(4),
