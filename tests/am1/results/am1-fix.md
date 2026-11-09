@@ -165,7 +165,7 @@ No new record format was taken.
 
 ## Checks
 
-`/tmp/am1fix/checks.sh` on `55f5854`, all exit 0:
+`/tmp/am1fix/checks.sh` on `55f5854` (log: `raw/checks-fix.log`), all exit 0:
 
 - `cargo fmt --all --check`.
 - `cargo clippy --workspace --all-targets -D warnings`.
