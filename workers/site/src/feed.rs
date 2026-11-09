@@ -74,6 +74,56 @@ pub struct Feed {
     by_ip: BTreeMap<String, u16>,
     /// Woken at each fed entry, or when the member stops following (`true`).
     waiters: Vec<oneshot::Sender<bool>>,
+    /// The owner's `Authz` read in flight, and the polls waiting for it: a burst of polls after the owner went stale
+    /// sends one read, not one per poll (LF-12 hosted: 3,000 polls sent 3,000 reads to the owner's leader, which
+    /// then answered the group leader's dep read 6.3 s late and held a commit for it).
+    refreshing: Option<Vec<oneshot::Sender<()>>>,
+}
+
+/// What a poll does about the owner's `Authz`: nothing while it is fresh, the read when it is stale and none is in
+/// flight, or wait for the one in flight.
+#[derive(Debug, PartialEq, Eq)]
+enum Refresh {
+    Fresh,
+    Read,
+    Wait,
+}
+
+impl Feed {
+    fn refresh(&mut self, now: u64, known: bool) -> (Refresh, Option<oneshot::Receiver<()>>) {
+        if !known || self.owner_at + 60_000 >= now {
+            return (Refresh::Fresh, None);
+        }
+        match self.refreshing.as_mut() {
+            Some(w) => {
+                let (tx, rx) = oneshot::channel();
+                w.push(tx);
+                (Refresh::Wait, Some(rx))
+            }
+            None => {
+                self.refreshing = Some(Vec::new());
+                (Refresh::Read, None)
+            }
+        }
+    }
+
+    /// The read in flight ended, read or not: the polls waiting for it go on with whatever owner is known now.
+    fn refreshed(&mut self) {
+        for w in self.refreshing.take().unwrap_or_default() {
+            let _ = w.send(());
+        }
+    }
+}
+
+/// Held by the poll that reads the owner; dropping it ends the read in flight (`Feed::refreshed`).
+struct Refreshed(Rc<RefCell<Feed>>);
+
+impl Drop for Refreshed {
+    fn drop(&mut self) {
+        if let Ok(mut f) = self.0.try_borrow_mut() {
+            f.refreshed();
+        }
+    }
 }
 
 impl Default for Feed {
@@ -93,6 +143,7 @@ impl Default for Feed {
             by_token: BTreeMap::new(),
             by_ip: BTreeMap::new(),
             waiters: Vec::new(),
+            refreshing: None,
         }
     }
 }
@@ -273,8 +324,13 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
         return Ok(json!({ "admit": "notServing" }));
     }
     let feed = of(repo);
-    let stale = feed.borrow().owner_at + 60_000 < now_ms();
-    if let (true, Some(owner)) = (stale, owner) {
+    let (refresh, wait) = feed.borrow_mut().refresh(now_ms(), owner.is_some());
+    if let Some(rx) = wait {
+        let _ = rx.await;
+    }
+    if let (Refresh::Read, Some(owner)) = (refresh, owner) {
+        // Wakes the polls waiting for this read however it ends, also when this poll's future is dropped mid-read.
+        let _done = Refreshed(feed.clone());
         let chain = graftyard_types::ChainId::Authz(owner);
         if let Ok((v, _)) =
             crate::lookup::call(&host.env, chain, &record, "/read", &json!({ "q": { "dep": true } })).await
@@ -304,4 +360,43 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
         return Ok(json!({ "admit": "lagging", "lagMs": u64::MAX }));
     }
     Ok(poll(feed, repo, role, p).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Feed, Refresh, Refreshed};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// A burst of polls after the owner went stale sends one `Authz` read: the first poll reads, the rest wait for it
+    /// and go on when it ends, also when the reading poll is dropped mid-read. Fresh again until the next minute.
+    #[test]
+    fn a_burst_of_polls_on_a_stale_owner_sends_one_read() {
+        let feed = Rc::new(RefCell::new(Feed::default()));
+        let now = 1_000_000;
+        assert_eq!(feed.borrow_mut().refresh(now, false).0, Refresh::Fresh, "no owner to read");
+        let (first, _) = feed.borrow_mut().refresh(now, true);
+        assert_eq!(first, Refresh::Read);
+        let mut waiting = Vec::new();
+        for _ in 0..2_999 {
+            let (r, rx) = feed.borrow_mut().refresh(now, true);
+            assert_eq!(r, Refresh::Wait);
+            waiting.push(rx.expect("a waiter"));
+        }
+        let guard = Refreshed(feed.clone());
+        feed.borrow_mut().owner_at = now;
+        drop(guard);
+        for mut rx in waiting {
+            assert_eq!(rx.try_recv(), Ok(Some(())), "every waiting poll goes on once the read ends");
+        }
+        assert_eq!(feed.borrow_mut().refresh(now + 60_000, true).0, Refresh::Fresh);
+        let (again, _) = feed.borrow_mut().refresh(now + 60_001, true);
+        assert_eq!(again, Refresh::Read, "stale again after a minute");
+        drop(Refreshed(feed.clone()));
+        assert_eq!(
+            feed.borrow_mut().refresh(now + 60_002, true).0,
+            Refresh::Read,
+            "a dropped read leaves none in flight"
+        );
+    }
 }

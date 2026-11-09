@@ -615,10 +615,85 @@ fn l0_12_a_stall_moves_every_live_lease_by_its_length() {
         assert_eq!(r.as_ref().unwrap().lease.expires, Timestamp(b.0 + by), "moved by the recorded stall");
     }
     assert_eq!(view_of(&w, &f).live().len(), 3);
-    for m in &w.repo.members {
-        assert_eq!(m.state().stalled_since, None, "the marker cleared on commit");
-    }
+    assert_markers_clear(&mut w);
     eprintln!("L0-12 stall: 3 of 3 leases live after a {STALL} ms stall, expires moved by {by} ms (one ExtendLeases)");
+}
+
+/// The marker clears on every member once it applies the entry carrying `extend`: at once on the leader, and on a
+/// follower when the next append tells it that entry committed.
+fn assert_markers_clear(w: &mut World) {
+    let l = w.repo.leader();
+    assert_eq!(w.repo.members[l.0 as usize].state().stalled_since, None, "the leader's marker cleared on commit");
+    w.record(vec![RepoEvent::Settings(settings())]);
+    w.settle();
+    for m in &w.repo.members {
+        assert_eq!(m.state().stalled_since, None, "every member's marker cleared once it applied the extend");
+    }
+}
+
+/// The same stall, ended by a leader change, as the hosted run on graft-m1 ended (`tests/am1/results/am1-hosted.md`,
+/// L0-12 stall): the leader holds an entry in flight while every member call is blackholed past LEASE, so no follower
+/// sees a `suspect` report. When calls work again a follower wins the next term. The new leader's first entry carries
+/// `extend` covering the stall, and every lease live before the stall is live after it with `expires` moved by it.
+#[test]
+fn l0_12_a_stall_ended_by_a_leader_change_moves_every_live_lease() {
+    const STALL: u64 = 30 * 60_000;
+    let mut w = lease_world();
+    let ids: Vec<LeaseId> = (0..3)
+        .map(|i| lease_id(&w.commit(issue(claimed(RUN, Some(&run(0))), shared(&[&format!("lc/{i}/**")], None)))))
+        .collect();
+    let before: Vec<Timestamp> = {
+        let f = w.fold();
+        ids.iter().map(|id| lease::lease_row(&*f.core, *id).unwrap().lease.expires).collect()
+    };
+    let old = w.repo.leader();
+    let now = w.now;
+    let rid = w.rid();
+    w.repo.on(old, now, |m, t| m.record(t, rid, REPO_FORMAT_V1, vec![RepoEvent::Settings(settings())])).unwrap();
+    let stalled_at = w.now;
+    w.repo.inbox.clear();
+    w.now = Timestamp(w.now.0 + STALL);
+    let now = w.now;
+    // The calls work again: the old leader's tick records the stall at its entry and re-sends it, both followers store
+    // it, and their answers are lost. Then the old leader is cut off for good.
+    w.repo.on(old, now, |m, t| m.tick(t));
+    assert_eq!(w.repo.members[old.0 as usize].state().stalled_since, Some(stalled_at));
+    // An edge's `suspect` report reaches the follower that will win before the re-send does: it marks the end of the
+    // stall, and the re-send's earlier entry must still win.
+    let new = *SITES.iter().find(|s| **s != old).unwrap();
+    w.repo.on(new, now, |m, t| m.suspect(t, graftyard_raft::Colo(1), old, m.term()));
+    assert_eq!(w.repo.members[new.0 as usize].state().stalled_since, Some(now));
+    let resent: Vec<_> = std::mem::take(&mut w.repo.inbox).into_iter().filter(|e| e.from == old).collect();
+    assert!(!resent.is_empty(), "the old leader re-sends its entry");
+    for e in resent {
+        w.repo.on(e.to, now, |m, t| m.step(t, e.from, e.msg));
+    }
+    w.repo.inbox.clear();
+    // Once the followers' promises lapse, a `suspect` report starts a campaign on one of them, which wins.
+    w.now = Timestamp(w.now.0 + graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1_000);
+    let now = w.now;
+    w.repo.on(new, now, |m, t| m.suspect(t, graftyard_raft::Colo(1), old, m.term()));
+    w.repo.deliver(now);
+    assert_eq!(w.repo.leader(), new, "a follower took over");
+    let term = w.repo.members[new.0 as usize].term();
+    let first = w.repo.members[new.0 as usize].log().iter().find(|e| e.term == term).cloned().unwrap();
+    assert!(first.index <= w.repo.members[new.0 as usize].state().commit, "the term's first entry committed");
+    let ext = first.extend.unwrap_or_else(|| panic!("the new leader's first entry carries no extend: {first:?}"));
+    let by = ext.by.as_millis() as u64;
+    assert!(ext.since <= stalled_at && by >= STALL, "the extension covers the stall: {ext:?}");
+    w.settle();
+    let o = w.commit(issue(claimed(RUN, Some(&run(0))), IssueOp::RenewLease { id: ids[0], ttl_seconds: Some(600) }));
+    assert_eq!(lease_id(&o), ids[0], "{o:?}");
+    let f = w.fold();
+    let rows: Vec<_> = ids.iter().map(|id| lease::lease_row(&*f.core, *id)).collect();
+    assert!(rows.iter().all(Option::is_some), "no lease expired by the stall");
+    for (r, b) in rows[1..].iter().zip(&before[1..]) {
+        assert_eq!(r.as_ref().unwrap().lease.expires, Timestamp(b.0 + by), "moved by the recorded stall");
+    }
+    let all = w.repo.members[w.repo.leader().0 as usize].log().iter().filter(|e| e.at > stalled_at);
+    assert_eq!(all.filter(|e| e.extend.is_some()).count(), 1, "one entry carried the stall");
+    assert_markers_clear(&mut w);
+    eprintln!("L0-12 stall with a leader change: 3 of 3 leases live after {STALL} ms, expires moved by {by} ms");
 }
 
 // ---- L0-16 ----

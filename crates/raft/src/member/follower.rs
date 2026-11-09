@@ -2,10 +2,10 @@
 
 use graftyard_types::SiteId;
 
-use crate::ELECTION_AFTER;
 use crate::after;
 use crate::fold::Command;
 use crate::types::Index;
+use crate::{CALL_DEADLINE, ELECTION_AFTER};
 
 use super::log::verify;
 use super::{AppendReq, AppendRes, Member, Message, Role};
@@ -138,6 +138,20 @@ impl<C: Command> Member<C> {
             matched = self.last();
         }
         self.set_commit(req.commit.min(matched));
+        // A stall marker: the leader's own entry that no quorum acknowledged within CALL_DEADLINE, which the leader
+        // marks too (`tick_leader`), learned from its re-send. Otherwise only the leader knows when a stall began, and
+        // a follower that wins the next term would stamp no `extend` for it (L0-12 hosted: a 30-minute stall ended by
+        // a leader change moved no lease). Above this member's commit, so a delayed append after the group committed
+        // past the entry marks nothing.
+        let unacked = self
+            .log
+            .iter()
+            .rev()
+            .take_while(|e| e.index > self.state.commit.max(req.commit))
+            .filter(|e| e.index <= matched && e.term == req.term && req.sent_at >= after(e.at, CALL_DEADLINE));
+        if let Some(at) = unacked.map(|e| e.at).min() {
+            self.state.stalled_since = Some(self.state.stalled_since.map_or(at, |m| m.min(at)));
+        }
         res.ok = res.refused.is_none();
         res.matched = matched;
         res.last = self.last();
