@@ -109,16 +109,22 @@ function TeamPage() {
   );
 }
 
+// Each count reads only the query it needs, so one failed read blanks one count.
 function TabCount({ tab }: { tab: Tab }) {
-  const params = Route.useParams();
-  const { data: team } = useSuspenseQuery(teamQuery(params));
-  const { data: children } = useSuspenseQuery(childTeamsQuery(params));
-  const n =
-    tab === "members"
-      ? team.members_count
-      : tab === "repositories"
-        ? team.repos_count
-        : children.length;
+  return tab === "teams" ? <ChildCount /> : <TeamCount tab={tab} />;
+}
+
+function ChildCount() {
+  const { data } = useSuspenseQuery(childTeamsQuery(Route.useParams()));
+  return <Count tab="teams" n={data.length} />;
+}
+
+function TeamCount({ tab }: { tab: Exclude<Tab, "teams"> }) {
+  const { data } = useSuspenseQuery(teamQuery(Route.useParams()));
+  return <Count tab={tab} n={tab === "members" ? data.members_count : data.repos_count} />;
+}
+
+function Count({ tab, n }: { tab: Tab; n: number | undefined }) {
   return (
     <Badge variant="secondary" size="sm" data-count={tab}>
       {n}

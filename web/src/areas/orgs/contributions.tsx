@@ -9,10 +9,10 @@ const WEEKS = 53;
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const SHADES = [
   "bg-muted",
-  "bg-emerald-200 dark:bg-emerald-900",
-  "bg-emerald-400 dark:bg-emerald-700",
-  "bg-emerald-600 dark:bg-emerald-500",
-  "bg-emerald-800 dark:bg-emerald-300",
+  "bg-emerald-200 dark:bg-emerald-800",
+  "bg-emerald-400 dark:bg-emerald-600",
+  "bg-emerald-600 dark:bg-emerald-400",
+  "bg-emerald-800 dark:bg-emerald-200",
 ];
 
 type Day = { date: string; count: number };

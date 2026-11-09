@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQueries, useSuspenseQuery } from "@tanstack/react-query";
 import { userQuery } from "@/areas/core/queries";
 import { languagesQuery } from "@/areas/code/queries";
 import { PinnedRepos } from "@/areas/orgs/profile";
@@ -72,8 +72,9 @@ function Readme({ org }: { org: string }) {
 
 function Pinned({ org }: { org: string }) {
   const { data: viewer } = useSuspenseQuery(userQuery());
-  const { data: members } = useSuspenseQuery(membersQuery(org));
-  // Owners pin for the org; the mock's PUT checks the role, so a member's save is refused.
+  // Not suspended, so the pins still show when the member list fails; members can edit
+  // them once it loads.
+  const members = useQuery(membersQuery(org)).data ?? [];
   return <PinnedRepos login={org} canEdit={members.some((m) => m.login === viewer.login)} />;
 }
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { useMutation, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { LockIcon, UserGroupIcon } from "@hugeicons/core-free-icons";
@@ -543,7 +543,8 @@ function TeamRepoRow({ org, team, repo }: TeamParams & { repo: Repo }) {
 
 export function DeleteTeam({ org, team }: TeamParams) {
   const { data: t } = useSuspenseQuery(teamQuery({ org, team }));
-  const { data: children } = useSuspenseQuery(childTeamsQuery({ org, team }));
+  // Not suspended: the dialog only mentions child teams when that list has loaded.
+  const children = useQuery(childTeamsQuery({ org, team })).data ?? [];
   const [open, setOpen] = useState(false);
   const navigate = useNavigate();
   const del = useMutation({

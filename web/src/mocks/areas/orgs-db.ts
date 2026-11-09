@@ -944,7 +944,7 @@ GitHub Enterprise Server 3.22, so \`gh\`, Actions runners, and your existing too
 | [raft](${HOST}/graftyard/raft) | Log, lease, transfer, and learners |
 | [web](${HOST}/graftyard/web) | This web app |
 
-**Contributing.** Read the design in \`design/DESIGN.md\` first, then pick a work package.`,
+**Contributing.** Read the design documents first, then pick a work package.`,
   ],
   ["lin", "Distributed systems, mostly. Currently teaching learners to read."],
 ]);
