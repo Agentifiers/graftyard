@@ -176,12 +176,20 @@ pub enum Plan {
     Issue(Box<IssueOp>),
     /// `mergePullRequest`. The edge asks the git cache for the `MergePlan` of `merge_request(n, method)`, then builds
     /// the `Merge` command with `merge_command` and commits it.
-    Merge { n: IssueNumber, method: MergeMethod, expected_head: Option<ObjectId> },
+    Merge(PlannedMerge),
     /// `enqueuePullRequest`, and `enablePullRequestAutoMerge` on a base with a merge queue, which is how gh adds a
     /// pull request to the queue (`gh pr merge` on such a base): a `QueueOp::Enqueue` at the head the edge read.
     Enqueue { n: IssueNumber, head: ObjectId },
     /// `dequeuePullRequest`.
     Dequeue { n: IssueNumber },
+}
+
+/// The inputs of a planned `mergePullRequest`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlannedMerge {
+    pub n: IssueNumber,
+    pub method: MergeMethod,
+    pub expected_head: Option<ObjectId>,
 }
 
 /// A planned mutation: its root field, the command, and the issue it is about, for the payload.
@@ -356,7 +364,7 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 }
                 None => None,
             };
-            planned(Plan::Merge { n, method, expected_head }, Some(n))
+            planned(Plan::Merge(PlannedMerge { n, method, expected_head }), Some(n))
         }
         "enqueuePullRequest" | "enablePullRequestAutoMerge" | "dequeuePullRequest" => {
             // GHES names `dequeuePullRequest`'s pull request `id`, the other two `pullRequestId`.
@@ -534,17 +542,16 @@ impl Obj for Edge<'_> {
 }
 
 /// What the edge asks the git cache to merge for a planned `mergePullRequest`, read from the fresh core tier: the
-/// base's tip and the pull request's head. A pull request that is closed, merged, or a draft is refused here.
-pub fn merge_request(p: &Planned, r: &Repo<'_>) -> Result<MergeRequest, Value> {
-    let Plan::Merge { n, method, .. } = &p.plan else { panic!("not a merge plan") };
-    graftyard_git::merge::merge_request(r.core, *n, *method).map_err(|e| refused_merge(p, &e))
+/// base's tip and the pull request's head. A pull request that is closed, merged, or a draft is refused here, with
+/// the reply `refused_merge_field` renders for the mutation's root `field`.
+pub fn merge_request(field: &str, m: &PlannedMerge, r: &Repo<'_>) -> Result<MergeRequest, Value> {
+    graftyard_git::merge::merge_request(r.core, m.n, m.method).map_err(|e| refused_merge_field(field, &e))
 }
 
 /// The `Merge` command for a planned `mergePullRequest`, from the git cache's plan. Its `decide` re-checks the head,
 /// the base, and every rule on the fold it commits on.
-pub fn merge_command(p: &Planned, plan: MergePlan, actor: Principal) -> Merge {
-    let Plan::Merge { n, expected_head, .. } = &p.plan else { panic!("not a merge plan") };
-    Merge { n: *n, plan, expected_head: *expected_head, actor }
+pub fn merge_command(m: &PlannedMerge, plan: MergePlan, actor: Principal) -> Merge {
+    Merge { n: m.n, plan, expected_head: m.expected_head, actor }
 }
 
 /// The GraphQL reply to a refused merge, with GitHub's text. A 409 is never retried into success.

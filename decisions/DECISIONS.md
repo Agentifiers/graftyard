@@ -1915,6 +1915,44 @@ BF-30 passed hosted on `graft-m1`, M3's assigned rows passed hosted on `graft-m2
 
 **Flip.** A hosted LF-1 rerun where a reinstall or a token from before it reaches an old task; a Core tier measured over its budget from the extra fields; or a task reference to another repository's issue, which would need `IssueRef`.
 
+### AM1-WP4's pure half: leases, `PathSet`, and the feed as the code needs them, 2026-11-08
+
+AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-12, L0-16, LF-12, and LF-13, on real members (`tests/am1/results/am1-wp4.md`; `build/BUILD-PLAN.md`, AM1-WP4). It changed `crates/raft`; the 2,000-seed sweep passed in 348 s with 0 step-downs flagged, and Porcupine was Ok on both histories (156,742 and 2,226,521 operations).
+
+#### Lease, `PathSet`, and feed shapes
+
+**Decision.** In the agent block of both DESIGN and AGENT-LAYER, and in AGENT-LAYER's own Shape and prose:
+- `LeaseAcquire { lease, plan: Option<IssueNumber> }`, where `plan` names the draft whose `graftyard-plan` block declared the lease; the API still renders `plan_block: bool`, true when `plan` is set.
+- A plan-block lease ends, with no command, once its draft is readied, closed, or merged, because `decide` reads that PR's state through `plan`.
+- `PathSet.merge_base` is `Option<Oid>`, `None` until the git cache reports one.
+- `FeedCursor.group` is a `RepoId`, the 8 bytes its 17-byte text names.
+- `ActivityEvent::Verdict` waits for AM4, whose `InsightVerdict` row is its only source.
+- The lease refusal names the holder as `app N` (or `user N`) and the expiry in epoch milliseconds, because a push does not read `Names`, where a slug lives.
+- The edge checks a feed query and answers 503 until it reads followers and learners, which serve the feed.
+- Format: repository 32.14, `RepoEvent` 35 `LeaseAcquire`, 36 `LeaseRenew`, 37 `LeaseRelease`, and 38 `PathSet`.
+
+**Why.** The editor's plan lease on a PR must be found to be replaced, and its liveness depends on the draft being open; a bool holds neither. `Push` carries no merge base and `validate` computes none. A `ChainId` with its kind does not fit the cursor's 8 bytes. Nothing writes `InsightVerdict` before AM4. The slug is on another chain, and reading it would add a dependency to every agent push. Today's edge reads only leaders, which never serve the feed.
+
+**Beat.** A `plan_block: bool` with a separate PR index. Computing the merge base in `decide`. A wider cursor, which changes the API's opaque form. Serving the feed from leaders until learners exist, which the feed's load rule forbids.
+
+**Evidence.** `tests/am1/results/am1-wp4.md`, "Gates", "Assumptions", and contradictions 1 to 3 and 6 to 9: LF-5 one lease from the valid block and 5 of 5 bodies unchanged, the plan lease ended by readying; LF-3 410, `wait` 25, 422 for 33 paths; L0-13 100 of 100 per bad acquire; 120 of 120 replies identical and `agent_bytes.golden` untouched; 40 of 40 planted bugs, counted from named failing tests after two plant-runner bugs were fixed. The first tags, 33 to 36 in `844ecbe`, collided with `m3-repos`' 33 `Created` and 34 `Deleted` and moved to 35 to 38 in `0477a8b`, before the merge [measured].
+
+**Flip.** A client that needs the plan lease to outlive readying; AM4's `InsightVerdict`, which adds `Verdict`; a hosted follower and learner read path, which ends the 503; or a slug read already on the push path, which would let the text name the App.
+
+#### A stall marker rides the next state write, and `decide` sees `ExtendLeases`
+
+**Decision.**
+- A member marks `stalled_since` in memory at a follower's first `suspect` report, a campaign start (not a transfer's), or the leader's first entry unacknowledged past CALL_DEADLINE, and stores it with its next state write. A campaign start writes at once. A crash before that write loses the marker, and the leases that stall covered lapse by its length, which leases accept as advisory. DESIGN, Shape, "Chains", says so.
+- The leader applies an entry's `extend` to its scratch view before that entry's commands decide (`Scratch::extend`), so the first command after a stall sees the moved leases; a follower already applies `extend` when it applies the entry.
+
+**Why.** A separate durable write at every `suspect` report changed the seeded harsh simulator's crash points, and acknowledged writes fell to 1,138 against its floor of 1,200; a separate `Noop` entry carrying `extend` broke two scenario tests. Without the pre-decide apply, a renew right after a 30-minute stall was refused `NotFound`, and a lease the stall covered read expired (AM1-WP4 bug 1).
+
+**Beat.** Persisting each marker at once, which costs a write per report on the commit path and broke the simulator's floor. A `Noop` entry to carry `extend`. Deciding on the fold at `applied` and letting the extension land after.
+
+**Evidence.** `tests/am1/results/am1-wp4.md`, contradictions 4 and 5, "Bugs the gates found" 1, and L0-12's stall: one later entry carried `ExtendLeases { by: 1,801,001 ms }`, 3 of 3 leases live after it with `expires` moved by exactly `by`, `stalled_since` cleared on all three members; the raft suite's 9 suites passed; the long sweep passed (2,000 seeds, 348 s, 0 step-downs flagged), and Porcupine was Ok on 156,742 and 2,226,521 operations [measured, in memory]. The hosted 30-minute stall with member calls blackholed has not run.
+
+**Flip.** A hosted run, or a customer report, where a crash during a stall lapses an Exclusive lease and a second holder's push lands inside it; leases made more than advisory (an enforced mode that a lapse would break); or a durable marker write that costs nothing measurable on the commit path, which would make losing the marker needless.
+
 ### The second warm site sizes its shards for the conflict predictor (2026-10-30)
 
 **Decision.** On a network's second warm site, k is the larger of the network's fan-out k and the shards the predictor needs at the measured mean overlap under `PREDICT_CPU`. `PREDICT_PAIRS` stays 8 per push as a cap.

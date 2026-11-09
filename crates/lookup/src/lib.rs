@@ -106,7 +106,7 @@ fn learn(chain: ChainId, nl: &Value) {
 }
 
 fn learn_leader(chain: ChainId, v: &Value) {
-    let leader = v.pointer("/meta/leader").and_then(Value::as_u64).map(|s| SiteId(s as u8));
+    let leader = v.pointer("/meta/leader").and_then(Value::as_u64).and_then(|s| u8::try_from(s).ok()).map(SiteId);
     KNOWN.with(|k| k.borrow_mut().entry(chain).or_default().leader = leader);
 }
 
@@ -321,7 +321,7 @@ pub async fn call_opt(
                 }
                 // Follow a named leader first, then the config's voters.
                 let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
-                let leader = nl.get("leader").and_then(Value::as_u64).map(|l| SiteId(l as u8));
+                let leader = nl.get("leader").and_then(Value::as_u64).and_then(|l| u8::try_from(l).ok()).map(SiteId);
                 let mut next: Vec<(SiteId, String, Step)> =
                     known.voters.iter().map(|(vs, vn)| (*vs, vn.clone(), step)).collect();
                 next.sort_by_key(|(vs, _, _)| Some(*vs) != leader);

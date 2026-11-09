@@ -25,5 +25,5 @@ pub use store::{
 };
 pub use tier::{
     AuditReport, DIGESTS, DIGESTS_KEEP, FoldError, Meta, Mismatch, SnapAt, TierDigest, Tiered, add_row, apply,
-    digest_at, digest_with, fold_audit_compare, fold_digest, has, meta, refold_digest, seed, tier_bit,
+    digest_at, digest_with, fold_audit_compare, fold_digest, has, meta, refold_digest, seed, tier_bit, try_meta,
 };

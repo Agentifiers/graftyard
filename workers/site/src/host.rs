@@ -687,6 +687,9 @@ struct ReqInner<E> {
     cut: Timestamp,
     /// `Fold::row_event`: rows stored before it hold whole events, and a read keeps the row's form.
     row_event: fn(&E) -> E,
+    /// The cause of the first read SQLite refused or row that did not decode, as `TierSql::lost` keeps it: the read
+    /// answered no row, and the host resets this member before anything computed from it leaves (`Host::lost_cause`).
+    lost: Option<String>,
 }
 
 impl<E> Clone for RequestSql<E> {
@@ -704,8 +707,25 @@ impl<E> std::fmt::Debug for RequestSql<E> {
 impl<E: raft::Record + Clone + std::fmt::Debug + serde::de::DeserializeOwned + 'static> RequestSql<E> {
     pub fn new(sql: SqlStorage, row_event: fn(&E) -> E) -> RequestSql<E> {
         RequestSql {
-            inner: Rc::new(RefCell::new(ReqInner { sql, pending: BTreeMap::new(), cut: Timestamp(0), row_event })),
+            inner: Rc::new(RefCell::new(ReqInner {
+                sql,
+                pending: BTreeMap::new(),
+                cut: Timestamp(0),
+                row_event,
+                lost: None,
+            })),
         }
+    }
+
+    /// Why a read of the table failed, if one did since the member was built.
+    pub fn lost(&self) -> Option<String> {
+        self.inner.borrow().lost.clone()
+    }
+
+    /// A refused read: logged with its cause and kept for the host (`RequestSql::lost`). The caller answers no row.
+    fn refused(&self, why: String) {
+        console_error!("request table lost: {why}");
+        self.inner.borrow_mut().lost.get_or_insert(why);
     }
 
     /// The input's transaction ran: every pending row is in the table, and every expired one gone.
@@ -735,9 +755,20 @@ impl<E: raft::Record + Clone + std::fmt::Debug + serde::de::DeserializeOwned + '
             }
             (i.sql.clone(), i.cut)
         };
-        let r = rows(&sql, "SELECT idx, at, events FROM request WHERE rid = ?", vec![id.to_string().into()])
-            .expect("a request row read");
-        let row = self.decode(id, r.first()?).expect("a request row decodes");
+        let r = match rows(&sql, "SELECT idx, at, events FROM request WHERE rid = ?", vec![id.to_string().into()]) {
+            Ok(r) => r,
+            Err(e) => {
+                self.refused(format!("read of {id}: {e}"));
+                return None;
+            }
+        };
+        let row = match self.decode(id, r.first()?) {
+            Ok(row) => row,
+            Err(e) => {
+                self.refused(e.to_string());
+                return None;
+            }
+        };
         (row.at >= cut).then_some(row)
     }
 
@@ -762,15 +793,17 @@ impl<E: raft::Record + Clone + std::fmt::Debug + serde::de::DeserializeOwned + '
             (i.sql.clone(), i.cut)
         };
         let mut out = BTreeMap::new();
-        each_row(&sql, "SELECT rid, idx, at, events FROM request", vec![], |r| {
+        let read = each_row(&sql, "SELECT rid, idx, at, events FROM request", vec![], |r| {
             let rid = rid_from(text(&r[0])?)?;
             let row = self.decode(rid, &r[1..])?;
             if row.at >= cut {
                 out.insert(rid, row);
             }
             Ok(true)
-        })
-        .expect("request rows read");
+        });
+        if let Err(e) = read {
+            self.refused(format!("read of every row: {e}"));
+        }
         out.extend(self.inner.borrow().pending.iter().map(|(k, v)| (*k, v.clone())));
         out.into_iter().collect()
     }
@@ -1187,7 +1220,7 @@ impl<F: Family> Host<F> {
             *self.synced.borrow_mut() = VecDeque::new();
         }
         // A fold read storage refused during `decide` or `apply`: nothing this input computed may leave.
-        if let Some(why) = F::lost(&core.m.group_fold().fold) {
+        if let Some(why) = self.lost_cause(&core.m) {
             drop(guard);
             self.fail_lost(&why);
             return Err(err(format!("fold storage lost: {why}")));
@@ -1499,11 +1532,9 @@ impl<F: Family> Host<F> {
                         }
                         // A command refused only for want of an id block is not answered: the lease loop records a
                         // block and re-sends it under the same request id, which a refusal left no row for.
-                        if let (Err(CommitError::Refused { err: e, .. }), Some((rid, _, Some(cmd)))) =
-                            (&result, &admitted)
-                            && F::needs_block(e)
-                        {
-                            self.blocked.borrow_mut().push((ticket, *rid, cmd.clone()));
+                        let blocked = matches!(&result, Err(CommitError::Refused { err: e, .. }) if F::needs_block(e));
+                        if blocked && let Some((rid, _, Some(cmd))) = admitted {
+                            self.blocked.borrow_mut().push((ticket, rid, cmd));
                             need_block = true;
                             continue;
                         }
@@ -1517,16 +1548,16 @@ impl<F: Family> Host<F> {
                         }
                         // The commit's work outside the log, on the leader that decided it: a repository's pack
                         // markers. Marker puts are create-only, so a re-sent command marks nothing twice.
-                        if let (Ok(a), Some((rid, _, Some(cmd)))) = (&result, &admitted) {
+                        if let (Ok(a), Some((rid, _, Some(cmd)))) = (&result, admitted) {
                             #[cfg(feature = "test-faults")]
-                            let skip = core.no_marker.remove(rid);
+                            let skip = core.no_marker.remove(&rid);
                             #[cfg(not(feature = "test-faults"))]
                             let skip = {
                                 let _ = rid;
                                 false
                             };
                             if !skip {
-                                marks.push((cmd.clone(), a.clone()));
+                                marks.push((cmd, a.clone()));
                             }
                         }
                         for tx in core.waiters.remove(&ticket).unwrap_or_default() {
@@ -1559,7 +1590,7 @@ impl<F: Family> Host<F> {
                                 })
                             });
                             // An answer read while storage refused a row is not sent: the caller sees a reset.
-                            if let Some(why) = F::lost(&core.m.group_fold().fold) {
+                            if let Some(why) = self.lost_cause(&core.m) {
                                 lost = Some(why);
                                 continue;
                             }
@@ -2112,7 +2143,7 @@ impl<F: Family> Host<F> {
         }
         match within(Duration::from_secs(10), rx).await {
             Some(Ok(Ok(_))) => Ok(()),
-            other => Err(format!("block {block:?} did not commit: {}", other.is_some())),
+            other => Err(format!("block {block:?} did not commit: {other:?}")),
         }
     }
 
@@ -2225,10 +2256,10 @@ impl<F: Family> Host<F> {
         abort(&self.state, "graftyard member storage write failed");
     }
 
-    /// Whether a fold read storage refused (`Family::lost`); if so the object is resetting, and the caller must let
+    /// Whether a fold read storage refused (`Host::lost_cause`); if so the object is resetting, and the caller must let
     /// nothing it computed from the fold leave: no reply, no batch, no snapshot part.
     pub fn fold_lost(self: &Rc<Self>) -> bool {
-        let why = self.core.try_borrow().ok().and_then(|c| c.as_ref().and_then(|c| F::lost(&c.m.group_fold().fold)));
+        let why = self.core.try_borrow().ok().and_then(|c| c.as_ref().and_then(|c| self.lost_cause(&c.m)));
         match why {
             Some(why) => {
                 self.fail_lost(&why);
@@ -2236,6 +2267,12 @@ impl<F: Family> Host<F> {
             }
             None => false,
         }
+    }
+
+    /// Why a read of `m`'s fold storage failed: a fold tier (`Family::lost`) or the `request` table
+    /// (`RequestSql::lost`).
+    fn lost_cause(&self, m: &raft::Member<F::C>) -> Option<String> {
+        F::lost(&m.group_fold().fold).or_else(|| self.requests.borrow().as_ref().and_then(RequestSql::lost))
     }
 
     /// A fold read storage refused (`Family::lost`): reset this object, as a failed write does. Only this member

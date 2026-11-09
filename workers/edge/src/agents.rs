@@ -209,7 +209,7 @@ async fn leases(
             Ok(q) => q,
             Err(r) => return Ok(r),
         };
-        let rd = match crate::api::read_named(c, owner, repo, Some(&who)).await? {
+        let rd = match crate::api::read(c, owner, repo, Some(&who)).await? {
             Ok(r) => r,
             Err(r) => return Ok(r),
         };

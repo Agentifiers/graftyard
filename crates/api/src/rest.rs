@@ -427,7 +427,7 @@ pub fn list_issues(r: &Repo<'_>, query: &str) -> Reply {
         all.reverse();
     }
     let page = Page::parse(query);
-    let more = all.len() > page.skip() + page.per_page;
+    let more = all.len() > page.end();
     let items: Vec<Value> = all.iter().skip(page.skip()).take(page.per_page).map(|it| issue_json(r, it)).collect();
     let keep: Vec<(&str, &str)> = query
         .split('&')

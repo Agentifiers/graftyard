@@ -243,16 +243,18 @@ pub enum EntryBody { Events(Vec<Event>) /* <= 1.5 MB with inline packs; DO rows 
                      Config(GroupConfig), Release(ReleaseEntry), Noop /* first entry of every term */,
                      IdBlock { base: DbId, len: u32 } /* <= 2^16 */, Archived(Archived), Promoted(Promoted) /* Packs */,
                      Split(SplitEntry) /* CHILD_GROUP_AT */, Imported(ImportBatch) /* SHARED `rest:migrations` */ }
-/// The recorded stall. A member persists `stalled_since` at the earliest durable marker: a follower's first `suspect`
-/// report, a candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE.
-/// Time a command spends queued in admission is not a stall. The next entry the group commits carries `ExtendLeases {
-/// since, by: at - since }`, and every path lease (`Lease`) and Actions job lease with `expires > since` moves
-/// `expires` by `by`. Idle time never counts, because an idle group sets no marker. A leader adds no `extend` while an
-/// unapplied entry in its log already carries one with `since` at or before its own marker, so one stall moves a lease
-/// once, and `since` is at least the `at` of the last entry it holds, so no lease that entry already judged expired is
-/// revived over a newer holder. Without the first rule, one 30-minute stall moved 501 leases by twice the stall
-/// [measured, `tests/m0/results/m0-wp12.md`, L0-12]. `decide` compares `expires` with the entry's `at`, reads compare
-/// it with the leader's leased clock, and expiry needs no command. Clients time expiry themselves from `expires`.
+/// The recorded stall. A member marks `stalled_since` at the earliest of a follower's first `suspect` report, a
+/// candidate's campaign start, or the leader's first entry that no quorum acknowledged within CALL_DEADLINE, and stores
+/// it with its next state write (a campaign writes at once): a crash before then loses the stall, and leases lapse by
+/// it [measured: a write per marker broke the harsh simulator's floor, AM1-WP4]. Queueing in admission is not a stall.
+/// The next entry the group commits carries `ExtendLeases { since, by: at - since }`, and every path lease (`Lease`)
+/// and Actions job lease with `expires > since` moves `expires` by `by`. Idle time never counts: an idle group sets no
+/// marker. A leader adds no `extend` while an unapplied entry in its log carries one with `since` at or before its own
+/// marker, so one stall moves a lease once, and `since` is at least the `at` of the last entry it holds, so no lease
+/// that entry judged expired is revived over a newer holder. Without the first rule, one 30-minute stall moved 501
+/// leases twice [measured, `tests/m0/results/m0-wp12.md`, L0-12]. The leader applies an entry's `extend` before its
+/// commands decide, so `decide` sees the moved leases and compares `expires` with the entry's `at`; reads compare it
+/// with the leader's leased clock, expiry needs no command, and clients time it from `expires`.
 pub struct ExtendLeases { pub since: Timestamp, pub by: Duration }
 /// Membership is in the log. Under `Joint`, a lease and a read-index round need promises from a majority of both
 /// configs. Pre-vote runs before every campaign, and votes are refused to non-members of the latest committed config.
@@ -408,20 +410,19 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// retrying 60 s after a failed try [guess, both numbers, `tests/m1/results/m1-wp3.md`].
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
-/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`,
-/// the member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
+/// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
+/// member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
 /// promised in this term; else late reports on a transfer's old leader withheld promises from the new one [measured,
-/// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets
-/// reports from two colos within 10 s stops granting promises to a leader that is still renewing, and restores them
-/// after 2 x the SUSPECT window or on a higher term. For the same 2 x SUSPECT window, which a higher term does not end,
-/// its pre-vote refuses that leader as a candidate, so the gray leader cannot win back the next election (Milestone 0
-/// measured a 24 s move without this rule, `tests/m0/results/m0-wp2.md`). A follower whose promise has lapsed campaigns on one report, or when
-/// its own read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven; only a leader's drain check runs from an alarm,
-/// and it starts no campaign (`SiteMode`). A
-/// promise bars votes for a rival of the leader it was given to, not for that leader, and an edge whose call is answered
-/// `NotLeader` with no leader named also reports to that member, so a deposed leader holding the newest log can win the
-/// next term while its followers' promises run. Milestone 0 measured idle groups stalled for about 11 s without this
-/// rule (`tests/m0/results/m0-wp4.md`, "Slow writes").
+/// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets reports from two colos within 10 s stops
+/// granting promises to a leader that is still renewing, and restores them after 2 x the SUSPECT window or on a higher
+/// term. For the same 2 x SUSPECT window, which a higher term does not end, its pre-vote refuses that leader as a
+/// candidate, so the gray leader cannot win back the next election (Milestone 0 measured a 24 s move without this rule,
+/// `tests/m0/results/m0-wp2.md`). A follower whose promise has lapsed campaigns on one report, or when its own
+/// read-index call to the leader fails. Campaigns are request-driven through this call, never alarm-driven; only a
+/// leader's drain check runs from an alarm, and it starts no campaign (`SiteMode`). A promise bars votes for a rival of
+/// the leader it was given to, not for that leader, and an edge whose call is answered `NotLeader` with no leader named
+/// also reports to that member, so a deposed leader holding the newest log can win the next term while its followers'
+/// promises run. M0 measured idle groups stalled about 11 s without it (`tests/m0/results/m0-wp4.md`, "Slow writes").
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -797,11 +798,11 @@ pub struct LeaseHolder { pub actor: ActorId, pub app: Option<AppId>, pub session
 /// both, found by walking both segment lists. A `RefPattern` uses the same syntax over full ref names.
 pub struct PathGlob(Box<str>);   pub struct RefPattern(Box<str>);
 pub struct LeaseScope { pub paths: SmallVec<[PathGlob; 8]> /* <= 32 globs */, pub refs: SmallVec<[RefPattern; 2]> }
-/// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block and are
-/// returned as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
-/// task, and a literal first segment in every path glob, so `**`, `*`, and `*/...` are refused. Past EXCLUSIVE_MAX after
-/// `granted` it reads as Shared until it expires. Plan-block leases are Shared, held by the editor, who needs push
-/// access, and count toward LEASES_PER_HOLDER and PLAN_LEASES_PER_REPO.
+/// An acquire conflicts only Exclusive against another holder's overlapping Exclusive. Shared leases never block; they
+/// return as overlaps. An Exclusive lease needs a live `AgentTask` named by the holder's `session`, at most one per
+/// task, and a literal first segment in every path glob, so `**`, `*`, and `*/...` fail. Past EXCLUSIVE_MAX after
+/// `granted` it reads as Shared until it expires. Plan-block leases are Shared, held by an editor with push access,
+/// count toward LEASES_PER_HOLDER and PLAN_LEASES_PER_REPO, and end once their draft is readied, closed, or merged.
 pub enum LeaseMode { Shared, Exclusive }
 pub const LEASE_TTL: Duration = Duration::from_secs(600);        // default; a holder may ask for 60 s to 3,600 s
 pub const EXCLUSIVE_MAX: Duration = Duration::from_secs(4 * 3_600);
@@ -827,7 +828,7 @@ pub enum AgentRepoEvent {   // flattened into `RepoEvent`
     AgentPolicy(AgentPolicy),                                     // Core
     PathSet(PathSet),                                             // Metadata, in the push's entry
     InsightVerdict(InsightVerdict),                               // Core; its check runs and labels are Metadata
-    LeaseAcquire { lease: Lease, plan_block: bool },              // Core
+    LeaseAcquire { lease: Lease, plan: Option<IssueNumber> },     // Core; `plan`: the plan block's draft
     LeaseRenew { id: LeaseId, expires: Timestamp },               // Core
     LeaseRelease { ids: SmallVec<[LeaseId; 4]>, by: Actor },      // Core
 }
@@ -1302,10 +1303,9 @@ pub const INBOX_WINDOW: Duration = Duration::from_secs(2 * 86_400);   // [guess]
 /// next `generation` on the domain's next site, from the metadata tiers that `MemberRegistry` lists.
 pub struct SearchShard { pub domain: Domain, pub shard: u8, pub generation: u32 }
 pub enum Domain { Default, Us, Eu, Apac }      // the owner's residency, from its `PlacementRecord` name
-/// The counters behind `x-ratelimit-*`, only where GHES rate limits are on (SHARED, "Public service concerns"). One
-/// object per `RateKey`, defined by `graft-site-a` and created with no hint, so it sits near its first caller. An isolate
-/// awaits it on its first request for a key, then adds its local count every RATE_FLUSH requests or 1 s, and each
-/// reply returns the window total.
+/// The counters behind `x-ratelimit-*`, where GHES rate limits are on (SHARED, "Public service concerns"). One object
+/// per `RateKey`, defined by `graft-site-a` created with no hint, so it is near its first caller. An isolate awaits it
+/// on a key's first request, then adds its count every RATE_FLUSH requests or 1 s; replies return the window total.
 pub struct RateCounter { pub key: RateKey }
 pub enum RateKey { User(AccountId), Installation(InstallationId), JobToken(RepoId), Token([u8; 32]), Ip(IpPrefix) }
 pub const RATE_FLUSH: u32 = 20;                 // requests per isolate and key between flushes [guess]

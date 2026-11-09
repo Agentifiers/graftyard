@@ -649,7 +649,7 @@ impl Consumer {
         for e in &v.entries {
             let Some(b) = e.built.as_ref().map(|b| &b.entry) else { break };
             bad |= self.fail.contains(&e.n);
-            let r = queue_ref(&main_ref(), b);
+            let r = queue_ref(&main_ref(), b).expect("main's queue refs fit");
             if self.reported.insert(r) {
                 self.run += 1;
                 let c = if bad { CheckConclusion::Failure } else { CheckConclusion::Success };
@@ -988,6 +988,41 @@ fn a_base_push_outside_the_queue_rebuilds_from_the_new_tip() {
     c.drain(&mut g, |_, _| {});
     let tip = g.get(&main_ref()).unwrap();
     assert_eq!(tip, merged(merged(oid(9), oid(101)), oid(102)), "both landed on the pushed tip");
+}
+
+/// A base whose queue refs would pass `REF_NAME_MAX` is refused at `Enqueue`, so no `Build` ever has to name one.
+#[test]
+fn an_enqueue_on_a_base_too_long_for_its_queue_refs_is_refused() {
+    let base = name(&format!("refs/heads/{}", "b".repeat(850)));
+    let mut g = G::new();
+    g.push("refs/heads/main", oid(1));
+    g.push(&base.display(), oid(1));
+    let RepoEvent::Rule(mut every) = rule(Grouping::AllGreen) else { unreachable!() };
+    every.pattern = "*".into();
+    g.record(vec![RepoEvent::Settings(settings()), RepoEvent::Rule(every)]);
+    g.push("refs/heads/f1", oid(101));
+    let issue = IssueCapture {
+        id: DbId((1 << 40) + 1),
+        author: None,
+        title: "t".into(),
+        body: "".into(),
+        labels: Default::default(),
+        assignees: Default::default(),
+    };
+    let capture = PrCapture {
+        head_sha: oid(101),
+        base_sha: oid(1),
+        state: PrState::Open { draft: false },
+        labels: Vec::new(),
+        issue,
+        changes_from: None,
+    };
+    let head = HeadSpec { repo: REPO, branch: name("refs/heads/f1") };
+    g.record(vec![RepoEvent::PrOpened { n: IssueNumber(1), head, base: base.clone(), capture }]);
+    let op = QueueOp { op: QueueAction::Enqueue { n: IssueNumber(1), head: oid(101) }, actor: Some(who(WRITER)) };
+    let err = g.commit(MergeCmd::Queue(op)).unwrap_err();
+    assert_eq!(err.1, MergeError::NoQueue);
+    assert!(QueueView::of(&g.fold().core, &base).entries.is_empty());
 }
 
 // ---- BF-1 ----

@@ -36,6 +36,9 @@ pub enum MoveStep {
     Degraded,
     /// The config's voters and home are the target's, and the leader is on the home.
     Done,
+    /// The target's voter count differs from the config's (`Solo` to or from a three-site record), or it names a site
+    /// twice: no sequence of one-site swaps reaches it.
+    Unsupported,
 }
 
 fn sites(p: &graftyard_types::Placement) -> Vec<SiteId> {
@@ -55,7 +58,9 @@ pub fn next_step(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord) -> Mov
             let vs = sites(new);
             if !vs.contains(&leader) {
                 // The leader's site is the old half's extra one: leadership goes to a voter of the new half first.
-                let to = vs.iter().copied().find(|s| *s == to.home).unwrap_or(vs[0]);
+                let Some(to) = vs.iter().copied().find(|s| *s == to.home).or(vs.first().copied()) else {
+                    return MoveStep::Unsupported;
+                };
                 return MoveStep::Transfer { to };
             }
             return MoveStep::Leave;
@@ -79,8 +84,10 @@ pub fn next_step(cfg: &GroupConfig, leader: SiteId, to: &PlacementRecord) -> Mov
     {
         return MoveStep::Transfer { to: stay };
     }
-    let add = *target.iter().find(|s| !vs.contains(s)).expect("a target site the config lacks");
+    let Some(&add) = target.iter().find(|s| !vs.contains(s)) else { return MoveStep::Unsupported };
     // A site that leaves, not the leader's while another can go first.
-    let drop = *vs.iter().filter(|s| leaving(**s)).min_by_key(|s| **s == leader).expect("a site that leaves");
+    let Some(&drop) = vs.iter().filter(|s| leaving(**s)).min_by_key(|s| **s == leader) else {
+        return MoveStep::Unsupported;
+    };
     MoveStep::Swap { add, drop }
 }

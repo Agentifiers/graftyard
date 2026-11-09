@@ -497,6 +497,17 @@ pub enum ReconfigError {
     RemovesLeader,
 }
 
+/// Why `Member::restore` refused what the host read back.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum RestoreError {
+    #[error(transparent)]
+    Placement(#[from] PlacementError),
+    /// The stored fold is not inside the stored log window: `base <= applied <= last`, where `last` is
+    /// `base + log.len()`.
+    #[error("stored fold at {applied:?} is outside the log window {base:?}..={last:?}")]
+    Window { base: Index, applied: Index, last: Index },
+}
+
 /// Why `Member::id_block` did not take a block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IdBlockError {
@@ -706,9 +717,12 @@ impl<C: Command> Member<C> {
         stored: Stored<C::Fold>,
         now: Timestamp,
         seed: u64,
-    ) -> Result<(Member<C>, Ready<C, ()>), PlacementError> {
+    ) -> Result<(Member<C>, Ready<C, ()>), RestoreError> {
         let Stored { state, base, log, fold } = stored;
-        assert!(base.index <= fold.applied(), "stored log base above the applied fold");
+        let last = Index(base.index.0 + log.len() as u64);
+        if !(base.index <= fold.applied() && fold.applied() <= last) {
+            return Err(RestoreError::Window { base: base.index, applied: fold.applied(), last });
+        }
         let mut fold = fold;
         // The admission window is not in the host's tables: rebuild it from the applied entries the stored window
         // holds (`GroupFold::note_writes`; an entry already noted is skipped).
