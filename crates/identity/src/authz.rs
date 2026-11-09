@@ -68,6 +68,8 @@ pub enum RepoEntry {
     Deleted { repo: RepoId, retain_until: Timestamp },
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthzEvent {
     Opened {
@@ -917,6 +919,8 @@ pub struct AuthzCmd {
     pub op: AuthzOp,
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthzOp {
     /// The chain's first command, from the signup's login claim. Only `graft-ops` or the CLI submits it.

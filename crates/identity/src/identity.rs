@@ -103,6 +103,8 @@ pub struct AuditEvent {
     pub at: Timestamp,
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityEvent {
     Created(AccountCapture),
@@ -348,6 +350,8 @@ pub struct IdentityCmd {
     pub op: IdentityOp,
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IdentityOp {
     /// The chain's first entry, after the signup's login claim committed. Only the operator or a finisher submits it.

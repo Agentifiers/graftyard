@@ -445,6 +445,8 @@ pub struct CodeRow {
 
 /// The design's `TokensEvent`. Serde's variant index is the declaration order, so Milestone 1's `Stored` and
 /// `Revoked` stay first and decode from rows stored before Milestone 3.
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokensEvent {
     /// A stored token with no optional field: Milestone 1's form, encoded as before.
@@ -984,6 +986,8 @@ pub struct TokensCmd {
     pub op: TokensOp,
 }
 
+/// Wire tags: postcard stores and sends the variants by position, JSON by name (`crates/git/tests/wire_tags.golden`).
+/// Add a variant only at the end: never insert, remove, reorder, or rename one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TokensOp {
     /// Store a new token's hash. The commit point of a new PAT or OAuth token.
