@@ -52,6 +52,24 @@ pub enum CredentialRef {
     SshKey(Fingerprint),
 }
 
+/// A password hash or second-factor verifier: encoded exactly as the value it wraps, and never printed by `Debug`, so
+/// a logged command, event, fold, or error cannot leak it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Secret<T>(pub T);
+
+impl<T> From<T> for Secret<T> {
+    fn from(v: T) -> Secret<T> {
+        Secret(v)
+    }
+}
+
+impl<T> std::fmt::Debug for Secret<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(..)")
+    }
+}
+
 /// SHARED's `CredentialEvent` [inference: SHARED names it without variants]. `Password` and `SecondFactor` hold
 /// hashes: an Argon2id or PBKDF2 string for the password and a verifier per factor [inference]; the edge checks them,
 /// and `decide` sees only whether one exists.
@@ -59,8 +77,8 @@ pub enum CredentialRef {
 pub enum CredentialEvent {
     Added { credential: CredentialRef, title: Box<str> },
     Removed { credential: CredentialRef },
-    Password { hash: Box<str> },
-    SecondFactor { id: u32, verifier: Option<Box<[u8]>> },
+    Password { hash: Secret<Box<str>> },
+    SecondFactor { id: u32, verifier: Option<Secret<Box<[u8]>>> },
 }
 
 /// Web sessions: started by a sign-in, ended by sign-out. Sign-out everywhere is the `Account` row's
@@ -186,12 +204,12 @@ fn credential_event(e: &mut Enc, c: &CredentialEvent) {
         }
         CredentialEvent::Password { hash } => {
             e.u8(2);
-            e.str(hash);
+            e.str(&hash.0);
         }
         CredentialEvent::SecondFactor { id, verifier } => {
             e.u8(3);
             e.u32(*id);
-            e.option(verifier.as_ref(), |e, v| e.bytes(v));
+            e.option(verifier.as_ref(), |e, v| e.bytes(&v.0));
         }
     }
 }
@@ -204,8 +222,8 @@ pub struct IdentityFold {
     pub created: Option<AccountCapture>,
     /// What `GET /user/keys` and `gh ssh-key list` list, with each credential's title.
     pub credentials: BTreeMap<CredentialRef, Box<str>>,
-    pub password: Option<Box<str>>,
-    pub second_factors: BTreeMap<u32, Box<[u8]>>,
+    pub password: Option<Secret<Box<str>>>,
+    pub second_factors: BTreeMap<u32, Secret<Box<[u8]>>>,
     pub sessions: BTreeMap<WebSessionId, SignInMethod>,
     pub sso: BTreeMap<OrgId, Digest>,
     pub audit: Vec<AuditEvent>,
@@ -222,8 +240,8 @@ tail_serde!(IdentityFold {
     account: Option<AccountId>,
     created: Option<AccountCapture>,
     credentials: BTreeMap<CredentialRef, Box<str>>,
-    password: Option<Box<str>>,
-    second_factors: BTreeMap<u32, Box<[u8]>>,
+    password: Option<Secret<Box<str>>>,
+    second_factors: BTreeMap<u32, Secret<Box<[u8]>>>,
     sessions: BTreeMap<WebSessionId, SignInMethod>,
     sso: BTreeMap<OrgId, Digest>,
     audit: Vec<AuditEvent>,
@@ -346,7 +364,7 @@ pub enum IdentityOp {
         credential: CredentialRef,
     },
     SetPassword {
-        hash: Box<str>,
+        hash: Secret<Box<str>>,
     },
     /// A sign-in the edge verified (password and second factor here, or the IdP's assertion, or the bootstrap link's
     /// code use). The leader reads the install's `Authz` chain and refuses a method other than its `InstanceAuth`, and
@@ -408,7 +426,7 @@ impl Record for IdentityCmd {
             }
             IdentityOp::SetPassword { hash } => {
                 e.u8(3);
-                e.str(hash);
+                e.str(&hash.0);
             }
             IdentityOp::SignIn { id, method, install } => {
                 e.u8(4);

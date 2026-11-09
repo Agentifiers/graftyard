@@ -17,7 +17,7 @@ use graftyard_types::{ChainId, Digest, Index, MemberKind, Placement, ReleaseId, 
 use serde::{Deserialize, Serialize};
 
 use crate::store::{Key, META, Schema, Store, Stored, Val, undo_table};
-use crate::tier::{SnapAt, TierDigest, add, digest_of, meta, refold_digest, row_hash, save_meta};
+use crate::tier::{SnapAt, TierDigest, add, digest_of, meta, refold_digest, row_hash, save_meta, try_meta};
 
 /// Entries between snapshots of a tier [guess].
 pub const SNAPSHOT_EVERY: u64 = 100_000;
@@ -181,6 +181,8 @@ pub enum SnapshotError {
     Digest { got: Digest, want: Digest },
     #[error("restore needs an empty tier")]
     NotEmpty,
+    #[error(transparent)]
+    Fold(#[from] crate::tier::FoldError),
 }
 
 impl SnapshotJob {
@@ -192,7 +194,7 @@ impl SnapshotJob {
         release: ReleaseId,
         format: graftyard_raft::Format,
     ) -> Result<SnapshotJob, SnapshotError> {
-        let mut m = meta(store);
+        let mut m = try_meta(store)?;
         if let Some(s) = m.snap {
             return Err(SnapshotError::Running(s.to));
         }
@@ -461,10 +463,13 @@ pub fn decode_some(buf: &[u8]) -> Result<(Vec<SnapshotFrame>, usize), SnapshotEr
     let mut out = Vec::new();
     while buf.len() >= at + 4 {
         let n = u32::from_be_bytes(buf[at..at + 4].try_into().expect("4")) as usize;
-        if buf.len() < at + 4 + n {
+        // `at + 4 + n` can overflow a 32-bit usize for a forged length; the body's length cannot.
+        let body = &buf[at + 4..];
+        if body.len() < n {
             break;
         }
-        out.push(postcard::from_bytes(&buf[at + 4..at + 4 + n]).map_err(|e| SnapshotError::Malformed(e.to_string()))?);
+        out.push(postcard::from_bytes(&body[..n]).map_err(|e| SnapshotError::Malformed(e.to_string()))?);
+        // Cannot overflow: `at + 4 + n <= buf.len()`.
         at += 4 + n;
     }
     Ok((out, at))

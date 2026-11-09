@@ -45,14 +45,17 @@ pub fn decode_archive_some(buf: &[u8]) -> (Vec<&[u8]>, usize, Option<usize>) {
     let mut out = Vec::new();
     while buf.len() >= at + 4 {
         let n = u32::from_be_bytes(buf[at..at + 4].try_into().expect("4")) as usize;
-        if buf.len() < at + 4 + n {
+        // `at + 4 + n` can overflow a 32-bit usize for a forged length; the body's length cannot.
+        let body = &buf[at + 4..];
+        if body.len() < n {
             break;
         }
-        out.push(&buf[at + 4..at + 4 + n]);
+        out.push(&body[..n]);
+        // Cannot overflow: `at + 4 + n <= buf.len()`.
         at += 4 + n;
     }
     let need = if out.is_empty() && buf.len() >= 4 {
-        Some(4 + u32::from_be_bytes(buf[..4].try_into().expect("4")) as usize)
+        Some(4usize.saturating_add(u32::from_be_bytes(buf[..4].try_into().expect("4")) as usize))
     } else {
         None
     };
@@ -79,5 +82,15 @@ mod tests {
         assert_eq!((rows.len(), used, need), (0, 0, Some(7)));
         let (rows, used, _) = decode_archive_some(&body[..12]);
         assert_eq!((rows, used), (vec![&b"one"[..], b""], 11));
+    }
+
+    /// A corrupted R2 object's length prefix near `u32::MAX` once overflowed `at + 4 + n` on wasm32 and panicked.
+    #[test]
+    fn a_forged_length_reads_as_incomplete() {
+        let mut b = vec![0xFF; 4];
+        b.extend_from_slice(b"abc");
+        let (rows, used, need) = decode_archive_some(&b);
+        assert_eq!((rows.len(), used), (0, 0));
+        assert_eq!(need, Some(4usize.saturating_add(0xFFFF_FFFF)));
     }
 }

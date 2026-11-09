@@ -384,3 +384,14 @@ fn a_leader_on_the_site_a_joint_drops_transfers_before_it_leaves() {
     assert_eq!(voters(&g.cfg()), vec![1, 2, 3]);
     g.assert_all_kept(&[1, 2, 3]);
 }
+
+/// A move that changes the voter count has no one-site path: the planner says so instead of panicking.
+#[test]
+fn a_move_between_solo_and_three_sites_is_unsupported() {
+    let solo =
+        PlacementRecord { name: PlacementName::Solo, sites: [SiteId(0)].into_iter().collect(), ..record([0, 1, 2], 0) };
+    let tri = record([0, 1, 2], 0);
+    let normal = |r: &PlacementRecord| GroupConfig::Normal(Box::new(Placement::from_record(CHAIN, r).unwrap()));
+    assert_eq!(next_step(&normal(&solo), SiteId(0), &tri), MoveStep::Unsupported, "Solo to Tri");
+    assert_eq!(next_step(&normal(&tri), SiteId(0), &solo), MoveStep::Unsupported, "Tri to Solo");
+}

@@ -201,6 +201,12 @@ impl Chain {
         self.commit_all(vec![(actor, op)]).pop().unwrap()
     }
 
+    /// An outside collaborator's row, as an accepted invitation's entry writes it.
+    pub fn collaborator(&mut self, account: i64, permission: RepoPermission) {
+        let ev = RepoEvent::Collaborator { who: AccountId(DbId(account)), permission: Some(permission) };
+        self.entry(EntryBody::Events(vec![ev]), TierSet::CORE);
+    }
+
     pub fn push(&mut self, branch: &str, new: ObjectId) {
         let r = name(branch);
         let m = &self.members[0];

@@ -34,12 +34,19 @@ pub struct MergeQueueEntry {
 }
 
 /// A built entry's queue ref, `refs/heads/gh-readonly-queue/{base}/pr-{n}-{parent_tip}`, at `group_tip`
-/// [unverified which SHA GitHub names].
-pub fn queue_ref(base: &RefName, e: &MergeQueueEntry) -> RefName {
+/// [unverified which SHA GitHub names]. `None` when the base is so long that the queue ref would pass
+/// `REF_NAME_MAX`; `Enqueue` refuses such a base, so every built row has `Some`.
+pub fn queue_ref(base: &RefName, e: &MergeQueueEntry) -> Option<RefName> {
     let b = base.display();
     let b = b.strip_prefix("refs/heads/").unwrap_or(&b);
     let name = format!("refs/heads/gh-readonly-queue/{b}/pr-{}-{}", e.pr.0, e.parent_tip.hex());
-    RefName::parse(name.as_bytes()).expect("a queue ref is a ref name")
+    RefName::parse(name.as_bytes()).ok()
+}
+
+/// Whether every queue ref of `base` is a ref name: the widest pull request number with any `parent_tip`.
+fn queue_refs_fit(base: &RefName) -> bool {
+    let widest = MergeQueueEntry { pr: IssueNumber(u32::MAX), group_tip: ObjectId::ZERO, parent_tip: ObjectId::ZERO };
+    queue_ref(base, &widest).is_some()
 }
 
 /// Stored in `Ejected`: add variants at the end only.
@@ -188,7 +195,7 @@ fn unbuild_refs(rows: &[(i64, QueueRow)], base: &RefName, from_seq: i64) -> Vec<
     rows.iter()
         .filter(|(s, _)| *s >= from_seq)
         .filter_map(|(_, r)| r.built)
-        .map(|(e, _)| RefUpdate { name: queue_ref(base, &e), expect: Some(e.group_tip), new: None })
+        .filter_map(|(e, _)| Some(RefUpdate { name: queue_ref(base, &e)?, expect: Some(e.group_tip), new: None }))
         .collect()
 }
 
@@ -288,6 +295,10 @@ impl QueueOp {
                 }
                 let rules = rules_over(core, &ph.base);
                 let settings = queue_settings(&rules).ok_or(MergeError::NoQueue)?;
+                // A base too long for its queue refs cannot have a queue.
+                if !queue_refs_fit(&ph.base) {
+                    return Err(MergeError::NoQueue);
+                }
                 crate::merge::gate_holds(core, *n, *head)?;
                 let pr = PrView {
                     n: *n,
@@ -349,7 +360,8 @@ fn build(
         }
     }
     let mut refs: Vec<RefUpdate> = Vec::new();
-    let created: Vec<RefName> = entries.iter().map(|e| queue_ref(base, e)).collect();
+    let created: Vec<RefName> =
+        entries.iter().map(|e| queue_ref(base, e).ok_or(MergeError::StaleChain)).collect::<Result<_, _>>()?;
     if replace {
         refs.extend(unbuild_refs(&rows, base, i64::MIN).into_iter().filter(|u| !created.contains(&u.name)));
     }
@@ -475,7 +487,9 @@ impl QueueMerge {
         }
         let refs = landed
             .iter()
-            .map(|(_, e, _)| RefUpdate { name: queue_ref(&base, e), expect: Some(e.group_tip), new: None })
+            .filter_map(|(_, e, _)| {
+                Some(RefUpdate { name: queue_ref(&base, e)?, expect: Some(e.group_tip), new: None })
+            })
             .collect();
         events.push(RepoEvent::Queue(QueueEvent::Landed { base, through: self.entry.pr, refs }));
         Ok((events, out))

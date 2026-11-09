@@ -206,6 +206,26 @@ pub fn authorize(p: &Principal, _a: ReadAction, authz: &[&dyn AuthzRead], repo: 
     }
 }
 
+/// Whether the caller may read the repository at all, before the edge serves any of its bytes: `authorize`, narrowed
+/// by the token's own reach (`token_allows`), so a `github_pat_` for other repositories cannot read a private one.
+/// `None` is an anonymous caller. Only `Allow` or `Hidden`: a public repository is readable with any token, and a
+/// denied private one renders as 404 (`design/SHARED.md`, "Cross-cutting conventions", the 404 rule).
+pub fn authorize_read(
+    p: Option<&Principal>,
+    token: Option<&TokenFields>,
+    authz: &[&dyn AuthzRead],
+    repo: &dyn RepoAccess,
+) -> Decision {
+    if repo.visibility() == Visibility::Public {
+        return Decision::Allow;
+    }
+    let Some(p) = p else { return Decision::Hidden };
+    if token_allows(token, &[], repo) == Decision::Hidden {
+        return Decision::Hidden;
+    }
+    authorize(p, ReadAction::Contents, authz, repo)
+}
+
 /// Never `Stale`: the folds are the ones the leader read through `fresh` for this entry.
 pub fn authorize_write(p: &Principal, a: WriteAction, authz: &[&dyn AuthzRead], repo: &dyn RepoAccess) -> Decision {
     let perm = permission(p, authz, repo);

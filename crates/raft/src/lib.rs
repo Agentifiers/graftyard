@@ -34,8 +34,8 @@ pub use member::{
     APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny,
     DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource,
     InstallWanted, LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready,
-    ReconfigError, Refusal, Resolution, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq, VoteRes, Write,
-    verify,
+    ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq,
+    VoteRes, Write, verify,
 };
 pub use outcome::Acked;
 pub use quorum::{DurableAck, QuorumProof};

@@ -240,8 +240,10 @@ impl PlacementChecks<'_> {
     }
 }
 
-/// Built only by `Placement::new` or `Placement::from_record`.
+/// Built only by `Placement::new` or `Placement::from_record`. Decoding reruns the checks that need no site table
+/// (`PlacementRaw`), so a stored or sent placement keeps the shape `new` gave it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PlacementRaw")]
 pub struct Placement {
     voters: ArrayVec<Member, 3>,
     learners: ArrayVec<Member, 16>,
@@ -249,6 +251,48 @@ pub struct Placement {
     home: SiteId,
     /// Highest member generation this group has named.
     generation: u32,
+}
+
+/// `Placement`'s encoded form, field for field, before its shape is checked.
+#[derive(Deserialize)]
+struct PlacementRaw {
+    voters: ArrayVec<Member, 3>,
+    learners: ArrayVec<Member, 16>,
+    home: SiteId,
+    generation: u32,
+}
+
+impl TryFrom<PlacementRaw> for Placement {
+    type Error = PlacementError;
+
+    /// The shape checks of `Placement::new` that need no site table or round trips: member kinds, distinct voter
+    /// sites, learner slots below `MAX_LEARNERS` and distinct, no object named twice, and a Full home.
+    fn try_from(r: PlacementRaw) -> Result<Placement, PlacementError> {
+        let PlacementRaw { voters, learners, home, generation } = r;
+        if voters.iter().any(|m| m.kind == MemberKind::Learner)
+            || learners.iter().any(|m| m.kind != MemberKind::Learner)
+        {
+            return Err(PlacementError::WrongKind);
+        }
+        for (i, v) in voters.iter().enumerate() {
+            if voters[..i].iter().any(|o| o.site == v.site) {
+                return Err(PlacementError::SameSite(v.site));
+            }
+        }
+        for (i, l) in learners.iter().enumerate() {
+            if usize::from(l.slot) >= MAX_LEARNERS || learners[..i].iter().any(|o| o.slot == l.slot) {
+                return Err(PlacementError::SameSlot(l.slot));
+            }
+        }
+        let all: Vec<&Member> = voters.iter().chain(&learners).collect();
+        for (i, a) in all.iter().enumerate() {
+            if all[..i].iter().any(|b| b.site == a.site && b.do_name == a.do_name) {
+                return Err(PlacementError::SameObject(a.site, a.do_name.clone()));
+            }
+        }
+        let p = Self::with_home(voters, learners, home)?;
+        Ok(Placement { generation: p.generation.max(generation), ..p })
+    }
 }
 
 impl Placement {
@@ -527,6 +571,39 @@ mod tests {
             Placement::new(v, learners(&[(1, MAX_LEARNERS as u8)]), SiteId(0), &checks),
             Err(PlacementError::SameSlot(MAX_LEARNERS as u8))
         );
+    }
+
+    /// A placement decodes to itself from the same bytes as before, and a raw one `new` would refuse does not decode.
+    #[test]
+    fn decoding_a_placement_reruns_its_shape_checks() {
+        let t = table();
+        let r = rtt(&[(0, 1, 80), (0, 2, 180), (1, 2, 200)]);
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+        let v = voters(&[(0, Full), (1, Full), (2, Witness)]);
+        let p = Placement::new(v.clone(), learners(&[(1, 0), (2, 3)]), SiteId(1), &checks).unwrap();
+
+        let bytes = postcard::to_allocvec(&p).unwrap();
+        // The encoding is the plain field sequence, as the derive wrote it before decoding was checked.
+        let fields = (p.voters(), p.learners(), p.home(), p.generation());
+        assert_eq!(bytes, postcard::to_allocvec(&fields).unwrap());
+        assert_eq!(postcard::from_bytes::<Placement>(&bytes).unwrap(), p);
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<Placement>(&json).unwrap(), p);
+        let solo = Placement::from_record(REPO, &record(PlacementName::Solo, &[0], 0, 1)).unwrap();
+        assert_eq!(serde_json::from_str::<Placement>(&serde_json::to_string(&solo).unwrap()).unwrap(), solo);
+
+        let bad = |voters: &[Member], learners: &[Member], home: u8| {
+            let raw = (voters, learners, SiteId(home), 1u32);
+            postcard::from_bytes::<Placement>(&postcard::to_allocvec(&raw).unwrap()).is_err()
+        };
+        assert!(bad(&[], &[], 0), "no voters");
+        assert!(bad(&v, &learners(&[(1, MAX_LEARNERS as u8)]), 0), "a learner slot past MAX_LEARNERS");
+        assert!(bad(&v, &learners(&[(1, 2), (2, 2)]), 0), "two learners in one slot");
+        assert!(bad(&v, &[], 2), "a Witness home");
+        assert!(bad(&v, &[v[0].clone()], 0), "a voter among the learners");
+        assert!(bad(&voters(&[(0, Full), (0, Full)]), &[], 0), "one site twice");
+        let json = r#"{"voters":[],"learners":[],"home":0,"generation":1}"#;
+        assert!(serde_json::from_str::<Placement>(json).is_err());
     }
 
     fn load(r: &[(Region, u32)]) -> GroupLoad {

@@ -564,7 +564,8 @@ impl Family for Repo {
     }
     /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier; with `{"q":
     /// {"rows": true}}`, both tiers' rows at this index, at most `graftyard_api::hosted::ROWS_MAX`
-    /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads; with `{"q":
+    /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads; with `{"q": {"rows": {"access":
+    /// true}}}`, only the core rows the edge's read gate reads (`TierRows::access_rows`); with `{"q":
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
@@ -585,6 +586,12 @@ impl Family for Repo {
             let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, DbId(id));
             t.index = graftyard_fold::meta(&*fold.core).applied.0;
             return serde_json::to_value(t).unwrap_or(Value::Null);
+        }
+        if q.get("rows").and_then(|r| r.get("access")).is_some() {
+            let core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
+            let index = graftyard_fold::meta(&*fold.core).applied.0;
+            return serde_json::to_value(graftyard_api::hosted::TierRows { index, core, meta: None, complete: true })
+                .unwrap_or(Value::Null);
         }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};

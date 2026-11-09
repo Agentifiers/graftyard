@@ -372,12 +372,16 @@ pub async fn user_invitation(c: &Ctx<'_>, req: &mut Request, id: Option<&str>) -
     let Some((o, n)) = repo.as_deref().and_then(|r| r.split_once('/')) else {
         return Ok(if id.is_none() { Reply::json(200, json!([])) } else { Reply::not_found() });
     };
-    let rd = match crate::api::read_named(c, o, n, Some(&who)).await? {
+    let rd = match crate::api::read_for_invitee(c, o, n, &who).await? {
         Ok(r) => r,
         Err(r) => return Ok(r),
     };
     let mine: Vec<(InvitationId, InvitationRow)> =
         invitations(&rd).into_iter().filter(|(_, r)| matches!(r.invitee, Invitee::User(u) if u.0 == me)).collect();
+    // A private repository the caller neither reads nor is invited to answers as an unknown one.
+    if mine.is_empty() && !crate::api::readable(c, &rd, &who) {
+        return Ok(Reply::not_found());
+    }
     Ok(match (req.method(), id.and_then(|i| i.parse::<i64>().ok())) {
         (Method::Get, None) => {
             let logins = names(c, &rd, &mine).await;

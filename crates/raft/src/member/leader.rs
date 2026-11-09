@@ -1084,9 +1084,11 @@ impl<C: Command> Member<C> {
             self.out.catchup.push(super::Catchup { to: peer, round, from: prev, through });
             return;
         }
-        let base = self.base.index.0 as usize;
-        let to = (last.0 as usize).min(prev.0 as usize + CATCHUP_MAX);
-        let window = &self.log[prev.0 as usize - base..to - base];
+        // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The differences
+        // are bounded by the in-memory window, so they fit.
+        let from = (prev.0 - self.base.index.0) as usize;
+        let to = ((last.0 - self.base.index.0) as usize).min(from + CATCHUP_MAX);
+        let window = &self.log[from..to];
         let entries = window[..append_batch(window)].to_vec();
         let req = AppendReq {
             term,

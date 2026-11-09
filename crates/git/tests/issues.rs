@@ -655,6 +655,15 @@ fn branch_patterns_match_as_fnmatch() {
     assert!(!branch_matches("main", &name("refs/tags/main")));
 }
 
+/// A pattern of many stars against a long branch it misses: backtracking tried about n^k splits.
+#[test]
+fn a_many_star_pattern_against_a_long_branch_finishes() {
+    let branch = name(&format!("refs/heads/{}", "a".repeat(880)));
+    assert!(!branch_matches(&format!("{}b", "*a".repeat(12)), &branch));
+    assert!(!branch_matches(&format!("{}b", "**a".repeat(12)), &branch));
+    assert!(branch_matches(&"*a".repeat(12), &branch));
+}
+
 #[test]
 fn a_command_that_touches_no_tier_it_tags_is_impossible() {
     // Every op's events fit the tiers the command declares.

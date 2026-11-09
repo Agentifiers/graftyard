@@ -111,12 +111,23 @@ fn seg_match(pat: &str, s: &str) -> bool {
     true
 }
 
+/// Whether segments `p` match pattern segments `g`, in O(|g|·|p|) rather than backtracking over every `**`: after
+/// the first `i` pattern segments, `ok[j]` is whether they match `p[..j]`.
 fn match_segs(g: &[&str], p: &[&str]) -> bool {
-    match g.first() {
-        None => p.is_empty(),
-        Some(&"**") => (0..=p.len()).any(|k| match_segs(&g[1..], &p[k..])),
-        Some(seg) => !p.is_empty() && seg_match(seg, p[0]) && match_segs(&g[1..], &p[1..]),
+    let mut ok = vec![false; p.len() + 1];
+    ok[0] = true;
+    let mut next = vec![false; p.len() + 1];
+    for seg in g {
+        for j in 0..=p.len() {
+            next[j] = if *seg == "**" {
+                ok[j] || (j > 0 && next[j - 1])
+            } else {
+                j > 0 && ok[j - 1] && seg_match(seg, p[j - 1])
+            };
+        }
+        std::mem::swap(&mut ok, &mut next);
     }
+    ok[p.len()]
 }
 
 /// Whether `path` (a file path or a full ref name) matches `glob`.
@@ -140,14 +151,24 @@ fn seg_overlap(a: &str, b: &str) -> bool {
     }
 }
 
+/// Whether some path matches both segment lists, in O(|a|·|b|) rather than backtracking over every `**`: filling
+/// rows from the end, `row[j]` is whether `a[i..]` and `b[j..]` overlap, and `below` holds row `i + 1`.
 fn overlap_segs(a: &[&str], b: &[&str]) -> bool {
-    match (a.first(), b.first()) {
-        (None, None) => true,
-        (Some(&"**"), _) => overlap_segs(&a[1..], b) || (!b.is_empty() && overlap_segs(a, &b[1..])),
-        (_, Some(&"**")) => overlap_segs(a, &b[1..]) || (!a.is_empty() && overlap_segs(&a[1..], b)),
-        (Some(x), Some(y)) => seg_overlap(x, y) && overlap_segs(&a[1..], &b[1..]),
-        _ => false,
+    let mut below = vec![false; b.len() + 1];
+    let mut row = vec![false; b.len() + 1];
+    for i in (0..=a.len()).rev() {
+        for j in (0..=b.len()).rev() {
+            row[j] = match (a.get(i), b.get(j)) {
+                (None, None) => true,
+                (Some(&"**"), _) => below[j] || (j < b.len() && row[j + 1]),
+                (_, Some(&"**")) => row[j + 1] || (i < a.len() && below[j]),
+                (Some(x), Some(y)) => seg_overlap(x, y) && below[j + 1],
+                _ => false,
+            };
+        }
+        std::mem::swap(&mut below, &mut row);
     }
+    below[0]
 }
 
 /// Whether some path matches both globs, found by walking both segment lists (`design/DESIGN.md`, Shape, the lease
@@ -227,5 +248,24 @@ mod tests {
         assert_eq!(literal_prefix("**"), "");
         assert_eq!(literal_prefix("*/x"), "");
         assert_eq!(literal_prefix("docs/auth.md"), "docs/auth.md");
+    }
+
+    /// Backtracking tried every way to split both segment lists between their `**`s; the table takes 13 rows of 31.
+    #[test]
+    fn many_double_stars_against_globs_that_do_not_overlap_finish() {
+        let stars = format!("{}x", "**/".repeat(12));
+        let deep = format!("{}y", "a/".repeat(30));
+        assert!(!glob_overlap(&stars, &deep) && !glob_overlap(&deep, &stars));
+        assert!(!glob_overlap(&stars, &format!("{}y", "**/".repeat(12))));
+        assert!(glob_overlap(&stars, &format!("{}x", "a/".repeat(30))));
+    }
+
+    /// Backtracking tried about C(42, 12) splits here; the table takes 13 rows of 31.
+    #[test]
+    fn many_double_stars_against_a_deep_path_that_does_not_match_finish() {
+        let glob = format!("{}x", "**/".repeat(12));
+        let path = vec!["a"; 30].join("/");
+        assert!(!glob_match(&glob, &path));
+        assert!(glob_match(&glob, &format!("{path}/x")));
     }
 }

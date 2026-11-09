@@ -1509,8 +1509,9 @@ fn decode_principal(d: &mut Dec, stateless: bool) -> Result<Principal, WireError
         _ => return Err(WireError::Malformed("credential tag")),
     };
     let n = d.u32()? as usize;
-    let mut sso_orgs = SmallVec::new();
-    for _ in 0..n.min(64) {
+    // Read every org the encoder wrote; only the reservation is capped, and `take` refuses a count past the buffer.
+    let mut sso_orgs = SmallVec::with_capacity(n.min(64));
+    for _ in 0..n {
         sso_orgs.push(graftyard_identity::OrgId(AccountId(graftyard_types::DbId(d.u64()? as i64))));
     }
     Ok(Principal { actor, scopes, credential, sso_orgs })

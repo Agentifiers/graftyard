@@ -253,6 +253,13 @@ fn meta<C: graftyard_raft::Command>(m: &raft::Member<C>) -> Value {
     json!({ "term": r.term.0, "leader": r.leader.map(|s| s.0), "configIndex": r.config_index.0 })
 }
 
+/// The site id at `k` in a request body, refused when it is missing or past `u8`, so `{"site": 258}` never names
+/// site 2. `what` names the route in the error.
+fn site_field(b: &Value, k: &str, what: &str) -> Result<SiteId> {
+    let n = b.get(k).and_then(Value::as_u64).ok_or_else(|| err(format!("{what} needs {k}")))?;
+    u8::try_from(n).map(SiteId).map_err(|_| err(format!("{what}: {k} {n} is not a site id")))
+}
+
 fn verdict_str(v: Verdict) -> &'static str {
     match v {
         Verdict::Leader => "leader",
@@ -897,8 +904,7 @@ impl<F: Family> Routes<F> {
             Some(b) => {
                 let colo = raft::Colo(b.get("colo").and_then(Value::as_u64).unwrap_or(0) as u32);
                 let term = raft::Term(b.get("term").and_then(Value::as_u64).unwrap_or(0));
-                let about =
-                    SiteId(b.get("about").and_then(Value::as_u64).ok_or_else(|| err("suspect needs about"))? as u8);
+                let about = site_field(&b, "about", "suspect")?;
                 self.host.input(|m, t| m.suspect(t, colo, about, term))?
             }
         };
@@ -1231,7 +1237,7 @@ impl<F: Family> Routes<F> {
     /// `transfer` to `{"to": site}`. With `test-faults`, `"abandon": true` drops its `TimeoutNow`, so the leader
     /// abandons it after the LEASE (B0-11's abandoned transfers).
     fn transfer(&self, body: Value) -> Result<Response> {
-        let to = SiteId(body.get("to").and_then(Value::as_u64).ok_or_else(|| err("transfer needs to"))? as u8);
+        let to = site_field(&body, "to", "transfer")?;
         let r = self.host.input(|m, t| m.transfer(t, to))?;
         #[cfg(feature = "test-faults")]
         if let Ok(id) = &r
@@ -1305,7 +1311,7 @@ impl<F: Family> Routes<F> {
     /// member is left as it is: a removed member keeps answering with its latest committed config (Shape, "Sites and
     /// placement").
     async fn replace(&self, body: Value) -> Result<Response> {
-        let to = SiteId(body.get("site").and_then(Value::as_u64).ok_or_else(|| err("replace needs site"))? as u8);
+        let to = site_field(&body, "site", "replace")?;
         // Test fault: the first new member's latency check fails, so the retry with the next generation runs.
         #[cfg(feature = "test-faults")]
         let fail_first = body.get("fail_first").and_then(Value::as_bool).unwrap_or(false);
@@ -1694,4 +1700,23 @@ pub async fn repo_owner(env: &Env, repo: graftyard_types::RepoId) -> std::result
     serde_json::from_value::<Option<AccountId>>(v.pointer("/value/repoOwner").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("{repo:?} has no RepoOwner row"))
+}
+
+#[cfg(test)]
+mod tests {
+    use graftyard_types::SiteId;
+    use serde_json::json;
+
+    use super::site_field;
+
+    /// A site id past `u8` is refused, never truncated onto another site.
+    #[test]
+    fn a_site_id_past_u8_is_refused() {
+        assert_eq!(site_field(&json!({ "site": 2 }), "site", "replace").expect("in range"), SiteId(2));
+        assert_eq!(site_field(&json!({ "site": 255 }), "site", "replace").expect("in range"), SiteId(255));
+        let e = site_field(&json!({ "site": 258 }), "site", "replace").expect_err("out of range").to_string();
+        assert!(e.contains("258 is not a site id"), "{e}");
+        let e = site_field(&json!({}), "to", "transfer").expect_err("missing").to_string();
+        assert!(e.contains("transfer needs to"), "{e}");
+    }
 }
