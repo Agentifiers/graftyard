@@ -178,15 +178,20 @@ fn push(b: &Bed, k: u32, n: usize) {
 
 /// Both tiers' snapshots at the leader's applied index, as the snapshot writer commits them.
 fn snapshot(b: &Bed) {
+    snapshot_of(b, &[Tier::Core, Tier::Metadata]);
+}
+
+/// `tiers`' snapshots at the leader's applied index.
+fn snapshot_of(b: &Bed, tiers: &[Tier]) {
     let (to, at) = {
         let w = b.w.borrow();
         let m = &w.repo.members[b.leader()];
         let e = m.entry_at(m.state().applied).expect("in memory").clone();
         (e.index, e.at)
     };
-    let evs = [Tier::Core, Tier::Metadata]
-        .into_iter()
-        .map(|tier| {
+    let evs = tiers
+        .iter()
+        .map(|&tier| {
             let digest = Digest([tier as u8 + 1; 32]);
             let key = R2Key::Snapshot { chain: ChainId::Repo(REPO), tier, from: Index(0), to, digest };
             RepoEvent::Archived(graftyard_git::Archived { key, from: Index(0), to, from_at: at, to_at: at, digest })
@@ -388,4 +393,38 @@ fn due_refuses_a_gap_and_a_row_of_another_entry() {
     assert!(log_archive::due(1, wrong, now, true, Index(99), 0, u64::MAX).unwrap_err().contains("holds entry"));
     let d = log_archive::due(1, rows, now, true, Index(3), 0, u64::MAX).unwrap().unwrap();
     assert_eq!((d.from, d.to, d.rows.len()), (Index(1), Index(3), 3));
+}
+
+/// `ARCHIVE_SLACK`: a log one byte over the cap is cut to `cap - cap/16`, not to the cap, so one alarm archives a
+/// range of entries rather than one entry each time a write crosses the cap.
+#[test]
+fn a_log_over_the_cap_is_cut_below_it_by_the_slack() {
+    let b = Bed::new();
+    for k in 0..40 {
+        push(&b, k, 100);
+    }
+    let rows: Vec<(Index, Vec<u8>)> = b.stored(0).iter().map(|e| (e.index, row(e))).collect();
+    let total: u64 = rows.iter().map(|(_, r)| r.len() as u64).sum();
+    let now = Timestamp(0);
+    let cap = total - 1;
+    let d = log_archive::due(total, rows.clone(), now, true, Index(u64::MAX), cap, u64::MAX).unwrap().unwrap();
+    let cut: u64 = d.rows.iter().map(|(_, _, r)| r.len() as u64).sum();
+    assert!(total - cut <= cap - cap / log_archive::ARCHIVE_SLACK, "left {} over {}", total - cut, cap);
+    assert!(d.rows.len() > 1, "one alarm archives more than the entry that crossed the cap");
+    // Under the cap and inside LOG_KEEP, nothing is due.
+    assert_eq!(log_archive::due(total, rows, now, true, Index(u64::MAX), total, u64::MAX).unwrap(), None);
+}
+
+/// Nothing is archived while only one tier has a snapshot: an install needs both to load (`View::of`).
+#[test]
+fn one_tier_s_snapshot_alone_archives_nothing() {
+    let b = Bed::new();
+    for k in 0..60 {
+        push(&b, k, 1_500);
+    }
+    assert!(b.bytes(b.leader()) > CAP);
+    snapshot_of(&b, &[Tier::Core]);
+    assert_eq!(b.step(CAP / 5), Step::Idle, "the core tier alone");
+    snapshot_of(&b, &[Tier::Metadata]);
+    assert!(matches!(b.step(CAP / 5), Step::Promoted { .. }), "both tiers");
 }

@@ -1134,6 +1134,8 @@ fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
     keep_rest_as("b036-issue-labels-delete-all", "DELETE", path, &all);
     // An unknown name is 422 for POST, and 404 for removing a label the issue does not have.
     assert_eq!(rest(&mut c, "POST", None, json!(["nope"])).status, 422);
+    // One unknown name refuses the whole request, beside a known one.
+    assert_eq!(rest(&mut c, "POST", None, json!(["bug", "nope"])).status, 422);
     assert_eq!(rest(&mut c, "DELETE", Some("bug"), Value::Null).status, 404);
     assert_eq!(rest(&mut c, "POST", None, json!({ "labels": [] })).status, 422);
     let r = c.repo(0, &h, &dir);
