@@ -34,7 +34,7 @@ pub const FEED_RING: (usize, Duration) = (10_000, Duration::from_secs(7 * 86_400
 /// `paths` per poll.
 pub const FEED_PATHS_MAX: usize = 32;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LeaseChange {
     Acquired,
     Released,
@@ -51,7 +51,7 @@ impl LeaseChange {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PrAction {
     Opened,
     Readied,
@@ -72,7 +72,7 @@ impl PrAction {
 
 /// One feed event, with its free text raw: the API renders `intent` and `title` through the trust view. `Verdict` is
 /// AM4's (`InsightVerdict`) and has no source yet.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ActivityEvent {
     Lease { lease: Lease, change: LeaseChange },
     Task { task: SessionId, state: TaskApiState },
@@ -81,6 +81,15 @@ pub enum ActivityEvent {
 }
 
 impl ActivityEvent {
+    /// The form a serving member sends the edge, which renders it (`graftyard_api::leases::event_json`).
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+
+    pub fn from_json(v: &serde_json::Value) -> Option<ActivityEvent> {
+        serde_json::from_value(v.clone()).ok()
+    }
+
     /// The paths the event names, for a poll's `paths` filter: a lease's globs, an agent push's paths. `None` for an
     /// event with no paths (a task or a pull request), which a filtered poll never returns.
     pub fn paths(&self) -> Option<Vec<&str>> {
@@ -338,6 +347,134 @@ pub fn events(
         out.push(ActivityEvent::Lease { lease, change });
     }
     out
+}
+
+// ---- a serving member's ring ----
+
+/// A serving member's feed (`design/AGENT-LAYER.md`, "Activity feed": "A serving member answers from its applied log
+/// with no read-index call"): the events of the entries it applied, newest last, at most FEED_RING. The host feeds it
+/// each applied entry in order with the core tier as it stands after the input that applied it, so events of entries
+/// applied in one input read that input's final rows (a lease acquired and released in one input shows as released).
+/// `live` is the lease set held at the last entry, which finds `Released` and `Expired`: a lease held before an entry
+/// and not after it is `Expired` at the first entry whose `at` passes its `expires`, or whose holder lost access.
+#[derive(Clone, Debug, Default)]
+pub struct Ring {
+    pub events: std::collections::VecDeque<(Index, Timestamp, ActivityEvent)>,
+    /// The index and `at` of each entry the ring holds, for `ring_floor`.
+    pub held: std::collections::VecDeque<(Index, Timestamp)>,
+    /// The last index fed, and the first: cursors before `first` are older than this member's ring.
+    pub through: Index,
+    pub first: Option<Index>,
+    live: std::collections::BTreeMap<LeaseId, Lease>,
+}
+
+impl Ring {
+    /// The oldest index a cursor may name (the index before the first entry kept), and the newest.
+    pub fn bounds(&self) -> (Index, Index) {
+        let h: Vec<(Index, Timestamp)> = self.held.iter().copied().collect();
+        let floor = ring_floor(&h).max(self.first.map_or(self.through, |f| Index(f.0.saturating_sub(1))));
+        (floor, self.through)
+    }
+
+    /// Feeds one applied entry (its index, `at`, and events; an entry with none still moves `through` and may expire
+    /// leases). `core` and `meta` are the tiers after the input that applied it.
+    pub fn feed(
+        &mut self,
+        repo: RepoId,
+        owner: &dyn AuthzRead,
+        core: &dyn Read,
+        meta: &dyn Read,
+        (index, at, evs): (Index, Timestamp, &[RepoEvent]),
+    ) {
+        if index <= self.through && self.first.is_some() {
+            return;
+        }
+        self.first.get_or_insert(index);
+        let view = LeaseView { core, owner, repo, at };
+        let now: std::collections::BTreeMap<LeaseId, Lease> =
+            view.live().into_iter().map(|r| (r.lease.id, r.lease)).collect();
+        let mut out = Vec::new();
+        let released: Vec<LeaseId> = evs
+            .iter()
+            .flat_map(|e| match e {
+                RepoEvent::LeaseRelease { ids, .. } => ids.to_vec(),
+                _ => Vec::new(),
+            })
+            .collect();
+        for e in evs {
+            match e {
+                RepoEvent::LeaseAcquire { lease, .. } => {
+                    out.push(ActivityEvent::Lease { lease: lease.clone(), change: LeaseChange::Acquired })
+                }
+                RepoEvent::TaskCreated(t) => out.push(ActivityEvent::Task { task: t.session.clone(), state: t.state }),
+                RepoEvent::TaskUpdated { session, state: Some(st), .. } => {
+                    out.push(ActivityEvent::Task { task: session.clone(), state: *st })
+                }
+                RepoEvent::PathSet(p) => out.push(ActivityEvent::AgentPush {
+                    refname: p.refname.clone(),
+                    head: p.head,
+                    paths: p.paths.iter().take(8).cloned().collect(),
+                }),
+                RepoEvent::AgentMeta { n, .. } => {
+                    let row =
+                        crate::tiers::get_rec::<crate::tiers::IssueRow>(meta, "issue", &[crate::tiers::n_key(*n)]);
+                    let (title, author) = row.map_or((Box::from(""), None), |r| (r.title, r.author));
+                    out.push(ActivityEvent::AgentPr { pr: *n, action: PrAction::Opened, title, author });
+                }
+                RepoEvent::IssueChanged { n, change: IssueChange::Draft(false), .. }
+                | RepoEvent::PrClosed { n, .. }
+                | RepoEvent::Merged { n, .. }
+                    if crate::tiers::agent_meta(core, *n).is_some() =>
+                {
+                    let action = match e {
+                        RepoEvent::PrClosed { .. } => PrAction::Closed,
+                        RepoEvent::Merged { .. } => PrAction::Merged,
+                        _ => PrAction::Readied,
+                    };
+                    let row =
+                        crate::tiers::get_rec::<crate::tiers::IssueRow>(meta, "issue", &[crate::tiers::n_key(*n)]);
+                    let (title, author) = row.map_or((Box::from(""), None), |r| (r.title, r.author));
+                    out.push(ActivityEvent::AgentPr { pr: *n, action, title, author });
+                }
+                _ => {}
+            }
+        }
+        for (id, l) in &self.live {
+            if now.contains_key(id) {
+                continue;
+            }
+            let task_final = l.holder.session.as_ref().is_some_and(|s| {
+                evs.iter().any(|e| matches!(e, RepoEvent::TaskUpdated { session, state: Some(st), .. } if session == s && st.is_final()))
+            });
+            let change = if released.contains(id) || task_final { LeaseChange::Released } else { LeaseChange::Expired };
+            out.push(ActivityEvent::Lease { lease: l.clone(), change });
+        }
+        self.live = now;
+        self.through = index;
+        self.held.push_back((index, at));
+        self.events.extend(out.into_iter().map(|e| (index, at, e)));
+        // FEED_RING: the last FEED_RING.0 entries and those within FEED_RING.1 of the newest.
+        let (floor, _) = self.bounds();
+        while self.held.front().is_some_and(|(i, _)| *i <= floor) {
+            self.held.pop_front();
+        }
+        while self.events.front().is_some_and(|(i, _, _)| *i <= floor) {
+            self.events.pop_front();
+        }
+    }
+
+    /// The events past `after` that a poll with `filter` returns.
+    pub fn past(&self, after: Index, filter: &[&str]) -> Vec<(Index, Timestamp, ActivityEvent)> {
+        self.events.iter().filter(|(i, _, e)| *i > after && e.matches(filter)).cloned().collect()
+    }
+}
+
+/// How many learners the feed needs for a group (`design/AGENT-LAYER.md`, "Activity feed": "`place_learners` adds
+/// learners until held plus refused fit in half of FEED_HELD_MAX each"), from each serving member's reported peak held
+/// count and refusals: the polls all of them carried, over half of FEED_HELD_MAX, rounded up.
+pub fn learners_for_feed(reports: &[(u32, u32)]) -> usize {
+    let total: u64 = reports.iter().map(|(peak, refused)| u64::from(*peak) + u64::from(*refused)).sum();
+    total.div_ceil(u64::from(FEED_HELD_MAX / 2)) as usize
 }
 
 // ---- held polls ----

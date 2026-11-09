@@ -15,6 +15,7 @@ mod callers;
 mod family;
 #[cfg(feature = "test-faults")]
 mod faults;
+mod feed;
 mod fold_audit;
 mod host;
 mod load;

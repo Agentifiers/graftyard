@@ -193,6 +193,9 @@ pub struct SiteFault {
     pub rate: Option<f64>,
 }
 
+/// A `SiteFault.site` naming every site at once.
+pub const ALL_SITES: u8 = 255;
+
 /// How long an isolate keeps the plan it read.
 const SITE_FAULT_TTL_MS: u64 = 1_000;
 
@@ -246,7 +249,11 @@ pub async fn site_down(env: &Env) -> bool {
             plan
         }
     };
-    plan.site == Some(me) && plan.from <= now && now < plan.until && plan.rate.is_none_or(roll)
+    // Site 255 is every site: L0-12's stall, every member running with every member call blackholed.
+    (plan.site == Some(me) || plan.site == Some(ALL_SITES))
+        && plan.from <= now
+        && now < plan.until
+        && plan.rate.is_none_or(roll)
 }
 
 fn wasm_mem_mb() -> f64 {

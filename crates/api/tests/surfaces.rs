@@ -983,3 +983,36 @@ fn hosted_dir_names_every_account_the_tiers_name() {
     assert_eq!(i["assignees"]["nodes"][0]["login"], "alice");
     assert!(!i.to_string().contains("\"ghost\""), "{i}");
 }
+
+/// `gh pr edit --body` (AM1's plan blocks): `updatePullRequest` with `body` commits `IssueChange::Body` and renders
+/// `UpdatePullRequestPayload.pullRequest` with the new body; a field that is not served, or body and title together,
+/// is refused before anything commits.
+#[test]
+fn update_pull_request_edits_the_body_and_refuses_what_it_does_not_serve() {
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let q = "mutation($input: UpdatePullRequestInput!) { updatePullRequest(input: $input) { pullRequest { number body } } }";
+    let (planned, vars) = {
+        let r = c.repo(0, &h, &dir);
+        let id = NodeId::scoped(NodeType::PullRequest, REPO, r.item(IssueNumber(2)).unwrap().row.id.0).encode();
+        let vars = json!({ "input": { "pullRequestId": id, "body": "edited" } }).as_object().cloned();
+        let req = Request::parse(q, vars.clone(), None).unwrap();
+        assert_eq!(route(&req).unwrap(), Some(Target::Id(REPO.0.0)));
+        let p = plan(&req, &r).unwrap();
+        let mut both = vars.clone().unwrap();
+        both["input"]["title"] = json!("t");
+        let req2 = Request::parse(q, Some(both.clone()), None).unwrap();
+        assert_eq!(plan(&req2, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
+        both["input"].as_object_mut().unwrap().remove("title");
+        both["input"]["state"] = json!("CLOSED");
+        let req3 = Request::parse(q, Some(both), None).unwrap();
+        assert_eq!(plan(&req3, &r).unwrap_err()["errors"][0]["type"], "UNPROCESSABLE");
+        (p, vars)
+    };
+    let Plan::Issue(op) = planned.plan.clone() else { panic!() };
+    let out = c.commit(WRITER, *op).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let req = Request::parse(q, vars, None).unwrap();
+    let reply = render(&req, &planned, &ack(out), &r);
+    assert_eq!(reply["data"]["updatePullRequest"]["pullRequest"]["body"], "edited", "{reply}");
+}

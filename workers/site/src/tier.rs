@@ -53,6 +53,11 @@ struct Inner {
     /// Test installs: the next stored read runs against a table that does not exist, so SQLite refuses it.
     #[cfg(feature = "test-faults")]
     fail_read: std::cell::Cell<bool>,
+    /// Test installs (L0-16): every read of this tier, stored or buffered, while it is held unloaded.
+    #[cfg(feature = "test-faults")]
+    reads: std::cell::Cell<u64>,
+    #[cfg(feature = "test-faults")]
+    held_unloaded: bool,
 }
 
 /// A handle on one tier's tables. Clones share the tables and the write buffer, so the fold, the snapshot writer, and
@@ -277,6 +282,10 @@ impl TierSql {
             lost: RefCell::new(None),
             #[cfg(feature = "test-faults")]
             fail_read: std::cell::Cell::new(false),
+            #[cfg(feature = "test-faults")]
+            reads: std::cell::Cell::new(0),
+            #[cfg(feature = "test-faults")]
+            held_unloaded: false,
         })))
     }
 
@@ -289,6 +298,27 @@ impl TierSql {
     #[cfg(feature = "test-faults")]
     pub fn fail_next_read(&self) {
         self.0.borrow().fail_read.set(true);
+    }
+
+    /// Test installs (L0-16): hold the tier unloaded (`loaded()` false, and `set_loaded` ignored so the alarm's load
+    /// does not bring it back) and count every read of it from now, or release it. A released tier stays unloaded:
+    /// `apply` skipped it while held, so the alarm's metadata load replays what it missed before it serves again.
+    /// Answers the reads counted.
+    #[cfg(feature = "test-faults")]
+    pub fn hold_unloaded(&self, hold: bool) -> u64 {
+        let mut i = self.0.borrow_mut();
+        i.held_unloaded = hold;
+        i.loaded = false;
+        if hold {
+            i.reads.set(0);
+        }
+        i.reads.get()
+    }
+
+    #[cfg(feature = "test-faults")]
+    pub fn reads_while_held(&self) -> Option<u64> {
+        let i = self.0.borrow();
+        i.held_unloaded.then(|| i.reads.get())
     }
 
     /// The buffered writes as statements for the input's transaction. They stay readable until `flushed`.
@@ -313,7 +343,12 @@ impl TierSql {
     }
 
     pub fn set_loaded(&self, loaded: bool) {
-        self.0.borrow_mut().loaded = loaded;
+        let mut i = self.0.borrow_mut();
+        #[cfg(feature = "test-faults")]
+        if i.held_unloaded {
+            return;
+        }
+        i.loaded = loaded;
     }
 }
 
@@ -327,6 +362,10 @@ impl Inner {
 
     /// The query a stored read runs: on test installs, once after `fail_next_read`, one SQLite refuses.
     fn query(&self, q: String) -> String {
+        #[cfg(feature = "test-faults")]
+        if self.held_unloaded {
+            self.reads.set(self.reads.get() + 1);
+        }
         #[cfg(feature = "test-faults")]
         if self.fail_read.replace(false) {
             return "SELECT written, v FROM graftyard_no_such_table".into();

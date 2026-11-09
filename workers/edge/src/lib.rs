@@ -679,6 +679,12 @@ async fn receive_pack(
     let pack = &body[rp.pack_at..];
     let mut index = None;
     let deletes_only = push.updates.iter().all(|u| u.new.is_none());
+    // AM1: a push that may be an agent's asks the git cache for `validate`'s detail and carries what it gives
+    // (`agents::agentish`). A default push asks for none, so its calls and bytes are unchanged.
+    let agent = agents::push_context(c, repo, &push).await;
+    let detail = graftyard_git::agent::detail_lines(&push.updates, agent.is_some());
+    // Only updates with a new tip get detail, so a push of deletes alone asks for none.
+    let mut got: Vec<graftyard_git::agent::RefDetail> = Vec::new();
     if !deletes_only {
         if pack.is_empty() {
             return refuse(Refusal::unpack_failed("no pack"));
@@ -699,15 +705,28 @@ async fn receive_pack(
             inline,
             part: c.cfg.part,
         };
-        let validate = validate(c, repo, pack, &tips);
+        let detail_out = std::cell::RefCell::new(Vec::new());
+        let validate = async {
+            let (ix, d) = validate(c, repo, pack, &tips, &detail).await?;
+            *detail_out.borrow_mut() = d;
+            ix.ok_or_else(|| "validate gave no index".to_owned())
+        };
         match store.place_teed(stage, validate).await {
             Ok((d, ix)) => {
                 push.pack = Some(d.into_pack());
                 index = Some(ix);
+                got = detail_out.into_inner();
             }
             Err(TeeError::Invalid(e)) => return refuse(Refusal::unpack_failed(&e)),
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
+    }
+    if let Some(a) = &agent {
+        agents::fill_push(c, a, &mut push, &got, path);
+    }
+    let f = graftyard_raft::Command::format(&push);
+    if push.validated() && !c.cfg.enabled.contains(&f) {
+        return unsupported(c.rid, f.family, f.version);
     }
     let len = push.encoded_len();
     if len > COMMAND_MAX {
@@ -793,21 +812,46 @@ async fn receive_pack(
     }
 }
 
-/// `GitCacheShard::validate` on the network's home shard: tips in the body ahead of the pack.
-async fn validate(c: &Ctx<'_>, repo: &Repo, pack: &[u8], tips: &[String]) -> std::result::Result<PackIndex, String> {
+/// `GitCacheShard::validate` on the network's home shard: tips in the body ahead of the pack. With `detail` (the
+/// `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also answers each
+/// update's new commits and changed paths; with an empty pack it answers only those, and no index. Without `detail`
+/// the call is the one a default push has always made.
+pub(crate) async fn validate(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    pack: &[u8],
+    tips: &[String],
+    detail: &str,
+) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), String> {
     let run = async {
-        let mut head = tips.join("\n").into_bytes();
-        head.push(b'\n');
+        let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
+        if !tips.is_empty() || detail.is_empty() {
+            head.push(b'\n');
+        }
         let n = head.len();
+        let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
+        if !detail.is_empty() {
+            url.push_str(&format!("&detailn={}", detail.len()));
+            head.extend_from_slice(detail.as_bytes());
+        }
         head.extend_from_slice(pack);
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head.as_slice()).into()));
-        let url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
         let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
         if r.status_code() != 200 {
             return Ok(Err(r.text().await.unwrap_or_default()));
         }
-        Ok::<_, Error>(Ok(r.json::<PackIndex>().await?))
+        if detail.is_empty() {
+            return Ok::<_, Error>(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
+        }
+        #[derive(Deserialize)]
+        struct Detailed {
+            index: Option<PackIndex>,
+            #[serde(default)]
+            detail: Vec<graftyard_git::agent::RefDetail>,
+        }
+        let d: Detailed = r.json().await?;
+        Ok(Ok((d.index, d.detail)))
     };
     match run.await {
         Ok(r) => r,

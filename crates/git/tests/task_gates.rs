@@ -531,3 +531,41 @@ fn a_task_token_needs_a_live_run_task_of_the_app_on_its_repository() {
     w.ident.owner.apply(&AuthzEvent::Installation { id, row: row.row, not_before: w.now });
     assert_eq!(check(&mut w, RUN, &one, &s), Err(TaskTokenError::NotLive), "a reinstall does not revive it");
 }
+
+/// The edge's hosted path (AM1 hosted half): the git cache's detail for a push (`RefDetail`, as
+/// `containers/git/server` answers it) through `validated_of` and `link` becomes a push whose `Graftyard-Session`
+/// trailer links on the leader, with `changed` and `protected` from the detail's paths; `detail_lines` asks only for an
+/// agentish push and only for updates with a new tip.
+#[test]
+fn the_git_cache_s_detail_links_through_the_edge_s_path() {
+    let mut w = run_world();
+    let session = run_task();
+    let app = claimed(RUN, Some(&session));
+    let branch = format!("refs/heads/graftyard/{}/w/x", session.text());
+    let commit = oid(77);
+    let raw = trailer_commit(&session);
+    let detail = [agent::RefDetail {
+        refname: branch.clone(),
+        commits: vec![agent::RawCommit { oid: commit.hex(), raw: raw.clone() }],
+        paths: vec!["src/lib.rs".into(), ".github/workflows/ci.yml".into()],
+        ..Default::default()
+    }];
+    let v = agent::validated_of(&detail, &[]);
+    assert_eq!(v.changed[0].paths.len(), 2);
+    assert_eq!(v.protected[0].paths.as_slice(), [Box::from(".github/workflows/ci.yml")]);
+    let pusher = match app.actor {
+        Actor::App { app, .. } => Some(app),
+        _ => None,
+    };
+    let f = w.fold();
+    let mut own = pusher.map(|a| task::app_sessions(&*f.core, a)).unwrap_or_default();
+    own.extend(task::claim(&app).cloned());
+    let linked = agent::link(&v.provenance, pusher, &own, Some(ORIGIN));
+    assert!(linked[0].sources.iter().any(|s| matches!(s, agent::Source::Session(x) if *x == session)));
+    let u = graftyard_git::refs::RefUpdate { name: name(&branch), expect: None, new: Some(commit) };
+    let lines = agent::detail_lines(std::slice::from_ref(&u), true);
+    assert_eq!(lines, format!("{} {} {branch}\n", commit.hex(), "0".repeat(40)));
+    assert_eq!(agent::detail_lines(std::slice::from_ref(&u), false), "");
+    let del = graftyard_git::refs::RefUpdate { name: name(&branch), expect: Some(commit), new: None };
+    assert_eq!(agent::detail_lines(&[del], true), "");
+}

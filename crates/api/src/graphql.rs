@@ -294,6 +294,27 @@ pub fn plan(req: &Request<'_>, r: &Repo<'_>) -> Result<Planned, Value> {
                 IssueOp::Comment { on: CommentTarget::Issue(n), body: s("body").unwrap_or("").into(), reply_to: None };
             planned(Plan::Issue(Box::new(op)), Some(n))
         }
+        // `gh pr edit --body`/`--title` (AM1's plan blocks): `updatePullRequest` with `body` or `title`, one change per
+        // command. Every other field is not served, and a request naming one is refused, so nothing is half applied.
+        "updatePullRequest" => {
+            let n = s("pullRequestId")
+                .and_then(|id| item_of(r, id))
+                .filter(|n| r.item(*n).is_some_and(|it| it.is_pull()))
+                .ok_or_else(|| not_found(field, "Could not resolve to a node with that global id."))?;
+            for k in
+                ["assigneeIds", "baseRefName", "labelIds", "maintainerCanModify", "milestoneId", "projectIds", "state"]
+            {
+                if input.get(k).is_some_and(|v| !v.is_null()) {
+                    return Err(unprocessable(field, format!("{k} is not served")));
+                }
+            }
+            let change = match (s("body"), s("title")) {
+                (Some(b), None) => graftyard_git::issues::IssueChange::Body(b.into()),
+                (None, Some(t)) => graftyard_git::issues::IssueChange::Title(t.into()),
+                _ => return Err(unprocessable(field, "exactly one of body and title is served per request")),
+            };
+            planned(Plan::Issue(Box::new(IssueOp::Change { n, change })), Some(n))
+        }
         // `gh pr review`: `PullRequestReviewAdd` with `event` and `body`, a review at the pull request's head.
         "addPullRequestReview" => {
             let n = s("pullRequestId")
@@ -478,6 +499,7 @@ impl Obj for Payload<'_> {
             "createIssue" => "CreateIssuePayload",
             "createPullRequest" => "CreatePullRequestPayload",
             "addPullRequestReview" => "AddPullRequestReviewPayload",
+            "updatePullRequest" => "UpdatePullRequestPayload",
             _ => "AddCommentPayload",
         }
     }
@@ -488,6 +510,8 @@ impl Obj for Payload<'_> {
         Some(match (f, self.root.out) {
             ("clientMutationId", _) => leaf(Value::Null),
             ("issue" | "pullRequest", IssueOut::Number(n)) => node(*n),
+            ("pullRequest", IssueOut::Done) if self.root.p.field == "updatePullRequest" => node(self.root.p.subject?),
+            ("actor", _) if self.root.p.field == "updatePullRequest" => Out::Null,
             ("commentEdge", IssueOut::Id(id)) => obj(Edge { r, n: self.root.p.subject?, id: *id }),
             ("pullRequestReview", IssueOut::Id(id)) => obj(crate::gql::review(r, self.root.p.subject?, *id)?),
             ("subject", _) => node(self.root.p.subject?),

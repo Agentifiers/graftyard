@@ -346,6 +346,90 @@ pub fn provenance_of(refname: &RefName, commits: &[(ObjectId, &[u8])], notes: &[
     out
 }
 
+/// One update as the git cache's `validate` reports it with `detailn` (`containers/git/server`): its new commits, raw
+/// and newest first, every path the new tip changes against its merge base with the default branch or against the old
+/// tip, whether it is a fast-forward, and for `refs/notes/ai` the changed note entries.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefDetail {
+    #[serde(rename = "ref")]
+    pub refname: String,
+    #[serde(default)]
+    pub commits: Vec<RawCommit>,
+    #[serde(default)]
+    pub more: bool,
+    #[serde(default)]
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub ff: bool,
+    #[serde(default)]
+    pub notes: Vec<RawNote>,
+    #[serde(default)]
+    pub merge_base: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawCommit {
+    pub oid: String,
+    #[serde(with = "crate::pack::b64")]
+    pub raw: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawNote {
+    pub path: String,
+    pub blob: bool,
+    pub oid: String,
+}
+
+/// The `validate` outputs a push carries (`Push::provenance`, `protected`, `changed`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Validated {
+    pub provenance: Vec<Provenance>,
+    pub protected: Vec<ProtectedHits>,
+    pub changed: Vec<ChangedPaths>,
+}
+
+/// The updates the edge asks `validate` for detail on: every update with a new tip when the pusher may be an agent
+/// (`agentish`), as `"<new> <old> <ref>"` lines, else none, so a default push's `validate` call is unchanged.
+pub fn detail_lines(updates: &[crate::refs::RefUpdate], agentish: bool) -> String {
+    if !agentish {
+        return String::new();
+    }
+    let zero = "0".repeat(40);
+    updates
+        .iter()
+        .filter_map(|u| {
+            let new = u.new?;
+            let old = u.expect.map_or_else(|| zero.clone(), |o| o.hex());
+            Some(format!("{} {old} {}\n", new.hex(), u.name.display()))
+        })
+        .collect()
+}
+
+/// `validate`'s outputs from the git cache's detail: each update's `provenance_of` its new commits and notes, its
+/// `changed_of` its paths, and its `protected_of` them against PROTECTED_PATHS and the policy's `extra` paths. A
+/// commit or note the parser cannot read contributes nothing and never fails the push.
+pub fn validated_of(detail: &[RefDetail], extra: &[Box<str>]) -> Validated {
+    let mut v = Validated::default();
+    for d in detail {
+        let Ok(r) = RefName::parse(d.refname.as_bytes()) else { continue };
+        let commits: Vec<(ObjectId, &[u8])> =
+            d.commits.iter().filter_map(|c| Some((ObjectId::parse_hex(c.oid.as_bytes())?, c.raw.as_slice()))).collect();
+        let notes: Vec<NoteEntry<'_>> = d
+            .notes
+            .iter()
+            .filter_map(|n| {
+                Some(NoteEntry { path: &n.path, blob: n.blob, oid: ObjectId::parse_hex(n.oid.as_bytes())? })
+            })
+            .collect();
+        v.provenance.extend(provenance_of(&r, &commits, &notes));
+        let paths: Vec<&str> = d.paths.iter().map(String::as_str).collect();
+        v.changed.push(changed_of(&r, &paths));
+        v.protected.extend(protected_of(&r, &paths, extra));
+    }
+    v
+}
+
 /// Whether any source would class an App token's push as Agent.
 pub fn classes(list: &[Provenance]) -> bool {
     list.iter().any(|p| p.sources.iter().any(|s| matches!(s, Source::Claimed { key, .. } if key.classes())))

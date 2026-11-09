@@ -232,6 +232,22 @@ pub(crate) async fn read(
     read_repo(c, repo, owner, name, viewer, None, Rows::All, Gate::Readers).await
 }
 
+/// `read` for a command that decides on the core tier alone (a lease command, L0-16): served while the metadata
+/// tier loads, with an empty metadata view, behind the same read gate as `read`.
+pub(crate) async fn read_core(
+    c: &Ctx<'_>,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+) -> Result<std::result::Result<Read, Reply>> {
+    let repo = match resolve(c, owner, name).await? {
+        Ok(Some(r)) => r,
+        Ok(None) => return Ok(Err(Reply::not_found())),
+        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+    };
+    read_repo(c, repo, owner, name, viewer, None, Rows::Core, Gate::Readers).await
+}
+
 /// `read` for the invitee's side of a repository invitation (`crate::collab::user_invitation`), with no read gate: an
 /// invitee is not yet a collaborator. The caller answers 404 unless the viewer holds an invitation or `readable`.
 pub(crate) async fn read_for_invitee(
@@ -290,9 +306,10 @@ async fn read_repo(
     gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
-        Rows::All => None,
+        Rows::All | Rows::Core => None,
         Rows::Merge(id, _) => Some(*id),
     };
+    let core_only = matches!(rows, Rows::Core);
     timing::mark("resolve");
     let read_authz = async {
         match known {
@@ -318,7 +335,8 @@ async fn read_repo(
     if !rows.complete {
         return Ok(Err(unavailable("the repository is too large for this edge's tier read")));
     }
-    let Some(meta) = rows.meta.as_ref() else {
+    let no_meta = Vec::new();
+    let Some(meta) = served_meta(&rows, core_only, &no_meta) else {
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
     timing::mark("rows_authz");
@@ -347,10 +365,25 @@ async fn read_repo(
     Ok(Ok(rd))
 }
 
-/// Which tier rows `read_repo` reads: both whole tiers, or a merge's rows (`TierRows::merge_rows`) for the pull
-/// request with this database id, with the leader's answer if the caller already read it.
+/// The metadata rows a read serves: the member's, or, while that tier loads, `empty` for a core-only read and none
+/// otherwise.
+pub(crate) fn served_meta<'a>(
+    rows: &'a TierRows,
+    core_only: bool,
+    empty: &'a Vec<(String, graftyard_fold::Key, Vec<graftyard_fold::Val>)>,
+) -> Option<&'a Vec<(String, graftyard_fold::Key, Vec<graftyard_fold::Val>)>> {
+    match rows.meta.as_ref() {
+        Some(m) => Some(m),
+        None => core_only.then_some(empty),
+    }
+}
+
+/// Which tier rows `read_repo` reads: both whole tiers; both, served with an empty metadata view while that tier
+/// loads (`Core`); or a merge's rows (`TierRows::merge_rows`) for the pull request with this database id, with the
+/// leader's answer if the caller already read it.
 enum Rows {
     All,
+    Core,
     Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
 }
 
@@ -369,7 +402,11 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 
 /// The repository's `{"rows": true}` read on its leader, creating its group on first use; `{"rows": {"merge": id}}`
 /// for a merge's rows only, which a member built before it answers with every row.
-async fn tier_rows(c: &Ctx<'_>, repo: &Repo, merge: Option<i64>) -> Result<std::result::Result<Value, Reply>> {
+pub(crate) async fn tier_rows(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    merge: Option<i64>,
+) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
@@ -1308,6 +1345,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     Reply::error(405, "Pull Request is not mergeable", "rest/pulls/pulls#merge-a-pull-request")
                 }
                 Ok(Err(CacheError::Bad(e))) | Err(e) => unavailable(&format!("the git cache: {e}")),
+            }
+        }
+        // AM1: `POST /git/refs` and `PATCH /git/refs/{ref}`, served in `crate::agents` so an agent's write carries
+        // `validate`'s outputs on an empty pack and a lease check sees its `changed` paths.
+        (Method::Post, ["git", "refs"]) | (Method::Patch, ["git", "refs", ..]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let reference = match tail {
+                [_, _, rest @ ..] if !rest.is_empty() => Some(rest.join("/")),
+                _ => None,
+            };
+            match rest::plan_write_ref(&r, reference.as_deref(), &body(req.bytes().await?)) {
+                Ok((u, force)) => crate::agents::write_ref(c, &rd, &r, &who, u, force).await?,
+                Err(x) => x,
             }
         }
         (Method::Delete, ["git", "refs", reference @ ..]) => {
