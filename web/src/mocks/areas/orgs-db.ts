@@ -1,5 +1,11 @@
 import type { Schemas } from "@/api/client";
-import type { MemberPrivileges, OrganizationInvitation, ProfileExtras } from "@/areas/orgs/api";
+import type {
+  MemberPrivileges,
+  OrganizationInvitation,
+  PendingRename,
+  ProfileExtras,
+  TeamSettings,
+} from "@/areas/orgs/api";
 import {
   API,
   HOST,
@@ -19,7 +25,13 @@ import {
   type Repository,
   type SimpleUser,
 } from "../world";
+import {
+  activity as feed,
+  people as activityPeople,
+  profiles as searchProfiles,
+} from "./activity-db";
 import { db } from "./core-db";
+import { people as directory } from "./repo-admin-db";
 
 // The organization's people, teams, hooks, rulesets, and audit log, and every user's
 // profile, follows, pins, and contributions. Records are kept normalized (a team holds
@@ -79,20 +91,25 @@ function rng(seed: number) {
 
 // ---- People ----
 
+// The instance's user directory, which GET /users serves. It reuses the activity area's
+// people (same objects, so ids agree) and adds the org's own members and collaborators.
 const extra = {
   kenji: user("kenji", "Kenji Watanabe"),
-  ana: user("ana", "Ana Lima"),
-  priya: user("priya", "Priya Natarajan"),
   olu: user("olu", "Olu Adeyemi"),
   rhea: user("rhea", "Rhea Kapoor"),
-  sam: user("sam", "Sam Fischer"),
+  sam: user("sam", "Sam Achterberg"),
   ines: user("ines", "Inês Duarte"),
-  jonas: user("jonas", "Jonas Berg"),
 };
 
 const people = new Map<string, SimpleUser>(
-  [users.mira, users.tomas, users.lin, users.devi, ...Object.values(extra)].map((u) => [u.login, u]),
+  [...activityPeople, ...Object.values(extra)].map((u) => [u.login, u]),
 );
+
+// Repository admin resolves invitees through its own list, so every login GET /users
+// suggests must be one it can invite.
+for (const u of people.values()) {
+  if (!directory.some((d) => d.login === u.login)) directory.push(u);
+}
 
 const profiles = new Map<string, Profile>([
   [
@@ -150,12 +167,26 @@ const profiles = new Map<string, Profile>([
 ]);
 
 function profileOf(login: string): Profile {
+  // The viewer's profile follows the account area's PATCH /user, which edits `me`.
+  if (login === me.login) {
+    const { name, bio, company, location, blog, email, twitter_username, created_at } = me;
+    return {
+      name,
+      bio,
+      company,
+      location,
+      blog,
+      email,
+      twitter: twitter_username ?? null,
+      created_at,
+    };
+  }
   return (
     profiles.get(login) ?? {
       name: people.get(login)?.name ?? null,
-      bio: null,
+      bio: searchProfiles[login]?.bio ?? null,
       company: null,
-      location: null,
+      location: searchProfiles[login]?.location ?? null,
       blog: null,
       email: null,
       twitter: null,
@@ -186,6 +217,7 @@ const following = new Map<string, Set<string>>([
   ["sam", new Set(["mira", "devi"])],
   ["ines", new Set(["mira", "tomas"])],
   ["jonas", new Set(["mira"])],
+  ["yuki", new Set(["mira", "lin"])],
 ]);
 
 export const follows = {
@@ -211,13 +243,18 @@ const dotfiles = repository("dotfiles", "Shell, editor, and tmux config.", "publ
   pushed: "2026-10-30T21:10:00Z",
   owner: users.mira,
 });
-const notes = repository("raft-notes", "Reading notes on Raft, joint consensus, and leases.", "private", {
-  language: null,
-  stars: 0,
-  topics: [],
-  pushed: "2026-11-02T07:45:00Z",
-  owner: users.mira,
-});
+const notes = repository(
+  "raft-notes",
+  "Reading notes on Raft, joint consensus, and leases.",
+  "private",
+  {
+    language: null,
+    stars: 0,
+    topics: [],
+    pushed: "2026-11-02T07:45:00Z",
+    owner: users.mira,
+  },
+);
 db.addRepo(dotfiles);
 db.addRepo(notes);
 
@@ -250,7 +287,7 @@ const outside = new Map<string, string[]>([
 
 let invitationId = 4100;
 const invitations: OrganizationInvitation[] = [];
-function invitation(
+export function invitation(
   target: { login: string | null; email: string | null },
   role: OrganizationInvitation["role"],
   teamIds: number[],
@@ -278,7 +315,7 @@ const invitationTeams = new Map<number, number[]>();
 // ---- Teams ----
 
 const teams: TeamRec[] = [];
-function addTeam(
+export function addTeam(
   t: Omit<TeamRec, "id" | "members" | "repos" | "created_at" | "updated_at"> & {
     members: [string, TeamRole][];
     repos: [string, RepoPermission][];
@@ -384,7 +421,13 @@ addTeam({
 });
 
 invitations.push(
-  invitation({ login: "ana", email: null }, "direct_member", [byWorld.get("edge")!.id], users.mira, ago(3)),
+  invitation(
+    { login: "ana", email: null },
+    "direct_member",
+    [byWorld.get("edge")!.id],
+    users.mira,
+    ago(3),
+  ),
   invitation({ login: null, email: "jo@contractor.test" }, "direct_member", [], users.devi, ago(9)),
 );
 invitationTeams.set(invitations[0].id, [byWorld.get("edge")!.id]);
@@ -400,7 +443,8 @@ export function slugify(name: string) {
 
 // ---- Settings the PATCH body does not cover ----
 
-const privileges: MemberPrivileges = {
+// Seeded onto the org record, which GET /orgs/{org} serves, so every write edits `org`.
+const privileges: MemberPrivileges & { members_can_create_teams: boolean } = {
   members_can_delete_repositories: false,
   members_can_change_repo_visibility: false,
   members_can_invite_outside_collaborators: true,
@@ -476,7 +520,11 @@ export function deliver(
   const result = outcome(hook.config.url);
   const payload: Record<string, unknown> =
     event === "ping"
-      ? { zen: "Design for failure.", hook_id: hook.id, hook: { type: "Organization", id: hook.id, events: hook.events } }
+      ? {
+          zen: "Design for failure.",
+          hook_id: hook.id,
+          hook: { type: "Organization", id: hook.id, events: hook.events },
+        }
       : {
           action,
           organization: { login: org.login, id: org.id },
@@ -577,7 +625,10 @@ let rulesetId = 3100;
 const rulesets: Ruleset[] = [];
 const rulesetHistory = new Map<number, RulesetVersion[]>();
 
-export type RulesetInput = Pick<Ruleset, "name" | "target" | "enforcement" | "bypass_actors" | "conditions" | "rules">;
+export type RulesetInput = Pick<
+  Ruleset,
+  "name" | "target" | "enforcement" | "bypass_actors" | "conditions" | "rules"
+>;
 
 export function makeRuleset(input: RulesetInput, at = now()): Ruleset {
   const id = rulesetId++;
@@ -648,7 +699,9 @@ export function recordRulesetVersion(r: Ruleset, actorId: number) {
       name: "Release tags",
       target: "tag",
       enforcement: "evaluate",
-      bypass_actors: [{ actor_id: byWorld.get("maintainers")!.id, actor_type: "Team", bypass_mode: "always" }],
+      bypass_actors: [
+        { actor_id: byWorld.get("maintainers")!.id, actor_type: "Team", bypass_mode: "always" },
+      ],
       conditions: {
         ref_name: { include: ["refs/tags/v*"], exclude: [] },
         repository_name: { include: ["edge", "raft"], exclude: [] },
@@ -709,7 +762,12 @@ type AuditEvent = Schemas["audit-log-event"];
 const audit: AuditEvent[] = [];
 let auditSeq = 0;
 
-export function log(action: string, actor: string, extra: Partial<AuditEvent> = {}, at = new Date()) {
+export function log(
+  action: string,
+  actor: string,
+  extra: Partial<AuditEvent> = {},
+  at = new Date(),
+) {
   const actorUser = people.get(actor);
   const event: AuditEvent = {
     "@timestamp": at.getTime(),
@@ -761,9 +819,30 @@ const OPERATION: Record<string, string> = {
     ["git.fetch", () => ({ repo: repoNames[Math.floor(r() * 3)] }), 18],
     ["repo.update", () => ({ repo: repoNames[Math.floor(r() * 3)] }), 4],
     ["protected_branch.update", () => ({ repo: repoNames[Math.floor(r() * 3)], name: "main" }), 2],
-    ["team.add_member", () => ({ team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`, user: actors[Math.floor(r() * actors.length)] }), 3],
-    ["team.remove_member", () => ({ team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`, user: actors[Math.floor(r() * actors.length)] }), 1],
-    ["team.add_repository", () => ({ team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`, repo: repoNames[Math.floor(r() * 3)] }), 2],
+    [
+      "team.add_member",
+      () => ({
+        team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`,
+        user: actors[Math.floor(r() * actors.length)],
+      }),
+      3,
+    ],
+    [
+      "team.remove_member",
+      () => ({
+        team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`,
+        user: actors[Math.floor(r() * actors.length)],
+      }),
+      1,
+    ],
+    [
+      "team.add_repository",
+      () => ({
+        team: `graftyard/${teams[Math.floor(r() * teams.length)].slug}`,
+        repo: repoNames[Math.floor(r() * 3)],
+      }),
+      2,
+    ],
     ["hook.create", () => ({ hook_id: hooks[Math.floor(r() * hooks.length)].id }), 1],
     ["hook.config_changed", () => ({ hook_id: hooks[Math.floor(r() * hooks.length)].id }), 1],
     ["org.update_member", () => ({ user: actors[Math.floor(r() * actors.length)] }), 1],
@@ -824,7 +903,12 @@ export function searchAudit(phrase: string, order: "asc" | "desc", include: stri
     })();
     return neg ? (e) => !test(e) : test;
   });
-  const source = include === "git" ? (e: AuditEvent) => e.action!.startsWith("git.") : include === "all" ? () => true : (e: AuditEvent) => !e.action!.startsWith("git.");
+  const source =
+    include === "git"
+      ? (e: AuditEvent) => e.action!.startsWith("git.")
+      : include === "all"
+        ? () => true
+        : (e: AuditEvent) => !e.action!.startsWith("git.");
   const hits = audit.filter((e) => source(e) && checks.every((c) => c(e)));
   return order === "asc" ? hits : [...hits].reverse();
 }
@@ -871,7 +955,10 @@ export const profilesDb = {
     return {
       login,
       readme: readmes.get(login) ?? null,
-      pinned: (pins.get(login) ?? []).flatMap((f) => visible(f) ?? []),
+      pinned: (pins.get(login) ?? []).flatMap((f) => {
+        const r = visible(f);
+        return r ? [minimalRepo(r)] : [];
+      }),
     };
   },
   setPins(login: string, fullNames: string[]) {
@@ -908,12 +995,18 @@ export function contributions(login: string) {
     if (!state) continue;
     const stamps = [
       ...state.issues.filter((i) => i.user?.login === login).map((i) => i.created_at),
-      ...[...state.comments.values()].flat().filter((c) => c.user?.login === login).map((c) => c.created_at),
+      ...[...state.comments.values()]
+        .flat()
+        .filter((c) => c.user?.login === login)
+        .map((c) => c.created_at),
     ];
-    for (const at of stamps) {
-      const i = Math.floor((Date.now() - Date.parse(at)) / DAY);
-      if (i >= 0 && i < days.length) days[i]++;
-    }
+    for (const at of stamps) bump(at);
+  }
+  // So do the events the activity area's feed shows for them.
+  for (const e of feed.events()) if (e.actor.login === login && e.created_at) bump(e.created_at);
+  function bump(at: string) {
+    const i = Math.floor((Date.now() - Date.parse(at)) / DAY);
+    if (i >= 0 && i < days.length) days[i]++;
   }
   return days
     .map((count, i) => ({ date: new Date(Date.now() - i * DAY).toISOString().slice(0, 10), count }))
@@ -922,11 +1015,26 @@ export function contributions(login: string) {
 
 // ---- Renderers to GHES schemas ----
 
+// Members who show their membership on their profile and in GET /orgs/{org}/public_members.
+const publicMembers = new Set(["mira", "devi", "lin"]);
+
+// members_can_create_teams lives on the org record; these are the rest of the page.
+const teamDefaults: Omit<TeamSettings, "members_can_create_teams"> = {
+  default_privacy: "closed",
+  default_notification_setting: "notifications_enabled",
+  team_discussions_enabled: false,
+};
+
+const rename: PendingRename = { login: null, queued_at: null, message: "No rename is queued." };
+
 export const orgDb = {
   org,
-  privileges,
+  teamDefaults,
+  rename,
+  // DELETE /orgs/{org} sets this; GET /orgs/{org} then answers 404 until a reload.
   deleted: false,
   members,
+  publicMembers,
   outside,
   invitations,
   invitationTeams,
@@ -1005,6 +1113,8 @@ export function teamFull(t: TeamRec): Schemas["team-full"] {
   const parent = t.parentId === null ? null : teamById(t.parentId);
   return {
     ...teamSimple(t),
+    privacy: t.privacy,
+    notification_setting: t.notification_setting,
     parent: parent ? teamSimple(parent) : null,
     members_count: t.members.size,
     repos_count: t.repos.size,
@@ -1014,7 +1124,11 @@ export function teamFull(t: TeamRec): Schemas["team-full"] {
   };
 }
 
-export function teamMember(login: string, role: TeamRole, inherited = false): Schemas["team-member"] {
+export function teamMember(
+  login: string,
+  role: TeamRole,
+  inherited = false,
+): Schemas["team-member"] {
   return { ...people.get(login)!, role, inherited };
 }
 
@@ -1050,10 +1164,26 @@ export function asPermission(raw: string | undefined): RepoPermission | undefine
   return raw ? map[raw] : undefined;
 }
 
-export function minimalRepo(r: Repository, permission?: RepoPermission): Schemas["minimal-repository"] {
+export function minimalRepo(
+  r: Repository,
+  permission?: RepoPermission,
+): Schemas["minimal-repository"] {
+  const l = r.license;
+  const license = l && {
+    key: l.key,
+    name: l.name,
+    url: l.url,
+    node_id: l.node_id,
+    ...(l.spdx_id && { spdx_id: l.spdx_id }),
+  };
   return permission
-    ? { ...r, permissions: permissionFlags(permission), role_name: ROLE_NAME[permission] }
-    : r;
+    ? {
+        ...r,
+        license,
+        permissions: permissionFlags(permission),
+        role_name: ROLE_NAME[permission],
+      }
+    : { ...r, license };
 }
 
 export function publicUser(u: SimpleUser): Schemas["public-user"] {

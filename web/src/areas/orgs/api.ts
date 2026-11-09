@@ -7,7 +7,9 @@ import { ApiError, waitForMocks, type Schemas } from "@/api/client";
 // - `/api/v3/orgs/{org}/invitations*` is github.com's invitation API. GHES 3.22 only has
 //   `PUT /orgs/{org}/memberships/{username}`, which cannot invite by email or into teams.
 // - `/api/v3/orgs/{org}/rename` stands in for a rename an org owner can run. GHES 3.22 only
-//   renames through the site admin's `PATCH /admin/organizations/{org}`.
+//   renames through the site admin's `PATCH /admin/organizations/{org}`. A rename is a
+//   queued job: it shows as pending until a site admin's maintenance window runs it, and
+//   the owner can cancel it before then.
 // - `/_t/ui/profiles/*` is the private UI API's profile README and pinned repositories,
 //   which github.com serves only through GraphQL.
 
@@ -31,6 +33,13 @@ export type OrganizationInvitation = {
   team_count: number;
   invitation_teams_url: string;
   invitation_source: "member" | "scim";
+};
+
+export type PendingRename = {
+  // The login the org will have once the job runs, or null when nothing is queued.
+  login: string | null;
+  queued_at: string | null;
+  message: string;
 };
 
 export type ProfileExtras = {
@@ -83,10 +92,20 @@ export type ExtPaths = {
     };
   };
   "/orgs/{org}/rename": {
+    get: {
+      parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
+      requestBody?: never;
+      responses: { 200: Json<PendingRename>; 404: NotFound };
+    };
     post: {
       parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
       requestBody: { content: { "application/json": { login: string } } };
-      responses: { 202: Json<{ message: string; url: string }>; 422: ValidationFailed };
+      responses: { 202: Json<PendingRename>; 404: NotFound; 422: ValidationFailed };
+    };
+    delete: {
+      parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
+      requestBody?: never;
+      responses: { 204: Empty; 404: NotFound };
     };
   };
 };
@@ -97,12 +116,31 @@ export type MemberPrivileges = {
   members_can_change_repo_visibility: boolean;
   members_can_invite_outside_collaborators: boolean;
   members_can_delete_issues: boolean;
-  members_can_create_teams: boolean;
   display_commenter_full_name_setting_enabled: boolean;
   readers_can_create_discussions: boolean;
 };
 
+// Team defaults and creation rules, from the org's Teams settings page.
+export type TeamSettings = {
+  members_can_create_teams: boolean;
+  default_privacy: "closed" | "secret";
+  default_notification_setting: "notifications_enabled" | "notifications_disabled";
+  team_discussions_enabled: boolean;
+};
+
 export type UiPaths = {
+  "/orgs/{org}/team-settings": {
+    get: {
+      parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
+      requestBody?: never;
+      responses: { 200: Json<TeamSettings>; 404: NotFound };
+    };
+    patch: {
+      parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
+      requestBody: { content: { "application/json": Partial<TeamSettings> } };
+      responses: { 200: Json<TeamSettings>; 404: NotFound; 422: ValidationFailed };
+    };
+  };
   "/orgs/{org}/member-privileges": {
     patch: {
       parameters: { query?: never; header?: never; path: OrgPath; cookie?: never };
