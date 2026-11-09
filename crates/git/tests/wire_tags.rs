@@ -4,10 +4,10 @@
 //! variant as its position in the declaration, and serde_json (member commands from the edge, replies) as its name.
 //! Inserting, removing, reordering, or renaming a variant therefore changes what a stored row or another release's
 //! message decodes to: `m3-repos` inserted `RepoEvent::Created` and `Deleted` (33, 34) before the lease events of
-//! `9fb5032`, and `graft-m1`'s lease groups stopped restoring. `wire_tags.txt` is the tag table: one line per variant,
-//! `<enum> <tag> <name>`. This test builds one value of every variant of every listed enum, checks that postcard
-//! writes the pinned tag as its first byte and decodes it back to the same bytes, and that the names are the pinned
-//! ones. A new variant goes at the end of its enum, and its line at the end of the enum's lines.
+//! `9fb5032`, and `graft-m1`'s lease groups stopped restoring. `wire_tags.golden` is the tag table: one line per
+//! variant, `<enum> <tag> <name> <sample bytes>`. This test builds one value of every variant of every listed enum,
+//! checks that postcard writes the pinned tag as its first byte and decodes it back to the same bytes, and that the
+//! names are the pinned ones. A new variant goes at the end of its enum, and its line at the end of the enum's lines.
 
 use std::fmt;
 
