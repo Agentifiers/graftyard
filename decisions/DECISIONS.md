@@ -2170,6 +2170,30 @@ F59's finisher for repository create and delete merged in memory (`tests/m3/resu
 
 **Flip.** A hosted crash-point run in which `Audit` fails to finish a cut create or delete, or finishes one twice; a measured cursor stall from a stuck create that delays other owed work past what owners accept, which would move creates to a per-repository queue; or a GHES client whose create body exceeds `CREATE_INIT_MAX`, which would raise or remove the cap.
 
+#### B0-30 counts for LM-1 as substituted
+
+**Decision.** The operator's, Ben Kraus, 2026-11-10. B0-30 counts for LM-1 as substituted: the row passes if its metadata half passes, which is member SQLite under `CHILD_GROUP_AT` with zero `SQLITE_FULL`, and archived entries readable for `RestoredTo`, over 30 simulated days of journey 9's metadata rows with git pushes off from simulated day 1.34. The push half, 30 days of pack churn, is recorded as replaced, not passed. The git cache work the push half needs becomes AM1-WP1's follow-up, "Git cache shards on a hot group with a multi-GB log", with its own gate: journey 9's pushes on a 4 GB group through leader changes and shard resets, with no push timeouts and archiving keeping up (`decisions/OPEN-QUESTIONS.md`, G7). BUILD-PLAN's LM-1 row, AM1-WP6's B0-30 row and list, and AGENT-LAYER's AM1 gate say so.
+
+**Why.** B0-30 asks a storage question: whether a hot group's member stays under `CHILD_GROUP_AT` with no `SQLITE_FULL`. The metadata rows a day are journey 9's, and the log stays at its cap through the archive alarm, which is what the row bounds. Pushes stopped because the git cache shard could not rehydrate a multi-GB log in time, a git-cache defect that the storage row was not built to find and that a 40 h run cannot fix in place. Holding LM-1 on it would tie the storage verdict to a separate piece of work.
+
+**Beat.** Restarting B0-30 after the shard work lands, which costs another 40 h and about $65 and delays LM-1 behind unrelated work. Counting the run as a full pass, which would hide that 30 days of pack churn on the member's free pages was never exercised hosted. Failing the row, which records a storage failure that did not happen.
+
+**Evidence.** `tests/am1/results/b0-30.md` on branch `b0-30` [measured]: 1,340,000 seeded comment rows, 4,017,184,768 B a member; member SQLite 6.68 to 6.99 GB and 0 `SQLITE_FULL` through simulated day 1.73; archiving 443 ranges through index 1,874. "Blocked on" items 5 to 11 record why pushes stopped, and four site fixes on the branch (`c3a2aa9`, `117f899`, `f9a05d3`, `8753c0a`). M0 measured 30 days of pack churn on one object: 8.45 GB after an archive pass, 9.09 GB at peak (`tests/m0/results/m0-wp9.md`, B0-30).
+
+**Flip.** AM1-WP1's follow-up shows that push churn changes metadata or log growth enough to cross `CHILD_GROUP_AT` within 30 days, which makes the push half part of B0-30's verdict again.
+
+#### Two Graftyard-run clauses move from LM-1 to AM3-WP3
+
+**Decision.** The operator's, Ben Kraus, 2026-11-10. L0-12's lease refusal for the Graftyard-run App kind, and B0-37's fetch half (a session ref appearing to a matching `ref-prefix`), move from LM-1 to AM3-WP3's gate, which builds Graftyard-run task creation. Every other part of both rows passed hosted (`tests/am1/results/am1-runs.md`) and stays with LM-1. BUILD-PLAN's AM3-WP3 now lists both clauses, and AM1-WP6's "What LM-1 still needs" no longer does.
+
+**Why.** Both clauses need a live Graftyard-run task, which only AM3-WP3 creates: today a `graftyard-workspace` token with no task is refused by `NoLiveTask` before the lease check, and only `graftyard-workspace` under such a task writes a session ref. LM-1 cannot reach them on its own work, and the code paths they test are already covered in memory (`crates/git/tests/lease_gates.rs`; `containers/git/server/sessions_test.go`).
+
+**Beat.** Holding LM-1 open until AM3-WP3, which is after M5. Building a test-only Graftyard-run task path in AM1, which would test a path AM3 will replace.
+
+**Evidence.** `tests/am1/results/am1-runs.md` [measured]: the Graftyard-run kind refused 100 of 100 pushes and 100 of 100 REST ref writes, all by "push needs a live task"; the session-ref hiding and refusal halves passed, with listing not reachable hosted. `tests/am1/results/am1-rest.md`: session refs advertised only to a v2 `ref-prefix` in the container.
+
+**Flip.** AM3-WP3 slips past the point where LM-1's other rows close, so LM-1 cannot certify the Graftyard-run kind at all; then a test-only task path in AM1 would be worth building.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
