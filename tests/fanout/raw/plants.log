@@ -3,7 +3,6 @@
  2 CAUGHT  go: validate holds the shared lock but ingest takes it shared too  []
  3 CAUGHT  go: a validate waiting for the lock is not counted in queue_depth  [FAIL:]
  4 CAUGHT  go: a finished validate stays in queue_depth  [FAIL:]
-5 of 5 caught
  5 CAUGHT  catch-up: a request is served by a catch-up that started before it arrived  [merge_cache::tests::fresh_shares_one_catch_up_among_the_requests_that_wait_for_it]
  6 CAUGHT  catch-up: a success is not recorded, so every request runs its own  [merge_cache::tests::fresh_shares_one_catch_up_among_the_requests_that_wait_for_it]
  7 CAUGHT  catch-up: shared catch-ups no longer take turns  [merge_cache::tests::fresh_shares_one_catch_up_among_the_requests_that_wait_for_it]
@@ -19,5 +18,4 @@
 17 CAUGHT  wire: Fanout inserted before PathSet  [every_stored_or_sent_enum_keeps_its_variant_tags_and_bytes]
 18 CAUGHT  site: the ranges read leaves out k  [fanout::tests::the_ranges_read_answers_the_committed_k]
 19 CAUGHT  site: this release does not read 32.15  [fanout::tests::the_ranges_read_answers_the_committed_k]
-19 of 20 caught
-20 of 22 caught (0-4 from the run after GOT took TestFinishValidate)
+20 of 20 caught (0-4 from the rerun after GOT took TestFinishValidate; in the first run 0 was MISSED by TestConcurrentValidatesOfOneNetwork alone)
