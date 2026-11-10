@@ -160,8 +160,16 @@ fn seeded() -> (Chain, usize) {
     let ejected = QueueEvent::Ejected {
         n: IssueNumber(2),
         reason: EjectReason::Dequeued,
-        refs: vec![RefUpdate { name: qref, expect: Some(oid(6)), new: None }],
+        refs: vec![RefUpdate { name: qref.clone(), expect: Some(oid(6)), new: None }],
     };
+    // A bot `Refs` entry on a queue ref (as `MergeQueue` cleans one up): no `push` for it.
+    let bot = RepoEvent::Refs {
+        push: graftyard_types::RequestId(graftyard_types::Ulid(78)),
+        actor: None,
+        updates: vec![RefUpdate { name: qref.clone(), expect: None, new: Some(oid(9)) }],
+        pack: None,
+    };
+    c.entry(EntryBody::Events(vec![bot]), TierSet::CORE);
     for q in [enq, built, ejected] {
         let t = graftyard_git::tiers::tier_of(&RepoEvent::Queue(q.clone()));
         c.entry(EntryBody::Events(vec![RepoEvent::Queue(q)]), t);
@@ -251,6 +259,11 @@ fn every_webhook_the_entries_carry_renders_against_its_schema_key() {
         ]
     );
     assert_eq!(counts["push"], 6, "main twice, f twice, tmp made and deleted, and never a queue ref");
+    assert!(all.iter().all(|(_, v)| !v["ref"].as_str().is_some_and(|r| r.contains("gh-readonly-queue"))));
+    // `edited` requires `changes` in GHES 3.22's schemas.
+    for (k, v) in all.iter().filter(|(k, _)| k.ends_with("-edited")) {
+        assert!(v["changes"].is_object(), "{k} has no changes");
+    }
     if let Ok(dir) = std::env::var("GRAFTYARD_REPLIES") {
         let mut n: BTreeMap<String, usize> = BTreeMap::new();
         for (k, body) in &all {

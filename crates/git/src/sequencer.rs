@@ -623,6 +623,46 @@ mod tests {
     }
 
     #[test]
+    fn round_robin_serves_every_queue_before_any_twice() {
+        // 60 hooks with a backlog each and 50 slots: the round after hooks 1 to 50 starts with 51 to 60, not 1 again.
+        let hooks: Vec<(i64, bool)> = (1..=60).map(|h| (h, false)).collect();
+        let mut s = seq(&hooks);
+        s.record(CHAIN, Index(3), (1..=3).flat_map(|i| (1..=60).map(move |h| row(i, h))).collect(), Timestamp(0));
+        let first = s.start(Timestamp(0));
+        assert_eq!(first.iter().map(|a| a.hook.0.0).max(), Some(50));
+        for a in &first {
+            s.report(a.attempt, Timestamp(1), Some(200), false, None);
+        }
+        let second: BTreeSet<i64> = s.start(Timestamp(1)).iter().map(|a| a.hook.0.0).collect();
+        assert!((51..=60).all(|h| second.contains(&h)), "hooks 51 to 60 waited a whole round: {second:?}");
+    }
+
+    #[test]
+    fn a_rebuilt_store_never_hands_out_an_attempt_id_the_lost_one_did() {
+        let mut lost = seq(&[(1, false)]);
+        lost.record(CHAIN, Index(1), vec![row(1, 1)], Timestamp(1_000));
+        let a = lost.start(Timestamp(1_000)).remove(0);
+        lost.report(a.attempt, Timestamp(1_100), Some(500), false, None);
+        // Rebuilt a minute later: a late report or redelivery naming the old attempt finds nothing.
+        let mut fresh = Sequencer::new(AccountId(DbId(1)), Timestamp(61_000));
+        fresh.set_targets(&[(HookId(DbId(1)), rec(false))]);
+        fresh.record(CHAIN, Index(1), vec![row(1, 1)], Timestamp(61_000));
+        let b = fresh.start(Timestamp(61_000)).remove(0);
+        assert!(b.attempt > a.attempt, "{} after {}", b.attempt, a.attempt);
+        assert_eq!(fresh.redeliver(HookId(DbId(1)), a.attempt, Timestamp(61_001)), Err(RedeliverErr::NotFound));
+    }
+
+    #[test]
+    fn a_redelivery_names_its_own_hook() {
+        let mut s = seq(&[(1, false), (2, false)]);
+        s.record(CHAIN, Index(1), vec![row(1, 1)], Timestamp(0));
+        let a = s.start(Timestamp(0)).remove(0);
+        s.report(a.attempt, Timestamp(1), Some(500), false, None);
+        assert_eq!(s.redeliver(HookId(DbId(2)), a.attempt, Timestamp(2)), Err(RedeliverErr::NotFound));
+        assert!(s.start(Timestamp(3)).is_empty(), "nothing was queued for hook 2");
+    }
+
+    #[test]
     fn at_most_hook_owner_concurrency_attempts_at_once() {
         let hooks: Vec<(i64, bool)> = (1..=80).map(|h| (h, false)).collect();
         let mut s = seq(&hooks);

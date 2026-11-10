@@ -627,3 +627,21 @@ fn bf58_the_sequencer_site_is_killed_with_deliveries_pending() {
         both.len()
     );
 }
+
+/// `HookCursorCmd` on the group: each half moves only forward, `replay_from` never passes `read + 1`, and a late or
+/// re-sent command changes nothing a newer one did.
+#[test]
+fn the_hook_cursor_moves_only_forward_on_the_group() {
+    let mut w = World::new(&[1]);
+    let now = w.now;
+    let at = |read: u64, replay_from: u64| HookCursor { read: Index(read), replay_from: Index(replay_from) };
+    let commit = |w: &mut World, c: HookCursor| {
+        let rid = w.rid();
+        w.groups[0].commit_cursor(rid, now, c);
+        w.groups[0].committed_cursor().unwrap()
+    };
+    assert_eq!(commit(&mut w, at(3, 2)), at(3, 2));
+    assert_eq!(commit(&mut w, at(2, 1)), at(3, 2), "a late cursor moves neither half back");
+    assert_eq!(commit(&mut w, at(3, 9)), at(3, 4), "replay_from stops at read + 1");
+    assert_eq!(commit(&mut w, at(5, 3)), at(5, 4));
+}
