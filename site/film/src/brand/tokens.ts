@@ -24,6 +24,9 @@ export const C = {
   slate: '#173A2A',
   slateRaised: '#1E3629',
   accentLift: '#B5D67E',
+  // A host refusal, as the site marks one (site/src/pages/agents.astro .refusals): the agents loop's refused merge and
+  // the gate's count while it refuses. One product state, not a second accent.
+  refuse: '#F0A868', // ui-state: a refusal
 };
 
 /**
