@@ -150,9 +150,13 @@ const res = await Promise.all(held);
 const ret = res.map((r) => r.end - lifted);
 const afterLift = ret.filter((x) => x >= 0);
 // No event lost: from the cursor before the fault, F (now following) and the leader list the same lease events.
+// F is read once it serves again (not `lagging`), up to 60 s, so a slow catch-up is not counted as a loss.
 await sleep(3_000);
 const cur = res.find((r) => r.cursor)?.cursor ?? before;
-const fromF = await poll(F, 77_777, 0, before);
+let fromF = await poll(F, 77_777, 0, before);
+const caught0 = Date.now();
+while (fromF.admit === "lagging" && Date.now() - caught0 < 60_000) { await sleep(2_000); fromF = await poll(F, 77_777, 0, before); }
+const fServedAfterMs = Date.now() - lifted;
 const now = (await statuses(CHAIN)).find((s) => s.role === "leader")?.site;
 // The reference: the voter that is neither F nor the leader now, from the same cursor.
 const ref = [leader, O].find((x) => x !== now && x !== F);
@@ -168,7 +172,7 @@ const v = {
   probes: { lagging: probes.filter((p) => p[1] === "lagging").length, firstHold: probes.find((p) => p[1] === "hold")?.[0] ?? null, seq: probes.slice(0, 12) },
   // F's ring after a gap holds every entry it applied; after an install it starts above `through`, so an older
   // cursor may get `gone` with the oldest it can serve (the design's ring rule), and that is recorded as such.
-  events: { committed: committed.length, fromF: fIds.length, fAdmit: fromF.admit, reference: ref, fromRef: rIds.length,
+  events: { committed: committed.length, fromF: fIds.length, fAdmit: fromF.admit, fServedAfterMs, reference: ref, fromRef: rIds.length,
     missingOnF: rIds.filter((x) => !fIds.includes(x)).length, heldCursor: cur },
   members: await feedOf(),
 };
