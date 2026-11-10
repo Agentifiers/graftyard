@@ -2,11 +2,11 @@
 # LF-13 on graft-m2b, both modes, 3 runs each (tests/am1/rest/lf13.mjs), for one orb service.
 cd "$(dirname "$0")/../.."
 source tests/m3/rows/env.sh
-ST=tests/fanout/raw/lf13.status
-[ -e tests/fanout/raw/.lf13.started ] && exec sleep infinity
-touch tests/fanout/raw/.lf13.started
+ST=tests/fanout/raw/lf13${LF13_TAG:-}.status
+[ -e tests/fanout/raw/.lf13${LF13_TAG:-}.started ] && exec sleep infinity
+touch tests/fanout/raw/.lf13${LF13_TAG:-}.started
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
-for mode in gap install; do
+for mode in ${MODES:-gap install}; do
   r=$([ $mode = gap ] && echo lf13-g || echo lf13-i)
   for n in 1 2 3; do
     echo "$(date -u +%FT%TZ) lf13 $mode $n start" >> $ST

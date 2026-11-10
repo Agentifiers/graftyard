@@ -49,10 +49,12 @@ const task = await api("POST", `${V1}/tasks`, app, { kind: "external", session: 
 if (task.status !== 201) throw new Error(`task ${task.status}`);
 const h = { "x-graftyard-agent-session": task.body.id };
 const committed = [];
+let leasesUntil = 0;
 async function leases(ms) {
   const end = Date.now() + ms;
+  leasesUntil = end;
   let k = 0;
-  while (Date.now() < end) {
+  while (Date.now() < Math.min(end, leasesUntil)) {
     const a = await api("POST", `${V1}/leases`, app, { paths: [`lf13/${tag}/${k}/**`], mode: "shared", ttl_seconds: 600 }, h);
     if (a.status === 201) {
       committed.push(`acquired ${a.body.lease.id}`);
@@ -80,25 +82,38 @@ row(OUT, { step: "held", members: await feedOf() });
 let faultMs = 5_000;
 const on = await bedGet(`/_bed/fault?site=${F}&for_ms=${mode === "gap" ? 30_000 : 300_000}`);
 const fault0 = Date.now();
-const during = leases(mode === "gap" ? 3_000 : 60_000);
+const during = leases(mode === "gap" ? 15_000 : 60_000);
 if (mode === "gap") {
+  // Each isolate rereads the site fault at most once a second (`SITE_FAULT_TTL_MS`), so F keeps taking appends for
+  // a second or two after the fault is set. A transfer before F stops would elect O at an entry F already holds,
+  // and O's first round would match. So wait until F's `last` has stood still while the leader's moved on by 3.
+  const w0 = Date.now();
+  let fLast = -1, fSince = Date.now(), gapSeen = null;
+  while (Date.now() - w0 < 8_000) {
+    await sleep(300);
+    const s = await statuses(CHAIN);
+    const fl = s.find((x) => x.site === F)?.last ?? -1, ll = s.find((x) => x.site === leader)?.last ?? -1;
+    if (fl !== fLast) { fLast = fl; fSince = Date.now(); }
+    if (Date.now() - fSince >= 1_500 && ll - fl >= 3) { gapSeen = { fLast: fl, leaderLast: ll, ms: Date.now() - fault0 }; break; }
+  }
+  row(OUT, { step: "fStopped", gapSeen, fLast });
   // The fault stays on until O leads and has committed entries F lacks, so O's first round to F starts past F's
   // last entry (`crates/raft/tests/lf13.rs`, `a_new_leader_s_first_round_leaves_a_gap_on_the_lagging_follower`). A
   // transfer the leader drops (it waits out F's missing ack, then abandons) is re-sent, up to 5 times.
   // A held poll waits at most FEED_WAIT_MAX (25 s), and F refuses new polls while faulted, so the fault must lift
-  // within about 20 s of the polls: the transfer is retried only for 12 s.
-  await sleep(1_000);
+  // within about 20 s of the polls: the transfer is retried until 14 s into the fault.
   let moved = false;
-  for (let tries = 0; tries < 5 && !moved && Date.now() - fault0 < 12_000; tries++) {
+  for (let tries = 0; tries < 5 && !moved && Date.now() - fault0 < 14_000; tries++) {
     const t = await member(CHAIN, leader, "/transfer", { to: O }, 15_000).catch((e) => ({ status: String(e).slice(0, 80) }));
     row(OUT, { step: "transfer", to: O, try: tries, answer: t.v ?? t.status });
     for (let i = 0; i < 12 && !moved; i++) { await sleep(500); moved = (await statuses(CHAIN)).find((s) => s.site === O)?.role === "leader"; }
   }
   // O commits past F: lease commits through the edge, which finds the new leader.
   const fAt = (await statuses(CHAIN)).find((s) => s.site === F)?.applied ?? 0;
-  await leases(2_000);
+  await sleep(2_000);
+  leasesUntil = 0;
   const st2 = await statuses(CHAIN);
-  row(OUT, { step: "pastF", moved, fApplied: fAt, leaderCommit: st2.find((s) => s.role === "leader")?.commit, members: st2.map((m) => [m.site, m.role, m.term, m.applied]) });
+  row(OUT, { step: "pastF", moved, fApplied: fAt, leaderCommit: st2.find((s) => s.role === "leader")?.commit, members: st2.map((m) => [m.site, m.role, m.term, m.applied, m.last]) });
 } else {
   // A cap far below the log, so the leader promotes and archives every range above its snapshots, and truncates.
   const cap = await member(CHAIN, leader, "/bench_seed", { archiveCap: { max: 4_096, range: 65_536 } }, 15_000);
