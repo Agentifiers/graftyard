@@ -1227,6 +1227,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if let Some(r) = crate::repos::repo_route(c, req, &rd, who.as_ref(), tail, rd.index, host).await? {
         return Ok(r);
     }
+    if let Some(r) = crate::hooks::repo_route(c, req, &rd, who.as_ref(), tail, host).await? {
+        return Ok(r);
+    }
     // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the
     // install's `AgentApp` rows for `is_agent`.
     let agent_accept = req.headers().get("accept")?;

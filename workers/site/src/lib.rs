@@ -14,6 +14,7 @@ mod archive;
 mod audit;
 mod callers;
 mod family;
+mod fanout;
 #[cfg(feature = "test-faults")]
 mod faults;
 mod feed;

@@ -50,6 +50,8 @@
 //	                                 last request's time in ms, kept as <repo>/graft-used's mtime
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
+//	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
+//	                                 container's vCPUs, one sample a second, and the validates waiting or running
 package main
 
 import (
@@ -67,9 +69,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -401,9 +405,15 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
+	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
+	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
+	// `aside` (finishValidate).
+	validating.Add(1) // waiting or running: the queue
+	defer validating.Add(-1)
 	l := lock(net)
-	l.Lock()
-	defer l.Unlock()
+	l.RLock()
+	defer l.RUnlock()
 	sweepValidated(rp)
 	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
 	if err != nil {
@@ -479,14 +489,98 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Kept aside under the pack's SHA-256 until /ingest names it.
 	os.Remove(file)
-	dst := filepath.Join(rp, "graft", "validated-"+sum)
-	os.RemoveAll(dst)
-	if err := os.Rename(q, dst); err != nil {
+	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	keep = true
 	jsonOut(w, out)
+}
+
+// aside serializes, per network, the one write two validates share: replacing graft/validated-<sum>. Two pushes of
+// the same pack bytes validate to the same name, and a rename onto a directory another validate just put there fails.
+var aside sync.Map
+
+// finishValidate sets quarantine q aside as graft/validated-<sum>, replacing an earlier one of the same bytes.
+func finishValidate(net, rp, q, sum string) error {
+	m, _ := aside.LoadOrStore(net, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	defer mu.Unlock()
+	dst := filepath.Join(rp, "graft", "validated-"+sum)
+	os.RemoveAll(dst)
+	return os.Rename(q, dst)
+}
+
+// validating counts the validates waiting or running on this container, for /load's queue depth.
+var validating atomic.Int64
+
+// cpuSamples holds the container's busy fraction of its vCPUs, one sample a second for the last minute, for /load.
+var cpuSamples struct {
+	sync.Mutex
+	last []float64
+}
+
+// cgroupCPU reads the container's cgroup v2 CPU time in µs and its vCPU quota (cpu.max), or the machine's CPUs when
+// there is no quota.
+func cgroupCPU() (usec int64, cpus float64, ok bool) {
+	b, err := os.ReadFile("/sys/fs/cgroup/cpu.stat")
+	if err != nil {
+		return 0, 0, false
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if v, found := strings.CutPrefix(l, "usage_usec "); found {
+			fmt.Sscan(v, &usec)
+		}
+	}
+	cpus = float64(runtime.NumCPU())
+	if m, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
+		var quota, period float64
+		if f := strings.Fields(string(m)); len(f) == 2 && f[0] != "max" {
+			fmt.Sscan(f[0], &quota)
+			fmt.Sscan(f[1], &period)
+			if quota > 0 && period > 0 {
+				cpus = quota / period
+			}
+		}
+	}
+	return usec, cpus, true
+}
+
+// sampleCPU appends one busy fraction a second, keeping the last 60.
+func sampleCPU() {
+	prev, _, ok := cgroupCPU()
+	if !ok {
+		return
+	}
+	at := time.Now()
+	for range time.Tick(time.Second) {
+		u, cpus, _ := cgroupCPU()
+		now := time.Now()
+		busy := float64(u-prev) / (float64(now.Sub(at).Microseconds()) * cpus)
+		prev, at = u, now
+		cpuSamples.Lock()
+		cpuSamples.last = append(cpuSamples.last, busy)
+		if len(cpuSamples.last) > 60 {
+			cpuSamples.last = cpuSamples.last[len(cpuSamples.last)-60:]
+		}
+		cpuSamples.Unlock()
+	}
+}
+
+// handleLoad answers the container's NetworkLoad (design/DESIGN.md, Shape, `NetworkLoad`): cpu_p99, the 99th
+// percentile of the last minute's one-second busy fractions of its vCPUs, and queue_depth, the validates waiting or running now.
+// A container is one network's shard, so its load is the network's on this shard.
+func handleLoad(w http.ResponseWriter, r *http.Request) {
+	cpuSamples.Lock()
+	s := append([]float64{}, cpuSamples.last...)
+	cpuSamples.Unlock()
+	sort.Float64s(s)
+	p99 := 0.0
+	if len(s) > 0 {
+		p99 = s[min(len(s)-1, len(s)*99/100)]
+	}
+	jsonOut(w, map[string]any{"cpu_p99": min(p99, 1), "queue_depth": validating.Load(), "samples": len(s)})
 }
 
 // update is one ref update of a detail request: its new and old tips (all zeros for a create or a delete) and name.
@@ -1300,6 +1394,7 @@ func handleFsck(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	go sampleCPU()
 	if err := http.ListenAndServe(":8080", mux()); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -1326,6 +1421,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/archive", handleArchive)
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
+	m.HandleFunc("/load", handleLoad)
 	return m
 }
 

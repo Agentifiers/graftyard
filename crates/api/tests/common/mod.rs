@@ -115,6 +115,8 @@ pub struct Chain {
     pub log_len: u64,
     pub last: graftyard_types::Digest,
     pub now: Timestamp,
+    /// Every committed entry, in order, as a consumer reads the log.
+    pub log: Vec<LogEntry<RepoEvent>>,
     deps: Vec<(ChainId, IdentityDep)>,
     next_request: u128,
 }
@@ -126,6 +128,7 @@ impl Chain {
             log_len: 0,
             last: PREV_ZERO,
             now: Timestamp(1_793_000_000_000),
+            log: Vec::new(),
             deps: deps(),
             next_request: 1,
         };
@@ -150,6 +153,7 @@ impl Chain {
         }
         self.log_len += 1;
         self.last = digest(&e);
+        self.log.push(e);
     }
 
     /// Decides `ops` in order as one entry on member 0's tiers, as the leader does, and commits what passed.

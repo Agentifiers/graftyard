@@ -135,11 +135,27 @@ const ZERO = "0".repeat(40);
 /** The receive-pack request body for one ref update, with report-status and no side-band. */
 export const receiveBody = (ref, old, nu, pack) =>
   Buffer.concat([pkt(`${old ?? ZERO} ${nu} ${ref}\0report-status agent=graftyard-a1\n`), Buffer.from("0000"), pack]);
-/** `ok`, or the `ng` reason, from a report-status reply. */
+/** The payloads of a pkt-line stream (flushes dropped); stops at the first malformed length. */
+function pktLines(s) {
+  const out = [];
+  for (let i = 0; i + 4 <= s.length;) {
+    const n = parseInt(s.slice(i, i + 4), 16);
+    if (!/^[0-9a-f]{4}$/.test(s.slice(i, i + 4)) || (n > 0 && n < 4)) break;
+    if (n === 0) { i += 4; continue; }
+    out.push(s.slice(i + 4, i + n));
+    i += n;
+  }
+  return out;
+}
+/** `ok`, or the `ng` reason, from a report-status reply, side-band framed or not. A status line is read by its
+ * pkt-line length, not by the text before it, since a length can end in a hex letter (`002cok refs/...`). */
 export function pushResult(text) {
-  const ng = text.match(/ng (\S+) ([^\n]*)/);
+  const raw = pktLines(text);
+  const band1 = raw.filter((l) => l[0] === "\x01").map((l) => l.slice(1)).join("");
+  const lines = raw.some((l) => l[0] === "\x01") ? pktLines(band1) : raw.filter((l) => l[0] !== "\x02" && l[0] !== "\x03");
+  const ng = lines.map((l) => l.match(/^ng (\S+) ([^\n]*)/)).find(Boolean);
   if (ng) return ng[2].includes("admission full") ? "full" : /stale|fetch first|non-fast-forward/.test(ng[2]) ? "stale" : "refused";
-  return /(^|[^a-z])ok refs\//.test(text) ? "ok" : "error";
+  return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";
 }
 
 if (opt.selftest) {
@@ -152,10 +168,14 @@ if (opt.selftest) {
     execFileSync("git", ["index-pack", "--stdin", "--strict"], { cwd: dir, input: b.pack });
     const log = execFileSync("git", ["log", "--format=%s", b.commit], { cwd: dir }).toString().trim();
     const ok = log === "second\nfirst" && execFileSync("git", ["cat-file", "-p", `${b.commit}:a1/3/7/f.txt`], { cwd: dir }).toString() === "second\n";
-    const r = pushResult("000eunpack ok\n0021ok refs/heads/claude/a1-x-1\n0000");
-    const n = pushResult("0030ng refs/heads/x agent admission full, retry after 2s\n0000");
-    console.log(JSON.stringify({ packs: ok, ok: r, full: n }));
-    if (!ok || r !== "ok" || n !== "full") process.exit(1);
+    const s = (...ls) => Buffer.concat([...ls.map(pkt), Buffer.from("0000")]).toString("latin1");
+    const r = pushResult(s("unpack ok\n", "ok refs/heads/claude/a1-x-1\n"));
+    // A length ending in a hex letter: `002cok refs/...` (am1-runs' and fanout's B0-35 setup read these as errors).
+    const hex = pushResult(s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr10\n"));
+    const n = pushResult(s("unpack ok\n", "ng refs/heads/x agent admission full, retry after 2s\n"));
+    const band = pushResult(s("\x02remote: hi\n", `\x01${s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr123\n")}`));
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
 }
@@ -229,7 +249,9 @@ const pushed = new Map(); // commit id -> ack time, for feed latency
 async function push(tok, ref, from, path, bytes, extra = {}) {
   const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000));
   const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
-  const res = r.status === 200 ? pushResult(r.text) : `http ${r.status}`;
+  // A refusal keeps the first words of its body, so a 503's cause is counted (no secret is in a server's reply,
+  // and every row passes `scan`).
+  const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
   return [res, r.ms, res === "ok" ? commit : from];
 }
@@ -293,17 +315,30 @@ const openPr = async (tok, branch, draft) => {
   return [r, r.body?.data?.createPullRequest?.pullRequest];
 };
 if (plan.openPrs) {
-  // Ten at a time: about 500 x 2 s / 10, under 3 minutes.
+  // Ten at a time: about 500 x 2 s / 10, under 3 minutes. A push or open that fails is retried up to 4 times, 2 s
+  // apart, so a 503 under the setup's own load does not drop the PR; each failure's answer is counted.
+  const why = {};
+  const note = (k) => { why[k] = (why[k] ?? 0) + 1; };
   for (let b = 0; b < plan.openPrs; b += 10) {
     await Promise.all(Array.from({ length: Math.min(10, plan.openPrs - b) }, async (_, j) => {
       const ref = `refs/heads/claude/a1-${RUN}-pr${b + j}`;
-      const [res] = await push(app, ref, null, `a1/pr/${b + j}.txt`, randomBytes(2_000));
-      if (res !== "ok") return;
-      const [, pr] = await openPr(app, ref.slice(11), true);
-      if (pr) openPrs.push(pr);
+      let pushed = false;
+      for (let t = 0; t < 5 && !pushed; t++) {
+        const [res] = await push(app, ref, null, `a1/pr/${b + j}.txt`, randomBytes(2_000));
+        pushed = res === "ok";
+        if (!pushed) { note(`push ${String(res).slice(0, 40)}`); await sleep(2_000); }
+      }
+      if (!pushed) return;
+      for (let t = 0; t < 5; t++) {
+        const [r, pr] = await openPr(app, ref.slice(11), true);
+        if (pr) { openPrs.push(pr); return; }
+        note(`open ${r.status} ${JSON.stringify(r.body?.errors?.[0]?.message ?? r.body?.message ?? "").slice(0, 60)}`);
+        await sleep(2_000);
+      }
     }));
   }
-  writeRow(OUT, { step: "open PRs", opened: openPrs.length });
+  writeRow(OUT, { step: "open PRs", opened: openPrs.length, failures: why });
+  log(`open PRs ${openPrs.length}/${plan.openPrs} ${JSON.stringify(why).slice(0, 400)}`);
 }
 
 t0 = Date.now() + 5_000;

@@ -30,6 +30,7 @@ pub mod oidc;
 mod org;
 mod overlay;
 mod placement;
+pub mod sealed;
 pub mod stateless;
 mod tokens;
 
