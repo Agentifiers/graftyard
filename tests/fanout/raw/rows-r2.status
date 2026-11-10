@@ -1,0 +1,42 @@
+2026-11-10T01:59:42Z cost {"workers_requests": 321182, "workers_cpu_ms": 2974729, "do_requests_m2b": 2447225, "do_rows_written_all": 493178, "do_active_s_all": 91471, "usd": 1.16}
+2026-11-10T02:00:16.900Z m3org/fr2-b032 = 131194
+2026-11-10T02:00:18.779Z repo:131194 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T02:00:18.963Z repo:131194 leader 0: k 4 at 5
+2026-11-10T02:00:18Z b0-32 fr2-b032 131194 start
+2026-11-10T02:15:12.181Z repo:131194 leader 2: k 4 at 190
+2026-11-10T02:15:12Z b0-32 fr2-b032 131194 done exit 0
+2026-11-10T02:15:14Z cost {"workers_requests": 377775, "workers_cpu_ms": 3649323, "do_requests_m2b": 2943109, "do_rows_written_all": 549969, "do_active_s_all": 111813, "usd": 1.35}
+2026-11-10T02:15:51.401Z m3org/fr2-b034 = 131195
+2026-11-10T02:15:53.463Z repo:131195 leader 0: k 1 at 4
+2026-11-10T02:15:53Z b0-34 fr2-b034 131195 start
+2026-11-10T02:32:27.212Z repo:131195 leader 1: k 1 at 296
+2026-11-10T02:32:27Z b0-34 fr2-b034 131195 done exit 0
+2026-11-10T02:32:28Z cost {"workers_requests": 554741, "workers_cpu_ms": 5328261, "do_requests_m2b": 4421445, "do_rows_written_all": 691059, "do_active_s_all": 144755, "usd": 1.85}
+2026-11-10T02:32:58.769Z m3org/fr2-b031 = 131196
+before [[0,"leader",2],[1,"follower",2],[2,"follower",2]]
+transfer from 0 -> 2 {"meta":{"configIndex":1,"leader":0,"term":2},"transfer":{"Ok":"10812946594231353623"}}
+after [[0,"follower",3],[1,"follower",3],[2,"leader",3]]
+2026-11-10T02:33:05.541Z repo:131196 leader 2: set k 4: {"k":4,"meta":{"configIndex":1,"leader":2,"term":3}}
+2026-11-10T02:33:05.736Z repo:131196 leader 2: k 4 at 6
+2026-11-10T02:33:05Z b0-31 fr2-b031 131196 start
+2026-11-10T02:46:47.333Z repo:131196 leader 0: k 4 at 278
+2026-11-10T02:46:47Z b0-31 fr2-b031 131196 done exit 0
+2026-11-10T02:46:48Z cost {"workers_requests": 768590, "workers_cpu_ms": 7250237, "do_requests_m2b": 5992355, "do_rows_written_all": 811414, "do_active_s_all": 175169, "usd": 2.36}
+2026-11-10T02:47:17.850Z m3org/fr2-b033 = 131197
+2026-11-10T02:47:19.393Z repo:131197 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T02:47:19.534Z repo:131197 leader 0: k 4 at 5
+2026-11-10T02:47:19Z b0-33 fr2-b033 131197 start
+2026-11-10T02:55:52.535Z repo:131197 leader 0: k 4 at 188
+2026-11-10T02:55:52Z b0-33 fr2-b033 131197 done exit 0
+2026-11-10T02:55:54Z cost {"workers_requests": 806149, "workers_cpu_ms": 8966132, "do_requests_m2b": 7368849, "do_rows_written_all": 887593, "do_active_s_all": 195586, "usd": 2.72}
+2026-11-10T02:56:25.485Z m3org/fr2-l012 = 131198
+2026-11-10T02:56:26.971Z repo:131198 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T02:56:27.118Z repo:131198 leader 0: k 4 at 5
+2026-11-10T02:56:27Z l0-12 fr2-l012 131198 start
+2026-11-10T03:30:34.381Z repo:131198 leader 2: k 4 at 1191
+2026-11-10T03:30:34Z l0-12 fr2-l012 131198 done exit 0
+2026-11-10T03:30:36Z cost {"workers_requests": 1043735, "workers_cpu_ms": 10743149, "do_requests_m2b": 8784834, "do_rows_written_all": 1094704, "do_active_s_all": 264872, "usd": 3.35}
+2026-11-10T03:30:54.143Z m3org/fr2-b035 = 131199
+2026-11-10T03:30:55.516Z repo:131199 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T03:30:55.650Z repo:131199 leader 0: k 4 at 5
+2026-11-10T03:30:55Z b0-35 fr2-b035 131199 start
