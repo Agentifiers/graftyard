@@ -804,6 +804,38 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
     }
 }
 
+/// The whole-tier read leaves out the metadata tables no view reads (`UNSERVED`: each agent ref's `PathSet` and each
+/// commit's provenance), and every captured query answers from the rows it does read as from the member's own tiers.
+#[test]
+fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
+    use graftyard_api::hosted::TierRows;
+    use graftyard_fold::{Store, Stored, Val};
+    use graftyard_git::tiers::{CORE, METADATA};
+    let mut c = seeded();
+    let row = |b: &[u8]| Stored { written: graftyard_types::Index(1), cols: vec![Val::Blob(b.into())] };
+    let m = &mut c.members[0];
+    m.meta.put("path_set", vec![Val::Blob(b"refs/heads/claude/a".as_slice().into())], row(&[7; 2_000]));
+    m.meta.put("provenance", vec![Val::Blob([1; 20].as_slice().into())], row(&[8; 64]));
+    let (core, ok1) = TierRows::dump(&c.members[0].core, &CORE, &mut 100_000);
+    let (meta, ok2) = TierRows::dump(&c.members[0].meta, &METADATA, &mut 100_000);
+    assert!(ok1 && ok2);
+    let tables: std::collections::BTreeSet<&str> = meta.iter().map(|(t, _, _)| t.as_str()).collect();
+    assert!(!tables.contains("path_set") && !tables.contains("provenance"), "{tables:?}");
+    assert!(tables.contains("comment") && tables.contains("issue"), "{tables:?}");
+    let (core, meta) = (TierRows::store(&core), TierRows::store(&meta));
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let full = c.repo(0, &h, &dir);
+    let read = graftyard_api::view::Repo { host: &h, at: dir.home(), core: &core, meta: &meta, dir: &dir };
+    for f in every_doc() {
+        let d = doc(&f);
+        if d.query.trim_start().starts_with("mutation") {
+            continue;
+        }
+        let vars = with_ids(&d, &full);
+        assert_eq!(ask(&read, &d, vars.clone()), ask(&full, &d, vars), "{f}");
+    }
+}
+
 /// The hosted path: the edge reads the tiers as `TierRows` JSON and plans, the command crosses as JSON with its
 /// `Render`, and the member renders from `&Acked` over its own tiers. The reply equals the in-process render.
 #[test]

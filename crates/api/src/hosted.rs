@@ -42,11 +42,17 @@ pub struct TierRows {
     pub complete: bool,
 }
 
+/// Metadata tables no `Repo` view, directory, or planner reads, which `TierRows::dump` leaves out: each agent ref's
+/// `PathSet` (the feed takes it from the entry's events) and each pushed commit's provenance. At 500 agents `path_set`
+/// was 1.12 MB of a 1.6 MB whole-tier read (500 rows), and each REST, GraphQL, task, and lease request reads the tiers.
+pub const UNSERVED: &[&str] = &["path_set", "provenance"];
+
 impl TierRows {
-    /// Every row of `schema`'s tables in `r`, at most `budget` in all. `complete` is false when more remain.
+    /// Every row of `schema`'s tables in `r` but `UNSERVED`'s, at most `budget` in all. `complete` is false when more
+    /// remain.
     pub fn dump(r: &dyn Read, schema: &Schema, budget: &mut usize) -> (Vec<(String, Key, Vec<Val>)>, bool) {
         let mut out = Vec::new();
-        for def in schema.tables {
+        for def in schema.tables.iter().filter(|d| !UNSERVED.contains(&d.name)) {
             let mut from: Key = Vec::new();
             loop {
                 let want = (*budget).min(1_000) + 1;
