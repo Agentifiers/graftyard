@@ -193,7 +193,7 @@ async fn read_gate(
         return Ok(Ok(d));
     }
     let (rows, owner) =
-        futures_util::future::join(api::access_rows(c, repo), authz_fold(c, repo.owner, &repo.record)).await;
+        futures_util::future::join(api::core_rows(c, repo, "access"), authz_fold(c, repo.owner, &repo.record)).await;
     let core = match rows? {
         Ok(core) => core,
         Err(e) => return Ok(Err(e)),

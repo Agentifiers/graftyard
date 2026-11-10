@@ -424,12 +424,12 @@ pub(crate) async fn tier_rows(
     })
 }
 
-/// The repository's `settings` and `collaborator` rows (`TierRows::access_rows`), what `crate::read_gate` reads.
-/// `Ok(Err(why))` when the leader cannot answer them now.
-pub(crate) async fn access_rows(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<MemStore, String>> {
+/// The repository's narrow `{"rows": {which: true}}` core read on its leader: `access` for `crate::read_gate`, or
+/// `agent` for an agent push. `Ok(Err(why))` when the leader cannot answer it now.
+pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<std::result::Result<MemStore, String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = json!({ "q": { "rows": { "access": true }, "ranges": true } }).to_string();
+    let q = json!({ "q": { "rows": { which: true }, "ranges": true } }).to_string();
     let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
