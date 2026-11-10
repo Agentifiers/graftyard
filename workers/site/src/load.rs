@@ -709,7 +709,7 @@ fn finish_install(
         }
     }
     let at = job.through_at.ok_or_else(|| err("entry through was not read"))?;
-    let retention = crate::host::request_retention(&h.env);
+    let retention = crate::host::request_retention(&h.env, true);
     let cut = at.saturating_sub(retention.as_millis() as u64);
     sql.exec("DELETE FROM i_request WHERE at < ?", vec![i(cut)])?;
     let kept = rows(sql, "SELECT count(*) FROM i_request", vec![])?.first().map_or(Ok(0), |r| int(&r[0]))?;
@@ -816,8 +816,11 @@ fn source(h: &Rc<Host<Repo>>, through: Index) -> std::result::Result<InstallSour
         return Err("the archives are not contiguous".into());
     }
     let config = gf.config().filter(|(i, _)| *i <= through).ok_or("a config committed after through")?.clone();
-    // The id block as of `through`: the member's, unless a later entry still in the log changed it.
-    let later = rows(&sql, "SELECT row FROM log WHERE idx > ? ORDER BY idx", vec![i(through.0)])
+    // The id block as of `through`: the member's, unless a later entry still in the log changed it. An `IdBlock`
+    // entry carries no events, so only small rows are read: reading every row above `through` into memory took a
+    // leader with 120 MB of log past its isolate's memory on the first archive (B0-30), and `LOG_MAX_BYTES` is 2 GiB.
+    let q = "SELECT row FROM log WHERE idx > ? AND length(row) < 4096 ORDER BY idx";
+    let later = rows(&sql, q, vec![i(through.0)])
         .map_err(|e| e.to_string())?
         .iter()
         .filter_map(|r| codec::from_bytes::<Entry>(blob(&r[0]).ok()?).ok())

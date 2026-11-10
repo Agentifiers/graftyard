@@ -127,6 +127,8 @@ pub struct Stats {
     pub truncated_to: u64,
     /// Leader: archive alarm runs that promoted or archived a range (`crate::archive`).
     pub archive_steps: u32,
+    /// Storage writes SQLite refused as full (`Host::full`), in this isolate.
+    pub sqlite_full: u32,
     /// Commands this member received, by format (`recv:<family>.<version>`), and `recv:unsupported` for bodies whose
     /// command it could not decode.
     pub received: BTreeMap<String, u32>,
@@ -1082,7 +1084,7 @@ impl<F: Family> Host<F> {
     pub fn restore(self: &Rc<Self>) -> Result<()> {
         let Some(join) = self.stored_join()? else { return Ok(()) };
         let site = SiteEnv::read(&self.env)?;
-        let retention = request_retention(&self.env);
+        let retention = request_retention(&self.env, F::tiered());
         let (stored, requests) = load::<F>(&self.state.storage(), &join, retention)?;
         *self.requests.borrow_mut() = Some(requests);
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
@@ -1279,6 +1281,7 @@ impl<F: Family> Host<F> {
         if defer || self.flush_due.get() {
             self.defer_flush();
         } else if let Err(e) = self.flush() {
+            self.full(&e);
             self.fail();
             return Err(err(format!("storage write failed: {e}")));
         }
@@ -1379,6 +1382,7 @@ impl<F: Family> Host<F> {
             self.queue.borrow_mut().extend(stmts);
         }
         if let Err(e) = self.flush() {
+            self.full(&e);
             self.fail();
             return err(format!("storage write failed: {e}"));
         }
@@ -1417,6 +1421,7 @@ impl<F: Family> Host<F> {
             }
             if let Err(e) = h.flush() {
                 console_error!("deferred storage write failed: {e}");
+                h.full(&e);
                 h.fail();
             }
         });
@@ -2252,6 +2257,15 @@ impl<F: Family> Host<F> {
         }
     }
 
+    /// Counts a failed write that SQLite refused for space (B0-30's `SQLITE_FULL`), and logs it, so a reader of
+    /// Workers Logs finds it after the reset this write causes.
+    fn full(&self, e: &str) {
+        if e.contains("SQLITE_FULL") || e.contains("database or disk is full") {
+            self.stats.borrow_mut().sqlite_full += 1;
+            console_error!("SQLITE_FULL: {e}");
+        }
+    }
+
     /// A storage write failed: reset the object. Every input from now on is refused, so nothing else leaves.
     fn fail(self: &Rc<Self>) {
         self.dying.set(true);
@@ -2442,13 +2456,17 @@ impl<F: Family> Host<F> {
 }
 
 /// How long this install keeps `request` rows: `REQUEST_RETENTION`, or with `test-faults` the
-/// `GRAFTYARD_REQUEST_RETENTION_S` variable, which every site of an install sets to the same value.
-pub fn request_retention(env: &Env) -> Duration {
+/// `GRAFTYARD_REQUEST_RETENTION_S` variable, which every site of an install sets to the same value. On a tiered
+/// (repository) chain `GRAFTYARD_REPO_REQUEST_RETENTION_S` wins: B0-30 replays 30 days in 40 h and scales the 48 h
+/// by the same factor, which a non-tiered chain's restore check (`load`) would refuse on groups that kept 48 h.
+pub fn request_retention(env: &Env, tiered: bool) -> Duration {
     #[cfg(feature = "test-faults")]
-    if let Some(s) = env.var("GRAFTYARD_REQUEST_RETENTION_S").ok().and_then(|v| v.to_string().parse().ok()) {
-        return Duration::from_secs(s);
+    for (var, on) in [("GRAFTYARD_REPO_REQUEST_RETENTION_S", tiered), ("GRAFTYARD_REQUEST_RETENTION_S", true)] {
+        if on && let Some(s) = env.var(var).ok().and_then(|v| v.to_string().parse().ok()) {
+            return Duration::from_secs(s);
+        }
     }
-    let _ = env;
+    let _ = (env, tiered);
     raft::REQUEST_RETENTION
 }
 

@@ -9,12 +9,18 @@ use serde::Deserialize;
 use worker::{Conditional, Container, Fetcher, Headers, Include, Method, Request, RequestInit, Response, State};
 
 use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
-use crate::ingest::{ChainLog, Load, LogPacks, rehydrate_plan, tail_start};
+use crate::ingest::{ChainLog, Load, rehydrate_plan, require_complete_entries, tail_start};
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
 use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
 use crate::store::marker_from_meta;
 use graftyard_types::Index;
+
+/// The most log entries one catch-up step reads, ingests, and saves its cursor past [guess]: at an entry's 1.5 MB cap
+/// 32 entries are at most 48 MB of inline packs, under an isolate's 128 MB with their decoded copies.
+const CATCH_UP_ENTRIES: u64 = 32;
+/// The most marked pack bytes a rehydrate holds before it ingests them [guess].
+const INGEST_BATCH_BYTES: usize = 32 << 20;
 
 fn err(e: impl std::fmt::Display) -> StoreError {
     StoreError(e.to_string())
@@ -694,6 +700,8 @@ impl ShardHost<'_> {
             let key = Self::cursor_key(n);
             let saved: Option<(String, IngestCursor)> = self.state.storage().get(&key).await.map_err(worker_err)?;
             self.state.storage().delete(&key).await.map_err(worker_err)?;
+            // An evicted network's half-done rehydrate starts again from nothing.
+            self.state.storage().delete(&format!("rehydrate:{}", n.0.0)).await.map_err(worker_err)?;
             let mut e = self.call(Method::Post, &format!("/evict?net={}", n.0.0), None, &[]).await?;
             match e.status_code() {
                 200 => room.evicted.push(n.0.0),
@@ -720,7 +728,15 @@ impl ShardHost<'_> {
         log: &L,
     ) -> Result<(IngestCursor, RehydrateReport), StoreError> {
         let started = self.up().await?;
-        self.init(network, true).await?;
+        // A rehydrate cut off (its caller's deadline, an isolate reset) resumes on the same disk after the last tail
+        // piece it ingested, kept under `rehydrate:<net>`: one started from nothing each time never finished a 2.4 GB
+        // tail inside the archive alarm's RUN_FOR (`tests/am1/results/b0-30.md`, "Blocked on", 11).
+        let pkey = format!("rehydrate:{}", network.0.0);
+        let saved: Option<(String, IngestCursor)> = self.state.storage().get(&pkey).await.map_err(worker_err)?;
+        let resumed = saved.filter(|(d, _)| *d == started.health.disk).map(|(_, c)| c);
+        if resumed.is_none() {
+            self.init(network, true).await?;
+        }
         // Markers from every bucket of the placement: a marker missing in one bucket is in another.
         let mut marks: BTreeMap<PackId, Marker> = BTreeMap::new();
         for b in buckets {
@@ -730,34 +746,74 @@ impl ShardHost<'_> {
         }
         let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
         let consumed = log.consumed(network).await?;
-        let mut tail: Vec<LogPacks> = Vec::new();
+        // The marked packs, then each chain's tail above its last `Promoted` in pieces of CATCH_UP_ENTRIES, each
+        // piece's packs fetched and ingested before the next is read. Building the whole plan first held the tail's
+        // entries and every pack at once: a hot group's tail is up to LOG_MAX_BYTES of inline packs, and a pool shard
+        // rehydrating one ran out of memory on every attempt (`tests/am1/results/b0-30.md`, "Blocked on", 9).
+        let marked = rehydrate_plan(&marks, &consumed, &[]);
+        let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
+        let incoming: u64 = marks.iter().map(|(_, m)| m.bytes).sum();
+        let mut room = self.make_room(network, incoming, None).await?;
+        let (mut stored, mut inline, mut bytes, mut ingested) = (0, 0, 0, 0);
+        let mut done = match resumed {
+            Some(c) => c,
+            None => {
+                let mut batch = Vec::new();
+                let mut batch_bytes = 0;
+                for l in &marked {
+                    let p = fetch_load(buckets, network, l).await?;
+                    stored += 1;
+                    bytes += p.1.len();
+                    batch_bytes += p.1.len();
+                    batch.push(p);
+                    if batch_bytes > INGEST_BATCH_BYTES {
+                        ingested += self.ingest(network, std::mem::take(&mut batch)).await?;
+                        batch_bytes = 0;
+                    }
+                }
+                ingested += self.ingest(network, batch).await?;
+                let c = IngestCursor::new(network);
+                self.state.storage().put(&pkey, (&started.health.disk, &c)).await.map_err(worker_err)?;
+                c
+            }
+        };
         let mut heads = Vec::with_capacity(chains.len());
         for chain in chains {
             let head = log.head(*chain).await?;
             let last = log.last_promoted(*chain).await?.map(|(_, p)| p);
-            let from = tail_start(last.as_ref());
-            if head.applied >= from {
-                tail.extend(log.entries(*chain, from, head.applied).await?);
+            let mut from = Index(tail_start(last.as_ref()).0.max(done.at(*chain).0 + 1));
+            while from <= head.applied {
+                let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(head.applied.0));
+                let piece = log.entries(*chain, from, to).await?;
+                require_complete_entries(*chain, from, to, &piece)?;
+                let plan: Vec<Load> = rehydrate_plan(&[], &consumed, &piece)
+                    .into_iter()
+                    .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
+                    .collect();
+                drop(piece);
+                let mut packs = Vec::new();
+                for l in &plan {
+                    let p = fetch_load(buckets, network, l).await?;
+                    if l.stored_id().is_some() {
+                        stored += 1
+                    } else {
+                        inline += 1
+                    }
+                    bytes += p.1.len();
+                    packs.push(p);
+                }
+                if !packs.is_empty() {
+                    let r = self.make_room(network, packs.iter().map(|(_, b)| b.len() as u64).sum(), None).await?;
+                    room.evicted.extend(r.evicted);
+                    room.busy.extend(r.busy);
+                }
+                ingested += self.ingest(network, packs).await?;
+                done.advance(*chain, to);
+                self.state.storage().put(&pkey, (&started.health.disk, &done)).await.map_err(worker_err)?;
+                from = Index(to.0 + 1);
             }
             heads.push(head.applied);
         }
-        let plan = rehydrate_plan(&marks, &consumed, &tail);
-        let incoming: u64 = plan
-            .iter()
-            .map(|l| match l {
-                Load::Stored { bytes, .. } => *bytes,
-                Load::Inline { bytes, .. } => bytes.len() as u64,
-            })
-            .sum();
-        let room = self.make_room(network, incoming, None).await?;
-        let mut packs = Vec::new();
-        let mut bytes = 0;
-        for l in &plan {
-            let p = fetch_load(buckets, network, l).await?;
-            bytes += p.1.len();
-            packs.push(p);
-        }
-        let mut ingested = self.ingest(network, packs).await?;
         // The refs, a page at a time. Pages read while the chain moves are each at their own index, so the cursor is
         // the last page's index, and the entries from the first page's index on are caught up after: their changes
         // apply again, the same values in the same order, and their packs arrive before the refs that need them.
@@ -781,7 +837,9 @@ impl ShardHost<'_> {
             };
             cursor.advance(*chain, heads[i].min(first.unwrap_or(last)));
             if last > cursor.at(*chain) {
-                let es = log.entries(*chain, Index(cursor.at(*chain).0 + 1), last).await?;
+                let from = Index(cursor.at(*chain).0 + 1);
+                let es = log.entries(*chain, from, last).await?;
+                require_complete_entries(*chain, from, last, &es)?;
                 let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, last);
                 let mut bodies = Vec::new();
                 for l in &plan {
@@ -795,13 +853,13 @@ impl ShardHost<'_> {
             }
         }
         self.save_cursor(&cursor, &started.health.disk).await?;
-        let stored = plan.iter().filter(|l| l.stored_id().is_some()).count();
+        self.state.storage().delete(&pkey).await.map_err(worker_err)?;
         Ok((
             cursor,
             RehydrateReport {
                 markers: marks.len(),
                 stored,
-                inline: plan.len() - stored,
+                inline,
                 ingested,
                 bytes,
                 refs,
@@ -862,29 +920,44 @@ impl ShardHost<'_> {
         let mut evicted = Vec::new();
         let mut seen = BTreeSet::new();
         for (chain, head) in chains.iter().zip(heads) {
-            if let Some(range) = cursor.behind(*chain, head.applied) {
-                let es = log.entries(*chain, *range.start(), *range.end()).await?;
+            let Some(range) = cursor.behind(*chain, head.applied) else { continue };
+            // In pieces of CATCH_UP_ENTRIES, each ingested, applied, and saved before the next is read: the whole
+            // range at once held every entry and inline pack behind the cursor, and a shard 4,480 entries behind
+            // (about 1.4 GB of inline packs) took its isolate past memory on every attempt, from the same cursor
+            // (`tests/am1/results/b0-30.md`, "Blocked on", 8).
+            let mut from = *range.start();
+            while from <= *range.end() {
+                let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(range.end().0));
+                let es = log.entries(*chain, from, to).await?;
+                // A newly elected leader can answer a short page below the old leader's applied index. Applying what
+                // arrived and advancing to `to` would skip packs and refs that no later catch-up would read again.
+                require_complete_entries(*chain, from, to, &es)?;
                 entries += es.len();
-                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), head.applied) else {
+                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), to) else {
                     return rehydrate(ms).await;
                 };
-                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, head.applied);
+                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, to);
+                drop(es);
                 let mut bodies = Vec::new();
                 for l in plan.iter().filter(|l| l.stored_id().is_none_or(|id| seen.insert(id))) {
                     bodies.push(fetch_load(buckets, network, l).await?);
                 }
+                drop(plan);
                 if !bodies.is_empty() {
                     let incoming = bodies.iter().map(|(_, b)| b.len() as u64).sum();
                     let r = self.make_room(network, incoming, None).await?;
                     evicted.extend(r.evicted);
                 }
                 packs += self.ingest(network, bodies).await?;
-                lap("ingest");
                 refs += changes.len();
                 self.apply_refs(network, &changes).await?;
-                lap("refs");
+                cursor.advance(*chain, to);
+                if to < *range.end() {
+                    self.save_cursor(&cursor, &started.health.disk).await?;
+                }
+                from = Index(to.0 + 1);
             }
-            cursor.advance(*chain, head.applied);
+            lap("ingest");
         }
         self.save_cursor(&cursor, &started.health.disk).await?;
         lap("save_cursor");

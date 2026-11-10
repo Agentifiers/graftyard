@@ -496,6 +496,9 @@ impl Family for Repo {
                 }
                 Ok(v)
             })()),
+            // Test installs: B0-30's storage readings (`crate::b030`).
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("b030").is_some() => Some(crate::b030::route(host, &body["b030"]).await),
             // Test installs: one fold audit run, the cron's own, from this member's site.
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("audit").is_some() => {

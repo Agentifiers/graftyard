@@ -740,7 +740,8 @@ pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
     let s = h.state.storage();
     crate::host::commit_tx(&s, stmts).map_err(Error::RustError)?;
     m.flushed();
-    Ok(json!({ "written": written.0, "digest": fold_digest(&m, Tier::Metadata).hex(), "dbBytes": sql.database_size() }))
+    let db = crate::b030::db_bytes(h);
+    Ok(json!({ "written": written.0, "digest": fold_digest(&m, Tier::Metadata).hex(), "dbBytes": db }))
 }
 
 /// Test installs: BF-20's load, run on the leader. `rate` single-ref pushes a second for `secs` seconds, each a new

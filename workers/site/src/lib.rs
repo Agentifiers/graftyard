@@ -12,6 +12,8 @@ use worker::*;
 
 mod archive;
 mod audit;
+#[cfg(feature = "test-faults")]
+mod b030;
 mod callers;
 mod family;
 mod fanout;
