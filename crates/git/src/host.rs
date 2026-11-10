@@ -700,6 +700,8 @@ impl ShardHost<'_> {
             let key = Self::cursor_key(n);
             let saved: Option<(String, IngestCursor)> = self.state.storage().get(&key).await.map_err(worker_err)?;
             self.state.storage().delete(&key).await.map_err(worker_err)?;
+            // An evicted network's half-done rehydrate starts again from nothing.
+            self.state.storage().delete(&format!("rehydrate:{}", n.0.0)).await.map_err(worker_err)?;
             let mut e = self.call(Method::Post, &format!("/evict?net={}", n.0.0), None, &[]).await?;
             match e.status_code() {
                 200 => room.evicted.push(n.0.0),
@@ -726,7 +728,15 @@ impl ShardHost<'_> {
         log: &L,
     ) -> Result<(IngestCursor, RehydrateReport), StoreError> {
         let started = self.up().await?;
-        self.init(network, true).await?;
+        // A rehydrate cut off (its caller's deadline, an isolate reset) resumes on the same disk after the last tail
+        // piece it ingested, kept under `rehydrate:<net>`: one started from nothing each time never finished a 2.4 GB
+        // tail inside the archive alarm's RUN_FOR (`tests/am1/results/b0-30.md`, "Blocked on", 11).
+        let pkey = format!("rehydrate:{}", network.0.0);
+        let saved: Option<(String, IngestCursor)> = self.state.storage().get(&pkey).await.map_err(worker_err)?;
+        let resumed = saved.filter(|(d, _)| *d == started.health.disk).map(|(_, c)| c);
+        if resumed.is_none() {
+            self.init(network, true).await?;
+        }
         // Markers from every bucket of the placement: a marker missing in one bucket is in another.
         let mut marks: BTreeMap<PackId, Marker> = BTreeMap::new();
         for b in buckets {
@@ -745,25 +755,33 @@ impl ShardHost<'_> {
         let incoming: u64 = marks.iter().map(|(_, m)| m.bytes).sum();
         let mut room = self.make_room(network, incoming, None).await?;
         let (mut stored, mut inline, mut bytes, mut ingested) = (0, 0, 0, 0);
-        let mut batch = Vec::new();
-        let mut batch_bytes = 0;
-        for l in &marked {
-            let p = fetch_load(buckets, network, l).await?;
-            stored += 1;
-            bytes += p.1.len();
-            batch_bytes += p.1.len();
-            batch.push(p);
-            if batch_bytes > INGEST_BATCH_BYTES {
-                ingested += self.ingest(network, std::mem::take(&mut batch)).await?;
-                batch_bytes = 0;
+        let mut done = match resumed {
+            Some(c) => c,
+            None => {
+                let mut batch = Vec::new();
+                let mut batch_bytes = 0;
+                for l in &marked {
+                    let p = fetch_load(buckets, network, l).await?;
+                    stored += 1;
+                    bytes += p.1.len();
+                    batch_bytes += p.1.len();
+                    batch.push(p);
+                    if batch_bytes > INGEST_BATCH_BYTES {
+                        ingested += self.ingest(network, std::mem::take(&mut batch)).await?;
+                        batch_bytes = 0;
+                    }
+                }
+                ingested += self.ingest(network, batch).await?;
+                let c = IngestCursor::new(network);
+                self.state.storage().put(&pkey, (&started.health.disk, &c)).await.map_err(worker_err)?;
+                c
             }
-        }
-        ingested += self.ingest(network, batch).await?;
+        };
         let mut heads = Vec::with_capacity(chains.len());
         for chain in chains {
             let head = log.head(*chain).await?;
             let last = log.last_promoted(*chain).await?.map(|(_, p)| p);
-            let mut from = tail_start(last.as_ref());
+            let mut from = Index(tail_start(last.as_ref()).0.max(done.at(*chain).0 + 1));
             while from <= head.applied {
                 let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(head.applied.0));
                 let piece = log.entries(*chain, from, to).await?;
@@ -789,6 +807,8 @@ impl ShardHost<'_> {
                     room.busy.extend(r.busy);
                 }
                 ingested += self.ingest(network, packs).await?;
+                done.advance(*chain, to);
+                self.state.storage().put(&pkey, (&started.health.disk, &done)).await.map_err(worker_err)?;
                 from = Index(to.0 + 1);
             }
             heads.push(head.applied);
@@ -830,6 +850,7 @@ impl ShardHost<'_> {
             }
         }
         self.save_cursor(&cursor, &started.health.disk).await?;
+        self.state.storage().delete(&pkey).await.map_err(worker_err)?;
         Ok((
             cursor,
             RehydrateReport {
