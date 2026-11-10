@@ -210,3 +210,44 @@ func TestLoadReportsCPUAndValidatesRunning(t *testing.T) {
 		t.Fatalf("cpu_p99 %v", c)
 	}
 }
+
+// Two validates of byte-identical packs set their quarantines aside under one name at once: each finishValidate
+// succeeds and one whole quarantine is left there, every round.
+func TestFinishValidateOfTheSamePackAtOnce(t *testing.T) {
+	rp := t.TempDir()
+	os.MkdirAll(filepath.Join(rp, "graft"), 0o755)
+	for round := 0; round < 200; round++ {
+		const n = 8
+		var ready, wg sync.WaitGroup
+		start := make(chan struct{})
+		errs := make(chan error, n)
+		for i := 0; i < n; i++ {
+			q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.MkdirAll(filepath.Join(q, "pack"), 0o755)
+			os.WriteFile(filepath.Join(q, "pack", "pack-x.idx"), []byte("idx"), 0o644)
+			ready.Add(1)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ready.Done()
+				<-start
+				errs <- finishValidate("t", rp, q, "same")
+			}()
+		}
+		ready.Wait()
+		close(start)
+		wg.Wait()
+		close(errs)
+		for e := range errs {
+			if e != nil {
+				t.Fatalf("round %d: %v", round, e)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(rp, "graft", "validated-same", "pack", "pack-x.idx")); err != nil {
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+}

@@ -346,3 +346,12 @@ fn pushes_spread_over_the_k_shards_by_push_id() {
         assert!((count..count + HOT_POOL).contains(&s.shard));
     }
 }
+
+/// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
+#[test]
+fn a_site_reports_its_most_loaded_shard_and_the_summed_queue() {
+    let l = |cpu, q| NetworkLoad { cpu_p99: cpu, queue_depth: q };
+    let c = graftyard_git::combine(&[l(0.2, 3), l(0.9, 1), l(0.5, 0)]);
+    assert_eq!(c, l(0.9, 4));
+    assert_eq!(graftyard_git::combine(&[]), NetworkLoad::default());
+}
