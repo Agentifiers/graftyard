@@ -231,7 +231,7 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
   const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
   // A refusal keeps the first words of its body, so a 503's cause is counted (no secret is in a server's reply,
   // and every row passes `scan`).
-  const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 60).trim()}`;
+  const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
   return [res, r.ms, res === "ok" ? commit : from];
 }
