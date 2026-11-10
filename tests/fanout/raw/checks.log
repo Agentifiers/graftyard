@@ -1,0 +1,1109 @@
+== cargo fmt --all --check
+RC=0 :: cargo fmt --all --check
+== cargo clippy --workspace --all-targets -- -D warnings
+    Checking graftyard-types v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/types)
+    Checking graftyard-raft v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/raft)
+    Checking graftyard-wire v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/wire)
+    Checking graftyard-release v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/release)
+    Checking graftyard-identity v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/identity)
+    Checking graftyard-fold v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/fold)
+    Checking graftyard-lookup v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/lookup)
+    Checking graftyard-git v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/git)
+    Checking graftyard-ops v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/ops)
+    Checking graftyard v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/cli)
+    Checking graftyard-api v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/api)
+    Checking graft-m1-wp5 v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp5)
+    Checking graft-m1-wp6-bed v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp6/bed)
+    Checking graft-m1-wp4 v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp4)
+    Checking graftyard-site v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/site)
+    Checking graftyard-edge v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/edge)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 20.53s
+RC=0 :: cargo clippy --workspace --all-targets -- -D warnings
+== cargo clippy --target wasm32-unknown-unknown -- -D warnings
+    Checking graftyard-git v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/git)
+    Checking graftyard-api v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/api)
+    Checking graftyard-site v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/site)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.20s
+RC=0 :: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+== cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings
+    Checking graftyard-site v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/site)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.87s
+RC=0 :: cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings
+== cargo clippy --target wasm32-unknown-unknown -- -D warnings
+    Checking graftyard-git v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/git)
+    Checking graftyard-lookup v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/lookup)
+    Checking graftyard-api v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/api)
+    Checking graftyard-edge v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/edge)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.73s
+RC=0 :: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+== cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings
+    Checking graftyard-edge v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/edge)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.03s
+RC=0 :: cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings
+== cargo clippy --target wasm32-unknown-unknown -- -D warnings
+    Checking graftyard-ops v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/ops)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.21s
+RC=0 :: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+== cargo test --workspace
+   Compiling graftyard-identity v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/identity)
+   Compiling graftyard-lookup v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/lookup)
+   Compiling graftyard-fold v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/fold)
+   Compiling graftyard-release v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/release)
+   Compiling graftyard-raft v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/raft)
+   Compiling graftyard-git v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/git)
+   Compiling graftyard-types v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/types)
+   Compiling graftyard-wire v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/wire)
+   Compiling graftyard-ops v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/ops)
+   Compiling graftyard v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/cli)
+   Compiling graftyard-api v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/crates/api)
+   Compiling graftyard-site v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/site)
+   Compiling graft-m1-wp6-bed v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp6/bed)
+   Compiling graftyard-edge v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/workers/edge)
+   Compiling graft-m1-wp4 v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp4)
+   Compiling graft-m1-wp5 v0.1.0 (/home/user/workspace/repo/.worktrees/fanout/tests/m1/wp5)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.35s
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graft_m1_wp4-af3464059317b810)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graft_m1_wp5-6c3e22bc0c339b09)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graft_m1_wp6_bed-84048a1998997fe7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard-9ca5c8e7e644cb00)
+
+running 23 tests
+test admin::tests::a_bootstrap_link_is_an_operator_sign_in_link_on_its_own_code_shard ... ok
+test genesis::tests::stale_and_refused_answers_are_read ... ok
+test genesis::tests::the_entry_is_posted_as_its_stored_bytes_with_no_token ... ok
+test config::tests::install_toml_round_trips_with_sites_and_rows ... ok
+test config::tests::key_files_parse_in_hex_and_openssl_pem ... ok
+test genesis::tests::genesis_refuses_system_chains_it_cannot_place ... ok
+test admin::tests::mint_key_step_waits_one_lifetime_then_retires_after_the_cache_and_a_lifetime ... ok
+test genesis::tests::install_creates_every_tokens_shard_and_reports_the_ranges_that_failed ... ok
+test placement::tests::a_pair_under_min_pair_rtt_or_unmeasured_is_refused ... ok
+test placement::tests::tri_on_three_regions_is_emitted_for_the_names_leader ... ok
+test placement::tests::two_sites_in_one_region_are_refused ... ok
+test sites::tests::a_v1_script_migrates_to_v2_by_adding_only_the_git_shard ... ok
+test sites::tests::bindings_compare_without_api_ids_and_in_any_order ... ok
+test placement::tests::spares_unknown_sites_and_bad_homes_are_refused ... ok
+test placement::tests::solo_needs_the_evaluation_flag ... ok
+test sites::tests::a_retry_that_reads_far_enough_passes ... ok
+test sites::tests::a_site_binds_only_its_own_git_shard_and_uploads_its_container ... ok
+test sites::tests::plan_refuses_a_changed_site_and_plans_nothing_on_a_rerun ... ok
+test sites::tests::spares_pair_only_with_other_continents ... ok
+test sites::tests::a_pair_under_min_pair_rtt_is_measured_again_with_a_new_generation_then_refused ... ok
+test sites::tests::spare_pairs_on_one_continent_are_not_measured ... ok
+test genesis::tests::sign_refuses_another_key_and_the_edge_refuses_another_install ... ok
+test genesis::tests::genesis_sign_install_then_replay_and_a_second_genesis ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_api-230e743dbfb5423f)
+
+running 9 tests
+test leases::tests::routes_parse_only_the_reference_paths ... ok
+test tasks::tests::routes_parse_only_the_reference_paths_and_never_v3 ... ok
+test agents::tests::routes_parse_only_the_reference_paths ... ok
+test leases::tests::acquire_bodies_parse_as_the_reference_names_them ... ok
+test tasks::tests::bodies_parse_as_the_reference_names_them ... ok
+test agents::tests::bodies_round_trip_and_refuse_what_the_reference_does_not_name ... ok
+test schema::tests::the_schema_is_the_pinned_sdl ... ok
+test exec::tests::type_probes_list_exactly_ghes_fields ... ok
+test exec::tests::every_value_is_checked_against_the_generated_schema ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/blobs.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/blobs-f041562ad63cc568)
+
+running 6 tests
+test bf25_a_blob_one_bucket_holds_is_never_acknowledged ... ok
+test meta_root_status_and_rate_limit_answer_as_ghes ... ok
+test a_release_s_replies_follow_the_pinned_schema_for_drafts_and_assets ... ok
+test bf26_archive_bytes_match_after_the_cache_is_deleted ... ok
+test bf25_reads_succeed_with_any_one_bucket_unreadable ... ok
+test the_captured_git_lfs_and_gh_release_session_gets_the_statuses_the_clients_got ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.35s
+
+     Running tests/gh_serve.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/gh_serve-895b93d0a796e542)
+
+running 1 test
+test serve ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/graphql_fragments.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graphql_fragments-29d7a6b02ecf5fab)
+
+running 3 tests
+test a_self_referencing_fragment_ends ... ok
+test a_doubling_fragment_chain_expands_each_fragment_once ... ok
+test a_repeated_spread_answers_as_one_spread_does ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/lease_api.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/lease_api-0c60a53209d43ef9)
+
+running 3 tests
+test lf3_foreign_cursor_long_wait_and_too_many_paths ... ok
+test lf12_lf13_polls_go_to_following_members_and_never_the_leader ... ok
+test the_lease_endpoints_serve_the_reference_shape ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/repos.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/repos-35aa4ca0a5e61327)
+
+running 3 tests
+test create_and_update_bodies_map_to_settings_and_refuse_what_ghes_refuses ... ok
+test a_created_repository_renders_ghes_full_repository_with_its_settings ... ok
+test gh_create_repository_gets_its_payload ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/surfaces.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/surfaces-9341b97f2b8ee26e)
+
+running 20 tests
+test a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error ... ok
+test commit_statuses_list_newest_first_and_page ... ok
+test an_unserved_field_is_undefined_field_not_null ... ok
+test a_hosted_mutation_renders_on_the_member_as_in_process ... ok
+test a_merge_plans_from_its_rows_as_from_both_tiers ... ok
+test add_pull_request_review_commits_a_review_at_the_head ... ok
+test hosted_dir_names_every_account_the_tiers_name ... ok
+test lists_hold_exactly_the_rows_the_fold_holds ... ok
+test merge_commits_the_merge_command_and_renders_its_payload ... ok
+test mutations_commit_then_render_from_acked ... ok
+test mergeable_reads_the_test_merge_of_the_current_head_and_base_tip ... ok
+test node_ids_in_either_format_reach_the_pull_request_but_a_legacy_one_cannot_route ... ok
+test pr_checks_marks_only_the_rule_s_checks_required ... ok
+test the_queue_mutations_read_the_pull_request_by_their_schema_input_names ... ok
+test journey_3_label_then_issue_then_both_lists ... ok
+test pr_view_and_issue_view_read_both_tiers ... ok
+test update_pull_request_edits_the_body_and_refuses_what_it_does_not_serve ... ok
+test ready_for_review_and_issue_labels_commit_and_render_as_ghes_does ... ok
+test every_captured_query_answers_without_errors ... ok
+test bf22_non_required_checks_live_in_metadata_and_prune_on_every_member ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 11.95s
+
+     Running tests/task_api.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/task_api-6ac7bd803b50440b)
+
+running 2 tests
+test the_read_endpoints_serve_the_reference_shape ... ok
+test lf1_uninstall_cancels_every_task_with_no_sweep ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/trust.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/trust-6f27ba0425f10462)
+
+running 11 tests
+test author_trust_is_the_author_s_push_permission_not_the_viewer_s_or_a_lower_role ... ok
+test exactly_the_design_s_resources_get_the_field ... ok
+test html_comments_and_markdown_that_renders_hidden_are_dropped_and_counted_by_kind ... ok
+test a_served_release_gets_its_author_s_view_only_under_the_media_type ... ok
+test is_agent_comes_from_agent_meta_and_the_install_s_agent_app_rows ... ok
+test every_hidden_char_range_is_dropped_and_counted_raw_and_as_references_and_its_neighbors_stay ... ok
+test the_media_type_is_matched_exactly_among_accept_ranges ... ok
+test lf4_one_payload_per_hidden_range_in_each_trust_resource ... ok
+test views_follow_the_current_body_and_its_author_after_edits ... ok
+test the_layer_adds_only_graftyard_trust_beside_an_untouched_body_on_single_and_list_replies ... ok
+test the_200_l009_payloads_are_absent_from_visible_and_counted_as_the_prototype_did ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_edge-3a4f9dacb7340294)
+
+running 5 tests
+test agents::tests::a_core_only_read_is_served_while_the_metadata_tier_loads ... ok
+test agents::tests::a_rest_ref_write_needs_a_fast_forward_unless_forced_or_created ... ok
+test agents::tests::only_agentish_pushes_ask_for_detail ... ok
+test agents::tests::fill_links_the_claim_and_keeps_paths_only_for_agent_updates ... ok
+test tests::a_body_that_inflates_past_the_cap_is_refused_as_a_bad_gzip ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_fold-1e2d58e353259c21)
+
+running 4 tests
+test archive::tests::a_forged_length_reads_as_incomplete ... ok
+test archive::tests::rows_split_at_any_cut_and_a_short_buffer_names_what_it_needs ... ok
+test canon::tests::matches_the_hand_written_enc_rule ... ok
+test store::tests::an_overlay_scan_is_the_merged_rows_cut_at_limit ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/install.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/install-4b4f9b60e79cd741)
+
+running 6 tests
+test learner_read_index_keeps_one_in_flight_and_a_50_ms_floor ... ok
+test a_restore_resumed_across_batches_from_its_stored_cursor_ends_at_the_trailers_digest ... ok
+test bf28_learners_beside_a_voter_and_on_one_site_are_distinct_objects_that_never_vote ... ok
+test f48_a_refold_from_a_snapshot_plus_the_log_tail_matches_every_member ... ok
+test bf29_a_follower_offline_past_the_archive_boundary_rejoins_by_install_snapshot ... ok
+test b0_30_log_max_bytes_archives_to_two_buckets_and_keeps_every_member_under_the_cap ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.65s
+
+     Running tests/tiers.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/tiers-3e8e82d89005adb4)
+
+running 11 tests
+test a_forged_frame_length_reads_as_incomplete ... ok
+test archive_due_walk_matches_archive_due_and_cuts_a_due_range_into_pieces ... ok
+test each_tier_applies_its_own_events_and_advances_past_every_entry ... ok
+test members_that_applied_the_same_log_agree_and_an_audit_names_the_one_that_differs ... ok
+test the_snapshot_writer_rotates_over_full_followers_and_is_the_member_itself_for_solo ... ok
+test apply_refuses_a_gap_a_repeat_a_wrong_prev_and_a_wrong_tag_and_writes_nothing ... ok
+test fold_digest_depends_on_the_rows_not_the_order_they_were_written ... ok
+test snap_undo_keeps_the_first_prior_value_only_and_never_a_later_write ... ok
+test a_snapshot_taken_while_apply_continues_holds_the_tier_at_to_and_restores_there ... ok
+test snapshot_cadence_and_retention_use_entry_times ... ok
+test a_job_resumed_from_its_stored_cursor_streams_what_frame_check_accepts_at_the_key_digest ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_git-f95303a615c73cfa)
+
+running 86 tests
+test agent::tests::session_ids_parse_as_the_host_scopes_them ... ok
+test agent::tests::notes_name_commits_by_fan_out_path_and_malformed_ones_are_skipped ... ok
+test blob::tests::an_archive_is_rebuilt_on_a_miss_with_the_same_bytes ... ok
+test agent::tests::trailers_follow_the_last_paragraph_and_strip_hidden_characters ... ok
+test blob::tests::a_blob_is_durable_only_in_two_regions_and_never_on_one_bucket ... ok
+test blob::tests::a_read_survives_one_unreadable_or_corrupt_bucket ... ok
+test agent::tests::only_classing_trailers_class_and_a_forged_session_stays_claimed ... ok
+test blob::tests::confirm_needs_two_regions_holding_the_same_bytes ... ok
+test blob::tests::markers_go_to_the_blobs_sites ... ok
+test blob::tests::the_declared_oid_and_size_must_be_the_bytes ... ok
+test clone::tests::only_whole_error_free_pack_responses_are_cacheable ... ok
+test clone::tests::a_clone_is_cacheable_and_keyed_by_wants_depth_filter_and_caps ... ok
+test clone::tests::include_tag_keys_on_the_tag_refs_and_nothing_else_does ... ok
+test clone::tests::a_fetch_that_depends_on_client_state_is_not_cacheable ... ok
+test feed::tests::a_cursor_is_17_bytes_in_base64url ... ok
+test feed::tests::learners_serve_and_full_or_lagging_members_send_polls_elsewhere ... ok
+test ingest::tests::promotion_inputs_split_inline_from_stored_inside_the_range ... ok
+test feed::tests::the_query_clamps_wait_and_caps_paths ... ok
+test group::tests::an_admission_refusal_crosses_the_wire_with_its_retry_hint ... ok
+test ingest::tests::a_catch_up_reads_every_head_at_once ... ok
+test ingest::tests::catch_up_reads_only_past_the_cursor_up_to_applied ... ok
+test ingest::tests::ref_changes_are_the_net_change_of_the_entries_in_range ... ok
+test init::tests::a_readme_without_a_description_is_its_heading ... ok
+test ingest::tests::rehydrate_takes_marked_packs_and_the_tail_once_each ... ok
+test ingest::tests::tail_starts_after_the_promoted_range_and_includes_the_promoted_pack ... ok
+test issue_ops::call::tests::a_blob_command_without_a_confirmed_blob_is_unavailable ... ok
+test issue_ops::call::tests::a_confirmed_blob_is_matched_by_its_bytes_not_its_sites ... ok
+test issue_ops::call::tests::another_issue_format_is_refused_before_the_rest_is_read ... ok
+test issue_ops::call::tests::an_issue_call_round_trips_and_names_its_format ... ok
+test key::tests::listing_prefixes_cover_exactly_their_kind ... ok
+test key::tests::markers_name_only_packs_and_blobs_and_neighbours_are_refused ... ok
+test lease::tests::exclusive_reads_shared_after_exclusive_max ... ok
+test merge_cache::tests::a_merge_on_a_container_with_no_repository_catches_up_first ... ok
+test key::tests::every_key_round_trips_and_has_one_spelling ... ok
+test merge_cache::tests::a_merge_catches_up_only_when_a_commit_is_missing ... ok
+test merge_cache::tests::a_build_answer_chains_from_on_and_keeps_the_entries_before_a_conflict ... ok
+test merge_cache::tests::a_direct_conflict_and_an_oversized_pack_are_refused ... ok
+test merge_cache::tests::fresh_shares_one_catch_up_among_the_requests_that_wait_for_it ... ok
+test merge_call::tests::a_merge_command_in_a_later_format_is_refused_before_its_body_is_read ... ok
+test merge_cache::tests::a_plan_answer_plans_each_entry_from_its_parent_tip ... ok
+test merge_cache::tests::catch_ups_on_one_network_take_turns ... ok
+test merge_cache::tests::a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it ... ok
+test lease::tests::plan_blocks_follow_the_grammar ... ok
+test pack::tests::object_meta_needs_both_fields ... ok
+test pkt::tests::rest_is_what_follows_the_last_packet ... ok
+test pkt::tests::round_trips_lines_and_special_packets ... ok
+test merge_call::tests::every_merge_command_round_trips_through_its_wire_form_and_names_32_4 ... ok
+test pkt::tests::refuses_bad_lengths_without_reading_past_the_buffer ... ok
+test pkt::tests::sideband_splits_at_the_band_size ... ok
+test pack::tests::base64_round_trips_every_tail_length ... ok
+test refs::tests::object_ids_parse_only_lower_hex_of_forty ... ok
+test refs::tests::ref_names_follow_check_ref_format ... ok
+test smart::tests::receive_pack_requests_parse_commands_caps_options_and_the_pack_offset ... ok
+test smart::tests::agent_admission_refuses_in_the_ng_shape_with_a_remote_line ... ok
+test smart::tests::receive_pack_advertisement_puts_caps_on_the_first_ref_or_on_capabilities ... ok
+test smart::tests::routes_follow_github_with_and_without_dot_git ... ok
+test smart::tests::the_cap_message_names_what_each_plan_offers ... ok
+test smart::tests::refusals_say_ng_on_every_ref_and_never_ok ... ok
+test smart::tests::v2_advertisement_is_githubs_set_exactly ... ok
+test smart::tests::v2_requests_split_caps_from_args ... ok
+test store::tests::markers_go_to_the_packs_sites_and_are_idempotent ... ok
+test store::tests::rule_needs_two_regions_not_two_buckets ... ok
+test smart::tests::receive_pack_requests_refuse_what_git_would_not_send ... ok
+test agent::tests::changed_paths_fold_to_directories_past_paths_max_and_protected_paths_match ... ok
+test sweep::tests::a_row_for_a_retried_request_that_names_another_pack_does_not_save_this_one ... ok
+test sweep::tests::committed_pack_in_one_bucket_with_a_marker_is_filled_never_deleted ... ok
+test init::tests::git_reads_the_readme_commit ... ok
+test sweep::tests::failed_placement_is_deleted_after_a_day_and_not_before ... ok
+test sweep::tests::marker_for_a_missing_object_alarms_and_keeps_the_marker ... ok
+test sweep::tests::markers_and_fills_run_before_deletes_and_budget_cuts_the_tail ... ok
+test sweep::tests::orphan_multipart_uploads_are_aborted_after_a_day ... ok
+test sweep::tests::missing_marker_is_repaired_from_the_request_row_at_any_age ... ok
+test sweep::tests::pack_id_time_counts_as_well_as_upload_time ... ok
+test sweep::tests::past_retention_or_unknown_metadata_or_a_down_leader_keeps_the_object ... ok
+test sweep::tests::stray_keys_and_idx_without_pack ... ok
+test sweep::tests::sweep_all_finds_every_network_and_resumes_after_its_budget ... ok
+test sweep::tests::sweep_all_stops_inside_a_network_when_actions_run_out_and_continues_there ... ok
+test sweep::tests::sweep_all_sweeps_only_the_networks_the_site_owns_and_never_deletes_committed_packs ... ok
+test sweep::tests::young_unmarked_pack_with_no_row_is_kept ... ok
+test task::tests::a_run_prefix_needs_a_segment_after_the_id ... ok
+test task::tests::derived_states_come_from_the_installation_and_the_idle_time ... ok
+test pkt::tests::fuzz_never_panics_or_overreads ... ok
+test store::tests::place_inlines_small_packs_and_refuses_unvalidated_bytes ... ok
+test store::tests::place_survives_one_failed_bucket_and_fails_on_two ... ok
+test store::tests::place_counts_a_retry_of_the_same_bytes_and_not_a_collision ... ok
+test store::tests::the_tee_returns_durable_only_when_validate_passed_on_the_same_bytes ... ok
+
+test result: ok. 86 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.66s
+
+     Running tests/agent_bytes.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/agent_bytes-16634a06702c0a4f)
+
+running 1 test
+test default_commands_events_and_folds_keep_mains_bytes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/agent_gates.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/agent_gates-24e782a1d04d9b4f)
+
+running 8 tests
+test a_repository_invitation_sent_through_the_leader_is_pending_and_accepted ... ok
+test lf2_control_a_stale_install_read_keeps_the_old_class ... ok
+test co_authored_by_alone_never_classes ... ok
+test a_default_pr_merges_as_before ... ok
+test agent_gate_counts_human_writers_on_the_current_head ... ok
+test lf2_the_first_decision_after_an_unflag_no_longer_classes_the_app_an_agent ... ok
+test b0_36_agents_are_refused_and_others_are_not ... ok
+test b0_37_hostile_provenance_and_host_refs ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 20.12s
+
+     Running tests/agent_load.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/agent_load-d8b7a63aea32b637)
+
+running 10 tests
+test an_owner_is_held_to_its_share_and_cannot_reduce_another_owners_network ... ok
+test fanout_steps_up_after_three_minutes_above_and_down_after_an_hour_below ... ok
+test the_leader_folds_minute_reports_into_one_k_for_both_warm_sites ... ok
+test a_hot_networks_clone_cache_entries_go_to_both_warm_sites ... ok
+test a_site_reports_its_most_loaded_shard_and_the_summed_queue ... ok
+test fanout_never_passes_fanout_max ... ok
+test b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share ... ok
+test over_budget_pushes_go_first_and_gets_are_null ... ok
+test b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_compute_for_lists ... ok
+test pushes_spread_over_the_k_shards_by_push_id ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.66s
+
+     Running tests/encoding.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/encoding-7fb30219cda43c20)
+
+running 1 test
+test milestone_1_repo_events_keep_their_bytes_and_digest ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/issues.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/issues-f0364529e739e7c9)
+
+running 24 tests
+test a_reader_cannot_approve_their_own_pull_request_and_a_dismissal_removes_the_core_verdict ... ok
+test a_required_row_shared_by_two_open_pull_requests_stays_until_neither_heads_it ... ok
+test a_required_status_maps_its_state_and_a_merge_queue_ref_is_guarded ... ok
+test a_many_star_pattern_against_a_long_branch_finishes ... ok
+test branch_patterns_match_as_fnmatch ... ok
+test a_command_that_touches_no_tier_it_tags_is_impossible ... ok
+test a_later_status_from_an_edge_whose_clock_trails_still_wins ... ok
+test a_late_member_reaches_the_same_digests_from_the_same_log ... ok
+test delete_repo_tombstones_the_chain_and_refuses_every_later_write ... ok
+test collaborators_and_org_grants_never_overlap_and_acceptance_grants_in_one_entry ... ok
+test init_repo_writes_the_first_settings_once_and_needs_an_admin ... ok
+test an_asset_names_a_durable_blob_and_goes_with_its_release ... ok
+test issue_numbers_are_one_space_and_commands_in_one_entry_see_each_other ... ok
+test an_installation_tokens_issue_writes_follow_its_app_permissions ... ok
+test settings_refuse_an_owner_change_and_a_retention_out_of_range ... ok
+test a_required_check_is_recorded_only_for_a_guarded_sha_and_pruned_when_its_head_moves ... ok
+test tier_of_routes_each_event_to_the_tiers_shared_names ... ok
+test lfs_objects_and_locks_are_metadata_rows ... ok
+test check_rows_are_pruned_by_entry_time_past_retention_on_every_member_and_required_rows_are_not ... ok
+test two_statuses_minted_in_one_millisecond_keep_both_rows_and_the_later_wins ... ok
+test publishing_a_release_creates_its_tag_in_core_and_a_draft_does_not ... ok
+test release_and_blob_commands_write_only_inside_their_declared_tiers ... ok
+test after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision ... ok
+test the_core_tier_counts_unresolved_review_threads_per_pull_request ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/lease_gates.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/lease_gates-8f9ea9bdb88ac714)
+
+running 13 tests
+test a_ring_fed_past_a_hole_refuses_cursors_from_before_it ... ok
+test l0_12_a_late_exclusive_acquire_after_an_idle_lease_succeeds ... ok
+test l0_12_a_stall_moves_every_live_lease_by_its_length ... ok
+test l0_12_a_stall_ended_by_a_leader_change_moves_every_live_lease ... ok
+test a_cancel_releases_the_tasks_leases_and_the_feed_reports_each_change ... ok
+test l0_16_lease_checks_read_the_core_tier_alone ... ok
+test renew_and_release_follow_the_holder_and_admin_rules ... ok
+test the_ring_a_serving_member_keeps_matches_the_pure_feed ... ok
+test lf5_plan_blocks_make_one_lease_and_leave_bodies_alone ... ok
+test l0_13_removed_uninstalled_and_old_holders_lose_their_hold ... ok
+test l0_13_bad_acquires_are_refused_100_of_100 ... ok
+test l0_12_agents_exclusive_refuses_only_agents ... ok
+test l0_13_plan_blocks_need_push_and_stop_at_the_repository_cap ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.86s
+
+     Running tests/log_archive.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/log_archive-b097419ccdeb987f)
+
+running 7 tests
+test next_archives_what_the_last_promotion_covers_and_promotes_otherwise ... ok
+test due_refuses_a_gap_and_a_row_of_another_entry ... ok
+test a_log_over_the_cap_is_cut_below_it_by_the_slack ... ok
+test one_tier_s_snapshot_alone_archives_nothing ... ok
+test an_archive_held_in_one_bucket_is_never_recorded ... ok
+test promotions_fit_the_cap_and_an_entry_over_it_alone_is_refused ... ok
+test the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_member_under_the_cap ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.99s
+
+     Running tests/merge_queue.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/merge_queue-8037cc75da602877)
+
+running 15 tests
+test an_enqueue_on_a_base_too_long_for_its_queue_refs_is_refused ... ok
+test a_direct_merge_needs_every_required_check_and_no_queue ... ok
+test a_merge_planned_before_a_head_or_base_push_is_refused ... ok
+test rules::conversation_resolution_linear_history_lock_push_and_strict ... ok
+test rules::required_checks_by_app_and_admin_bypass ... ok
+test rules::reviews_count_approvals_and_a_change_request_blocks ... ok
+test a_base_push_outside_the_queue_rebuilds_from_the_new_tip ... ok
+test a_landing_planned_before_a_failure_is_refused_whole ... ok
+test the_merge_queue_cursor_names_touched_bases_and_moves_only_forward ... ok
+test touched_names_the_base_of_every_entry_the_consumer_must_see ... ok
+test bf1_a_group_landing_and_a_bot_batch_in_one_entry_commit_on_all_three ... ok
+test bm2_a_queue_entry_with_a_stale_parent_tip_is_refused ... ok
+test bf23_a_re_requested_check_refuses_the_merge_until_the_new_run_concludes ... ok
+test bf23_on_the_queue_a_re_requested_check_holds_the_landing_until_it_concludes ... ok
+test bf21_a_head_green_group_ejects_the_failing_third_and_lands_the_rest_whole ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.90s
+
+     Running tests/prsync.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/prsync-ab5e68de14f2b490)
+
+running 15 tests
+test a_base_move_leaves_mergeable_unknown_until_the_next_head_push ... ok
+test a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes ... ok
+test a_consumer_overtaken_by_a_head_push_records_nothing_of_the_older_head ... ok
+test a_first_attempt_runs_in_band_and_only_a_re_send_goes_to_the_queue ... ok
+test a_head_push_past_the_test_merge_budget_leaves_mergeable_null ... ok
+test a_first_attempt_that_never_returns_is_re_sent_while_pushes_keep_coming ... ok
+test a_head_push_moves_both_pull_refs_and_a_conflict_deletes_the_merge_ref ... ok
+test a_late_command_of_an_older_head_moves_nothing_back ... ok
+test a_redelivered_batch_applies_once ... ok
+test the_member_wire_form_reads_a_push_and_a_sync ... ok
+test a_reopened_pull_request_is_synced_at_its_branch_tip ... ok
+test a_merge_too_large_to_record_deletes_the_older_heads_merge_ref ... ok
+test a_new_leader_reads_from_the_committed_cursor_and_skips_nothing ... ok
+test first_attempts_that_return_without_passing_the_cursor_do_not_hold_back_the_re_send ... ok
+test a_batch_split_over_two_commands_moves_the_cursor_when_its_retry_is_planned_again ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.85s
+
+     Running tests/push.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/push-87650af3d71f623f)
+
+running 23 tests
+test a_push_under_an_installation_token_has_its_own_format_and_round_trips ... ok
+test a_principal_with_more_than_64_sso_orgs_round_trips ... ok
+test a_fanout_entry_sets_the_committed_k ... ok
+test a_resent_request_is_answered_from_its_row_and_applied_once ... ok
+test after_settings_a_pushs_deps_name_the_new_owner_and_enterprise ... ok
+test a_fine_grained_token_pushes_only_inside_its_scope_and_permissions ... ok
+test a_non_atomic_push_applies_the_refs_that_pass ... ok
+test an_atomic_push_with_one_stale_expect_changes_nothing_and_says_ng_on_every_ref ... ok
+test an_installation_token_pushes_only_inside_its_claims_and_installation ... ok
+test a_replay_reports_each_refused_refs_own_reason ... ok
+test an_unknown_format_is_unsupported_and_changes_nothing ... ok
+test a_ref_that_is_a_directory_or_file_of_another_is_refused_as_a_name_conflict ... ok
+test promoted_and_archived_follow_each_other_and_archive_only_promoted_ranges ... ok
+test credentials_and_permissions_are_checked_at_decide ... ok
+test bf2_a_revoked_token_refuses_all_100_queued_pushes ... ok
+test the_wire_form_round_trips_and_refuses_an_unknown_format ... ok
+test a_snapshot_archived_keeps_one_snapshot_at_or_below_every_index_in_the_window ... ok
+test deletes_and_creates_check_their_expects_in_order_inside_one_entry ... ok
+test the_group_survives_a_restart_from_its_rows ... ok
+test bf27_a_revoked_jti_refuses_all_1000_queued_pushes ... ok
+test a_suspended_users_pushes_are_all_refused_including_those_admitted_before_the_suspension ... ok
+test a_command_over_command_max_is_refused_by_the_member_before_decide ... ok
+test ten_thousand_refs_commit_atomically_and_ten_thousand_and_one_are_refused_whole ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.68s
+
+     Running tests/refs_paging.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/refs_paging-291efa45324791b2)
+
+running 4 tests
+test a_small_repository_answers_every_ref_as_before ... ok
+test catch_up_applies_the_entries_ref_changes_and_ends_at_the_folds_refs ... ok
+test the_streamed_advertisement_is_the_whole_advertisement ... ok
+test at_bf20s_ref_count_no_read_reply_grows_with_the_refs ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 30.36s
+
+     Running tests/shard.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/shard-b9e746ff4d1cec85)
+
+running 13 tests
+test alarm_renews_hourly_until_a_day_after_the_last_request ... ok
+test evict_plan_breaks_ties_by_network_and_counts_the_incoming_rehydrate ... ok
+test evict_plan_frees_least_recently_used_until_under_budget ... ok
+test evict_plan_never_evicts_the_network_being_served ... ok
+test region_check_replaces_three_times_then_alarms ... ok
+test shards_counts_are_the_b0_14_values ... ok
+test validator_is_stable_for_a_push_and_ignores_shards_not_caught_up ... ok
+test start_cap_is_count_plus_hot_pool ... ok
+test container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins ... ok
+test warm_sites_start_at_home_and_pick_another_site ... ok
+test raising_k_moves_no_network_and_keeps_the_earlier_shards ... ok
+test first_shard_is_in_count_and_the_rest_in_the_hot_pool_without_repeats ... ok
+test rendezvous_spreads_networks_and_a_new_count_moves_only_about_one_in_n ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.95s
+
+     Running tests/task_gates.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/task_gates-74c921571d5b0e82)
+
+running 8 tests
+test an_idle_task_times_out_and_its_next_command_records_it ... ok
+test the_git_cache_s_detail_links_through_the_edge_s_path ... ok
+test a_task_token_needs_a_live_run_task_of_the_app_on_its_repository ... ok
+test agent_meta_takes_the_session_and_requester_from_the_task ... ok
+test the_workspace_writes_only_its_tasks_session_ref ... ok
+test external_tasks_follow_the_reference_rules ... ok
+test a_live_tasks_push_is_accepted_and_its_trailer_links ... ok
+test open_task_caps ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.72s
+
+     Running tests/transfer.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/transfer-8b75654d32724c3c)
+
+running 4 tests
+test the_transfer_settings_wire_form_names_its_format_first ... ok
+test an_enterprise_change_moves_only_the_enterprise ... ok
+test a_created_then_deleted_repository_refuses_every_write ... ok
+test the_transfer_settings_moves_deps_to_the_new_owner_and_its_enterprise ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/wire_tags.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/wire_tags-763ee417666c0128)
+
+running 1 test
+test every_stored_or_sent_enum_keeps_its_variant_tags_and_bytes ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_identity-6d3ffc6256f12f33)
+
+running 23 tests
+test glob::tests::many_double_stars_against_a_deep_path_that_does_not_match_finish ... ok
+test agents::tests::a_session_is_its_string_in_json_and_its_enum_in_postcard ... ok
+test glob::tests::many_double_stars_against_globs_that_do_not_overlap_finish ... ok
+test glob::tests::two_globs_overlap_when_some_path_matches_both ... ok
+test ids::tests::ids_group_leases_each_block_once_from_block_1 ... ok
+test ids::tests::id_block_refuses_empty_oversized_crossing_and_zero ... ok
+test ids::tests::pack_round_trips_and_stays_below_2_pow_53 ... ok
+test glob::tests::globs_anchor_at_the_root_and_star_stays_in_one_segment ... ok
+test cache::tests::budget_is_50_reads_a_second_then_stale_reads_and_503_writes ... ok
+test cache::tests::read_uses_entries_up_to_10_s_and_writes_always_fetch ... ok
+test cache::tests::capacity_drops_the_oldest ... ok
+test stateless::tests::rotation_signs_with_the_new_key_after_one_lifetime_and_retires_the_old_after_its_last_exp ... ok
+test stateless::tests::narrowing_never_exceeds_the_installation_or_the_app ... ok
+test placement::tests::placement_set_reuses_placement_new_and_solo_needs_the_flag ... ok
+test tokens::tests::parses_githubs_published_example_and_refuses_neighbours ... ok
+test tokens::tests::a_source_that_never_lands_is_reported ... ok
+test ids::tests::cursor_runs_to_offset_2_pow_16_minus_1_then_stops ... ok
+test stateless::tests::a_task_claim_round_trips_and_its_absence_keeps_the_payload ... ok
+test stateless::tests::a_token_is_ghs_appid_then_a_jws_of_varying_length_and_verifies ... ok
+test stateless::tests::a_tampered_expired_or_unknown_key_token_is_refused ... ok
+test stateless::tests::the_signing_key_is_cached_for_at_most_signing_key_cache ... ok
+test tokens::tests::redraw_lands_in_the_family_in_about_three_draws ... ok
+test oidc::tests::an_id_token_is_accepted_only_with_its_key_issuer_audience_nonce_and_time ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.63s
+
+     Running tests/access.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/access-4f2cc9ab114d902e)
+
+running 2 tests
+test the_read_gate_hides_a_private_repository_from_everyone_who_cannot_read_it ... ok
+test hidden_forbidden_and_the_higher_of_grant_and_collaborator ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/agent_apps.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/agent_apps-94ada7f1997f2af5)
+
+running 1 test
+test the_setup_registers_three_install_owned_agent_apps_and_a_rerun_changes_nothing ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/agents.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/agents-1eb8f0a256937f1d)
+
+running 3 tests
+test folds_and_policy_events_without_agent_rows_keep_their_m3_bytes ... ok
+test org_agent_settings_default_off_and_survive_a_policy_write ... ok
+test agent_app_rows_live_only_on_the_install_chain_and_only_a_site_admin_writes_them ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/audit.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/audit-30d7683445afff10)
+
+running 9 tests
+test fold_blobs_without_a_cursor_keep_the_previous_releases_bytes ... ok
+test the_audit_cursor_is_operator_only_monotone_and_format_3 ... ok
+test the_authz_audit_cursor_is_operator_only_monotone_and_format_4 ... ok
+test a_batch_lost_before_its_cursor_runs_again_from_the_cursor_under_a_new_leader ... ok
+test audit_lists_a_credential_its_edge_left_unlisted_once_a_minute_passed ... ok
+test audit_finishes_app_registrations_and_login_rows_from_the_names_log ... ok
+test audit_finishes_an_enterprise_change_on_every_repository ... ok
+test audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved ... ok
+test audit_lists_every_credential_whose_edge_died_200_of_200 ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running tests/decide.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/decide-104c058b19492a27)
+
+running 23 tests
+test a_claim_on_the_wrong_shard_is_refused ... ok
+test a_signup_with_no_block_asks_for_one_and_a_block_never_rewinds ... ok
+test a_move_to_a_malformed_record_is_refused ... ok
+test a_revocation_earlier_in_the_same_entry_binds_the_commands_after_it ... ok
+test an_owner_move_bumps_generation_and_keeps_moving_from_until_finished ... ok
+test commands_lists_the_credential_chains_in_deps_once ... ok
+test a_released_login_is_a_former_name_until_someone_claims_it ... ok
+test a_user_may_not_place_suspend_or_record_blocks ... ok
+test followers_refuse_a_placement_that_drops_moving_from_or_skips_a_generation ... ok
+test login_syntax_is_exactly_shareds_rule ... ok
+test case_folding_collides_and_keeps_the_owners_spelling_out_of_the_key ... ok
+test repo_name_syntax ... ok
+test credential_refusals_cover_missing_wrong_account_and_wrong_shard ... ok
+test repo_owner_rows_live_on_the_repos_shard ... ok
+test only_admins_create_repositories_and_org_admin_grants_bind_by_entry ... ok
+test the_original_owner_can_take_its_former_name_back_by_account ... ok
+test a_repository_id_is_never_reused_across_blocks ... ok
+test two_claims_of_one_login_in_one_entry_the_second_refused_by_the_first ... ok
+test repo_names_are_unique_case_folded_and_renames_leave_aliases ... ok
+test reserved_names_are_refused_in_any_case_and_followers_refuse_them_too ... ok
+test different_logins_in_one_entry_take_consecutive_ids ... ok
+test a_revoked_token_refuses_every_command_decided_afterwards ... ok
+test a_suspended_account_refuses_every_command_decided_afterwards ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/group_move.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/group_move-89d5b4924e786979)
+
+running 6 tests
+test a_move_between_solo_and_three_sites_is_unsupported ... ok
+test a_joint_of_two_placements_differing_by_two_sites_is_refused ... ok
+test a_home_only_move_is_one_config_change_and_a_transfer ... ok
+test a_move_to_a_placement_sharing_two_sites_swaps_one_and_keeps_writing ... ok
+test a_move_to_disjoint_sites_goes_one_site_per_config_change ... ok
+test a_leader_on_the_site_a_joint_drops_transfers_before_it_leaves ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/m3.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/m3-950474dbb18c667b)
+
+running 14 tests
+test a_follower_refuses_a_code_used_twice ... ok
+test an_oauth_app_registers_through_its_client_id ... ok
+test a_revoked_jti_lapses_at_exp ... ok
+test an_app_record_commits_only_after_its_slug_claim ... ok
+test an_accounts_login_follows_its_claim_and_its_rename ... ok
+test fold_blobs_without_milestone_3_rows_keep_milestone_1_bytes ... ok
+test optional_fields_fit_their_kind ... ok
+test milestone_1_commands_keep_format_1_and_a_format_1_member_refuses_format_2 ... ok
+test every_credential_kind_is_refused_off_its_shard ... ok
+test only_an_admin_of_the_owner_claims_a_slug ... ok
+test audit_finishes_or_aborts_a_registration_nobody_finished ... ok
+test a_paired_token_revokes_with_its_partner ... ok
+test a_device_code_yields_one_token_and_lapses_at_900_s ... ok
+test bf33_device_flow_under_a_leader_kill_completes_or_restarts_cleanly ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.28s
+
+     Running tests/raft.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/raft-7c8ec9cd96ce6112)
+
+running 5 tests
+test a_follower_refuses_a_second_owner_for_one_login ... ok
+test a_refusal_resting_on_an_uncommitted_claim_is_never_returned ... ok
+test bf15_suspended_account_with_1000_commands_queued ... ok
+test bf15_revoked_token_with_1000_commands_queued ... ok
+test db_ids_are_never_reused_across_a_leader_change_mid_block ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.24s
+
+     Running tests/secret_debug.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/secret_debug-e03a681529975871)
+
+running 1 test
+test secrets_encode_unchanged_and_debug_redacts_them ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/wp3.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/wp3-ff5df9a6ed45b51b)
+
+running 10 tests
+test every_write_reads_the_account_row_for_suspension_and_sign_out_everywhere ... ok
+test a_sign_in_takes_only_the_method_instance_auth_names ... ok
+test add_key_lists_the_key_text_only_for_its_own_committed_fingerprint ... ok
+test audit_finishes_a_credential_nobody_listed_and_only_a_committed_one_is_listed ... ok
+test an_org_invitation_accepted_grants_in_one_entry_and_declined_grants_nothing ... ok
+test only_a_site_admin_writes_instance_auth_and_the_next_sign_in_follows_it ... ok
+test the_edges_writes_keep_the_account_login_and_identity_in_step ... ok
+test a_transfer_keeps_every_route_on_the_group_and_names_the_new_enterprise ... ok
+test one_ssh_key_added_from_two_edges_at_once_gets_one_owner ... ok
+test a_new_ssh_key_and_pat_are_listed_at_once_without_the_audit_consumer ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests/wp4.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/wp4-49d1e304dff71926)
+
+running 6 tests
+test bf32_a_wrong_oauth_secret_is_refused_and_no_identity_chain_holds_a_client_secret ... ok
+test delete_installation_token_is_the_tokens_own_and_idempotent ... ok
+test an_installation_is_bounded_by_its_app_and_uninstall_fails_its_tokens_at_once ... ok
+test bf27_jti_revoked_with_1000_commands_queued ... ok
+test key_rotation_keeps_both_keys_valid_through_the_overlap ... ok
+test bf32_an_octokit_app_jwt_verifies_against_app_record_keys_and_mints ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_lookup-13e7839bb9043a1a)
+
+running 3 tests
+test tests::a_commit_starts_at_the_cached_leader ... ok
+test tests::a_lookup_reads_registry_rows_only_after_the_names_missed ... ok
+test tests::only_the_commit_shapes_are_readable ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_ops-49aab86c2daedcad)
+
+running 1 test
+test tests::a_wrapped_key_unwraps_and_a_wrong_wrap_key_does_not ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_raft-3844c02fce169683)
+
+running 3 tests
+test admit::tests::retry_after_counts_the_queue_at_the_agent_rate ... ok
+test admit::tests::a_lane_with_one_actor_is_a_fifo_and_actors_take_turns ... ok
+test admit::tests::old_items_leave_from_every_actor ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/admission.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/admission-bd83d9371bdd4bd4)
+
+running 10 tests
+test b0_32_a_burst_of_500_agent_pushes_in_one_second_on_a_hot_group_all_commit_and_merges_wait_at_most_two_entries ... ok
+test hot_is_read_from_the_log_so_a_new_leader_stages_at_once ... ok
+test demotion_counts_live_in_the_fold_so_a_new_leader_demotes_at_once ... ok
+test agent_wait_answers_full_after_thirty_seconds ... ok
+test b0_33_at_measured_capacity_every_agent_command_is_admitted ... ok
+test b0_29_the_journey_9_mix_commits_under_600_ms_with_no_stale_and_merges_in_the_next_entry ... ok
+test b0_33_at_a_pinned_300_commands_per_second_agents_get_their_share_and_humans_keep_their_latency ... ok
+test b0_31_an_apac_leader_stages_1_mib_agent_pushes_and_refuses_them_at_once_while_placement_fails ... ok
+test humans_and_the_merge_queue_are_never_behind_agent_commands ... ok
+test a_bot_flood_cannot_take_the_agent_floor ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.58s
+
+     Running tests/codec.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/codec-0caeaebdc5b21610)
+
+running 5 tests
+test another_version_truncation_and_trailing_bytes_are_refused ... ok
+test id_block_entries_encode_with_tag_3 ... ok
+test the_digest_encoding_is_unchanged ... ok
+test entries_round_trip_to_the_same_digest ... ok
+test state_and_every_message_round_trip ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/leadership.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/leadership-05494b56cabb86ac)
+
+running 33 tests
+test a_higher_term_restores_promises_but_pre_vote_still_refuses_the_reported_leader ... ok
+test a_late_timeout_now_after_abandonment_is_ignored ... ok
+test a_refused_transfer_is_abandoned_at_once_and_leaves_no_lease ... ok
+test a_same_release_refuser_of_a_committed_entry_cannot_follow_until_its_release_changes ... ok
+test a_target_that_returns_within_the_lease_still_takes_over ... ok
+test a_transfer_vote_promises_the_target ... ok
+test a_voter_that_has_not_seen_the_transfer_refuses_the_target_as_promised ... ok
+test an_older_refuser_makes_the_leader_truncate_and_hand_off ... ok
+test a_drained_site_hands_off_and_takes_no_leadership ... ok
+test bf14_a_missed_receipt_is_reported_never_forwarded ... ok
+test an_unreachable_target_is_retried_until_the_lease_then_abandoned ... ok
+test both_same_release_refusers_are_the_leaders_own_defect ... ok
+test a_new_leader_does_not_count_a_follower_it_has_not_heard_from ... ok
+test fewer_than_commit_fail_min_failures_never_trip ... ok
+test a_resumed_led_term_still_goes_home ... ok
+test deadline_misses_during_the_leaders_own_stall_are_excused ... ok
+test not_leader_naming_no_leader_is_reported_to_that_member_too ... ok
+test one_report_starts_a_campaign_once_the_promise_has_lapsed ... ok
+test only_the_accepted_transfer_id_breaks_a_promise ... ok
+test commit_errors_trip_and_the_probe_picks_a_healthy_target ... ok
+test a_sick_prober_makes_the_leader_hold ... ok
+test a_quarantined_home_gets_no_transfer ... ok
+test six_slow_confirms_trip_and_five_do_not ... ok
+test transfer_hands_leadership_to_a_caught_up_target ... ok
+test transfer_waits_for_the_other_follower_so_the_target_wins_without_the_old_leader ... ok
+test promises_return_after_twice_the_window ... ok
+test the_leader_holds_when_no_probe_qualifies_a_target ... ok
+test two_colos_within_the_window_stop_promises_to_a_renewing_leader ... ok
+test the_probe_picks_the_healthy_site_never_the_sick_one ... ok
+test leadership_returns_home_after_it_recovers_and_catches_up ... ok
+test a_stepped_down_member_is_not_a_target_so_healthy_sites_do_not_ping_pong ... ok
+test a_healthy_leader_never_trips ... ok
+test home_follows_the_config_not_the_bootstrap_record ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
+
+     Running tests/lf13.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/lf13-ba0b307634870329)
+
+running 3 tests
+test a_log_truncated_past_the_follower_sends_it_an_install ... ok
+test rounds_lost_to_the_same_leader_leave_no_gap ... ok
+test a_new_leader_s_first_round_leaves_a_gap_on_the_lagging_follower ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/liveness.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/liveness-e2a96447f452d81d)
+
+running 5 tests
+test long_liveness ... ignored, long liveness: RAFT_LIVE_SEEDS
+test leaders_leave_a_site_whose_writes_fail ... ok
+test leaders_leave_slow_storage ... ok
+test a_healthy_group_keeps_its_leader ... ok
+test leaders_leave_a_site_whose_calls_fail ... ok
+
+test result: ok. 4 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 12.47s
+
+     Running tests/restore_memory.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/restore_memory-757106bbaf64915d)
+
+running 2 tests
+test restore_reads_no_request_row_and_a_resend_is_answered_from_storage ... ok
+test restore_holds_no_second_copy_of_the_stored_log_or_fold ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.95s
+
+     Running tests/scenarios.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/scenarios-a5fd07dc75d9ff1e)
+
+running 31 tests
+test a_member_with_no_committed_config_grants_no_vote_and_serves_no_read ... ok
+test a_promised_voter_refuses_a_cut_off_rival ... ok
+test a_restarted_voter_does_not_vote_twice_in_a_term ... ok
+test a_resumed_leader_never_commits_beside_an_entry_it_lost ... ok
+test any_voter_may_bootstrap_and_two_proposers_agree ... ok
+test a_group_fold_loaded_from_its_tables_equals_the_replayed_one ... ok
+test an_old_term_entry_is_not_committed_by_counting_replicas ... ok
+test a_member_is_replaced_on_its_own_site_in_two_config_changes ... ok
+test a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry ... ok
+test flapping_member_is_quarantined ... ok
+test bf12_resend_after_leader_loss_is_answered_from_the_request_row ... ok
+test bootstrap_bytes_are_identical_on_every_voter ... ok
+test joint_needs_both_majorities_and_witness_rules_hold ... ok
+test a_stale_instance_of_a_resumed_leader_cannot_truncate_its_successor ... ok
+test group_commit_puts_a_round_of_commands_in_one_entry ... ok
+test id_blocks_commit_as_their_own_entry_and_never_rewind ... ok
+test command_max_and_unknown_formats_are_refused_without_a_change ... ok
+test bf13_refusal_from_an_uncommitted_entry_is_never_returned ... ok
+test nothing_leaves_before_its_writes_persist ... ok
+test promise_bars_a_rival_until_it_lapses ... ok
+test refusals_resolve_at_commit_with_the_commit_index ... ok
+test restore_refuses_a_fold_outside_the_stored_log_window ... ok
+test restarted_leader_resumes_led_term ... ok
+test the_leader_counts_itself_only_after_its_own_write_confirms ... ok
+test verify_refuses_a_bad_expect_and_a_broken_chain ... ok
+test votes_are_refused_to_non_members_of_the_committed_config ... ok
+test the_fold_panics_on_a_request_applied_twice - should panic ... ok
+test reads_need_the_lease_or_a_round ... ok
+test bf12_many_kills ... ok
+test the_in_memory_log_is_bounded_by_bytes ... ok
+test a_lagging_follower_catches_up_in_calls_under_the_byte_cap ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+
+     Running tests/sim.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/sim-84115984499001fb)
+
+running 6 tests
+test long_sweep ... ignored, long sweep: RAFT_SEEDS, RAFT_STEPS
+test checker_accepts_concurrent_and_unknown_outcomes ... ok
+test checker_rejects_known_bad_histories ... ok
+test quiet_network_commits_and_reads ... ok
+test harsh_network_keeps_every_invariant ... ok
+test gray_network_keeps_every_invariant ... ok
+
+test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 31.78s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_release-2f905fe2bfeba348)
+
+running 13 tests
+test tests::anchor_vars_parse_as_scripts_hold_them ... ok
+test tests::refusal_variants_are_stable_names ... ok
+test tests::a_signed_genesis_round_trips_and_is_accepted ... ok
+test tests::signing_is_deterministic_and_resigning_replaces ... ok
+test tests::a_genesis_signed_by_the_anchor_but_naming_another_customer_key_is_refused ... ok
+test tests::a_genesis_bound_to_another_group_or_position_is_refused ... ok
+test tests::a_genesis_for_another_install_is_refused ... ok
+test tests::truncated_extended_and_foreign_bytes_are_malformed ... ok
+test tests::the_group_accepts_one_genesis_and_refuses_a_replay_or_a_second ... ok
+test tests::unsigned_and_non_genesis_entries_are_refused ... ok
+test tests::a_signature_by_another_key_is_refused ... ok
+test tests::genesis_body_rules ... ok
+test tests::a_bit_flip_in_any_byte_of_a_signed_genesis_is_refused ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.77s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_site-05cf19437ed55792)
+
+running 14 tests
+test callers::tests::a_learner_that_stops_calling_is_called_again_after_quiet ... ok
+test archive::tests::a_promoted_entry_s_request_row_names_its_pack ... ok
+test archive::tests::the_alarm_s_archived_is_the_range_members_truncate_through ... ok
+test host::tests::an_answer_after_the_deadline_is_kept_and_the_miss_reported_first ... ok
+test fanout::tests::the_ranges_read_answers_the_committed_k ... ok
+test host::tests::dependency_reads_run_at_once ... ok
+test host::tests::an_answer_in_time_reports_no_miss_and_one_past_the_limit_is_missed ... ok
+test member::tests::a_site_id_past_u8_is_refused ... ok
+test host::tests::the_owners_authz_is_read_under_the_joined_record ... ok
+test tier::tests::a_row_that_does_not_decode_is_an_error ... ok
+test sweep::tests::a_row_names_its_stored_packs_as_markers ... ok
+test tier::tests::a_table_created_under_an_older_key_is_told_apart_from_this_releases_shape ... ok
+test feed::tests::a_burst_of_polls_on_a_stale_owner_sends_one_read ... ok
+test callers::tests::a_learner_that_calls_the_leader_is_never_called_back_so_depth_stays_bounded ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_types-adc692097aaff229)
+
+running 14 tests
+test chain::tests::text_form_round_trips_and_rejects_neighbours ... ok
+test log::tests::digest_hex_is_lower_case_64_characters_only ... ok
+test placement::tests::member_names_separate_kind_slot_and_generation ... ok
+test log::tests::ulid_text_round_trips_keeps_time_and_rejects_neighbours ... ok
+test placement::tests::lookup_order_walks_moving_from ... ok
+test placement::tests::from_record_builds_the_bootstrap_voters_and_checks_shape_only ... ok
+test placement::tests::new_accepts_tri_at_the_rtt_boundary_and_refuses_just_under_it ... ok
+test placement::tests::learners_beside_a_voter_and_on_one_site_are_distinct_objects ... ok
+test placement::tests::new_needs_two_full_voters_and_a_full_home ... ok
+test placement::tests::new_refuses_shared_region_site_and_account ... ok
+test placement::tests::place_learners_adds_none_below_learner_at_and_spreads_by_rate_up_to_max ... ok
+test site::tests::site_set_holds_each_site_once ... ok
+test placement::tests::decoding_a_placement_reruns_its_shape_checks ... ok
+test registry::tests::shard_is_stable_and_spreads ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running unittests src/lib.rs (/home/user/workspace/repo/.worktrees/target-rows/debug/deps/graftyard_wire-aa1b9bec67ec715a)
+
+running 22 tests
+test ids::tests::first_party_clients_are_the_five_seeded_ids ... ok
+test ids::tests::database_id_is_set_only_where_it_fits_an_int ... ok
+test host::tests::isolation_moves_raw_codeload_uploads_and_objects_to_subdomains ... ok
+test host::tests::the_bare_host_serves_every_surface_on_one_origin ... ok
+test ids::tests::a_legacy_scoped_id_names_no_repository ... ok
+test host::tests::hosts_clients_classify_as_dotcom_are_refused ... ok
+test ids::tests::ids_round_trip_and_malformed_ones_are_refused ... ok
+test page::tests::cursors_round_trip ... ok
+test page::tests::a_link_headers_next_page_names_a_routable_repository_path ... ok
+test page::tests::per_page_clamps_silently_and_bad_values_take_defaults ... ok
+test page::tests::a_huge_page_is_empty_and_has_no_next_link ... ok
+test ids::tests::githubs_own_ids_decode ... ok
+test rate::tests::off_means_no_headers_and_a_404 ... ok
+test rate::tests::on_renders_githubs_headers_and_drops_rate_in_2026 ... ok
+test reply::tests::error_bodies_have_a_string_status ... ok
+test reply::tests::a_held_etag_is_a_bodyless_304 ... ok
+test reply::tests::no_user_agent_is_403_and_an_unknown_version_400_on_rest_only ... ok
+test reply::tests::every_surface_gets_the_request_id_and_only_rest_the_media_type ... ok
+test reply::tests::secondary_rate_limit_is_a_429_with_retry_after ... ok
+test time::tests::timestamps_render_as_github_does ... ok
+test reply::tests::the_request_id_header_has_githubs_shape_and_the_whole_id ... ok
+test page::tests::links_name_the_repository_id_and_keep_other_parameters ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_api
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_fold
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_git
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_identity
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_lookup
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_ops
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_raft
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_release
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_types
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests graftyard_wire
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+RC=0 :: cargo test --workspace
+== python3 scripts/check_design.py
+design/DESIGN.md: OK
+design/AGENT-LAYER.md: OK
+agent block: OK
+cost figures: OK
+RC=0 :: python3 scripts/check_design.py
+== python3 scripts/check_names.py
+check_names: OK, 1848 files
+RC=0 :: python3 scripts/check_names.py
+== python3 scripts/check_links.py
+check_links: OK, 2847 citations
+RC=0 :: python3 scripts/check_links.py
+== go test ./...
+ok  	graftyard/containers/git/server	3.311s
+RC=0 :: go test ./...
+CDONE
