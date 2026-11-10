@@ -125,7 +125,8 @@ impl Lifecycle {
                 if Some(settings.owner) != s.authz_owner() || settings.enterprise != authz.enterprise() {
                     return Err(LifecycleErr::WrongOwner);
                 }
-                if !(1..=CHECK_RETENTION_MAX).contains(&settings.check_retention_days) || settings.merge_methods.is_empty()
+                if !(1..=CHECK_RETENTION_MAX).contains(&settings.check_retention_days)
+                    || settings.merge_methods.is_empty()
                 {
                     return Err(LifecycleErr::Invalid);
                 }

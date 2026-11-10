@@ -271,7 +271,8 @@ async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Res
     let b = graftyard_lookup::Bindings { env, sites: &site.sites };
     let q = json!({ "q": { "settings": true } }).to_string();
     let Some((v, _, t)) = graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? else {
-        let r = audit::RepoRead { owner, enterprise: None, voters: Vec::new(), home: record.home, life: RepoLife::NoGroup };
+        let r =
+            audit::RepoRead { owner, enterprise: None, voters: Vec::new(), home: record.home, life: RepoLife::NoGroup };
         return Ok(AuditRead::Repo(r));
     };
     let stub = b.member(t.site, &t.do_name).map_err(|e| e.to_string())?;

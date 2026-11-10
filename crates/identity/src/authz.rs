@@ -832,9 +832,7 @@ impl Scratch for AuthzScratch<'_> {
                 key,
                 entry: Some(RepoEntry::Live { repo, .. } | RepoEntry::Reserved { repo, .. }),
             } if !free_for(self.name(key), *repo) => Err(format!("{key:?} is held by {:?}", self.name(key)).into()),
-            AuthzEvent::RepoCreate { key, repo, .. }
-                if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) =>
-            {
+            AuthzEvent::RepoCreate { key, repo, .. } if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) => {
                 Err(format!("{key:?} is not live for {repo:?}").into())
             }
             AuthzEvent::App { app, record: Some(r) } if r.id != *app => Err(format!("{app:?} holds {:?}", r.id).into()),
