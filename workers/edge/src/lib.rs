@@ -1576,6 +1576,21 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             "trace": trace.into_inner(),
         }));
     }
+    // A hot-pool shard, `git#<site>#pool:<n>`, belongs to no one network, so `?site=S&pool=N` names it directly; it
+    // is torn down like a network's shard (`tests/fanout/teardown.py --pools`).
+    if path == "/_bed/kill_pool" {
+        let site = qp("site").and_then(|v| v.parse::<u8>().ok()).map(SiteId).ok_or("site")?;
+        let pool = qp("pool").and_then(|v| v.parse::<u32>().ok()).ok_or("pool")?;
+        let region = c.sites.get(site).ok_or("unknown site")?.region;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post);
+        return c
+            .env
+            .durable_object(&format!("SHARD_{}", site.0))?
+            .get_by_name_with_location_hint(&format!("git#{}#pool:{pool}", site.0), region.hint())?
+            .fetch_with_request(Request::new_with_init("https://shard/teardown", &init)?)
+            .await;
+    }
     let id = qp("repo").and_then(|v| v.parse::<i64>().ok()).map(|r| RepoId(DbId(r))).ok_or("repo")?;
     let repo = repo_by_id(c, id).await.map_err(Error::RustError)?;
     let chain = ChainId::Repo(repo.id);
