@@ -16,6 +16,10 @@ use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, reg
 use crate::store::marker_from_meta;
 use graftyard_types::Index;
 
+/// The most log entries one catch-up step reads, ingests, and saves its cursor past [guess]: at an entry's 1.5 MB cap
+/// 32 entries are at most 48 MB of inline packs, under an isolate's 128 MB with their decoded copies.
+const CATCH_UP_ENTRIES: u64 = 32;
+
 fn err(e: impl std::fmt::Display) -> StoreError {
     StoreError(e.to_string())
 }
@@ -862,29 +866,41 @@ impl ShardHost<'_> {
         let mut evicted = Vec::new();
         let mut seen = BTreeSet::new();
         for (chain, head) in chains.iter().zip(heads) {
-            if let Some(range) = cursor.behind(*chain, head.applied) {
-                let es = log.entries(*chain, *range.start(), *range.end()).await?;
+            let Some(range) = cursor.behind(*chain, head.applied) else { continue };
+            // In pieces of CATCH_UP_ENTRIES, each ingested, applied, and saved before the next is read: the whole
+            // range at once held every entry and inline pack behind the cursor, and a shard 4,480 entries behind
+            // (about 1.4 GB of inline packs) took its isolate past memory on every attempt, from the same cursor
+            // (`tests/am1/results/b0-30.md`, "Blocked on", 8).
+            let mut from = *range.start();
+            while from <= *range.end() {
+                let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(range.end().0));
+                let es = log.entries(*chain, from, to).await?;
                 entries += es.len();
-                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), head.applied) else {
+                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), to) else {
                     return rehydrate(ms).await;
                 };
-                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, head.applied);
+                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, to);
+                drop(es);
                 let mut bodies = Vec::new();
                 for l in plan.iter().filter(|l| l.stored_id().is_none_or(|id| seen.insert(id))) {
                     bodies.push(fetch_load(buckets, network, l).await?);
                 }
+                drop(plan);
                 if !bodies.is_empty() {
                     let incoming = bodies.iter().map(|(_, b)| b.len() as u64).sum();
                     let r = self.make_room(network, incoming, None).await?;
                     evicted.extend(r.evicted);
                 }
                 packs += self.ingest(network, bodies).await?;
-                lap("ingest");
                 refs += changes.len();
                 self.apply_refs(network, &changes).await?;
-                lap("refs");
+                cursor.advance(*chain, to);
+                if to < *range.end() {
+                    self.save_cursor(&cursor, &started.health.disk).await?;
+                }
+                from = Index(to.0 + 1);
             }
-            cursor.advance(*chain, head.applied);
+            lap("ingest");
         }
         self.save_cursor(&cursor, &started.health.disk).await?;
         lap("save_cursor");
