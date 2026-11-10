@@ -416,7 +416,7 @@ impl World {
 
     fn step(&mut self) {
         self.now = Timestamp(self.now.0 + STEP);
-        if self.now.0 % 1_000 == 0 {
+        if self.now.0.is_multiple_of(1_000) {
             let now = self.now;
             for g in &mut self.groups {
                 g.tick(now);
