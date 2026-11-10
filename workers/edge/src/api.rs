@@ -39,7 +39,6 @@ use graftyard_git::{Copies, ObjectMeta};
 use graftyard_identity::{Actor, AuthzFold, Principal};
 use graftyard_types::{ChainId, NetworkId, SiteId};
 use graftyard_wire::{Body, Endpoint, Host, Incoming, Meta, RateLimits, Reply, Surface};
-use serde::Deserialize as _;
 use serde_json::{Value, json};
 use worker::*;
 
