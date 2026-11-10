@@ -8,7 +8,9 @@
 //   Journey 9's own count (4.17 a second, 75 at 18x) is not reachable, and its agent-class pushes and every edge route
 //   that reads the repository's tiers (`{"rows": true}`: agent pushes' `push_context`, the task and lease API, GraphQL)
 //   took the leader past its 300 s CPU limit on this 4 GB tier. Each blob is a fixed random base with 64 bytes
-//   replaced, so the git cache's repacks and promotions delta them.
+//   replaced, so the git cache's repacks and promotions delta them. From 10:30Z the service runs with
+//   B030_PACK_GB_DAY=0.31 (journey 9's 40 KB mean pack at 1.6 pushes/s): at 2.48 GB a simulated day the log took in
+//   about 0.8 MB/s and the archive alarm drained about 0.2 MB/s under load, so the log grew past its cap.
 // - **Agent rows.** M0's rows a simulated day (6,050 tasks, each with a task row, a 2 KB PR opened on a pushed branch
 //   at its tip, and a 16 KB `PathSet` deleted with the PR 20 simulated minutes later; 48,400 300-byte statuses; 60,500
 //   150-byte provenance rows) are recorded by the leader in batched entries (`/bench_seed {"record"}`) every 10 s.
@@ -20,7 +22,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { EDGE, leaderOf, log, member, row, sleep, state as m3, tokens } from "../hosted/lib.mjs";
+import { EDGE, leaderOf, log, member, row, sleep, state as m3, statuses, tokens } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const CHAIN = `repo:${REPO.repo}`;
@@ -32,8 +34,10 @@ const DAYS = 30;
 const SPEED = Number(process.env.B030_SPEED ?? 18);
 const DAY_S = 86_400 / SPEED; // wall seconds per simulated day
 const PUSH_PER_S = Number(process.env.B030_PUSHES ?? 1.6);
-// Journey 9's 74.4 GB of inline packs in 30 days (m0-wp9.md, B0-30), as PUSH_PER_S pushes of this many bytes.
-const PUSH_BYTES = Math.round(74.4e9 / 30 / (PUSH_PER_S * DAY_S));
+// Inline pack bytes a simulated day: journey 9's 74.4 GB in 30 days (m0-wp9.md, B0-30) is 2.48. B030_PACK_GB_DAY lowers
+// it when the hosted archive alarm cannot drain that at SPEED (tests/am1/results/b0-30.md, "Substitutions").
+const PACK_PER_DAY = Number(process.env.B030_PACK_GB_DAY ?? 74.4 / 30) * 1e9;
+const PUSH_BYTES = Math.round(PACK_PER_DAY / (PUSH_PER_S * DAY_S));
 const PER_DAY = { tasks: 6_050, checks: 48_400, provenance: 60_500 };
 const BRANCHES = 500;
 const BATCH_S = 10;
@@ -222,6 +226,23 @@ const note = (k) => { tally[k] = (tally[k] ?? 0) + 1; };
 main = await tip("refs/heads/main");
 if (!main) throw new Error("no main");
 log(`b030 load: ${CHAIN}, speed ${SPEED}, ${PUSH_PER_S} pushes/s of ${PUSH_BYTES} bytes, day ${simDay().toFixed(3)}, pushes ${st.pushes}`);
+// The archive alarm promotes through the leader's own site's git cache shard, and only site a's shard has stayed
+// warm: shards b and c, cold, took their isolates past memory catching up on 2 GB of log and the archive stopped
+// (b0-30.md, "Blocked on", 7). So once a minute, a leader other than HOME_SITE hands leadership back to it when it is
+// caught up (member `/transfer`, as tests/am1/runs/transfer.mjs does). B030_HOME=none turns this off.
+const HOME_SITE = process.env.B030_HOME === "none" ? null : Number(process.env.B030_HOME ?? 0);
+let lastHome = Date.now(), homing = false;
+async function keepHome() {
+  try {
+    const sts = await statuses(CHAIN);
+    const l = sts.filter((s) => s.role === "leader").sort((a, b) => b.term - a.term)[0];
+    const home = sts.find((s) => s.site === HOME_SITE);
+    if (!l || l.site === HOME_SITE || !home || home.applied < l.applied - 2) return;
+    const t = await member(CHAIN, l.site, "/transfer", { to: HOME_SITE }, 15_000);
+    leader = null;
+    note(`home ${l.site}->${HOME_SITE} ${JSON.stringify(t.v?.transfer ?? t.v).slice(0, 40)}`);
+  } catch (e) { note(`home error ${String(e).slice(0, 40)}`); }
+}
 let batching = false, inflight = 0;
 let last = Date.now(), lastRow = Date.now(), lastBatch = 0, lastSave = Date.now();
 const done = () => simDay() >= DAYS || existsSync(STOP);
@@ -251,6 +272,11 @@ while (!done()) {
     }
   }
   if (now - lastSave > 15_000) { save(); lastSave = now; }
+  if (HOME_SITE !== null && now - lastHome > 60_000 && !homing) {
+    lastHome = now;
+    homing = true;
+    keepHome().finally(() => { homing = false; });
+  }
   if (now - lastRow > 60_000) {
     lastRow = now;
     row(OUT, { kind: "minute", at: new Date().toISOString(), day: +simDay().toFixed(4), pushes: st.pushes, pushBytes: st.pushBytes,
