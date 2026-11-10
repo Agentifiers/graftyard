@@ -1,0 +1,21 @@
+2026-11-10T16:18:51Z cost {"workers_requests": 363736, "workers_cpu_ms": 3089667, "do_requests": 2636554, "do_rows_written": 504861, "do_active_s": 153781, "containers_cpu_s": 8304, "containers_gib_s": 3183757, "containers_gb_s": 6367513, "containers_usd": 8.57, "usd": 9.88}
+2026-11-10T16:19:29.104Z m3org/fr3r-b029 = 131214
+2026-11-10T16:19:30.703Z repo:131214 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T16:19:30.837Z repo:131214 leader 0: k 4 at 5
+2026-11-10T16:19:30Z b0-29 fr3r-b029 131214 start
+2026-11-10T16:32:43.637Z repo:131214 leader 0: k 4 at 238
+2026-11-10T16:32:43Z b0-29 fr3r-b029 131214 done exit 0
+2026-11-10T16:32:50Z torn down 131214
+2026-11-10T16:32:50Z lf13 gap 1 start
+2026-11-10T16:34:06Z lf13 gap 1 exit 0
+2026-11-10T16:34:06Z lf13 gap 2 start
+2026-11-10T16:35:02Z lf13 gap 2 exit 0
+2026-11-10T16:35:02Z lf13 gap 3 start
+2026-11-10T16:35:56Z lf13 gap 3 exit 0
+2026-11-10T16:35:56Z lf13 install 1 start
+2026-11-10T16:37:50Z lf13 install 1 exit 0
+2026-11-10T16:37:50Z lf13 install 2 start
+2026-11-10T16:40:30Z lf13 install 2 exit 0
+2026-11-10T16:40:30Z lf13 install 3 start
+2026-11-10T16:43:10Z lf13 install 3 exit 0
+ALLDONE
