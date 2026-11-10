@@ -467,6 +467,10 @@ struct RepoChain {
     read: RepoRead,
     /// Every step performed, in order.
     steps: Vec<RepoStep>,
+    /// A repository chain whose create's `InitRepo` never commits.
+    refuse_init: bool,
+    /// The committed `RepoOwner` observed each time an `Init` was submitted.
+    repo_owner_at_init: Vec<Option<AccountId>>,
 }
 
 fn placed(w: &mut World, owner: AccountId, sites: [u8; 3]) -> PlacementRecord {
@@ -495,8 +499,14 @@ fn open_org(w: &mut World, o: AccountId, admin: AccountId, enterprise: Option<Ac
 }
 
 /// One consumer batch over `owner`'s `Authz` log, the way the site runs it: entries a minute old from the chain's
-/// cursor, each planned on fresh reads, `Step::Repo` performed on `repo`.
-fn authz_batch(w: &mut World, owner: AccountId, repo: &mut RepoChain, skip_cursor: bool) -> Option<audit::Report> {
+/// cursor, each planned on fresh reads, `Step::Repo` performed on `repo`. A stuck item is returned so a test can check
+/// that its cursor stayed put instead of the harness turning it into a panic.
+fn authz_batch(
+    w: &mut World,
+    owner: AccountId,
+    repo: &mut RepoChain,
+    skip_cursor: bool,
+) -> Result<Option<audit::Report>, Owed> {
     let g = w.authz(owner);
     let l = g.leader().unwrap();
     let now = g.now;
@@ -515,7 +525,7 @@ fn authz_batch(w: &mut World, owner: AccountId, repo: &mut RepoChain, skip_curso
     )
     .unwrap();
     if !audit::needs_batch(cursor, scanned.through, &owed) {
-        return None;
+        return Ok(None);
     }
     let chain = ChainId::Authz(owner);
     let mut f = Finisher::new(chain, now, cursor, scanned.through, owed);
@@ -530,23 +540,43 @@ fn authz_batch(w: &mut World, owner: AccountId, repo: &mut RepoChain, skip_curso
                     f.read(c, fold);
                 }
             }
-            Want::Submit(Step::Repo(_, s)) => {
-                match &s {
-                    RepoStep::Move { to } => (repo.read.voters, repo.read.home) = (to.sites.to_vec(), to.home),
-                    RepoStep::Settings { owner, enterprise } => {
-                        (repo.read.owner, repo.read.enterprise) = (*owner, *enterprise)
+            Want::Submit(Step::Repo(id, s)) => {
+                let refused = match &s {
+                    RepoStep::Move { to } => {
+                        (repo.read.voters, repo.read.home) = (to.sites.to_vec(), to.home);
+                        false
                     }
-                    RepoStep::Init { .. } | RepoStep::Delete { .. } => panic!("a transfer owes no {s:?}"),
+                    RepoStep::Settings { owner, enterprise } => {
+                        (repo.read.owner, repo.read.enterprise) = (*owner, *enterprise);
+                        false
+                    }
+                    RepoStep::Init { owner, enterprise, .. } => {
+                        let names: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(id)))).fresh_leader();
+                        repo.repo_owner_at_init.push(names.repo_owner(id));
+                        if repo.refuse_init {
+                            true
+                        } else {
+                            repo.read.life = RepoLife::Created;
+                            (repo.read.owner, repo.read.enterprise) = (*owner, *enterprise);
+                            false
+                        }
+                    }
+                    RepoStep::Delete { .. } => {
+                        repo.read.life = RepoLife::Deleted;
+                        false
+                    }
+                };
+                if !refused {
+                    repo.steps.push(s);
                 }
-                repo.steps.push(s);
-                f.submitted(false);
+                f.submitted(refused);
             }
             Want::Submit(s) => {
                 let refused = submit(w, s);
                 f.submitted(refused);
             }
-            Want::Done(r) => return Some(r),
-            Want::Stuck(o) => panic!("stuck on {o:?}"),
+            Want::Done(r) => return Ok(Some(r)),
+            Want::Stuck(o) => return Err(o),
         }
     }
     panic!("the batch never finished");
@@ -586,14 +616,16 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
                 life: RepoLife::Created,
             },
             steps: Vec::new(),
+            refuse_init: false,
+            repo_owner_at_init: Vec::new(),
         };
         // The edge's commit point, then nothing: its isolate died.
         let reserve = AuthzOp::ReserveTransfer { name: name.clone(), repo, from: alpha };
         w.authz_cmd(beta, AuthzCmd { cred: as_user(admin), op: reserve }).unwrap();
         // Inside the minute nothing is due.
-        assert_eq!(authz_batch(&mut w, beta, &mut chain, false), None);
+        assert_eq!(authz_batch(&mut w, beta, &mut chain, false).unwrap(), None);
         advance_all(&mut w, MINUTE + 1_000);
-        let r = authz_batch(&mut w, beta, &mut chain, false).expect("a batch");
+        let r = authz_batch(&mut w, beta, &mut chain, false).unwrap().expect("a batch");
         assert_eq!(r.owed, 1);
         let moves = chain.steps.iter().filter(|s| matches!(s, RepoStep::Move { .. })).count();
         assert_eq!(moves, usize::from(other_place), "{:?}", chain.steps);
@@ -614,7 +646,7 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
         // Run again: nothing is owed, nothing is submitted.
         let n = chain.steps.len();
         advance_all(&mut w, MINUTE + 1_000);
-        assert_eq!(authz_batch(&mut w, beta, &mut chain, false).map(|r| r.steps).unwrap_or(0), 0);
+        assert_eq!(authz_batch(&mut w, beta, &mut chain, false).unwrap().map(|r| r.steps).unwrap_or(0), 0);
         assert_eq!(chain.steps.len(), n);
     }
 }
@@ -731,4 +763,341 @@ fn the_authz_audit_cursor_is_operator_only_monotone_and_format_4() {
     let mut v = Vec::new();
     cur(5).encode(&mut v);
     assert_eq!(v[v.len() - 9], 29, "AuthzOp tag 29");
+}
+
+// ---- repository create and delete, from the owner's `Authz` log (format 0x12.11) ----
+
+fn create_owner(w: &mut World, enterprise: Option<AccountId>) -> (AccountId, AccountId) {
+    let (owner, admin) = (acct(0, 19, 1), acct(0, 12, 1));
+    let put = NamesOp::PutAccount { id: admin, suspended: false, sessions_not_before: Timestamp(0) };
+    w.names_cmd(ChainId::Names(account_shard(admin)), NamesCmd { cred: OPS, op: put }).unwrap();
+    open_org(w, owner, admin, enterprise);
+    (owner, admin)
+}
+
+fn commit_create(w: &mut World, owner: AccountId, admin: AccountId, name: &RepoName, init: &str) -> RepoId {
+    let op = AuthzOp::CreateRepoWith { name: name.clone(), init: init.into() };
+    let out = w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op }).unwrap().out;
+    let graftyard_identity::AuthzOut::Repo { repo, .. } = out else { panic!("create did not return a repository") };
+    repo
+}
+
+fn create_chain(owner: AccountId, life: RepoLife) -> RepoChain {
+    RepoChain {
+        read: RepoRead { owner, enterprise: None, voters: Vec::new(), home: SiteId(0), life },
+        steps: Vec::new(),
+        refuse_init: false,
+        repo_owner_at_init: Vec::new(),
+    }
+}
+
+fn set_repo_owner(w: &mut World, repo: RepoId, owner: AccountId) {
+    w.names_cmd(
+        ChainId::Names(name_shard(&NameKey::Repo(repo))),
+        NamesCmd { cred: OPS, op: NamesOp::RepoOwner { repo, owner } },
+    )
+    .unwrap();
+}
+
+fn names_log_entries(w: &mut World, repo: RepoId) -> usize {
+    let g = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo))));
+    let leader = g.leader().unwrap();
+    g.m(leader).state().commit.0 as usize
+}
+
+/// A completed entry is covered by the cursor and a fresh batch changes no fold and performs no repository step.
+fn assert_quiescent(w: &mut World, owner: AccountId, repo_id: RepoId, repo: &mut RepoChain) {
+    let names_before: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo_id)))).fresh_leader();
+    let authz_before: AuthzFold = w.authz(owner).fresh_leader();
+    assert!(authz_before.audit_cursor() > Index(0), "the cursor passed the commit point");
+    let steps_before = repo.steps.clone();
+    let read_before = repo.read.clone();
+    let second = authz_batch(w, owner, repo, false).unwrap().map(|r| r.steps).unwrap_or(0);
+    assert_eq!(second, 0);
+    assert_eq!(repo.steps, steps_before);
+    assert_eq!(repo.read, read_before);
+    let names_after: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo_id)))).fresh_leader();
+    let authz_after: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(names_after, names_before, "a second batch did not write Names");
+    assert_eq!(authz_after, authz_before, "a second batch did not write Authz");
+}
+
+fn assert_live(w: &mut World, owner: AccountId, name: &RepoName, repo: RepoId) {
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    assert!(matches!(authz.name(&name.key()), Some(RepoEntry::Live { repo: have, .. }) if have == repo));
+}
+
+/// The create edge died immediately after its atomic name-and-`RepoCreate` commit. The consumer must first commit
+/// `RepoOwner`, then initialize the chain with the requested settings; within the edge's minute it does neither.
+#[test]
+fn audit_finishes_a_create_killed_after_its_name() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("after-name").unwrap();
+    let init = r#"{"description":"the requested description","has_wiki":true}"#;
+    let repo_id = commit_create(&mut w, owner, admin, &name, init);
+    let mut repo = create_chain(acct(0, 19, 99), RepoLife::NoGroup);
+
+    assert_eq!(authz_batch(&mut w, owner, &mut repo, false).unwrap(), None);
+    assert!(repo.steps.is_empty());
+    let names: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo_id)))).fresh_leader();
+    assert_eq!(names.repo_owner(repo_id), None);
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the create is due");
+    assert_eq!((report.owed, report.steps, report.refused), (1, 2, 0));
+    assert_eq!(
+        repo.steps,
+        vec![RepoStep::Init { owner, enterprise: None, init: init.into() }],
+        "the only repository step follows the committed RepoOwner"
+    );
+    assert_eq!(repo.repo_owner_at_init, vec![Some(owner)], "RepoOwner committed before Init was submitted");
+    assert_eq!(repo.read.owner, owner);
+    assert_eq!(repo.read.life, RepoLife::Created);
+    let names: NamesFold = w.names(ChainId::Names(name_shard(&NameKey::Repo(repo_id)))).fresh_leader();
+    assert_eq!(names.repo_owner(repo_id), Some(owner));
+    assert_live(&mut w, owner, &name, repo_id);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// `RepoOwner` survived the crash: it is not written a second time, and initialization starts immediately.
+#[test]
+fn audit_finishes_a_create_killed_after_repo_owner() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("after-owner").unwrap();
+    let init = r#"{"description":"owner already committed"}"#;
+    let repo_id = commit_create(&mut w, owner, admin, &name, init);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::NoGroup);
+    let entries_before = names_log_entries(&mut w, repo_id);
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the create is due");
+    assert_eq!((report.owed, report.steps, report.refused), (1, 1, 0));
+    assert_eq!(repo.steps, vec![RepoStep::Init { owner, enterprise: None, init: init.into() }]);
+    assert_eq!(repo.repo_owner_at_init, vec![Some(owner)]);
+    assert_eq!(names_log_entries(&mut w, repo_id), entries_before, "no second RepoOwner entry");
+    assert_live(&mut w, owner, &name, repo_id);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// The README/group work survived, but `Created` did not: an open chain still owes exactly its first settings.
+#[test]
+fn audit_finishes_a_create_killed_after_readme() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("after-readme").unwrap();
+    let init = r#"{"description":"README committed, settings did not"}"#;
+    let repo_id = commit_create(&mut w, owner, admin, &name, init);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::Open);
+    let entries_before = names_log_entries(&mut w, repo_id);
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the create is due");
+    assert_eq!((report.owed, report.steps, report.refused), (1, 1, 0));
+    assert_eq!(repo.steps, vec![RepoStep::Init { owner, enterprise: None, init: init.into() }]);
+    assert_eq!(repo.read.life, RepoLife::Created);
+    assert_eq!(names_log_entries(&mut w, repo_id), entries_before);
+    assert_live(&mut w, owner, &name, repo_id);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// Age never turns an already-created chain back into a pending create. In particular, the abort deadline is checked
+/// only after the chain's life says initialization is still owed.
+#[test]
+fn a_finished_create_owes_nothing() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("already-created").unwrap();
+    let repo_id = commit_create(&mut w, owner, admin, &name, r#"{"description":"done"}"#);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::Created);
+
+    advance_all(&mut w, 700_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the old entry is scanned");
+    assert_eq!((report.owed, report.steps, report.refused), (1, 0, 0));
+    assert!(repo.steps.is_empty());
+    assert_eq!(repo.read.life, RepoLife::Created);
+    assert_live(&mut w, owner, &name, repo_id);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// Refused initialization keeps the cursor parked until the ten-minute abort deadline. The abort releases only the
+/// old repository's name: both a stale batch and a directly replayed stale abort leave a same-named replacement live.
+#[test]
+fn a_create_whose_init_never_commits_is_aborted_after_create_abort_after() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("never-initializes").unwrap();
+    let init = r#"{"description":"the repository chain refuses this"}"#;
+    let old_repo = commit_create(&mut w, owner, admin, &name, init);
+    let mut repo = create_chain(owner, RepoLife::NoGroup);
+    repo.refuse_init = true;
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let stuck = authz_batch(&mut w, owner, &mut repo, false);
+    assert!(matches!(stuck, Err(Owed::Create { repo, .. }) if repo == old_repo));
+    assert!(repo.steps.is_empty(), "a refused Init changes no chain state");
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(authz.audit_cursor(), Index(0), "a stuck item leaves the cursor unmoved");
+    assert_live(&mut w, owner, &name, old_repo);
+
+    advance_all(&mut w, 600_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the abort is due");
+    assert_eq!((report.owed, report.steps, report.refused), (1, 1, 0));
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(authz.name(&name.key()), None, "the old Live name was released");
+    assert_quiescent(&mut w, owner, old_repo, &mut repo);
+
+    let new_repo = commit_create(&mut w, owner, admin, &name, r#"{"description":"replacement"}"#);
+    assert_ne!(new_repo, old_repo);
+    assert_live(&mut w, owner, &name, new_repo);
+
+    // Replaying the consumer's old commit point must be harmless, and so must the operator operation itself: the
+    // latter assertion distinguishes an AbortCreate that checks `repo` from one that blindly clears `key`.
+    let stale = AuthzOp::AbortCreate { key: name.key(), repo: old_repo };
+    w.authz_cmd(owner, AuthzCmd { cred: OPS, op: stale }).unwrap();
+    assert_live(&mut w, owner, &name, new_repo);
+    let replay = authz_batch(&mut w, owner, &mut repo, true).unwrap().map(|r| r.steps).unwrap_or(0);
+    assert_eq!(replay, 0);
+    assert_live(&mut w, owner, &name, new_repo);
+}
+
+/// Abort is a consumer/operator operation, not an owner-admin operation. Both new operations use 0x12.11 and a release
+/// that reads only through 0x12.4 refuses them as unsupported.
+#[test]
+fn abort_create_is_operator_only_and_format_11() {
+    use graftyard_identity::{
+        AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11, AuthzErr,
+    };
+    use graftyard_raft::{CallError, Command};
+
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("operator-abort").unwrap();
+    let create = AuthzCmd {
+        cred: as_user(admin),
+        op: AuthzOp::CreateRepoWith { name: name.clone(), init: r#"{"description":"format"}"#.into() },
+    };
+    let repo_id = commit_create(&mut w, owner, admin, &name, r#"{"description":"format"}"#);
+    let abort = AuthzCmd { cred: OPS, op: AuthzOp::AbortCreate { key: name.key(), repo: repo_id } };
+    for cmd in [&create, &abort] {
+        assert_eq!(cmd.format(), AUTHZ_FORMAT_V11);
+        assert_eq!((cmd.format().family, cmd.format().version), (0x12, 11));
+    }
+    assert!(matches!(
+        w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: abort.op.clone() }),
+        Err(CommitError::Refused { err: AuthzErr::Forbidden, .. })
+    ));
+    assert_live(&mut w, owner, &name, repo_id);
+
+    let mut old: common::Group<AuthzCmd> = common::Group::reading(
+        ChainId::Authz(owner),
+        vec![AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4],
+        AuthzFold::new(owner),
+    );
+    old.elect(A);
+    for (id, cmd) in [(91, create), (92, abort)] {
+        assert!(matches!(old.commit(A, id, cmd), Err(CallError::Unsupported(_))));
+    }
+}
+
+/// The log-borne settings payload is bounded. A valid JSON description can exercise both sides of the exact byte cap.
+#[test]
+fn create_repo_with_over_the_cap_is_bad_record() {
+    use graftyard_identity::{AuthzErr, CREATE_INIT_MAX};
+
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let prefix = r#"{"description":""#;
+    let suffix = r#""}"#;
+    let description_len = CREATE_INIT_MAX - prefix.len() - suffix.len();
+    let at_cap = format!(r#"{{"description":"{}"}}"#, "d".repeat(description_len));
+    assert_eq!(at_cap.len(), CREATE_INIT_MAX, "the fixture itself is at the cap");
+    let over_cap = format!(r#"{{"description":"{}"}}"#, "d".repeat(description_len + 1));
+    assert_eq!(over_cap.len(), CREATE_INIT_MAX + 1);
+
+    let over = AuthzOp::CreateRepoWith { name: RepoName::parse("too-large").unwrap(), init: over_cap.into() };
+    assert!(matches!(
+        w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: over }),
+        Err(CommitError::Refused { err: AuthzErr::BadRecord, .. })
+    ));
+    let name = RepoName::parse("exactly-large-enough").unwrap();
+    let repo_id = commit_create(&mut w, owner, admin, &name, &at_cap);
+    assert_live(&mut w, owner, &name, repo_id);
+}
+
+/// A created repository whose delete committed only on `Authz` gets the repository tombstone with precisely the
+/// retention deadline carried by the deleted name.
+#[test]
+fn audit_tombstones_a_delete_killed_after_its_name() {
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, None);
+    let name = RepoName::parse("delete-after-name").unwrap();
+    let repo_id = commit_create(&mut w, owner, admin, &name, r#"{"description":"created first"}"#);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::Created);
+    let retain_until = Timestamp(w.authz(owner).now.0 + 3_600_000);
+    let delete = AuthzOp::DeleteRepo { key: name.key(), retain_until };
+    w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: delete }).unwrap();
+
+    advance_all(&mut w, MINUTE + 1_000);
+    let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the delete is due");
+    assert_eq!(report.steps, 1, "the Created create owes nothing; the delete owes one tombstone");
+    assert_eq!(repo.steps, vec![RepoStep::Delete { retain_until }]);
+    assert_eq!(repo.read.life, RepoLife::Deleted);
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(authz.name(&name.key()), Some(RepoEntry::Deleted { repo: repo_id, retain_until }));
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// Neither an existing tombstone nor an expired deleted name is sent back to the repository chain.
+#[test]
+fn a_finished_or_expired_delete_owes_nothing() {
+    for expired in [false, true] {
+        let mut w = World::default();
+        let (owner, admin) = create_owner(&mut w, None);
+        let name = RepoName::parse(if expired { "expired-delete" } else { "finished-delete" }).unwrap();
+        let repo_id = commit_create(&mut w, owner, admin, &name, r#"{"description":"delete no-op"}"#);
+        set_repo_owner(&mut w, repo_id, owner);
+        let life = if expired { RepoLife::Created } else { RepoLife::Deleted };
+        let mut repo = create_chain(owner, life);
+        let retain_until = Timestamp(w.authz(owner).now.0 + if expired { MINUTE } else { 3_600_000 });
+        let delete = AuthzOp::DeleteRepo { key: name.key(), retain_until };
+        w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: delete }).unwrap();
+
+        advance_all(&mut w, if expired { 3 * MINUTE } else { MINUTE + 1_000 });
+        let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the old entries are scanned");
+        assert_eq!(report.steps, 0, "expired={expired}");
+        assert!(repo.steps.is_empty(), "expired={expired}");
+        assert_eq!(repo.read.life, life);
+        let authz: AuthzFold = w.authz(owner).fresh_leader();
+        assert_eq!(authz.name(&name.key()), Some(RepoEntry::Deleted { repo: repo_id, retain_until }));
+        assert_quiescent(&mut w, owner, repo_id, &mut repo);
+    }
+}
+
+/// The settings JSON is a record of the create request, not a source of current ownership metadata. Initialization
+/// reads the owner's enterprise after every intervening Authz entry has been applied.
+#[test]
+fn an_enterprise_change_before_the_finisher_runs_is_in_init() {
+    let (old_enterprise, new_enterprise) = (acct(0, 19, 5), acct(0, 19, 6));
+    let mut w = World::default();
+    let (owner, admin) = create_owner(&mut w, Some(old_enterprise));
+    let name = RepoName::parse("enterprise-moved").unwrap();
+    let init = format!(r#"{{"description":"requested","old_enterprise":{}}}"#, old_enterprise.0.0);
+    let repo_id = commit_create(&mut w, owner, admin, &name, &init);
+    set_repo_owner(&mut w, repo_id, owner);
+    let mut repo = create_chain(owner, RepoLife::NoGroup);
+    let change = AuthzOp::SetEnterprise { enterprise: Some(new_enterprise) };
+    w.authz_cmd(owner, AuthzCmd { cred: OPS, op: change }).unwrap();
+
+    advance_all(&mut w, MINUTE + 1_000);
+    authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the create is due");
+    assert_eq!(repo.steps, vec![RepoStep::Init { owner, enterprise: Some(new_enterprise), init: init.into() }]);
+    assert_eq!(repo.read.enterprise, Some(new_enterprise));
+    assert_live(&mut w, owner, &name, repo_id);
+    assert_quiescent(&mut w, owner, repo_id, &mut repo);
 }
