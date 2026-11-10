@@ -10,7 +10,9 @@
 //   took the leader past its 300 s CPU limit on this 4 GB tier. Each blob is a fixed random base with 64 bytes
 //   replaced, so the git cache's repacks and promotions delta them. From 10:30Z the service runs with
 //   B030_PACK_GB_DAY=0.31 (journey 9's 40 KB mean pack at 1.6 pushes/s): at 2.48 GB a simulated day the log took in
-//   about 0.8 MB/s and the archive alarm drained about 0.2 MB/s under load, so the log grew past its cap.
+//   about 0.8 MB/s and the archive alarm drained about 0.2 MB/s under load, so the log grew past its cap. From
+//   12:10Z it runs with B030_PUSHES=0: every push-path stall was in the git cache shard, so the log takes only the
+//   recorded agent rows, about 0.14 GB a simulated day, and the archive alarm holds it at LOG_MAX_BYTES.
 // - **Agent rows.** M0's rows a simulated day (6,050 tasks, each with a task row, a 2 KB PR opened on a pushed branch
 //   at its tip, and a 16 KB `PathSet` deleted with the PR 20 simulated minutes later; 48,400 300-byte statuses; 60,500
 //   150-byte provenance rows) are recorded by the leader in batched entries (`/bench_seed {"record"}`) every 10 s.
@@ -37,7 +39,8 @@ const PUSH_PER_S = Number(process.env.B030_PUSHES ?? 1.6);
 // Inline pack bytes a simulated day: journey 9's 74.4 GB in 30 days (m0-wp9.md, B0-30) is 2.48. B030_PACK_GB_DAY lowers
 // it when the hosted archive alarm cannot drain that at SPEED (tests/am1/results/b0-30.md, "Substitutions").
 const PACK_PER_DAY = Number(process.env.B030_PACK_GB_DAY ?? 74.4 / 30) * 1e9;
-const PUSH_BYTES = Math.round(PACK_PER_DAY / (PUSH_PER_S * DAY_S));
+// B030_PUSHES=0 sends no pushes (tests/am1/results/b0-30.md, "Blocked on", 10).
+const PUSH_BYTES = PUSH_PER_S > 0 ? Math.round(PACK_PER_DAY / (PUSH_PER_S * DAY_S)) : 0;
 const PER_DAY = { tasks: 6_050, checks: 48_400, provenance: 60_500 };
 const BRANCHES = 500;
 const BATCH_S = 10;
@@ -223,7 +226,9 @@ function rid26() {
 // ---- the schedule ----
 const tally = {};
 const note = (k) => { tally[k] = (tally[k] ?? 0) + 1; };
-main = await tip("refs/heads/main");
+// The main tip from the state once read: ls-refs goes through the git cache shard, which may be mid-rehydrate.
+main = st.main ?? await tip("refs/heads/main");
+st.main = main;
 if (!main) throw new Error("no main");
 log(`b030 load: ${CHAIN}, speed ${SPEED}, ${PUSH_PER_S} pushes/s of ${PUSH_BYTES} bytes, day ${simDay().toFixed(3)}, pushes ${st.pushes}`);
 // The archive alarm promotes through the leader's own site's git cache shard, and only site a's shard has stayed
