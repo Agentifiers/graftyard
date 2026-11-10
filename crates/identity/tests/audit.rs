@@ -1004,6 +1004,22 @@ fn abort_create_is_operator_only_and_format_11() {
     }
 }
 
+/// A follower verifies RepoCreate against the name events before it, rather than accepting an orphaned marker.
+#[test]
+fn a_follower_refuses_repo_create_without_its_live_name() {
+    use graftyard_identity::AuthzEvent;
+    use graftyard_raft::{Fold, Scratch};
+
+    let fold = AuthzFold::new(acct(0, 19, 1));
+    let event = AuthzEvent::RepoCreate {
+        key: RepoName::parse("orphaned-marker").unwrap().key(),
+        repo: RepoId(DbId(59)),
+        init: r#"{"description":"no name committed"}"#.into(),
+    };
+    let error = fold.scratch().check(&event).expect_err("RepoCreate needs its matching Live name");
+    assert!(error.contains("not live"), "{error}");
+}
+
 /// The log-borne settings payload is bounded. A valid JSON description can exercise both sides of the exact byte cap.
 #[test]
 fn create_repo_with_over_the_cap_is_bad_record() {
@@ -1042,6 +1058,21 @@ fn audit_tombstones_a_delete_killed_after_its_name() {
     let retain_until = Timestamp(w.authz(owner).now.0 + 3_600_000);
     let delete = AuthzOp::DeleteRepo { key: name.key(), retain_until };
     w.authz_cmd(owner, AuthzCmd { cred: as_user(admin), op: delete }).unwrap();
+    let now = w.authz(owner).now;
+    let authz: AuthzFold = w.authz(owner).fresh_leader();
+    assert_eq!(
+        graftyard_identity::finish::delete(
+            owner,
+            repo_id,
+            Timestamp(retain_until.0 + 1),
+            &authz,
+            Some(owner),
+            Some(RepoLife::Created),
+            now,
+        ),
+        Ok(None),
+        "a stale owed deadline cannot tombstone the name's current retention"
+    );
 
     advance_all(&mut w, MINUTE + 1_000);
     let report = authz_batch(&mut w, owner, &mut repo, false).unwrap().expect("the delete is due");
