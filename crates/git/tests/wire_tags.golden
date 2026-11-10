@@ -41,6 +41,8 @@ git::repo::RepoEvent 36 LeaseRenew 241a30303030303030303030303030303030303030303
 git::repo::RepoEvent 37 LeaseRelease 25000002
 git::repo::RepoEvent 38 PathSet 260000010101010101010101010101010101010101010100000000
 git::repo::RepoEvent 39 Fanout 2701
+git::repo::RepoEvent 40 Hook 2802000000
+git::repo::RepoEvent 41 HookCursor 290101
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
 git::issue_ops::IssueOp<git::blob::BlobRef> 2 Close 0201
@@ -79,6 +81,8 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 34 DeleteRepo 2201
 git::issue_ops::IssueOp<git::blob::BlobRef> 35 AcquireLease 2300000000016100
 git::issue_ops::IssueOp<git::blob::BlobRef> 36 RenewLease 241a303030303030303030303030303030303030303030303030303100
 git::issue_ops::IssueOp<git::blob::BlobRef> 37 ReleaseLease 251a3030303030303030303030303030303030303030303030303031
+git::issue_ops::IssueOp<git::blob::BlobRef> 38 PutHook 26000161000000000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 39 DeleteHook 2702
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
@@ -657,3 +661,8 @@ git::task::TaskErr 8 Final 0800
 git::transfer::TransferErr 0 NotReserved 00
 git::transfer::TransferErr 1 WrongEnterprise 01
 git::transfer::TransferErr 2 NotRead 02
+git::hooks::HookContentType 0 Json 00
+git::hooks::HookContentType 1 Form 01
+git::sequencer::Outcome 0 Ok 00
+git::sequencer::Outcome 1 Failed 01
+git::sequencer::Outcome 2 TimedOut 02

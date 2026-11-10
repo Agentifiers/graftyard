@@ -582,6 +582,7 @@ impl Family for Repo {
             git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
             git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
             git::repo::RepoOut::Transfer(o) => json!({ "Transfer": o }),
+            git::repo::RepoOut::HookCursor(o) => json!({ "HookCursor": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),

@@ -49,6 +49,7 @@ mod api;
 #[cfg(feature = "test-faults")]
 mod bed_rows;
 mod collab;
+mod hooks;
 mod ident;
 mod keys;
 mod oidc;

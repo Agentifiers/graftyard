@@ -333,6 +333,10 @@ fn current() -> (Vec<String>, Vec<String>) {
         git::refs::Atomicity, git::repo::RejectReason, git::repo::RefOutcome, git::shard::ImageSlot,
         git::task::TaskKind, git::task::TaskApiState, git::task::TaskActor, git::task::TaskErr,
         git::transfer::TransferErr,
+        // M4-WP1: inside `RepoEvent::Hook`'s record.
+        git::hooks::HookContentType,
+        // M4-WP1: a `HookSequencer`'s stored attempt rows.
+        git::sequencer::Outcome,
     }
 }
 
