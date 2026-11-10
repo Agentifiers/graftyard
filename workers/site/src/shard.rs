@@ -104,6 +104,8 @@ impl ChainLog for GroupLog<'_> {
         })?;
         Ok((page, Index(v["index"].as_u64().unwrap_or(0))))
     }
+    /// Reads pages until `to` or an empty page. A newly elected leader may clamp `to` below the index a caller got
+    /// from the previous leader, so the result may be short; `ShardHost` checks the complete range before applying it.
     async fn entries(&self, _c: ChainId, from: Index, to: Index) -> std::result::Result<Vec<LogPacks>, StoreError> {
         let mut out: Vec<LogPacks> = Vec::new();
         let mut at = from.0;

@@ -47,12 +47,27 @@ pub trait ChainLog {
     async fn head(&self, chain: ChainId) -> Result<Head, StoreError>;
     /// One page of the chain's refs after `after` (`RefsPage::next` of the page before), with the index it was read at.
     async fn refs_page(&self, chain: ChainId, after: Option<String>) -> Result<(RefsPage, Index), StoreError>;
-    /// Committed entries with index in `from..=to`. Fails for an index the leader has archived and truncated.
+    /// Committed entries with index in `from..=to`. Fails for an index the leader has archived and truncated. A read
+    /// routed to a newly elected leader may instead return a short range; consumers check it before applying anything.
     async fn entries(&self, chain: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError>;
     /// The chain's last committed `Promoted`, with the index of its entry.
     async fn last_promoted(&self, chain: ChainId) -> Result<Option<(Index, Promoted)>, StoreError>;
     /// Every stored pack the network chain's `Compacted` entries consumed.
     async fn consumed(&self, network: NetworkId) -> Result<BTreeSet<PackId>, StoreError>;
+}
+
+/// Requires one entry at every index of `from..=to`, in order, before any of the range is applied.
+pub fn require_complete_entries(
+    chain: ChainId,
+    from: Index,
+    to: Index,
+    entries: &[LogPacks],
+) -> Result<(), StoreError> {
+    if entries.iter().map(|e| e.index.0).eq(from.0..=to.0) {
+        return Ok(());
+    }
+    let received: Vec<u64> = entries.iter().map(|e| e.index.0).collect();
+    Err(StoreError(format!("{chain}: incomplete log entries {}..={}; received indices {received:?}", from.0, to.0)))
 }
 
 /// Each chain's head, every read sent to its leader at once and awaited together, in `chains` order. A catch-up needs
@@ -322,5 +337,24 @@ mod tests {
         let (inline, stored_) = promotion_inputs(&entries, Index(1), Index(2));
         assert_eq!(inline, vec![(Index(1), vec![1]), (Index(2), vec![2])]);
         assert_eq!(stored_, vec![stored(7)]);
+    }
+
+    /// A newly elected leader can answer a short page (`ChainLog::entries`). Only an exact `from..=to` run passes:
+    /// a catch-up that applied a short page and advanced to `to` skipped those entries' packs and refs for good
+    /// (`tests/am1/results/b0-30.md`, blocker 12).
+    #[test]
+    fn only_a_complete_entries_range_passes() {
+        let range = |ix: &[u64]| ix.iter().map(|i| entry(*i, vec![])).collect::<Vec<_>>();
+        let ok = |ix: &[u64]| require_complete_entries(CHAIN, Index(5), Index(8), &range(ix)).is_ok();
+        assert!(ok(&[5, 6, 7, 8]));
+        assert!(!ok(&[]), "the lagging leader's empty page");
+        assert!(!ok(&[5, 6]), "a page short at the end");
+        assert!(!ok(&[6, 7, 8]), "a page short at the start");
+        assert!(!ok(&[5, 7, 8]), "a hole");
+        assert!(!ok(&[5, 6, 6, 7, 8]), "a repeat");
+        assert!(!ok(&[5, 6, 8, 7]), "out of order");
+        assert!(!ok(&[5, 6, 7, 8, 9]), "past the range");
+        let e = require_complete_entries(CHAIN, Index(5), Index(8), &range(&[5, 6])).unwrap_err();
+        assert!(e.0.contains("5..=8") && e.0.contains("[5, 6]"), "{}", e.0);
     }
 }

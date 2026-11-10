@@ -9,7 +9,7 @@ use serde::Deserialize;
 use worker::{Conditional, Container, Fetcher, Headers, Include, Method, Request, RequestInit, Response, State};
 
 use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
-use crate::ingest::{ChainLog, Load, rehydrate_plan, tail_start};
+use crate::ingest::{ChainLog, Load, rehydrate_plan, require_complete_entries, tail_start};
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
 use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
@@ -785,6 +785,7 @@ impl ShardHost<'_> {
             while from <= head.applied {
                 let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(head.applied.0));
                 let piece = log.entries(*chain, from, to).await?;
+                require_complete_entries(*chain, from, to, &piece)?;
                 let plan: Vec<Load> = rehydrate_plan(&[], &consumed, &piece)
                     .into_iter()
                     .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
@@ -836,7 +837,9 @@ impl ShardHost<'_> {
             };
             cursor.advance(*chain, heads[i].min(first.unwrap_or(last)));
             if last > cursor.at(*chain) {
-                let es = log.entries(*chain, Index(cursor.at(*chain).0 + 1), last).await?;
+                let from = Index(cursor.at(*chain).0 + 1);
+                let es = log.entries(*chain, from, last).await?;
+                require_complete_entries(*chain, from, last, &es)?;
                 let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, last);
                 let mut bodies = Vec::new();
                 for l in &plan {
@@ -926,6 +929,9 @@ impl ShardHost<'_> {
             while from <= *range.end() {
                 let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(range.end().0));
                 let es = log.entries(*chain, from, to).await?;
+                // A newly elected leader can answer a short page below the old leader's applied index. Applying what
+                // arrived and advancing to `to` would skip packs and refs that no later catch-up would read again.
+                require_complete_entries(*chain, from, to, &es)?;
                 entries += es.len();
                 let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), to) else {
                     return rehydrate(ms).await;
