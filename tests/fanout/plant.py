@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """fanout: planted bugs in this branch's new code (concurrent validate and /load in the git shard container, shared
-catch-ups, the Fanout event and its fold row, the leader's report fold, the validator choice, and the site's ranges
-read). Plants one mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints
-CAUGHT, MISSED, or DID NOT COMPILE. Run from the worktree root:
+catch-ups, the Fanout event and its fold row, the leader's report fold, the validator choice, the site's ranges read,
+and the A1 driver's push-result parser). Plants one mutant at a time, runs the tests that gate it, and restores the
+file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the worktree root:
 
     python3 tests/fanout/plant.py          # every mutant
     python3 tests/fanout/plant.py 0 3      # by number
@@ -23,6 +23,8 @@ LOAD = ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', '']
 PUSH = ['cargo', '-p', 'graftyard-git', '--test', 'push', 'fanout']
 WIRE = ['cargo', '-p', 'graftyard-git', '--test', 'wire_tags', '']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', 'fanout::tests']
+A1 = 'tests/am1/rest/a1.mjs'
+SELF = ['node', A1, '--selftest']
 
 MUTANTS = [
     ('go: two validates of the same pack rename onto one directory unserialized', GO,
@@ -75,6 +77,9 @@ MUTANTS = [
     ('site: a follower answers a report without the notLeader shape', 'workers/site/src/fanout.rs',
      'json!({ "error": crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(nl)) })',
      'json!({ "error": "not leader", "term": nl.term.0 })', SITE),
+    ('driver: a push result is matched by its text, so `002cok refs/...` reads as an error', A1,
+     '  return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";',
+     '  return /(^|[^a-z])ok refs\\//.test(text) ? "ok" : "error";', SELF),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
@@ -82,6 +87,10 @@ ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.enviro
 
 
 def run(t):
+    if t[0] == 'node':
+        r = subprocess.run(t, cwd=ROOT, capture_output=True, text=True, timeout=120)
+        out = r.stdout + r.stderr
+        return r.returncode, out, 'SyntaxError' in out
     if t[0] == 'go':
         r = subprocess.run(['go', 'test', '-count=1', '-run', t[1], '.'], cwd=os.path.join(ROOT, 'containers/git/server'),
                            capture_output=True, text=True, timeout=600)
