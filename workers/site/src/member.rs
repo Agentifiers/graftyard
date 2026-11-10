@@ -1001,6 +1001,7 @@ impl<F: Family> Routes<F> {
             "markerFailures": s.marker_failures,
             "truncatedTo": s.truncated_to,
             "archiveSteps": s.archive_steps,
+            "sqliteFull": s.sqlite_full,
             "received": s.received,
             "alarms": s.alarms,
             "alarmRuns": s.alarm_runs,
