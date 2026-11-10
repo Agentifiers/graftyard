@@ -209,14 +209,16 @@ async fn read_gate(
 
 /// The read gate's per-isolate cache: a decision is reused for `READ_CACHE` (`design/DESIGN.md`, Shape, Identity:
 /// "reads honor a revocation within 10 s"), so the three requests of one clone or fetch read the access rows and the
-/// owner's `Authz` once. Keyed by the repository and the stored token's hash, or no token. A request under an
-/// installation token or a session is not cached: its key would need its claims.
+/// owner's `Authz` once. Decisions are keyed by the repository and the stored token's hash, an installation token's
+/// `jti` (hashed with a domain prefix), or no token. A web session is not cached. An installation token's revocation
+/// or narrowing is likewise honoured within `READ_CACHE`.
 mod gate {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 
-    use graftyard_identity::{Actor, Credential, Decision, Principal, READ_CACHE};
+    use graftyard_identity::{Actor, Credential, Decision, Principal, READ_CACHE, stateless::InstallationClaims};
     use graftyard_types::{RepoId, Timestamp};
+    use sha2::{Digest, Sha256};
 
     /// The most decisions one isolate keeps; past it the cache starts empty again.
     const ENTRIES_MAX: usize = 4_096;
@@ -227,10 +229,20 @@ mod gate {
         static CACHE: RefCell<BTreeMap<Key, (Timestamp, Decision)>> = const { RefCell::new(BTreeMap::new()) };
     }
 
+    fn stateless_key(claims: &InstallationClaims) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"graftyard-read-gate-ghs\0");
+        hash.update(claims.jti.0.0.to_be_bytes());
+        hash.finalize().into()
+    }
+
     pub(crate) fn key(repo: RepoId, who: Option<&Principal>) -> Option<Key> {
         match who {
             None => Some((repo, None)),
             Some(Principal { actor: Actor::User(_), credential: Credential::Stored(h), .. }) => Some((repo, Some(*h))),
+            Some(Principal { credential: Credential::Stateless(claims), .. }) => {
+                Some((repo, Some(stateless_key(claims))))
+            }
             Some(_) => None,
         }
     }
@@ -248,6 +260,77 @@ mod gate {
             }
             c.insert(k, (now, d));
         });
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use std::collections::BTreeMap;
+
+    use graftyard_identity::stateless::InstallationClaims;
+    use graftyard_identity::{
+        Actor, AppId, Credential, InstallationId, Jti, Kid, PermissionSet, Principal, RepoScope, ScopeSet, UserId,
+        WebSessionId,
+    };
+    use graftyard_types::{AccountId, DbId, RepoId, Timestamp, Ulid};
+    use sha2::{Digest, Sha256};
+
+    use super::gate;
+
+    fn claims(jti: u128) -> InstallationClaims {
+        InstallationClaims {
+            app: AppId(DbId(1)),
+            installation: InstallationId(DbId(2)),
+            repos: RepoScope::All,
+            permissions: PermissionSet(BTreeMap::new()),
+            jti: Jti(Ulid(jti)),
+            iat: Timestamp(1_000),
+            exp: Timestamp(2_000),
+            kid: Kid(3),
+            task: None,
+        }
+    }
+
+    fn principal(credential: Credential) -> Principal {
+        Principal {
+            actor: Actor::User(UserId(AccountId(DbId(1)))),
+            scopes: ScopeSet(0),
+            credential,
+            sso_orgs: smallvec::SmallVec::new(),
+        }
+    }
+
+    fn stateless(jti: u128) -> Principal {
+        principal(Credential::Stateless(Box::new(claims(jti))))
+    }
+
+    #[test]
+    fn stateless_keys_follow_the_jti() {
+        let repo = RepoId(DbId(1));
+        let first = stateless(10);
+        let second = stateless(11);
+        assert_eq!(gate::key(repo, Some(&first)), gate::key(repo, Some(&first)));
+        assert_ne!(gate::key(repo, Some(&first)), gate::key(repo, Some(&second)));
+    }
+
+    #[test]
+    fn stateless_keys_are_domain_separated_from_stored_token_hashes() {
+        let repo = RepoId(DbId(1));
+        let jti = 0x0001_0203_0405_0607_0809_0a0b_0c0d_0e0f;
+        let stateless = stateless(jti);
+        let unseparated: [u8; 32] = Sha256::digest(jti.to_be_bytes()).into();
+        for hash in [[0; 32], unseparated] {
+            let stored = principal(Credential::Stored(hash));
+            assert_ne!(gate::key(repo, Some(&stateless)), gate::key(repo, Some(&stored)));
+        }
+    }
+
+    #[test]
+    fn sessions_stay_uncached_and_anonymous_stays_repository_scoped() {
+        let repo = RepoId(DbId(1));
+        let session = principal(Credential::Session(WebSessionId(Ulid(1))));
+        assert_eq!(gate::key(repo, Some(&session)), None);
+        assert_eq!(gate::key(repo, None), Some((repo, None)));
     }
 }
 
