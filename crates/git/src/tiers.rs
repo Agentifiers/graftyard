@@ -83,6 +83,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Created { .. } | RepoEvent::Deleted { .. } => TierSet::CORE,
         RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
         RepoEvent::PathSet(_) => TierSet::METADATA,
+        RepoEvent::Fanout { .. } => TierSet::CORE,
     }
 }
 
@@ -145,6 +146,8 @@ pub const CORE: Schema = Schema {
         // tables, so the schema keeps main's order and appends.
         t("created", &[]),
         t("deleted", &[]),
+        // Format 32.15: the network's committed k (`RepoEvent::Fanout`).
+        t("fanout", &[]),
     ],
 };
 
@@ -818,6 +821,7 @@ impl RepoTiers {
                 }
             }
             RepoEvent::PathSet(_) => {}
+            RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
         }
     }
 

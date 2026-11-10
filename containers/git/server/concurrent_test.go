@@ -176,3 +176,37 @@ func TestConcurrentValidatesOfOneNetwork(t *testing.T) {
 		t.Fatalf("quarantines left behind: %v", left)
 	}
 }
+
+// /load answers the NetworkLoad fields: a CPU fraction between 0 and 1 and the validates running, which a validate
+// counts while it runs and not after.
+func TestLoadReportsCPUAndValidatesRunning(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=9")
+	l := lock("9")
+	l.Lock() // a validate of network 9 now waits inside handleValidate
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		http.Post(s.URL+"/validate?net=9&tipsn=0", "", strings.NewReader("PACK"))
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	var v map[string]any
+	for time.Now().Before(deadline) {
+		_, v = call(t, s, "GET", "/load")
+		if v["queue_depth"].(float64) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	l.Unlock()
+	<-done
+	if v["queue_depth"].(float64) != 1 {
+		t.Fatalf("a waiting validate is not counted: %v", v)
+	}
+	if _, v = call(t, s, "GET", "/load"); v["queue_depth"].(float64) != 0 {
+		t.Fatalf("a finished validate is still counted: %v", v)
+	}
+	if c := v["cpu_p99"].(float64); c < 0 || c > 1 {
+		t.Fatalf("cpu_p99 %v", c)
+	}
+}
