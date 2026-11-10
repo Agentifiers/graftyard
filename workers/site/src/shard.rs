@@ -25,10 +25,13 @@ use crate::{SiteEnv, now_ms};
 thread_local! {
     /// Per network, the catch-ups running on this isolate's shard objects, so a merge waits for one in flight
     /// (`merge_then_catch_up`'s `in_flight`). An object's requests share its isolate.
-    static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<i64, graftyard_git::merge_cache::CatchUps>> =
+    ///
+    /// Keyed by the shard object too: a hot-pool object of the network may share the isolate with its first shard,
+    /// and each must catch up its own container.
+    static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<(String, i64), graftyard_git::merge_cache::CatchUps>> =
         Default::default();
     /// Per network, the log index the latest shared catch-up (`CatchUps::fresh`) reached, for `x-graft-cursor`.
-    static CURSORS: std::cell::RefCell<std::collections::HashMap<i64, u64>> = Default::default();
+    static CURSORS: std::cell::RefCell<std::collections::HashMap<(String, i64), u64>> = Default::default();
     /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), and when
     /// this isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`).
     static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, (u8, u64)>> = Default::default();
@@ -39,9 +42,9 @@ fn fanout_k(net: NetworkId) -> u8 {
     FANOUT.with(|m| m.borrow().get(&net.0.0).map_or(1, |(k, _)| *k))
 }
 
-/// This isolate's catch-up gate for network `net`.
-fn catch_ups(net: NetworkId) -> graftyard_git::merge_cache::CatchUps {
-    CATCH_UPS.with(|m| m.borrow_mut().entry(net.0.0).or_default().clone())
+/// This isolate's catch-up gate for network `net` on shard object `obj`.
+fn catch_ups(obj: &str, net: NetworkId) -> graftyard_git::merge_cache::CatchUps {
+    CATCH_UPS.with(|m| m.borrow_mut().entry((obj.to_owned(), net.0.0)).or_default().clone())
 }
 
 #[durable_object]
@@ -189,6 +192,7 @@ impl DurableObject for GitShard {
                 crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
             }
         };
+        let obj = self.state.id().to_string();
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
@@ -198,17 +202,17 @@ impl DurableObject for GitShard {
         // two at once each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one
         // hung until the runtime ended it at 884 s ("Promise will never complete", `tests/m3/results/wire-fix.md`).
         let caught_up = || async {
-            let _running = catch_ups(net).turn().await;
+            let _running = catch_ups(&obj, net).turn().await;
             host.catch_up(net, &[chain], &bs, &log).await
         };
         // A validate, clone, or fetch needs only every commit made before it arrived, so requests that arrive while a
         // catch-up runs share the next one (`CatchUps::fresh`): hosted, each catch-up reads the leader, and one each
         // held a network to about 2.7 validates/s (`tests/am1/results/am1-runs.md`, "Diagnosis").
         let fresh = || async {
-            catch_ups(net)
+            catch_ups(&obj, net)
                 .fresh(|| async {
                     let c = host.catch_up(net, &[chain], &bs, &log).await?;
-                    CURSORS.with(|m| m.borrow_mut().insert(net.0.0, c.cursor.at(chain).0));
+                    CURSORS.with(|m| m.borrow_mut().insert((obj.clone(), net.0.0), c.cursor.at(chain).0));
                     Ok(())
                 })
                 .await
@@ -306,7 +310,7 @@ impl DurableObject for GitShard {
             }
             "/info-refs" | "/upload-pack" => {
                 fresh().await.map_err(se)?;
-                let at = CURSORS.with(|m| m.borrow().get(&net.0.0).copied().unwrap_or(0));
+                let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -354,7 +358,7 @@ impl DurableObject for GitShard {
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
                     || async { host.up().await.map(|_| ()) },
                     || {
-                        let idle = catch_ups(net).idle();
+                        let idle = catch_ups(&obj, net).idle();
                         let waited = &waited;
                         async move {
                             let w0 = now_ms();
