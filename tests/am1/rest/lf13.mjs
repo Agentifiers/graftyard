@@ -95,17 +95,20 @@ const during = leases(mode === "gap" ? 15_000 : 20_000);
 if (mode === "gap") {
   // Each isolate rereads the site fault at most once a second (`SITE_FAULT_TTL_MS`), so F keeps taking appends for
   // a second or two after the fault is set. A transfer before F stops would elect O at an entry F already holds,
-  // and O's first round would match. So wait until F's `last` has stood still while the leader's moved on by 3.
+  // and O's first round would match. So wait until F's `last` has stood still while O holds an entry F lacks (O's
+  // `last` past F's): only then does O's first round, from its own last entry, start past F's. Lease commits are
+  // slow while F is faulted (round two of fanout's hosted LF-13 saw 4 in a run), so a lead of 3 is not required.
   const w0 = Date.now();
-  let fLast = -1, fSince = Date.now(), gapSeen = null;
-  while (Date.now() - w0 < 8_000) {
+  let fLast = -1, fSince = Date.now(), gapSeen = null, oLast = -1;
+  while (Date.now() - w0 < 11_000) {
     await sleep(300);
     const s = await statuses(CHAIN);
-    const fl = s.find((x) => x.site === F)?.last ?? -1, ll = s.find((x) => x.site === leader)?.last ?? -1;
+    const fl = s.find((x) => x.site === F)?.last ?? -1;
+    oLast = s.find((x) => x.site === O)?.last ?? -1;
     if (fl !== fLast) { fLast = fl; fSince = Date.now(); }
-    if (Date.now() - fSince >= 1_500 && ll - fl >= 3) { gapSeen = { fLast: fl, leaderLast: ll, ms: Date.now() - fault0 }; break; }
+    if (Date.now() - fSince >= 1_500 && oLast > fl) { gapSeen = { fLast: fl, oLast, ms: Date.now() - fault0 }; break; }
   }
-  row(OUT, { step: "fStopped", gapSeen, fLast });
+  row(OUT, { step: "fStopped", gapSeen, fLast, oLast });
   // The fault stays on until O leads and has committed entries F lacks, so O's first round to F starts past F's
   // last entry (`crates/raft/tests/lf13.rs`, `a_new_leader_s_first_round_leaves_a_gap_on_the_lagging_follower`). A
   // transfer the leader drops (it waits out F's missing ack, then abandons) is re-sent, up to 5 times.
