@@ -71,6 +71,15 @@ const [F, O] = st.filter((m) => m.role === "follower").map((m) => m.site);
 if (leader === undefined || F === undefined || O === undefined) throw new Error(`need a leader and two followers: ${JSON.stringify(st)}`);
 row(OUT, { step: "start", mode, leader, follower: F, other: O, members: st });
 log(`lf13 ${mode}: leader ${leader}, F ${F}, other ${O}`);
+if (mode === "install") {
+  // The archive alarm sums the log at most once a minute while it finds nothing to do, and a held poll waits at most
+  // 25 s, so the cap is set first and the archiver kept busy (each run that archives re-arms in 200 ms) by 40 s of
+  // commits before any poll is held; the fault then truncates past F within seconds and lifts as soon as it has.
+  const cap = await member(CHAIN, leader, "/bench_seed", { archiveCap: { max: 4_096, range: 65_536 } }, 15_000);
+  row(OUT, { step: "archiveCap", answer: cap.v ?? cap.status });
+  await leases(40_000);
+  row(OUT, { step: "warm", stats: (({ truncatedTo, archiveSteps }) => ({ truncatedTo, archiveSteps }))((await member(CHAIN, leader, "/stats", undefined, 15_000)).v ?? {}) });
+}
 await leases(3_000);
 const before = (await poll(F, 99_999, 0)).cursor;
 
@@ -82,7 +91,7 @@ row(OUT, { step: "held", members: await feedOf() });
 let faultMs = 5_000;
 const on = await bedGet(`/_bed/fault?site=${F}&for_ms=${mode === "gap" ? 30_000 : 300_000}`);
 const fault0 = Date.now();
-const during = leases(mode === "gap" ? 15_000 : 60_000);
+const during = leases(mode === "gap" ? 15_000 : 20_000);
 if (mode === "gap") {
   // Each isolate rereads the site fault at most once a second (`SITE_FAULT_TTL_MS`), so F keeps taking appends for
   // a second or two after the fault is set. A transfer before F stops would elect O at an entry F already holds,
@@ -115,15 +124,16 @@ if (mode === "gap") {
   const st2 = await statuses(CHAIN);
   row(OUT, { step: "pastF", moved, fApplied: fAt, leaderCommit: st2.find((s) => s.role === "leader")?.commit, members: st2.map((m) => [m.site, m.role, m.term, m.applied, m.last]) });
 } else {
-  // A cap far below the log, so the leader promotes and archives every range above its snapshots, and truncates.
-  const cap = await member(CHAIN, leader, "/bench_seed", { archiveCap: { max: 4_096, range: 65_536 } }, 15_000);
-  row(OUT, { step: "archiveCap", answer: cap.v ?? cap.status });
-  for (let i = 0; i < 120; i++) {
-    await sleep(2_000);
+  // The cap (set above) is far below the log, so the leader archives each range as it fills, and truncates past F.
+  let truncated = null;
+  for (let i = 0; i < 36 && !truncated; i++) {
+    await sleep(500);
     const s = (await member(CHAIN, leader, "/stats", undefined, 15_000)).v ?? {};
     const fs = (await statuses(CHAIN)).find((x) => x.site === F);
-    if (s.truncatedTo > (fs?.applied ?? 0) + 1) { row(OUT, { step: "truncated", truncatedTo: s.truncatedTo, fApplied: fs?.applied, archiveSteps: s.archiveSteps }); break; }
+    if (s.truncatedTo > (fs?.applied ?? 0) + 1) truncated = { truncatedTo: s.truncatedTo, fApplied: fs?.applied, archiveSteps: s.archiveSteps, ms: Date.now() - fault0 };
   }
+  row(OUT, { step: "truncated", truncated });
+  leasesUntil = 0;
 }
 await during;
 faultMs = Date.now() - fault0;
