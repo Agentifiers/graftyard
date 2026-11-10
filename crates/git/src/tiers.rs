@@ -83,6 +83,8 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::Created { .. } | RepoEvent::Deleted { .. } => TierSet::CORE,
         RepoEvent::LeaseAcquire { .. } | RepoEvent::LeaseRenew { .. } | RepoEvent::LeaseRelease { .. } => TierSet::CORE,
         RepoEvent::PathSet(_) => TierSet::METADATA,
+        RepoEvent::Fanout { .. } => TierSet::CORE,
+        RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
     }
 }
 
@@ -145,6 +147,11 @@ pub const CORE: Schema = Schema {
         // tables, so the schema keeps main's order and appends.
         t("created", &[]),
         t("deleted", &[]),
+        // Format 32.15: the network's committed k (`RepoEvent::Fanout`).
+        t("fanout", &[]),
+        // M4-WP1, 32.16: repository webhooks by id, and the `Webhooks` consumer's `HookCursor`.
+        t("hook", &["id"]),
+        t("hook_cursor", &[]),
     ],
 };
 
@@ -810,6 +817,14 @@ impl RepoTiers {
                 }
             }
             RepoEvent::Deleted { retain_until, actor } => put_rec(w, "deleted", Vec::new(), &(*retain_until, *actor)),
+            RepoEvent::Hook { id, record, .. } => {
+                // A create's id is the core tier's next one, which the tier's cursor passes, as a release's does.
+                if record.is_some() {
+                    assigned(w, ev, Tier::Core, id.0);
+                }
+                crate::hooks::write_core(w, ev, at)
+            }
+            RepoEvent::HookCursor(_) => crate::hooks::write_core(w, ev, at),
             RepoEvent::LeaseAcquire { lease, plan } => crate::lease::write_acquire(w, lease, *plan),
             RepoEvent::LeaseRenew { id, expires } => crate::lease::write_renew(w, *id, *expires),
             RepoEvent::LeaseRelease { ids, .. } => {
@@ -818,6 +833,7 @@ impl RepoTiers {
                 }
             }
             RepoEvent::PathSet(_) => {}
+            RepoEvent::Fanout { k } => put_rec(w, "fanout", Vec::new(), k),
         }
     }
 

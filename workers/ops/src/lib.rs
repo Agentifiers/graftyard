@@ -11,6 +11,7 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use graftyard_identity::Kid;
+use graftyard_identity::sealed::{HookSecret, HookSecrets, Wrapped};
 use graftyard_identity::stateless::{KeyError, KeySource, SigningSecret};
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,54 @@ impl KeySource for MintKeySource<'_> {
     }
 }
 
+/// One `SecretsWrapKey` slot's text (`design/DESIGN.md`, Shape, `SecretName`; Secrets Store's two slots per rotatable
+/// secret): JSON with the slot number and the 32-byte AES-256 key as hex [inference: the design names no format].
+#[derive(Clone, Serialize, Deserialize)]
+pub struct WrapKeySlot {
+    pub slot: u8,
+    pub key: String,
+}
+
+/// `HookSecrets` over the `SecretsWrapKey` slots the host read: `current` wraps, and any slot listed unwraps what it
+/// wrapped. A hook secret never leaves this crate's `unwrap` except as the HMAC key `HookSequencer` signs with.
+pub struct WrapKeySource {
+    pub current: u8,
+    pub slots: Vec<(u8, [u8; 32])>,
+}
+
+impl WrapKeySource {
+    /// From the slot texts the host read; `current` names the slot new values wrap under.
+    pub fn parse(current: u8, texts: &[&str]) -> Result<WrapKeySource, KeyError> {
+        let mut slots = Vec::new();
+        for t in texts {
+            let s: WrapKeySlot = serde_json::from_str(t).map_err(|_| bad("not a SecretsWrapKey slot"))?;
+            let k: [u8; 32] = unhex(&s.key).and_then(|k| k.try_into().ok()).ok_or_else(|| bad("wrap key"))?;
+            slots.push((s.slot, k));
+        }
+        Ok(WrapKeySource { current, slots })
+    }
+
+    fn key(&self, slot: u8) -> Result<Aes256Gcm, KeyError> {
+        let k = self.slots.iter().find(|(s, _)| *s == slot).ok_or_else(|| bad("no such wrap key slot"))?.1;
+        Ok(Aes256Gcm::new(&k.into()))
+    }
+}
+
+impl HookSecrets for WrapKeySource {
+    fn wrap(&self, plain: &[u8], nonce: [u8; 12]) -> Result<Wrapped, KeyError> {
+        let ct = self.key(self.current)?.encrypt(Nonce::from_slice(&nonce), plain).map_err(|_| bad("seal"))?;
+        Ok(Wrapped { slot: self.current, nonce, ciphertext: ct.into() })
+    }
+
+    fn unwrap(&self, w: &Wrapped) -> Result<HookSecret, KeyError> {
+        let plain = self
+            .key(w.slot)?
+            .decrypt(Nonce::from_slice(&w.nonce), w.ciphertext.as_ref())
+            .map_err(|_| bad("the wrap key did not open the hook secret"))?;
+        Ok(HookSecret(plain.into()))
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod worker_main;
 
@@ -89,5 +138,28 @@ mod tests {
         let tampered = MintWrapKey { wrapped: format!("{flipped:02x}{}", &m.wrapped[2..]), ..m };
         assert!(unwrap(&serde_json::to_string(&tampered).unwrap()).is_err());
         assert!(unwrap("{}").is_err());
+    }
+
+    #[test]
+    fn a_hook_secret_wraps_and_unwraps_under_its_slot_and_signs() {
+        let slot = |s: u8, k: u8| serde_json::to_string(&WrapKeySlot { slot: s, key: hex(&[k; 32]) }).unwrap();
+        let (one, two) = (slot(1, 4), slot(2, 5));
+        let old = WrapKeySource::parse(1, &[&one]).unwrap();
+        let w = old.wrap(b"It's a Secret to Everybody", [3; 12]).unwrap();
+        assert_eq!(w.slot, 1);
+        assert!(!w.ciphertext.windows(6).any(|x| x == b"Secret"));
+        // After a rotation to slot 2, a value wrapped under slot 1 still opens while slot 1 is listed.
+        let both = WrapKeySource::parse(2, &[&one, &two]).unwrap();
+        let s = both.unwrap(&w).unwrap();
+        assert_eq!(
+            graftyard_identity::sealed::signature_256(&s, b"Hello, World!"),
+            "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17"
+        );
+        assert_eq!(both.wrap(b"x", [0; 12]).unwrap().slot, 2);
+        // Slot 1 cleared: the old value no longer opens. A tampered value never does.
+        assert!(WrapKeySource::parse(2, &[&two]).unwrap().unwrap(&w).is_err());
+        let mut t = w.clone();
+        t.ciphertext[0] ^= 1;
+        assert!(both.unwrap(&t).is_err());
     }
 }

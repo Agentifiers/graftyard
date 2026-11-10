@@ -71,6 +71,11 @@ impl IssueCall {
     pub fn format(&self) -> Format {
         // 32.14 first: a lease command, or a command the edge marked, which may carry lease events. It may carry
         // 32.8's and 32.12's too.
+        // 32.16 first of all: a hook command is never an agent, task, or lease command, and carries an App's claims
+        // as 32.9 does.
+        if self.op.is_hook() {
+            return crate::hooks::REPO_FORMAT_HOOKS;
+        }
         if self.op.is_lease() || self.leases {
             return crate::repo::REPO_FORMAT_LEASES;
         }
@@ -189,6 +194,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             crate::repo::REPO_FORMAT_TASKS,
             REPO_FORMAT_REPOS,
             crate::repo::REPO_FORMAT_LEASES,
+            crate::hooks::REPO_FORMAT_HOOKS,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -198,13 +204,15 @@ impl<'de> Deserialize<'de> for IssueCall {
         // 32.14 is a superset of 32.12: it carries a task claim and a session as 32.12 does.
         let tasks = fmt(crate::repo::REPO_FORMAT_TASKS) || leases;
         let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
+        // 32.16 carries an App's claims, or none for a user, as 32.8 does.
+        let hooks = fmt(crate::hooks::REPO_FORMAT_HOOKS);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
             return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
         }
-        let actor = match (app || agent || tasks, w.claims) {
+        let actor = match (app || agent || tasks || hooks, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
-            (false, Some(_)) | (true, None) if !agent && !tasks => {
+            (false, Some(_)) | (true, None) if !agent && !tasks && !hooks => {
                 return Err(serde::de::Error::custom(
                     "claims ride only in format 32.8 or 32.9, and 32.9 always has them",
                 ));

@@ -1,14 +1,13 @@
 {
   "source": "https://mrshu.github.io/github-statuses/",
   "sourceAuthor": "Marek Šuppa",
-  "asOf": "2026-11-08",
-  "from": "2026-08-11",
-  "incidents": 67,
-  "uptime": "92.91",
-  "downtimeMinutes": 9192,
-  "daysWithIncident": 43,
+  "asOf": "2026-11-09",
+  "from": "2026-08-12",
+  "incidents": 66,
+  "uptime": "93.00",
+  "downtimeMinutes": 9072,
+  "daysWithIncident": 42,
   "days": [
-    "minor",
     "major",
     "minor",
     "none",
@@ -96,6 +95,7 @@
     "major",
     "minor",
     "minor",
+    "none",
     "none",
     "none"
   ],
@@ -112,8 +112,8 @@
     },
     {
       "name": "API Requests",
-      "uptime": "97.99",
-      "downtimeMinutes": 2610
+      "uptime": "98.08",
+      "downtimeMinutes": 2490
     },
     {
       "name": "Issues",

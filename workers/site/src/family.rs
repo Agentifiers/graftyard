@@ -268,8 +268,9 @@ impl Family for Repo {
     /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), 32.8 (AM1-WP2's agent commands), and 32.9
     /// (an issue command under a `ghs_` token) are read on the same terms, as are 32.11 (`CancelInvitation`) and 32.12
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
-    /// `InitRepo` and `DeleteRepo`), and 32.17 (F59's finisher steps, which only this release's own `Audit` consumer
-    /// sends, once `GRAFTYARD_AUDIT` is set).
+    /// `InitRepo` and `DeleteRepo`). 32.15 is `RepoEvent::Fanout`, which only a leader of this release records itself;
+    /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
+    /// `GRAFTYARD_AUDIT` is set.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -285,6 +286,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_TASKS,
             git::repo::REPO_FORMAT_REPOS,
             git::repo::REPO_FORMAT_LEASES,
+            git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
         ]
     }
@@ -441,9 +443,9 @@ impl Family for Repo {
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
-        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed"];
+        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout"];
         #[cfg(not(feature = "test-faults"))]
-        &["/snapshot_commit", "/fold", "/feed"]
+        &["/snapshot_commit", "/fold", "/feed", "/fanout"]
     }
     /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
     /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
@@ -455,6 +457,12 @@ impl Family for Repo {
     ) -> Option<worker::Result<Value>> {
         match path {
             "/feed" => Some(crate::feed::route(host, body).await),
+            "/fanout" => Some(crate::fanout::report(host, body).await),
+            // Test installs: commit k at once, with no load behind it, to drive fan-out without saturating a shard.
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("fanout").is_some() => {
+                Some(crate::fanout::force(host, body["fanout"].as_u64().unwrap_or(1) as u8).await)
+            }
             "/snapshot_commit" => Some(crate::snap::commit(host, body).await),
             "/fold" => Some((|| {
                 let core = host.core.borrow();
@@ -577,6 +585,7 @@ impl Family for Repo {
             git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
             git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
             git::repo::RepoOut::Transfer(o) => json!({ "Transfer": o }),
+            git::repo::RepoOut::HookCursor(o) => json!({ "HookCursor": o }),
             git::repo::RepoOut::Lifecycle(o) => json!({ "Lifecycle": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
@@ -698,7 +707,13 @@ impl Family for Repo {
                 .unwrap_or(Value::Null);
         }
         if q.get("ranges").is_some() {
-            return json!({ "promoted": fold.promoted(), "archived": fold.archived(), "first": fold.first_index().0 });
+            // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).
+            return json!({
+                "promoted": fold.promoted(),
+                "archived": fold.archived(),
+                "first": fold.first_index().0,
+                "fanout": fold.fanout_k(),
+            });
         }
         if q.get("tiers").is_some() {
             return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));

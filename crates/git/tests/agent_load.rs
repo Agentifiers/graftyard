@@ -8,6 +8,8 @@ use graftyard_git::prsync::{MERGE_EST_MS, MergeBudget, MergeCause, SHARD_VCPU, T
 use graftyard_git::{
     FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP_FOR, Fanout, HOT_POOL, NetworkLoad, clone_cache_buckets, fanout, pool_grants,
 };
+use std::collections::BTreeMap;
+
 use graftyard_types::{DbId, NetworkId, SiteId, Timestamp};
 
 const MIN: u64 = 60_000;
@@ -273,4 +275,83 @@ fn over_budget_pushes_go_first_and_gets_are_null() {
     assert_eq!(push_shed, 0, "pushes are served first");
     assert!(get_null > get_ok * 10, "GETs past the budget answer null");
     assert!(used <= f64::from(b.vcpu()) * 1.01, "{used}");
+}
+
+// ---- the hosted wiring's pure halves: the leader's report fold and the edge's validator choice ----
+
+const S0: SiteId = SiteId(0);
+const S1: SiteId = SiteId(1);
+
+/// The leader's `LoadReports`: k steps up only after FANOUT_UP_FOR of reports above the line from either warm site,
+/// answers a k only when it differs from the committed one, ignores a site that is not warm, and counts a site whose
+/// report went stale as idle.
+#[test]
+fn the_leader_folds_minute_reports_into_one_k_for_both_warm_sites() {
+    let warm = [S0, S1];
+    let mut r = graftyard_git::LoadReports::default();
+    let mut k = 1u8;
+    let mut commits = Vec::new();
+    for m in 0..=4u64 {
+        // Only site 1 is hot; site 0 reports idle.
+        assert_eq!(r.report(warm, S0, load(0.1), k, Timestamp(m * MIN)), None, "the idle site never steps k");
+        if let Some(next) = r.report(warm, S1, load(0.95), k, Timestamp(m * MIN + 1)) {
+            commits.push((m, next));
+            k = next;
+        }
+    }
+    assert_eq!(commits, vec![(3, 2)], "one step, after 3 min above FANOUT_UP, from the hotter site");
+    // A third site's report is not counted.
+    assert_eq!(r.report(warm, SiteId(2), load(1.0), k, Timestamp(5 * MIN)), None);
+    // Site 1 goes quiet after minute 4. Its last report counts until LOAD_STALE has passed, then as idle, so an hour
+    // of idle reports from site 0 after that steps k down once.
+    let quiet = 4 * MIN + 1 + graftyard_git::LOAD_STALE.as_millis() as u64;
+    let mut down = None;
+    for m in quiet.div_ceil(MIN)..=(quiet.div_ceil(MIN) + 61) {
+        if let Some(next) = r.report(warm, S0, load(0.1), k, Timestamp(m * MIN)) {
+            down = Some((m, next));
+            break;
+        }
+    }
+    let (m, next) = down.expect("k steps down after FANOUT_DOWN_FOR idle");
+    assert_eq!(next, 1);
+    assert!(m * MIN >= quiet + FANOUT_DOWN_FOR.as_millis() as u64, "not before an hour: {m}");
+}
+
+/// The edge's validator: at k = 1 every push goes to the network's first shard under its M1 name; at k = 4 pushes
+/// spread over all four by push id, each push id always to the same one, the pool ones named `pool:<n>` from the hot
+/// pool, and no network's first shard changes with k.
+#[test]
+fn pushes_spread_over_the_k_shards_by_push_id() {
+    use graftyard_git::{object_name, push_validator, shards_for};
+    let (n, count) = (net(131171), 2u16);
+    for p in 0..200u32 {
+        let id = p.to_be_bytes();
+        let v = push_validator(n, S0, count, 1, &id);
+        assert_eq!(object_name(n, v, count), "git#0#net:131171");
+    }
+    let ks = shards_for(n, S0, count, 4);
+    let mut hits = BTreeMap::<u16, u32>::new();
+    for p in 0..4000u32 {
+        let id = p.to_be_bytes();
+        let v = push_validator(n, S0, count, 4, &id);
+        assert_eq!(v, push_validator(n, S0, count, 4, &id), "a push id always picks one shard");
+        assert!(ks.contains(&v));
+        *hits.entry(v.shard).or_default() += 1;
+    }
+    assert_eq!(hits.len(), 4, "all four shards validate");
+    assert!(hits.values().all(|h| (700..1300).contains(h)), "about even: {hits:?}");
+    assert_eq!(shards_for(n, S0, count, 4)[0], shards_for(n, S0, count, 1)[0]);
+    for s in &ks[1..] {
+        assert!(object_name(n, *s, count).starts_with("git#0#pool:"), "{s:?}");
+        assert!((count..count + HOT_POOL).contains(&s.shard));
+    }
+}
+
+/// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
+#[test]
+fn a_site_reports_its_most_loaded_shard_and_the_summed_queue() {
+    let l = |cpu, q| NetworkLoad { cpu_p99: cpu, queue_depth: q };
+    let c = graftyard_git::combine(&[l(0.2, 3), l(0.9, 1), l(0.5, 0)]);
+    assert_eq!(c, l(0.9, 4));
+    assert_eq!(graftyard_git::combine(&[]), NetworkLoad::default());
 }

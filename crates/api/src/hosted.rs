@@ -300,6 +300,11 @@ pub enum What {
         n: u32,
         empty: bool,
     },
+    /// `POST /repos/{o}/{r}/hooks` (201 with `Location`) and `PATCH .../hooks/{id}` (200): GHES's `hook` object
+    /// (`crate::webhooks::hook_json`), secret masked. M4-WP1, format 32.16.
+    Hook {
+        created: bool,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -413,6 +418,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
             WireReply::of(&crate::leases::render_ok(&r, owner, at, acked, *created))
         }
         What::IssueLabels { n, empty } => WireReply::of(&crate::rest::issue_labels_ok(&r, *n, *empty)),
+        What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
     }
 }
 
@@ -431,6 +437,7 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::RepoCreatedGraphql { .. } => graphql(crate::graphql::refused_field("createRepository", e)),
         What::Lease { .. } => WireReply::of(&crate::leases::refused(None, e)),
         What::IssueLabels { .. } => WireReply::of(&crate::rest::issue_labels_refused(e)),
+        What::Hook { .. } => WireReply::of(&crate::webhooks::refused(e)),
     }
 }
 

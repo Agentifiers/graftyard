@@ -1100,6 +1100,18 @@ fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
     let removed =
         gql(&mut c, "removeLabelsFromLabelable", json!({ "labelableId": issue_id, "labelIds": [label_id] }), sel);
     assert_eq!(names(&removed, "removeLabelsFromLabelable"), ["bug"]);
+    // The edge finds the repository from the request alone (`route`), from the `labelableId` as from a
+    // `pullRequestId`; the hosted B0-36 run got "a mutation runs through plan" before this.
+    for field in ["addLabelsToLabelable", "removeLabelsFromLabelable"] {
+        let q = format!("mutation($i: {}Input!) {{ {field}(input: $i) {{ clientMutationId }} }}", {
+            let mut s = field.to_owned();
+            s[..1].make_ascii_uppercase();
+            s
+        });
+        let vars = json!({ "i": { "labelableId": issue_id, "labelIds": [label_id] } }).as_object().cloned();
+        let req = Request::parse(&q, vars, None).unwrap();
+        assert_eq!(route(&req).unwrap(), Some(graftyard_api::graphql::Target::Id(REPO.0.0)), "{field}");
+    }
 
     // REST: add, replace, remove one, remove all.
     let path = "/repos/{owner}/{repo}/issues/{issue_number}/labels";

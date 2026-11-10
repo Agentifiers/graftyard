@@ -32,11 +32,13 @@ const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.lengt
 const count = (xs) => xs.reduce((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {});
 const feedOf = async () => (await statuses(CHAIN)).map((s) => ({ site: s.site, role: s.role, term: s.term, feed: s.feed, applied: s.applied }));
 
-/** A poll straight to F's `/feed`, as the edge sends it, with its own token and IP hashes. */
-async function poll(site, k, wait, cursor = null) {
+/** A poll straight to F's `/feed`, as the edge sends it, with its own token and IP hashes. The held polls ask for
+ *  `lf13-held/**`, which no write of this driver touches, so only F stopping (or `wait` ending) returns them; the
+ *  lease commits that make the fault are `lf13/**` events. */
+async function poll(site, k, wait, cursor = null, paths = ["lf13/**"]) {
   const t0 = Date.now();
   try {
-    const r = await member(CHAIN, site, "/feed", { cursor, wait_s: wait, paths: ["lf13/**"], learner_answers: false, token: `lf13-${tag}-${k}`, ip: `lf13ip-${k}` }, (wait + 15) * 1000);
+    const r = await member(CHAIN, site, "/feed", { cursor, wait_s: wait, paths, learner_answers: false, token: `lf13-${tag}-${k}`, ip: `lf13ip-${k}` }, (wait + 15) * 1000);
     return { admit: r.v?.admit ?? `status ${r.status}`, events: r.v?.events ?? [], cursor: r.v?.cursor, stopped: !!r.v?.stopped, end: Date.now(), ms: Date.now() - t0 };
   } catch (e) { return { admit: `error ${String(e).slice(0, 50)}`, events: [], end: Date.now(), ms: Date.now() - t0 }; }
 }
@@ -47,10 +49,12 @@ const task = await api("POST", `${V1}/tasks`, app, { kind: "external", session: 
 if (task.status !== 201) throw new Error(`task ${task.status}`);
 const h = { "x-graftyard-agent-session": task.body.id };
 const committed = [];
+let leasesUntil = 0;
 async function leases(ms) {
   const end = Date.now() + ms;
+  leasesUntil = end;
   let k = 0;
-  while (Date.now() < end) {
+  while (Date.now() < Math.min(end, leasesUntil)) {
     const a = await api("POST", `${V1}/leases`, app, { paths: [`lf13/${tag}/${k}/**`], mode: "shared", ttl_seconds: 600 }, h);
     if (a.status === 201) {
       committed.push(`acquired ${a.body.lease.id}`);
@@ -67,33 +71,74 @@ const [F, O] = st.filter((m) => m.role === "follower").map((m) => m.site);
 if (leader === undefined || F === undefined || O === undefined) throw new Error(`need a leader and two followers: ${JSON.stringify(st)}`);
 row(OUT, { step: "start", mode, leader, follower: F, other: O, members: st });
 log(`lf13 ${mode}: leader ${leader}, F ${F}, other ${O}`);
+if (mode === "install") {
+  // The archive alarm sums the log at most once a minute while it finds nothing to do, and a held poll waits at most
+  // 25 s, so the cap is set first and the archiver kept busy (each run that archives re-arms in 200 ms) by 40 s of
+  // commits before any poll is held; the fault then truncates past F within seconds and lifts as soon as it has.
+  const cap = await member(CHAIN, leader, "/bench_seed", { archiveCap: { max: 4_096, range: 65_536 } }, 15_000);
+  row(OUT, { step: "archiveCap", answer: cap.v ?? cap.status });
+  await leases(40_000);
+  row(OUT, { step: "warm", stats: (({ truncatedTo, archiveSteps }) => ({ truncatedTo, archiveSteps }))((await member(CHAIN, leader, "/stats", undefined, 15_000)).v ?? {}) });
+}
 await leases(3_000);
 const before = (await poll(F, 99_999, 0)).cursor;
 
-// 1,000 held on F, spread over 2 s.
-const held = Array.from({ length: 1000 }, (_, k) => sleep(k * 2).then(() => poll(F, k, 25)));
-await sleep(4_000);
+// HELD (default 1,000) held on F, spread over 2 s. At FEED_HELD_MAX (1,000) a new poll is answered `full` until they
+// return, which hides `lagging` from the probes (fanout, LF-13 round 3); HELD=999 leaves one slot for them.
+const HELD = Number(process.env.HELD ?? 1000);
+const held = Array.from({ length: HELD }, (_, k) => sleep(k * 2).then(() => poll(F, k, 25, null, ["lf13-held/**"])));
+await sleep(2_500);
 row(OUT, { step: "held", members: await feedOf() });
 
 let faultMs = 5_000;
 const on = await bedGet(`/_bed/fault?site=${F}&for_ms=${mode === "gap" ? 30_000 : 300_000}`);
 const fault0 = Date.now();
-const during = leases(mode === "gap" ? 8_000 : 60_000);
+const during = leases(mode === "gap" ? 15_000 : 20_000);
 if (mode === "gap") {
-  await sleep(1_000);
-  const t = await member(CHAIN, leader, "/transfer", { to: O }, 15_000);
-  row(OUT, { step: "transfer", to: O, answer: t.v ?? t.status });
-  for (let i = 0; i < 20 && (await statuses(CHAIN)).find((s) => s.site === O)?.role !== "leader"; i++) await sleep(500);
+  // Each isolate rereads the site fault at most once a second (`SITE_FAULT_TTL_MS`), so F keeps taking appends for
+  // a second or two after the fault is set. A transfer before F stops would elect O at an entry F already holds,
+  // and O's first round would match. So wait until F's `last` has stood still while O holds an entry F lacks (O's
+  // `last` past F's): only then does O's first round, from its own last entry, start past F's. Lease commits are
+  // slow while F is faulted (round two of fanout's hosted LF-13 saw 4 in a run), so a lead of 3 is not required.
+  const w0 = Date.now();
+  let fLast = -1, fSince = Date.now(), gapSeen = null, oLast = -1;
+  while (Date.now() - w0 < 11_000) {
+    await sleep(300);
+    const s = await statuses(CHAIN);
+    const fl = s.find((x) => x.site === F)?.last ?? -1;
+    oLast = s.find((x) => x.site === O)?.last ?? -1;
+    if (fl !== fLast) { fLast = fl; fSince = Date.now(); }
+    if (Date.now() - fSince >= 1_500 && oLast > fl) { gapSeen = { fLast: fl, oLast, ms: Date.now() - fault0 }; break; }
+  }
+  row(OUT, { step: "fStopped", gapSeen, fLast, oLast });
+  // The fault stays on until O leads and has committed entries F lacks, so O's first round to F starts past F's
+  // last entry (`crates/raft/tests/lf13.rs`, `a_new_leader_s_first_round_leaves_a_gap_on_the_lagging_follower`). A
+  // transfer the leader drops (it waits out F's missing ack, then abandons) is re-sent, up to 5 times.
+  // A held poll waits at most FEED_WAIT_MAX (25 s), and F refuses new polls while faulted, so the fault must lift
+  // within about 20 s of the polls: the transfer is retried until 14 s into the fault.
+  let moved = false;
+  for (let tries = 0; tries < 5 && !moved && Date.now() - fault0 < 14_000; tries++) {
+    const t = await member(CHAIN, leader, "/transfer", { to: O }, 15_000).catch((e) => ({ status: String(e).slice(0, 80) }));
+    row(OUT, { step: "transfer", to: O, try: tries, answer: t.v ?? t.status });
+    for (let i = 0; i < 12 && !moved; i++) { await sleep(500); moved = (await statuses(CHAIN)).find((s) => s.site === O)?.role === "leader"; }
+  }
+  // O commits past F: lease commits through the edge, which finds the new leader.
+  const fAt = (await statuses(CHAIN)).find((s) => s.site === F)?.applied ?? 0;
+  await sleep(2_000);
+  leasesUntil = 0;
+  const st2 = await statuses(CHAIN);
+  row(OUT, { step: "pastF", moved, fApplied: fAt, leaderCommit: st2.find((s) => s.role === "leader")?.commit, members: st2.map((m) => [m.site, m.role, m.term, m.applied, m.last]) });
 } else {
-  // A cap far below the log, so the leader promotes and archives every range above its snapshots, and truncates.
-  const cap = await member(CHAIN, leader, "/bench_seed", { archiveCap: { max: 4_096, range: 65_536 } }, 15_000);
-  row(OUT, { step: "archiveCap", answer: cap.v ?? cap.status });
-  for (let i = 0; i < 120; i++) {
-    await sleep(2_000);
+  // The cap (set above) is far below the log, so the leader archives each range as it fills, and truncates past F.
+  let truncated = null;
+  for (let i = 0; i < 36 && !truncated; i++) {
+    await sleep(500);
     const s = (await member(CHAIN, leader, "/stats", undefined, 15_000)).v ?? {};
     const fs = (await statuses(CHAIN)).find((x) => x.site === F);
-    if (s.truncatedTo > (fs?.applied ?? 0) + 1) { row(OUT, { step: "truncated", truncatedTo: s.truncatedTo, fApplied: fs?.applied, archiveSteps: s.archiveSteps }); break; }
+    if (s.truncatedTo > (fs?.applied ?? 0) + 1) truncated = { truncatedTo: s.truncatedTo, fApplied: fs?.applied, archiveSteps: s.archiveSteps, ms: Date.now() - fault0 };
   }
+  row(OUT, { step: "truncated", truncated });
+  leasesUntil = 0;
 }
 await during;
 faultMs = Date.now() - fault0;
@@ -107,9 +152,13 @@ const res = await Promise.all(held);
 const ret = res.map((r) => r.end - lifted);
 const afterLift = ret.filter((x) => x >= 0);
 // No event lost: from the cursor before the fault, F (now following) and the leader list the same lease events.
+// F is read once it serves again (not `lagging`), up to 60 s, so a slow catch-up is not counted as a loss.
 await sleep(3_000);
 const cur = res.find((r) => r.cursor)?.cursor ?? before;
-const fromF = await poll(F, 77_777, 0, before);
+let fromF = await poll(F, 77_777, 0, before);
+const caught0 = Date.now();
+while (fromF.admit === "lagging" && Date.now() - caught0 < 60_000) { await sleep(2_000); fromF = await poll(F, 77_777, 0, before); }
+const fServedAfterMs = Date.now() - lifted;
 const now = (await statuses(CHAIN)).find((s) => s.role === "leader")?.site;
 // The reference: the voter that is neither F nor the leader now, from the same cursor.
 const ref = [leader, O].find((x) => x !== now && x !== F);
@@ -120,11 +169,12 @@ const v = {
   mode, fault: { status: on.status, ms: faultMs, off: off.status }, leaderAfter: now,
   held: { n: res.length, admits: count(res.map((r) => r.admit)), stopped: res.filter((r) => r.stopped).length,
     withEvents: res.filter((r) => r.events.length > 0).length, withCursor: res.filter((r) => r.cursor).length,
-    returnedBeforeLift: ret.filter((x) => x < 0).length, afterLiftMs: { p50: pct(afterLift, 0.5), p99: pct(afterLift, 0.99), max: afterLift.length ? Math.max(...afterLift) : null } },
+    returnedBeforeLift: ret.filter((x) => x < 0).length, within1s: ret.filter((x) => x >= 0 && x <= 1000).length,
+    noEvents: res.filter((r) => r.events.length === 0).length, afterLiftMs: { p50: pct(afterLift, 0.5), p99: pct(afterLift, 0.99), max: afterLift.length ? Math.max(...afterLift) : null } },
   probes: { lagging: probes.filter((p) => p[1] === "lagging").length, firstHold: probes.find((p) => p[1] === "hold")?.[0] ?? null, seq: probes.slice(0, 12) },
   // F's ring after a gap holds every entry it applied; after an install it starts above `through`, so an older
   // cursor may get `gone` with the oldest it can serve (the design's ring rule), and that is recorded as such.
-  events: { committed: committed.length, fromF: fIds.length, fAdmit: fromF.admit, reference: ref, fromRef: rIds.length,
+  events: { committed: committed.length, fromF: fIds.length, fAdmit: fromF.admit, fServedAfterMs, reference: ref, fromRef: rIds.length,
     missingOnF: rIds.filter((x) => !fIds.includes(x)).length, heldCursor: cur },
   members: await feedOf(),
 };

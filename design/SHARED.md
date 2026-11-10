@@ -453,10 +453,12 @@ pub fn authorize(p: &Principal, a: ReadAction, authz: &[ReadView], repo: &ReadVi
 pub fn authorize_write(p: &Principal, a: WriteAction, authz: &[Fresh], repo: &Fresh) -> Decision;   // never `Stale`
 /// The edge's gate before any repository route: `Allow` on a public repository, `Hidden` for an anonymous caller or a
 /// token whose reach misses the repository, else `authorize(.., Contents, ..)`. Never `Forbidden`. The edge caches the
-/// decision per (repository, stored token) for `READ_CACHE`; anonymous git gets 401, anyone else hidden gets 404.
-/// A REST repository request whose credential the edge refuses (revoked, lapsed, or unknown) gets 401 "Bad
-/// credentials" before the gate runs, as GitHub answers, so a bad token is never served as anonymous, even on a public
-/// repository; git already answers it 401 (`932cc33`; `decisions/DECISIONS.md`, "A refused credential is 401 before the read gate").
+/// decision for `READ_CACHE` per repository and a stored token's hash, an installation token's `jti` hashed with a
+/// domain prefix (`04487ca`), or no token, never a web session; anonymous git gets 401, anyone else hidden gets 404. A
+/// REST repository request whose credential the edge refuses (revoked, lapsed, or unknown) gets 401 "Bad credentials"
+/// before the gate runs, as GitHub answers, so a bad token is never served as anonymous, even on a public repository;
+/// git already answers it 401 (`932cc33`; `decisions/DECISIONS.md`, "A refused credential is 401 before the read
+/// gate").
 pub fn authorize_read(p: Option<&Principal>, t: Option<&TokenFields>, authz: &[ReadView], repo: &ReadView) -> Decision;
 pub enum Decision { Allow, Forbidden, Hidden }
 pub enum ReadAction { Metadata, Contents, Issues }   // each needs `Read`

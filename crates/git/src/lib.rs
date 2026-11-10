@@ -12,6 +12,7 @@ pub mod bucket;
 pub mod clone;
 pub mod feed;
 pub mod group;
+pub mod hooks;
 pub mod ingest;
 pub mod init;
 pub mod issue_ops;
@@ -31,6 +32,7 @@ pub mod queue;
 pub mod queue_consumer;
 pub mod refs;
 pub mod repo;
+pub mod sequencer;
 pub mod shard;
 pub mod smart;
 pub mod standin;
@@ -54,9 +56,10 @@ pub use pack::{
 };
 pub use shard::{
     DISK_USE_PCT, DiskRepo, FANOUT_DOWN, FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP, FANOUT_UP_FOR, Fanout, GitCacheShard,
-    HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, NetworkLoad, REGION_RETRIES, RENEW_EVERY, RegionCheck, Renewal,
-    SHARDS, WARM_FOR, clone_cache_buckets, container_regions, evict_plan, fanout, image_for, may_start, pool_grants,
-    region_check, renewal, shards_for, validator, warm_sites,
+    HOT_POOL, INACTIVITY, ImageSlot, IngestCursor, LOAD_STALE, LoadReports, NetworkLoad, REGION_RETRIES, RENEW_EVERY,
+    RegionCheck, Renewal, SHARDS, WARM_FOR, clone_cache_buckets, combine, container_regions, evict_plan, fanout,
+    image_for, may_start, object_name, pool_grants, push_validator, region_check, renewal, shards_for, validator,
+    warm_sites,
 };
 pub use store::{
     Copies, PART_SIZE, PackStore, Place, PlaceError, PutOutcome, Stage, TeeError, durable_sites, mark_committed,

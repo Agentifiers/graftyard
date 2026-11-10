@@ -332,7 +332,12 @@ fn current() -> (Vec<String>, Vec<String>) {
         git::pack::PackRef, git::queue::EjectReason, git::queue::QueueEvent, git::queue_consumer::CacheAsk,
         git::refs::Atomicity, git::repo::RejectReason, git::repo::RefOutcome, git::shard::ImageSlot,
         git::task::TaskKind, git::task::TaskApiState, git::task::TaskActor, git::task::TaskErr,
-        git::transfer::TransferErr, git::lifecycle::LifecycleOp, git::lifecycle::LifecycleErr,
+        git::transfer::TransferErr,
+        // M4-WP1: inside `RepoEvent::Hook`'s record.
+        git::hooks::HookContentType,
+        // M4-WP1: a `HookSequencer`'s stored attempt rows.
+        git::sequencer::Outcome,
+        git::lifecycle::LifecycleOp, git::lifecycle::LifecycleErr,
     }
 }
 

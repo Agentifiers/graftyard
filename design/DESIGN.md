@@ -174,14 +174,13 @@ pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 1
 /// Where one owner's chains, or one system chain, live. An owner's record is the `NamesEvent::Placement` row on
 /// `account_shard(owner)`. It covers the owner's `Authz`, `Identity`, `Actions`, and repository chains, and the network
 /// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it; signup
-/// copies the install account's (`placement set default`) as `InitPlacement`. A system chain's record is in the signed
-/// genesis (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites` are logical:
-/// `from_record` swaps a site that `Release` records lost for the spare its `ReplaceMember` named. Changing an owner's
-/// record bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves each of its groups, child
-/// groups included, from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`, then
-/// `Normal`; leadership leaves a site before it is dropped), because `reconfigure` refuses a disjoint `Joint` (BF-30),
-/// and clears `moving_from` last; `home` alone is one change and a transfer. A record's `home` only seeds bootstrap; a
-/// group's committed config then wins (BF-11).
+/// copies the install's default as `InitPlacement`. A system chain's record is in the signed genesis
+/// (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites` are logical: `from_record`
+/// swaps a site that `Release` records lost for the spare its `ReplaceMember` named. Changing an owner's record bumps
+/// `generation` and keeps the old record in `moving_from`. A Workflow then moves each of its groups, child groups
+/// included, from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`, then `Normal`;
+/// leadership leaves a site before it is dropped), because `reconfigure` refuses a disjoint `Joint` (BF-30), and clears
+/// `moving_from` last; `home` alone is one change and a transfer. A record's `home` only seeds bootstrap (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
@@ -638,12 +637,12 @@ pub const HOT_PUSHES: f32 = 2.0;                                 // [guess]
 /// buckets before followers truncate them, so RPO stays zero. Check runs and statuses are kept 90 days (settable from 1
 /// to 400) as GHES 3.22 does, and `PathSet` rows are deleted when their PR closes.
 pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
-/// Hot networks spread over k shards per warm site (`shards_for`). Each warm site's first shard of the network reports
-/// `NetworkLoad` each minute, and the network group's leader commits one k for both warm sites from the larger load,
-/// with no API call or cron, so the second warm site holds k shards when the first is lost; it raises its own k for the
-/// predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time to first byte p99 at 0.71 to
-/// 1.10 s and human push p99 at 0.84 to 1.50 s [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass]. A step up
-/// takes an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`: k and since when.
+/// Hot networks spread over k shards per warm site (`shards_for`). A warm site's first shard reports `NetworkLoad` each
+/// minute it validates (stale past `LOAD_STALE`), and the leader commits one k for both warm sites from the larger load
+/// as `RepoEvent::Fanout` (32.15), with no API call or cron, so the second warm site holds k shards when the first is
+/// lost; it raises its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time
+/// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step up takes
+/// an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`.
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
@@ -983,10 +982,9 @@ pub enum DayTarget { Site(SiteId), Workflows, Containers(SiteId) /* undo of a `C
 pub enum SecretName { DeployToken, ReadToken, TunnelToken, MintWrapKey, SshHostKeys, McpAppKey, McpClientSecret,
                       InsightsAppKey, AgentsAppKey, WorkspaceAppKey, SecretsWrapKey, HostedRunnersAppKey }
 /// `undo` is pre-signed with the intent: a `Rollback` per day target, and a pointer pin per pinned script it rolls.
-/// `graft-ops` or an edge isolate submits one on a gate breach with no human signature. A committed undo ends the
-/// forward steps. `graft-ops` runs a `Rollback` as drain, N at 100%, then undrain, deploys N at 100% for a pinned
-/// script once the API answers, and commits `IntentDone`. A `Containers` rollback needs no API call: shards read it from
-/// the `Release` view and restart onto `git_prev`.
+/// `graft-ops` or an edge submits one on a gate breach, unsigned by a human. A committed undo ends forward steps.
+/// `graft-ops` runs a `Rollback` as drain, N at 100%, then undrain, deploys N at 100% for a pinned script when the API
+/// answers, and commits `IntentDone`. A `Containers` rollback needs no API call; shards restart onto `git_prev`.
 pub struct SignedIntent { pub id: IntentId, pub issued_at: Timestamp, pub not_after: Timestamp, pub intent: Intent,
                           pub release_sig: Signature, pub key: KeyId, pub sig: Signature,
                           pub undo: SmallVec<[(ReleaseEntry, Signature); 8]> }
@@ -1114,39 +1112,39 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 
 // ---- Git cache shards (derived) ----
 /// One container-backed Durable Object per (site, shard), under the `durable_object` scheduling policy, because a new
-/// account cannot create an application under `default` [measured, `tests/m0/results/b0-16.md`]. Networks map to shards
-/// by rendezvous hashing of (network, shard) within a site. Each shard keeps an LRU of bare repositories with reftable
-/// on its ephemeral disk, rebuilt by `rehydrate` (Packs), and holds nothing canonical. Each network is warm on its
-/// group's home site and the next site by rendezvous, on one shard per warm site, or on k shards when its git CPU
-/// passes one. The first of the k is its rendezvous shard among `count`, and the others come from the site's hot pool
-/// by rendezvous, so `count` never changes and no other network moves. Pushes validate on any caught-up shard of the k,
-/// chosen by rendezvous on the push id, and that shard stores an inline pack's `.idx` under `R2Key::InlineIdx`; the
-/// pack is thin, so the others still index it (`rehydrate`, G5). Upload-pack and predictions spread over all k. Merges
-/// run on the leader site's shard (BM-2). `AdmitClass` rides into each shard's work queue, so Human and MergeQueue
-/// validates and merges run first, and agent test merges, predictions, and clone misses are shed first. A hot network's
-/// clone-cache entries are written to both warm sites' buckets. A depth-1 fetch that misses the clone cache, for a
-/// commit whose tree is close to a cached tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack
-/// of the wanted commit's objects missing from it, under one pack header and trailer. Each object is whole or a delta
-/// inside its own part, so the client's `index-pack` accepts it as is. For each tip move, the shard that took the merge
-/// packs the new tip's objects the base and earlier parts lack into one part, stored beside the clone cache's tip pack,
-/// so each part is built once per network and other shards and the second warm site fetch it. Every 20 moves it folds
-/// base and parts into a new base. A miss composes base, parts, and a pack of the wanted commit's own new objects, and
-/// builds `refs/pull/N/merge` on the last tip whose part exists, so a miss never packs a tip move. A shard serves a hot
-/// network only once it holds the parts up to the tip. On torvalds/linux a part cost 0.3 to 2 CPU-s, up to 10 CPU-s for
-/// a 2,300-object merge, a fold 1.2 to 1.7 CPU-s, and a miss 0.2 to 0.5 CPU-s; with misses on the current tip, each
-/// miss during a big move's part cost 9 to 19 CPU-s and saturated the shard [measured, `tests/m0/results/m0-wp9.md`,
-/// B0-34, third pass]. A stock depth-1 miss of a 6 GB network costs 25 to 46 CPU-s, and a composed miss's time to first
-/// byte was 0.35 s [measured, B0-34]. A shard object starts its container with `ctx.container.start()`, naming its
-/// image, the tier's instance size, and `enableInternet: false`, so the container reaches R2 and members only through
-/// its object. It starts one only while its index is under `count + HOT_POOL`. The policy has no `max_instances`, so
-/// this check, over a fixed set of shard names, is each site's start cap. At start the object reads `CLOUDFLARE_REGION`
-/// inside the container and replaces a container outside its site's container regions, at most three times, then
-/// alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, and its alarm renews it every hour until 24
-/// h after the shard's last request, so a warm shard carries a day without a new start. Each site-script version's
-/// image map holds its release's git image as `git` and the previous release's as `git_prev`. A new version restarts no
-/// running container [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its
-/// site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed `Rollback { target:
-/// Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network with both copies warm.
+/// account cannot create an application under `default` [measured, B0-16]. Networks map to shards by rendezvous hashing
+/// of (network, shard) within a site. Each shard keeps an LRU of bare repositories with reftable on its ephemeral disk,
+/// rebuilt by `rehydrate` (Packs), and holds nothing canonical. Each network is warm on its group's home site and the
+/// next site by rendezvous, on one shard per warm site, or on k shards when its git CPU passes one. The first of the k
+/// is its rendezvous shard among `count`, and the others come from the site's hot pool by rendezvous, so `count` never
+/// changes and no other network moves. A push validates on the shard of the k that rendezvous on its pack's trailer
+/// picks, after it catches up (else on the first shard); a shard runs one network's validates concurrently (Scale).
+/// That shard stores an inline pack's `.idx` under `R2Key::InlineIdx`; the pack is thin, so the others still index it
+/// (`rehydrate`, G5). Upload-pack and predictions spread over all k. Merges run on the leader site's shard (BM-2).
+/// `AdmitClass` rides into each shard's work queue, so Human and MergeQueue validates and merges run first, and agent
+/// test merges, predictions, and clone misses are shed first. A hot network's clone-cache entries are written to both
+/// warm sites' buckets. A depth-1 fetch that misses the clone cache, for a commit whose tree is close to a cached
+/// tip's, is composed: the shard sends the tip's cached depth-1 pack plus a pack of the wanted commit's objects missing
+/// from it, under one pack header and trailer. Each object is whole or a delta inside its own part, so the client's
+/// `index-pack` accepts it as is. For each tip move, the shard that took the merge packs the new tip's objects the base
+/// and earlier parts lack into one part, stored beside the clone cache's tip pack, so each part is built once per
+/// network and other shards fetch it. Every 20 moves it folds base and parts into a new base. A miss composes base,
+/// parts, and a pack of the wanted commit's own new objects, and builds `refs/pull/N/merge` on the last tip whose part
+/// exists, so a miss never packs a tip move. A shard serves a hot network only once it holds the parts up to the tip.
+/// On torvalds/linux a part cost 0.3 to 2 CPU-s, up to 10 CPU-s for a 2,300-object merge, a fold 1.2 to 1.7 CPU-s, and
+/// a miss 0.2 to 0.5 CPU-s; with misses on the current tip, each miss during a big move's part cost 9 to 19 CPU-s and
+/// saturated the shard [measured, M0-WP9, B0-34, third pass]. A stock depth-1 miss of a 6 GB network costs 25 to 46
+/// CPU-s, and a composed miss's time to first byte was 0.35 s [measured, B0-34]. A shard object starts its container
+/// with `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so the
+/// container reaches R2 and members only through its object. It starts one only while its index is under `count +
+/// HOT_POOL`. The policy has no `max_instances`, so this check, over a fixed set of shard names, is each site's start
+/// cap. At start the object reads `CLOUDFLARE_REGION` inside the container and replaces a container outside its site's
+/// container regions, at most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum,
+/// renewed by its alarm hourly until 24 h after its last request. Each site-script version's image map holds its
+/// release's git image as `git` and the previous release's as `git_prev`. A new version restarts no running container
+/// [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its site's `ContainerDay`
+/// step covers it, and returns to `git_prev` on that day's committed `Rollback { target: Containers(site) }`. Per site,
+/// `count + HOT_POOL` lets any two sites carry every network with both copies warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
@@ -1310,14 +1308,16 @@ pub enum Domain { Default, Us, Eu, Apac }      // the owner's residency, from it
 pub struct RateCounter { pub key: RateKey }
 pub enum RateKey { User(AccountId), Installation(InstallationId), JobToken(RepoId), Token([u8; 32]), Ip(IpPrefix) }
 pub const RATE_FLUSH: u32 = 20;                 // requests per isolate and key between flushes [guess]
-/// Per-isolate cache. A read-class request may use an entry up to 10 s old. A write-class request always reads the
-/// token, the actor's `Account` row, and the owner's Authz on their leaders (`fresh`), and the leader reads each
-/// distinct credential shard again once per entry, so a revocation or suspension binds every command decided after it.
-/// A new PAT, OAuth token, or SSH key commits first on its `Tokens` shard. The edge then appends the `Identity` side
-/// itself, before it answers, and the `Audit` finisher appends it only when nobody did within a minute. Installation
-/// tokens are signed in `graft-ops` with a key wrapped by a Secrets Store key. The edge mints through a `fetch()`-based
-/// binding to `graft-ops` with a version override from `OpsPointer`, and each `graft-ops` isolate caches the unwrapped
-/// key. A `lifeboat:read` token, minted per developer by `graftyard lifeboat enroll`, is refused by the main edge.
+/// Per-isolate cache. A read-class request may use an entry up to 10 s old, keyed by a stored token's hash or an
+/// installation token's `jti`, never a session: uncached, `ghs_` reads cost 260 leader `/read`s a second at 500 agents
+/// [measured, fanout], which keying by `jti` removes [inference] (`04487ca`; SHARED, `authorize_read`). A write-class
+/// request always reads the token, the actor's `Account` row, and the owner's Authz on their leaders (`fresh`), and the
+/// leader reads each distinct credential shard again once per entry, so a revocation or suspension binds every command
+/// decided after it. A new PAT, OAuth token, or SSH key commits first on its `Tokens` shard. The edge then appends the
+/// `Identity` side before it answers, and `Audit` appends it only if nobody did within a minute. Installation tokens
+/// are signed in `graft-ops` with a key wrapped by a Secrets Store key. The edge mints over a `fetch()` binding to
+/// `graft-ops`, versioned by `OpsPointer`, and each `graft-ops` isolate caches the unwrapped key. A `lifeboat:read`
+/// token, minted per developer by `graftyard lifeboat enroll`, is refused by the main edge.
 pub const SIGNING_KEY_CACHE: Duration = Duration::from_secs(3600);   // at most, per `graft-ops` isolate
 pub const READ_CACHE: Duration = Duration::from_secs(10);
 pub const IDENTITY_BUDGET_PER_ISOLATE: u32 = 50;   // group reads per second; compiled, never config
@@ -1470,8 +1470,8 @@ Every request enters at the Cloudflare data center nearest the client and runs `
 
 **Journey 9. A 500-agent fleet on the monorepo.** 500 cloud agents each push their own branch every 2 minutes and open draft PRs while journey 1's humans, merges, and CI continue. The full trace is journey A1 in `design/AGENT-LAYER.md`, with rates from `python3 scripts/cost_agents.py --a1` [guess constants].
 
-1. The group carries 27.6 commands/s against the 300 commands/s Milestone 0 gate, 25.2/s of them agent class with task updates and lease renewals, and its leader about 305 req/s. Activity feed polls, 45/s, go only to followers and learners, which answer from their applied log with no read-index call. Writes to different refs never conflict in `decide`. Milestone 0 measured the leader at 330 req/s, the 305 plus one `outcome` call per command, and feed polls at 45.4/s with none on the leader [measured, `tests/m0/results/m0-wp9.md`, B0-29]; with `outcome` folded into `commit` it served 301 req/s (sixth pass). Admission takes Human and MergeQueue commands first in every entry and counts caused commands against the agent share. A burst of 500 agent pushes of 256 KiB in 1 s was acknowledged at p99 2.5 to 3.3 s with every merge in the next entry, but at `INLINE_MAX_HOT` 256 KiB merges waited up to 2.3 s behind entries of inline packs, which the 64 KiB cap fixed [measured, B0-32].
-2. The network's git cache needs 2.68 vCPU at a push every 2 minutes, with git CPU measured on torvalds/linux and clone-cache misses composed from the cached tip [measured, `tests/m0/results/m0-wp9.md`, B0-34]. Head-push test merges use 0.21 vCPU of `TEST_MERGE_BUDGET`, so `fanout` keeps k = 1 `standard-4` shard per warm site, at 67% of its 4 vCPU, and clone-cache entries go to both warm buckets. Recomputing all 500 open test merges on each of 10 base moves a minute would need 4 vCPU, so test merges stay lazy and budgeted, and `mergeable` is null past the budget. In B0-34, stock clone-cache misses cost 25 to 46 CPU-s each and saturated 7 shards, and composed misses held human push p99 at 0.68 to 1.56 s in every phase.
+1. The group carries 27.6 commands/s against the 300 commands/s Milestone 0 gate, 25.2/s of them agent class with task updates and lease renewals, and its leader about 305 req/s. Activity feed polls, 45/s, go only to followers and learners, which answer from their applied log with no read-index call. Writes to different refs never conflict in `decide`. Milestone 0 measured the leader at 330 req/s, the 305 plus one `outcome` call per command, and feed polls at 45.4/s with none on the leader [measured, `tests/m0/results/m0-wp9.md`, B0-29]; with `outcome` folded into `commit` it served 301 req/s (sixth pass). The 305 does not count the edge read gate's access-rows `/read` per git request and App read: uncached for installation tokens, that added about 260 req/s at 500 agents, and the leader could not hold (12,000 to 23,000 `/read`s and up to 28,105 `/suspect` reports per 600 s row) [measured, `tests/am1/results/fanout.md`]; the gate now caches those decisions by `jti` (Shape, Identity). Admission takes Human and MergeQueue commands first in every entry and counts caused commands against the agent share. A burst of 500 agent pushes of 256 KiB in 1 s was acknowledged at p99 2.5 to 3.3 s with every merge in the next entry, but at `INLINE_MAX_HOT` 256 KiB merges waited up to 2.3 s behind entries of inline packs, which the 64 KiB cap fixed [measured, B0-32].
+2. The network's git cache needs 2.68 vCPU at a push every 2 minutes, with git CPU measured on torvalds/linux and clone-cache misses composed from the cached tip [measured, `tests/m0/results/m0-wp9.md`, B0-34]. Head-push test merges use 0.21 vCPU of `TEST_MERGE_BUDGET`, so `fanout` keeps k = 1 `standard-4` shard per warm site, at 67% of its 4 vCPU, by git CPU. The shard's per-network validate lock capped one network at about 2 pushes/s hosted (am1-runs, 405 to 515 ms a validate); `fanout` runs one network's validates concurrently, 39/s on 1 vCPU and 58/s on 4 at 8 in flight against 16/s before in the container bench, the hosted rate was about 2.7/s before, and with k forced to 4 hosted validates on pool shards took p50 456 ms [measured, `tests/am1/results/fanout.md`]. So the lock no longer bounds k = 1 on paper, but no hosted 500-agent run has passed yet, and clone-cache entries go to both warm buckets. Recomputing all 500 open test merges on each of 10 base moves a minute would need 4 vCPU, so test merges stay lazy and budgeted, and `mergeable` is null past the budget. In B0-34, stock clone-cache misses cost 25 to 46 CPU-s each and saturated 7 shards, and composed misses held human push p99 at 0.68 to 1.56 s in every phase.
 3. Agent commits' trailers and `refs/notes/ai` become `Provenance` during `validate`, session logs land under host-owned `SESSION_REFS`, and agent Apps cannot approve, merge, mark ready, push outside their task's prefix, or change protected paths (`ActorKind::Agent`). Only a human writer, or the controller from an issue a human assigned, creates a Graftyard-run task, and only while the org's `agents_enabled` is on. `LOG_MAX_BYTES` holds each member's log at 2 GB, so 30 days leave 8.45 GB on a member seeded with a 3.93 GB metadata tier (4.57 GB on disk), growing 0.055 GB a day, and the member reaches `CHILD_GROUP_AT` in about 32 days [measured, `tests/m0/results/m0-wp9.md`, B0-30] (Scale).
 
 ## Scale
@@ -1491,7 +1491,7 @@ Numbers are [guess] unless they cite a limit.
 | Clone duration | 5 GB at 50 MB/s is about 100 s [guess] | 20-minute drain on runtime updates | 12x |
 | Git cache shards | Daily working set 400 GB at 2,000 developers [guess], 25 `standard-4` shards per site, 50 warm (200 vCPU), plus 3 SSH fronts only where SSH is on (Enterprise, or the opt-in `cloudflared` option on Pro and Business), so none in the default; a start cap of 32 per site (25 shards and the hot pool of 7) bounds them at 384.0 vCPU (`cost.py`) | 1,500 vCPU per account default | 3.9x. An alarm fires at 70% (1,050 vCPU). Hosted runners run in a separate runner account. The quota request is on the day-0 list |
 | Agent fleet, group commands (journey 9) | 27.6 commands/s for 500 agents, 25.2/s agent class with caused commands, task updates, and lease renewals; 252 agent-class commands/s offered at 5,000 (`scripts/cost_agents.py --a1`) | 300 commands/s Milestone 0 gate | 11x at 500. At 5,000 the token bucket admits `AGENT_SHARE` of measured capacity, 150/s if capacity is 300, about 3,000 agents per group, and the rest get the git `ng` or REST 429 shape after 30 s. Milestone 0 measured 350 to 2,350 commands/s of capacity at this mix, so all 252/s were admitted, and pinned at 300 it admitted 149.5/s with every refusal in those shapes [measured, `tests/m0/results/m0-wp9.md`, B0-33]. With `outcome` folded into `commit`, `AGENT_INLINE_ENTRY` on every group, and `hot` from the log, three far-flung runs (ATL leader, weur and apac followers, fresh groups) held their leader with 0 `suspect`, Human and MergeQueue p99 746 to 943 ms, 253 agent commands/s admitted, and the leader at about 500 req/s [measured, `tests/m0/results/m0-wp9.md`, B0-33, seventh pass], and a fourth run with `commit_fail_min` passed at 674 ms (eighth pass). Before the fold the leader served 750 to 950 req/s and 2 of 3 runs lost it by election (fifth pass). So zero leader changes at 5,000 agents is measured for this mix, with a thin margin: 57 to 326 ms under the 1 s line over a run, least in the first 30 s, where the apac follower's appends miss `CALL_DEADLINE` while the group warms up (997 and 1,050 ms in two runs' first 30 s) |
-| Agent fleet, leader requests | About 305 req/s, none of them activity feed polls, 330 req/s measured with one `outcome` call per command (`tests/m0/results/m0-wp9.md`, B0-29) and 301 req/s with `outcome` folded into `commit` (sixth pass, `outcome` 0.1/s); 45 feed polls/s on followers and learners, about 22/s each | 1,000 req/s soft per DO | 3.3x; group reads 322/s, learners above 500 reads/s |
+| Agent fleet, leader requests | About 305 req/s, none of them activity feed polls, plus the read gate's access-rows `/read`s while installation tokens went uncached (about 260/s at 500 agents, `tests/am1/results/fanout.md`), 330 req/s measured with one `outcome` call per command (`tests/m0/results/m0-wp9.md`, B0-29) and 301 req/s with `outcome` folded into `commit` (sixth pass, `outcome` 0.1/s); 45 feed polls/s on followers and learners, about 22/s each | 1,000 req/s soft per DO | 3.3x; group reads 322/s, learners above 500 reads/s |
 | Agent fleet, git cache CPU for one network | 2.68 vCPU from index-pack 0.88, per-push test merges 0.21, agent CI clone-cache misses 0.94 (each agent CI job checks out a fresh tip, composed from the cached tip), agent clone misses 0.19, queue merges 0.01, composed-miss base renewal 0.38, and composed-miss part builds 0.08 (0.5 CPU-s a tip move, once per network, at 10 moves a minute) [measured constants, `tests/m0/results/m0-wp9.md`, B0-34, third pass] | 4 vCPU per `standard-4`; `TEST_MERGE_BUDGET` 25% | k = 1 per warm site, 67% of 4 vCPU; k = 1 at 5 pushes a task too. Both warm sites take k from the larger site's `NetworkLoad`. Stock misses would need 38 to 69 vCPU, past `FANOUT_MAX`. The hot pool adds 7 per site, so reserved vCPU at 2,000 developers is 384.8 of 1,500 |
 | Agent fleet, test merges | 4 vCPU if every open PR's merge were recomputed on each of 10 base moves a minute; 1 vCPU asked by 500 clients polling every 5 s; one test merge on torvalds/linux 5 to 50 ms at p50, at most 338 ms at p99 [measured, B0-34] | 1 vCPU of budget at k = 1 | Coalesced per (PR, base tip). Head pushes use 0.21, GETs share the other 0.79, and the rest see `mergeable: null` |
 | Agent fleet, member bytes on the monorepo group | 8.45 GB after 30 days of journey 9 on a member seeded with a 3.93 GB metadata tier (4.57 GB on disk), with the log held at 2.06 to 2.15 GB by `LOG_MAX_BYTES`, growing 0.055 GB a day [measured, `tests/m0/results/m0-wp9.md`, B0-30]. `scripts/cost_agents.py --a1`, with on-disk factors of 1.16 for the tier and 1.4 for small agent rows, prints 8.29 GiB: a 4 GiB tier at 4.64 GiB, 2.0 GiB of log (71 GB uncapped), and 1.65 GiB of agent rows | 10 GB per DO; `CHILD_GROUP_AT` of 8 GiB member bytes | 1.2x. The member reaches `CHILD_GROUP_AT` in about 32 days [measured, B0-30]. The script gives 25 days (6.7 GiB fixed, plus 0.56 GiB a month of check rows for 90 days and 1.07 GiB a month of PRs, provenance, and tasks), because its 4 GiB tier is 0.34 GiB of rows larger than the bed's. An A1-class fleet runs only once metadata child groups (Milestone 7) exist [inference] |
@@ -1840,7 +1840,7 @@ At 2,000 developers the largest lines of the default are:
 | Spare sites (canary operations on three empty buckets) | under $1 |
 | Spectrum SSH data at $1 per GB, SSH fronts, and any Spectrum add-on fee: native SSH needs Enterprise [measured, `tests/m0/results/m0-wp7.md`, B0-24], no tier here is on Enterprise, Enterprise has no list price (`SSH_PLANS` in `scripts/cost.py`), and the `cloudflared` SSH option on Pro and Business is off by default | $0 in the table |
 
-Agents add $21, $274, and $2,572 a month at 50, 300, and 2,000 developers on top of the default, 9%, 23%, and 28% (`python3 scripts/cost_agents.py`). Monthly lines use 5 pushes a task. With git CPU measured on torvalds/linux and composed clone-cache misses, `fanout` keeps the largest network at k = 1 at 2,000 developers, so the layer adds no extra warm shards ($0), and test merges on agent head pushes cost $1. The conflict predictor, at a measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), costs $54. They include agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month). Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
+Agents add $21, $274, and $2,572 a month at 50, 300, and 2,000 developers on top of the default, 9%, 23%, and 28% (`python3 scripts/cost_agents.py`). Monthly lines use 5 pushes a task. With git CPU measured on torvalds/linux and composed clone-cache misses, `fanout` keeps the largest network at k = 1 at 2,000 developers, so the layer adds no extra warm shards ($0), and test merges on agent head pushes cost $1. The conflict predictor, at a measured 0.37 vCPU-s a pair (`tests/m0/results/m0-wp16.md`, L0-05), costs $54. They include agent CI egress with every agent CI checkout missing the clone cache, the `Inbox` line grown by agent activity, and $342 as an upper bound for members held active by activity feed long-polls. At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month), by git CPU. The validate lock that held one network to about 2 pushes/s hosted is gone: one shard now validates 39 a second on 1 vCPU, about 9 times journey 9's 4.17/s [measured, container bench, `tests/am1/results/fanout.md`]. Hosted, at 100 agents every push landed with k = 1 (commit p99 885 ms), and the 500-agent rows failed on the read gate, not on validates, so the $0 line stands but is not yet shown hosted at 500 agents; LM-1's load rows are being rerun. Sandbox compute and model tokens for Graftyard-run agents, $2,827 and $182,400 a month at 2,000 developers with a guessed $2 of tokens a task, sit outside this comparison as runner compute does, and opt-in Code Mode is excluded. Graftyard-run agents are offered and off until an org enables them (`FRAME.md`, agent-layer answer 1). Line items are in `design/AGENT-LAYER.md`, "Cost".
 
 The quorum costs $3,637 a month over `Solo` at 2,000 developers, 66% more, most of it the second warm copy of every shard. At 50 developers it costs $99 more. That buys RPO zero and an RTO of about 11.5 s per request for the loss of any one region, continent, or site release, and a vault copy outside the install account.
 

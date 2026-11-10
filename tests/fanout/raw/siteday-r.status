@@ -1,0 +1,3 @@
+image registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:172216ad0cbdf8779b0c20a698a0b5040a3de4295581408698ea3b157a8df3e9
+siteday 1e25da8: sites deployed (roll stopped after 4 instances; containers/ unchanged since e46da45)
+edge b94893bd-cced-4665-8066-fb047162a60d

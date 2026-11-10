@@ -1,4 +1,4 @@
-//! The Worker: `POST /mint` from the edge's `OPS` binding. Answers 503 when the signing key cannot be read, so the
+//! The Worker: `POST /mint` and `POST /wrap` from the edge's `OPS` binding. Answers 503 when the signing key cannot be read, so the
 //! edge mints nothing then.
 
 use std::cell::RefCell;
@@ -22,8 +22,43 @@ fn rand10() -> [u8; 10] {
     b
 }
 
+/// `POST /wrap` (M4-WP1): a hook secret the edge received, sealed under `SecretsWrapKey`'s current slot. The two
+/// slots are the Secrets Store bindings `SECRETS_WRAP_KEY_A` and `_B`, and `SECRETS_WRAP_KEY_CURRENT` names the one new
+/// values take [inference: the design names the secret, not its bindings]. Nothing here logs the body.
+async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
+    use graftyard_identity::sealed::HookSecrets as _;
+    #[derive(serde::Deserialize)]
+    struct Body {
+        secret: String,
+    }
+    let Ok(b) = req.json::<Body>().await else { return Response::error("not a hook secret", 400) };
+    let mut texts = Vec::new();
+    for name in ["SECRETS_WRAP_KEY_A", "SECRETS_WRAP_KEY_B"] {
+        if let Ok(s) = env.secret_store(name)
+            && let Some(t) = s.get().await?
+        {
+            texts.push(t);
+        }
+    }
+    let current = env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0);
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    let src = match crate::WrapKeySource::parse(current, &refs) {
+        Ok(s) => s,
+        Err(e) => return Response::error(e.to_string(), 503),
+    };
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&rand10().into_iter().chain(rand10()).take(12).collect::<Vec<_>>());
+    match src.wrap(b.secret.as_bytes(), nonce) {
+        Ok(w) => Response::from_json(&w),
+        Err(e) => Response::error(e.to_string(), 503),
+    }
+}
+
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    if req.method() == Method::Post && req.path() == "/wrap" {
+        return wrap(req, &env).await;
+    }
     if req.method() != Method::Post || req.path() != "/mint" {
         return Response::error("Not Found", 404);
     }

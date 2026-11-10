@@ -1,0 +1,8 @@
+2026-11-10T04:22:46Z cost {"workers_requests": 1074294, "workers_cpu_ms": 11153147, "do_requests_m2b": 9104947, "do_rows_written_all": 1430849, "do_active_s_all": 349560, "usd": 3.89}
+2026-11-10T04:23:20.767Z m3org/fr3-b035 = 131200
+2026-11-10T04:23:22.681Z repo:131200 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T04:23:22.791Z repo:131200 leader 0: k 4 at 5
+2026-11-10T04:23:22Z b0-35 fr3-b035 131200 start
+2026-11-10T04:41:12.309Z repo:131200 leader 0: k 4 at 753
+2026-11-10T04:41:12Z b0-35 fr3-b035 131200 done exit 0
+ALLDONE
