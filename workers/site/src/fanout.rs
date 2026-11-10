@@ -50,8 +50,7 @@ pub async fn report(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
         // would be a 500, which lookup counts as a missed member and reports with `suspect` (hosted B0-34: 27 of 29
         // reports in its window ended so on the followers).
         if c.m.role() != Role::Leader {
-            let nl = crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(c.m.not_leader()));
-            return Ok(json!({ "error": nl }));
+            return Ok(not_leader(c.m.not_leader()));
         }
         let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
         let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
@@ -71,6 +70,11 @@ pub async fn force(h: &Rc<Host<Repo>>, k: u8) -> Result<Value> {
     let k = k.clamp(1, git::FANOUT_MAX);
     commit(h, k).await?;
     Ok(json!({ "k": k }))
+}
+
+/// What a member that does not lead answers `/fanout`: the `notLeader` shape `graftyard_lookup` follows.
+fn not_leader(nl: graftyard_raft::NotLeader) -> Value {
+    json!({ "error": crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(nl)) })
 }
 
 /// Records `Fanout { k }` as the leader's own entry and waits for it to commit.
@@ -142,5 +146,19 @@ mod tests {
         });
         assert_eq!(Repo::read_json(&fold, &q)["fanout"], 4);
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
+    }
+
+    /// A follower's answer to a shard's report names the leader in the shape lookup follows (`/error/notLeader`),
+    /// not an error the lookup would count as a missed member.
+    #[test]
+    fn a_follower_answers_a_report_with_not_leader() {
+        let nl = graftyard_raft::NotLeader {
+            term: graftyard_raft::Term(7),
+            leader: Some(graftyard_types::SiteId(2)),
+            config: None,
+        };
+        let v = super::not_leader(nl);
+        assert_eq!(v.pointer("/error/notLeader/leader"), Some(&json!(2)));
+        assert_eq!(v.pointer("/error/notLeader/term"), Some(&json!(7)));
     }
 }

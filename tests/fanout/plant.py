@@ -72,6 +72,9 @@ MUTANTS = [
      '                "fanout": fold.fanout_k(),\n', '', SITE),
     ('site: this release does not read 32.15', FAM,
      '            git::repo::REPO_FORMAT_FANOUT,\n        ]', '        ]', SITE),
+    ('site: a follower answers a report without the notLeader shape', 'workers/site/src/fanout.rs',
+     'json!({ "error": crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(nl)) })',
+     'json!({ "error": "not leader", "term": nl.term.0 })', SITE),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

@@ -19,3 +19,4 @@
 18 CAUGHT  site: the ranges read leaves out k  [fanout::tests::the_ranges_read_answers_the_committed_k]
 19 CAUGHT  site: this release does not read 32.15  [fanout::tests::the_ranges_read_answers_the_committed_k]
 20 of 20 caught (0-4 from the rerun after GOT took TestFinishValidate; in the first run 0 was MISSED by TestConcurrentValidatesOfOneNetwork alone)
+20 CAUGHT  site: a follower answers a report without the notLeader shape  [fanout::tests::a_follower_answers_a_report_with_not_leader]  (added after 105c228; 21 of 21 with the 20 above)
