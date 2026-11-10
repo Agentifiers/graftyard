@@ -1,25 +1,26 @@
-// B0-30's replay: 30 simulated days of journey 9 on m3org/b0-30 in about 40 h (SPEED 18), at journey 9's bytes per
-// day (tests/m0/results/m0-wp9.md, B0-30), with these substitutions (tests/am1/results/b0-30.md, "Substitutions"):
+// B0-30's replay: 30 simulated days of journey 9 on m3org/b0-30 in about 40 h (SPEED 18), with journey 9's log bytes
+// and agent rows per simulated day (tests/m0/results/m0-wp9.md, B0-30), and these substitutions
+// (tests/am1/results/b0-30.md, "Substitutions"):
 //
-// - **Log bytes.** M0 replayed 1.815 M agent pushes of 10 to 70 KB (74.4 GB uncapped). Here the same 2.48 GB a
-//   simulated day goes as real git pushes through graft-m1's edge, PUSH_BYTES each, at about 0.5 a second, by
-//   m3-admin (Human class, so packs stay inline as M0's uncapped volume). Each pack is one commit of one blob: a
-//   fixed 1 MB base with 64 random bytes replaced, so the git cache's repacks and the archive alarm's promotions
-//   delta them and the shard's disk does not take 74 GB.
-// - **Agent rows.** M0's rows per simulated day (6,050 tasks with a 2 KB PR row and a 1 KB task row each, 48,400
-//   300-byte check rows, 60,500 150-byte provenance rows, a 16 KB `PathSet` per open PR deleted 20 simulated minutes
-//   later) are recorded by the leader in batched entries (`/bench_seed {"record"}`), not as 10 M separate commands.
-// - **Live commands.** A sample of agent commands through the edge (task summary edits, lease acquire, renew and
-//   release, `addComment`) at LIVE_PER_S, so the edge, admission, and decide paths run beside the batches.
+// - **Pushes.** Journey 9's 2.48 GB of inline packs a simulated day go as real git pushes through graft-m1's edge by
+//   m3-admin to refs/heads/b030/<i> (Human class), PUSH_PER_S a second, evenly spaced (default 1.6, under `hot`'s 2 a
+//   second so admission keeps them inline up to INLINE_MAX), PUSH_BYTES each so the bytes a day are journey 9's.
+//   Journey 9's own count (4.17 a second, 75 at 18x) is not reachable, and its agent-class pushes and every edge route
+//   that reads the repository's tiers (`{"rows": true}`: agent pushes' `push_context`, the task and lease API, GraphQL)
+//   took the leader past its 300 s CPU limit on this 4 GB tier. Each blob is a fixed random base with 64 bytes
+//   replaced, so the git cache's repacks and promotions delta them.
+// - **Agent rows.** M0's rows a simulated day (6,050 tasks, each with a task row, a 2 KB PR opened on a pushed branch
+//   at its tip, and a 16 KB `PathSet` deleted with the PR 20 simulated minutes later; 48,400 300-byte statuses; 60,500
+//   150-byte provenance rows) are recorded by the leader in batched entries (`/bench_seed {"record"}`) every 10 s.
 //
 // Resumable: state in tests/am1/raw/b030-state.json, written every 15 s; the schedule runs on active seconds, so a
 // restart continues where the last state left it. Stops at the end of day 30 or when tests/am1/raw/b030-STOP exists.
-// Rows go to tests/am1/raw/b030-load.jsonl, one a minute.
+// Rows go to tests/am1/raw/b030-load.jsonl: each batch, and a summary a minute.
 //   node tests/am1/b030/load.mjs
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { EDGE, api, ghs, leaderOf, log, member, row, sleep, state as m3, tokens } from "../hosted/lib.mjs";
+import { EDGE, leaderOf, log, member, row, sleep, state as m3, tokens } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const CHAIN = `repo:${REPO.repo}`;
@@ -30,17 +31,18 @@ const OUT = "tests/am1/raw/b030-load.jsonl";
 const DAYS = 30;
 const SPEED = Number(process.env.B030_SPEED ?? 18);
 const DAY_S = 86_400 / SPEED; // wall seconds per simulated day
-const PUSH_BYTES = 1_000_000;
-const PER_DAY = { packBytes: 74.4e9 / 30, tasks: 6_050, checks: 48_400, provenance: 60_500 };
+const PUSH_PER_S = Number(process.env.B030_PUSHES ?? 1.6);
+// Journey 9's 74.4 GB of inline packs in 30 days (m0-wp9.md, B0-30), as PUSH_PER_S pushes of this many bytes.
+const PUSH_BYTES = Math.round(74.4e9 / 30 / (PUSH_PER_S * DAY_S));
+const PER_DAY = { tasks: 6_050, checks: 48_400, provenance: 60_500 };
 const BRANCHES = 500;
-const LIVE_PER_S = Number(process.env.B030_LIVE ?? 0.5);
 const BATCH_S = 10;
 const ADMIN = 7100003;
 
 // ---- state ----
 const st = existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {
-  started: new Date().toISOString(), active: 0, pushes: 0, pushBytes: 0, pushFail: {}, tips: {},
-  tasks: 0, prs: 0, closed: 0, checks: 0, provenance: 0, batches: 0, batchFail: 0, open: [], live: {}, liveTasks: [],
+  started: new Date().toISOString(), active: 0, pushes: 0, pushFails: 0, next: 0, pushBytes: 0, tips: {},
+  tasks: 0, prs: 0, closed: 0, checks: 0, provenance: 0, batches: 0, batchFail: 0, open: [],
   statusId: 1, idBase: 1 << 30,
 };
 const save = () => { writeFileSync(`${STATE}.tmp`, JSON.stringify(st)); renameSync(`${STATE}.tmp`, STATE); };
@@ -103,9 +105,9 @@ function pushResult(text) {
   return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";
 }
 const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toString("base64")}` });
-async function git(path, body, headers) {
+async function git(path, body, headers, tok = tokens.admin) {
   try {
-    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tokens.admin), "user-agent": "git/2.56.0", ...headers }, signal: AbortSignal.timeout(180_000) });
+    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...headers }, signal: AbortSignal.timeout(180_000) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1") };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80) }; }
 }
@@ -114,22 +116,31 @@ async function tip(ref) {
     { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
   return r.text.match(new RegExp(`([0-9a-f]{40}) ${ref}\\n`))?.[1] ?? null;
 }
-// The 1 MB base every blob varies: the same bytes after a restart, so deltas keep finding it.
-const BASE = (() => { const out = []; for (let i = 0; out.length * 32 < PUSH_BYTES; i++) out.push(createHash("sha256").update(`b030-base-${i}`).digest()); return Buffer.concat(out).subarray(0, PUSH_BYTES); })();
+// The base every blob varies: the same random bytes after a restart, so deltas keep finding it.
+const BASE = (() => { const out = []; for (let i = 0; out.length * 32 < PUSH_BYTES + 32; i++) out.push(createHash("sha256").update(`b030-base-${i}`).digest()); return Buffer.concat(out).subarray(0, PUSH_BYTES); })();
 let main = null;
+const busy = new Set();
 async function onePush(k) {
-  const i = k % BRANCHES;
-  const ref = `refs/heads/claude/b030-${i}`;
+  let i = k % BRANCHES;
+  while (busy.has(i)) i = (i + 1) % BRANCHES;
+  busy.add(i);
+  try { return await pushOn(i, k); } finally { busy.delete(i); }
+}
+async function pushOn(i, k) {
+  const ref = `refs/heads/b030/${i}`;
   const blob = Buffer.from(BASE);
-  randomBytes(64).copy(blob, (k * 7919) % (PUSH_BYTES - 64));
+  randomBytes(64).copy(blob, Math.floor(Math.random() * (blob.length - 64)));
   const parent = st.tips[i] ?? main;
   const { pack, commit } = onePack(`b030/${i}/f.bin`, blob, parent, `b030 ${k}`, Math.floor(simMs() / 1000));
+  const t0 = Date.now();
   const r = await git("git-receive-pack", receiveBody(ref, st.tips[i] ?? null, commit, pack), { "content-type": "application/x-git-receive-pack-request" });
+  pushMs.push(Date.now() - t0);
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status}`;
   if (res === "ok") { st.tips[i] = commit; st.pushes++; st.pushBytes += pack.length; }
   else if (res === "stale") st.tips[i] = await tip(ref);
   return res;
 }
+const pushMs = [];
 
 // ---- recorded agent rows ----
 const bytes = (s) => [...Buffer.from(s)];
@@ -162,13 +173,15 @@ function batch() {
   for (let j = 0; j < nTasks; j++) {
     const t = st.tasks + j;
     const n = 1_000_001 + t;
-    const branch = bytes(`refs/heads/claude/b030-pr-${t}`);
-    const head = oid();
+    const bi = t % BRANCHES;
+    const branch = bytes(`refs/heads/b030/${bi}`);
+    const tipHex = st.tips[bi] ?? main;
+    const head = [...Buffer.from(tipHex, "hex")];
     ev.push({ TaskCreated: { session: `${m3.app}.b030-${t}`, kind: "External", state: "Completed", prefix: null, requester: null,
       app: m3.app, installation: m3.installation, creator: { App: { app: m3.app, installation: m3.installation } }, issue: null,
       snapshot: 1, prompt: null, pr: n, summary: pad(900, `task ${t}`) } });
     ev.push({ PrOpened: { n, head: { repo: REPO.repo, branch }, base: bytes("refs/heads/main"),
-      capture: { head_sha: head, base_sha: oid(), state: { Open: { draft: true } }, labels: [],
+      capture: { head_sha: head, base_sha: [...Buffer.from(main, "hex")], state: { Open: { draft: true } }, labels: [],
         issue: { id: st.idBase + t, author: ADMIN, title: `b030 ${t}`, body: pad(1_800, `pr ${t}`), labels: [], assignees: [] }, changes_from: null } } });
     ev.push({ PathSet: { refname: branch, pr: n, head, merge_base: null,
       paths: Array.from({ length: 160 }, (_, p) => pad(100, `src/b030/${t}/${p}`)), planned: [], truncated: false } });
@@ -188,7 +201,7 @@ function batch() {
   st.checks += nChecks;
   const nProv = Math.min(500, due(st.provenance, PER_DAY.provenance));
   for (let j = 0; j < nProv; j++) {
-    ev.push({ Provenance: { push: rid26(), list: [{ commit: oid(), refname: bytes(`refs/heads/claude/b030-${(st.provenance + j) % BRANCHES}`),
+    ev.push({ Provenance: { push: rid26(), list: [{ commit: oid(), refname: bytes(`refs/heads/b030/${(st.provenance + j) % BRANCHES}`),
       sources: [{ Claimed: { key: "GraftyardSession", value: pad(60, `b030-${st.provenance + j}`) } }] }] } });
   }
   st.provenance += nProv;
@@ -203,98 +216,52 @@ function rid26() {
   return out;
 }
 
-// ---- live commands through the edge ----
-let app = null, appAt = 0;
-async function appToken() {
-  if (!app || Date.now() - appAt > 40 * 60_000) {
-    const r = await ghs({});
-    if (r.status !== 201) throw new Error(`ghs ${r.status}`);
-    app = r.body.token; appAt = Date.now();
-  }
-  return app;
-}
-const V1 = `/api/graftyard/v1/repos/${R}`;
-let target = null;
-async function liveOne(k) {
-  const tok = await appToken();
-  const kind = ["task", "lease", "renew", "comment"][k % 4];
-  if (st.liveTasks.length < 20) {
-    const r = await api("POST", `${V1}/tasks`, tok, { kind: "external", session: `b030-live-${st.liveTasks.length}-${Date.now().toString(36)}`, summary: "b030 live" });
-    if (r.status === 201) st.liveTasks.push({ id: r.body.id, lease: null });
-    return `task:create ${r.status}`;
-  }
-  const t = st.liveTasks[k % st.liveTasks.length];
-  const h = { "x-graftyard-agent-session": t.id };
-  if (kind === "task") return `task ${(await api("PATCH", `${V1}/tasks/${t.id}`, tok, { summary: pad(400, `live ${k}`) })).status}`;
-  if (kind === "lease") {
-    if (t.lease) { const r = await api("DELETE", `${V1}/leases/${t.lease}`, tok, undefined, h); t.lease = null; return `lease:release ${r.status}`; }
-    const r = await api("POST", `${V1}/leases`, tok, { paths: [`b030/live/${k % 997}/**`], mode: "shared", ttl_seconds: 600 }, h);
-    if (r.status === 201) t.lease = r.body?.lease?.id ?? null;
-    return `lease:acquire ${r.status}`;
-  }
-  if (kind === "renew") return t.lease ? `lease:renew ${(await api("POST", `${V1}/leases/${t.lease}/renew`, tok, { ttl_seconds: 600 }, h)).status}` : "lease:none";
-  if (!target) {
-    const q = await api("POST", "/api/graphql", tokens.admin, { query: `query { repository(owner: "m3org", name: "b0-30") { id issues(first: 1) { nodes { id number } } } }` });
-    target = q.body?.data?.repository?.issues?.nodes?.[0];
-    if (!target) {
-      const c = await api("POST", "/api/graphql", tokens.admin, { query: "mutation($i: CreateIssueInput!) { createIssue(input: $i) { issue { id number } } }", variables: { i: { repositoryId: q.body?.data?.repository?.id, title: "b030 live target" } } });
-      target = c.body?.data?.createIssue?.issue;
-    }
-    if (!target) return "comment:no target";
-  }
-  const r = await api("POST", "/api/graphql", tok, { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: pad(300, `live ${k}`) } } });
-  return r.body?.data?.addComment ? "comment ok" : `comment ${String(r.body?.errors?.[0]?.message ?? r.status).slice(0, 40)}`;
-}
-
 // ---- the schedule ----
 const tally = {};
 const note = (k) => { tally[k] = (tally[k] ?? 0) + 1; };
 main = await tip("refs/heads/main");
 if (!main) throw new Error("no main");
-// The fleet's App classes as Agent, as a1.mjs flags it.
-const flag = await api("PUT", `/api/graftyard/v1/agents/apps/${m3.app}`, tokens.admin, { kind: "third_party", confine: "refs/heads/claude/**" });
-log(`b030 load: ${CHAIN}, speed ${SPEED}, day ${simDay().toFixed(3)}, pushes ${st.pushes}, flag ${flag.status}`);
-let inflight = 0, liveInflight = 0, liveK = Object.values(st.live).reduce((a, b) => a + b, 0);
+log(`b030 load: ${CHAIN}, speed ${SPEED}, ${PUSH_PER_S} pushes/s of ${PUSH_BYTES} bytes, day ${simDay().toFixed(3)}, pushes ${st.pushes}`);
+let batching = false, inflight = 0;
 let last = Date.now(), lastRow = Date.now(), lastBatch = 0, lastSave = Date.now();
 const done = () => simDay() >= DAYS || existsSync(STOP);
 while (!done()) {
   const now = Date.now();
   // Active time advances with the wall clock, at most 5 s a tick, so a pause (an orb restart) is not caught up.
-  st.active += Math.min(5, (now - last) / 1000);
+  const dt = Math.min(5, (now - last) / 1000);
+  st.active += dt;
+  st.pushDue = (st.pushDue ?? 0) + PUSH_PER_S * dt;
   last = now;
-  const wantPushes = Math.floor((PER_DAY.packBytes * simDay()) / PUSH_BYTES);
-  while (st.pushes + inflight < wantPushes && inflight < 4) {
+  while (st.pushDue >= 1 && inflight < 8) {
+    st.pushDue -= 1;
     inflight++;
-    onePush(st.pushes + inflight + Math.floor(Math.random() * 1e6)).then((r) => note(`push ${r}`)).catch((e) => note(`push error ${String(e).slice(0, 30)}`)).finally(() => inflight--);
+    // Each branch has one push in flight at most, so a push's parent is its branch's last tip.
+    onePush(st.next++).then((r) => { note(`push ${r}`); if (r !== "ok") st.pushFails++; }).catch((e) => note(`push error ${String(e).slice(0, 30)}`)).finally(() => inflight--);
   }
-  if (now - lastBatch >= BATCH_S * 1000) {
+  if (now - lastBatch >= BATCH_S * 1000 && !batching) {
     lastBatch = now;
     const ev = batch();
     if (ev.length) {
+      batching = true;
       const t0 = Date.now();
-      try {
-        const at = await record(ev);
+      record(ev).then((at) => {
         if (at) { st.batches++; note("batch ok"); row(OUT, { kind: "batch", at, events: ev.length, ms: Date.now() - t0 }); }
         else { st.batchFail++; note("batch lost"); }
-      } catch (e) { st.batchFail++; note(`batch ${String(e).slice(0, 60)}`); }
+      }).catch((e) => { st.batchFail++; note(`batch ${String(e).slice(0, 60)}`); }).finally(() => { batching = false; });
     }
-  }
-  const wantLive = Math.floor(st.active * LIVE_PER_S);
-  while (liveK < wantLive && liveInflight < 4) {
-    liveInflight++;
-    const k = liveK++;
-    liveOne(k).then((r) => { note(r); st.live[r] = (st.live[r] ?? 0) + 1; }).catch((e) => note(`live error ${String(e).slice(0, 30)}`)).finally(() => liveInflight--);
   }
   if (now - lastSave > 15_000) { save(); lastSave = now; }
   if (now - lastRow > 60_000) {
     lastRow = now;
     row(OUT, { kind: "minute", at: new Date().toISOString(), day: +simDay().toFixed(4), pushes: st.pushes, pushBytes: st.pushBytes,
-      tasks: st.tasks, closed: st.closed, checks: st.checks, provenance: st.provenance, batches: st.batches, batchFail: st.batchFail, tally });
+      tasks: st.tasks, closed: st.closed, checks: st.checks, provenance: st.provenance, batches: st.batches, batchFail: st.batchFail, inflight,
+      pushMs: pushMs.length ? { n: pushMs.length, p50: pushMs.sort((a, b) => a - b)[pushMs.length >> 1], max: pushMs.at(-1) } : null, tally });
     for (const k of Object.keys(tally)) delete tally[k];
+    pushMs.length = 0;
   }
   await sleep(250);
 }
-while (inflight || liveInflight) await sleep(500);
+while (inflight || batching) await sleep(500);
 save();
 log(`b030 load ended at day ${simDay().toFixed(3)}: ${JSON.stringify({ pushes: st.pushes, tasks: st.tasks, checks: st.checks, provenance: st.provenance })}`);
 writeFileSync("tests/am1/raw/b030-load.done", new Date().toISOString() + "\n");
