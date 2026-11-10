@@ -1084,7 +1084,7 @@ impl<F: Family> Host<F> {
     pub fn restore(self: &Rc<Self>) -> Result<()> {
         let Some(join) = self.stored_join()? else { return Ok(()) };
         let site = SiteEnv::read(&self.env)?;
-        let retention = request_retention(&self.env);
+        let retention = request_retention(&self.env, F::tiered());
         let (stored, requests) = load::<F>(&self.state.storage(), &join, retention)?;
         *self.requests.borrow_mut() = Some(requests);
         let applied = stored.state.as_ref().map_or(Index(0), |s| s.applied);
@@ -2456,13 +2456,17 @@ impl<F: Family> Host<F> {
 }
 
 /// How long this install keeps `request` rows: `REQUEST_RETENTION`, or with `test-faults` the
-/// `GRAFTYARD_REQUEST_RETENTION_S` variable, which every site of an install sets to the same value.
-pub fn request_retention(env: &Env) -> Duration {
+/// `GRAFTYARD_REQUEST_RETENTION_S` variable, which every site of an install sets to the same value. On a tiered
+/// (repository) chain `GRAFTYARD_REPO_REQUEST_RETENTION_S` wins: B0-30 replays 30 days in 40 h and scales the 48 h
+/// by the same factor, which a non-tiered chain's restore check (`load`) would refuse on groups that kept 48 h.
+pub fn request_retention(env: &Env, tiered: bool) -> Duration {
     #[cfg(feature = "test-faults")]
-    if let Some(s) = env.var("GRAFTYARD_REQUEST_RETENTION_S").ok().and_then(|v| v.to_string().parse().ok()) {
-        return Duration::from_secs(s);
+    for (var, on) in [("GRAFTYARD_REPO_REQUEST_RETENTION_S", tiered), ("GRAFTYARD_REQUEST_RETENTION_S", true)] {
+        if on && let Some(s) = env.var(var).ok().and_then(|v| v.to_string().parse().ok()) {
+            return Duration::from_secs(s);
+        }
     }
-    let _ = env;
+    let _ = (env, tiered);
     raft::REQUEST_RETENTION
 }
 

@@ -709,7 +709,7 @@ fn finish_install(
         }
     }
     let at = job.through_at.ok_or_else(|| err("entry through was not read"))?;
-    let retention = crate::host::request_retention(&h.env);
+    let retention = crate::host::request_retention(&h.env, true);
     let cut = at.saturating_sub(retention.as_millis() as u64);
     sql.exec("DELETE FROM i_request WHERE at < ?", vec![i(cut)])?;
     let kept = rows(sql, "SELECT count(*) FROM i_request", vec![])?.first().map_or(Ok(0), |r| int(&r[0]))?;

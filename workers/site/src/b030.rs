@@ -75,6 +75,7 @@ fn size(h: &Rc<Host<Repo>>) -> Result<Value> {
         "logBytes": one("SELECT COALESCE(SUM(length(row)), 0) FROM log")?,
         "logFirst": one("SELECT COALESCE(MIN(idx), 0) FROM log")?,
         "requestRows": one("SELECT COUNT(*) FROM request")?,
+        "requestBytes": one("SELECT COALESCE(SUM(length(events)), 0) FROM request")?,
         "archiveRanges": one("SELECT COUNT(*) FROM archive_keys")?,
         "archivedTo": one("SELECT COALESCE(MAX(to_idx), 0) FROM archive_keys")?,
         "sqliteFull": h.stats.borrow().sqlite_full,
