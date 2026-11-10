@@ -1904,6 +1904,8 @@ pub enum RepoCmd {
     Transfer(crate::transfer::TransferSettings),
     /// The `Webhooks` consumer's cursor (`crate::hooks`), `{"hookCursor": ..}`, format 32.16.
     HookCursor(crate::hooks::HookCursorCmd),
+    /// A create's or a delete's finisher step (`crate::lifecycle`), `{"lifecycle": ..}`, format 32.17 (F59).
+    Lifecycle(crate::lifecycle::Lifecycle),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1914,6 +1916,7 @@ pub enum RepoOut {
     Merge(crate::merge_call::MergeCallOut),
     Transfer(crate::transfer::TransferOut),
     HookCursor(crate::hooks::HookCursorOut),
+    Lifecycle(crate::lifecycle::LifecycleOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -1923,6 +1926,7 @@ pub enum RepoErr {
     Issue { err: crate::issue_ops::IssueErr, render: serde_json::Value },
     Merge { n: crate::issues::IssueNumber, err: crate::merge::MergeError, render: serde_json::Value },
     Transfer(crate::transfer::TransferErr),
+    Lifecycle(crate::lifecycle::LifecycleErr),
 }
 
 impl crate::smart::PushOutOf for RepoOut {
@@ -1933,7 +1937,8 @@ impl crate::smart::PushOutOf for RepoOut {
             | RepoOut::Issue(_)
             | RepoOut::Merge(_)
             | RepoOut::Transfer(_)
-            | RepoOut::HookCursor(_) => None,
+            | RepoOut::HookCursor(_)
+            | RepoOut::Lifecycle(_) => None,
         }
     }
 }
@@ -1948,6 +1953,7 @@ impl Serialize for RepoCmd {
             Merge(&'a crate::merge_call::MergeCall),
             Transfer(&'a crate::transfer::TransferSettings),
             HookCursor(&'a crate::hooks::HookCursorCmd),
+            Lifecycle(&'a crate::lifecycle::Lifecycle),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -1956,6 +1962,7 @@ impl Serialize for RepoCmd {
             RepoCmd::Merge(c) => Tagged::Merge(c).serialize(s),
             RepoCmd::Transfer(c) => Tagged::Transfer(c).serialize(s),
             RepoCmd::HookCursor(c) => Tagged::HookCursor(c).serialize(s),
+            RepoCmd::Lifecycle(c) => Tagged::Lifecycle(c).serialize(s),
         }
     }
 }
@@ -1978,6 +1985,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(RepoCmd::Transfer).map_err(D::Error::custom)
         } else if let Some(c) = one("hookCursor") {
             serde_json::from_value(c).map(RepoCmd::HookCursor).map_err(D::Error::custom)
+        } else if let Some(c) = one("lifecycle") {
+            serde_json::from_value(c).map(RepoCmd::Lifecycle).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -1993,6 +2002,7 @@ impl Record for RepoCmd {
             RepoCmd::Merge(c) => c.cmd.encode(out),
             RepoCmd::Transfer(c) => c.encode(out),
             RepoCmd::HookCursor(c) => c.encode(out),
+            RepoCmd::Lifecycle(c) => c.encode(out),
         }
     }
 }
@@ -2011,6 +2021,7 @@ impl Command for RepoCmd {
             RepoCmd::Merge(c) => c.cmd.format(),
             RepoCmd::Transfer(c) => c.format(),
             RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
+            RepoCmd::Lifecycle(c) => c.format(),
         }
     }
     fn tiers(&self) -> TierSet {
@@ -2021,6 +2032,7 @@ impl Command for RepoCmd {
             RepoCmd::Merge(c) => c.cmd.tiers(),
             RepoCmd::Transfer(c) => c.tiers(),
             RepoCmd::HookCursor(c) => c.tiers(),
+            RepoCmd::Lifecycle(c) => c.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -2031,6 +2043,7 @@ impl Command for RepoCmd {
             RepoCmd::Merge(c) => c.cmd.deps(fold),
             RepoCmd::Transfer(c) => c.deps(),
             RepoCmd::HookCursor(_) => SmallVec::new(),
+            RepoCmd::Lifecycle(c) => c.deps(fold),
         }
     }
     fn decide(
@@ -2060,6 +2073,9 @@ impl Command for RepoCmd {
                 let (e, o) = c.decide(s);
                 Ok((e, RepoOut::HookCursor(o)))
             }
+            RepoCmd::Lifecycle(c) => {
+                c.decide(s, deps).map(|(e, o)| (e, RepoOut::Lifecycle(o))).map_err(RepoErr::Lifecycle)
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2072,6 +2088,7 @@ impl Command for RepoCmd {
             }
             RepoCmd::Transfer(c) => RepoOut::Transfer(c.replay(events)),
             RepoCmd::HookCursor(c) => RepoOut::HookCursor(c.replay(events)),
+            RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
         }
     }
 }

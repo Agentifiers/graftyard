@@ -12,7 +12,9 @@
 //! - **Repository steps.** A transfer's or an enterprise change's plan reads the repository chain (its settings owner
 //!   and enterprise, from `{"q": {"tiers": ..}}`'s `settings`, and its committed config from `/status`) and has two
 //!   steps there: the group's move, one `/move` step at a time on its leader until it answers `Done`, and the
-//!   transfer's own `Settings` (repository format 32.10).
+//!   transfer's own `Settings` (repository format 32.10). A create's and a delete's (F59) read the chain's `created`
+//!   and `deleted` rows too, and a chain with no group as `NoGroup`; their steps are the first settings, after
+//!   creating the group under the owner's record, and the tombstone (`{"lifecycle": ..}`, 32.17).
 //! - **Off until enabled.** The cursor commands are formats 0x10.3, 0x11.3, and 0x12.4, which a member reads only once a site
 //!   day put every member of the group on this release; until then `GRAFTYARD_AUDIT` is unset and nothing runs, as
 //!   the edge sends no format before `FormatsEnable` (`design/SHARED.md`, the two-release rule). A fold whose cursor
@@ -137,7 +139,7 @@ pub async fn on_alarm<F: Audited>(h: &Rc<Host<F>>) {
     let through = scanned.through;
     spawn_local(async move {
         let t0 = now_ms();
-        let r = crate::host::within(BATCH_FOR, batch(&env, chain, cursor, through, owed))
+        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, through, owed))
             .await
             .unwrap_or_else(|| Err(format!("no answer in {} s", BATCH_FOR.as_secs())));
         match &r {
@@ -177,7 +179,8 @@ pub async fn finish_now<F: Audited>(h: &Rc<Host<F>>, body: Value) -> Result<Valu
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let t0 = now_ms();
-        let r = crate::host::within(BATCH_FOR, batch(&env, chain, cursor, cursor, vec![owed]))
+        let now = Timestamp(now_ms());
+        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, cursor, vec![owed]))
             .await
             .unwrap_or_else(|| Err(format!("no answer in {} s", BATCH_FOR.as_secs())));
         match &r {
@@ -201,11 +204,12 @@ pub async fn finish_now<F: Audited>(h: &Rc<Host<F>>, body: Value) -> Result<Valu
 async fn batch(
     env: &Env,
     chain: ChainId,
+    now: Timestamp,
     from: Index,
     through: Index,
     owed: Vec<audit::Owed>,
 ) -> std::result::Result<Value, String> {
-    let mut f = Finisher::new(chain, from, through, owed);
+    let mut f = Finisher::new(chain, now, from, through, owed);
     for _ in 0..1_000 {
         match f.want() {
             Want::Read(chains) => {
@@ -257,16 +261,20 @@ async fn read(env: &Env, chain: ChainId) -> std::result::Result<AuditRead, Strin
     })
 }
 
-/// A repository chain's owner, enterprise, and group, by its id: the `RepoOwner` row names the owner whose record
-/// places it, and its leader answers the `settings` row and its committed config.
+/// A repository chain's owner, enterprise, group, and life, by its id: the `RepoOwner` row names the owner whose
+/// record places it, and its leader answers the `settings` row, the `created` and `deleted` rows, and its committed
+/// config. A chain with no group reads as `NoGroup` under its `RepoOwner` owner: a create cut short before `InitRepo`.
 async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Result<AuditRead, String> {
+    use graftyard_identity::finish::RepoLife;
     let (chain, record, owner) = repo_target(env, repo).await?;
     let site = crate::SiteEnv::read(env).map_err(|e| e.to_string())?;
     let b = graftyard_lookup::Bindings { env, sites: &site.sites };
     let q = json!({ "q": { "settings": true } }).to_string();
-    let (v, _, t) = graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes())
-        .await?
-        .ok_or_else(|| format!("{chain}: no group"))?;
+    let Some((v, _, t)) = graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? else {
+        let r =
+            audit::RepoRead { owner, enterprise: None, voters: Vec::new(), home: record.home, life: RepoLife::NoGroup };
+        return Ok(AuditRead::Repo(r));
+    };
     let stub = b.member(t.site, &t.do_name).map_err(|e| e.to_string())?;
     let mut res = stub.fetch_with_str("https://member/status").await.map_err(|e| e.to_string())?;
     let st: Value = res.json().await.map_err(|e| e.to_string())?;
@@ -280,7 +288,12 @@ async fn read_repo(env: &Env, repo: graftyard_types::RepoId) -> std::result::Res
     let account = |k: &str| serde_json::from_value::<Option<graftyard_types::AccountId>>(v["value"][k].clone());
     let o = account("owner").map_err(|e| e.to_string())?.unwrap_or(owner);
     let e = account("enterprise").map_err(|e| e.to_string())?;
-    Ok(AuditRead::Repo(audit::RepoRead { owner: o, enterprise: e, voters, home }))
+    let life = match (v["value"]["deleted"].as_bool(), v["value"]["created"].as_bool()) {
+        (Some(true), _) => RepoLife::Deleted,
+        (_, Some(true)) => RepoLife::Created,
+        _ => RepoLife::Open,
+    };
+    Ok(AuditRead::Repo(audit::RepoRead { owner: o, enterprise: e, voters, home, life }))
 }
 
 /// The chain, record, and owner of a repository: its owner's record from the `RepoOwner` row. During a transfer the
@@ -349,17 +362,43 @@ async fn repo_step(
                 enterprise: *enterprise,
                 request: request_id(chain, &json!({ "owner": owner, "enterprise": enterprise })),
             });
-            let cmd = serde_json::to_value(&cmd).map_err(|e| e.to_string())?;
-            let rid = request_id(chain, &cmd);
-            let done = graftyard_lookup::commit_as(&b, chain, &record, rid, cmd).await?;
-            if done.get("ok").is_some() {
-                Ok(false)
-            } else if done.get("refused").is_some() {
-                Ok(true)
-            } else {
-                Err(format!("{chain}: {done}"))
-            }
+            repo_commit(&b, chain, &record, cmd).await
         }
+        RepoStep::Init { owner, .. } => {
+            // The edge died before its README push or `InitRepo`, perhaps before any member joined.
+            graftyard_lookup::create(&b, chain, &record, &json!({ "owner": owner })).await?;
+            let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
+                .expect("an init step maps to a lifecycle command")?;
+            let request = request_id(chain, &serde_json::to_value(&cmd.op).map_err(|e| e.to_string())?);
+            cmd.request = request;
+            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
+        }
+        RepoStep::Delete { .. } => {
+            let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
+                .expect("a delete step maps to a lifecycle command")?;
+            let request = request_id(chain, &serde_json::to_value(&cmd.op).map_err(|e| e.to_string())?);
+            cmd.request = request;
+            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
+        }
+    }
+}
+
+/// Commits a finisher's repository command under a request id derived from it. `Ok(true)` when the leader refused it.
+async fn repo_commit(
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &graftyard_types::PlacementRecord,
+    cmd: graftyard_git::repo::RepoCmd,
+) -> std::result::Result<bool, String> {
+    let cmd = serde_json::to_value(&cmd).map_err(|e| e.to_string())?;
+    let rid = request_id(chain, &cmd);
+    let done = graftyard_lookup::commit_as(b, chain, record, rid, cmd).await?;
+    if done.get("ok").is_some() {
+        Ok(false)
+    } else if done.get("refused").is_some() {
+        Ok(true)
+    } else {
+        Err(format!("{chain}: {done}"))
     }
 }
 

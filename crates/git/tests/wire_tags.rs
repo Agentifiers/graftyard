@@ -337,6 +337,7 @@ fn current() -> (Vec<String>, Vec<String>) {
         git::hooks::HookContentType,
         // M4-WP1: a `HookSequencer`'s stored attempt rows.
         git::sequencer::Outcome,
+        git::lifecycle::LifecycleOp, git::lifecycle::LifecycleErr,
     }
 }
 

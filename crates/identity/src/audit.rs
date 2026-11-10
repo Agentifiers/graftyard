@@ -16,6 +16,11 @@
 //!   `Settings` of each repository the org names `Live` (`crate::finish::enterprise_change`). Their plans read the
 //!   repository chain too (`AuditRead::Repo`), and two of their steps are on it (`Step::Repo`): the group's move and
 //!   the transfer's own `Settings`, which the site performs.
+//! - **Repository create and delete (F59, Authz format 0x12.11, repository format 32.17).** A `RepoCreate` on an
+//!   owner's `Authz` chain owes the rest of its create (`crate::finish::create`): `RepoOwner`, then the chain's first
+//!   settings, or, once `crate::finish::CREATE_ABORT_AFTER` passed with the chain still not created, the abort that
+//!   releases the name. A name turned `Deleted` owes the chain's tombstone (`crate::finish::delete`). Both read the
+//!   repository chain only once the rest is read (`RepoRead::life`).
 
 use std::time::Duration;
 
@@ -25,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::apps::{AppId, ClientId, Slug};
 use crate::authz::{AuthzCmd, AuthzEvent, AuthzFold, AuthzOp, RepoEntry};
-use crate::finish::{self, RepoStep, Step, Transfer, TransferStep, TransferView};
+use crate::finish::{self, RepoLife, RepoStep, Step, Transfer, TransferStep, TransferView};
 use crate::identity::{CredentialRef, IdentityFold};
 use crate::names::{
     Login, LoginKey, NameKey, NamesCmd, NamesEvent, NamesFold, NamesOp, NamesRead, RepoNameKey, account_shard,
@@ -76,6 +81,21 @@ pub enum Owed {
     Enterprise {
         org: AccountId,
     },
+    /// A `RepoCreate` on `owner`'s `Authz` chain in an entry of time `at`: the create of `repo` under `key`, with the
+    /// settings asked for.
+    Create {
+        owner: AccountId,
+        key: RepoNameKey,
+        repo: RepoId,
+        init: Box<str>,
+        at: Timestamp,
+    },
+    /// A name on `owner`'s `Authz` chain turned `Deleted` until `retain_until`: the delete of `repo`.
+    Delete {
+        owner: AccountId,
+        repo: RepoId,
+        retain_until: Timestamp,
+    },
 }
 
 /// A fold the planner reads, as the site's `dep` read answers it.
@@ -96,6 +116,9 @@ pub struct RepoRead {
     pub enterprise: Option<AccountId>,
     pub voters: Vec<SiteId>,
     pub home: SiteId,
+    /// Whether the chain has a group, and whether it holds `Created` or `Deleted` (F59). A chain with no group reads
+    /// as `NoGroup`, with no voters.
+    pub life: RepoLife,
 }
 
 /// The credentials an account lists (`GET /user/keys`, PATs, OAuth tokens): not installation, refresh, or lifeboat
@@ -133,6 +156,12 @@ pub fn authz_owed(owner: AccountId, e: &LogEntry<AuthzEvent>) -> Vec<Owed> {
                 Some(Owed::Transfer { repo: *repo, from: *from, to: owner, key: key.clone() })
             }
             AuthzEvent::Enterprise { .. } => Some(Owed::Enterprise { org: owner }),
+            AuthzEvent::RepoCreate { key, repo, init } => {
+                Some(Owed::Create { owner, key: key.clone(), repo: *repo, init: init.clone(), at: e.at })
+            }
+            AuthzEvent::RepoName { entry: Some(RepoEntry::Deleted { repo, retain_until }), .. } => {
+                Some(Owed::Delete { owner, repo: *repo, retain_until: *retain_until })
+            }
             _ => None,
         })
         .collect()
@@ -182,6 +211,15 @@ impl Owed {
             }
             // The org's `Authz`, then each repository it names `Live` (`Owed::repo_reads`).
             Owed::Enterprise { org } => vec![ChainId::Authz(*org)],
+            // The owner's `Authz` and the `RepoOwner` row; the repository chain only once that row names the owner,
+            // since the site finds the chain's members through it (`plan`).
+            Owed::Create { owner, repo, .. } => {
+                vec![ChainId::Authz(*owner), ChainId::Names(name_shard(&NameKey::Repo(*repo)))]
+            }
+            // The same two; the repository chain only while the name is still held `Deleted` for it.
+            Owed::Delete { owner, repo, .. } => {
+                vec![ChainId::Authz(*owner), ChainId::Names(name_shard(&NameKey::Repo(*repo)))]
+            }
         }
     }
 
@@ -198,9 +236,13 @@ impl Owed {
     }
 }
 
-/// The next step `o` owes, from the folds `read` gives for `o.reads()`; `Err` names a chain `read` lacks. A claim
-/// whose record never committed is aborted (`finish::app_registration` with no record): the consumer has none.
-pub fn plan<'a>(o: &Owed, read: impl Fn(ChainId) -> Option<&'a AuditRead>) -> Result<Option<Step>, ChainId> {
+/// The next step `o` owes at `now`, from the folds `read` gives for `o.reads()`; `Err` names a chain `read` lacks. A
+/// claim whose record never committed is aborted (`finish::app_registration` with no record): the consumer has none.
+pub fn plan<'a>(
+    o: &Owed,
+    now: Timestamp,
+    read: impl Fn(ChainId) -> Option<&'a AuditRead>,
+) -> Result<Option<Step>, ChainId> {
     let names = |c: ChainId| match read(c) {
         Some(AuditRead::Names(f)) => Ok(f),
         _ => Err(c),
@@ -289,6 +331,29 @@ pub fn plan<'a>(o: &Owed, read: impl Fn(ChainId) -> Option<&'a AuditRead>) -> Re
             };
             finish::enterprise_change(*org, f, &live, &repos).map_err(ChainId::Repo)?
         }
+        Owed::Create { owner, repo, init, at, .. } => {
+            let a = ChainId::Authz(*owner);
+            let Some(AuditRead::Authz(authz)) = read(a) else { return Err(a) };
+            let repo_owner = names(ChainId::Names(name_shard(&NameKey::Repo(*repo))))?.repo_owner(*repo);
+            let rc = ChainId::Repo(*repo);
+            let life = match read(rc) {
+                Some(AuditRead::Repo(r)) => Some(r.life),
+                _ => None,
+            };
+            let c = finish::Create { owner: *owner, repo: *repo, init, at: *at };
+            finish::create(&c, authz, repo_owner, life, now).map_err(|()| rc)?
+        }
+        Owed::Delete { owner, repo, retain_until } => {
+            let a = ChainId::Authz(*owner);
+            let Some(AuditRead::Authz(authz)) = read(a) else { return Err(a) };
+            let repo_owner = names(ChainId::Names(name_shard(&NameKey::Repo(*repo))))?.repo_owner(*repo);
+            let rc = ChainId::Repo(*repo);
+            let life = match read(rc) {
+                Some(AuditRead::Repo(r)) => Some(r.life),
+                _ => None,
+            };
+            finish::delete(*owner, *repo, *retain_until, authz, repo_owner, life, now).map_err(|()| rc)?
+        }
     })
 }
 
@@ -372,6 +437,8 @@ pub struct Report {
 #[derive(Clone, Debug)]
 pub struct Finisher {
     chain: ChainId,
+    /// The batch's clock: a create aborts only once `finish::CREATE_ABORT_AFTER` passed by it.
+    now: Timestamp,
     from: Index,
     through: Index,
     owed: Vec<Owed>,
@@ -383,17 +450,17 @@ pub struct Finisher {
 }
 
 impl Finisher {
-    /// The batch for `(from, through]`, where `from` is the committed cursor.
-    pub fn new(chain: ChainId, from: Index, through: Index, mut owed: Vec<Owed>) -> Finisher {
+    /// The batch for `(from, through]`, where `from` is the committed cursor, run at `now`.
+    pub fn new(chain: ChainId, now: Timestamp, from: Index, through: Index, mut owed: Vec<Owed>) -> Finisher {
         owed.dedup();
         let report = Report { owed: owed.len() as u32, ..Report::default() };
-        Finisher { chain, from, through, owed, at: 0, steps: 0, reads: Vec::new(), cursor_sent: false, report }
+        Finisher { chain, now, from, through, owed, at: 0, steps: 0, reads: Vec::new(), cursor_sent: false, report }
     }
 
     pub fn want(&mut self) -> Want {
         while let Some(o) = self.owed.get(self.at) {
             let reads = &self.reads;
-            match plan(o, |c| reads.iter().find(|(r, _)| *r == c).map(|(_, f)| f)) {
+            match plan(o, self.now, |c| reads.iter().find(|(r, _)| *r == c).map(|(_, f)| f)) {
                 Ok(Some(_)) if self.steps >= STEPS_MAX => return Want::Stuck(o.clone()),
                 Ok(Some(step)) => return Want::Submit(step),
                 Ok(None) => self.item_done(),

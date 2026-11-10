@@ -19,6 +19,7 @@ pub mod issue_ops;
 pub mod issues;
 pub mod key;
 pub mod lease;
+pub mod lifecycle;
 pub mod log_archive;
 pub mod mem;
 pub mod merge;

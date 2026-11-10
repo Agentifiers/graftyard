@@ -45,7 +45,8 @@ pub use apps::{
 };
 pub use authz::{
     AccountKind, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead,
-    AuthzScratch, InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry, RepoPermission,
+    AuthzScratch, CREATE_INIT_MAX, InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry,
+    RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -95,6 +96,10 @@ pub const AUTHZ_FORMAT_V3: Format = Format { family: 0x12, version: 3 };
 /// The `Audit` consumer's cursor on `Authz` chains (`crate::audit`), which finishes transfers and enterprise changes.
 /// Read and enabled on the same terms as version 2.
 pub const AUTHZ_FORMAT_V4: Format = Format { family: 0x12, version: 4 };
+/// F59: `AuthzOp::CreateRepoWith`, whose entry also records `AuthzEvent::RepoCreate` so the `Audit` consumer can
+/// finish or abort the create, and `AuthzOp::AbortCreate`, the abort's release of the name. Read and enabled on the
+/// same terms as version 2. Versions 5 to 10 are other work's.
+pub const AUTHZ_FORMAT_V11: Format = Format { family: 0x12, version: 11 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };
