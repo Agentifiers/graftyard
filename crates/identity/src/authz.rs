@@ -29,7 +29,7 @@ use crate::org::{
 };
 use crate::overlay::{Overlay, SetOverlay, Table};
 use crate::tokens::RepoScope;
-use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4};
+use crate::{AUTHZ_FORMAT, AUTHZ_FORMAT_V2, AUTHZ_FORMAT_V3, AUTHZ_FORMAT_V4, AUTHZ_FORMAT_V11};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountKind {
@@ -148,6 +148,16 @@ pub enum AuthzEvent {
     /// `AuthzEvent`, as `NamesEvent::AuditCursor`.
     AuditCursor {
         through: Index,
+    },
+    // ---- F59, format 11 ----
+    /// A repository create's commit point carries what its finisher needs (`crate::audit`, `Owed::Create`): in the
+    /// same entry as the name's `Live`, the repository and the settings the create asked for, as the JSON of
+    /// `graftyard_git`'s `RepoSettings`, which this crate never reads. The fold keeps nothing of it: only the log
+    /// does, which the consumer scans. Not in the design's `AuthzEvent` [inference: F59 names no event].
+    RepoCreate {
+        key: RepoNameKey,
+        repo: RepoId,
+        init: Box<str>,
     },
 }
 
@@ -284,6 +294,12 @@ impl Record for AuthzEvent {
             AuthzEvent::AuditCursor { through } => {
                 e.u8(16);
                 e.u64(through.0);
+            }
+            AuthzEvent::RepoCreate { key, repo, init } => {
+                e.u8(17);
+                e.str(key.as_str());
+                enc::repo(&mut e, *repo);
+                e.str(init);
             }
         }
     }
@@ -481,6 +497,14 @@ impl AuthzFold {
         };
         find(true).or_else(|| find(false))
     }
+
+    /// The `retain_until` of a name this owner holds `Deleted` for the repository (F59's delete finisher).
+    pub fn deleted(&self, repo: RepoId) -> Option<Timestamp> {
+        self.names.values().find_map(|e| match e {
+            RepoEntry::Deleted { repo: r, retain_until } if *r == repo => Some(*retain_until),
+            _ => None,
+        })
+    }
 }
 
 pub trait AuthzRead {
@@ -674,7 +698,7 @@ where
         }
         AuthzEvent::AgentApp { app, row: Some(r) } => t.agent_apps.put(*app, r.clone()),
         AuthzEvent::AgentApp { app, row: None } => t.agent_apps.del(app),
-        AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } => {}
+        AuthzEvent::OrgAgents { .. } | AuthzEvent::AuditCursor { .. } | AuthzEvent::RepoCreate { .. } => {}
         AuthzEvent::Team(TeamEvent::Created { team, .. }) => t.ids.apply_assigned(team.0),
         AuthzEvent::Invitation(InvitationEvent::Sent { id, .. }) => t.ids.apply_assigned(id.0),
         // `OrgRows::write`'s.
@@ -808,6 +832,11 @@ impl Scratch for AuthzScratch<'_> {
                 key,
                 entry: Some(RepoEntry::Live { repo, .. } | RepoEntry::Reserved { repo, .. }),
             } if !free_for(self.name(key), *repo) => Err(format!("{key:?} is held by {:?}", self.name(key)).into()),
+            AuthzEvent::RepoCreate { key, repo, .. }
+                if !matches!(self.name(key), Some(RepoEntry::Live { repo: r, .. }) if r == *repo) =>
+            {
+                Err(format!("{key:?} is not live for {repo:?}").into())
+            }
             AuthzEvent::App { app, record: Some(r) } if r.id != *app => Err(format!("{app:?} holds {:?}", r.id).into()),
             AuthzEvent::App { app, record: Some(_) } if self.closed.contains(app) => {
                 Err(format!("{app:?} was closed and is never registered again").into())
@@ -1069,7 +1098,25 @@ pub enum AuthzOp {
     AuditCursor {
         through: Index,
     },
+    // ---- F59, format 11 ----
+    /// `CreateRepo` with the settings the create asked for, `init` (at most `CREATE_INIT_MAX` bytes), so the `Audit`
+    /// consumer can finish a create whose edge died: the entry also records `AuthzEvent::RepoCreate`.
+    CreateRepoWith {
+        name: RepoName,
+        init: Box<str>,
+    },
+    /// A create's abort: its name, still `Live` for `repo`, is released, and the id is never used again. Only the
+    /// `Audit` consumer sends it, with no account and no key, once the create's `InitRepo` could not commit within
+    /// `crate::audit::CREATE_ABORT_AFTER`. A key that no longer names `repo` as `Live` commits nothing.
+    AbortCreate {
+        key: RepoNameKey,
+        repo: RepoId,
+    },
 }
+
+/// The largest `init` a `CreateRepoWith` carries [guess: a `RepoSettings` with a description and twenty topics is
+/// under 2 KB].
+pub const CREATE_INIT_MAX: usize = 8 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthzOut {
@@ -1256,6 +1303,16 @@ impl Record for AuthzCmd {
             AuthzOp::AuditCursor { through } => {
                 e.u8(29);
                 e.u64(through.0);
+            }
+            AuthzOp::CreateRepoWith { name, init } => {
+                e.u8(30);
+                e.str(name.as_str());
+                e.str(init);
+            }
+            AuthzOp::AbortCreate { key, repo } => {
+                e.u8(31);
+                e.str(key.as_str());
+                enc::repo(&mut e, *repo);
             }
         }
     }
@@ -1447,6 +1504,35 @@ impl AuthzCmd {
                 let repo = RepoId(s.ids.peek().ok_or(AuthzErr::NeedIdBlock)?);
                 let entry = RepoEntry::Live { repo, epoch: next };
                 Ok((smallvec![AuthzEvent::RepoName { key, entry: Some(entry) }], AuthzOut::Repo { repo, epoch: next }))
+            }
+            AuthzOp::CreateRepoWith { name, init } => {
+                if init.len() > CREATE_INIT_MAX {
+                    return Err(AuthzErr::BadRecord);
+                }
+                let key = name.key();
+                if s.name(&key).is_some_and(|e| !matches!(e, RepoEntry::Alias { .. })) {
+                    return Err(AuthzErr::Taken);
+                }
+                let repo = RepoId(s.ids.peek().ok_or(AuthzErr::NeedIdBlock)?);
+                let entry = RepoEntry::Live { repo, epoch: next };
+                Ok((
+                    smallvec![
+                        AuthzEvent::RepoName { key: key.clone(), entry: Some(entry) },
+                        AuthzEvent::RepoCreate { key, repo, init: init.clone() },
+                    ],
+                    AuthzOut::Repo { repo, epoch: next },
+                ))
+            }
+            AuthzOp::AbortCreate { key, repo } => {
+                if !self.cred.is_operator() {
+                    return Err(AuthzErr::Forbidden);
+                }
+                match s.name(key) {
+                    Some(RepoEntry::Live { repo: r, .. }) if r == *repo => {
+                        Ok((smallvec![AuthzEvent::RepoName { key: key.clone(), entry: None }], AuthzOut::Done))
+                    }
+                    _ => Ok((SmallVec::new(), AuthzOut::Done)),
+                }
             }
             AuthzOp::RenameRepo { from, to } => {
                 let Some(RepoEntry::Live { repo, .. }) = s.name(from) else { return Err(AuthzErr::NoRepo) };
@@ -1684,6 +1770,7 @@ impl Command for AuthzCmd {
     fn format(&self) -> Format {
         match self.op {
             AuthzOp::AuditCursor { .. } => AUTHZ_FORMAT_V4,
+            AuthzOp::CreateRepoWith { .. } | AuthzOp::AbortCreate { .. } => AUTHZ_FORMAT_V11,
             AuthzOp::PutAgentApp(_) | AuthzOp::DeleteAgentApp { .. } | AuthzOp::SetOrgAgents { .. } => AUTHZ_FORMAT_V3,
             AuthzOp::PutApp { .. }
             | AuthzOp::CloseApp { .. }

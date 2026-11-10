@@ -17,11 +17,20 @@
 //! - **Transfer (M3-WP3).** The commit point is the destination's `Reserved` name (`transfer`).
 //! - **Enterprise change.** The commit point is the org's `Enterprise` event; each repository the org names `Live`
 //!   then gets the transfer's own `Settings` with the new enterprise (`enterprise_change`).
+//! - **Repository create (F59).** The commit point is `CreateRepoWith` on the owner's `Authz` chain (Authz format
+//!   0x12.11): the name's `Live` and, in the same entry, `RepoCreate` with the settings asked for. Then `RepoOwner` on
+//!   `Names`, then the chain's first settings and `Created` (`RepoStep::Init`, repository format 32.17). The abort path
+//!   is `AbortCreate`, which releases the name, taken only once `CREATE_ABORT_AFTER` passed since the commit point and
+//!   the chain still holds no `Created` (`create`). The README commit of `auto_init` is not redone: it needs the git
+//!   cache's `validate`, which no finisher calls, so a create the finisher completed has no commit.
+//! - **Repository delete (F59).** The commit point is the name's `Deleted` on the owner's `Authz` chain; the chain's
+//!   `Deleted` tombstone follows (`RepoStep::Delete`, 32.17). It has no abort: once the name is `Deleted` the
+//!   repository is gone for every route, and only the tombstone is owed (`delete`).
 
-use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId, SiteId};
+use graftyard_types::{AccountId, ChainId, CredentialShard, PlacementRecord, RepoId, SiteId, Timestamp};
 
 use crate::apps::{AppRecord, ClientId, Slug};
-use crate::authz::{AuthzCmd, AuthzOp, AuthzRead, RepoEntry};
+use crate::authz::{AuthzCmd, AuthzFold, AuthzOp, AuthzRead, RepoEntry};
 use crate::identity::{CredentialRef, IdentityCmd, IdentityFold, IdentityOp};
 use crate::names::{
     Login, LoginRow, NameKey, NamesCmd, NamesOp, NamesRead, RepoNameKey, SlugRow, account_shard, name_shard,
@@ -48,6 +57,100 @@ pub enum RepoStep {
     Move { to: PlacementRecord },
     /// The transfer's own `Settings` (repository format 32.10) with the new owner and its enterprise.
     Settings { owner: AccountId, enterprise: Option<AccountId> },
+    /// A create's first settings and `Created` (repository format 32.17): `init` is the JSON of the `RepoSettings` the
+    /// create asked for, with `owner` and `enterprise` as the owner's `Authz` names them now. The site creates the
+    /// group under `owner` first if it has none.
+    Init { owner: AccountId, enterprise: Option<AccountId>, init: Box<str> },
+    /// A delete's tombstone on the chain (32.17), with the name's `retain_until`.
+    Delete { retain_until: Timestamp },
+}
+
+/// How long the finisher keeps trying a create's first settings before it aborts the create and releases its name
+/// [guess: ten times `FINISH_AFTER`, far past any edge request's life, so no in-band `InitRepo` is still coming].
+pub const CREATE_ABORT_AFTER: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Where a repository chain stands, as the finisher reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepoLife {
+    /// No group answers for the chain, or no `RepoOwner` row places it: nothing was written to it.
+    NoGroup,
+    /// The group exists and holds neither `Created` nor `Deleted`.
+    Open,
+    Created,
+    Deleted,
+}
+
+/// A repository create whose commit point committed on `owner`'s chain at `at`, with the settings asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Create<'a> {
+    pub owner: AccountId,
+    pub repo: RepoId,
+    pub init: &'a str,
+    pub at: Timestamp,
+}
+
+/// The next step of a create: `RepoOwner`, then the chain's first settings, or, once `CREATE_ABORT_AFTER` passed with
+/// the chain still not created, the abort, which releases the repository's `Live` name wherever a rename put it.
+/// `authz` is the owner's fold, `repo_owner` the repository's `RepoOwner` row, and `life` the chain's state, `None`
+/// until it is read (`Err(())` then asks for it). `None` when nothing is owed: the chain was created or deleted, the
+/// owner names the repository `Live` nowhere (aborted, deleted, or transferred away), or another owner's `RepoOwner`
+/// row holds it.
+#[allow(clippy::result_unit_err)]
+pub fn create(
+    c: &Create<'_>,
+    authz: &AuthzFold,
+    repo_owner: Option<AccountId>,
+    life: Option<RepoLife>,
+    now: Timestamp,
+) -> Result<Option<Step>, ()> {
+    let live = authz.names.iter().find_map(|(k, e)| match e {
+        RepoEntry::Live { repo, .. } if *repo == c.repo => Some(k),
+        _ => None,
+    });
+    let Some(key) = live else { return Ok(None) };
+    match repo_owner {
+        None => return Ok(Some(names(NameKey::Repo(c.repo), NamesOp::RepoOwner { repo: c.repo, owner: c.owner }))),
+        Some(o) if o != c.owner => return Ok(None),
+        Some(_) => {}
+    }
+    match life.ok_or(())? {
+        RepoLife::Created | RepoLife::Deleted => Ok(None),
+        RepoLife::NoGroup | RepoLife::Open => {
+            if now.0 >= c.at.0.saturating_add(CREATE_ABORT_AFTER.as_millis() as u64) {
+                let op = AuthzOp::AbortCreate { key: key.clone(), repo: c.repo };
+                return Ok(Some(Step::Authz(
+                    ChainId::Authz(c.owner),
+                    Box::new(AuthzCmd { cred: CredentialShard::NONE, op }),
+                )));
+            }
+            let init = RepoStep::Init { owner: c.owner, enterprise: authz.enterprise(), init: c.init.into() };
+            Ok(Some(Step::Repo(c.repo, init)))
+        }
+    }
+}
+
+/// The next step of a delete whose name turned `Deleted` until `retain_until` on `owner`'s chain: the chain's
+/// tombstone, while the owner's fold still holds the name so, the `RepoOwner` row names the owner, and the chain has
+/// a group that holds no `Deleted`. `Err(())` asks for the chain's state, which is read only once the row names the
+/// owner: the site finds the chain's members through it, and a chain with no row was never written. Nothing is owed
+/// once `retain_until` passed, when the chain would refuse the tombstone anyway.
+#[allow(clippy::result_unit_err)]
+pub fn delete(
+    owner: AccountId,
+    repo: RepoId,
+    retain_until: Timestamp,
+    authz: &AuthzFold,
+    repo_owner: Option<AccountId>,
+    life: Option<RepoLife>,
+    now: Timestamp,
+) -> Result<Option<Step>, ()> {
+    if authz.deleted(repo) != Some(retain_until) || now >= retain_until || repo_owner != Some(owner) {
+        return Ok(None);
+    }
+    Ok(match life.ok_or(())? {
+        RepoLife::NoGroup | RepoLife::Deleted => None,
+        RepoLife::Open | RepoLife::Created => Some(Step::Repo(repo, RepoStep::Delete { retain_until })),
+    })
 }
 
 fn names(key: NameKey, op: NamesOp) -> Step {

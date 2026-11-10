@@ -268,7 +268,8 @@ impl Family for Repo {
     /// (collaborators and invitations), 32.7 (a push under a `ghs_` token), 32.8 (AM1-WP2's agent commands), and 32.9
     /// (an issue command under a `ghs_` token) are read on the same terms, as are 32.11 (`CancelInvitation`) and 32.12
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
-    /// `InitRepo` and `DeleteRepo`).
+    /// `InitRepo` and `DeleteRepo`), and 32.17 (F59's finisher steps, which only this release's own `Audit` consumer
+    /// sends, once `GRAFTYARD_AUDIT` is set).
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -284,6 +285,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_TASKS,
             git::repo::REPO_FORMAT_REPOS,
             git::repo::REPO_FORMAT_LEASES,
+            git::lifecycle::REPO_FORMAT_LIFECYCLE,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -575,6 +577,7 @@ impl Family for Repo {
             git::repo::RepoOut::Push(_) => serde_json::to_value(git::group::PushReport::of(a)).unwrap_or(Value::Null),
             git::repo::RepoOut::Sync(o) => json!({ "Sync": o }),
             git::repo::RepoOut::Transfer(o) => json!({ "Transfer": o }),
+            git::repo::RepoOut::Lifecycle(o) => json!({ "Lifecycle": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
@@ -609,6 +612,7 @@ impl Family for Repo {
                 json!({ "err": w.err, "status": w.status })
             }
             RepoErr::Transfer(e) => json!({ "err": format!("{e:?}"), "status": 409 }),
+            RepoErr::Lifecycle(e) => json!({ "err": format!("{e:?}"), "status": 409 }),
             RepoErr::Issue { err, render } => {
                 let reply = serde_json::from_value::<graftyard_api::hosted::Render>(render.clone())
                     .map(|r| graftyard_api::hosted::render_err(&r, err))
@@ -661,7 +665,9 @@ impl Family for Repo {
         // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
         // `Audit` consumer's transfer plans.
         if q.get("settings").is_some() {
-            return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise() });
+            return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise(),
+                "created": git::tiers::created(&*fold.core).is_some(),
+                "deleted": git::tiers::deleted(&*fold.core).is_some() });
         }
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
@@ -1201,8 +1207,10 @@ impl Family for Authz {
 
     fn reads() -> Vec<Format> {
         // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it;
-        // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set.
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3, id::AUTHZ_FORMAT_V4]
+        // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set;
+        // 0x12.11 F59's create with its settings, which the edge sends only once `FormatsEnable` enabled it, and the
+        // consumer's abort.
+        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3, id::AUTHZ_FORMAT_V4, id::AUTHZ_FORMAT_V11]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's
     /// `Reserved` name and an enterprise change commit on this chain.

@@ -94,6 +94,7 @@ id::AuthzEvent 12 Installation 0c020001
 id::AuthzEvent 13 AgentApp 0d0200
 id::AuthzEvent 14 OrgAgents 0e0000
 id::AuthzEvent 15 AuditCursor 0f01
+id::AuthzEvent 16 RepoCreate 100161020161
 id::AuthzOp 0 Open 000000
 id::AuthzOp 1 SetMember 010200
 id::AuthzOp 2 SetGrant 02020200
@@ -124,6 +125,8 @@ id::AuthzOp 26 PutAgentApp 1a020000
 id::AuthzOp 27 DeleteAgentApp 1b02
 id::AuthzOp 28 SetOrgAgents 1c0000
 id::AuthzOp 29 AuditCursor 1d01
+id::AuthzOp 30 CreateRepoWith 1e01610161
+id::AuthzOp 31 AbortCreate 1f016102
 id::IdentityEvent 0 Created 0001610001
 id::IdentityEvent 1 Credential 0100000101010101010101010101010101010101010101010101010101010101010101000161
 id::IdentityEvent 2 Sso 0200020101010101010101010101010101010101010101010101010101010101010101
@@ -282,6 +285,8 @@ id::audit::Owed 1 App 0101610202
 id::audit::Owed 2 Login 02020161
 id::audit::Owed 3 Transfer 030202020161
 id::audit::Owed 4 Enterprise 0402
+id::audit::Owed 5 Create 0502016102016101
+id::audit::Owed 6 Delete 06020201
 id::AccountKind 0 User 00
 id::AccountKind 1 Org 01
 id::AccountKind 2 Enterprise 02
@@ -656,3 +661,11 @@ git::task::TaskErr 8 Final 0800
 git::transfer::TransferErr 0 NotReserved 00
 git::transfer::TransferErr 1 WrongEnterprise 01
 git::transfer::TransferErr 2 NotRead 02
+git::lifecycle::LifecycleOp 0 Init 0002000000000000000000000000000001
+git::lifecycle::LifecycleOp 1 Delete 0101
+git::lifecycle::LifecycleErr 0 NotLive 00
+git::lifecycle::LifecycleErr 1 NotDeleted 01
+git::lifecycle::LifecycleErr 2 WrongOwner 02
+git::lifecycle::LifecycleErr 3 Invalid 03
+git::lifecycle::LifecycleErr 4 Gone 04
+git::lifecycle::LifecycleErr 5 NotRead 05

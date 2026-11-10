@@ -1871,6 +1871,8 @@ pub enum RepoCmd {
     Merge(Box<crate::merge_call::MergeCall>),
     /// The transfer's own `Settings` (`crate::transfer`), `{"transfer": ..}`, format 32.10: only a finisher sends it.
     Transfer(crate::transfer::TransferSettings),
+    /// A create's or a delete's finisher step (`crate::lifecycle`), `{"lifecycle": ..}`, format 32.17 (F59).
+    Lifecycle(crate::lifecycle::Lifecycle),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1880,6 +1882,7 @@ pub enum RepoOut {
     Issue(crate::issue_ops::call::IssueCallOut),
     Merge(crate::merge_call::MergeCallOut),
     Transfer(crate::transfer::TransferOut),
+    Lifecycle(crate::lifecycle::LifecycleOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -1889,13 +1892,18 @@ pub enum RepoErr {
     Issue { err: crate::issue_ops::IssueErr, render: serde_json::Value },
     Merge { n: crate::issues::IssueNumber, err: crate::merge::MergeError, render: serde_json::Value },
     Transfer(crate::transfer::TransferErr),
+    Lifecycle(crate::lifecycle::LifecycleErr),
 }
 
 impl crate::smart::PushOutOf for RepoOut {
     fn push_out(&self) -> Option<&PushOut> {
         match self {
             RepoOut::Push(p) => Some(p),
-            RepoOut::Sync(_) | RepoOut::Issue(_) | RepoOut::Merge(_) | RepoOut::Transfer(_) => None,
+            RepoOut::Sync(_)
+            | RepoOut::Issue(_)
+            | RepoOut::Merge(_)
+            | RepoOut::Transfer(_)
+            | RepoOut::Lifecycle(_) => None,
         }
     }
 }
@@ -1909,6 +1917,7 @@ impl Serialize for RepoCmd {
             Issue(&'a crate::issue_ops::call::IssueCall),
             Merge(&'a crate::merge_call::MergeCall),
             Transfer(&'a crate::transfer::TransferSettings),
+            Lifecycle(&'a crate::lifecycle::Lifecycle),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -1916,6 +1925,7 @@ impl Serialize for RepoCmd {
             RepoCmd::Issue(c) => Tagged::Issue(c).serialize(s),
             RepoCmd::Merge(c) => Tagged::Merge(c).serialize(s),
             RepoCmd::Transfer(c) => Tagged::Transfer(c).serialize(s),
+            RepoCmd::Lifecycle(c) => Tagged::Lifecycle(c).serialize(s),
         }
     }
 }
@@ -1936,6 +1946,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(|c| RepoCmd::Merge(Box::new(c))).map_err(D::Error::custom)
         } else if let Some(c) = one("transfer") {
             serde_json::from_value(c).map(RepoCmd::Transfer).map_err(D::Error::custom)
+        } else if let Some(c) = one("lifecycle") {
+            serde_json::from_value(c).map(RepoCmd::Lifecycle).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -1950,6 +1962,7 @@ impl Record for RepoCmd {
             RepoCmd::Issue(c) => out.extend(serde_json::to_vec(c).expect("an issue command encodes")),
             RepoCmd::Merge(c) => c.cmd.encode(out),
             RepoCmd::Transfer(c) => c.encode(out),
+            RepoCmd::Lifecycle(c) => c.encode(out),
         }
     }
 }
@@ -1967,6 +1980,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.format(),
             RepoCmd::Merge(c) => c.cmd.format(),
             RepoCmd::Transfer(c) => c.format(),
+            RepoCmd::Lifecycle(c) => c.format(),
         }
     }
     fn tiers(&self) -> TierSet {
@@ -1976,6 +1990,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.tiers(),
             RepoCmd::Merge(c) => c.cmd.tiers(),
             RepoCmd::Transfer(c) => c.tiers(),
+            RepoCmd::Lifecycle(c) => c.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -1985,6 +2000,7 @@ impl Command for RepoCmd {
             RepoCmd::Issue(c) => c.deps(fold),
             RepoCmd::Merge(c) => c.cmd.deps(fold),
             RepoCmd::Transfer(c) => c.deps(),
+            RepoCmd::Lifecycle(c) => c.deps(fold),
         }
     }
     fn decide(
@@ -2010,6 +2026,9 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => {
                 c.decide(s, deps).map(|(e, o)| (e, RepoOut::Transfer(o))).map_err(RepoErr::Transfer)
             }
+            RepoCmd::Lifecycle(c) => {
+                c.decide(s, deps).map(|(e, o)| (e, RepoOut::Lifecycle(o))).map_err(RepoErr::Lifecycle)
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2021,6 +2040,7 @@ impl Command for RepoCmd {
                 RepoOut::Merge(crate::merge_call::MergeCallOut { out: c.cmd.replay(events), render: c.render.clone() })
             }
             RepoCmd::Transfer(c) => RepoOut::Transfer(c.replay(events)),
+            RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
         }
     }
 }

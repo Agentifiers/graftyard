@@ -106,7 +106,7 @@ fn run_batch(w: &mut World, chain: ChainId, now: Timestamp) -> Option<audit::Rep
     if scanned.through <= cursor {
         return None;
     }
-    let mut f = Finisher::new(chain, cursor, scanned.through, owed);
+    let mut f = Finisher::new(chain, now, cursor, scanned.through, owed);
     for _ in 0..200 {
         match f.want() {
             Want::Read(cs) => {
@@ -272,7 +272,7 @@ fn a_batch_lost_before_its_cursor_runs_again_from_the_cursor_under_a_new_leader(
         |_, e| owed.extend(audit::tokens_owed(&fold, e)),
     )
     .unwrap();
-    let mut f = Finisher::new(chain, cursor, scanned.through, owed);
+    let mut f = Finisher::new(chain, now, cursor, scanned.through, owed);
     loop {
         match f.want() {
             Want::Read(cs) => {
@@ -456,7 +456,7 @@ fn fold_blobs_without_a_cursor_keep_the_previous_releases_bytes() {
 // ---- transfers and enterprise changes, from the destination's `Authz` log (format 0x12.4) ----
 
 use graftyard_identity::audit::RepoRead;
-use graftyard_identity::finish::RepoStep;
+use graftyard_identity::finish::{RepoLife, RepoStep};
 use graftyard_identity::{AuthzFold, OrgRole, RepoEntry, RepoName, UserId};
 use graftyard_types::{PlacementName, PlacementRecord, RepoId, SiteId};
 
@@ -518,7 +518,7 @@ fn authz_batch(w: &mut World, owner: AccountId, repo: &mut RepoChain, skip_curso
         return None;
     }
     let chain = ChainId::Authz(owner);
-    let mut f = Finisher::new(chain, cursor, scanned.through, owed);
+    let mut f = Finisher::new(chain, now, cursor, scanned.through, owed);
     for _ in 0..200 {
         match f.want() {
             Want::Read(cs) => {
@@ -536,6 +536,7 @@ fn authz_batch(w: &mut World, owner: AccountId, repo: &mut RepoChain, skip_curso
                     RepoStep::Settings { owner, enterprise } => {
                         (repo.read.owner, repo.read.enterprise) = (*owner, *enterprise)
                     }
+                    RepoStep::Init { .. } | RepoStep::Delete { .. } => panic!("a transfer owes no {s:?}"),
                 }
                 repo.steps.push(s);
                 f.submitted(false);
@@ -577,7 +578,13 @@ fn audit_alone_finishes_a_transfer_whose_finisher_died_after_reserved() {
         )
         .unwrap();
         let mut chain = RepoChain {
-            read: RepoRead { owner: alpha, enterprise: Some(e1), voters: pa.sites.to_vec(), home: pa.home },
+            read: RepoRead {
+                owner: alpha,
+                enterprise: Some(e1),
+                voters: pa.sites.to_vec(),
+                home: pa.home,
+                life: RepoLife::Created,
+            },
             steps: Vec::new(),
         };
         // The edge's commit point, then nothing: its isolate died.
@@ -634,7 +641,10 @@ fn audit_finishes_an_enterprise_change_on_every_repository() {
     // Both repositories share one fake chain here: each is read as its own, its `Settings` recorded by repository.
     let mut chains: std::collections::BTreeMap<RepoId, RepoRead> = repos
         .iter()
-        .map(|r| (*r, RepoRead { owner: org, enterprise: Some(e1), voters: vec![SiteId(0)], home: SiteId(0) }))
+        .map(|r| {
+            let life = RepoLife::Created;
+            (*r, RepoRead { owner: org, enterprise: Some(e1), voters: vec![SiteId(0)], home: SiteId(0), life })
+        })
         .collect();
     let g = w.authz(org);
     let l = g.leader().unwrap();
@@ -650,7 +660,7 @@ fn audit_finishes_an_enterprise_change_on_every_repository() {
     )
     .unwrap();
     assert_eq!(owed, vec![Owed::Enterprise { org }]);
-    let mut f = Finisher::new(ChainId::Authz(org), Index(0), s.through, owed);
+    let mut f = Finisher::new(ChainId::Authz(org), now, Index(0), s.through, owed);
     let mut settings = 0;
     loop {
         match f.want() {
