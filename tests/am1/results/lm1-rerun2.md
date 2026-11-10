@@ -288,3 +288,65 @@ At `f0efb8c`, every check passes (`tests/am1/runs/checks.sh`, log copied to `tes
 Plants: 21–24 caught 4 of 4 and 25–26 caught 2 of 2, so 6 of 6 for this round's new code. `f0efb8c` adds only a
 `test-faults` route for the teardown, and no plant was written for it. The teardown itself shows it works: 7 of 7
 pool shards answered 200 and then listed as `stopped`.
+
+## 14. After the scope change: B0-35 and the 500-agent rows, no LF-13 (17:00–17:42Z)
+
+**Scope change (operator, after section 13):**
+- LF-13 moved to its own thread and a new install, `graft-m3c`. It is no longer run on graft-m2b, and section 6 is
+  the last graft-m2b LF-13 record.
+- Two clauses moved from LM-1 to AM3-WP3: L0-12's lease refusal for the Graftyard-run kind, and B0-37's session-ref
+  listing. Neither is counted below as an LM-1 failure.
+- The freed budget went to B0-35 and the 500-agent rows: `ROWS="b0-35 b0-32 b0-31 b0-33 l0-12 b0-34"`,
+  `NO_LF13=1`, `TEARDOWN=1`.
+- `STOP_USD=13.4` (`4ccef7c`, a new `rows.sh` knob) means no new row starts once the round has cost $13.40. That
+  leaves room for one row's overrun under $15.
+
+**Deployed:** unchanged from section 1. Sites are r4 (`a271fb3`), and the edge is `d579a6b0-01f0-4681-9523-ee1e33218994`
+(`f0efb8c`).
+
+| Row | Run (repo) | Pass line | Measured | Verdict |
+| --- | --- | --- | --- | --- |
+| B0-35 | `mwaxscha` (131215), 500 agents, 600 s, k 4 | "Test-merge vCPU within `TEST_MERGE_BUDGET`, Actions dispatch p99 at most 10 s, and zero computes from list fields" | **Setup opened 500 of 500 PRs** (plus 100 of 100 tasks) in about 4.5 min. Then, from about 17:08:30Z to the end, **every edge request answered 503**: receive-pack 10 × 200 of 2,464, upload-pack 0 of 9,747, GraphQL 20 × 200 of 17,156, REST v3 0 of 6,070, graftyard v1 0 of 3,252 (`edgekinds.py`, 17:07:53–17:17:53Z). Member peaks 279 (f1) / 56 / 51 MiB; site b 2,380 `exceededMemory`. The driver crashed when the run ended (leader `/stats` had no body), so it wrote no summary row; `a0cf57a` fixes that. Test-merge vCPU and list-field computes are still not instrumented, and m2b has no Actions to dispatch | **FAIL** |
+| B0-32 | `mwayfpmp` (131216), 180 s, k 4 | "Every push acknowledged within 5 s or answered in an HTTP 200 with `ng <ref> agent admission full, retry after <n>s` … zero leader changes, and zero `suspect` reports" | Burst **12 of 500 ok**: 410 × 503 gate, 56 timeouts, 21 × 500, 1 refused, none in the `ng` shape; p50 27 s. Agent pushes 333 of 757 ok. Leader 0 → 2. Leader inbound `/read` 46,430, `/suspect` 63,043, `/campaign` 497. Member peak 318 MiB (f2); site c 2,314 `exceededMemory` | **FAIL** |
+| B0-31 | `mwayqfnk` (131217), 600 s, leader moved to site 2 first, k 4 | "Commit p99 at most 1 s with buckets up" | Agent pushes **126 of 2,501 ok**: 1,582 × 503 gate, 469 refused, 258 timeouts, 66 × 500. Leader commit p50/p99 4,226 / 9,754 ms (n 244). Term went from 3 to 28 during the run. Leader inbound `/read` 103,445, `/suspect` 128,734. Member peaks 265 / 97 / 81 MiB; `exceededMemory` a 218, b 812 | **FAIL** |
+| B0-33, L0-12 A1 replay, B0-34 | — | — | **Not run.** `rows.sh` stopped at $13.80 (> `STOP_USD` 13.4) after B0-31 | **not run** |
+
+**New observation: a group left with no leader (B0-35, 131215).**
+- From about 17:08:30Z the group answered every edge call with 503. At 17:21Z, after the load had stopped, all
+  three voters were still followers at term 4 with `leader: null`; two had voted for site 2.
+- Over 17:09–17:17Z, f2 received 150,399 `/suspect` reports and 78,842 `/read`s, yet no election finished.
+- One test-only `/campaign` to each voter at 17:22Z elected site 0 at term 5 within 5 s.
+- So during this run the request-driven campaign path (lookup `suspect`, then `try_campaign`) didn't elect a leader
+  under load, but a quiet `/campaign` did at once.
+- Why isn't verified. It may be f2 sitting over its memory limit, so its own campaign or vote traffic failed, or a
+  campaign left `Busy`. B0-31's `tests/fanout/raw/lead-r5.log` (`tests/fanout/leadwatch.sh`, 15 s samples) shows
+  the opposite failure: elections that do finish, but churn from term 9 to 28 in about 10 minutes, with one voter at
+  a time not answering `/status`.
+
+**Reading the rows together.** All three rows that ran fail the way B0-29 did in section 3:
+- one member climbs to 265–318 MiB and logs thousands of `exceededMemory`;
+- then the `/suspect` storm (63–129 k on the leader), elections, and the gate's 503s.
+- The limiter is still the unexplained member memory of section 4. Fixes 1 and 2 didn't remove it.
+
+**Cost.** $13.91 by `m2bcost.py` at 17:42Z (containers $10.77), from the r2 site day. Under the $15 cap. This
+section's rows added $2.66: B0-35 $0.91, B0-32 $0.52, B0-31 $1.12, plus the teardown.
+
+**Teardown.** The final pass at 17:41Z (`tests/fanout/raw/teardown-r2-11.log`) tore down 52 running shards, all
+200. That includes `git#0#pool:1,3-7`, which this section's k = 4 rows had started again. No pool shard is needed by
+any row now.
+
+**What LM-1 still lacks, besides B0-30** (updated; this replaces section 11):
+1. Repository members that hold journey 9 in 128 MB (section 4). B0-29, B0-31, B0-32 and B0-35 fail on it, and
+   B0-33, B0-34 and L0-12's A1 replay weren't run.
+2. Leader election under that load. B0-35's group stayed leaderless for about 10 minutes until a manual
+   `/campaign`. This is a new item, not diagnosed.
+3. B0-34's `fanout` stepping k in band, shown hosted.
+4. B0-35's instruments: test-merge vCPU against `TEST_MERGE_BUDGET`, list-field computes, and Actions dispatch,
+   which needs an install with Actions.
+5. LF-13 now belongs to `graft-m3c`. L0-12's Graftyard-run lease refusal and B0-37's session-ref listing belong to
+   AM3-WP3.
+
+**Commits added:**
+- `4ccef7c`: `rows.sh` `STOP_USD`.
+- `a0cf57a`: `a1.mjs` keeps its row when the leader's `/stats` has no body.
+- This commit: section 14, `tests/fanout/lead.mjs` and `leadwatch.sh`, and the raw status files.

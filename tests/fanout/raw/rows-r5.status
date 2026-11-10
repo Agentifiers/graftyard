@@ -1,0 +1,30 @@
+2026-11-10T17:00:14Z cost {"workers_requests": 563879, "workers_cpu_ms": 4782368, "do_requests": 4106051, "do_rows_written": 739742, "do_active_s": 206649, "containers_cpu_s": 9111, "containers_gib_s": 3458154, "containers_gb_s": 6916308, "containers_usd": 9.31, "usd": 11.25}
+2026-11-10T17:00:53.757Z m3org/fr5-b035 = 131215
+2026-11-10T17:00:56.238Z repo:131215 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T17:00:56.419Z repo:131215 leader 0: k 4 at 5
+2026-11-10T17:00:56Z b0-35 fr5-b035 131215 start
+2026-11-10T17:18:38.378Z repo:131215 leader 2: k 4 at 554
+2026-11-10T17:18:38Z b0-35 fr5-b035 131215 done exit 1
+2026-11-10T17:18:43Z torn down 131215
+2026-11-10T17:18:47Z cost {"workers_requests": 762550, "workers_cpu_ms": 7513130, "do_requests": 5912218, "do_rows_written": 828565, "do_active_s": 238470, "containers_cpu_s": 9681, "containers_gib_s": 3596419, "containers_gb_s": 7192837, "containers_usd": 9.69, "usd": 12.16}
+2026-11-10T17:19:04.956Z m3org/fr5-b032 = 131216
+2026-11-10T17:19:06.436Z repo:131216 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T17:19:06.547Z repo:131216 leader 0: k 4 at 5
+2026-11-10T17:19:06Z b0-32 fr5-b032 131216 start
+2026-11-10T17:26:50.749Z repo:131216 leader 2: k 4 at 197
+2026-11-10T17:26:50Z b0-32 fr5-b032 131216 done exit 0
+2026-11-10T17:26:57Z torn down 131216
+2026-11-10T17:26:59Z cost {"workers_requests": 814663, "workers_cpu_ms": 8253932, "do_requests": 6424322, "do_rows_written": 907507, "do_active_s": 253010, "containers_cpu_s": 10109, "containers_gib_s": 3711450, "containers_gb_s": 7422899, "containers_usd": 10.0, "usd": 12.68}
+2026-11-10T17:27:19.270Z m3org/fr5-b031 = 131217
+before [[0,"leader",2],[1,"follower",2],[2,"follower",2]]
+transfer from 0 -> 2 {"meta":{"configIndex":1,"leader":0,"term":2},"transfer":{"Ok":"15821882971317669444"}}
+after [[0,"follower",3],[1,"follower",3],[2,"leader",3]]
+2026-11-10T17:27:26.691Z repo:131217 leader 2: set k 4: {"k":4,"meta":{"configIndex":1,"leader":2,"term":3}}
+2026-11-10T17:27:26.847Z repo:131217 leader 2: k 4 at 7
+2026-11-10T17:27:26Z b0-31 fr5-b031 131217 start
+2026-11-10T17:40:36.318Z repo:131217 leader 0: k 4 at 250
+2026-11-10T17:40:36Z b0-31 fr5-b031 131217 done exit 0
+2026-11-10T17:40:42Z torn down 131217
+2026-11-10T17:40:44Z cost {"workers_requests": 997155, "workers_cpu_ms": 9882060, "do_requests": 7800485, "do_rows_written": 1012089, "do_active_s": 282252, "containers_cpu_s": 10852, "containers_gib_s": 3963004, "containers_gb_s": 7926007, "containers_usd": 10.68, "usd": 13.8}
+STOP at $13.8
+ALLDONE
