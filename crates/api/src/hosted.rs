@@ -42,11 +42,17 @@ pub struct TierRows {
     pub complete: bool,
 }
 
+/// Metadata tables no `Repo` view, directory, or planner reads, which `TierRows::dump` leaves out: each agent ref's
+/// `PathSet` (the feed takes it from the entry's events) and each pushed commit's provenance. At 500 agents `path_set`
+/// was 1.12 MB of a 1.6 MB whole-tier read (500 rows), and each REST, GraphQL, task, and lease request reads the tiers.
+pub const UNSERVED: &[&str] = &["path_set", "provenance"];
+
 impl TierRows {
-    /// Every row of `schema`'s tables in `r`, at most `budget` in all. `complete` is false when more remain.
+    /// Every row of `schema`'s tables in `r` but `UNSERVED`'s, at most `budget` in all. `complete` is false when more
+    /// remain.
     pub fn dump(r: &dyn Read, schema: &Schema, budget: &mut usize) -> (Vec<(String, Key, Vec<Val>)>, bool) {
         let mut out = Vec::new();
-        for def in schema.tables {
+        for def in schema.tables.iter().filter(|d| !UNSERVED.contains(&d.name)) {
             let mut from: Key = Vec::new();
             loop {
                 let want = (*budget).min(1_000) + 1;
@@ -117,6 +123,23 @@ impl TierRows {
             .collect();
         c.extend(core.prefix("agent_task", &[]).into_iter().map(|(k, cols)| ("agent_task".to_owned(), k, cols)));
         c
+    }
+
+    /// The answer to `{"rows": true, "packed": true}`: the rows as one JSON string. As a `serde_json::Value` tree,
+    /// each `Val::Blob` byte is its own node, and a 740 KB answer was a 13 MB tree, peaking at 24 MB per read while it
+    /// was built and serialized. At 250 agents the members of a repository ran out of memory on `/read`
+    /// (`tests/am1/results/lm1-rerun2.md`). The string is the same JSON, built once.
+    pub fn packed(&self) -> Value {
+        Value::String(serde_json::to_string(self).unwrap_or_default())
+    }
+
+    /// The rows a `rows` read's `value` holds, packed (`TierRows::packed`) or not: a member built before `packed`
+    /// answers the object.
+    pub fn from_value(v: &Value) -> Result<TierRows, serde_json::Error> {
+        match v {
+            Value::String(s) => serde_json::from_str(s),
+            v => TierRows::deserialize(v),
+        }
     }
 
     /// The rows as a store `Repo` reads.

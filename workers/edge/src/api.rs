@@ -39,7 +39,6 @@ use graftyard_git::{Copies, ObjectMeta};
 use graftyard_identity::{Actor, AuthzFold, Principal};
 use graftyard_types::{ChainId, NetworkId, SiteId};
 use graftyard_wire::{Body, Endpoint, Host, Incoming, Meta, RateLimits, Reply, Surface};
-use serde::Deserialize as _;
 use serde_json::{Value, json};
 use worker::*;
 
@@ -329,7 +328,7 @@ async fn read_repo(
         Err(r) => return Ok(Err(r)),
     };
     // A member built before the `rows` read answered `ranges`: its tiers cannot be served.
-    let Ok(rows) = TierRows::deserialize(&v["value"]) else {
+    let Ok(rows) = TierRows::from_value(&v["value"]) else {
         return Ok(Err(unavailable("the repository's members do not serve tier rows yet (site release)")));
     };
     if !rows.complete {
@@ -409,9 +408,7 @@ pub(crate) async fn tier_rows(
 ) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
-    // `ranges` too: a member built before the `rows` read answers its small ranges reply instead of every ref.
-    let q = json!({ "q": { "rows": rows, "ranges": true } }).to_string();
+    let q = tier_rows_query(merge);
     let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
@@ -422,6 +419,13 @@ pub(crate) async fn tier_rows(
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
         Err(e) => Err(unavailable(&e)),
     })
+}
+
+/// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
+/// every ref. `packed`: the whole tiers as one JSON string (`TierRows::packed`), which `TierRows::from_value` reads.
+fn tier_rows_query(merge: Option<i64>) -> String {
+    let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
+    json!({ "q": { "rows": rows, "ranges": true, "packed": true } }).to_string()
 }
 
 /// The repository's narrow `{"rows": {which: true}}` core read on its leader: `access` for `crate::read_gate`, or
@@ -436,7 +440,7 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
         v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
     }
     Ok(match v {
-        Ok(Some((v, _, _))) => match TierRows::deserialize(&v["value"]) {
+        Ok(Some((v, _, _))) => match TierRows::from_value(&v["value"]) {
             Ok(rows) => Ok(TierRows::store(&rows.core)),
             Err(_) => Err("the repository's members do not serve tier rows yet (site release)".into()),
         },
@@ -776,7 +780,7 @@ pub(crate) async fn task_claim(
     let repo = crate::Repo { id: repo, owner, record };
     let (rows, install) = futures_util::future::join(tier_rows(c, &repo, None), crate::install_authz(c)).await;
     let rows = match rows? {
-        Ok(v) => match TierRows::deserialize(&v["value"]) {
+        Ok(v) => match TierRows::from_value(&v["value"]) {
             Ok(r) if r.complete => r,
             _ => return Ok(Err(unavailable("the task's repository could not be read; retry"))),
         },
@@ -1593,4 +1597,17 @@ async fn codeload(c: &Ctx<'_>, req: &Request, host: &Host, owner: &str, name: &s
         Ok((bytes, _)) => release::archive_reply(&cl, bytes),
         Err(e) => unavailable(&e),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    /// The whole-tier read asks for the packed answer, so the leader builds one string, not a `Value` tree of 18 times
+    /// its size; a merge's narrow read asks for it too, which a member answers unpacked.
+    #[test]
+    fn the_tier_read_asks_for_packed_rows() {
+        let q: serde_json::Value = serde_json::from_str(&super::tier_rows_query(None)).unwrap();
+        assert_eq!(q, serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } }));
+        let q: serde_json::Value = serde_json::from_str(&super::tier_rows_query(Some(7))).unwrap();
+        assert_eq!(q["q"]["rows"], serde_json::json!({ "merge": 7 }));
+    }
 }

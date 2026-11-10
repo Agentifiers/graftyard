@@ -1,0 +1,4 @@
+2026-11-10T15:23:45.048Z m3org/fr3s500 = 131212
+2026-11-10T15:23:46.561Z repo:131212 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T15:23:46.685Z repo:131212 leader 0: k 4 at 5
+2026-11-10T15:23:46Z r3s500 fr3s500 131212 start --agents 500 --seconds 300 --api-reads 0

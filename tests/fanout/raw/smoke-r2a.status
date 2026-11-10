@@ -1,0 +1,15 @@
+2026-11-10T13:38:25.695Z m3org/fr2s250 = 131210
+2026-11-10T13:38:27.113Z repo:131210 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T13:38:27.207Z repo:131210 leader 0: k 4 at 5
+2026-11-10T13:38:27Z r2s250 fr2s250 131210 start --agents 250 --seconds 300 --api-reads 0
+2026-11-10T13:54:22Z r2s250 fr2s250 131210 done exit 0
+2026-11-10T13:54:28Z torn down 131210
+2026-11-10T13:54:28Z cost {"workers_requests": 34620, "workers_cpu_ms": 287490, "do_requests": 259129, "do_rows_written": 116312, "do_active_s": 18244, "containers_cpu_s": 2902, "containers_gib_s": 1163387, "containers_gb_s": 2326773, "containers_usd": 3.13, "usd": 3.33}
+2026-11-10T13:55:05.642Z m3org/fr2s500 = 131211
+2026-11-10T13:55:07.552Z repo:131211 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T13:55:07.683Z repo:131211 leader 0: k 4 at 5
+2026-11-10T13:55:07Z r2s500 fr2s500 131211 start --agents 500 --seconds 300 --api-reads 0
+2026-11-10T14:03:22Z r2s500 fr2s500 131211 done exit 0
+2026-11-10T14:03:29Z torn down 131211
+2026-11-10T14:03:29Z cost {"workers_requests": 106464, "workers_cpu_ms": 791640, "do_requests": 739112, "do_rows_written": 182063, "do_active_s": 33329, "containers_cpu_s": 3445, "containers_gib_s": 1372557, "containers_gb_s": 2745114, "containers_usd": 3.69, "usd": 4.08}
+DONE

@@ -665,7 +665,8 @@ impl Family for Repo {
     /// The refs as `[[name, oid]]`, what `graftyard_git::group::ReadValue` reads, from the core tier, while they fit one
     /// page, and with `{"q": {"refs": {..}}}` one page of them (`graftyard_git::group::refs_read`); with `{"q":
     /// {"rows": true}}`, both tiers' rows at this index, at most `graftyard_api::hosted::ROWS_MAX`
-    /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads; with `{"q": {"rows": {"access":
+    /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads, as one JSON string with `"packed":
+    /// true` (`TierRows::packed`); with `{"q": {"rows": {"access":
     /// true}}}`, only the core rows the edge's read gate reads (`TierRows::access_rows`); with `{"q": {"rows":
     /// {"agent": true}}}`, only the core rows an agent push reads (`TierRows::agent_rows`); with `{"q":
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
@@ -710,8 +711,12 @@ impl Family for Repo {
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
             let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
             let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(TierRows { index, core, meta: meta.map(|(m, _)| m), complete })
-                .unwrap_or(Value::Null);
+            let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
+            // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
+            if q.get("packed").and_then(Value::as_bool) == Some(true) {
+                return rows.packed();
+            }
+            return serde_json::to_value(rows).unwrap_or(Value::Null);
         }
         if q.get("ranges").is_some() {
             // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).

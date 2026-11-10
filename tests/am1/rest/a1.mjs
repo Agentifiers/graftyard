@@ -505,7 +505,8 @@ if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefine
 log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).toISOString()}, leader site ${leader}`);
 await Promise.all(jobs);
 const after = await statuses(CHAIN);
-const lstats = leader !== undefined ? (await member(CHAIN, leader, "/stats", undefined, 15_000)).v : {};
+// A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
+const lstats = (leader !== undefined ? (await member(CHAIN, leader, "/stats", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
 const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / seconds).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
 const feedLat = seen.map((x) => x[2]);
 const v = {

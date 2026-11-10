@@ -148,6 +148,31 @@ mod tests {
         assert!(Repo::reads().contains(&REPO_FORMAT_FANOUT));
     }
 
+    /// A `rows` read with `packed` answers the whole tiers as one JSON string the edge reads back as the same rows;
+    /// without it, the object a member built before `packed` answered.
+    #[test]
+    fn a_packed_rows_read_answers_one_string_of_the_same_rows() {
+        use graftyard_api::hosted::TierRows;
+        let mut fold = RepoFold::new(RepoId(DbId(9)), AccountId(DbId(1)));
+        fold.apply_entry(&LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(1),
+            prev: Digest([0; 32]),
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k: 4 }]),
+        });
+        let packed = Repo::read_json(&fold, &json!({ "rows": true, "ranges": true, "packed": true }));
+        let plain = Repo::read_json(&fold, &json!({ "rows": true, "ranges": true }));
+        assert!(packed.is_string() && plain.is_object());
+        let rows = TierRows::from_value(&packed).unwrap();
+        assert_eq!(rows, TierRows::from_value(&plain).unwrap());
+        assert!(rows.complete && rows.core.iter().any(|(t, _, _)| t == "fanout"));
+    }
+
     /// A follower's answer to a shard's report names the leader in the shape lookup follows (`/error/notLeader`),
     /// not an error the lookup would count as a missed member.
     #[test]

@@ -23,6 +23,9 @@ LOAD = ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', '']
 PUSH = ['cargo', '-p', 'graftyard-git', '--test', 'push', 'fanout']
 WIRE = ['cargo', '-p', 'graftyard-git', '--test', 'wire_tags', '']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', 'fanout::tests']
+EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'api::tests']
+SURF = ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', 'a_hosted_mutation']
+SURF2 = ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', '']
 A1 = 'tests/am1/rest/a1.mjs'
 SELF = ['node', A1, '--selftest']
 
@@ -77,6 +80,24 @@ MUTANTS = [
     ('site: a follower answers a report without the notLeader shape', 'workers/site/src/fanout.rs',
      'json!({ "error": crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(nl)) })',
      'json!({ "error": "not leader", "term": nl.term.0 })', SITE),
+    # lm1-rerun2: whole-tier reads packed into one JSON string.
+    ('site: a packed rows read still answers the Value tree', FAM,
+     '            if q.get("packed").and_then(Value::as_bool) == Some(true) {\n                return rows.packed();\n            }\n',
+     '', SITE),
+    ('edge: the tier read stops asking for packed rows', 'workers/edge/src/api.rs',
+     'json!({ "q": { "rows": rows, "ranges": true, "packed": true } })',
+     'json!({ "q": { "rows": rows, "ranges": true } })', EDGE),
+    ('api: a packed answer is read as the Value tree it is not', 'crates/api/src/hosted.rs',
+     '            Value::String(s) => serde_json::from_str(s),\n', '', SURF),
+    ('api: packing drops the metadata tier', 'crates/api/src/hosted.rs',
+     '        Value::String(serde_json::to_string(self).unwrap_or_default())',
+     '        Value::String(serde_json::to_string(&TierRows { meta: None, ..self.clone() }).unwrap_or_default())', SURF),
+    ('api: the tier read leaves out a table a view reads (comment)', 'crates/api/src/hosted.rs',
+     'pub const UNSERVED: &[&str] = &["path_set", "provenance"];',
+     'pub const UNSERVED: &[&str] = &["path_set", "provenance", "comment"];', SURF2),
+    ('api: the tier read serves path_set again', 'crates/api/src/hosted.rs',
+     'pub const UNSERVED: &[&str] = &["path_set", "provenance"];', 'pub const UNSERVED: &[&str] = &["provenance"];',
+     SURF2),
     ('driver: a push result is matched by its text, so `002cok refs/...` reads as an error', A1,
      '  return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";',
      '  return /(^|[^a-z])ok refs\\//.test(text) ? "ok" : "error";', SELF),

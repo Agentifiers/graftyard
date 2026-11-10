@@ -1,0 +1,10 @@
+2026-11-10T15:44:29Z cost {"workers_requests": 148960, "workers_cpu_ms": 1328980, "do_requests": 1166470, "do_rows_written": 390466, "do_active_s": 107211, "containers_cpu_s": 7461, "containers_gib_s": 2887654, "containers_gb_s": 5775308, "containers_usd": 7.77, "usd": 8.57}
+2026-11-10T15:44:53.329Z m3org/fr2r-b029 = 131213
+2026-11-10T15:44:55.129Z repo:131213 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-10T15:44:55.339Z repo:131213 leader 0: k 4 at 5
+2026-11-10T15:44:55Z b0-29 fr2r-b029 131213 start
+2026-11-10T15:58:21.321Z repo:131213 leader 0: k 4 at 248
+2026-11-10T15:58:21Z b0-29 fr2r-b029 131213 done exit 0
+2026-11-10T15:58:28Z torn down 131213
+2026-11-10T15:58:30Z watcher stopped rows.sh after b0-29 (pid 86502
+108245)
