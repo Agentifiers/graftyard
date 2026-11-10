@@ -2088,7 +2088,7 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 ### `am1-runs`: LM-1's hosted rows on `graft-m2b`, 2026-11-09
 
-`am1-runs` ran AM1's remaining hosted rows on `graft-m2b`. L0-12's refusal counts, L0-13, B0-36, B0-37's push half, and LF-4 on issues and releases pass; every 500-agent load row and LF-13 fail (`tests/am1/results/am1-runs.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, A25).
+`am1-runs` ran AM1's remaining hosted rows on `graft-m2b`. L0-12's refusal counts, L0-13, B0-36, B0-37's push half, and LF-4 on issues and releases pass; every 500-agent load row and LF-13 fail (`tests/am1/results/am1-runs.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, A25, since closed by `fanout`).
 
 #### A cursor inside an `InstallSnapshot` hole gets 410, as one older than the ring
 
@@ -2104,7 +2104,7 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 #### LM-1's load rows fail on the validate lock, and the agent cost lines wait for `fanout`'s rerun
 
-**Decision.** The lead's: B0-29, B0-31 to B0-35, and L0-12's A1 replay fail as written, and their gates stay. The cause is recorded as A25, owned by AM1-WP1: the git shard's `/validate` holds the network's exclusive lock, so with k = 1 one network validates about 2 pushes/s against journey 9's 4.17/s. Branch `fanout` builds concurrent validates inside one shard, `fanout`, and the `NetworkLoad` report, then reruns the rows hosted. The cost figures for extra warm shards ($0 at journey 9) stay unchanged until that rerun measures them; DESIGN's Cost and Scale lines and AGENT-LAYER's accepted risk now say that k counts git CPU only. LF-13's gap fault stays unproven hosted, because even a leader change during the fault left no gap, and is retried on `fanout`.
+**Decision.** The lead's: B0-29, B0-31 to B0-35, and L0-12's A1 replay fail as written, and their gates stay. The cause was recorded as A25 (since closed: "A25 closes", below), owned by AM1-WP1: the git shard's `/validate` holds the network's exclusive lock, so with k = 1 one network validates about 2 pushes/s against journey 9's 4.17/s. Branch `fanout` builds concurrent validates inside one shard, `fanout`, and the `NetworkLoad` report, then reruns the rows hosted. The cost figures for extra warm shards ($0 at journey 9) stay unchanged until that rerun measures them; DESIGN's Cost and Scale lines and AGENT-LAYER's accepted risk now say that k counts git CPU only. LF-13's gap fault stays unproven hosted, because even a leader change during the fault left no gap, and is retried on `fanout`.
 
 **Why.** The failure is a missing build piece, `fanout` and in-shard concurrency, not a gate set too tight: at 100 and 250 agents the same driver passes its latency lines. Moving the cost figures before a measurement would replace one unmeasured number with another.
 
@@ -2113,6 +2113,46 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 **Evidence.** `tests/am1/results/am1-runs.md`, "Diagnosis" [measured]: 100 agents pushed 148 of 148 (commit p99 933 ms) and 250 pushed 379 of 379 (992 ms) with no leader change; at 500 the validate queue reached p90 17.7 s and max 58 s, and B0-29 acknowledged 5 of 2,500 agent pushes. Validates took 405 ms (100 agents) to 515 ms (250 agents) unloaded. LF-13 gap runs 2 and 3 moved the leader during the fault and showed 0 `lagging`.
 
 **Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
+
+### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
+
+`fanout` removed the git shard's per-network validate lock and built `fanout`; its hosted 500-agent reruns on `graft-m2b` then failed on the edge read gate. `04487ca` caches the gate's installation-token decisions, and LM-1's load rows are being rerun. M4-WP1's pure half passed BF-57 and BF-58 in memory (`tests/am1/results/fanout.md`; `tests/m4/results/m4-wp1.md`; `build/BUILD-PLAN.md`, AM1-WP1, AM1-WP6, and M4-WP1).
+
+#### A25 closes: a shard validates one network's pushes concurrently, and `fanout` commits k as `RepoEvent::Fanout`
+
+**Decision.** The answer to A25 is both pieces, with concurrency inside a shard first. The git shard's `/validate` takes the network's lock shared: each validate writes only its own quarantine and reads the repository through alternates, and only the steps that write the repository (`/ingest`, ref writes, repack, init, evict) take it alone, with one mutex for setting a validated pack aside. `fanout` is built as DESIGN states it, with three differences now in the design text: a warm site's first shard reports `NetworkLoad` only during minutes in which it validates pushes, so an idle network's k steps down through `LOAD_STALE` (180 s); the leader commits k as its own `RepoEvent::Fanout { k }` entry (repository format 32.15, wire tag 39), which the edge never sends; and a push validates on the shard that rendezvous on its pack's trailer picks, which catches up before it validates, with the first shard validating the push itself if that shard cannot answer. DESIGN's Cost line "At journey 9's push every 2 minutes k is also 1, with 0 extra shards ($0 a month)" stands, by git CPU, now with the lock removed; it is not yet shown hosted at 500 agents.
+
+**Why.** The lock, not git CPU, held one network to about 2 pushes/s, so raising k alone would have paid for pool shards to work around a serialization the container did not need. A validate's writes are private to its quarantine, so sharing the lock costs no correctness, and the race tests and `git fsck --strict` show none. With the lock gone, one `standard-2` shard validates about 9 times journey 9's offered rate, which keeps k = 1 consistent with the cost model. Picking by the pack's trailer gives every re-send the same shard.
+
+**Beat.** Raising k to spread validates across pool shards with the lock kept, which buys shards for queueing rather than CPU and would move the $0 line. A per-ref lock, which still serializes pushes to one ref's neighbours and adds lock bookkeeping that the quarantine already makes unnecessary. Picking only among caught-up shards, which needs every first shard to track each pool shard's cursor.
+
+**Evidence.** `tests/am1/results/fanout.md` [measured]. Container bench (`tests/fanout/bench.py`, 30 KB thin packs): about 16 validates/s for one network before, at any concurrency; after, 38.7/s on 1 vCPU at 4 in flight, 39.0/s at 8, and 58.2/s on 4 vCPUs at 8; the writer path (validate, ingest, `POST /refs`) stays at 13.0/s before and after. Hosted before, about 2.7/s, bounded by each validate's own catch-up, which `CatchUps::fresh` now shares. Hosted on `graft-m2b`: 100 agents at k = 1 pushed 142 of 142 with commit p99 885 ms (933 ms before); 500 agents with k forced to 4 sent validates to pool shards at p50 456 ms (first shard p50 1.1 s), against a p90 of 17.7 s before, but pushed no more, because the read gate failed first. In-band stepping was not shown: 27 of 29 `/fanout` reports in B0-34 hit a follower that answered an error, and k stayed 1; `105c228` makes a follower answer `notLeader` but is not deployed. Race tests `TestConcurrentValidatesOfOneNetwork` and `TestFinishValidateOfTheSamePackAtOnce` under `-race`; 22 of 22 plants caught.
+
+**Flip.** A hosted 500-agent run at k = 1, with the read gate off the leader, whose validates queue past the push deadline, which would move k above 1 at journey 9 and the cost line through `scripts/cost_agents.py`; or a validate found to write outside its quarantine, which would bring back the exclusive lock.
+
+#### The read gate caches installation-token decisions by `jti`
+
+**Decision.** The edge read gate's per-isolate cache keys a decision by the repository and a stored token's hash, an installation token's `jti` hashed with the domain prefix `graftyard-read-gate-ghs`, or no token, for `READ_CACHE`. A web session stays uncached. An installation token's revocation or narrowing is honoured within `READ_CACHE`, as a stored token's is. DESIGN, Shape, Identity, and SHARED, `authorize_read`, say so (`04487ca`).
+
+**Why.** Before this, only stored user tokens were cached, so every `ghs_` push and every App read cost one leader `/read` of the repository's access rows: about 260/s at journey 9's 500 agents, on a leader whose whole budget is about 305 req/s. Missed reads raised `suspect` reports, leaders stepped down, and the gate answered 503 "the repository's access rows did not answer". A token's `jti` fixes every claim the decision depends on, so it is as safe a key as a stored token's hash. The domain prefix keeps a `jti` key from colliding with a stored token's hash.
+
+**Beat.** Serving the access rows from a follower or from the shard's catch-up at the `fresh` floor, which removes the leader read for every credential but is a larger change; it is deferred until a run shows the cache is not enough. Keying by installation id and a permissions hash, which needs the claims parsed into a key and would share a decision across tokens the uninstall path revokes one by one.
+
+**Evidence.** `tests/am1/results/fanout.md`, "What limits the 500-agent rows now" [measured for the limiter]: 16,777 leader `/read`s and 20,199 `/suspect` reports in B0-29's 600 s, 28,105 `/suspect` in B0-34, 23 `StepDown { CommitErrors }` and 15 member memory resets in B0-34's window, and 1,897 of 2,500 agent pushes in B0-29 and 11,415 of 12,546 in B0-33 answered 503 by the gate. That the cache removes the limiter is [inference] until the rerun of LM-1's load rows reports.
+
+**Flip.** The rerun still showing leader `/read`s near the uncached rate, or revocations of installation tokens needing to bind reads sooner than `READ_CACHE`; either would move the access rows off the leader instead.
+
+#### M4-WP1's pure half: tags after the merge, and four design points
+
+**Decision.** M4-WP1 takes repository format 32.16 and no Authz format, so 0x12.10 stays free. On the merge into main, `RepoEvent::Hook` and `HookCursor` take wire tags 40 and 41, after `Fanout` at 39, which was already deployed on `graft-m2b`; on their branch they had 39 and 40. `IssueOp::PutHook` and `DeleteHook` are 38 and 39. The results file's four design points stay with SHARED, which owns them, and are recorded in BUILD-PLAN's M4-WP1 status: `HookDelivery.guid` is a derived UUIDv8 and `entry` is optional for pings; `RepoEvent::Hook` carries `created: bool` and an optional actor; the `merge_group` and queue payloads are checked against dotcom's description, which GHES 3.22 lacks; and the sequencer hands out each attempt, so a Queues message carries an attempt the sequencer started.
+
+**Why.** A deployed tag cannot move (`decisions/DECISIONS.md`, "Released wire positions are pinned, and `RepoEvent` keeps leases at 35 to 38"), and `Fanout`'s 39 was stored on `graft-m2b` before M4-WP1 merged, while the hook events were stored nowhere.
+
+**Beat.** Keeping the branch's 39 and 40 for the hook events and moving `Fanout`, which would break `graft-m2b`'s stored entries.
+
+**Evidence.** `tests/m4/results/m4-wp1.md` [measured, in memory]: BF-57 healthy first-attempt p99 700 ms, the slow hook's 201 deliveries in chain order, cursor lag at most 1,000 ms; BF-58 465 of 465 (event, hook) pairs delivered, 0 under a new GUID; 34 of 34 plants caught; 628 tests passed. `crates/git/tests/wire_tags.golden` on main: `RepoEvent` 39 `Fanout`, 40 `Hook`, 41 `HookCursor`; `IssueOp` 38 `PutHook`, 39 `DeleteHook`.
+
+**Flip.** None for the tags, which are pinned once released. For the design points: a hosted `HookSequencer` that cannot hold one attempt in flight per queue from the sequencer, which would move attempt choice into the delivery Workers.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
