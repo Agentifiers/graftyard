@@ -119,6 +119,23 @@ impl TierRows {
         c
     }
 
+    /// The answer to `{"rows": true, "packed": true}`: the rows as one JSON string. As a `serde_json::Value` tree,
+    /// each `Val::Blob` byte is its own node, and a 740 KB answer was a 13 MB tree, peaking at 24 MB per read while it
+    /// was built and serialized. At 250 agents the members of a repository ran out of memory on `/read`
+    /// (`tests/am1/results/lm1-rerun2.md`). The string is the same JSON, built once.
+    pub fn packed(&self) -> Value {
+        Value::String(serde_json::to_string(self).unwrap_or_default())
+    }
+
+    /// The rows a `rows` read's `value` holds, packed (`TierRows::packed`) or not: a member built before `packed`
+    /// answers the object.
+    pub fn from_value(v: &Value) -> Result<TierRows, serde_json::Error> {
+        match v {
+            Value::String(s) => serde_json::from_str(s),
+            v => TierRows::deserialize(v),
+        }
+    }
+
     /// The rows as a store `Repo` reads.
     pub fn store(rows: &[(String, Key, Vec<Val>)]) -> MemStore {
         let mut s = MemStore::default();

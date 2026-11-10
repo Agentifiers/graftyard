@@ -822,6 +822,12 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
     };
     let t = rows(&c);
     assert!(t.complete);
+    // Packed, the member's answer is one JSON string, and it reads back as the same rows; an unpacked answer from a
+    // member built before `packed` reads the same.
+    let packed = t.packed();
+    assert!(packed.is_string());
+    assert_eq!(TierRows::from_value(&packed).unwrap(), t);
+    assert_eq!(TierRows::from_value(&serde_json::to_value(&t).unwrap()).unwrap(), t);
     let (core, meta) = (TierRows::store(&t.core), TierRows::store(t.meta.as_ref().unwrap()));
     // The rows `Repo` reads are the member's; the written index and the tier's `META` row do not cross.
     let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut 100_000).0;
