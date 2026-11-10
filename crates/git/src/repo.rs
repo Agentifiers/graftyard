@@ -68,6 +68,9 @@ pub const REPO_FORMAT_REPOS: Format = Format { family: 0x20, version: 13 };
 /// package's. An edge sends it only once `FormatsEnable` has enabled it; a command without the mark never takes it, so
 /// every earlier form keeps its bytes.
 pub const REPO_FORMAT_LEASES: Format = Format { family: 0x20, version: 14 };
+/// `fanout` (`design/DESIGN.md`, Shape, `NetworkLoad` and `fanout`): `RepoEvent::Fanout`, tag 39, which a network
+/// group's leader records itself when k changes. No client command carries it, so every earlier form keeps its bytes.
+pub const REPO_FORMAT_FANOUT: Format = Format { family: 0x20, version: 15 };
 
 /// At most this many ref updates in one `--atomic` push [guess at GitHub's own limit].
 pub const ATOMIC_REFS_MAX: usize = 10_000;
@@ -346,6 +349,13 @@ pub enum RepoEvent {
     },
     /// Metadata, in the push's entry: one row per ref, deleted when the ref's pull request closes.
     PathSet(crate::agent::PathSet),
+    // Format 32.15 (`REPO_FORMAT_FANOUT`): tag 39.
+    /// Core. The k both warm sites hold for the network (`crate::shard::fanout`), committed by the network group's
+    /// leader in an entry of its own with no request, only when k changes. Its core `fanout` row is what a shard's
+    /// `ranges` read answers.
+    Fanout {
+        k: u8,
+    },
 }
 
 impl RepoEvent {
@@ -507,6 +517,11 @@ impl RepoFold {
     }
 
     /// The first index still in the chain's log (`ChainLog::first_index`).
+    /// The k the group's leader last committed for the network (`RepoEvent::Fanout`), 1 before any.
+    pub fn fanout_k(&self) -> u8 {
+        get_rec::<u8>(&*self.core, "fanout", &[]).unwrap_or(1)
+    }
+
     pub fn first_index(&self) -> Index {
         Index(self.archived().map_or(0, |a| a.to.0) + 1)
     }
@@ -1701,6 +1716,8 @@ impl Record for RepoEvent {
             RepoEvent::LeaseRenew { id, expires } => return tagged(out, 36, &(id, expires)),
             RepoEvent::LeaseRelease { ids, by } => return tagged(out, 37, &(ids, by)),
             RepoEvent::PathSet(p) => return tagged(out, 38, p),
+            // Format 32.15: tag 39.
+            RepoEvent::Fanout { k } => return tagged(out, 39, k),
         };
         e.u8(0);
         e.u128(push.0.0);

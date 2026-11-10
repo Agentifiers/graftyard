@@ -330,6 +330,16 @@ impl ShardHost<'_> {
         Ok(r)
     }
 
+    /// The container's `NetworkLoad`: the last minute's p99 busy fraction of its vCPUs and the validates waiting or
+    /// running. A container that is not running reports no load and is not started for it.
+    pub async fn load(&self) -> Result<crate::shard::NetworkLoad, StoreError> {
+        if !self.container()?.running() {
+            return Ok(crate::shard::NetworkLoad::default());
+        }
+        let mut r = self.ok(Method::Get, "/load", None).await?;
+        r.json().await.map_err(worker_err)
+    }
+
     pub async fn health(&self) -> Result<Health, StoreError> {
         let mut r = self.ok(Method::Get, "/health", None).await?;
         r.json().await.map_err(worker_err)

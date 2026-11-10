@@ -992,3 +992,38 @@ fn bf2_a_revoked_token_refuses_all_100_queued_pushes() {
         commit(&mut g, push(vec![up("refs/heads/late", None, Some(oid(1)))], Atomicity::PerRef, who(WRITER, 2)));
     assert!(matches!(&o, PushOutcome::Refused(r) if r.status == 401), "{o:?}");
 }
+
+/// `Fanout { k }` (format 32.15) sets the core `fanout` row, which `fanout_k` reads and a shard's `ranges` read
+/// answers; before any, k is 1. It changes no ref and its bytes are tag 39 then k.
+#[test]
+fn a_fanout_entry_sets_the_committed_k() {
+    use graftyard_git::repo::{REPO_FORMAT_FANOUT, RepoEvent, RepoFold};
+    use graftyard_raft::Fold;
+    use graftyard_types::{Index, RepoId};
+
+    let mut fold = RepoFold::new(RepoId(DbId(7)), AccountId(DbId(OWNER)));
+    assert_eq!(fold.fanout_k(), 1);
+    let mut prev = graftyard_raft::PREV_ZERO;
+    for (i, k) in [3u8, 2].into_iter().enumerate() {
+        let ev = RepoEvent::Fanout { k };
+        let mut b = Vec::new();
+        ev.encode(&mut b);
+        assert_eq!(b, vec![39, k]);
+        let e = graftyard_raft::LogEntry {
+            term: graftyard_raft::Term(2),
+            index: Index(i as u64 + 1),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: graftyard_raft::TierSet::CORE,
+            at: Timestamp(1),
+            requests: SmallVec::new(),
+            extend: None,
+            body: graftyard_raft::EntryBody::Events(vec![ev]),
+        };
+        prev = graftyard_raft::digest(&e);
+        fold.apply_entry(&e);
+        assert_eq!(fold.fanout_k(), k);
+    }
+    assert!(fold.refs().is_empty());
+    assert_eq!(graftyard_git::tiers::tier_of(&RepoEvent::Fanout { k: 2 }), graftyard_raft::TierSet::CORE);
+}

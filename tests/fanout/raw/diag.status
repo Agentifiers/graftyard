@@ -1,0 +1,11 @@
+file:///home/user/workspace/repo/.worktrees/fanout/tests/am1/hosted/lib.mjs:90
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:131192
+    at leaderOf (file:///home/user/workspace/repo/.worktrees/fanout/tests/am1/hosted/lib.mjs:90:9)
+    at async file:///home/user/workspace/repo/.worktrees/fanout/tests/fanout/k.mjs:9:16
+
+Node.js v26.12.0
+2026-11-10T01:20:07.976Z repo:131192 leader 0: k 4 at 388
+DONE

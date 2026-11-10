@@ -25,13 +25,26 @@ use crate::{SiteEnv, now_ms};
 thread_local! {
     /// Per network, the catch-ups running on this isolate's shard objects, so a merge waits for one in flight
     /// (`merge_then_catch_up`'s `in_flight`). An object's requests share its isolate.
-    static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<i64, graftyard_git::merge_cache::CatchUps>> =
+    ///
+    /// Keyed by the shard object too: a hot-pool object of the network may share the isolate with its first shard,
+    /// and each must catch up its own container.
+    static CATCH_UPS: std::cell::RefCell<std::collections::HashMap<(String, i64), graftyard_git::merge_cache::CatchUps>> =
         Default::default();
+    /// Per network, the log index the latest shared catch-up (`CatchUps::fresh`) reached, for `x-graft-cursor`.
+    static CURSORS: std::cell::RefCell<std::collections::HashMap<(String, i64), u64>> = Default::default();
+    /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), and when
+    /// this isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`).
+    static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, (u8, u64)>> = Default::default();
 }
 
-/// This isolate's catch-up gate for network `net`.
-fn catch_ups(net: NetworkId) -> graftyard_git::merge_cache::CatchUps {
-    CATCH_UPS.with(|m| m.borrow_mut().entry(net.0.0).or_default().clone())
+/// The k `net`'s group committed, as this isolate last read it; 1 before any read.
+fn fanout_k(net: NetworkId) -> u8 {
+    FANOUT.with(|m| m.borrow().get(&net.0.0).map_or(1, |(k, _)| *k))
+}
+
+/// This isolate's catch-up gate for network `net` on shard object `obj`.
+fn catch_ups(obj: &str, net: NetworkId) -> graftyard_git::merge_cache::CatchUps {
+    CATCH_UPS.with(|m| m.borrow_mut().entry((obj.to_owned(), net.0.0)).or_default().clone())
 }
 
 #[durable_object]
@@ -68,8 +81,11 @@ impl GroupLog<'_> {
 
 impl ChainLog for GroupLog<'_> {
     /// The fold's last `Archived` raises `first` (`RepoFold::first_index`); `applied` is the read's index.
-    async fn head(&self, _chain: ChainId) -> std::result::Result<Head, StoreError> {
+    async fn head(&self, chain: ChainId) -> std::result::Result<Head, StoreError> {
         let v = self.ranges().await?;
+        if let (ChainId::Repo(r), Some(k)) = (chain, v["fanout"].as_u64()) {
+            FANOUT.with(|m| m.borrow_mut().entry(r.0.0).or_insert((1, 0)).0 = k as u8);
+        }
         Ok(Head { first: Index(v["first"].as_u64().unwrap_or(1)), applied: Index(v["index"].as_u64().unwrap_or(0)) })
     }
     async fn refs_page(
@@ -154,6 +170,10 @@ impl DurableObject for GitShard {
                 &json!({ "running": running, "alarm": self.state.storage().get_alarm().await? }),
             );
         }
+        // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
+        if path == "/load" {
+            return Response::from_json(&host.load().await.map_err(se)?);
+        }
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
             self.state.storage().delete_alarm().await?;
@@ -172,6 +192,7 @@ impl DurableObject for GitShard {
                 crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
             }
         };
+        let obj = self.state.id().to_string();
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
@@ -181,13 +202,93 @@ impl DurableObject for GitShard {
         // two at once each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one
         // hung until the runtime ended it at 884 s ("Promise will never complete", `tests/m3/results/wire-fix.md`).
         let caught_up = || async {
-            let _running = catch_ups(net).turn().await;
+            let _running = catch_ups(&obj, net).turn().await;
             host.catch_up(net, &[chain], &bs, &log).await
+        };
+        // A validate, clone, or fetch needs only every commit made before it arrived, so requests that arrive while a
+        // catch-up runs share the next one (`CatchUps::fresh`): hosted, each catch-up reads the leader, and one each
+        // held a network to about 2.7 validates/s (`tests/am1/results/am1-runs.md`, "Diagnosis").
+        let fresh = || async {
+            catch_ups(&obj, net)
+                .fresh(|| async {
+                    let c = host.catch_up(net, &[chain], &bs, &log).await?;
+                    CURSORS.with(|m| m.borrow_mut().insert((obj.clone(), net.0.0), c.cursor.at(chain).0));
+                    Ok(())
+                })
+                .await
         };
         match path.as_str() {
             "/validate" => {
-                caught_up().await.map_err(se)?;
+                fresh().await.map_err(se)?;
                 let body = req.bytes().await?;
+                // `fanout`: the network's first shard forwards a push to the one of the k that rendezvous on its id
+                // picks (`graftyard_git::push_validator`), which catches up before it validates. The push id is the
+                // pack's trailer, its own SHA-1, the same on every re-send. A pool shard never forwards (`via`), and
+                // one that cannot answer leaves the push to the first shard. The first shard is index 0 of a
+                // one-shard `count` here: each network has its own first-shard object, so only the pool indices,
+                // `1..1 + HOT_POOL`, are shared between networks.
+                let k = fanout_k(net);
+                // Once a minute, on its own validates, the first shard reports its k shards' combined load to the
+                // group's leader, which steps k (`crate::fanout`). A network with no pushes reports nothing.
+                let due = FANOUT.with(|m| {
+                    let mut m = m.borrow_mut();
+                    let e = m.entry(net.0.0).or_insert((1, 0));
+                    let due = now_ms() >= e.1 + crate::fanout::REPORT_EVERY_MS;
+                    if due {
+                        e.1 = now_ms();
+                    }
+                    due
+                });
+                if due && q(&url, "via").is_none() {
+                    let own = host.load().await.unwrap_or_default();
+                    let (env, sites, me, rec) = (self.env.clone(), site.sites.clone(), site.id, log.record.clone());
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let mut loads = vec![own];
+                        for s in graftyard_git::shards_for(net, me, 1, k).iter().skip(1) {
+                            let name = graftyard_git::object_name(net, *s, 1);
+                            let r = match crate::fanout::stub(&env, &sites, me, &name) {
+                                Ok(st) => st.fetch_with_str("https://shard/load").await,
+                                Err(e) => Err(e),
+                            };
+                            if let Ok(mut r) = r
+                                && let Ok(l) = r.json::<graftyard_git::NetworkLoad>().await
+                            {
+                                loads.push(l);
+                            }
+                        }
+                        match crate::fanout::report_from_shard(&env, &sites, me, net, &rec, &loads).await {
+                            Ok(k) => FANOUT.with(|m| m.borrow_mut().entry(net.0.0).or_insert((1, 0)).0 = k),
+                            Err(e) => console_error!("fanout report {}: {e}", net.0.0),
+                        }
+                    });
+                }
+                if k > 1 && q(&url, "via").is_none() && body.len() >= 20 {
+                    let pick = graftyard_git::push_validator(net, site.id, 1, k, &body[body.len() - 20..]);
+                    if pick.shard != 0 {
+                        let name = graftyard_git::object_name(net, pick, 1);
+                        let rec = serde_json::to_string(&log.record)?;
+                        let mut fwd = url.clone();
+                        fwd.query_pairs_mut().append_pair("via", "0");
+                        if q(&url, "record").is_none() {
+                            fwd.query_pairs_mut().append_pair("record", &rec);
+                        }
+                        let mut init = RequestInit::new();
+                        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&body[..]).into()));
+                        let r = match crate::fanout::stub(&self.env, &site.sites, site.id, &name) {
+                            Ok(s) => s.fetch_with_request(Request::new_with_init(fwd.as_str(), &init)?).await,
+                            Err(e) => Err(e),
+                        };
+                        match r {
+                            Ok(r) if r.status_code() == 200 || r.status_code() == 422 => return Ok(r),
+                            Ok(mut r) => console_error!(
+                                "fanout: {name} answered {} {}; validating on the first shard",
+                                r.status_code(),
+                                r.text().await.unwrap_or_default().chars().take(200).collect::<String>()
+                            ),
+                            Err(e) => console_error!("fanout: {name}: {e}; validating on the first shard"),
+                        }
+                    }
+                }
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
                 let tips: Vec<String> =
                     String::from_utf8_lossy(&body[..n.min(body.len())]).split_whitespace().map(str::to_owned).collect();
@@ -208,7 +309,8 @@ impl DurableObject for GitShard {
                 }
             }
             "/info-refs" | "/upload-pack" => {
-                let c = caught_up().await.map_err(se)?;
+                fresh().await.map_err(se)?;
+                let at = CURSORS.with(|m| m.borrow().get(&(obj.clone(), net.0.0)).copied().unwrap_or(0));
                 let proto = req.headers().get("git-protocol")?.unwrap_or_default();
                 let enc = req.headers().get("content-encoding")?.unwrap_or_default();
                 let body = if path == "/upload-pack" { Some(req.bytes().await?) } else { None };
@@ -217,8 +319,7 @@ impl DurableObject for GitShard {
                 for (k, v) in r.headers().entries() {
                     h.set(&k, &v)?;
                 }
-                h.set("x-graft-cursor", &c.cursor.at(chain).0.to_string())?;
-                h.set("x-graft-rehydrated", if c.rehydrated.is_some() { "1" } else { "0" })?;
+                h.set("x-graft-cursor", &at.to_string())?;
                 Ok(r.with_headers(h))
             }
             // A new leadership's `warm` (`crate::prsync`) comes here; a merge that arrives meanwhile waits for it.
@@ -257,7 +358,7 @@ impl DurableObject for GitShard {
                 let a = graftyard_git::merge_cache::merge_then_catch_up(
                     || async { host.up().await.map(|_| ()) },
                     || {
-                        let idle = catch_ups(net).idle();
+                        let idle = catch_ups(&obj, net).idle();
                         let waited = &waited;
                         async move {
                             let w0 = now_ms();

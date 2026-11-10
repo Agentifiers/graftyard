@@ -212,12 +212,41 @@ where
 /// `in_flight`). Single-threaded, as a Durable Object is: `start` marks one running until its `Running` drops, and
 /// `idle` ends once none runs.
 #[derive(Clone, Default)]
-pub struct CatchUps(std::rc::Rc<std::cell::RefCell<(u32, Vec<std::task::Waker>)>>);
+pub struct CatchUps(std::rc::Rc<std::cell::RefCell<(u32, Vec<std::task::Waker>)>>, std::rc::Rc<Turns>);
+
+/// `CatchUps::fresh`'s count: catch-ups started on this gate, and the start number of the latest one that succeeded.
+#[derive(Default)]
+struct Turns {
+    started: std::cell::Cell<u64>,
+    ok: std::cell::Cell<u64>,
+}
 
 /// One running catch-up; dropping it ends it, whatever its outcome.
 pub struct Running(CatchUps);
 
 impl CatchUps {
+    /// Brings the shard up to date for a request that arrived now, sharing catch-ups: it returns once a catch-up
+    /// that *started* after the request arrived has succeeded, so the shard holds every commit the client could have
+    /// seen. Requests that arrive while one runs wait for the next one, and all of them share it, so a burst of n
+    /// validates costs two catch-ups, not n (hosted, each `heads` read is a leader round trip). `run` is called only
+    /// when this request starts the catch-up; its error is returned to that request alone, and the others try again.
+    pub async fn fresh<F, Fut, E>(&self, mut run: F) -> Result<(), E>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<(), E>>,
+    {
+        let arrived = self.1.started.get();
+        let _running = self.turn().await;
+        if self.1.ok.get() > arrived {
+            return Ok(());
+        }
+        let n = self.1.started.get() + 1;
+        self.1.started.set(n);
+        run().await?;
+        self.1.ok.set(n);
+        Ok(())
+    }
+
     pub fn start(&self) -> Running {
         self.0.borrow_mut().0 += 1;
         Running(self.clone())
@@ -497,6 +526,82 @@ mod tests {
         assert_eq!(most.get(), 1, "two catch-ups ran at once");
         assert_eq!(*order.borrow(), vec![0, 1, 2]);
         assert_eq!(futures_executor::block_on(gate.idle()), ());
+    }
+
+    /// A burst of validates on one network shares catch-ups: the first starts one, the nine that arrive while it runs
+    /// all wait for and share the next, so two catch-ups run, not ten, and never two at once. Each request returns only
+    /// after a catch-up that started after it arrived succeeded. A failed catch-up fails only the request that ran it.
+    #[test]
+    fn fresh_shares_one_catch_up_among_the_requests_that_wait_for_it() {
+        use futures_util::task::LocalSpawnExt;
+        let mut pool = futures_executor::LocalPool::new();
+        let sp = pool.spawner();
+        let gate = CatchUps::default();
+        let runs = std::rc::Rc::new(std::cell::RefCell::new(Vec::<u64>::new()));
+        let (now, most) = (std::rc::Rc::new(std::cell::Cell::new(0)), std::rc::Rc::new(std::cell::Cell::new(0)));
+        let clock = std::rc::Rc::new(std::cell::Cell::new(0u64));
+        let done = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fail_first = std::rc::Rc::new(std::cell::Cell::new(true));
+        for i in 0..10u64 {
+            let (g, runs, now, most, clock, done, fail) = (
+                gate.clone(),
+                runs.clone(),
+                now.clone(),
+                most.clone(),
+                clock.clone(),
+                done.clone(),
+                fail_first.clone(),
+            );
+            sp.spawn_local(async move {
+                // Request i arrives at tick i (one tick per spawn, before any catch-up ends).
+                let arrived = clock.get();
+                clock.set(clock.get() + 1);
+                let r = g
+                    .fresh(|| {
+                        let (runs, now, most, clock, fail) =
+                            (runs.clone(), now.clone(), most.clone(), clock.clone(), fail.clone());
+                        async move {
+                            let started = clock.get();
+                            now.set(now.get() + 1);
+                            most.set(most.get().max(now.get()));
+                            for _ in 0..3 {
+                                yield_once().await;
+                            }
+                            now.set(now.get() - 1);
+                            runs.borrow_mut().push(started);
+                            if fail.replace(false) && i == 0 {
+                                return Err(started);
+                            }
+                            Ok(())
+                        }
+                    })
+                    .await;
+                done.borrow_mut().push((i, arrived, r));
+            })
+            .unwrap();
+        }
+        pool.run();
+        assert_eq!(most.get(), 1, "two catch-ups ran at once");
+        // The first fails (its request alone sees the error); the second serves the other nine.
+        assert_eq!(runs.borrow().len(), 2, "one catch-up per turn, shared: {:?}", runs.borrow());
+        let started_second = runs.borrow()[1];
+        for (i, arrived, r) in done.borrow().iter() {
+            if *i == 0 {
+                assert!(r.is_err(), "the request whose catch-up failed sees the failure");
+            } else {
+                assert!(r.is_ok(), "request {i}");
+                assert!(started_second >= *arrived, "request {i} served by a catch-up older than it");
+            }
+        }
+        // A request after the burst starts a catch-up of its own: nothing it could have seen is assumed held.
+        let before = runs.borrow().len();
+        let r2 = runs.clone();
+        futures_executor::block_on(gate.fresh(|| {
+            r2.borrow_mut().push(99);
+            async { Ok::<_, u64>(()) }
+        }))
+        .unwrap();
+        assert_eq!(runs.borrow().len(), before + 1);
     }
 
     /// Pending once, then ready: lets the other task run.

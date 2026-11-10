@@ -125,6 +125,49 @@ pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -
     next
 }
 
+/// A load report older than this counts as idle: a warm site that stopped reporting holds no k up [guess, three of
+/// its one-minute reports].
+pub const LOAD_STALE: Duration = Duration::from_secs(180);
+
+/// What a network group's leader keeps between `NetworkLoad` reports: each warm site's latest report and when it
+/// came, and the hysteresis `fanout` reads. In memory only: a new leader starts from the committed k with no
+/// hysteresis, so at worst a step waits one more window.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LoadReports {
+    pub sites: ArrayVec<(SiteId, Timestamp, NetworkLoad), 2>,
+    pub f: Fanout,
+}
+
+impl LoadReports {
+    /// Takes `site`'s report at `now` and answers the k to commit when it differs from `k`, the committed one. Only
+    /// the network's two warm sites count; a third site's report is ignored, and a stale one counts as idle.
+    pub fn report(&mut self, warm: [SiteId; 2], site: SiteId, load: NetworkLoad, k: u8, now: Timestamp) -> Option<u8> {
+        if !warm.contains(&site) {
+            return None;
+        }
+        self.sites.retain(|(s, ..)| warm.contains(s) && *s != site);
+        self.sites.push((site, now, load));
+        let idle = NetworkLoad::default();
+        let fresh = |s: SiteId| {
+            self.sites
+                .iter()
+                .find(|(x, at, _)| *x == s && now.0 < at.0 + LOAD_STALE.as_millis() as u64)
+                .map_or(idle, |(_, _, l)| *l)
+        };
+        let loads = [fresh(warm[0]), fresh(warm[1])];
+        let next = fanout([&loads[0], &loads[1]], k, now, &mut self.f);
+        (next != k.clamp(1, FANOUT_MAX)).then_some(next)
+    }
+}
+
+/// The NetworkLoad of a site's k shards of one network: the most loaded one's CPU and their summed queue depth.
+pub fn combine(loads: &[NetworkLoad]) -> NetworkLoad {
+    NetworkLoad {
+        cpu_p99: loads.iter().map(|l| l.cpu_p99).fold(0.0, f32::max),
+        queue_depth: loads.iter().map(|l| l.queue_depth).sum(),
+    }
+}
+
 /// The pool shards each network of `asks` holds on one site: `(network, owner, held, want)`, where `held` and `want`
 /// are pool shards (k - 1). Each owner is held to `share(owner)`, its plan's share of the pool, and all to HOT_POOL.
 /// Shards a network already holds are kept first, up to its owner's share, so another owner's step up never reduces
@@ -168,6 +211,26 @@ pub fn warm_sites(network: NetworkId, home: SiteId, sites: &[SiteId]) -> [SiteId
 /// The shard of the k that validates a push: rendezvous on the push's id among the caught-up ones.
 pub fn validator(push: &[u8], caught_up: &[GitCacheShard]) -> Option<GitCacheShard> {
     caught_up.iter().max_by_key(|s| weight(push, s.shard)).copied()
+}
+
+/// The shard of `network`'s k on `site` that validates push `push`: rendezvous on the push id among
+/// `shards_for(network, site, count, k)`, so one push always lands on the same shard and pushes spread evenly. The
+/// caller falls back to the first shard when the chosen one is not caught up.
+pub fn push_validator(network: NetworkId, site: SiteId, count: u16, k: u8, push: &[u8]) -> GitCacheShard {
+    let ks = shards_for(network, site, count, k);
+    validator(push, &ks).unwrap_or(ks[0])
+}
+
+/// The shard object a shard of `network` answers as. A network's first shard keeps the per-network name every site
+/// script and edge has used since M1 (`git#<site>#net:<repo>`), so no network moves when fan-out ships; a hot-pool
+/// shard is shared by the networks rendezvous gives it, `git#<site>#pool:<n>`, and keeps each one's repository and
+/// `IngestCursor` side by side.
+pub fn object_name(network: NetworkId, s: GitCacheShard, count: u16) -> String {
+    if s.shard < count {
+        format!("git#{}#net:{}", s.site.0, network.0.0)
+    } else {
+        format!("git#{}#pool:{}", s.site.0, s.shard)
+    }
 }
 
 /// The policy has no `max_instances`, so a shard object starts its container only while its index is under the cap.
