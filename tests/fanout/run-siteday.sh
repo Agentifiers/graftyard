@@ -1,13 +1,17 @@
 #!/bin/bash
 # The fanout site day on graft-m2b as one orb service: the image (tests/am1/runs/image.sh, tagged am1runs, pushed),
 # then the site day (tests/am1/runs/siteday.sh) with that digest, then the edge with the current formats and OPS.
+# NOROLL=1 skips --roll-shards (shards are derived caches; fresh repositories start on the image).
 # TAG names a later day's status and logs (tests/fanout/raw/siteday$TAG.status, fanout$TAG-*.log).
 cd "$(dirname "$0")/../.."
 T=${TAG:-}
 [ -e tests/fanout/raw/.siteday$T.started ] && exec sleep infinity
 touch tests/fanout/raw/.siteday$T.started
-bash tests/am1/runs/image.sh fanout$T-image.log
-IMG=$(grep -E "^registry.cloudflare.com/.*@sha256:" tests/am1/raw/runs/fanout$T-image.log | head -1)
+# IMG=<digest-pinned image> reuses a pushed image (containers/ unchanged) instead of building one.
+if [ -z "${IMG:-}" ]; then
+  bash tests/am1/runs/image.sh fanout$T-image.log
+  IMG=$(grep -E "^registry.cloudflare.com/.*@sha256:" tests/am1/raw/runs/fanout$T-image.log | head -1)
+fi
 echo "image $IMG" > tests/fanout/raw/siteday$T.status
 [ -n "$IMG" ] || { echo "no image" >> tests/fanout/raw/siteday$T.status; exec sleep infinity; }
 bash tests/am1/runs/siteday.sh fanout$T-siteday.log "$IMG"
