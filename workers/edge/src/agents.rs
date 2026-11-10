@@ -323,8 +323,8 @@ pub(crate) fn linked(
     v
 }
 
-/// What an agent push needs read before its commit: the install's `AgentApp` rows and the repository's core rows (its
-/// `AgentPolicy` and tasks). `None` for a push `agentish` rules out, which reads nothing more.
+/// What an agent push needs read before its commit: the install's `AgentApp` rows and only the repository's core rows
+/// it reads (its `AgentPolicy` and tasks). `None` for a push `agentish` rules out, which reads nothing more.
 pub(crate) struct AgentPush {
     install: Option<AuthzFold>,
     core: graftyard_fold::MemStore,
@@ -342,11 +342,10 @@ pub(crate) async fn push_context(
     if !agentish(c, &push.actor, install.as_ref(), &push.updates) {
         return None;
     }
-    let rows = match crate::api::tier_rows(c, repo, None).await {
-        Ok(Ok(v)) => serde_json::from_value::<graftyard_api::hosted::TierRows>(v["value"].clone()).ok(),
-        _ => None,
+    let core = match crate::api::core_rows(c, repo, "agent").await {
+        Ok(Ok(store)) => store,
+        _ => graftyard_fold::MemStore::default(),
     };
-    let core = rows.map(|r| graftyard_api::hosted::TierRows::store(&r.core)).unwrap_or_default();
     Some(AgentPush { install, core })
 }
 

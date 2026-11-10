@@ -599,6 +599,69 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     assert_eq!(refused["errors"][0]["message"], "Pull request is not open");
 }
 
+/// An agent push reads its policy and every task, and no settings, open-task index, ref, or issue rows. The narrow
+/// store answers the policy and session lookups exactly as the full tiers do.
+#[test]
+fn an_agent_push_reads_only_its_policy_and_task_rows() {
+    use graftyard_api::hosted::TierRows;
+    use graftyard_git::agent::AgentPolicy;
+    use graftyard_git::repo::RepoEvent;
+    use graftyard_git::task::{AgentTask, TaskActor, TaskApiState, TaskKind, task_key};
+    use graftyard_identity::{InstallationId, SessionId, UserId};
+    use graftyard_types::Index;
+
+    let mut c = seeded();
+    let policy = AgentPolicy { extra_paths: vec!["agent-owned/**".into()], ..AgentPolicy::default() };
+    c.entry(EntryBody::Events(vec![RepoEvent::AgentPolicy(policy.clone())]), TierSet::CORE);
+
+    let app = AppId(DbId(5));
+    let other_app = AppId(DbId(6));
+    let task = |name: &str, app| {
+        let session = SessionId::External { app, name: name.into() };
+        AgentTask {
+            session,
+            kind: TaskKind::External,
+            state: TaskApiState::InProgress,
+            prefix: None,
+            requester: Some(UserId(AccountId(DbId(WRITER)))),
+            app,
+            installation: InstallationId(DbId(900 + app.0.0)),
+            creator: TaskActor::User(UserId(AccountId(DbId(WRITER)))),
+            issue: None,
+            snapshot: Index(1),
+            prompt: None,
+            pr: None,
+            summary: format!("task {name}").into(),
+        }
+    };
+    let owned = task("owned", app);
+    let other = task("other", other_app);
+    let owned_id = owned.session.clone();
+    c.entry(
+        EntryBody::Events(vec![RepoEvent::TaskCreated(owned), RepoEvent::TaskCreated(other)]),
+        TierSet::CORE.union(TierSet::METADATA),
+    );
+
+    let m = &c.members[0];
+    let rows = TierRows::agent_rows(&m.core);
+    let actual: Vec<_> = rows.iter().map(|(table, key, _)| (table.as_str(), key.clone())).collect();
+    assert_eq!(
+        actual,
+        vec![
+            ("agent_policy", Vec::new()),
+            ("agent_task", task_key(&owned_id)),
+            ("agent_task", task_key(&SessionId::External { app: other_app, name: "other".into() })),
+        ]
+    );
+
+    let narrow = TierRows::store(&rows);
+    assert_eq!(graftyard_git::tiers::agent_policy(&narrow), policy);
+    assert_eq!(graftyard_git::tiers::agent_policy(&narrow), graftyard_git::tiers::agent_policy(&m.core));
+    let full_sessions = graftyard_git::task::app_sessions(&m.core, app);
+    assert_eq!(full_sessions, vec![owned_id]);
+    assert_eq!(graftyard_git::task::app_sessions(&narrow, app), full_sessions);
+}
+
 #[test]
 fn an_unserved_field_is_undefined_field_not_null() {
     let c = seeded();

@@ -107,6 +107,18 @@ impl TierRows {
         c
     }
 
+    /// The core rows an agent push reads (`linked` on the edge): the `AgentPolicy` row and every task. The member
+    /// answers them alone to `{"rows": {"agent": true}}`, which a member built before it answers with every row.
+    pub fn agent_rows(core: &dyn Read) -> Vec<(String, Key, Vec<Val>)> {
+        let mut c: Vec<_> = core
+            .get("agent_policy", &[])
+            .map(|cols| ("agent_policy".to_owned(), Vec::new(), cols))
+            .into_iter()
+            .collect();
+        c.extend(core.prefix("agent_task", &[]).into_iter().map(|(k, cols)| ("agent_task".to_owned(), k, cols)));
+        c
+    }
+
     /// The rows as a store `Repo` reads.
     pub fn store(rows: &[(String, Key, Vec<Val>)]) -> MemStore {
         let mut s = MemStore::default();
