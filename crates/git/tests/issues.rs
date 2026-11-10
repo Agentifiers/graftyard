@@ -13,8 +13,8 @@ use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::RepoEvent;
 use graftyard_git::tiers::{CORE, METADATA, RepoTiers, RequiredRow, tier_of};
 use graftyard_identity::{
-    AccountKind, Actor, AuthzEvent, AuthzFold, Credential, IdentityDep, NamesEvent, NamesFold, Principal,
-    RepoPermission, ScopeSet, TokenKind, TokensEvent, TokensFold, UserId, shard_of_hash,
+    AccountKind, Actor, AuthzEvent, AuthzFold, Credential, IdentityDep, NameEpoch, NamesEvent, NamesFold, Principal,
+    RepoEntry, RepoName, RepoPermission, ScopeSet, TokenKind, TokensEvent, TokensFold, UserId, shard_of_hash,
 };
 use graftyard_raft::{EntryBody, Fold, Format, LogEntry, PREV_ZERO, Term, TierSet, digest};
 use graftyard_types::{
@@ -56,6 +56,10 @@ fn deps() -> Vec<(ChainId, IdentityDep)> {
     let mut tokens = TokensFold::new(TokenShard(0));
     let mut authz = AuthzFold::new(AccountId(DbId(OWNER)));
     authz.apply(&AuthzEvent::Opened { kind: AccountKind::User, enterprise: None });
+    authz.apply(&AuthzEvent::RepoName {
+        key: RepoName::parse("tool").unwrap().key(),
+        entry: Some(RepoEntry::Live { repo: REPO, epoch: NameEpoch(1) }),
+    });
     for a in [OWNER, WRITER, READER] {
         let id = AccountId(DbId(a));
         names.apply(&NamesEvent::Account { id, suspended: false, sessions_not_before: Timestamp(0) });

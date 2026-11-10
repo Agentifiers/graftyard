@@ -364,20 +364,21 @@ async fn repo_step(
             });
             repo_commit(&b, chain, &record, cmd).await
         }
-        RepoStep::Init { owner, enterprise, init } => {
-            use graftyard_git::lifecycle::{Lifecycle, LifecycleOp, init_settings};
-            let settings = init_settings(init, *owner, *enterprise)?;
+        RepoStep::Init { owner, .. } => {
             // The edge died before its README push or `InitRepo`, perhaps before any member joined.
             graftyard_lookup::create(&b, chain, &record, &json!({ "owner": owner })).await?;
-            let op = LifecycleOp::Init(settings);
-            let request = request_id(chain, &serde_json::to_value(&op).map_err(|e| e.to_string())?);
-            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(Lifecycle { op, request })).await
+            let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
+                .expect("an init step maps to a lifecycle command")?;
+            let request = request_id(chain, &serde_json::to_value(&cmd.op).map_err(|e| e.to_string())?);
+            cmd.request = request;
+            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
         }
-        RepoStep::Delete { retain_until } => {
-            use graftyard_git::lifecycle::{Lifecycle, LifecycleOp};
-            let op = LifecycleOp::Delete { retain_until: *retain_until };
-            let request = request_id(chain, &serde_json::to_value(&op).map_err(|e| e.to_string())?);
-            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(Lifecycle { op, request })).await
+        RepoStep::Delete { .. } => {
+            let mut cmd = graftyard_git::lifecycle::of_step(step, RequestId(Ulid(0)))
+                .expect("a delete step maps to a lifecycle command")?;
+            let request = request_id(chain, &serde_json::to_value(&cmd.op).map_err(|e| e.to_string())?);
+            cmd.request = request;
+            repo_commit(&b, chain, &record, graftyard_git::repo::RepoCmd::Lifecycle(cmd)).await
         }
     }
 }

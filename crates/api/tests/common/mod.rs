@@ -17,8 +17,8 @@ use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::RepoEvent;
 use graftyard_git::tiers::{RepoTiers, tier_of};
 use graftyard_identity::{
-    AccountKind, Actor, AuthzEvent, AuthzFold, Credential, IdentityDep, NamesEvent, NamesFold, Principal,
-    RepoPermission, ScopeSet, TokenKind, TokensEvent, TokensFold, UserId, credential_chains,
+    AccountKind, Actor, AuthzEvent, AuthzFold, Credential, IdentityDep, NameEpoch, NamesEvent, NamesFold, Principal,
+    RepoEntry, RepoName, RepoPermission, ScopeSet, TokenKind, TokensEvent, TokensFold, UserId, credential_chains,
 };
 use graftyard_raft::{
     Acked, Command, CommitError, EntryBody, Ev, Fold, Format, LogEntry, Member, MemberConfig, PREV_ZERO, Record,
@@ -62,6 +62,11 @@ fn deps() -> Vec<(ChainId, IdentityDep)> {
     let mut tokens = TokensFold::new(TokenShard(0));
     let mut authz = AuthzFold::new(AccountId(DbId(OWNER)));
     authz.apply(&AuthzEvent::Opened { kind: AccountKind::User, enterprise: None });
+    // The owner names the repository `Live`, which an `InitRepo` needs (F59: a create the finisher aborted is not).
+    authz.apply(&AuthzEvent::RepoName {
+        key: RepoName::parse("tool").unwrap().key(),
+        entry: Some(RepoEntry::Live { repo: REPO, epoch: NameEpoch(1) }),
+    });
     for a in [OWNER, WRITER, READER] {
         let id = AccountId(DbId(a));
         names.apply(&NamesEvent::Account { id, suspended: false, sessions_not_before: Timestamp(0) });

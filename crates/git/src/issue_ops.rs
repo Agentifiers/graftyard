@@ -899,6 +899,18 @@ impl IssueCmd {
                 if v.settings().is_some() || crate::tiers::created(v.core()).is_some() {
                     return Ok((SmallVec::new(), IssueOut::Done));
                 }
+                // The owner's `CreateRepoWith` is the commit point. A late create after the finisher aborted it must
+                // not initialize the chain again; stored commands still replay exactly as their leader decided them.
+                let live = deps.iter().any(|(chain, dep)| match (chain, dep) {
+                    (ChainId::Authz(o), IdentityDep::Authz(f)) if *o == owner && f.owner == Some(owner) => f
+                        .names
+                        .values()
+                        .any(|e| matches!(e, graftyard_identity::RepoEntry::Live { repo, .. } if *repo == v.repo())),
+                    _ => false,
+                });
+                if !live {
+                    return Err(IssueErr::NotFound);
+                }
                 if s.owner != owner || s.enterprise != authz.and_then(|a| a.enterprise()) {
                     return Err(IssueErr::OwnerChange);
                 }

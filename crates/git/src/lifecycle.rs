@@ -165,6 +165,21 @@ pub fn init_settings(init: &str, owner: AccountId, enterprise: Option<AccountId>
     Ok(s)
 }
 
+/// The repository command for a create or delete finisher step. Move and transfer steps have their own commands.
+pub fn of_step(step: &graftyard_identity::finish::RepoStep, request: RequestId) -> Option<Result<Lifecycle, String>> {
+    use graftyard_identity::finish::RepoStep;
+    match step {
+        RepoStep::Init { owner, enterprise, init } => Some(
+            init_settings(init, *owner, *enterprise)
+                .map(|settings| Lifecycle { op: LifecycleOp::Init(settings), request }),
+        ),
+        RepoStep::Delete { retain_until } => {
+            Some(Ok(Lifecycle { op: LifecycleOp::Delete { retain_until: *retain_until }, request }))
+        }
+        RepoStep::Move { .. } | RepoStep::Settings { .. } => None,
+    }
+}
+
 /// The JSON a `Lifecycle` crosses the binding as: `format` first, so a member that does not read 32.17 refuses it
 /// without reading the rest.
 #[derive(Serialize, Deserialize)]
