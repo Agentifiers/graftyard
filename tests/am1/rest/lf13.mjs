@@ -83,8 +83,10 @@ if (mode === "install") {
 await leases(3_000);
 const before = (await poll(F, 99_999, 0)).cursor;
 
-// 1,000 held on F, spread over 2 s.
-const held = Array.from({ length: 1000 }, (_, k) => sleep(k * 2).then(() => poll(F, k, 25, null, ["lf13-held/**"])));
+// HELD (default 1,000) held on F, spread over 2 s. At FEED_HELD_MAX (1,000) a new poll is answered `full` until they
+// return, which hides `lagging` from the probes (fanout, LF-13 round 3); HELD=999 leaves one slot for them.
+const HELD = Number(process.env.HELD ?? 1000);
+const held = Array.from({ length: HELD }, (_, k) => sleep(k * 2).then(() => poll(F, k, 25, null, ["lf13-held/**"])));
 await sleep(2_500);
 row(OUT, { step: "held", members: await feedOf() });
 
