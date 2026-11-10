@@ -46,8 +46,12 @@ pub async fn report(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
     let (key, warm, k) = {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("member not joined")?;
+        // A follower answers `notLeader`, as `/read` does, so the caller's lookup follows the leader. An error here
+        // would be a 500, which lookup counts as a missed member and reports with `suspect` (hosted B0-34: 27 of 29
+        // reports in its window ended so on the followers).
         if c.m.role() != Role::Leader {
-            return Err("not leader".into());
+            let nl = crate::host::call_error_json(&graftyard_raft::CallError::NotLeader(c.m.not_leader()));
+            return Ok(json!({ "error": nl }));
         }
         let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
         let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
