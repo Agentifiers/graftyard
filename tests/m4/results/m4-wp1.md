@@ -2,7 +2,7 @@
 
 BUILD-PLAN M4-WP1 asks for `SUBSCRIPTIONS`, `HookDelivery` with one automatic attempt and the `retry` opt-in, `HookCursor`, `HookRecord` on `RepoEvent::Hook`, `HOOK_OWNER_CONCURRENCY`, the `Webhooks`, `Audit`, and `Search` consumers on the M2-WP5 pipeline, `HookSequencer` as the delivery store, signing through `graft-ops`, and the `webhooks` surface at T0 including `merge_group`, `pull_request.enqueued`, and `pull_request.dequeued`. This round builds the pure, in-memory half of the `Webhooks` part and runs BF-57 and BF-58 on real raft members. Nothing was deployed. `Audit` and `Search` as consumers, Basin Pipelines, the `HookSequencer` Durable Object class, delivery Workers, and the site day are not built here.
 
-Branch `m4-wp1`, cut from `main` at `c8eda69`, with `main` at `aa9e097` merged in (`8d9034a`). `aa9e097` holds the `am1-runs` merge with `89cf205` and `dfa5410`, and it is `origin/main` at the time of writing.
+Branch `m4-wp1`, cut from `main` at `c8eda69`. `main` at `aa9e097`, the `am1-runs` merge with `89cf205` and `dfa5410`, is merged in as `8d9034a`, and `origin/main` at `cadf83d` as `f0faea7`. `cadf83d` changed only `README.md`, `build/`, `decisions/`, and `design/` (no `.rs` or `.toml`), none of it about M4-WP1, so the checks below hold across it, and the three scripts pass after it.
 
 ## What was built
 
@@ -142,7 +142,7 @@ The expected set is derived from what the test committed (each push to every hoo
 - `cargo clippy --workspace --all-targets -- -D warnings`: clean.
 - wasm32 `cargo clippy -- -D warnings` for `graftyard-site`, `graftyard-site --features test-faults`, `graftyard-edge`, `graftyard-edge --features test-faults`, and `graftyard-ops`: clean.
 - `cargo test --workspace`: 72 suites, 628 passed, 0 failed, 3 ignored.
-- `python3 scripts/check_design.py`, `check_names.py` (1,845 files), and `check_links.py` (2,862 citations): OK.
+- `python3 scripts/check_design.py`, `check_names.py` (1,846 files), and `check_links.py` (2,869 citations): OK, after the merge of `cadf83d`.
 
 ## What the hosted half needs
 
