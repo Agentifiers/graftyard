@@ -6,7 +6,7 @@
   "scripts": {
     "studio": "remotion studio",
     "stills": "remotion still Mark16 out/stills/mark-16.png --log=error && remotion still MarkSizes out/stills/mark-sizes.png --log=error && remotion still MarkLarge out/stills/mark-large.png --log=error",
-    "check": "tsc --noEmit && node scripts/lint-film.mjs src && tsx scripts/grid-check.ts src/timeline.ts && tsx scripts/grid-check.ts src/ghes/timeline.ts && tsx scripts/grid-check.ts src/chaos/timeline.ts",
+    "check": "tsc --noEmit && node scripts/lint-film.mjs src && tsx scripts/grid-check.ts src/timeline.ts && tsx scripts/grid-check.ts src/ghes/timeline.ts && tsx scripts/grid-check.ts src/chaos/timeline.ts && tsx scripts/grid-check.ts src/agents/timeline.ts",
     "sound": "node scripts/sound.mjs",
     "cues": "tsx scripts/export-cues.ts",
     "music": "node scripts/py.mjs scripts/audio/track.py music",
@@ -23,8 +23,10 @@
     "loop": "bash scripts/render.sh Film out/loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Film out/loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/loop.mp4 -c copy -an -movflags +faststart ../public/film/push-loop.mp4 && ffmpeg -v error -y -i out/loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/push-loop.webm && node scripts/frames.mjs still 195 --scale 1 && ffmpeg -v error -y -i out/stills/f0195.png -q:v 3 ../public/film/push-loop.jpg",
     "loop:ghes": "bash scripts/render.sh Ghes out/ghes-loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Ghes out/ghes-loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/ghes-loop.mp4 -c copy -an -movflags +faststart ../public/film/ghes-loop.mp4 && ffmpeg -v error -y -i out/ghes-loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/ghes-loop.webm && node scripts/frames.mjs still 255 --comp Ghes --scale 1 && ffmpeg -v error -y -i out/stills/Ghes-f0255.png -q:v 3 ../public/film/ghes-loop.jpg",
     "loop:chaos": "bash scripts/render.sh Chaos out/chaos-loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Chaos out/chaos-loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/chaos-loop.mp4 -c copy -an -movflags +faststart ../public/film/chaos-loop.mp4 && ffmpeg -v error -y -i out/chaos-loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/chaos-loop.webm && node scripts/frames.mjs still 225 --comp Chaos --scale 1 && ffmpeg -v error -y -i out/stills/Chaos-f0225.png -q:v 3 ../public/film/chaos-loop.jpg",
+    "loop:agents": "bash scripts/render.sh Agents out/agents-loop.mp4 --loop --no-audio --jpeg && bash scripts/render.sh Agents out/agents-loop.mp4 --clean && mkdir -p ../public/film && ffmpeg -v error -y -i out/agents-loop.mp4 -c copy -an -movflags +faststart ../public/film/agents-loop.mp4 && ffmpeg -v error -y -i out/agents-loop.mp4 -an -c:v libvpx-vp9 -crf 26 -b:v 0 -row-mt 1 -pix_fmt yuv420p -color_primaries bt709 -color_trc bt709 -colorspace bt709 ../public/film/agents-loop.webm && node scripts/frames.mjs still 255 --comp Agents --scale 1 && ffmpeg -v error -y -i out/stills/Agents-f0255.png -q:v 3 ../public/film/agents-loop.jpg",
     "cues:ghes": "tsx scripts/export-cues.ts --sync src/ghes/sync.ts --timeline src/ghes/timeline.ts --out out/cues-ghes.json",
-    "cues:chaos": "tsx scripts/export-cues.ts --sync src/chaos/sync.ts --timeline src/chaos/timeline.ts --out out/cues-chaos.json"
+    "cues:chaos": "tsx scripts/export-cues.ts --sync src/chaos/sync.ts --timeline src/chaos/timeline.ts --out out/cues-chaos.json",
+    "cues:agents": "tsx scripts/export-cues.ts --sync src/agents/sync.ts --timeline src/agents/timeline.ts --out out/cues-agents.json"
   },
   "dependencies": {
     "@remotion/cli": "4.0.529",
