@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""teardown.py FIRST LAST [FIRST LAST ...] | --all-nets -> tears down every running graft-m2b git shard container of
+"""teardown.py FIRST LAST [FIRST LAST ...] | --all-nets -> tears down every running graft-m2b (or $INSTALL) git shard container of
 the networks in any range FIRST..LAST (`git#<site>#net:<repo>`), or of every network with `--all-nets` (older
 installs' networks, such as 65536-65540 and 131072-131073, sit outside every range `rows.sh` uses), through the test
 edge's `/_bed/kill?repo=&shard=`, as `workers/site/deploy.mjs --roll-shards` does. Shards are derived caches: the next request catches the network up again. Container instances
@@ -22,7 +22,7 @@ api = lambda p: json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/{p}", headers=H), timeout=60))["result"]
 done = {}
 for app in api("applications"):
-    if not app["name"].startswith("graft-m2b-site-"):
+    if not app["name"].startswith(os.environ.get("INSTALL", "graft-m2b") + "-site-"):
         continue
     for i in api(f"applications/{app['id']}/instances?per_page=1000")["instances"]:
         if i["status"].get("state") != "running":

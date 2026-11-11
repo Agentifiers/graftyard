@@ -2264,6 +2264,22 @@ Branch `lf13-m3c` ran LF-13 on a new test install, `graft-m3c`, and passed it in
 
 **Flip.** An idle install whose shards still start with these changes in, which would name another caller; or BM-2 failing because the shard was stopped at an election, which would warm a stopped shard only for a group with a client in the last hour.
 
+### `merge-budget`: the test-merge budget is the merging shard's, 2026-11-11
+
+Branch `merge-budget` built AM1-WP1's follow-up, "The test-merge budget and B0-35's instruments", and ran it on `graft-m3c` (`tests/am1/results/merge-budget.md`; `build/BUILD-PLAN.md`, AM1-WP1).
+
+#### A27 closes: a network's `MergeBudget` lives in the shard that runs its merges, charged by measured time
+
+**Decision.** The shard object that runs a network's test merges holds that network's `MergeBudget` in its memory (`graftyard_git::prsync::Budgets`). That shard is the network's first shard on the leader's site. The budget refills at TEST_MERGE_BUDGET of that one shard's vCPU, read from its instance type (0.25 vCPU on today's `standard-2`). Each merge it admits is charged its measured time, not the catch-up before it. Past the budget the shard answers `{"shed": true}` and runs nothing, and the `PrSync` consumer deletes the old merge ref, so `mergeable` stays null. The shard reports `spentMs`, `computed`, `shed`, `listAsked`, and `listComputes` with each merge (`x-graft-budget`) and in `/status`. The leader's `/stats` keeps them as `testMerges`, with its first attempts' asks and sheds. DESIGN's and AGENT-LAYER's agent block now say "per network in the memory of the shard that runs its merges (the leader site's first), refills at TEST_MERGE_BUDGET of its vCPU and is charged each merge's measured time". A27 leaves OPEN-QUESTIONS.
+
+**Why.** The consumer runs in whichever isolate the leader's first attempt or the queue lands in, so a budget there was per isolate: never shared, never charged, never reported. The shard sees every merge of its network, whoever asks, and can time the merge itself. The design's "of the k shards' vCPU" priced merges that only one of the k shards ever runs. The code's `SHARD_VCPU` = 4 priced a `standard-4` while the site runs `standard-2`, which allowed 100% of the shard.
+
+**Beat.** Keeping the budget in the consumer and moving it into a shared store, which adds a call on every merge for state the shard already sees. Charging the estimate only (50 ms), which a slow merge on a large repository (up to 338 ms at p99 on torvalds/linux) would overrun unseen. Spreading test merges over the k shards, which needs every one of them caught up to the PR's head before it merges.
+
+**Evidence.** `tests/am1/results/merge-budget.md` [measured]. On `graft-m3c`, one repository with 50 open PRs had head pushes at 10/s and the base moved 27 times in 300 s. Its shard computed 190 test merges, shed 694, and spent 55.3 vCPU-s, which is 0.1845 vCPU against 0.25. It computed 0 merges for list fields, and 2,952 of 3,012 `mergeable` polls answered `UNKNOWN`. Tests `the_shard_budgets_each_network_once_for_all_its_callers`, `a_head_push_past_the_test_merge_budget_leaves_mergeable_null`, and `a_compute_charged_to_a_list_field_is_counted`; 18 of 18 planted bugs caught (`tests/budget/plant.py`).
+
+**Flip.** Test merges that run on more than one shard of a network, such as merges spread over k, which would need one budget across those shards. Or a merge whose wall time misprices its CPU, because the shard runs merges side by side or waits on disk, which would charge container CPU time instead.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
