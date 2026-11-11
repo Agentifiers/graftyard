@@ -21,6 +21,10 @@
 //!   once a second, so it starts and ends mid-run with no new version. A member on the faulted site answers every
 //!   Raft and edge call with 503 (`site_down`) and fails each call it sends before it leaves, reporting it with
 //!   `call_failed`, so the leader's `Health` window sees every call fail.
+//! - LF-13's member sever (`Host::severed_until`, member route `/sever`): one member fails as the site fault fails a
+//!   whole member class, set and lifted in that object at once. The site fault takes up to a second per
+//!   isolate to start and end and fails every group on the site, so it cannot place a follower's last entry before a
+//!   leadership transfer; this can (`crates/raft/tests/lf13.rs`, the new leader's first round leaves a gap).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

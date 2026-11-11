@@ -1,7 +1,8 @@
 #!/bin/bash
-# LF-13 on graft-m2b, both modes, 3 runs each (tests/am1/rest/lf13.mjs), for one orb service.
+# LF-13, both modes, 3 runs each (tests/am1/rest/lf13.mjs), for one orb service: on graft-m2b, or on the install
+# LF13_ENV names (tests/am1/lf13/env-m3c.sh for graft-m3c).
 cd "$(dirname "$0")/../.."
-source tests/m3/rows/env.sh
+source ${LF13_ENV:-tests/m3/rows/env.sh}
 ST=tests/fanout/raw/lf13${LF13_TAG:-}.status
 [ -e tests/fanout/raw/.lf13${LF13_TAG:-}.started ] && exec sleep infinity
 touch tests/fanout/raw/.lf13${LF13_TAG:-}.started

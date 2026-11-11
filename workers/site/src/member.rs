@@ -381,6 +381,10 @@ impl<F: Family> Routes<F> {
                     | "/deps_log"
                     | "/arrivals"
             );
+            if !observe && url.path() != "/sever" && self.host.severed() {
+                crate::faults::count("severed:in");
+                return Response::error("member severed (injected)", 503);
+            }
             if !observe && crate::faults::site_down(&self.host.env).await {
                 crate::faults::count("site_fault:in");
                 return Response::error("member class failing (injected site fault)", 503);
@@ -529,6 +533,14 @@ impl<F: Family> Routes<F> {
                 self.ready_or(|| self.record(body)).await
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
+            // LF-13: `{"for_ms": MS}` severs this member for MS ms (`Host::severed_until`); 0 lifts it. Answers
+            // this member's clock, so a driver times the lift on the clock the feed's `stoppedAt` uses.
+            (Method::Post, "/sever") => {
+                let ms = req.json::<Value>().await?["for_ms"].as_u64().unwrap_or(0);
+                let now = now_ms();
+                self.host.severed_until.set(if ms == 0 { 0 } else { now + ms });
+                Response::from_json(&json!({ "now": now, "until": self.host.severed_until.get() }))
+            }
             // B0-18's depth gauge: how many nested object calls are left from this member's ambient context. After
             // `afterMs`, a task (charged, as every send is, to the newest incoming request) starts a chain of calls
             // to this object's own `/depth_hop`, each made at once inside the previous hop's handler, and answers

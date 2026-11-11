@@ -7,10 +7,12 @@ import json, os, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 a, b = sys.argv[1], sys.argv[2]
+# The install by its script prefix: graft-m2b unless INSTALL names another, such as graft-m3c.
+P = os.environ.get("INSTALL", "graft-m2b")
 H = {"authorization": f"Bearer {tok}", "content-type": "application/json"}
 apps = json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/containers/applications", headers=H), timeout=60))["result"]
-ids = {x["id"].replace("-", ""): x["name"] for x in apps if x["name"].startswith("graft-m2b-site-")}
+ids = {x["id"].replace("-", ""): x["name"] for x in apps if x["name"].startswith(f"{P}-site-")}
 q = """query($a: String!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) {
   c: containersUsageAdaptiveGroups(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e}) {
     sum { cpuTimeSec allocatedMemory allocatedDisk } dimensions { applicationId } } } } }"""

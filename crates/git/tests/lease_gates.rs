@@ -908,6 +908,49 @@ fn the_ring_a_serving_member_keeps_matches_the_pure_feed() {
     assert_eq!(feed::learners_for_feed(&[(0, 0)]), 0);
 }
 
+/// LF-13 hosted, gap mode (`tests/am1/results/fanout.md`, r3 gap 2: one lease event fewer on F's ring than on the
+/// third voter): a follower catching up applies many entries in one input, and the host feeds the ring each of them
+/// with the tiers that input left. A lease acquired and released inside that batch is gone from those tiers at its
+/// acquire's entry, but its release must still reach the ring, as it does on a member that applied them one by one.
+#[test]
+fn a_lease_acquired_and_released_in_one_catch_up_batch_reports_both() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "batch", Some(WRITER));
+    let mut entries = Vec::new();
+    let last_events = |w: &mut World| {
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = e.body else { unreachable!() };
+        (e.index, e.at, evs)
+    };
+    let id = lease_id(&w.commit(issue(app(CLAUDE), shared(&["batch/**"], Some("batch")))));
+    entries.push(last_events(&mut w));
+    w.commit(issue(app(CLAUDE), IssueOp::ReleaseLease { id })).unwrap();
+    entries.push(last_events(&mut w));
+    let after = w.fold();
+    assert!(lease::lease_row(&*after.core, id).is_none(), "the batch's final tiers no longer hold the lease");
+    // Both entries fed with the batch's final tiers, as a follower's catch-up input feeds them.
+    let mut batch = feed::Ring::default();
+    for (i, at, evs) in &entries {
+        batch.feed(REPO, &w.ident.owner, &after.core, &after.meta, (*i, *at, evs));
+    }
+    let changes: Vec<LeaseChange> = batch
+        .past(Index(0), &["batch/**"])
+        .into_iter()
+        .filter_map(|(_, _, e)| match e {
+            ActivityEvent::Lease { lease, change } if lease.id == id => Some(change),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes, vec![LeaseChange::Acquired, LeaseChange::Released], "the catch-up batch's ring");
+}
+
 /// LF-13 hosted, install mode (`tests/am1/results/am1-runs.md`): a follower sent `InstallSnapshot` never feeds its ring
 /// the entries the snapshot covered. A cursor from before that hole must get `gone` (410 with the oldest cursor it can
 /// serve), never a `hold` past it that skips the events in between.
@@ -951,4 +994,57 @@ fn a_ring_fed_past_a_hole_refuses_cursors_from_before_it() {
     assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the hole, or of the baseline entry, is kept");
     let c2 = feed::FeedCursor { group: REPO, index: *i2 }.encode();
     assert_eq!(feed::start(REPO, Some(&c2), oldest, newest), feed::Start::After(*i2), "the new floor serves");
+}
+
+/// LF-13 on graft-m3c: the install's own input moves the member's base past the ring with no entry to feed, and the
+/// member follows again at once. A cursor from before the install must get `gone` then, not a `hold` that skips
+/// what the snapshot covered, even before any later entry arrives. A lease the snapshot holds and the next entry
+/// releases still reports `Released` (the second hosted batch: 2 such events missing on F).
+#[test]
+fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "skip", Some(WRITER));
+    let last = |w: &mut World| {
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = e.body else { unreachable!() };
+        (e.index, e.at, evs, w.fold())
+    };
+    let mut ring = feed::Ring::default();
+    w.commit(issue(app(CLAUDE), shared(&["skip/0/**"], Some("skip")))).unwrap();
+    let (i0, at0, evs0, f0) = last(&mut w);
+    ring.feed(REPO, &w.ident.owner, &f0.core, &f0.meta, (i0, at0, &evs0));
+    let before = feed::FeedCursor { group: REPO, index: ring.through }.encode();
+    // The snapshot covers an acquire the ring never saw; the entry after it releases that lease.
+    let id = lease_id(&w.commit(issue(app(CLAUDE), shared(&["skip/1/**"], Some("skip")))));
+    let (through, at1, _, snap) = last(&mut w);
+    ring.skip(REPO, &w.ident.owner, &snap.core, (through, at1));
+    let (oldest, newest) = ring.bounds();
+    assert!(
+        matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
+        "a cursor from before the install is gone at once: oldest {oldest:?}, newest {newest:?}"
+    );
+    assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the install is served");
+    w.commit(issue(app(CLAUDE), IssueOp::ReleaseLease { id })).unwrap();
+    let (i2, at2, evs2, f2) = last(&mut w);
+    assert_eq!(i2.0, through.0 + 1, "the next entry follows the snapshot");
+    ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (i2, at2, &evs2));
+    let (oldest, newest) = ring.bounds();
+    let at_snapshot = feed::FeedCursor { group: REPO, index: through }.encode();
+    assert_eq!(feed::start(REPO, Some(&at_snapshot), oldest, newest), feed::Start::After(through));
+    let served: Vec<(Index, LeaseId, LeaseChange)> = ring
+        .past(through, &[])
+        .into_iter()
+        .filter_map(|(i, _, e)| match e {
+            ActivityEvent::Lease { lease, change } => Some((i, lease.id, change)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(served, vec![(i2, id, LeaseChange::Released)], "the snapshot's lease, released after it");
 }
