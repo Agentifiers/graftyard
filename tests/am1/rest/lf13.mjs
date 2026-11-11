@@ -206,7 +206,12 @@ const now = (await statuses(CHAIN)).find((s) => s.role === "leader")?.site;
 // The reference: the voter that is neither F nor the leader now, from the same cursor.
 const ref = [leader, O].find((x) => x !== now && x !== F);
 const fromRef = ref === undefined ? null : await poll(ref, 77_778, 0, before);
-const ids = (evs) => evs.map((e) => e[2]?.Lease).filter(Boolean).map((l) => `${l.change} ${l.lease?.id?.join?.(",") ?? JSON.stringify(l.lease?.id)}`);
+// Each list is cut at the smaller of the two members' cursors, so an entry one member applied and the other not yet
+// is not counted as missing or extra (graft-m3c's first batches: the reference trailed F by one entry).
+const at = (c) => (c ? Number(Buffer.from(c, "base64url").readBigUInt64BE(9)) : Infinity);
+let upTo = Infinity;
+const ids = (evs) => evs.filter((e) => e[0] <= upTo).map((e) => e[2]?.Lease).filter(Boolean).map((l) => `${l.change} ${l.lease?.id?.join?.(",") ?? JSON.stringify(l.lease?.id)}`);
+upTo = Math.min(at(fromF.cursor), at(fromRef?.cursor));
 let fIds = ids(fromF.events), rIds = ids(fromRef?.events ?? []);
 // After an install F's ring starts above the snapshot, so the pre-fault cursor is `gone` with the oldest it serves
 // (the design's ring rule): a client re-reads from there. No event is lost if F and the reference list the same
@@ -214,7 +219,8 @@ let fIds = ids(fromF.events), rIds = ids(fromRef?.events ?? []);
 let goneFrom = null;
 if (fromF.admit === "gone" && fromF.oldest && ref !== undefined) {
   const [f2, r2] = await Promise.all([poll(F, 77_779, 0, fromF.oldest), poll(ref, 77_780, 0, fromF.oldest)]);
-  goneFrom = { oldest: fromF.oldest, fAdmit: f2.admit, refAdmit: r2.admit, fromF: ids(f2.events).length, fromRef: ids(r2.events).length };
+  upTo = Math.min(at(f2.cursor), at(r2.cursor));
+  goneFrom = { oldest: fromF.oldest, upTo, fAdmit: f2.admit, refAdmit: r2.admit, fromF: ids(f2.events).length, fromRef: ids(r2.events).length };
   fIds = ids(f2.events); rIds = ids(r2.events);
 }
 const v = {
