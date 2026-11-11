@@ -562,6 +562,12 @@ const v = {
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null },
   leader: { before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
     commitMs: { n: lstats.commitMs?.length, p50: pct(lstats.commitMs, 0.5), p99: pct(lstats.commitMs, 0.99) },
+    // Round 5's commit split: admission to append (`queueMs`, which holds the entry's dep reads), the dep reads by
+    // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
+    split: Object.fromEntries([["queue", lstats.queueMs], ["round", lstats.roundMs], ["confirm", lstats.confirmMs],
+      ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
+      .map(([k, xs]) => [k, { n: xs?.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }])),
+    depFails: lstats.depFails,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),

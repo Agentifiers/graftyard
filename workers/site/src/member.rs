@@ -1205,6 +1205,10 @@ impl<F: Family> Routes<F> {
         });
         // B0-35's instruments: the network's test-merge budget as its shard last reported it, and this leader's
         // head-push merges asked and shed since the last reset (`crate::prsync`).
+        // Round 5's commit split: each entry's dep reads, by chain kind, and each command's wait to its entry's append.
+        v["depsMs"] = json!(s.deps_ms);
+        v["depFails"] = json!(s.dep_fails);
+        v["queueMs"] = json!(s.queue_ms);
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         if reset {
             s.commit_ms.clear();
@@ -1213,6 +1217,9 @@ impl<F: Family> Routes<F> {
             s.apply_steps.clear();
             s.confirm_ms.clear();
             s.append_ms.clear();
+            s.deps_ms.clear();
+            s.dep_fails.clear();
+            s.queue_ms.clear();
             s.entries = 0;
             s.commands = 0;
             s.failed_calls = 0;
