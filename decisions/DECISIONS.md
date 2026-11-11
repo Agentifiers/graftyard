@@ -2230,6 +2230,8 @@ F59's finisher for repository create and delete merged in memory (`tests/m3/resu
 
 #### B0-30 counts for LM-1 as substituted
 
+**Reversed, 2026-11-11.** The operator directed that every row passes as written, with no substitutions, and B0-30 then failed on its own fail line; see "B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn". This entry is kept as the record of what was decided on 2026-11-10.
+
 **Decision.** The operator's, Ben Kraus, 2026-11-10. B0-30 counts for LM-1 as substituted: the row passes if its metadata half passes, which is member SQLite under `CHILD_GROUP_AT` with zero `SQLITE_FULL`, and archived entries readable for `RestoredTo`, over 30 simulated days of journey 9's metadata rows with git pushes off from simulated day 1.34. The push half, 30 days of pack churn, is recorded as replaced, not passed. The git cache work the push half needs becomes AM1-WP1's follow-up, "Git cache shards on a hot group with a multi-GB log", with its own gate: journey 9's pushes on a 4 GB group through leader changes and shard resets, with no push timeouts and archiving keeping up (`decisions/OPEN-QUESTIONS.md`, G7). BUILD-PLAN's LM-1 row, AM1-WP6's B0-30 row and list, and AGENT-LAYER's AM1 gate say so.
 
 **Why.** B0-30 asks a storage question: whether a hot group's member stays under `CHILD_GROUP_AT` with no `SQLITE_FULL`. The metadata rows a day are journey 9's, and the log stays at its cap through the archive alarm, which is what the row bounds. Pushes stopped because the git cache shard could not rehydrate a multi-GB log in time, a git-cache defect that the storage row was not built to find and that a 40 h run cannot fix in place. Holding LM-1 on it would tie the storage verdict to a separate piece of work.
@@ -2307,6 +2309,20 @@ Branch `merge-budget` built AM1-WP1's follow-up, "The test-merge budget and B0-3
 **Evidence.** `tests/am1/results/merge-budget.md` [measured]. On `graft-m3c`, one repository with 50 open PRs had head pushes at 10/s and the base moved 27 times in 300 s. Its shard computed 190 test merges, shed 694, and spent 55.3 vCPU-s, which is 0.1845 vCPU against 0.25. It computed 0 merges for list fields, and 2,952 of 3,012 `mergeable` polls answered `UNKNOWN`. Tests `the_shard_budgets_each_network_once_for_all_its_callers`, `a_head_push_past_the_test_merge_budget_leaves_mergeable_null`, and `a_compute_charged_to_a_list_field_is_counted`; 18 of 18 planted bugs caught (`tests/budget/plant.py`).
 
 **Flip.** Test merges that run on more than one shard of a network, such as merges spread over k, which would need one budget across those shards. Or a merge whose wall time misprices its CPU, because the shard runs merges side by side or waits on disk, which would charge container CPU time instead.
+
+### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
+
+B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on its fail line at simulated day 27.52 (`tests/am1/results/b0-30.md`; `build/BUILD-PLAN.md`, AM1-WP6, B0-30).
+
+**Decision.** The operator's direction of 2026-11-11: every LM-1 row passes as written, with no substitutions. The 2026-11-10 decision "B0-30 counts for LM-1 as substituted" (metadata half only, push half replaced) is withdrawn, and the LM-1 gate text in BUILD-PLAN and AGENT-LAYER no longer carries it. B0-30 is rerun as written, 30 days of journey 9 with pushes on, by thread "B0-30: MetaSplit child group, archive stall, full 30-day rerun" on branch `b030-split`, which builds the metadata child group (G6) and fixes the archive stall: a promotion's `/validate` stays on the network's first shard, nothing is forwarded to a shard with no cursor for its disk, and an archive run covers a promotion (G7). Thread "hot-shards" builds the push half, AM1-WP1's follow-up "Git cache shards on a hot group with a multi-GB log", whose gate is unchanged.
+
+**Why.** The substitution's premise was that the metadata half answers B0-30's storage question on its own. The run disproved it: archiving stalled on the git cache shard, the same defect the push half was set aside for, and the members crossed `CHILD_GROUP_AT` with nothing to take the tier. A pass on half the row would certify neither the split nor the archive under pack churn, which are what the row exists to test.
+
+**Beat.** Counting the metadata half as passed up to the crossing, which hides that no child group exists. Moving `CHILD_GROUP_AT` up to fit the measured growth, which the 10 GB object limit leaves no room for and which the stall, not the tier, drove. Waiting for M7-WP4 in order, which leaves LM-1 open on a row that a hot group reaches in about a month.
+
+**Evidence.** `tests/am1/results/b0-30.md` [measured]: site 0 read 8,591,708,160 B at 23:09:41Z on 2026-11-11 against 8,589,934,592 B; `SQLITE_FULL` 0 throughout; the final verify read 81 of 81 sampled archived ranges from both buckets and resolved 10 of 10 `RestoredTo` lookups; SQLite grew 0.0585 GB a simulated day while archiving kept up, projecting about 8.21 GB at day 30 [inference, linear], and 0.184 GB a day during the stall; from about 17:13Z `fanout` at k = 6 forwarded the archive promotion's validate to cold pool shards, and site a's promotion validate median went from 0.17 s at 16Z to 7,551 s at 21Z. Cost $64.90.
+
+**Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
