@@ -179,6 +179,8 @@ pub struct Stats {
     pub prsync_sent: u32,
     /// `PrSync` first attempts this member's leader alarm ran in band.
     pub prsync_first: u32,
+    /// The cursor at which this member's leader alarm parked `PrSync` (`PARK_AFTER`), 0 when not parked.
+    pub prsync_parked: u64,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,

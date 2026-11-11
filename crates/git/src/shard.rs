@@ -291,6 +291,33 @@ pub fn renewal(now: Timestamp, last_request: Timestamp) -> Renewal {
     }
 }
 
+/// Who calls a shard: a client's request or the work it caused (a push, a fetch, a merge, a test merge, an archive
+/// promotion), or a new leadership's warm catch-up (`warm` on `/catchup`), which no client asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Caller {
+    Client,
+    Warm,
+}
+
+/// What the shard object does with a call, given whether its container runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Serve {
+    /// Answer without starting the container: a warm call on a stopped shard. A network nobody uses has no shard to
+    /// warm, and starting one would bill a container until `WARM_FOR` ran out (`tests/am1/results/idle-shards.md`).
+    Skip,
+    /// Serve, starting the container if needed. `touch` records the call as the shard's last request, which keeps it
+    /// warm `WARM_FOR` longer; a warm call does not, so leaderships on an idle group never keep its shard running.
+    Run { touch: bool },
+}
+
+pub fn serve(caller: Caller, running: bool) -> Serve {
+    match caller {
+        Caller::Client => Serve::Run { touch: true },
+        Caller::Warm if running => Serve::Run { touch: false },
+        Caller::Warm => Serve::Skip,
+    }
+}
+
 /// Each site-script version's image map: its release's git image as `git` and the previous release's as `git_prev`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

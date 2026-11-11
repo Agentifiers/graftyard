@@ -2224,6 +2224,18 @@ F59's finisher for repository create and delete merged in memory (`tests/m3/resu
 
 **Flip.** AM3-WP3 slips past the point where LM-1's other rows close, so LM-1 cannot certify the Graftyard-run kind at all; then a test-only task path in AM1 would be worth building.
 
+### Idle git cache shards stay stopped, 2026-11-11
+
+**Decision.** Three changes, so no shard container runs for a repository nobody uses. `PrSync` and `MergeQueue` park a chain once `PARK_AFTER` (10) batches went out from one cursor, store the park on the member, and are unparked by a moved cursor or the member route `/prsync {"replay": true}`; the queue consumer acks a failed `PrSync` re-send instead of retrying it. A new leadership's `warm` catches up its site's shard only if the container runs, and never counts as the shard's last request. `rehydrate` loads a marked pack that a chain's tail names with the tail, in index order.
+
+**Why.** On `graft-m2b`, with no load, 20 of the torn-down network shards were running again within an hour (`tests/am1/results/idle-shards.md`). Two loops did it. A rehydrate loaded each network's first stored pack, which is thin against an earlier inline pack, before that inline pack, so it failed every time. Each `PrSync` test merge, re-sent forever every 30 s and retried 10 times by Queues, and each new leadership's `warm`, started the shard again to fail the same way.
+
+**Beat.** Dropping `warm`, which brings back BM-2's 270 to 540 ms catch-up on a freshly elected leader's first merge. A backoff without a bound, which still wakes the shard forever. Retrying a 422 ingest later in the same call, which would hide the ordering bug.
+
+**Evidence.** `tests/am1/results/idle-shards.md` [measured]: the before and after idle hours, Workers Logs of the re-sends and warms, and an offline replay of 131216's 423 packs, which ingest in log order and fail with the first stored pack loaded first.
+
+**Flip.** An idle install whose shards still start with these changes in, which would name another caller; or BM-2 failing because the shard was stopped at an election, which would warm a stopped shard only for a group with a client in the last hour.
+
 ### `lf13-m3c`: LF-13 passes on its own install, 2026-11-11
 
 Branch `lf13-m3c` ran LF-13 on a new test install, `graft-m3c`, and passed it in both modes, 3 of 3 runs each, on `9d59283` (`tests/am1/results/lf13-m3c.md`, `tests/am1/results/install-m3c.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, F66).

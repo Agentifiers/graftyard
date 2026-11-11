@@ -153,6 +153,27 @@ fn alarm_renews_hourly_until_a_day_after_the_last_request() {
     assert_eq!(renewal(Timestamp(last.0 + 23 * H + H / 2), last), Renewal::Renew { next: Timestamp(last.0 + 24 * H) });
 }
 
+/// A new leadership's warm catch-up starts no container and keeps none warm: on `graft-m2b`, groups with no client
+/// re-elected every hour or so, and each `warm` started its network's shard, which `WARM_FOR` then held for a day
+/// (`tests/am1/results/idle-shards.md`). A client's call still starts a stopped shard and keeps it warm.
+#[test]
+fn only_a_clients_call_starts_a_shard_or_keeps_it_warm() {
+    assert_eq!(serve(Caller::Warm, false), Serve::Skip);
+    assert_eq!(serve(Caller::Warm, true), Serve::Run { touch: false });
+    assert_eq!(serve(Caller::Client, false), Serve::Run { touch: true });
+    assert_eq!(serve(Caller::Client, true), Serve::Run { touch: true });
+    // Hourly warms on a running shard, with no client after hour 0: it lapses a day after the client, as it would
+    // with no warms at all.
+    let client = Timestamp(0);
+    let mut last = client;
+    for h in 1..=30 {
+        if serve(Caller::Warm, true) == (Serve::Run { touch: true }) {
+            last = Timestamp(h * H);
+        }
+    }
+    assert_eq!(renewal(Timestamp(25 * H), last), Renewal::Lapse);
+}
+
 #[test]
 fn container_day_covers_10_50_100_percent_in_rendezvous_order_and_rollback_wins() {
     let count = 25;

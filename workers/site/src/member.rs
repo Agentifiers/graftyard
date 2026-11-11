@@ -1197,6 +1197,7 @@ impl<F: Family> Routes<F> {
             "alarmArms": s.alarm_arms,
             "prsyncSent": s.prsync_sent,
             "prsyncFirst": s.prsync_first,
+            "prsyncParked": s.prsync_parked,
             "peers": s.peers,
             "calls": s.calls,
             "trace": s.trace,
