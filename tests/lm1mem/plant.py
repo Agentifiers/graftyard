@@ -15,10 +15,12 @@ MEM = 'workers/site/src/member.rs'
 FAM = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
 API = 'workers/edge/src/api.rs'
+EDGE_LIB = 'workers/edge/src/lib.rs'
 RAFT_INSTALL = 'crates/raft/src/member/install.rs'
 LOOKUP = ['cargo', '-p', 'graftyard-lookup', '--lib', 'tests']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', '']
 EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_failed_read']
+EDGE_GATE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_shed_authz']
 FOLD = ['cargo', '-p', 'graftyard-fold', '--test', 'install', 'a_learner_behind']
 
 MUTANTS = [
@@ -89,6 +91,12 @@ MUTANTS = [
     ('round 4: a learner behind grants a read from its older fold', RAFT_INSTALL,
      '        for id in failed {\n            self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });',
      '        for id in failed {\n            let g = grant(self);\n            self.out.resolutions.push(Resolution::Read { id, result: Ok(g) });', FOLD),
+    ('round 5: the read gate drops a shed Authz read\'s reason (Retry-After 5, not 1)', EDGE_LIB,
+     '        Err(e) => Err(format!("the owner\'s Authz chain did not answer: {e}")),',
+     '        Err(_) => Err("the owner\'s Authz chain did not answer".into()),', EDGE_GATE),
+    ('round 5: a shed Authz read is taken as a missing group', EDGE_LIB,
+     '        Err(e) => Err(format!("the owner\'s Authz chain did not answer: {e}")),',
+     '        Err(_) => Ok(graftyard_identity::AuthzFold::default()),', EDGE_GATE),
     ('shared: every read builds its own answer', HOST, '    if let Some(b) = built.get(&key) {',
      '    if let Some(b) = built.get(&key).filter(|_| false) {', SITE),
     ('shared: answers keyed by nothing, so another query gets the first answer', HOST,

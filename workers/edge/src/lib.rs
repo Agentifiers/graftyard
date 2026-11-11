@@ -193,12 +193,15 @@ async fn read_gate(
         return Ok(Ok(d));
     }
     let (rows, owner) =
-        futures_util::future::join(api::core_rows(c, repo, "access"), authz_fold(c, repo.owner, &repo.record)).await;
+        futures_util::future::join(api::core_rows(c, repo, "access"), authz_read(c, repo.owner, &repo.record)).await;
     let core = match rows? {
         Ok(core) => core,
         Err(e) => return Ok(Err(e)),
     };
-    let Some(owner) = owner else { return Ok(Err("the owner's Authz chain did not answer".into())) };
+    let owner = match gate_owner(owner) {
+        Ok(o) => o,
+        Err(e) => return Ok(Err(e)),
+    };
     let access = graftyard_git::issue_ops::Access { repo: repo.id, owner: repo.owner, core: &core };
     let folds: [&dyn graftyard_identity::AuthzRead; 1] = [&owner];
     let d = graftyard_identity::authorize_read(who, c.token_fields.borrow().as_ref(), &folds, &access);
@@ -206,6 +209,18 @@ async fn read_gate(
         gate::put(k, now(), d);
     }
     Ok(Ok(d))
+}
+
+/// The owner's `Authz` for the read gate, or why it failed. A read its members shed keeps its OVERLOADED reason, so
+/// `api::read_failed` answers `Retry-After: 1` as for the access rows.
+fn gate_owner(
+    owner: std::result::Result<Option<graftyard_identity::AuthzFold>, String>,
+) -> std::result::Result<graftyard_identity::AuthzFold, String> {
+    match owner {
+        Ok(Some(o)) => Ok(o),
+        Ok(None) => Err("the owner's Authz chain did not answer".into()),
+        Err(e) => Err(format!("the owner's Authz chain did not answer: {e}")),
+    }
 }
 
 /// The read gate's per-isolate cache: a decision is reused for `READ_CACHE` (`design/DESIGN.md`, Shape, Identity:
@@ -376,16 +391,26 @@ async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<Acco
     })
 }
 
-/// `owner`'s `Authz` fold, read as a `dep` through `fresh` on its leader.
+/// `owner`'s `Authz` fold, read as a `dep` by read-index on the group's learners and followers
+/// (`graftyard_lookup::read_spread`), never on to the leader once one sheds it: on a 500-agent row these reads, about
+/// 125/s, queued every repository entry's `Authz` dep read on the leader and set the commit p99
+/// (`design/DESIGN.md`, "Follower read"). `Err` names `graftyard_lookup::OVERLOADED` when the members shed it.
+pub(crate) async fn authz_read(
+    c: &Ctx<'_>,
+    owner: AccountId,
+    record: &PlacementRecord,
+) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
+    let q = json!({ "q": { "dep": true } });
+    let Some((v, _, _)) = graftyard_lookup::read_spread(&c.bindings(), ChainId::Authz(owner), record, &q).await? else {
+        return Ok(None);
+    };
+    let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
+    graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
+}
+
+/// `authz_read`, `None` when it cannot be read.
 async fn authz_fold(c: &Ctx<'_>, owner: AccountId, record: &PlacementRecord) -> Option<graftyard_identity::AuthzFold> {
-    let q = json!({ "q": { "dep": true } }).to_string();
-    let (v, _, _) = graftyard_lookup::call_opt(&c.bindings(), ChainId::Authz(owner), record, "/read", q.as_bytes())
-        .await
-        .ok()??;
-    let s = v["value"].as_str()?;
-    let bytes: Option<Vec<u8>> =
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect();
-    graftyard_raft::codec::from_bytes(&bytes?).ok()
+    authz_read(c, owner, record).await.ok().flatten()
 }
 
 /// The owner's `Placement` row on `account_shard(owner)`.
@@ -1983,5 +2008,19 @@ mod tests {
         let e = gunzip(&z, (1 << 20) - 1).expect_err("past the cap").to_string();
         assert!(e.starts_with("gzip: "), "{e}");
         assert!(gunzip(b"not gzip", 1 << 20).expect_err("corrupt").to_string().starts_with("gzip: "));
+    }
+
+    /// An owner's `Authz` read its members shed keeps the shed reason through the read gate, so the git and LFS gates
+    /// answer 503 with `Retry-After: 1`; a group with no answer is 503 with 5.
+    #[test]
+    fn a_shed_authz_read_is_a_short_503_at_the_read_gate() {
+        let shed = format!("authz:7: every member asked shed the read: {}", graftyard_lookup::OVERLOADED);
+        let e = super::gate_owner(Err(shed)).expect_err("shed");
+        let r = crate::api::read_failed("the repository's access rows did not answer; retry", &e);
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("1")), "{e}");
+        let e = super::gate_owner(Ok(None)).expect_err("no group");
+        let r = crate::api::read_failed("the repository's access rows did not answer; retry", &e);
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("5")), "{e}");
+        assert!(super::gate_owner(Ok(Some(graftyard_identity::AuthzFold::default()))).is_ok());
     }
 }

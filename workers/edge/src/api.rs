@@ -461,18 +461,9 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
     })
 }
 
-/// The owner's `Authz` fold, read as a `dep` through `fresh`, for permissions and `author_association`.
+/// The owner's `Authz` fold by read-index (`crate::authz_read`), for permissions and `author_association`.
 async fn authz(c: &Ctx<'_>, repo: &Repo) -> Option<AuthzFold> {
-    let chain = ChainId::Authz(repo.owner);
-    let q = json!({ "q": { "dep": true } }).to_string();
-    let (v, _, _) =
-        graftyard_lookup::call_opt(&c.bindings(), chain, &repo.record, "/read", q.as_bytes()).await.ok()??;
-    let bytes = hex(v["value"].as_str()?)?;
-    graftyard_raft::codec::from_bytes(&bytes).ok()
-}
-
-fn hex(s: &str) -> Option<Vec<u8>> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    crate::authz_read(c, repo.owner, &repo.record).await.ok().flatten()
 }
 
 /// The placement's buckets, home site first.

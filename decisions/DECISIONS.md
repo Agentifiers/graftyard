@@ -2114,6 +2114,20 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
 
+### F65 follow-up: the edge reads an owner's `Authz` by read-index, 2026-11-11
+
+Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-agent B0-29-shaped smoke with 8 learners, the leader's commit p99 was 50 s; its entries' storage confirm p99 was 202 ms and append-to-apply p99 1,000 ms, while its `Authz` dep reads had p99 17.7 s and `depsMs` p99 46.5 s. The owner's `Authz` leader took about 123 `/read`s a second, every one from the edge (`tests/am1/results/lm1-memory.md`, section 12).
+
+**Decision.** The edge reads an owner's `Authz` fold (`authz_read`, behind `api::authz`, `ident::authz_of`, the read gate, and `install_authz`) with `graftyard_lookup::read_spread`: learners first, then followers, by read-index, under `READS_MAX` and the member caps, 503 with `Retry-After` when they shed it and never on to the leader. A repository leader's `fresh` dep read stays on the `Authz` leader. Rows place learners on the hot `Authz` group as on the repository's.
+
+**Why.** A read-index answer holds every entry acknowledged before the read arrived, as a leader's `fresh` does, so permissions and the read gate keep their rule; the `Authz` leader keeps only writes and one dep read per repository entry.
+
+**Beat.** An edge cache of the `Authz` fold: it would break read-your-writes for a permission change, which the read gate's 10 s cache already bounds for decisions only.
+
+**Evidence.** `leader.split` in the smoke row, and `/read` counts per `Authz` member from Workers Logs (section 12).
+
+**Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
+
 ### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
 
 Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
