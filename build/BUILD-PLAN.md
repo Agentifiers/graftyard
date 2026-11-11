@@ -1069,11 +1069,43 @@ Cost of the round: $13.91 for `graft-m2b`, containers $10.77. The memory work co
 
 Cost of the round: $15.75 for `graft-m2b`, containers $10.45, by `tests/fanout/cost.sh`.
 
-What LM-1 still needs before it closes (2026-11-11, after `lm1-memory`). `am1-rest` built the pieces in memory (`tests/am1/results/am1-rest.md`, 26 of 26 planted bugs; no record format, so 32.15 and 0x12.9 stay free), and `am1-runs` ran them hosted (`tests/am1/results/am1-runs.md`, 3 of 3 planted bugs). Passed and closed: L0-12's refusal counts, L0-13, B0-36, B0-37's push half, LF-4 on issues and releases, and LF-13 (on `graft-m3c`, `tests/am1/results/lf13-m3c.md`). Left:
-- Repository members that hold journey 9 in 128 MB, on branch `lm1-memory` (F65, narrowed): the read cap and dump cache held the 500-agent smoke under 80 MB, and the round now running caps every leader read in flight and streams granted answers. Then B0-29, B0-31 to B0-35, and L0-12's A1 replay with 500 pollers. The validate lock (`fanout`) and the gate's installation-token reads (`04487ca`) are fixed.
-- Leaders that hold their lease under that load: they step down on `Confirm` (storage confirm p99 1.7 to 2.1 s) and on `CommitErrors` at about 300 req/s, and bursts of 1,000 or more narrow reads moved an idle leader. B0-35's leaderless group is diagnosed: a leader stuck 641 s building dumps for abandoned reads, fixed in `f125a37`, not an election fault.
-- `fanout` stepping k in band, shown hosted: `105c228` is deployed and `/fanout` reports answer ok, but k was not seen to step; B0-34 needs a full run.
-- Actions for B0-35's dispatch half. Its instruments and the test-merge budget are built (AM1-WP1, "Follow-up: the test-merge budget and B0-35's instruments", on `merge-budget`).
+**Round 3, follower reads (2026-11-11)** (`tests/am1/results/lm1-memory.md`, section 10). Site day and edge `1e11c400` on `54c45213`, at 500 agents unless the row says otherwise.
+
+| Row | Gate (pass / fail) | Round 3 on `graft-m2b`, `54c45213` |
+| --- | --- | --- |
+| Smoke, 500 agents, 300 s | None | Peaks 75 / 55 / 112 MB, 0 `exceededMemory`; the leader stepped down on `CommitErrors` 15 s into load; commit p99 5,675 ms |
+| B0-29 | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale` on distinct refs, leader < 600 req/s with zero feed polls / commit p99 > 1 s, a queue merge > 10 s, a feed poll on the leader | Fail: commit p99 3,419 ms (p50 662, n 8,167); leader 0 → 1 → 2, the first step-down 7 minutes into load; 7,774 `/suspect`; 2,412 of 2,500 agent pushes ok; merge p99 9,303 ms; 306 req/s and 0 feed polls on the leader |
+| B0-32 | Every push acked within 5 s or `ng … admission full`, merges in the next 2 entries, zero leader changes and `suspect` | Fail: zero leader changes but 3 `suspect`; burst 168 ok and 332 refused, not in the `admission full` shape, 1 within 5 s; merge p99 41,005 ms |
+| B0-31 | Commit p99 ≤ 1 s with buckets up / > 3 s | Fail, between the lines: commit p99 2,541 ms; leader 0 → 1 in two moves (`CommitErrors`, then `Confirm` p99 1,377 ms) |
+| B0-34 | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s / TTFB p99 > 5 s, k > 8 | Fail: clone TTFB p99 58,554 ms (p50 1,643); k 1 → 2 in band; human push p99 240 s |
+| B0-33, 5,000 agents | Human and merge-queue p99 ≤ 1 s, ≥ 140 agent commands/s, zero leader changes and `suspect` / a leader change or `suspect`, < 100 commands/s | Fail: term 2 → 19 in 5 minutes, 27,703 `/suspect`; commit p99 15,980 ms; 127 of 12,523 agent pushes ok, 6,925 answered 503 by the read gate |
+| L0-12, A1 replay with a leader kill every 60 s | Feed p99 ≤ 2 s outside kills, no lease overlap over 500 ms, refusal counts right | Fail: feed p99 64,031 ms (p50 2,647); f0 led through 10 kills (term 2 → 5); f0 peaked at 275 MB with 711 aborted `/read`s |
+| B0-35, 500 open PRs | Test-merge vCPU within `TEST_MERGE_BUDGET`, dispatch p99 ≤ 10 s, zero list-field computes | Not judged: the budget was not instrumented and `graft-m2b` has no Actions; `mergeable` 3,876 `MERGEABLE` and 24,168 × 503; f1 logged 812 `exceededMemory` |
+
+Cost of round 3: $6.39, containers $1.76.
+
+**Round 4, learners first and no leader fallback (2026-11-11)** (`tests/am1/results/lm1-memory.md`, section 11; `decisions/DECISIONS.md`, "F65 follow-up: a read the members shed is 503, never the leader's"). Site day and edge `460e0956` on `48f8fae1`, 8 learners per row (enam 4, weur 2, apac 2), the same gate lines as round 3.
+
+| Row | Round 4 on `graft-m2b`, `48f8fae1` |
+| --- | --- |
+| Smoke, 500 agents, 300 s, 3 learners | Leader held term 2 with 0 `/suspect`; commit p99 3,966 ms; 1,218 of 1,241 agent pushes ok; `read:api` 15,913 × 200 and 36,422 × 503 with `Retry-After: 1`; leader peak 95 MB, no `exceededMemory` |
+| B0-29 | Fail: commit p99 5,461 ms (p50 834, n 6,793) against 600 ms; 0 leader changes and 0 `/suspect`; 2,250 of 2,500 agent pushes ok; merges 13 of 28 answered, p99 18,971 ms; `read:api` 51,594 × 200 and 52,858 × 503; the org's `Authz` leader took 87 `/read`/s and stepped down |
+| B0-32 | Fail: 0 leader changes and 0 `/suspect`, but the burst had 49 ok and 446 refused, not in the `admission full` shape, 0 within 5 s (p50 26.6 s) |
+| B0-31 | Fail, between the lines: commit p99 2,311 ms (p50 658) against 1 s, under the 3 s fail line; 29 `/suspect` |
+| L0-12, A1 replay with a leader kill every 60 s | Fail: feed p99 12,984 ms (p50 1,141) against 2 s; term 11 after 10 kills; voters peaked at 256 to 278 MB; lease overlap not reported by the driver |
+| B0-34 | Fail: clone TTFB p99 158,542 ms (p50 846) against 1 s; k 1 → 2 in band; leader held term 2 with 0 `/suspect`; human push p99 121 s |
+| B0-33, 5,000 agents | Fail: term 2 → 8, 7,539 `/suspect`; commit p99 8,568 ms; 2,020 of 12,533 agent pushes ok |
+| B0-35, 500 open PRs | Not judged: the budget's instruments (`merge-budget`) were not in this build and `graft-m2b` has no Actions; 18,870 `mergeable` reads answered 503 |
+
+Cost of round 4: $11.19, containers $1.93; rounds 1 to 4 together $43.56.
+
+What LM-1 still needs before it closes (2026-11-11, after `lm1-memory`'s round 4). `am1-rest` built the pieces in memory (`tests/am1/results/am1-rest.md`, 26 of 26 planted bugs; no record format, so 32.15 and 0x12.9 stay free), and `am1-runs` ran them hosted (`tests/am1/results/am1-runs.md`, 3 of 3 planted bugs). Passed and closed: L0-12's refusal counts, L0-13, B0-36, B0-37's push half, LF-4 on issues and releases, and LF-13 (on `graft-m3c`, `tests/am1/results/lf13-m3c.md`). Left:
+- Leaders now hold under the read load: learners, then followers, take API tier reads and the read gate's rows by read-index, and a read they shed answers 503 with `Retry-After` and never reaches the leader (round 4: B0-29, B0-32, and B0-34 held one leader with 0 `suspect`; the validate lock, `fanout`, and the gate's installation-token reads, `04487ca`, were fixed before). Left on branch `lm1-memory` (F65):
+  - Commit p99 with a holding leader: 5,461 ms on B0-29 against 600 ms, and 2,311 ms on B0-31 against 1 s.
+  - The owner's `Authz` group as the new hot read target: every REST and GraphQL read and every repository entry's `deps` read its whole fold on its leader, which took 87 `/read`/s on B0-29 and stepped down seven times. That this sets the repository's commit tail is [inference], to be measured in round 5 with those reads by read-index on the `Authz` group's followers and learners.
+  - Step-downs on the commit path, where the leader takes almost no reads: B0-33 at 5,000 agents (term 2 → 8, 7,539 `suspect`) and L0-12's leader kills (term 11, feed p99 12,984 ms against 2 s). A raft change, if one is needed, is reported first.
+  - B0-34's clone TTFB: p99 158,542 ms against 1 s. `fanout` stepped k 1 → 2 in band in rounds 3 and 4.
+- B0-35: the test-merge budget and its instruments are built (A27 closed; AM1-WP1, "Follow-up: the test-merge budget and B0-35's instruments", on `merge-budget`), and its gate still needs the 500-agent bar and Actions for the dispatch half.
 - Nothing that needs a live Graftyard-run task: L0-12's lease refusal for that kind, B0-37's session-ref listing, and B0-36's lease refusal and no-live-task and cancelled-task fork pushes for that kind are AM3-WP3's, by the operator's decision of 2026-11-10; every other part of the three rows passed hosted.
 - B0-36's GraphQL label surface, now that `89cf205` is on `graft-m2b` (`fanout`'s site day and edge `b9f4291e`).
 - LF-4's other six resources (pull requests, comments, reviews, review comments, commits, and check runs), which need REST GETs on the edge (F61).
