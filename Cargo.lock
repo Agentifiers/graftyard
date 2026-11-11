@@ -625,6 +625,7 @@ name = "graftyard-edge"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "futures-channel",
  "futures-util",
  "graftyard-api",
  "graftyard-fold",

@@ -173,6 +173,46 @@ mod tests {
         assert!(rows.complete && rows.core.iter().any(|(t, _, _)| t == "fanout"));
     }
 
+    /// The packed dump is cached by the tiers' state: a second read at the same state answers the same string, and an
+    /// applied entry, another repository at the same index, or a dropped cache answers fresh rows, never a stale dump.
+    #[test]
+    fn a_cached_dump_never_outlives_its_tiers() {
+        use graftyard_api::hosted::TierRows;
+        let q = json!({ "rows": true, "ranges": true, "packed": true });
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let k_of = |v: &serde_json::Value| {
+            let rows = TierRows::from_value(v).unwrap();
+            rows.core.iter().find(|(t, _, _)| t == "fanout").map(|(_, _, c)| format!("{c:?}"))
+        };
+        let one = |k| entry(1, k, Digest([0; 32]));
+        let two = |k, after: &LogEntry<RepoEvent>| entry(2, k, graftyard_raft::digest(after));
+        let mut a = RepoFold::new(RepoId(DbId(31)), AccountId(DbId(1)));
+        a.apply_entry(&one(2));
+        let first = Repo::read_json(&a, &q);
+        assert_eq!(Repo::read_json(&a, &q), first);
+        a.apply_entry(&two(5, &one(2)));
+        let second = Repo::read_json(&a, &q);
+        assert_ne!(k_of(&second), k_of(&first), "an applied entry is in the next read");
+        assert_eq!(TierRows::from_value(&second).unwrap().index, 2);
+        // Another repository's tiers at the same index are not served the first one's dump.
+        let mut b = RepoFold::new(RepoId(DbId(32)), AccountId(DbId(1)));
+        b.apply_entry(&one(7));
+        b.apply_entry(&two(3, &one(7)));
+        assert_ne!(k_of(&Repo::read_json(&b, &q)), k_of(&second));
+        crate::family::forget_dumps();
+        assert_eq!(Repo::read_json(&a, &q), second);
+    }
+
     /// A follower's answer to a shard's report names the leader in the shape lookup follows (`/error/notLeader`),
     /// not an error the lookup would count as a missed member.
     #[test]

@@ -248,7 +248,9 @@ async fn candidates(
 /// that found the group, and the member that answered; `None` when the chain has no group: on the rule's first pass
 /// every bootstrap member answered that it is not joined, and no site's registry holds a row for the chain. An answer
 /// with `error.notLeader` (or `done.notLeader`) teaches the config and leader and is retried there; a member that is
-/// not joined, or that holds no config, is skipped. `busy` (a read past its deadline) is skipped too. Only
+/// not joined, or that holds no config, is skipped. `busy` (a read past its deadline) is skipped too. A member's
+/// `overloaded` answer is retried on it after its `retryAfterMs`, then returned as an error naming OVERLOADED; it
+/// never raises `suspect` (`classify`). Only
 /// leader-answered routes should be called this way: a command goes to one member at a time, and a member that is
 /// not the leader refuses it.
 pub async fn call_opt(
@@ -262,6 +264,7 @@ pub async fn call_opt(
     let mut last = String::from("no member answered");
     let mut first_pass = true;
     let mut term = 0;
+    let mut busy = 0;
     while now_ms() < end {
         let mut k = 0;
         let mut cands = candidates(b, chain, record, k).await.unwrap_or_default();
@@ -290,25 +293,42 @@ pub async fn call_opt(
             if !tried.insert(name.clone()) {
                 continue;
             }
-            let Some((status, v)) = post(b, s, &name, path, body).await else {
-                last = format!("{name}: no answer");
-                others += 1;
-                missed.push(Target { site: s, do_name: name });
-                continue;
-            };
-            if status == 409 && matches!(step, Step::Bootstrap { .. }) {
-                last = format!("{name}: not joined");
-                unjoined += 1;
-                continue;
-            }
-            others += 1;
-            if status != 200 {
-                last = format!("{name}: {status}");
-                if status >= 500 {
+            let r = post(b, s, &name, path, body).await;
+            let v = match classify(r.as_ref().map(|(s, v)| (*s, v)), matches!(step, Step::Bootstrap { .. })) {
+                Answer::Missed(why) => {
+                    last = format!("{name}: {why}");
+                    others += 1;
                     missed.push(Target { site: s, do_name: name });
+                    continue;
                 }
-                continue;
-            }
+                Answer::NotJoined => {
+                    last = format!("{name}: not joined");
+                    unjoined += 1;
+                    continue;
+                }
+                Answer::Skip(why) => {
+                    last = format!("{name}: {why}");
+                    others += 1;
+                    continue;
+                }
+                // The leader is alive and shedding heavy reads: no `suspect`, not missed, not leaderless. The same
+                // member is asked again after its `retryAfterMs`, OVERLOAD_TRIES times, then the caller answers 503.
+                Answer::Overloaded(ms) => {
+                    others += 1;
+                    busy += 1;
+                    if busy > OVERLOAD_TRIES {
+                        return Err(format!("{chain}: {name}: {OVERLOADED} {ms} ms"));
+                    }
+                    Delay::from(Duration::from_millis(ms.clamp(50, 2_000))).await;
+                    tried.remove(&name);
+                    queue.push_front((s, name, step));
+                    continue;
+                }
+                Answer::Reply => {
+                    others += 1;
+                    r.map(|(_, v)| v).unwrap_or_default()
+                }
+            };
             if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
                 term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
                 learn(chain, nl);
@@ -331,10 +351,6 @@ pub async fn call_opt(
                 last = format!("{name}: not leader");
                 continue;
             }
-            if v.get("busy").is_some() {
-                last = format!("{name}: busy");
-                continue;
-            }
             learn_leader(chain, &v);
             return Ok(Some((v, step, Target { site: s, do_name: name })));
         }
@@ -352,6 +368,50 @@ pub async fn call_opt(
         Delay::from(Duration::from_millis(250)).await;
     }
     Err(format!("{chain}: {last}"))
+}
+
+/// The word in `call_opt`'s error when the leader kept shedding the read (`overloaded_reply`): the caller answers 503
+/// with a short `Retry-After`.
+pub const OVERLOADED: &str = "overloaded";
+/// How many times `call_opt` asks a member that answered `overloaded` again before it gives up.
+const OVERLOAD_TRIES: u32 = 4;
+
+/// A member's answer to a heavy read past its in-flight cap: a 200, so it is never a missed call, with `busy`, so a
+/// lookup built before `overloaded` skips it without a `suspect` report too.
+pub fn overloaded_reply(retry_after_ms: u64) -> Value {
+    json!({ "busy": true, "overloaded": { "retryAfterMs": retry_after_ms } })
+}
+
+/// How `call_opt` takes one member's answer.
+#[derive(Debug, PartialEq, Eq)]
+enum Answer {
+    /// No answer in CALL, or a 5xx: reported with `suspect` at the end of the pass.
+    Missed(String),
+    /// A bootstrap name's 409.
+    NotJoined,
+    /// Another status, or `busy` (a read past its deadline): the next candidate, with no report.
+    Skip(String),
+    /// Shed by the member's heavy-read cap: asked again after this many ms, with no report.
+    Overloaded(u64),
+    /// An answer to read: the value, or `NotLeader`.
+    Reply,
+}
+
+fn classify(r: Option<(u16, &Value)>, bootstrap: bool) -> Answer {
+    let Some((status, v)) = r else { return Answer::Missed("no answer".into()) };
+    if status == 409 && bootstrap {
+        return Answer::NotJoined;
+    }
+    if status != 200 {
+        return if status >= 500 { Answer::Missed(status.to_string()) } else { Answer::Skip(status.to_string()) };
+    }
+    if let Some(o) = v.get("overloaded") {
+        return Answer::Overloaded(o.get("retryAfterMs").and_then(Value::as_u64).unwrap_or(250));
+    }
+    if v.get("busy").is_some() {
+        return Answer::Skip("busy".into());
+    }
+    Answer::Reply
 }
 
 /// `call_opt` for a group that must exist: no group is an error.
@@ -467,6 +527,9 @@ pub async fn suspect(
     colo: u32,
     all: bool,
 ) -> Option<Target> {
+    if !report_due(chain, about.site, term, all, now_ms()) {
+        return None;
+    }
     let body = json!({ "colo": colo, "about": about.site.0, "term": term }).to_string();
     let others: Vec<Target> = known_voters(chain).into_iter().filter(|v| all || v.site != about.site).collect();
     let calls = others.iter().map(|v| post(b, v.site, &v.do_name, "/suspect", body.as_bytes()));
@@ -474,6 +537,34 @@ pub async fn suspect(
     others.into_iter().zip(answers).find_map(|(v, a)| {
         let verdict = a?.1.get("verdict")?.as_str()?.to_owned();
         matches!(verdict.as_str(), "leader" | "won" | "resumed").then_some(v)
+    })
+}
+
+/// How often one isolate sends the same `suspect` report: about one member, in one term, to the same voters. A
+/// member's verdict on a repeat inside this gap is the one it just gave, so a campaign is late by at most this much,
+/// while a leader that sheds or drops reads drew up to 150,000 reports a run from every edge isolate's lookups
+/// (`tests/am1/results/lm1-memory.md`).
+pub const SUSPECT_GAP: Duration = Duration::from_millis(500);
+
+thread_local! {
+    static REPORTED: RefCell<HashMap<(ChainId, SiteId, u64, bool), u64>> = RefCell::new(HashMap::new());
+}
+
+/// Whether this isolate sends the report now (`SUSPECT_GAP`), recording it if so.
+fn report_due(chain: ChainId, about: SiteId, term: u64, all: bool, now: u64) -> bool {
+    REPORTED.with(|r| {
+        let mut r = r.borrow_mut();
+        let gap = SUSPECT_GAP.as_millis() as u64;
+        if r.len() > 4_096 {
+            r.retain(|_, at| now < *at + gap);
+        }
+        match r.get(&(chain, about, term, all)) {
+            Some(at) if now < *at + gap => false,
+            _ => {
+                r.insert((chain, about, term, all), now);
+                true
+            }
+        }
     })
 }
 
@@ -836,6 +927,42 @@ mod tests {
         assert_eq!(cached_leader(chain), None);
         KNOWN.with(|k| k.borrow_mut().get_mut(&chain).unwrap().leader = Some(SiteId(1)));
         assert_eq!(cached_leader(chain), None, "a leader outside the config is not sent to");
+    }
+
+    /// A capped read's answer is the leader saying "busy, retry": never a missed member, which `call_opt` reports
+    /// with `suspect` and which fed the storm the cap is there to stop, and never a reply to return. A 5xx and no
+    /// answer stay missed, and the old `busy` (a read past its deadline) is still skipped.
+    #[test]
+    fn an_overloaded_answer_is_retried_and_never_missed() {
+        let shed = overloaded_reply(300);
+        assert_eq!(classify(Some((200, &shed)), false), Answer::Overloaded(300));
+        assert_eq!(classify(Some((200, &shed)), true), Answer::Overloaded(300));
+        assert_eq!(classify(Some((200, &json!({ "busy": true }))), false), Answer::Skip("busy".into()));
+        assert_eq!(classify(Some((503, &Value::Null)), false), Answer::Missed("503".into()));
+        assert_eq!(classify(None, false), Answer::Missed("no answer".into()));
+        assert_eq!(classify(Some((409, &Value::Null)), true), Answer::NotJoined);
+        assert_eq!(classify(Some((409, &Value::Null)), false), Answer::Skip("409".into()));
+        assert_eq!(classify(Some((200, &json!({ "value": 1 }))), false), Answer::Reply);
+        let nl = json!({ "error": { "notLeader": { "term": 3 } } });
+        assert_eq!(classify(Some((200, &nl)), false), Answer::Reply);
+        // A lookup built before `overloaded` reads the same answer as `busy`, so it does not report it either.
+        assert!(shed.get("busy").is_some());
+    }
+
+    /// One isolate sends one report per (chain, member, term, scope) per SUSPECT_GAP; another member, another term,
+    /// or the all-voters report about the same member is its own report, and the gap's end lets the next one out.
+    #[test]
+    fn suspect_reports_are_damped_per_member_and_term() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(11)));
+        let gap = SUSPECT_GAP.as_millis() as u64;
+        assert!(report_due(chain, SiteId(0), 4, false, 1_000));
+        assert!(!report_due(chain, SiteId(0), 4, false, 1_000 + gap - 1));
+        assert!(report_due(chain, SiteId(1), 4, false, 1_001));
+        assert!(report_due(chain, SiteId(0), 5, false, 1_002));
+        assert!(report_due(chain, SiteId(0), 4, true, 1_003));
+        assert!(report_due(chain, SiteId(0), 4, false, 1_000 + gap));
+        let other = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(12)));
+        assert!(report_due(other, SiteId(0), 4, false, 1_000 + gap));
     }
 
     #[test]

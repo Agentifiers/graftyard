@@ -253,6 +253,31 @@ fn repo_of(join: &Join) -> Option<RepoId> {
     }
 }
 
+/// How many repositories' packed dumps one isolate keeps: about 150 KB to 1.2 MB each at journey 9.
+const DUMPS_MAX: usize = 8;
+
+/// The state of both tiers a packed dump was built at: each tier's `applied` and row-hash `sum`, and whether the
+/// metadata tier was loaded, which decides whether the dump holds its rows.
+type DumpKey = (u64, [u8; 32], bool, u64, [u8; 32]);
+
+thread_local! {
+    /// The last packed whole-tier dump per repository (`Repo::read_json`), by `DumpKey`. A dump took up to 7.8 s of
+    /// CPU on a 500-PR repository, and 200 API reads/s mostly read the same tiers at the same index
+    /// (`tests/am1/results/lm1-memory.md`).
+    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, (DumpKey, Value)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn dump_key(fold: &git::repo::RepoFold) -> DumpKey {
+    let (c, m) = (graftyard_fold::meta(&*fold.core), graftyard_fold::meta(&*fold.meta));
+    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)
+}
+
+/// Drops every cached dump, for a member whose fold storage refused a read.
+pub fn forget_dumps() {
+    DUMPS.with(|d| d.borrow_mut().clear());
+}
+
 impl Family for Repo {
     type Ev = git::repo::RepoEvent;
     type Fold = git::repo::RepoFold;
@@ -709,6 +734,16 @@ impl Family for Repo {
         }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};
+            let packed = q.get("packed").and_then(Value::as_bool) == Some(true);
+            // The packed dump is built once per state of both tiers and served from the isolate after that
+            // (`DUMPS`): the key is read from the tiers' own meta rows after the read's lease check, so a hit
+            // answers exactly what a rebuild would.
+            let key = packed.then(|| dump_key(fold));
+            if let (Some(k), Some(repo)) = (&key, fold.repo)
+                && let Some(v) = DUMPS.with(|d| d.borrow().get(&repo).filter(|(at, _)| at == k).map(|(_, v)| v.clone()))
+            {
+                return v;
+            }
             let mut budget = ROWS_MAX;
             let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
@@ -716,8 +751,18 @@ impl Family for Repo {
             let index = graftyard_fold::meta(&*fold.core).applied.0;
             let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
             // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
-            if q.get("packed").and_then(Value::as_bool) == Some(true) {
-                return rows.packed();
+            if packed {
+                let v = rows.packed();
+                if let (Some(k), Some(repo)) = (key, fold.repo) {
+                    DUMPS.with(|d| {
+                        let mut d = d.borrow_mut();
+                        if d.len() >= DUMPS_MAX && !d.contains_key(&repo) {
+                            d.clear();
+                        }
+                        d.insert(repo, (k, v.clone()));
+                    });
+                }
+                return v;
             }
             return serde_json::to_value(rows).unwrap_or(Value::Null);
         }

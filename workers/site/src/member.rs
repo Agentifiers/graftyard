@@ -42,6 +42,38 @@ const READ_INDEX_HOLD: Duration = Duration::from_millis(500);
 
 /// Round trips per peer; the row keeps their median.
 const RTT_SAMPLES: usize = 20;
+/// Whole-tier reads (`{"q": {"rows": true}}`) a leader serves at once [guess]: on a 500-PR repository, whose packed
+/// dump is 1.18 MB, the leader's wasm memory was 59 MB at 40 in flight and 92 MB at 60, and 100 reset the isolate,
+/// while throughput stopped growing past about 30 (`tests/am1/results/lm1-memory.md`, "Cause").
+pub const HEAVY_READS: u32 = 16;
+/// The `retryAfterMs` of a shed whole-tier read: about one cached dump's service time.
+const OVERLOAD_RETRY_MS: u64 = 250;
+
+/// A whole-tier read: `{"rows": true}`, not a narrow `{"rows": {"access" | "agent" | "merge": ..}}` one.
+fn heavy_read(q: &Value) -> bool {
+    q.get("rows").is_some_and(Value::is_boolean)
+}
+
+/// Whether a read is shed: a whole-tier one on a leader with HEAVY_READS of them in flight already.
+fn sheds(heavy: bool, in_flight: u32, leading: bool) -> bool {
+    heavy && leading && in_flight >= HEAVY_READS
+}
+
+/// One whole-tier read in flight on this member, counted in `Host::heavy_reads` until it is answered or dropped.
+struct HeavyRead<'a>(&'a std::cell::Cell<u32>);
+
+impl<'a> HeavyRead<'a> {
+    fn new(n: &'a std::cell::Cell<u32>) -> HeavyRead<'a> {
+        n.set(n.get() + 1);
+        HeavyRead(n)
+    }
+}
+
+impl Drop for HeavyRead<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(1));
+    }
+}
 /// A member measures again only on a day it served a request and has not measured yet.
 const DAY_MS: u64 = 86_400_000;
 
@@ -880,6 +912,17 @@ impl<F: Family> Routes<F> {
         };
         // `{"index": true}`: a follower's or learner's read, by read-index against the leader (`Member::read_index`).
         let index = body.get("index").and_then(Value::as_bool).unwrap_or(false);
+        // A whole-tier dump past HEAVY_READS in flight on a leader is shed at once, as a 200 the lookup retries
+        // without a `suspect` report (`graftyard_lookup::overloaded_reply`): memory grew with these reads in flight
+        // and 100 at once reset the isolate (`tests/am1/results/lm1-memory.md`). A follower still answers
+        // `NotLeader`, so the caller finds the leader.
+        let heavy = heavy_read(&q);
+        let leading = self.host.core.borrow().as_ref().is_some_and(|c| c.m.role() == Role::Leader);
+        if sheds(heavy, self.host.heavy_reads.get(), leading) {
+            self.host.stats.borrow_mut().shed_reads += 1;
+            return self.reply(graftyard_lookup::overloaded_reply(OVERLOAD_RETRY_MS));
+        }
+        let _held = heavy.then(|| HeavyRead::new(&self.host.heavy_reads));
         let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
         let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q));
         self.host.dispatch(out, None);
@@ -996,6 +1039,8 @@ impl<F: Family> Routes<F> {
             "inboundMs": now_ms().saturating_sub(s.inbound_since),
             "failedCalls": s.failed_calls,
             "depReads": s.dep_reads,
+            "shedReads": s.shed_reads,
+            "heavyReads": self.host.heavy_reads.get(),
             "catchups": s.catchups,
             "leases": s.leases,
             "markerFailures": s.marker_failures,
@@ -1754,7 +1799,27 @@ mod tests {
     use graftyard_types::SiteId;
     use serde_json::json;
 
-    use super::site_field;
+    use super::{HEAVY_READS, HeavyRead, heavy_read, sheds, site_field};
+
+    /// Only whole-tier reads count against the cap, only a leader sheds, and the count comes back down when a read
+    /// is answered or dropped, so a burst of timed-out callers does not leave the leader shedding for good.
+    #[test]
+    fn only_whole_tier_reads_on_a_leader_are_shed_past_the_cap() {
+        assert!(heavy_read(&json!({ "rows": true, "ranges": true, "packed": true })));
+        for narrow in [json!({ "rows": { "access": true } }), json!({ "rows": { "merge": 7 } }), json!({ "dep": true })]
+        {
+            assert!(!heavy_read(&narrow), "{narrow}");
+        }
+        assert!(!sheds(true, HEAVY_READS - 1, true));
+        assert!(sheds(true, HEAVY_READS, true));
+        assert!(!sheds(true, HEAVY_READS, false), "a follower answers NotLeader instead");
+        assert!(!sheds(false, HEAVY_READS * 4, true));
+        let n = std::cell::Cell::new(0);
+        let held: Vec<_> = (0..HEAVY_READS).map(|_| HeavyRead::new(&n)).collect();
+        assert!(sheds(true, n.get(), true));
+        drop(held);
+        assert_eq!(n.get(), 0);
+    }
 
     /// A site id past `u8` is refused, never truncated onto another site.
     #[test]
