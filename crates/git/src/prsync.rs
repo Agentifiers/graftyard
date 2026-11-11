@@ -7,7 +7,8 @@
 //!   touch, and hands out `SyncBatch`es. A batch always starts at the committed cursor. Its first attempt runs in
 //!   band (`Delivery::First`): the leader runs the consumer's handler itself. Work the cursor has not passed
 //!   `REDELIVER_AFTER_MS` after it was first handed out is sent again (`Delivery::Again`), through the site's queue, so
-//!   a lost attempt, a dead consumer, or a new leader only delays.
+//!   a lost attempt, a dead consumer, or a new leader only delays. A chain whose cursor has not moved after
+//!   `PARK_AFTER` batches is parked until it does.
 //! - The consumer reads each pull request's state fresh (`views`), has the git cache compute missing test merges, and
 //!   commits a `PrSync`. Its `decide` keeps only what still holds on the fold, so a batch delivered twice, or out of
 //!   order with a later one, changes nothing the first did not.
@@ -34,6 +35,12 @@ pub const REPO_FORMAT_V3: Format = Format { family: 0x20, version: 3 };
 /// The first attempt runs in band, so this covers an attempt that failed silently or never returned, a message lost
 /// with its consumer, or a leader change; Queues retries a failed queue delivery itself.
 pub const REDELIVER_AFTER_MS: u64 = 30_000;
+/// Batches handed out, first attempts and re-sends, while the committed cursor stays at one index. Past it the
+/// dispatcher parks the chain for its consumer (`design/SHARED.md`, "Event fan-out", Isolation: a handler that fails 10
+/// times on one entry parks that chain), so a batch that fails the same way every time stops waking the network's git
+/// cache shard every `REDELIVER_AFTER_MS` (`tests/am1/results/idle-shards.md`). A cursor that moves, because the work
+/// committed or an operator replayed it, unparks the chain.
+pub const PARK_AFTER: u32 = 10;
 /// A stretch of entries that touch no pull request is still covered by a cursor entry this often [guess], so a new
 /// leader never reads more than this many entries back.
 pub const CURSOR_STRIDE: u64 = 1_000;
@@ -89,9 +96,11 @@ pub enum Delivery {
 }
 
 /// The leader's half of the cursor, in memory only: `scanned` is the last entry read, `pending` what each unhandled
-/// entry touched (pull requests for `PrSync`, base branches for `MergeQueue`), `sent` the last batch's `through`, `sent_at` when the work the cursor has not passed
-/// was first handed out, or last sent again, and `running` when the first attempt in flight started. Nothing here
-/// outlives the leadership; the committed cursor is where a new one starts.
+/// entry touched (pull requests for `PrSync`, base branches for `MergeQueue`), `sent` the last batch's `through`,
+/// `sent_at` when the work the cursor has not passed was first handed out, or last sent again, `running` when the
+/// first attempt in flight started, `tries` the batches handed out since the committed cursor last moved, and
+/// `tried_at` the cursor they were handed out from. Nothing here outlives the leadership; the committed cursor is
+/// where a new one starts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Dispatcher<T = IssueNumber> {
     scanned: Index,
@@ -99,11 +108,21 @@ pub struct Dispatcher<T = IssueNumber> {
     sent: Index,
     sent_at: u64,
     running: Option<u64>,
+    tries: u32,
+    tried_at: Index,
 }
 
 impl<T> Default for Dispatcher<T> {
     fn default() -> Dispatcher<T> {
-        Dispatcher { scanned: Index(0), pending: BTreeMap::new(), sent: Index(0), sent_at: 0, running: None }
+        Dispatcher {
+            scanned: Index(0),
+            pending: BTreeMap::new(),
+            sent: Index(0),
+            sent_at: 0,
+            running: None,
+            tries: 0,
+            tried_at: Index(0),
+        }
     }
 }
 
@@ -132,9 +151,17 @@ impl<T: Ord + Clone> Dispatcher<T> {
     /// goes out as one batch, and a first attempt that has not `finished` `REDELIVER_AFTER_MS` after it started
     /// counts as lost, so it no longer holds the work behind it. A batch always starts at the
     /// committed cursor and names every pull request after it, so no entry between the cursor and `through` goes
-    /// unhandled, whoever led before.
+    /// unhandled, whoever led before. After `PARK_AFTER` batches at one cursor the chain is parked until the cursor
+    /// moves.
     pub fn batch(&mut self, cursor: Index, now: Timestamp) -> Option<(SyncBatch<T>, Delivery)> {
         if self.scanned <= cursor {
+            return None;
+        }
+        if cursor != self.tried_at {
+            self.tried_at = cursor;
+            self.tries = 0;
+        }
+        if self.tries >= PARK_AFTER {
             return None;
         }
         let outstanding = self.sent > cursor;
@@ -161,12 +188,25 @@ impl<T: Ord + Clone> Dispatcher<T> {
         }
         self.sent = self.scanned;
         let prs: BTreeSet<T> = self.pending.values().flatten().cloned().collect();
+        self.tries = self.tries.saturating_add(1);
         Some((SyncBatch { from: cursor, through: self.scanned, prs: prs.into_iter().collect() }, how))
     }
 
-    /// Whether the cursor still trails work, so the leader's alarm should come back for it.
+    /// Whether this consumer's chain is parked at `cursor` after `PARK_AFTER` batches without the cursor moving.
+    pub fn parked(&self, cursor: Index) -> bool {
+        self.tried_at == cursor && self.tries >= PARK_AFTER
+    }
+
+    /// Restore a park its member stored, so a new leadership does not spend another `PARK_AFTER` attempts.
+    pub fn park(&mut self, cursor: Index) {
+        self.tried_at = cursor;
+        self.tries = PARK_AFTER;
+    }
+
+    /// Whether the cursor still trails work, so the leader's alarm should come back for it. A parked chain does not
+    /// keep re-arming the alarm.
     pub fn waiting(&self, cursor: Index) -> bool {
-        self.sent > cursor || !self.pending.is_empty()
+        !self.parked(cursor) && (self.sent > cursor || !self.pending.is_empty())
     }
 
     /// The last batch did not reach the queue: its work is due again at once.

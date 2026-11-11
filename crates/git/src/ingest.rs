@@ -113,10 +113,29 @@ impl Load {
 /// promoted range name. A stored pack in both appears once. "After its last `Promoted`" is read as after the promoted
 /// range's `to`: inline packs between `to` and the `Promoted` entry itself are not covered by it, and they are still in
 /// the log because `Archived` covers only the promoted range.
-pub fn rehydrate_plan(markers: &[(PackId, Marker)], consumed: &BTreeSet<PackId>, tail: &[LogPacks]) -> Vec<Load> {
+///
+/// `last` names each chain's last `Promoted`. A marked pack of such a chain at or after its tail start is left to the
+/// tail, which loads it in index order, except the promoted pack itself, which the tail's first entries may build on.
+/// A pushed pack is stored thin, against objects an earlier inline pack of the tail brought: loaded first, it failed
+/// every rehydrate with `index-pack`'s "did not receive expected object", and a shard that cannot rehydrate fails each
+/// `PrSync` test merge and archive promotion again (`tests/am1/results/idle-shards.md`).
+pub fn rehydrate_plan(
+    markers: &[(PackId, Marker)],
+    consumed: &BTreeSet<PackId>,
+    last: &[(ChainId, Option<Promoted>)],
+    tail: &[LogPacks],
+) -> Vec<Load> {
     let mut seen = BTreeSet::new();
     let mut out = Vec::new();
-    let mut marked: Vec<&(PackId, Marker)> = markers.iter().filter(|(id, _)| !consumed.contains(id)).collect();
+    let in_tail = |id: &PackId, m: &Marker| {
+        last.iter().any(|(c, p)| {
+            *c == m.chain
+                && m.index >= tail_start(p.as_ref())
+                && p.as_ref().and_then(|p| p.pack.stored_id()) != Some(*id)
+        })
+    };
+    let mut marked: Vec<&(PackId, Marker)> =
+        markers.iter().filter(|(id, m)| !consumed.contains(id) && !in_tail(id, m)).collect();
     marked.sort_by_key(|(id, m)| (m.index, *id));
     for (id, m) in marked {
         if seen.insert(*id) {
@@ -286,13 +305,49 @@ mod tests {
         // Packs 1 and 2 are marked; pack 3 committed at 12 but its marker write was lost; 2 also appears in the tail.
         let markers = [marker(2, 11), marker(1, 3)];
         let tail = [entry(11, vec![stored(2)]), entry(12, vec![PackRef::Inline(vec![9]), stored(3)])];
-        let plan = rehydrate_plan(&markers, &BTreeSet::new(), &tail);
+        let plan = rehydrate_plan(&markers, &BTreeSet::new(), &[], &tail);
         let ids: Vec<Option<u128>> = plan.iter().map(|l| l.stored_id().map(|p| p.0.0)).collect();
         assert_eq!(ids, vec![Some(1), Some(2), None, Some(3)]);
         // Consumed packs are skipped wherever they appear.
         let consumed = BTreeSet::from([PackId(Ulid(2)), PackId(Ulid(3))]);
-        let plan = rehydrate_plan(&markers, &consumed, &tail);
+        let plan = rehydrate_plan(&markers, &consumed, &[], &tail);
         assert_eq!(plan.iter().filter_map(Load::stored_id).map(|p| p.0.0).collect::<Vec<_>>(), vec![1]);
+    }
+
+    /// The order `host::rehydrate` ingests in: the marked phase on its own, then each tail piece. On `graft-m2b`, 131216
+    /// never promoted: its first stored pack (entry 125) is thin against entry 3's inline pack, and a marked phase that
+    /// loaded it first failed every rehydrate (`tests/am1/results/idle-shards.md`). The marked phase keeps only what
+    /// lies below the tail, and the last promoted pack, which tail packs may build on.
+    #[test]
+    fn a_rehydrate_leaves_the_tails_stored_packs_to_the_tail_in_index_order() {
+        let order = |markers: &[(PackId, Marker)], last: Option<Promoted>, tail: &[LogPacks]| {
+            let marked = rehydrate_plan(markers, &BTreeSet::new(), &[(CHAIN, last.clone())], &[]);
+            let from = tail_start(last.as_ref());
+            let piece: Vec<LogPacks> = tail.iter().filter(|e| e.index >= from).cloned().collect();
+            let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
+            let rest = rehydrate_plan(&[], &BTreeSet::new(), &[], &piece);
+            let rest = rest.into_iter().filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)));
+            marked
+                .into_iter()
+                .chain(rest)
+                .map(|l| match l {
+                    Load::Stored { id, .. } => format!("s{}", id.0.0),
+                    Load::Inline { index, .. } => format!("i{}", index.0),
+                })
+                .collect::<Vec<_>>()
+        };
+        // No promotion: everything is tail, in index order, the inline pack before the stored pack built on it.
+        let tail = [entry(3, vec![PackRef::Inline(vec![1])]), entry(125, vec![stored(7)])];
+        assert_eq!(order(&[marker(7, 125)], None, &tail), ["i3", "s7"]);
+        // 1..10 promoted into pack 50 (committed at 14): pack 4 (at 5) is below the tail and the promoted pack is
+        // marked, so both load first; pack 8 (at 12) waits for the inline pack at 11.
+        let p = Promoted { from: Index(1), to: Index(10), pack: stored(50) };
+        let tail = [
+            entry(11, vec![PackRef::Inline(vec![2])]),
+            entry(12, vec![stored(8)]),
+            LogPacks { index: Index(14), packs: vec![], promoted: Some(p.clone()), consumed: vec![], refs: None },
+        ];
+        assert_eq!(order(&[marker(8, 12), marker(4, 5), marker(50, 14)], Some(p), &tail), ["s4", "s50", "i11", "s8"]);
     }
 
     #[test]
@@ -303,7 +358,7 @@ mod tests {
         // The promoted entry itself (at 14) names the promoted pack, which a rehydrate must load even if its marker
         // never landed.
         let tail = [LogPacks { index: Index(14), packs: vec![], promoted: Some(p), consumed: vec![], refs: None }];
-        let plan = rehydrate_plan(&[], &BTreeSet::new(), &tail);
+        let plan = rehydrate_plan(&[], &BTreeSet::new(), &[], &tail);
         assert_eq!(plan.iter().filter_map(Load::stored_id).map(|p| p.0.0).collect::<Vec<_>>(), vec![50]);
     }
 

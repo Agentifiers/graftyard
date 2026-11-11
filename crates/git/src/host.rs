@@ -750,7 +750,12 @@ impl ShardHost<'_> {
         // piece's packs fetched and ingested before the next is read. Building the whole plan first held the tail's
         // entries and every pack at once: a hot group's tail is up to LOG_MAX_BYTES of inline packs, and a pool shard
         // rehydrating one ran out of memory on every attempt (`tests/am1/results/b0-30.md`, "Blocked on", 9).
-        let marked = rehydrate_plan(&marks, &consumed, &[]);
+        // Each chain's last `Promoted`, read once: the marked phase leaves the tail's own stored packs to the tail.
+        let mut last = Vec::with_capacity(chains.len());
+        for chain in chains {
+            last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
+        }
+        let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
         let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
         let incoming: u64 = marks.iter().map(|(_, m)| m.bytes).sum();
         let mut room = self.make_room(network, incoming, None).await?;
@@ -778,15 +783,14 @@ impl ShardHost<'_> {
             }
         };
         let mut heads = Vec::with_capacity(chains.len());
-        for chain in chains {
+        for (chain, last) in &last {
             let head = log.head(*chain).await?;
-            let last = log.last_promoted(*chain).await?.map(|(_, p)| p);
             let mut from = Index(tail_start(last.as_ref()).0.max(done.at(*chain).0 + 1));
             while from <= head.applied {
                 let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(head.applied.0));
                 let piece = log.entries(*chain, from, to).await?;
                 require_complete_entries(*chain, from, to, &piece)?;
-                let plan: Vec<Load> = rehydrate_plan(&[], &consumed, &piece)
+                let plan: Vec<Load> = rehydrate_plan(&[], &consumed, &[], &piece)
                     .into_iter()
                     .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
                     .collect();

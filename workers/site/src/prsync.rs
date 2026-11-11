@@ -101,8 +101,14 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         _ => (Dispatcher::default(), true),
     });
     if new {
+        // A chain this member parked stays parked under its new leadership, so a stuck batch costs each member at
+        // most PARK_AFTER attempts, and the shard wake-ups they cost, however often the group re-elects.
+        if h.state.storage().get::<u64>(PARK_KEY).await.ok().flatten() == Some(cursor.0) {
+            d.park(cursor);
+        }
         warm(h, repo, &record);
     }
+    let was_parked = d.parked(cursor);
     if let Err(e) = scan(h, &mut d, repo, cursor, applied) {
         note(h, format!("prsync scan: {e}"));
     }
@@ -122,6 +128,17 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             }
         }
         None => {}
+    }
+    // Parked: `design/SHARED.md`, "Event fan-out", Isolation. The park is the chain's SLO signal: an error in the
+    // logs, `prsyncParked` in `/stats`, and the member's stored cursor, which `/prsync {"replay": true}` clears.
+    if d.parked(cursor) {
+        h.stats.borrow_mut().prsync_parked = cursor.0;
+        if !was_parked {
+            note(h, format!("prsync {} parked at {} after {} batches", repo.0.0, cursor.0, git::prsync::PARK_AFTER));
+            if let Err(e) = h.state.storage().put(PARK_KEY, cursor.0).await {
+                note(h, format!("prsync park: {e}"));
+            }
+        }
     }
     let waiting = d.waiting(cursor);
     DISPATCHERS.with(|m| m.borrow_mut().insert(key.clone(), (term, d)));
@@ -166,11 +183,28 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
 }
 
-/// A new leadership catches up this site's shard of the network at once. Merges and test merges run on the leader's
+/// The member's stored cursor at which it parked the chain for `PrSync`.
+const PARK_KEY: &str = "prsync_park";
+
+/// The operator's replay of a parked chain (`design/SHARED.md`, "Event fan-out", Isolation): the member forgets its
+/// park and its dispatcher, and its next alarm, as a new leadership, sends the work from the cursor again.
+pub async fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
+    let key = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+    let was = h.state.storage().get::<u64>(PARK_KEY).await.ok().flatten();
+    h.state.storage().delete(PARK_KEY).await?;
+    DISPATCHERS.with(|m| m.borrow_mut().remove(&key));
+    h.stats.borrow_mut().prsync_parked = 0;
+    h.arm_in(LEADER_ALARM_MS);
+    Ok(json!({ "replayed": was }))
+}
+
+/// A new leadership catches up this site's shard of the network at once, if it runs. Merges and test merges run on the leader's
 /// site's shard (`merge`), and one that last served under another leader is behind every push validated and merged
 /// elsewhere since, so without this the first merge after an election caught up first: 270 to 540 ms of every merge on
 /// a freshly elected leader, in 91 of 91 and 29 of 29 samples (`tests/m2/results/m2-wp6.md`, BM-2). Best effort: a
-/// failed catch-up leaves the merge's own catch-up to run.
+/// failed catch-up leaves the merge's own catch-up to run. The call carries `warm`, so a stopped shard answers without
+/// starting its container (`graftyard_git::serve`): a group with no clients re-elects after its members idle out, and
+/// each warm started its network's shard, which then billed for a day (`tests/am1/results/idle-shards.md`).
 fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRecord) {
     let env = h.env.clone();
     let Ok(rec) = serde_json::to_string(record) else { return };
@@ -186,7 +220,8 @@ fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRec
                     ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint())
                 })
                 .map_err(|e| e.to_string())?;
-            let url = format!("https://shard/catchup?repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
+            let url =
+                format!("https://shard/catchup?warm=1&repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
             let mut init = RequestInit::new();
             init.with_method(Method::Post);
             let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
@@ -258,9 +293,10 @@ pub async fn consume(batch: MessageBatch<Value>, env: Env) -> Result<()> {
                     console_log!("mergequeue {} {}..{} queued handled {v}", q.repo, q.batch.from.0, q.batch.through.0);
                     m.ack();
                 }
+                // Acked: the leader's dispatcher re-sends from the cursor and parks after PARK_AFTER, as for `PrSync`.
                 Err(e) => {
                     console_error!("mergequeue {} {}..{}: {e}", q.repo, q.batch.from.0, q.batch.through.0);
-                    m.retry();
+                    m.ack();
                 }
             }
             continue;
@@ -287,9 +323,12 @@ pub async fn consume(batch: MessageBatch<Value>, env: Env) -> Result<()> {
                 );
                 m.ack();
             }
+            // Acked, not retried: the leader's dispatcher sends the work again from the cursor, and counts each
+            // batch toward PARK_AFTER. Queues' own 10 retries a message multiplied every re-send by up to 11 test
+            // merges, each one waking the network's shard (`tests/am1/results/idle-shards.md`).
             Err(e) => {
                 console_error!("prsync {} {}..{}: {e}", body.repo, body.batch.from.0, body.batch.through.0);
-                m.retry();
+                m.ack();
             }
         }
     }

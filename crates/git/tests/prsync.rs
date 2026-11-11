@@ -10,8 +10,8 @@ use graftyard_git::issues::{
 };
 use graftyard_git::pack::PackRef;
 use graftyard_git::prsync::{
-    Delivery, Dispatcher, MergeAnswer, PrSync, REDELIVER_AFTER_MS, REPO_FORMAT_V3, SyncBatch, SyncRead, TestMerge,
-    commands, scan,
+    Delivery, Dispatcher, MergeAnswer, PARK_AFTER, PrSync, REDELIVER_AFTER_MS, REPO_FORMAT_V3, SyncBatch, SyncRead,
+    TestMerge, commands, scan,
 };
 use graftyard_git::refs::{ObjectId, RefName, RefUpdate};
 use graftyard_git::repo::{REPO_FORMAT_V1, RepoCmd, RepoEvent, RepoFold, RepoOut};
@@ -704,6 +704,69 @@ fn a_first_attempt_runs_in_band_and_only_a_re_send_goes_to_the_queue() {
     p.alarm(&g);
     assert_eq!(p.sent, [Delivery::First, Delivery::Again]);
     p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1]);
+    assert_once(&g);
+}
+
+#[test]
+fn a_batch_that_fails_every_time_is_parked_after_park_after_attempts() {
+    let (mut g, mut p) = setup();
+    p.drain(&mut g);
+    p.sent.clear();
+    g.push("refs/heads/f", oid(3));
+    for _ in 0..30 {
+        p.alarm(&g);
+        if !p.queue.is_empty() {
+            p.queue.clear();
+            p.disp.finished(false);
+        }
+        g.pass(REDELIVER_AFTER_MS);
+    }
+    assert_eq!(p.sent.len(), PARK_AFTER as usize);
+    assert_eq!(p.sent.first(), Some(&Delivery::First));
+    assert!(p.sent[1..].iter().all(|d| *d == Delivery::Again));
+    let cursor = consumer_cursor(&*g.fold().core, Consumer::PrSync);
+    assert!(p.disp.parked(cursor));
+    assert!(!p.disp.waiting(cursor));
+
+    // More work does not unpark the chain: only the committed cursor moving does.
+    g.push("refs/heads/f", oid(4));
+    for _ in 0..3 {
+        p.alarm(&g);
+        assert!(p.queue.is_empty());
+        g.pass(REDELIVER_AFTER_MS);
+    }
+    assert_eq!(p.sent.len(), PARK_AFTER as usize);
+
+    // A new leadership restores the member's park instead of spending another ten attempts.
+    let mut restored = Dispatcher::default();
+    restored.park(cursor);
+    p.disp = restored;
+    p.alarm(&g);
+    assert!(p.queue.is_empty());
+    assert_eq!(p.sent.len(), PARK_AFTER as usize);
+
+    // The operator replays the parked batch; its commit moves the cursor and unparks the chain.
+    let through = g.m(g.leader()).state().applied;
+    let replay = SyncBatch { from: cursor, through, prs: vec![IssueNumber(1)] };
+    for c in p.plan(&g, &replay) {
+        g.commit(c);
+    }
+    assert!(consumer_cursor(&*g.fold().core, Consumer::PrSync) > cursor);
+    g.push("refs/heads/f", oid(5));
+    p.drain(&mut g);
+    assert_synced(&g, &p.cache, &[1]);
+    assert_once(&g);
+}
+
+#[test]
+fn a_healthy_pipeline_never_parks_however_many_batches_it_sends() {
+    let (mut g, mut p) = setup();
+    for i in 0..3 * PARK_AFTER {
+        g.push("refs/heads/f", oid(10 + i));
+        p.drain(&mut g);
+    }
+    assert!(p.sent.len() > PARK_AFTER as usize);
     assert_synced(&g, &p.cache, &[1]);
     assert_once(&g);
 }
