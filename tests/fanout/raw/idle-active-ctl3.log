@@ -1,0 +1,6 @@
+{"at":"2026-11-11T08:44:30.158Z","step":"create","status":201,"id":131236}
+{"at":"2026-11-11T08:44:32.031Z","step":"clone","ok":true}
+{"at":"2026-11-11T08:44:35.685Z","step":"push topic","ok":true}
+{"at":"2026-11-11T08:44:36.293Z","step":"open pr","status":200,"v":{"meta":{"configIndex":1,"leader":0,"term":2},"recorded":6}}
+{"at":"2026-11-11T08:44:38.709Z","step":"head push","ok":true,"head":"c8c74a390f183170e3bfaeb165e00f1e3239f6c0"}
+{"at":"2026-11-11T08:44:46.086Z","step":"synced","after_s":5,"pull_head":"c8c74a390f183170e3bfaeb165e00f1e3239f6c0","pull_merge":"5a36e148aba3698bffc1059dd671d901cfaab84b"}
