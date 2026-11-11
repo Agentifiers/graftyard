@@ -59,20 +59,43 @@ fn sheds(heavy: bool, in_flight: u32, leading: bool) -> bool {
     heavy && leading && in_flight >= HEAVY_READS
 }
 
-/// One whole-tier read in flight on this member, counted in `Host::heavy_reads` until it is answered or dropped.
-struct HeavyRead<'a>(&'a std::cell::Cell<u32>);
+/// One whole-tier read in flight on this member, counted in `Host::heavy_reads` until its answer's body has been
+/// sent or dropped (`held_body`).
+struct HeavyRead(Rc<std::cell::Cell<u32>>);
 
-impl<'a> HeavyRead<'a> {
-    fn new(n: &'a std::cell::Cell<u32>) -> HeavyRead<'a> {
+impl HeavyRead {
+    fn new(n: &Rc<std::cell::Cell<u32>>) -> HeavyRead {
         n.set(n.get() + 1);
-        HeavyRead(n)
+        HeavyRead(n.clone())
     }
 }
 
-impl Drop for HeavyRead<'_> {
+impl Drop for HeavyRead {
     fn drop(&mut self) {
         self.0.set(self.0.get().saturating_sub(1));
     }
+}
+
+/// How much of an answer's body one pull of its stream yields.
+const BODY_CHUNK: usize = 64 * 1024;
+
+/// `body` as a stream of BODY_CHUNK pieces that owns `held` until the last piece is taken or the stream is dropped:
+/// a whole-tier answer of 0.5 to 1.2 MB stays in the isolate while it streams to a far edge, and the 500-agent smoke's
+/// apac leader reached 258 MB with no more than HEAVY_READS answers being built, because built ones were not counted
+/// (`tests/am1/results/lm1-memory.md`, "The answers' bodies").
+fn held_body<G: 'static>(
+    body: Vec<u8>,
+    held: G,
+) -> impl futures_util::Stream<Item = std::result::Result<Vec<u8>, Error>> + 'static {
+    let mut pieces: std::collections::VecDeque<Vec<u8>> = body.chunks(BODY_CHUNK).map(<[u8]>::to_vec).collect();
+    let mut held = Some(held);
+    futures_util::stream::poll_fn(move |_| {
+        let next = pieces.pop_front();
+        if pieces.is_empty() {
+            held.take();
+        }
+        std::task::Poll::Ready(next.map(Ok))
+    })
 }
 /// A member measures again only on a day it served a request and has not measured yet.
 const DAY_MS: u64 = 86_400_000;
@@ -682,6 +705,19 @@ impl<F: Family> Routes<F> {
         })
     }
 
+    /// `reply` for a whole-tier read: the body streams out holding the read's place under HEAVY_READS (`held_body`).
+    fn reply_held(&self, mut v: Value, held: HeavyRead) -> Result<Response> {
+        if self.host.fold_lost() {
+            return Response::error("member reset: fold storage lost", 503);
+        }
+        v["meta"] = self.meta();
+        let body = serde_json::to_vec(&v).map_err(|e| err(e.to_string()))?;
+        drop(v);
+        let headers = Headers::new();
+        headers.set("content-type", "application/json")?;
+        Ok(Response::from_stream(held_body(body, held))?.with_headers(headers))
+    }
+
     fn reply(&self, mut v: Value) -> Result<Response> {
         // An answer read while storage refused a fold row may lack rows: the caller sees a reset instead.
         if self.host.fold_lost() {
@@ -933,7 +969,10 @@ impl<F: Family> Routes<F> {
         };
         self.host.served();
         match within(raft::CALL_DEADLINE * 3, rx).await {
-            Some(Ok(Ok((value, index)))) => self.reply(json!({ "value": value, "index": index.0 })),
+            Some(Ok(Ok((value, index)))) => match _held {
+                Some(held) => self.reply_held(json!({ "value": value, "index": index.0 }), held),
+                None => self.reply(json!({ "value": value, "index": index.0 })),
+            },
             Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
             Some(Err(_)) => Response::error("member reset", 503),
             None => self.reply(json!({ "busy": true })),
@@ -1814,10 +1853,34 @@ mod tests {
         assert!(sheds(true, HEAVY_READS, true));
         assert!(!sheds(true, HEAVY_READS, false), "a follower answers NotLeader instead");
         assert!(!sheds(false, HEAVY_READS * 4, true));
-        let n = std::cell::Cell::new(0);
+        let n = std::rc::Rc::new(std::cell::Cell::new(0));
         let held: Vec<_> = (0..HEAVY_READS).map(|_| HeavyRead::new(&n)).collect();
         assert!(sheds(true, n.get(), true));
         drop(held);
+        assert_eq!(n.get(), 0);
+    }
+
+    /// An answer's body keeps its read counted until its last piece is taken, so answers still streaming to a far
+    /// edge count against HEAVY_READS; the pieces are the body in order; a body dropped half sent releases it too.
+    #[test]
+    fn a_streamed_answer_holds_its_read_until_sent() {
+        use futures_util::StreamExt;
+        let n = std::rc::Rc::new(std::cell::Cell::new(0));
+        let body: Vec<u8> = (0..super::BODY_CHUNK * 2 + 10).map(|i| (i % 251) as u8).collect();
+        let mut s = std::pin::pin!(super::held_body(body.clone(), HeavyRead::new(&n)));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let mut got = Vec::new();
+        for left in [1, 1, 0] {
+            let std::task::Poll::Ready(Some(Ok(piece))) = s.poll_next_unpin(&mut cx) else { panic!("a piece") };
+            got.extend(piece);
+            assert_eq!(n.get(), left, "counted until the last piece is taken");
+        }
+        assert!(matches!(s.poll_next_unpin(&mut cx), std::task::Poll::Ready(None)));
+        assert_eq!(got, body);
+        let mut cut = Box::pin(super::held_body(body, HeavyRead::new(&n)));
+        let _ = cut.poll_next_unpin(&mut cx);
+        assert_eq!(n.get(), 1);
+        drop(cut);
         assert_eq!(n.get(), 0);
     }
 

@@ -428,7 +428,7 @@ pub struct Host<F: Family> {
     alarm_at: Cell<u64>,
     served_at: Cell<u64>,
     /// Whole-tier reads in flight on this member (`crate::member::HEAVY_READS`).
-    pub heavy_reads: Cell<u32>,
+    pub heavy_reads: Rc<Cell<u32>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -1008,7 +1008,7 @@ impl<F: Family> Host<F> {
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
             served_at: Cell::new(0),
-            heavy_reads: Cell::new(0),
+            heavy_reads: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),

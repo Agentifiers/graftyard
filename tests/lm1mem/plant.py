@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """lm1-memory: planted bugs in this branch's new code (the lookup's overload answer and `suspect` damping, the member's
-heavy-read cap, and the packed-dump cache). Plants one mutant at a time, runs the
+heavy-read cap with streamed answers, and the packed-dump cache). Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
 
@@ -38,6 +38,8 @@ MUTANTS = [
      '    q.get("rows").is_some()', SITE),
     ('cap: a dropped read stays counted', MEM, '        self.0.set(self.0.get().saturating_sub(1));',
      '        let _ = self.0;', SITE),
+    ('cap: a streamed answer releases its read at the first piece, not the last', MEM,
+     '        if pieces.is_empty() {\n            held.take();\n        }', '        held.take();', SITE),
     ('cache: a hit is served without comparing its key, so an applied entry is not in the next read', FAM,
      '.filter(|(at, _)| at == k)', '.filter(|(at, _)| at == k || true)', SITE),
     ('cache: the key is a constant', FAM, '    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)',
