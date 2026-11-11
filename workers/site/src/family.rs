@@ -336,15 +336,10 @@ impl Family for Repo {
             f.applied_at = f.applied_at.max(e.at);
         }
         let fold = &m.group_fold().fold;
-        // An install's input applies through the snapshot, whose entries this member never holds: the ring restarts
-        // there now with the installed tier's leases, and entries waiting from before it are past what it serves.
-        // Before the owner's `Authz` is read the ring has fed nothing, so it has no cursor to refuse.
+        // An install's input applies through the snapshot, whose entries this member never holds: entries waiting
+        // from before it are past what the ring serves. `crate::load::finish_install` restarted the ring there.
         if to > from && m.entry_at(to).is_none() {
             f.pending.clear();
-            if let Some(owner) = f.owner.clone() {
-                let at = graftyard_fold::try_meta(&*fold.core).map_or(graftyard_types::Timestamp(0), |m| m.at);
-                f.ring.skip(repo, &owner, &fold.core, (to, at));
-            }
         }
         for i in from.0 + 1..=to.0 {
             let Some(e) = m.entry_at(raft::Index(i)) else { continue };
