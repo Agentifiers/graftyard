@@ -25,7 +25,15 @@ guard). Only `graft-m2b` was used. `graft-m1-*` and `graft-m3c-*` were not touch
 - **What still fails:** leader moves from `StepDown Confirm` (storage confirm p99 1.7 to 2.1 s) and `CommitErrors`
   under about 300 req/s on the leader, and a second memory spike in which about 600 cheap reads complete in the same
   millisecond after a stall, then `exceededMemory` (section 8, hypothesis).
-- **Cost:** $15.75 of the $25 cap by `tests/fanout/cost.sh` from `mem-t0`, containers $10.45 of it.
+- **Round 2 (`80d8837`, section 9):** every read is capped at `READS_MAX` (256), and granted answers are built once per
+  query as shared bytes that stream out.
+  - At 500 agents, no member logged `exceededMemory` in any row (B0-29, B0-32, B0-31, B0-34 and B0-35).
+  - B0-33, at 5,000 agents, still did (651 on one member).
+  - Every row still fails its gate. Commit p99 is 3.2 to 7.3 s and leaders still move, because reads saturate the
+    leader's one thread.
+  - B0-32 had zero leader changes and zero `suspect` reports.
+  - L0-12's A1 replay was not run: the round hit its $10 cap.
+- **Cost:** round 1 $15.75 of the $25 cap by `tests/fanout/cost.sh` from `mem-t0`, containers $10.45 of it.
 
 ## 1. Cause
 
@@ -245,6 +253,66 @@ once. Test: `dump_rebuilds_are_spaced_but_cache_hits_are_not`. Plants 10 and 11.
 seven more `CommitErrors` step-downs with `to: None` between 02:39 and 02:41 and stayed leader. Memory is no longer the
 failure. Commit latency and leader moves still are, through storage confirm stalls and the far site's commit errors.
 
+## 6d. Round 2: every read capped, granted answers built once and streamed (`80d8837`)
+
+The B0-29 burst (section 8) pointed at the grant: one quorum round grants every read waiting on it
+(`check_reads`, `crates/raft/src/member/leader.rs`), and the host built every answer as a `serde_json::Value` in
+that input, so every tree was alive until its read was sent. The probe of 600 parallel `{"q": {}}` reads on an
+idle leader took it from 55.8 to 94.1 MB.
+
+A grant holds only until the member's next input (`ReadGrant`: "only before the member's next `step`"), so the
+answer cannot be built later from the fold. `80d8837` changes what is kept instead:
+- `host::ReadBody::Json(Rc<[u8]>)`: the answer is serialized once, and the `Value` tree is dropped in the input.
+- `host::shared_answer`: reads of the same query granted in the same input share one `Rc<[u8]>`. `/stats` reports
+  this as `sharedReads`.
+- `member::held_body` streams `{"value":` + the shared bytes + `,"index":…,"meta":…}` in 64 KiB pieces, copying each
+  piece out only when taken.
+- `READS_MAX` = 256: reads of any kind in flight on a member, counted from arrival until the last piece is taken.
+  Past it, the member answers the same 200 `overloaded` that the lookup retries without `suspect`. `HEAVY_READS`
+  (16) still holds for whole-tier reads on a leader. `/stats` reports `readsInFlight`.
+
+Tests:
+- `every_read_is_shed_past_reads_max_and_whole_tier_ones_past_the_heavy_cap`;
+- `reads_granted_together_share_one_answer_per_query`;
+- `a_streamed_answer_holds_its_read_until_sent`, rewritten for the three-part body.
+
+`tests/lm1mem/plant.py`: 19 of 19 caught. Plants 6 to 10, 12 and 13 are new: a follower caps whole-tier reads,
+narrow reads go uncapped, `READS_MAX` off by one, no sharing, sharing keyed by nothing, the shared value skipped,
+and release at the first piece.
+
+Full checks on `80d8837`, with `origin/main` `c1db5ac` merged in: fmt, every clippy, `cargo test --workspace` (674
+passed), `go test`, `check_design` and `check_names` pass. `check_links` passes on a clean `git archive` (2,945
+citations).
+
+### What bounds the step-downs (evidence, before round 2's rows)
+
+`STEP_DOWN` is `{ window_s: 10, commit_errors: 0.05, commit_fail_min: 3, confirm_p99_ms: 500,
+confirm_slow_min: 6 }` (`crates/raft/src/lib.rs`):
+- A leader steps down when its storage confirms in the last 10 s have a p99 over 500 ms with 6 slow;
+- or when more than 5% (at least 3) of its AppendEntries to every follower miss `CALL_DEADLINE` (1 s).
+
+Both are measured on the leader's own isolate:
+- `confirm_begin`/`confirm_end` time `storage().sync()` from a `spawn_local`, so a confirm is slow when the isolate
+  is busy, not only when storage is.
+- A call "misses" when its reply is not stepped within 1 s, which also happens when the isolate cannot run the reply.
+
+On B0-29's site a leader (131224 f0, Workers Logs per second, 02:53:26 to 02:53:36, just before its `Confirm`
+step-down at 02:53:36):
+- 187 to 774 invocations a second;
+- 300 to 712 ms of CPU a second, almost all in `/read`;
+- wall maxima 1 to 2.5 s.
+
+The site c leader at 02:59:14 to 02:59:31 ran 592 ms of CPU in one second (416 in `/read`), and invocations in the
+same second waited up to 3.5 s. So the confirms and the calls were late because the isolate's one thread was
+saturated by reads. The raft rule is doing what it says: a leader that cannot run its own inputs in time is sick.
+This is [inference] from CPU-per-second and wall, not from a trace of one confirm.
+
+Round 2 bounds the reads in flight but not their CPU. If the step-downs remain:
+- The next fix is the reads' CPU, not raft: move the edge's API reads off the leader to followers by read-index,
+  which DESIGN already allows for feed polls ("Feed polls never reach the leader").
+- Or make `HEAVY_READS` and `READS_MAX` adapt to the leader's own confirm p99.
+- Excusing busy-isolate confirms in `STEP_DOWN` is a `crates/raft` change and would be reported first.
+
 ## 6c. Design contradictions
 
 - `design/DESIGN.md`, "Commit and read paths" (the `Fresh` comment): "Every `Fresh` read touches SQLite after its
@@ -321,3 +389,72 @@ needs a new `/stats` field on the consumer, plus a site day. B0-35 itself was no
   - Evidence still missing: the query of each of the 600 reads, which Workers Logs does not record.
 - Every probe burst of 1,000 or more narrow reads on the idle 131224 moved its leader (term 8 to 10). Read volume
   alone can now cost a leader its lease through `CommitErrors`, independent of memory.
+
+## 9. Round 2 rows (`80d8837`)
+
+All on `graft-m2b`, sites a `fd5cedf3`, b `2134ec8b`, c `d0964d27`, and edge `0f8a0f84`, from the site day at
+04:46Z. `origin/main` `c1db5ac` merged. `rows.sh m6` with K = 4, `TEARDOWN=1` and `STOP_USD=9.3`, from the window
+starting at 03:35Z (`tests/fanout/raw/mem2-t0.t0`). The idle-shards thread
+(T-01a1c8aa-e61f-7739-bd38-27cb59655101) held `graft-m2b` for its baseline until 04:45Z, and `graft-m2b` passed
+back to it at 06:38Z.
+
+Memory, from `durableObjectsPeriodicGroups` (peak MB per member) and Workers Logs outcomes other than `ok`:
+
+| Row (repo) | f0 / f1 / f2 peak MB | `exceededMemory` | Other non-ok outcomes |
+| --- | --- | --- | --- |
+| Smoke 500, 300 s (131227) | 56 / 35 / 108 | 0 | 47 `canceled` |
+| B0-29 (131228) | 73 / 203 / 167 | 0 | f1: 190 `exception` at 05:19:55, "Internal error in Durable Object storage caused object to be reset" |
+| B0-32 (131229) | 98 / 34 / 30 | 0 | 28 `canceled` |
+| B0-31 (131230) | 104 / 61 / 105 | 0 | 92 `canceled` |
+| B0-33, 5,000 agents (131231) | 150 / 262 / 89 | f1: 651, at 06:02:03 to 06:02:05 (330 `/read`, 212 `/commit`, 87 `/suspect`) | f1 141 `exception` |
+| B0-34 (131232) | 114 / 45 / 120 | 0 | 101 `canceled` |
+| B0-35 (131233) | 115 / 193 / 101 | 0 | f1 34 `aborted` |
+
+In round 1, B0-29 alone had hundreds of `exceededMemory` outcomes, and the apac leader was at 262 MB.
+
+Rows against their gate lines, from `tests/am1/raw/a1-<row>-<run>.jsonl`:
+
+| Row | Gate (pass / fail) | Measured | Verdict |
+| --- | --- | --- | --- |
+| B0-29, 600 s | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale` on distinct refs, leader < 600 req/s with zero feed polls / commit p99 > 1 s | Commit p99 4,699 ms (p50 2,162, n 461); leader 0 → 2, term 7; `/suspect` 12,856; agent pushes 2,426 of 2,500 ok, 51 timeouts; `read:api` 58,063 200 / 8,181 503; 96 req/s, 0 feed polls | **Fail** |
+| B0-32, 180 s | Every push acked within 5 s or `ng … admission full`, merges in the next 2 entries, zero leader changes, zero `suspect` / any lost ack, leader change or `suspect` | **Zero leader changes (term 2), zero `suspect`**; commit p99 3,216 ms; agent push p99 36,660 ms; burst 112 ok, 384 refused, 4 `fetch failed`; 5 agent pushes `fetch failed` | **Fail** (pushes past 5 s; 9 `fetch failed`, unacknowledged at the client) |
+| B0-31, 600 s | Commit p99 ≤ 1 s with buckets up / > 3 s | Commit p99 7,324 ms; leader 0 → 1, term 10; agent pushes 805 ok, 1,623 refused | **Fail** |
+| B0-33, 300 s, 5,000 agents | Human and merge-queue p99 ≤ 1 s, ≥ 140 agent commands/s admitted, zero leader changes and `suspect` / any leader change or `suspect`, < 100 commands/s | Commit p99 21,442 ms; leader 0 → 1, term 17; `/suspect` 43,591; agent pushes refused 3,182 and timed out 1,246; f1 `exceededMemory` | **Fail** |
+| B0-34, 600 s, shard kill at 300 s | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s / TTFB p99 > 5 s, k > 8 | k stepped 1 → 2 in band (repo 131232: "k 1 at 4" → "k 2 at 652"); clone TTFB p99 26,965 ms (p50 2,196); human push p99 240 s; commit p99 3,727 ms; leader 0 → 2, term 4 | **Fail** (TTFB) |
+| B0-35, 600 s, 500 open PRs | Test-merge vCPU within budget, Actions dispatch p99 ≤ 10 s, zero computes from list fields | `read:mergeable` 4,475 `MERGEABLE` and 35,036 503 of 57,957; `read:api` 2,266 200 / 37,551 503; leader 0 → 1, term 9. Test-merge vCPU, list-field computes and dispatch p99 are **not measured** (`MergeBudget::charge` is a separate work item) | **Not judged**; the reads it measured mostly answered 503 |
+| L0-12 A1 replay | | Not run: `STOP at $10.23` | Not run |
+
+### The step-downs after the read cap
+
+They remain in every row except B0-32. What bounds them, with evidence:
+- The rule is `STEP_DOWN` (section 6d): confirm p99 over 500 ms with 6 slow in 10 s, or more than 5% of
+  AppendEntries to every follower missing 1 s.
+- On the smoke's leader (131227 f0, Workers Logs per second, 04:59:48 to 05:00:05), before
+  `StepDown { Confirm { p99_ms: 1835 } }` at 05:00:03:
+  - 85 to 838 invocations a second, with 60 to 942 ms of CPU a second, almost all `/read`;
+  - wall maxima of 1.3 to 3.0 s.
+- The reads themselves are cheap: of 1,526 `/read`s in 04:59:48 to 04:59:52, 1,411 took 0 to 2 ms of CPU. Their
+  count is the problem: 5,660 `/read`s in 5 minutes on f0 cost 16.6 s of CPU.
+- `shedReads` reached 35,630 on one member in B0-29. Each shed answer is one more invocation on the leader, and the
+  lookup asks again up to 4 times.
+- The memory fix therefore moved the failure from `exceededMemory` to CPU: the leader's one thread spends most of
+  each second on reads, so its storage confirms and AppendEntries replies are stepped late.
+- [inference] This comes from CPU per second and wall time; no single confirm was traced.
+
+Next fix (not built; no raft change made):
+1. Take the edge's API reads (`read:api`, 200/s, the largest load) off the leader: serve them from followers by
+   read-index, as DESIGN already does for feed polls ("Feed polls never reach the leader").
+   - That splits the read CPU across three isolates.
+   - It is a lookup and edge change, not a raft change. `read_index` exists (`Member::read_index`).
+2. Make an `overloaded` answer cost the leader less. The lookup could wait the full `retryAfterMs` before its first
+   retry and try a follower's read-index instead of the same leader. Today 4 retries on the leader multiply the
+   invocations at the worst moment.
+3. Only if 1 and 2 leave confirm stalls: excuse a confirm that is slow because the isolate was busy. That changes
+   `crates/raft` `STEP_DOWN` and needs the sweep and Porcupine, so it would be reported first.
+
+### Cost, round 2
+
+`tests/fanout/cost.sh` with `T0_FILE=tests/fanout/raw/mem2-t0.t0` (03:35Z): **$10.23** at the stop, containers
+included. About $1.9 of it accrued before the site day, mostly idle shard containers waking during the idle-shards
+baseline. Rows: B0-29 $1.33, B0-32 $0.40, B0-31 $2.34, B0-33 $0.79, B0-34 $1.33, B0-35 $1.48. Rounds 1 and 2
+together: $25.98.

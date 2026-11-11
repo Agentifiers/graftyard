@@ -13,6 +13,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 LK = 'crates/lookup/src/lib.rs'
 MEM = 'workers/site/src/member.rs'
 FAM = 'workers/site/src/family.rs'
+HOST = 'workers/site/src/host.rs'
 LOOKUP = ['cargo', '-p', 'graftyard-lookup', '--lib', 'tests']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', '']
 
@@ -32,14 +33,21 @@ MUTANTS = [
      '        match r.get(&(chain, about, term, all)) {', '        match r.get(&(chain, about, 0, all)) {', LOOKUP),
     ('damping: the gap never ends', LK, '            Some(at) if now < *at + gap => false,',
      '            Some(_) => false,', LOOKUP),
-    ('cap: a follower sheds too', MEM, '    heavy && leading && in_flight >= HEAVY_READS',
-     '    heavy && in_flight >= HEAVY_READS', SITE),
+    ('cap: a follower sheds whole-tier reads too', MEM, '(heavy && leading && heavies >= HEAVY_READS)',
+     '(heavy && heavies >= HEAVY_READS)', SITE),
+    ('cap: narrow reads are never capped (heavy only, as before)', MEM, '    reads >= READS_MAX || (heavy',
+     '    (reads >= READS_MAX && heavy) || (heavy', SITE),
+    ('cap: READS_MAX is off by one', MEM, '    reads >= READS_MAX ||', '    reads > READS_MAX ||', SITE),
+    ('shared: every read builds its own answer', HOST, '    if let Some(b) = built.get(&key) {',
+     '    if let Some(b) = built.get(&key).filter(|_| false) {', SITE),
+    ('shared: answers keyed by nothing, so another query gets the first answer', HOST,
+     '    let key = q.to_string();', '    let key = String::new();\n    let _ = q;', SITE),
     ('cap: narrow row reads count as heavy', MEM, '    q.get("rows").is_some_and(Value::is_boolean)',
      '    q.get("rows").is_some()', SITE),
+    ('stream: the shared value is skipped', MEM, '                1 => &shared,', '                1 => &[],', SITE),
+    ('stream: the read is released at the first piece', MEM, '        if sent >= total {', '        if sent > 0 {', SITE),
     ('cap: a dropped read stays counted', MEM, '        self.0.set(self.0.get().saturating_sub(1));',
      '        let _ = self.0;', SITE),
-    ('cap: a streamed answer releases its read at the first piece, not the last', MEM,
-     '        if pieces.is_empty() {\n            held.take();\n        }', '        held.take();', SITE),
     ('rebuilds: a valid cached dump still waits for the next slot', FAM,
      '    if DUMPS.with(|d| d.borrow().get(&repo).is_some_and(|(k, _)| *k == key)) {\n        return None;\n    }',
      '    let _ = key;', SITE),

@@ -51,7 +51,36 @@ type Entry<F> = raft::LogEntry<<F as Family>::Ev>;
 type Envelope<F> = raft::Envelope<<F as Family>::Ev>;
 
 pub type Outcome<F> = Result<Acked<FOut<F>>, CommitError<FErr<F>>>;
-pub type ReadResult = Result<(Value, Index), NotLeader>;
+pub type ReadResult = Result<(ReadBody, Index), NotLeader>;
+
+/// A granted read's answer. `Json` is its `value` already serialized: a grant holds only until the member's next
+/// input (`raft::ReadGrant`), so the answer is built in the input that granted it, as bytes, and the reads of one
+/// query granted in the same input share one copy (`shared_answer`). The `Value` tree is dropped at once, so one
+/// quorum round that grants hundreds of reads no longer holds hundreds of trees until each is sent: 600 refs reads
+/// granted together took an idle leader from 56 to 94 MB, and on B0-29 600 reads ended in one millisecond before
+/// the apac leader's `exceededMemory` (`tests/am1/results/lm1-memory.md`, "Rows"). `Shed`: a whole-tier read whose
+/// dump rebuild is not due yet (`family::dump_wait`), with the ms until it is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReadBody {
+    Json(Rc<[u8]>),
+    Shed(u64),
+}
+
+/// The answer for query `q` from `built`, the answers already made in this input, else from `build`, kept for the
+/// input's other reads of the same query. `built` must not outlive the input: its answers are at that input's grant.
+pub fn shared_answer(
+    built: &mut HashMap<String, ReadBody>,
+    q: &Value,
+    build: impl FnOnce() -> ReadBody,
+) -> (ReadBody, bool) {
+    let key = q.to_string();
+    if let Some(b) = built.get(&key) {
+        return (b.clone(), true);
+    }
+    let b = build();
+    built.insert(key, b.clone());
+    (b, false)
+}
 
 const TICK: Duration = Duration::from_millis(100);
 const ACTIVE_FOR_MS: u64 = 3_000;
@@ -118,8 +147,10 @@ pub struct Stats {
     pub inbound_since: u64,
     pub failed_calls: u32,
     pub dep_reads: u32,
-    /// Whole-tier reads shed past `crate::member::HEAVY_READS`.
+    /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
+    pub shared_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,
@@ -429,6 +460,8 @@ pub struct Host<F: Family> {
     served_at: Cell<u64>,
     /// Whole-tier reads in flight on this member (`crate::member::HEAVY_READS`).
     pub heavy_reads: Rc<Cell<u32>>,
+    /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
+    pub reads_in_flight: Rc<Cell<u32>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -1014,6 +1047,7 @@ impl<F: Family> Host<F> {
             alarm_at: Cell::new(0),
             served_at: Cell::new(0),
             heavy_reads: Rc::new(Cell::new(0)),
+            reads_in_flight: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1546,6 +1580,8 @@ impl<F: Family> Host<F> {
             let Ok(mut guard) = self.core.try_borrow_mut() else { return back };
             let Some(core) = guard.as_mut() else { return back };
             let now = now_ms();
+            // The answers this input built, by query: valid only at this input's grants (`shared_answer`).
+            let mut built: HashMap<String, ReadBody> = HashMap::new();
             for r in out.resolutions {
                 match r {
                     Resolution::Ticket { ticket, result } => {
@@ -1599,26 +1635,34 @@ impl<F: Family> Host<F> {
                             // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
                                 core.m.fresh(&g).map(|f| {
-                                    // `probe`: only that a member leads (`graftyard_lookup::create`).
-                                    let body = if q.get("probe").is_some() {
-                                        Value::Null
-                                    } else if q.get("dep").is_some() {
-                                        json!(hex(&F::fold_bytes(f.fold())))
-                                    } else if let Some(rid) = q.get("request").and_then(Value::as_str) {
-                                        // The sweeper's `RequestSource`: the row at the same applied index.
-                                        match rid.parse() {
+                                    let (body, hit) = shared_answer(&mut built, &q, || {
+                                        // `probe`: only that a member leads (`graftyard_lookup::create`).
+                                        let body = if q.get("probe").is_some() {
+                                            Value::Null
+                                        } else if q.get("dep").is_some() {
+                                            json!(hex(&F::fold_bytes(f.fold())))
+                                        } else if let Some(rid) = q.get("request").and_then(Value::as_str) {
+                                            // The sweeper's `RequestSource`: the row at the same applied index.
+                                            match rid.parse() {
                                             Ok(rid) => core.m.group_fold().request(rid).map_or(Value::Null, |row| {
                                                 json!({ "index": row.index.0, "packs": F::row_packs(&row.events) })
                                             }),
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
-                                    } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
-                                        // Checked here, where the dump would be built, so one granted batch
-                                        // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
-                                        graftyard_lookup::overloaded_reply(ms)
-                                    } else {
-                                        F::read_json(f.fold(), &q)
-                                    };
+                                        } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
+                                            // Checked here, where the dump would be built, so one granted batch
+                                            // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
+                                            return ReadBody::Shed(ms);
+                                        } else {
+                                            F::read_json(f.fold(), &q)
+                                        };
+                                        ReadBody::Json(
+                                            serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()).into(),
+                                        )
+                                    });
+                                    if hit {
+                                        self.stats.borrow_mut().shared_reads += 1;
+                                    }
                                     (body, f.index())
                                 })
                             });
@@ -2657,6 +2701,32 @@ mod tests {
     use std::cell::Cell;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
+
+    /// Reads of the same query granted in one input share one built answer, and a different query builds its own.
+    #[test]
+    fn reads_granted_together_share_one_answer_per_query() {
+        use super::{ReadBody, shared_answer};
+        let mut built = std::collections::HashMap::new();
+        let mut builds = 0;
+        let mut make = |v: &str| {
+            builds += 1;
+            ReadBody::Json(v.as_bytes().to_vec().into())
+        };
+        let a = serde_json::json!({ "refs": { "after": "YQ" } });
+        let (first, hit) = shared_answer(&mut built, &a, || make("1"));
+        assert!(!hit);
+        let (again, hit) = shared_answer(&mut built, &a, || make("2"));
+        assert!(hit);
+        assert_eq!(again, first);
+        let (ReadBody::Json(x), ReadBody::Json(y)) = (&first, &again) else { panic!("json") };
+        assert!(std::rc::Rc::ptr_eq(x, y), "one copy, not one per read");
+        let b = serde_json::json!({ "refs": { "after": "Yg" } });
+        let (other, hit) = shared_answer(&mut built, &b, || make("3"));
+        assert!(!hit);
+        assert_eq!(other, ReadBody::Json(b"3".to_vec().into()));
+        drop(make);
+        assert_eq!(builds, 2);
+    }
 
     use futures_channel::oneshot;
 
