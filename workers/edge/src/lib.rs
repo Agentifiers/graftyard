@@ -164,8 +164,11 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
     };
     let authz = ChainId::Authz(account);
     let b = c.bindings();
-    let q = json!({ "q": { "repo": name.as_str() } }).to_string();
-    let v = match graftyard_lookup::call_opt(&b, authz, &record, "/read", q.as_bytes()).await {
+    // By read-index on the `Authz` group's learners and followers, as `authz_read`: one per request, it was about
+    // 240 reads/s on the `Authz` leader at 500 agents once the permission reads had moved (`design/DESIGN.md`,
+    // "Follower read").
+    let q = json!({ "q": { "repo": name.as_str() } });
+    let v = match graftyard_lookup::read_spread(&b, authz, &record, &q).await {
         Ok(Some((v, _, _))) => v,
         // An owner whose `Authz` chain was never created holds no repository.
         Ok(None) => return Ok(Ok(None)),
@@ -1935,7 +1938,12 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     let repo = match resolve(&c, &owner, &name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return text(rid, 404, "Repository not found.\n"),
-        Err(e) => return text(rid, 503, &format!("the repository lookup failed; retry ({e})\n")),
+        Err(e) => {
+            let r = api::read_failed("the repository lookup failed; retry", &e);
+            let res = text(rid, 503, &format!("the repository lookup failed; retry ({e})\n"))?;
+            res.headers().set("retry-after", r.header("retry-after").unwrap_or("5"))?;
+            return Ok(res);
+        }
     };
     let repo = &repo;
     // The read gate, before any byte of the repository: an anonymous request for a repository that is not visibly

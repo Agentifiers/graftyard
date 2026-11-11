@@ -226,7 +226,7 @@ pub(crate) async fn read(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, viewer, None, Rows::All, Gate::Readers).await
 }
@@ -242,7 +242,7 @@ pub(crate) async fn read_core(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, viewer, None, Rows::Core, Gate::Readers).await
 }
@@ -258,7 +258,7 @@ pub(crate) async fn read_for_invitee(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, Some(viewer), None, Rows::All, Gate::Invitees).await
 }
@@ -1050,7 +1050,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows, Gate::Readers).await?;
             (owner, name, rd)
         }
-        Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
+        Some(Err(Some(e))) => return Ok(read_failed("the repository lookup failed; retry", &e)),
         Some(Err(None)) => match &target {
             Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found())),
             _ => {
