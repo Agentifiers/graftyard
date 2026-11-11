@@ -48,7 +48,6 @@ mod agents;
 mod api;
 #[cfg(feature = "test-faults")]
 mod bed_rows;
-mod coalesce;
 mod collab;
 mod hooks;
 mod ident;

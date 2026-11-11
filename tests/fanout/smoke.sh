@@ -24,7 +24,7 @@ for s in $SMOKES; do
   bash tests/am1/runs/a1.sh b0-29 "$repo" "$rid" $flags
   echo "$(date -u +%FT%TZ) $name $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-29-$repo.log)" >> "$ST"
   python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
-  echo "$(date -u +%FT%TZ) cost $(T0_FILE=tests/fanout/raw/siteday-r2.t0 bash tests/fanout/cost.sh 2>/dev/null)" >> "$ST"
+  echo "$(date -u +%FT%TZ) cost $(T0_FILE=${T0_FILE:-tests/fanout/raw/siteday-r2.t0} bash tests/fanout/cost.sh 2>/dev/null)" >> "$ST"
 done
 echo DONE >> "$ST"
 exec sleep infinity

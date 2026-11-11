@@ -15,7 +15,6 @@ test-faults = []
 
 [dependencies]
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 graftyard-api = { path = "../../crates/api" }
 graftyard-fold = { path = "../../crates/fold" }

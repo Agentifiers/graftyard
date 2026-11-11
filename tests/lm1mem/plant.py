@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """lm1-memory: planted bugs in this branch's new code (the lookup's overload answer and `suspect` damping, the member's
-heavy-read cap, the packed-dump cache, and the edge's coalescing of tier reads). Plants one mutant at a time, runs the
+heavy-read cap, and the packed-dump cache). Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
 
@@ -13,10 +13,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 LK = 'crates/lookup/src/lib.rs'
 MEM = 'workers/site/src/member.rs'
 FAM = 'workers/site/src/family.rs'
-CO = 'workers/edge/src/coalesce.rs'
 LOOKUP = ['cargo', '-p', 'graftyard-lookup', '--lib', 'tests']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', '']
-EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'coalesce']
 
 MUTANTS = [
     ('lookup: an overloaded answer is taken as a missed member (suspect feeds the storm)', LK,
@@ -44,15 +42,6 @@ MUTANTS = [
      '.filter(|(at, _)| at == k)', '.filter(|(at, _)| at == k || true)', SITE),
     ('cache: the key is a constant', FAM, '    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)',
      '    let _ = (c, m);\n    (0, [0; 32], false, 0, [0; 32])', SITE),
-    ('coalesce: a caller joins the call already in flight', CO,
-     '                if let Some(waiters) = round {\n                    waiters.push(tx);',
-     '                if let Some(waiters) = round.as_mut().filter(|_| false) {\n                    waiters.push(tx);', EDGE),
-    ('coalesce: a dropped leader hands off nothing', CO,
-     '        if self.armed {\n            hand_off(&self.key);', '        if self.armed && false {\n            hand_off(&self.key);',
-     EDGE),
-    ('coalesce: the key stays in flight after the last round', CO,
-     '        let Some(mut waiting) = rounds.remove(key).flatten() else { return };',
-     '        let Some(mut waiting) = rounds.get_mut(key).and_then(Option::take) else { return };', EDGE),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
