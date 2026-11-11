@@ -453,6 +453,11 @@ pub struct Host<F: Family> {
     /// Transfers to abandon: their `TimeoutNow` is dropped (`/transfer` with `abandon`).
     #[cfg(feature = "test-faults")]
     pub abandon: RefCell<BTreeSet<u64>>,
+    /// Test installs (LF-13): until this time (epoch ms) this member fails as a site fault fails a whole member class:
+    /// it answers every call but the observation routes with 503 and fails each call it sends before it leaves
+    /// (`/sever`). Set and lifted in this object at once, with no plan cache in between.
+    #[cfg(feature = "test-faults")]
+    pub severed_until: Cell<u64>,
     /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
     /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
@@ -1021,6 +1026,8 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             abandon: RefCell::new(BTreeSet::new()),
             #[cfg(feature = "test-faults")]
+            severed_until: Cell::new(0),
+            #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
         });
         #[cfg(feature = "test-faults")]
@@ -1134,6 +1141,12 @@ impl<F: Family> Host<F> {
     pub fn down(&self) -> bool {
         let until = self.down_until.get();
         until != 0 && now_ms() < until
+    }
+
+    /// Inside a `/sever` window (LF-13).
+    #[cfg(feature = "test-faults")]
+    pub fn severed(&self) -> bool {
+        now_ms() < self.severed_until.get()
     }
 
     pub fn joined(&self) -> bool {
@@ -1751,6 +1764,12 @@ impl<F: Family> Host<F> {
             if crate::faults::site_down(&h.env).await {
                 crate::faults::count(&format!("site_fault:out>{}", to.0));
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "site fault")));
+                return h.call_failed(on_error);
+            }
+            #[cfg(feature = "test-faults")]
+            if h.severed() {
+                crate::faults::count(&format!("severed:out>{}", to.0));
+                h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "severed")));
                 return h.call_failed(on_error);
             }
             #[cfg(feature = "test-faults")]

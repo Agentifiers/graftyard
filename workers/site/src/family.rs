@@ -355,7 +355,7 @@ impl Family for Repo {
             }
         }
         if to > from || (gap, !out.install.is_empty()) != (false, false) || was != (f.gap, f.installing) {
-            f.fed();
+            f.fed(crate::now_ms());
         }
     }
     /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
