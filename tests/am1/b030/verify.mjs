@@ -10,10 +10,20 @@ import { leaderOf, log, member } from "../hosted/lib.mjs";
 const C = "repo:1048586";
 const OUT = "tests/am1/raw/b030-verify.jsonl";
 const N = Number(process.env.N ?? 80);
-const s = await leaderOf(C);
+let s = await leaderOf(C);
+// A leader change mid-run answers notLeader or nothing: look the leader up again and retry, up to 6 times.
+async function ask(body, ms) {
+  for (let t = 0; ; t++) {
+    const v = (await member(C, s, "/bench_seed", body, ms).catch(() => ({}))).v;
+    if (v && !v.error && !v.notLeader) return v;
+    if (t >= 5) return v ?? { error: "no answer" };
+    await new Promise((r) => setTimeout(r, 5_000));
+    s = await leaderOf(C);
+  }
+}
 const all = [];
 for (let after = 0; ;) {
-  const v = (await member(C, s, "/bench_seed", { b030: { archives: { after, n: 500 } } }, 60_000)).v;
+  const v = await ask({ b030: { archives: { after, n: 500 } } }, 60_000);
   if (!v?.archives?.length) break;
   all.push(...v.archives);
   after = v.archives.at(-1).to;
@@ -24,7 +34,7 @@ const pick = [...new Set([0, all.length - 1, ...Array.from({ length: N }, (_, k)
 let ok = 0, bytes = 0, entries = 0;
 const bad = [];
 for (const a of pick) {
-  const v = (await member(C, s, "/bench_seed", { b030: { verify: { key: a.key } } }, 120_000)).v;
+  const v = await ask({ b030: { verify: { key: a.key } } }, 120_000);
   appendFileSync(OUT, JSON.stringify({ kind: "verify", ...v }) + "\n");
   if (v.ok) { ok++; bytes += v.copies[0].bytes; entries += v.copies[0].entries; } else bad.push(a.key);
 }
@@ -32,7 +42,7 @@ for (const a of pick) {
 let rOk = 0;
 const rBad = [];
 for (const a of pick.filter((_, k) => k % Math.max(1, Math.floor(pick.length / 10)) === 0).slice(0, 10)) {
-  const v = (await member(C, s, "/bench_seed", { b030: { at: a.toAt } }, 120_000)).v;
+  const v = await ask({ b030: { at: a.toAt } }, 120_000);
   appendFileSync(OUT, JSON.stringify({ kind: "at", range: [a.from, a.to], ...v }) + "\n");
   if (v.key === a.key && v.index === a.to && v.entryAt === a.toAt) rOk++; else rBad.push(a.key);
 }
