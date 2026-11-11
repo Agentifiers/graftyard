@@ -1160,7 +1160,7 @@ impl<F: Family> Routes<F> {
 
     fn stats(&self, reset: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
-        let v = json!({
+        let mut v = json!({
             "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
             "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
             "commitMs": s.commit_ms,
@@ -1203,6 +1203,9 @@ impl<F: Family> Routes<F> {
             "trace": s.trace,
             "hops": s.hops,
         });
+        // B0-35's instruments: the network's test-merge budget as its shard last reported it, and this leader's
+        // head-push merges asked and shed since the last reset (`crate::prsync`).
+        v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         if reset {
             s.commit_ms.clear();
             s.round_ms.clear();
@@ -1213,6 +1216,8 @@ impl<F: Family> Routes<F> {
             s.entries = 0;
             s.commands = 0;
             s.failed_calls = 0;
+            s.test_merge_asks = 0;
+            s.test_merge_shed = 0;
             s.peers.clear();
             s.calls.clear();
             s.trace.clear();

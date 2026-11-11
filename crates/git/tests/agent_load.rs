@@ -4,7 +4,9 @@
 //! torvalds/linux measurements [measured, `tests/m0/results/m0-wp9.md`, B0-34: p50 5 to 45 ms, p99 at most 338 ms].
 
 use graftyard_git::issues::IssueNumber;
-use graftyard_git::prsync::{MERGE_EST_MS, MergeBudget, MergeCause, SHARD_VCPU, TEST_MERGE_BUDGET};
+use graftyard_git::prsync::{
+    Budgets, MERGE_EST_MS, MergeAnswer, MergeBudget, MergeCause, SHARD_VCPU, TEST_MERGE_BUDGET, budgeted, instance_vcpu,
+};
 use graftyard_git::{
     FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP_FOR, Fanout, HOT_POOL, NetworkLoad, clone_cache_buckets, fanout, pool_grants,
 };
@@ -181,7 +183,7 @@ fn b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share() {
 #[test]
 fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_compute_for_lists() {
     let secs = 600u64;
-    let mut b = MergeBudget::new(1, 0);
+    let mut b = MergeBudget::new(SHARD_VCPU, 0);
     let mut rng = 0x1234_5678_u64;
     let mut next = || {
         rng ^= rng << 13;
@@ -201,7 +203,7 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
             let n = IssueNumber((next() % 500) as u32);
             if b.admit(MergeCause::HeadPush, n, MERGE_EST_MS, ms) {
                 let c = cost(next());
-                b.charge(MERGE_EST_MS, c);
+                b.charge(MergeCause::HeadPush, MERGE_EST_MS, c);
                 per_sec_ms[s] += f64::from(c);
                 push_ok += 1;
                 dispatch_wait.push(c as u64);
@@ -214,7 +216,7 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
             let n = IssueNumber((next() % 500) as u32);
             if b.admit(MergeCause::Get, n, MERGE_EST_MS, ms) {
                 let c = cost(next());
-                b.charge(MERGE_EST_MS, c);
+                b.charge(MergeCause::Get, MERGE_EST_MS, c);
                 per_sec_ms[s] += f64::from(c);
                 get_ok += 1;
             } else {
@@ -225,7 +227,7 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
             list_computes += 1;
         }
     }
-    let used = b.spent_ms / (secs as f64 * 1000.0);
+    let used = b.stats().spent_ms / (secs as f64 * 1000.0);
     let budget = f64::from(TEST_MERGE_BUDGET * SHARD_VCPU);
     let mut per_sec: Vec<f64> = per_sec_ms.iter().map(|x| x / 1000.0).collect();
     per_sec.sort_by(f64::total_cmp);
@@ -239,6 +241,10 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
     );
     assert!(used <= budget, "{used} vCPU over {budget}");
     assert_eq!(list_computes, 0);
+    // The instruments B0-35 reads count what the run did.
+    let st = b.stats();
+    assert_eq!((st.computed, st.shed, st.list_computes), (push_ok + get_ok, push_shed + get_null, 0));
+    assert_eq!(st.list_asked, (secs * 10) as u32, "every list ask is counted, none computed");
     assert_eq!(push_shed, 0, "journey 9's head pushes fit the budget, so dispatch is never shed");
     assert!(dispatch_p99 <= 10_000);
     assert!(get_null > 0 && get_ok > 0, "GETs coalesce and yield to pushes");
@@ -248,25 +254,25 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
 /// served, GETs take what is left and are otherwise null, and use stays within the budget.
 #[test]
 fn over_budget_pushes_go_first_and_gets_are_null() {
-    let mut b = MergeBudget::new(1, 0);
+    let mut b = MergeBudget::new(SHARD_VCPU, 0);
     let (mut push_ok, mut push_shed, mut get_ok, mut get_null) = (0, 0, 0, 0);
     for ms in (0..120_000u64).step_by(10) {
         if ms % 240 == 0 {
             if b.admit(MergeCause::HeadPush, IssueNumber((ms / 240 % 500) as u32), MERGE_EST_MS, ms) {
-                b.charge(MERGE_EST_MS, 100.0);
+                b.charge(MergeCause::HeadPush, MERGE_EST_MS, 100.0);
                 push_ok += 1;
             } else {
                 push_shed += 1;
             }
         }
         if b.admit(MergeCause::Get, IssueNumber((ms / 10 % 500) as u32), MERGE_EST_MS, ms) {
-            b.charge(MERGE_EST_MS, 100.0);
+            b.charge(MergeCause::Get, MERGE_EST_MS, 100.0);
             get_ok += 1;
         } else {
             get_null += 1;
         }
     }
-    let used = b.spent_ms / 120_000.0;
+    let used = b.stats().spent_ms / 120_000.0;
     println!(
         "over budget: {push_ok} push merges, {push_shed} shed, {get_ok} GET computes, {get_null} GETs null, use \
          {used:.2} of {:.2} vCPU",
@@ -275,6 +281,78 @@ fn over_budget_pushes_go_first_and_gets_are_null() {
     assert_eq!(push_shed, 0, "pushes are served first");
     assert!(get_null > get_ok * 10, "GETs past the budget answer null");
     assert!(used <= f64::from(b.vcpu()) * 1.01, "{used}");
+}
+
+/// The shard's `budgeted` on one `standard-2` shard object (0.25 vCPU of budget) that two networks' merges reach, from
+/// two consumer isolates each: a hot-pool object serves several networks, and a leader's first attempt and the queue
+/// consumer run in different isolates. Each network has its own budget, shared by every caller of it: network 1's
+/// callers, 0.6 vCPU of 150 ms merges between them, are held to its 0.25, while network 2's one merge a second runs.
+/// The counts B0-35 reads add up, only the merge's own time is charged, a shed merge runs no catch-up, and a list
+/// field's ask is counted and never computes.
+#[test]
+fn the_shard_budgets_each_network_once_for_all_its_callers() {
+    use std::cell::{Cell, RefCell};
+    let budgets = RefCell::new(Budgets::new(instance_vcpu("standard-2")));
+    let clock = Cell::new(0u64);
+    let catch_ups = Cell::new(0u32);
+    let (n1, n2) = (net(1), net(2));
+    let ask = |n: NetworkId, cause: MergeCause, cost: u64| {
+        futures_executor::block_on(budgeted(
+            &budgets,
+            n,
+            cause,
+            IssueNumber(clock.get() as u32),
+            || clock.get(),
+            // The catch-up before a merge takes 20 ms and is not charged.
+            || async {
+                clock.set(clock.get() + 20);
+                catch_ups.set(catch_ups.get() + 1);
+                Ok::<(), ()>(())
+            },
+            || async {
+                clock.set(clock.get() + cost);
+                Ok(MergeAnswer::Conflict { conflict: vec![] })
+            },
+        ))
+        .unwrap()
+        .is_some()
+    };
+    let (mut ran1, mut ran2) = (0u32, 0u32);
+    for ms in (0..60_000u64).step_by(250) {
+        // Network 1: two consumer isolates, each a head push every 500 ms, interleaved, at 150 ms of git each.
+        clock.set(ms);
+        ran1 += u32::from(ask(n1, MergeCause::HeadPush, 150));
+        // Network 2: one push a second at 50 ms.
+        if ms % 1000 == 0 {
+            clock.set(ms + 200);
+            ran2 += u32::from(ask(n2, MergeCause::HeadPush, 50));
+        }
+        if ms % 5000 == 0 {
+            assert!(!ask(n1, MergeCause::List, 50), "a list field never computes");
+        }
+    }
+    let (s1, s2) = (budgets.borrow().stats(n1).unwrap(), budgets.borrow().stats(n2).unwrap());
+    println!("network 1 {s1:?}; network 2 {s2:?}");
+    let used1 = s1.spent_ms / 60_000.0;
+    assert!(used1 <= f64::from(s1.vcpu) * 1.1, "network 1's callers share one budget: {used1} of {}", s1.vcpu);
+    assert!(s1.shed > 0 && ran1 < 240, "network 1 is shed past its budget");
+    assert_eq!(ran2, 60, "network 2's merges never wait on network 1's budget");
+    assert_eq!((s1.computed, s1.shed), (ran1, 240 - ran1));
+    assert_eq!((s1.list_asked, s1.list_computes, s2.list_asked), (12, 0, 0));
+    assert_eq!(s1.spent_ms, f64::from(s1.computed) * 150.0, "the merge's time is charged, not the catch-up's");
+    assert_eq!(catch_ups.get(), s1.computed + s2.computed, "a shed merge wakes no catch-up");
+    assert_eq!(s2.spent_ms, 60.0 * 50.0, "each merge is charged its measured time");
+}
+
+/// A compute for a list field, which nothing should run, shows in `list_computes`, and B0-35's "zero computes from
+/// list fields" reads it.
+#[test]
+fn a_compute_charged_to_a_list_field_is_counted() {
+    let mut b = MergeBudget::new(SHARD_VCPU, 0);
+    b.charge(MergeCause::Get, MERGE_EST_MS, 20.0);
+    b.charge(MergeCause::List, MERGE_EST_MS, 30.0);
+    let st = b.stats();
+    assert_eq!((st.computed, st.list_computes, st.spent_ms), (2, 1, 50.0));
 }
 
 // ---- the hosted wiring's pure halves: the leader's report fold and the edge's validator choice ----

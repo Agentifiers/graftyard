@@ -306,8 +306,9 @@ struct Pipe {
     /// How each batch went out, in order: the first attempt in band, or a re-send through the queue.
     sent: Vec<Delivery>,
     cache: Cache,
-    /// TEST_MERGE_BUDGET as the consumer applies it, when set; each merge costs `merge_ms` of vCPU.
-    budget: Option<(graftyard_git::prsync::MergeBudget, f32)>,
+    /// TEST_MERGE_BUDGET as the shard applies it, when set (`budgeted`), with the shard's clock, which each merge
+    /// advances by the given ms.
+    budget: Option<(std::cell::RefCell<graftyard_git::prsync::Budgets>, std::cell::Cell<u64>, u64)>,
 }
 
 impl Pipe {
@@ -351,15 +352,37 @@ impl Pipe {
         let (mut merges, mut shed) = (Vec::new(), Vec::new());
         for v in &vs {
             let Some((base, head)) = v.needs_merge() else { continue };
-            if let Some((budget, cost)) = &mut self.budget {
-                let est = graftyard_git::prsync::MERGE_EST_MS;
-                if !budget.admit(graftyard_git::prsync::MergeCause::HeadPush, v.n, est, g.now.0) {
-                    shed.push((v.n, head));
-                    continue;
-                }
-                budget.charge(est, *cost);
-            }
-            merges.push(self.cache.merge(v.n, base, head));
+            let Some((budgets, clock, cost)) = &self.budget else {
+                merges.push(self.cache.merge(v.n, base, head));
+                continue;
+            };
+            // The shard's `/merge`: its answer through JSON, as the consumer reads it, then `take`.
+            clock.set(clock.get().max(g.now.0));
+            let cache = &mut self.cache;
+            let a = futures_executor::block_on(graftyard_git::prsync::budgeted(
+                budgets,
+                graftyard_types::NetworkId(REPO.0),
+                graftyard_git::prsync::MergeCause::HeadPush,
+                v.n,
+                || clock.get(),
+                || async { Ok::<(), ()>(()) },
+                || async {
+                    clock.set(clock.get() + cost);
+                    cache.runs += 1;
+                    Ok(if cache.conflicts.contains(&head) {
+                        MergeAnswer::Conflict { conflict: vec!["f".into()] }
+                    } else {
+                        MergeAnswer::Clean {
+                            merge: Cache::merge_commit(base, head).hex(),
+                            pack: vec![0x50; cache.pack_bytes],
+                        }
+                    })
+                },
+            ))
+            .unwrap()
+            .unwrap_or(MergeAnswer::Shed { shed: true });
+            let a: MergeAnswer = serde_json::from_str(&serde_json::to_string(&a).unwrap()).unwrap();
+            graftyard_git::prsync::take(a, v.n, base, head, &mut merges, &mut shed).unwrap();
         }
         commands(b, &vs, merges, shed)
     }
@@ -837,12 +860,14 @@ fn a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes() {
 }
 
 /// TEST_MERGE_BUDGET: past the budget a head push's test merge is not computed, its old merge ref is deleted, and
-/// `mergeable` reads null (GraphQL `UNKNOWN`), as for a merge too large to record. Within it the merge runs.
+/// `mergeable` reads null (GraphQL `UNKNOWN`), as for a merge too large to record. Within it the merge runs. The shard
+/// charges each merge's measured time: on a `standard-2` (0.25 vCPU of budget) a 10 s merge leaves the bucket about
+/// 7 s short when it ends, so the next push is shed, though its 50 ms estimate alone would have let it run.
 #[test]
 fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     let (mut g, mut p) = setup();
-    // A merge costs 10 s of vCPU against 1 vCPU a second of budget at k = 1: the second within a second is shed.
-    p.budget = Some((graftyard_git::prsync::MergeBudget::new(1, g.now.0), 10_000.0));
+    let budgets = graftyard_git::prsync::Budgets::new(graftyard_git::prsync::instance_vcpu("standard-2"));
+    p.budget = Some((std::cell::RefCell::new(budgets), std::cell::Cell::new(g.now.0), 10_000));
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
     let runs = p.cache.runs;
@@ -854,4 +879,6 @@ fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     assert_eq!(g.get(&merge_ref(IssueNumber(1))), None, "the older head's merge ref is gone");
     assert_eq!(p.cache.runs, runs, "no merge computed past the budget");
     assert_eq!(g.get(&head_ref(IssueNumber(1))), Some(oid(3)), "the head ref still moves");
+    let st = p.budget.as_ref().unwrap().0.borrow().stats(graftyard_types::NetworkId(REPO.0)).unwrap();
+    assert_eq!((st.computed, st.shed, st.spent_ms), (1, 1, 10_000.0), "one charged at its measured time, one shed");
 }

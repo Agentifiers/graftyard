@@ -24,6 +24,13 @@
 //   node tests/am1/rest/a1.mjs --dry <row> [--agents N] [--seconds S]   # the plan, offline; checks the rates
 //   node tests/am1/rest/a1.mjs --selftest                               # the pack builder against git, offline
 //   node tests/am1/rest/a1.mjs <row> --repo NAME --chain repo:ID [--seconds 600] [--agents 500] [--kill-every 60]
+//     [--push-every S]   # each agent's push interval, for a scaled run (default the row's 120 s)
+//     [--as-admin]       # every request under the admin's PAT, for installs that cannot mint App tokens (graft-m3c)
+//
+// B0-35 pushes to its open PRs' head branches, so each push asks the network's shard for a test merge, adds `mergeable`
+// to its list reads, and writes `testMerges`: each site's shard budget over the window (`/_bed/shard_status`, the
+// shard's `graftyard_git::prsync::BudgetStats`), the vCPU used against the budget, list-field computes, and the
+// leader's `/stats` `testMerges` (asked and shed by its first attempts).
 //
 // Long runs go in an orb service: amp orb service start a1-<row> --command "node tests/am1/rest/a1.mjs <row> ... >
 // tests/am1/raw/a1-<row>.log 2>&1; sleep infinity". Environment as `tests/am1/hosted/lib.mjs` (GRAFT_EDGE,
@@ -41,7 +48,8 @@ import { parseArgs } from "node:util";
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
-  run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" } } });
+  run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
+  "push-every": { type: "string" }, "as-admin": { type: "boolean" } } });
 
 // ---- the plan, from the rows ----
 
@@ -72,7 +80,8 @@ export function planFor(row, { agents, seconds, apiReads, refReads }) {
     case "b0-32": return { ...base, burst: { at: Math.min(60, seconds / 3), pushes: 500, bytes: 256 << 10, merges: 5 } };
     case "b0-33": return { ...journey9(agents ?? 5000), row, seconds, fastUser: 100, pollers: 0, apiReads: 0 };
     case "b0-34": return { ...base, clones: 1 };
-    case "b0-35": return { ...base, openPrs: 500, prPollers: 500, prPollEvery: 5 };
+    // An open PR and a poller per agent: 500 each at the row's 500 agents, fewer in a scaled run.
+    case "b0-35": return { ...base, openPrs: base.agents, prPollers: base.agents, prPollEvery: 5 };
     case "l0-12": return { ...base, leases: true, killEvery: 60 };
     default: throw new Error(`unknown row ${row}`);
   }
@@ -90,6 +99,22 @@ export function offered(p) {
     meanPackBytes: p.packFixed ?? Math.round((1 - p.bigShare) * (p.packMin + p.packMax) / 2 + p.bigShare * p.bigBytes),
     feedPollers: p.pollers, refReadsPerS: p.refReads, apiReadsPerS: p.apiReads, mergesPerMin: p.mergesPerMin,
   };
+}
+
+const FIELDS = ["spentMs", "computed", "shed", "listAsked", "listComputes"];
+/** The window's counts per site: `after` less `before`, or `after` alone if the shard object restarted (`since`). */
+export function budgetWindow(before, after, seconds) {
+  const sites = after.map((a, site) => {
+    if (!a) return null;
+    const b = before[site];
+    const restarted = !b || b.since !== a.since;
+    return { site, vcpu: a.vcpu, restarted, ...Object.fromEntries(FIELDS.map((f) => [f, restarted ? a[f] : a[f] - b[f]])) };
+  }).filter(Boolean);
+  const sum = (f) => sites.reduce((n, x) => n + x[f], 0);
+  const vcpuUsed = +(sum("spentMs") / (seconds * 1000)).toFixed(4);
+  const budgetVcpu = sites.length ? Math.max(...sites.map((x) => x.vcpu)) : null;
+  return { sites, vcpuUsed, budgetVcpu, withinBudget: budgetVcpu !== null && vcpuUsed <= budgetVcpu, computed: sum("computed"),
+    shed: sum("shed"), listComputes: sum("listComputes") };
 }
 
 // ---- packs: one blob, its tree, and a commit, as git writes them ----
@@ -174,8 +199,13 @@ if (opt.selftest) {
     const hex = pushResult(s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr10\n"));
     const n = pushResult(s("unpack ok\n", "ng refs/heads/x agent admission full, retry after 2s\n"));
     const band = pushResult(s("\x02remote: hi\n", `\x01${s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr123\n")}`));
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok") process.exit(1);
+    // B0-35's window: a delta on a shard that kept its budget, the whole count on one that restarted, none on a site
+    // whose shard never merged.
+    const bs = (since, spentMs, computed, shed) => ({ since, vcpu: 0.25, spentMs, computed, shed, listAsked: 0, listComputes: 0 });
+    const w = budgetWindow([bs(1, 100, 2, 0), bs(5, 900, 9, 9), null], [bs(1, 6100, 52, 3), bs(7, 400, 4, 1), null], 60);
+    const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win) process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
 }
@@ -187,6 +217,7 @@ const plan = planFor(row, { agents: opt.agents ? Number(opt.agents) : undefined,
   apiReads: opt["api-reads"] !== undefined ? Number(opt["api-reads"]) : undefined, refReads: opt["ref-reads"] !== undefined ? Number(opt["ref-reads"]) : undefined });
 if (opt["kill-every"]) plan.killEvery = Number(opt["kill-every"]);
 if (opt.pollers !== undefined) plan.pollers = Number(opt.pollers);
+if (opt["push-every"] !== undefined) plan.pushEvery = Number(opt["push-every"]);
 
 if (opt.dry) {
   const o = offered(plan);
@@ -205,7 +236,7 @@ if (opt.dry) {
 // ---- the live run ----
 
 if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID are required for a live run");
-const { api, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
+const { api, bedGet, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -223,11 +254,17 @@ const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return
 
 // Tokens: m3-ci installation tokens, refreshed every 40 min; the admin's PAT for humans and merges.
 let app = null;
-const refreshApp = async () => { const r = await ghs({}); if (r.status !== 201) throw new Error(`ghs ${r.status}`); app = r.body.token; };
 const admin = tokens.admin;
+// `--as-admin`: pushes are Human class, so the run measures the test-merge budget, not B0-35's admission.
+const refreshApp = async () => {
+  if (opt["as-admin"]) { app = admin; return; }
+  const r = await ghs({}); if (r.status !== 201) throw new Error(`ghs ${r.status}`); app = r.body.token;
+};
 // The fleet's App is the confined vendor App, as B0-36 ran it: every push and command it sends is Agent class.
-const flag = await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
-if (flag.status !== 200) throw new Error(`flag m3-ci: ${flag.status}`);
+if (!opt["as-admin"]) {
+  const flag = await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
+  if (flag.status !== 200) throw new Error(`flag m3-ci: ${flag.status}`);
+}
 await refreshApp();
 const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toString("base64")}` });
 
@@ -323,15 +360,17 @@ if (plan.openPrs) {
     await Promise.all(Array.from({ length: Math.min(10, plan.openPrs - b) }, async (_, j) => {
       const ref = `refs/heads/claude/a1-${RUN}-pr${b + j}`;
       let pushed = false;
+      let tipAt = null;
       for (let t = 0; t < 5 && !pushed; t++) {
-        const [res] = await push(app, ref, null, `a1/pr/${b + j}.txt`, randomBytes(2_000));
+        const [res, , nu] = await push(app, ref, null, `a1/pr/${b + j}.txt`, randomBytes(2_000));
         pushed = res === "ok";
+        tipAt = nu;
         if (!pushed) { note(`push ${String(res).slice(0, 40)}`); await sleep(2_000); }
       }
       if (!pushed) return;
       for (let t = 0; t < 5; t++) {
         const [r, pr] = await openPr(app, ref.slice(11), true);
-        if (pr) { openPrs.push(pr); return; }
+        if (pr) { openPrs.push({ ...pr, ref, tip: tipAt }); return; }
         note(`open ${r.status} ${JSON.stringify(r.body?.errors?.[0]?.message ?? r.body?.message ?? "").slice(0, 60)}`);
         await sleep(2_000);
       }
@@ -339,6 +378,8 @@ if (plan.openPrs) {
   }
   writeRow(OUT, { step: "open PRs", opened: openPrs.length, failures: why });
   log(`open PRs ${openPrs.length}/${plan.openPrs} ${JSON.stringify(why).slice(0, 400)}`);
+  // Each of the first agents pushes its PR's head branch, so every push is a head push that asks for a test merge.
+  for (const [k, pr] of openPrs.slice(0, plan.agents).entries()) { agents[k].ref = pr.ref; agents[k].tip = pr.tip; }
 }
 
 t0 = Date.now() + 5_000;
@@ -428,7 +469,7 @@ const jobs = [
   every("read:ref", plan.refReads, async () => st(await lsRefs(admin, "refs/heads/"))),
   every("read:api", plan.apiReads, async () => st(Math.random() < 0.5
     ? await api("GET", `/api/v3/repos/${R}/issues?per_page=30`, admin)
-    : await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequests(last: 10) { nodes { number isDraft } } } }` }))),
+    : await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequests(last: 10) { nodes { number isDraft${plan.openPrs ? " mergeable" : ""} } } } }` }))),
   every("read:clone", plan.clones, async () => {
     const s = Date.now();
     const r = await fetch(`${EDGE}/${R}.git/git-upload-pack`, { method: "POST", headers: { ...auth(admin), "git-protocol": "version=2", "content-type": "application/x-git-upload-pack-request" },
@@ -499,11 +540,18 @@ if (plan.pollers) {
   }
 }
 
+// B0-35's instruments: each site's shard of the network, its test-merge budget's counts (null before any merge).
+const budgets = () => Promise.all([0, 1, 2].map(async (s) => {
+  try { return JSON.parse((await bedGet(`/_bed/shard_status?repo=${CHAIN.split(":")[1]}&shard=${s}`)).body).testMerges ?? null; } catch { return null; }
+}));
+const budgetBefore = plan.openPrs ? await budgets() : null;
 const leaderBefore = await statuses(CHAIN);
 const leader = leaderBefore.find((s) => s.role === "leader")?.site;
 if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
 log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).toISOString()}, leader site ${leader}`);
 await Promise.all(jobs);
+// Give the last pushes' first attempts time to reach the shard.
+const budgetAfter = plan.openPrs ? (await sleep(15_000), await budgets()) : null;
 const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 const lstats = (leader !== undefined ? (await member(CHAIN, leader, "/stats", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
@@ -517,6 +565,8 @@ const v = {
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
+  ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
+    pollAnswers: codes["read:mergeable"] ?? {} } } : {}),
 };
 writeRow(OUT, v);
 log(JSON.stringify(v).slice(0, 4000));

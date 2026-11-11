@@ -47,10 +47,16 @@ fn catch_ups(obj: &str, net: NetworkId) -> graftyard_git::merge_cache::CatchUps 
     CATCH_UPS.with(|m| m.borrow_mut().entry((obj.to_owned(), net.0.0)).or_default().clone())
 }
 
+/// The shard container's instance type; every route builds its `ShardHost` with it.
+const INSTANCE: &str = "standard-2";
+
 #[durable_object]
 pub struct GitShard {
     state: State,
     env: Env,
+    /// TEST_MERGE_BUDGET of each network whose test merges run here, in this object's memory
+    /// (`graftyard_git::prsync::Budgets`).
+    budgets: std::cell::RefCell<graftyard_git::prsync::Budgets>,
 }
 
 struct GroupLog<'a> {
@@ -157,19 +163,24 @@ fn buckets(env: &Env, site: &SiteEnv) -> Vec<(SiteId, R2)> {
 
 impl DurableObject for GitShard {
     fn new(state: State, env: Env) -> Self {
-        GitShard { state, env }
+        let vcpu = graftyard_git::prsync::instance_vcpu(INSTANCE);
+        GitShard { state, env, budgets: std::cell::RefCell::new(graftyard_git::prsync::Budgets::new(vcpu)) }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
         let url = req.url()?;
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-        let host = ShardHost { state: &self.state, region, image: "git", instance: "standard-2" };
+        let host = ShardHost { state: &self.state, region, image: "git", instance: INSTANCE };
         let path = url.path().to_owned();
+        // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
+            let budget = q(&url, "repo")
+                .and_then(|v| v.parse().ok())
+                .and_then(|r| self.budgets.borrow().stats(NetworkId(DbId(r))));
             return Response::from_json(
-                &json!({ "running": running, "alarm": self.state.storage().get_alarm().await? }),
+                &json!({ "running": running, "alarm": self.state.storage().get_alarm().await?, "testMerges": budget }),
             );
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
@@ -398,7 +409,10 @@ impl DurableObject for GitShard {
                 h.set("x-graft-timing", &timing)?;
                 Ok(r.with_headers(h))
             }
-            // The `PrSync` consumer's test merge, after catching up so both commits are here.
+            // The `PrSync` consumer's test merge under TEST_MERGE_BUDGET (`cause`, a head push by default, and `n`).
+            // Past the budget, or for a list field, `{"shed": true}` with no catch-up and no merge. Otherwise it
+            // catches up so both commits are here, and the merge's own time is charged. Either way `x-graft-budget`
+            // carries the network's counts.
             "/merge" => {
                 let oid = |k: &str| {
                     q(&url, k)
@@ -406,8 +420,28 @@ impl DurableObject for GitShard {
                         .ok_or_else(|| Error::RustError(k.to_owned()))
                 };
                 let (base, head) = (oid("base")?, oid("head")?);
-                caught_up().await.map_err(se)?;
-                Response::from_json(&host.merge(net, base, head).await.map_err(se)?)
+                // A head push's unless named: the consumer is the one caller.
+                let cause = q(&url, "cause")
+                    .as_deref()
+                    .and_then(graftyard_git::prsync::MergeCause::parse)
+                    .unwrap_or(graftyard_git::prsync::MergeCause::HeadPush);
+                let n = graftyard_git::issues::IssueNumber(q(&url, "n").and_then(|v| v.parse().ok()).unwrap_or(0));
+                let a = graftyard_git::prsync::budgeted(
+                    &self.budgets,
+                    net,
+                    cause,
+                    n,
+                    now_ms,
+                    || async { caught_up().await.map(|_| ()) },
+                    || host.merge(net, base, head),
+                )
+                .await
+                .map_err(se)?
+                .unwrap_or(graftyard_git::prsync::MergeAnswer::Shed { shed: true });
+                let stats = self.budgets.borrow().stats(net).unwrap_or_default();
+                let h = Headers::new();
+                h.set("x-graft-budget", &serde_json::to_string(&stats)?)?;
+                Ok(Response::from_json(&a)?.with_headers(h))
             }
             // `git archive` of a commit the cache holds once it caught up (`codeload-archives`).
             "/archive" => {
@@ -427,7 +461,7 @@ impl DurableObject for GitShard {
     async fn alarm(&self) -> Result<Response> {
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-        let host = ShardHost { state: &self.state, region, image: "git", instance: "standard-2" };
+        let host = ShardHost { state: &self.state, region, image: "git", instance: INSTANCE };
         host.on_alarm(Timestamp(now_ms())).await.map_err(se)?;
         Response::empty()
     }

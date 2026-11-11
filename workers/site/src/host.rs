@@ -181,6 +181,13 @@ pub struct Stats {
     pub prsync_first: u32,
     /// The cursor at which this member's leader alarm parked `PrSync` (`PARK_AFTER`), 0 when not parked.
     pub prsync_parked: u64,
+    /// Leader: the network's test-merge budget counts (`graftyard_git::prsync::BudgetStats`) as the shard last sent
+    /// them to one of this member's first attempts. Cumulative on the shard since its `since`, so `/stats?reset`
+    /// keeps it.
+    pub test_merges: Option<serde_json::Value>,
+    /// Leader: head-push test merges its first attempts asked the shard for, and how many came back shed.
+    pub test_merge_asks: u32,
+    pub test_merge_shed: u32,
     appended: Vec<(u64, u64)>,
     /// Every member-to-member call this member sent, by the peer's site id.
     pub peers: BTreeMap<u8, PeerCalls>,
@@ -190,6 +197,17 @@ pub struct Stats {
     pub trace: VecDeque<[u64; 6]>,
     /// Test installs: member-to-member calls by modelled hop (`Host::hop`): `[ok, failed for depth, failed otherwise]`.
     pub hops: BTreeMap<u64, [u32; 3]>,
+}
+
+impl Stats {
+    /// A first attempt's answer (`crate::prsync::one`): its shard's budget counts, and its asks and sheds.
+    pub fn test_merges(&mut self, v: &serde_json::Value) {
+        if !v["budget"].is_null() {
+            self.test_merges = Some(v["budget"].clone());
+        }
+        self.test_merge_asks += v["asked"].as_u64().unwrap_or(0) as u32;
+        self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
+    }
 }
 
 /// The kinds in `Stats::trace`. `peer` is the other member's address; `index` is the read index (0 for none), the
@@ -2708,6 +2726,19 @@ mod tests {
     use std::cell::Cell;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
+
+    /// `/stats`' `testMerges`: first attempts' asks and sheds add up, and the shard's latest counts are kept, not
+    /// replaced by an attempt that asked for no merge.
+    #[test]
+    fn first_attempts_add_their_test_merges_to_the_leaders_stats() {
+        let mut s = super::Stats::default();
+        let shard = serde_json::json!({ "computed": 3, "shed": 1 });
+        s.test_merges(&serde_json::json!({ "asked": 4, "shed": 1, "budget": shard }));
+        s.test_merges(&serde_json::json!({ "asked": 2, "shed": 2, "budget": null }));
+        s.test_merges(&serde_json::json!({ "skipped": 9 }));
+        assert_eq!((s.test_merge_asks, s.test_merge_shed), (6, 3));
+        assert_eq!(s.test_merges, Some(shard));
+    }
 
     /// Reads of the same query granted in one input share one built answer, and a different query builds its own.
     #[test]

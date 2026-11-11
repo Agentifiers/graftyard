@@ -84,9 +84,9 @@ pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
 /// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute.
-/// `MergeBudget`, per network in shard memory, refills at TEST_MERGE_BUDGET of the k shards' vCPU: pushes and dispatch
-/// may run one merge into deficit, and GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL
-/// `UNKNOWN`, as GHES 3.22 documents. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
+/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first), refills at
+/// TEST_MERGE_BUDGET of its vCPU and is charged each merge's measured time; pushes and dispatch may run one merge into
+/// deficit, GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
 /// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU.
 pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
