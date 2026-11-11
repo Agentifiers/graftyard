@@ -1099,13 +1099,31 @@ Cost of round 3: $6.39, containers $1.76.
 
 Cost of round 4: $11.19, containers $1.93; rounds 1 to 4 together $43.56.
 
-What LM-1 still needs before it closes (2026-11-11, after `lm1-memory`'s round 4). `am1-rest` built the pieces in memory (`tests/am1/results/am1-rest.md`, 26 of 26 planted bugs; no record format, so 32.15 and 0x12.9 stay free), and `am1-runs` ran them hosted (`tests/am1/results/am1-runs.md`, 3 of 3 planted bugs). Passed and closed: L0-12's refusal counts, L0-13, B0-36, B0-37's push half, LF-4 on issues and releases, and LF-13 (on `graft-m3c`, `tests/am1/results/lf13-m3c.md`). Left:
-- Leaders now hold under the read load: learners, then followers, take API tier reads and the read gate's rows by read-index, and a read they shed answers 503 with `Retry-After` and never reaches the leader (round 4: B0-29, B0-32, and B0-34 held one leader with 0 `suspect`; the validate lock, `fanout`, and the gate's installation-token reads, `04487ca`, were fixed before). Left on branch `lm1-memory` (F65):
-  - Commit p99 with a holding leader: 5,461 ms on B0-29 against 600 ms, and 2,311 ms on B0-31 against 1 s.
-  - The owner's `Authz` group as the new hot read target: every REST and GraphQL read and every repository entry's `deps` read its whole fold on its leader, which took 87 `/read`/s on B0-29 and stepped down seven times. That this sets the repository's commit tail is [inference], to be measured in round 5 with those reads by read-index on the `Authz` group's followers and learners.
-  - Step-downs on the commit path, where the leader takes almost no reads: B0-33 at 5,000 agents (term 2 → 8, 7,539 `suspect`) and L0-12's leader kills (term 11, feed p99 12,984 ms against 2 s). A raft change, if one is needed, is reported first.
-  - B0-34's clone TTFB: p99 158,542 ms against 1 s. `fanout` stepped k 1 → 2 in band in rounds 3 and 4.
-- B0-35: the test-merge budget and its instruments are built (A27 closed; AM1-WP1, "Follow-up: the test-merge budget and B0-35's instruments", on `merge-budget`), and its gate still needs the 500-agent bar and Actions for the dispatch half.
+**Round 5, `Authz` reads by read-index and the commit split (2026-11-11)** (`tests/am1/results/lm1-memory.md`, section 12; `decisions/DECISIONS.md`, "F65 follow-up: the edge reads an owner's `Authz` by read-index"). Site day on `7583378f`, which adds the leader's commit split to `/stats`, then edge `e2cfdfba` and `afb025ac`, which read an owner's `Authz` fold and its `o/r` rows by read-index; 8 learners per repository and 4 on the org's `Authz` group; the same gate lines as round 3. On a 500-agent B0-29-shaped smoke before the edge change, the leader's commit p99 was 50,066 ms, with `Authz` dep reads at p99 17,713 ms; after it, commit p99 was 1,739 ms with `Authz` dep reads at p99 366 ms, and the leader held. Storage confirm stayed at p99 38 to 202 ms.
+
+| Row | Round 5 on `graft-m2b`, sites `7583378f`, edge `afb025ac` |
+| --- | --- |
+| B0-29 | Not judged on commit: the leader held (site 0, term 2, 0 changes, 0 feed polls), but its `/stats` split was lost when the isolate reset. Merges fail: 4 × 200 and 25 × 503. 2,305 of 2,500 agent pushes ok |
+| B0-32 | Fail: burst 147 ok and 352 refused, not in the `admission full` shape (p50 23,063 ms); commit p99 932 ms; two `CommitErrors` holds, term 2 → 4 |
+| B0-31 | Between the lines: commit p99 1,163 ms against 1 s, under the 3 s fail line (round 4: 2,311 ms); the leader held |
+| L0-12, A1 replay with a leader kill every 60 s | Fail: feed p99 14,291 ms against 2 s; leader 0 → 1, term 6; the last leadership's `Authz` dep reads p50 2,246 ms and 956 `/suspect`. Lease overlap is not measurable: the driver takes only Shared leases, which never conflict |
+| B0-34 | Fail on human push p99, 121 s (client timeouts). Clone TTFB p99 2,253 ms is between the lines (round 4: 158,542 ms); k 1 → 2 in band; the leader held |
+| B0-35 | Judged, and fails over budget: test merges used 0.274 vCPU against 0.25 (707 computed, 6,043 shed). List-field computes 0, which passes. Dispatch p99 not instrumented (no Actions). `mergeable` 1,949 `MERGEABLE`, 16,018 `UNKNOWN`, and 39,990 × 503 |
+| B0-33, 5,000 agents | Not run: the round's $10 stop came first |
+
+Every step-down in round 5 was `CommitErrors`, none `Confirm`. In the rows, 29 to 71% of `read:api` still answered 503, shed by 8 learners and 2 followers at `HEAVY_READS`. After both smokes the org's `Authz` group was left with no leader (three followers at terms 53 and 55) until a test-only `/campaign` (`decisions/OPEN-QUESTIONS.md`, F67).
+
+Cost of round 5: $10.56, containers $2.34; rounds 1 to 5 together $54.12.
+
+What LM-1 still needs before it closes (2026-11-11, after `lm1-memory`'s round 5). `am1-rest` built the pieces in memory (`tests/am1/results/am1-rest.md`, 26 of 26 planted bugs; no record format, so 32.15 and 0x12.9 stay free), and `am1-runs` ran them hosted (`tests/am1/results/am1-runs.md`, 3 of 3 planted bugs). Passed and closed: L0-12's refusal counts, L0-13, B0-36, B0-37's push half, LF-4 on issues and releases, and LF-13 (on `graft-m3c`, `tests/am1/results/lf13-m3c.md`). Left:
+- Leaders now hold under the read load: learners, then followers, take API tier reads, the read gate's rows, and the owner's `Authz` fold and `o/r` rows by read-index, and a read they shed answers 503 with `Retry-After` and never reaches the leader. `Authz` is no longer the bound: with it off the leader, no part of a commit dominates (round 5). The validate lock (`fanout`) and the gate's installation-token reads (`04487ca`) were fixed before. Left on branch `lm1-memory` (F65), round 6 next:
+  - Groups left with no leader until a test-only `/campaign`, which production does not have (F67).
+  - `CommitErrors` step-downs and slow dep reads under L0-12's leader kills (`Authz` dep reads p50 2,246 ms on the last leadership), and B0-33 at 5,000 agents, not run in round 5.
+  - L0-12's lease overlap, which the driver cannot show with Shared leases only; round 6 adds Exclusive leases.
+  - B0-32's burst: refused rather than answered `admission full`, and acknowledged past 5 s.
+  - B0-34's human push p99 (121 s).
+  - B0-35's overrun of `TEST_MERGE_BUDGET` (0.274 vCPU against 0.25; A28), and Actions for its dispatch half. Its budget and instruments are built (A27 closed; AM1-WP1, "Follow-up: the test-merge budget and B0-35's instruments").
+  - Half the whole-tier API reads still shed on learners at `HEAVY_READS` (29 to 71% of `read:api` answered 503; K9).
 - Nothing that needs a live Graftyard-run task: L0-12's lease refusal for that kind, B0-37's session-ref listing, and B0-36's lease refusal and no-live-task and cancelled-task fork pushes for that kind are AM3-WP3's, by the operator's decision of 2026-11-10; every other part of the three rows passed hosted.
 - B0-36's GraphQL label surface, now that `89cf205` is on `graft-m2b` (`fanout`'s site day and edge `b9f4291e`).
 - LF-4's other six resources (pull requests, comments, reviews, review comments, commits, and check runs), which need REST GETs on the edge (F61).
