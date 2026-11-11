@@ -13,11 +13,12 @@
 //!   commits a `PrSync`. Its `decide` keeps only what still holds on the fold, so a batch delivered twice, or out of
 //!   order with a later one, changes nothing the first did not.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use graftyard_fold::Read;
 use graftyard_raft::{Command, EntryBody, Format, LogEntry, Record, TierSet};
-use graftyard_types::{ChainId, Index, RepoId, RequestId, Timestamp, Ulid};
+use graftyard_types::{ChainId, Index, NetworkId, RepoId, RequestId, Timestamp, Ulid};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
@@ -275,45 +276,68 @@ pub enum MergeCause {
     List,
 }
 
+/// A shard's vCPU at an instance type [doc: Containers instance types, `research/cloudflare.md`]; an unknown name is
+/// read as the tiers' `standard-4`.
+pub fn instance_vcpu(instance: &str) -> f32 {
+    match instance {
+        "lite" => 0.0625,
+        "basic" => 0.25,
+        "standard-1" => 0.5,
+        "standard-2" => 1.0,
+        "standard-3" => 2.0,
+        _ => SHARD_VCPU,
+    }
+}
+
+/// What one network's budget did on its shard since `since` (ms), B0-35's instruments: the measured ms charged, merges
+/// computed, merges shed past the budget, asks from list fields, which never compute, and merges computed for one,
+/// which must stay zero. The shard sends it with each test merge (`x-graft-budget`) and in `/status`; the leader
+/// that ran the consumer keeps the latest in `/stats` as `testMerges`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetStats {
+    pub since: u64,
+    /// The budget, in vCPU.
+    pub vcpu: f32,
+    pub spent_ms: f64,
+    pub computed: u32,
+    pub shed: u32,
+    pub list_asked: u32,
+    pub list_computes: u32,
+}
+
 /// The test-merge budget of one network on one site: a bucket of vCPU-milliseconds that refills at TEST_MERGE_BUDGET
-/// of the k shards' vCPU and holds one second of it, or one merge's estimate when that is more. Pushes and dispatch
-/// may take the bucket below zero by one merge, so they are never shed while GETs are; a GET runs only on a positive
-/// balance that covers its estimate. Memory only, per shard object: a restart starts it full [inference].
+/// of the vCPU of the shard that runs the merges, the network's first shard on the leader's site, and holds one second
+/// of it, or one merge's estimate when that is more. Pushes and dispatch may take the bucket below zero by one merge,
+/// so they are never shed while GETs are; a GET runs only on a positive balance that covers its estimate. Memory only,
+/// in that shard object (`Budgets`): a restart starts it full [inference].
 #[derive(Clone, Debug, PartialEq)]
 pub struct MergeBudget {
-    k: u8,
+    rate: f32,
     ms: f32,
     at: u64,
     /// The last GET compute per PR, for GET_COALESCE_MS.
     got: BTreeMap<IssueNumber, u64>,
-    /// vCPU-ms charged, for the gate's "within budget".
-    pub spent_ms: f64,
+    stats: BudgetStats,
 }
 
 impl MergeBudget {
-    pub fn new(k: u8, now: u64) -> MergeBudget {
-        MergeBudget { k: k.max(1), ms: Self::rate(k.max(1)), at: now, got: BTreeMap::new(), spent_ms: 0.0 }
-    }
-
-    /// vCPU-ms a second.
-    fn rate(k: u8) -> f32 {
-        TEST_MERGE_BUDGET * SHARD_VCPU * f32::from(k) * 1000.0
-    }
-
-    pub fn set_k(&mut self, k: u8) {
-        self.k = k.max(1);
+    /// The budget of a shard of `vcpu` (`instance_vcpu`), full at `now`.
+    pub fn new(vcpu: f32, now: u64) -> MergeBudget {
+        let rate = TEST_MERGE_BUDGET * vcpu * 1000.0;
+        let stats = BudgetStats { since: now, vcpu: rate / 1000.0, ..BudgetStats::default() };
+        MergeBudget { rate, ms: rate, at: now, got: BTreeMap::new(), stats }
     }
 
     fn refill(&mut self, now: u64, est_ms: f32) {
-        let rate = Self::rate(self.k);
         let dt = now.saturating_sub(self.at) as f32 / 1000.0;
-        self.ms = (self.ms + rate * dt).min(rate.max(est_ms));
-        self.at = now;
+        self.ms = (self.ms + self.rate * dt).min(self.rate.max(est_ms));
+        self.at = self.at.max(now);
     }
 
     /// Whether a test merge for `cause` of pull request `n`, estimated at `est_ms` of vCPU, may run now. A `true`
     /// charges the estimate; `charge` corrects it once the merge's real cost is known. A `false` leaves `mergeable`
-    /// null (GraphQL `UNKNOWN`) until a later compute.
+    /// null (GraphQL `UNKNOWN`) until a later compute, and counts as shed, or for a list field as asked.
     pub fn admit(&mut self, cause: MergeCause, n: IssueNumber, est_ms: f32, now: u64) -> bool {
         self.refill(now, est_ms);
         let ok = match cause {
@@ -322,7 +346,7 @@ impl MergeBudget {
             // A GET leaves GET_RESERVE of a second's budget for pushes and dispatch, which arrive unannounced.
             MergeCause::Get => {
                 let fresh = self.got.get(&n).is_none_or(|t| now >= t + GET_COALESCE_MS);
-                fresh && self.ms - est_ms >= GET_RESERVE * Self::rate(self.k)
+                fresh && self.ms - est_ms >= GET_RESERVE * self.rate
             }
         };
         if ok {
@@ -330,19 +354,115 @@ impl MergeBudget {
                 self.got.insert(n, now);
             }
             self.ms -= est_ms;
+        } else if cause == MergeCause::List {
+            self.stats.list_asked += 1;
+        } else {
+            self.stats.shed += 1;
         }
         ok
     }
 
-    /// A merge admitted at `est_ms` cost `real_ms`.
-    pub fn charge(&mut self, est_ms: f32, real_ms: f32) {
+    /// A merge for `cause` admitted at `est_ms` ran and took `real_ms`.
+    pub fn charge(&mut self, cause: MergeCause, est_ms: f32, real_ms: f32) {
         self.ms -= real_ms - est_ms;
-        self.spent_ms += f64::from(real_ms);
+        self.stats.spent_ms += f64::from(real_ms);
+        self.stats.computed += 1;
+        if cause == MergeCause::List {
+            self.stats.list_computes += 1;
+        }
     }
 
-    /// The budget, in vCPU, at the current k.
+    /// The budget, in vCPU.
     pub fn vcpu(&self) -> f32 {
-        Self::rate(self.k) / 1000.0
+        self.rate / 1000.0
+    }
+
+    pub fn stats(&self) -> BudgetStats {
+        self.stats.clone()
+    }
+}
+
+/// Every network's `MergeBudget` in one shard object, by network: a hot-pool object serves several networks, and each
+/// network's budget is its own (`design/DESIGN.md`, Shape, `MergeBudget`). `vcpu` is the shard's.
+#[derive(Clone, Debug)]
+pub struct Budgets {
+    vcpu: f32,
+    of: BTreeMap<NetworkId, MergeBudget>,
+}
+
+impl Budgets {
+    pub fn new(vcpu: f32) -> Budgets {
+        Budgets { vcpu, of: BTreeMap::new() }
+    }
+
+    /// `net`'s budget, full at `now` on first use.
+    pub fn of(&mut self, net: NetworkId, now: u64) -> &mut MergeBudget {
+        self.of.entry(net).or_insert_with(|| MergeBudget::new(self.vcpu, now))
+    }
+
+    pub fn stats(&self, net: NetworkId) -> Option<BudgetStats> {
+        self.of.get(&net).map(MergeBudget::stats)
+    }
+}
+
+/// The shard's test merge under the budget: admits it for `cause` against `net`'s budget, then, only when
+/// admitted, runs `prepare` (the shard's catch-up, not charged) and `run` (the merge), and charges `run`'s time on
+/// `clock` (ms). That is its wall time, which bounds a single-threaded git merge's vCPU from above [inference]. `None`
+/// when the budget shed it or a list field asked, so `mergeable` stays null. A merge that failed is charged for the
+/// time it took.
+pub async fn budgeted<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = Result<T, E>>>(
+    budgets: &RefCell<Budgets>,
+    net: NetworkId,
+    cause: MergeCause,
+    n: IssueNumber,
+    clock: impl Fn() -> u64,
+    prepare: impl FnOnce() -> P,
+    run: impl FnOnce() -> F,
+) -> Result<Option<T>, E> {
+    let now = clock();
+    if !budgets.borrow_mut().of(net, now).admit(cause, n, MERGE_EST_MS, now) {
+        return Ok(None);
+    }
+    prepare().await?;
+    let t0 = clock();
+    let r = run().await;
+    let real = clock().saturating_sub(t0) as f32;
+    budgets.borrow_mut().of(net, t0).charge(cause, MERGE_EST_MS, real);
+    r.map(Some)
+}
+
+/// One test merge's answer, into the batch's `merges`, or its `shed` (`commands`), so `mergeable` reads null when the
+/// shard ran no merge.
+pub fn take(
+    a: MergeAnswer,
+    n: IssueNumber,
+    base: ObjectId,
+    head: ObjectId,
+    merges: &mut Vec<TestMerge>,
+    shed: &mut Vec<(IssueNumber, ObjectId)>,
+) -> Result<(), &'static str> {
+    match a {
+        MergeAnswer::Shed { .. } => shed.push((n, head)),
+        a => merges.push(a.test_merge(n, base, head).ok_or("the shard named no object id")?),
+    }
+    Ok(())
+}
+
+impl MergeCause {
+    /// The shard's `cause` query value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MergeCause::HeadPush => "push",
+            MergeCause::Dispatch => "dispatch",
+            MergeCause::Get => "get",
+            MergeCause::List => "list",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<MergeCause> {
+        [MergeCause::HeadPush, MergeCause::Dispatch, MergeCause::Get, MergeCause::List]
+            .into_iter()
+            .find(|c| c.as_str() == s)
     }
 }
 
@@ -435,11 +555,16 @@ pub enum MergeAnswer {
     Conflict {
         conflict: Vec<String>,
     },
+    /// The shard's answer past TEST_MERGE_BUDGET, or to a list field: no merge ran, and `mergeable` stays null. The
+    /// container never sends it.
+    Shed {
+        shed: bool,
+    },
 }
 
 impl MergeAnswer {
-    /// The test merge of pull request `n` at (base, head), or `None` when the answer names no object id. A conflict
-    /// keeps its first four paths, as `MergeabilityResult::Conflict` holds.
+    /// The test merge of pull request `n` at (base, head), or `None` when the answer names no object id or no merge
+    /// ran (`Shed`). A conflict keeps its first four paths, as `MergeabilityResult::Conflict` holds.
     pub fn test_merge(self, n: IssueNumber, base: ObjectId, head: ObjectId) -> Option<TestMerge> {
         let (result, pack) = match self {
             MergeAnswer::Clean { merge, pack } => {
@@ -450,6 +575,7 @@ impl MergeAnswer {
                 let paths = conflict.into_iter().take(4).map(Into::into).collect();
                 (MergeabilityResult::Conflict { paths }, None)
             }
+            MergeAnswer::Shed { .. } => return None,
         };
         Some(TestMerge { n, base, head, result, pack })
     }

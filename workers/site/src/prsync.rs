@@ -174,6 +174,9 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 }
             });
             let Some(h) = w.upgrade() else { return };
+            if let Ok(v) = &r {
+                h.stats.borrow_mut().test_merges(v);
+            }
             // Batches that waited for this attempt, or the re-send of a failed one.
             h.arm_in(LEADER_ALARM_MS);
         });
@@ -355,11 +358,6 @@ async fn record_of(env: &Env, repo: RepoId) -> std::result::Result<graftyard_typ
     Ok(record)
 }
 
-thread_local! {
-    /// Each repository's test-merge budget on this isolate, at k = 1 until `fanout` is wired to the consumer.
-    static BUDGETS: RefCell<HashMap<i64, git::prsync::MergeBudget>> = RefCell::default();
-}
-
 async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     let repo = RepoId(DbId(m.repo));
     let chain = ChainId::Repo(repo);
@@ -383,23 +381,18 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     }
     let mut merges = Vec::new();
     let mut shed = Vec::new();
+    let (mut budget, mut asked) = (Value::Null, 0);
     for view in &views {
         let Some((base, head)) = view.needs_merge() else { continue };
-        // TEST_MERGE_BUDGET: a head push's merge is shed only past the budget by more than one merge.
-        let est = git::prsync::MERGE_EST_MS;
-        let ok = BUDGETS.with(|b| {
-            let mut b = b.borrow_mut();
-            let b = b.entry(repo.0.0).or_insert_with(|| git::prsync::MergeBudget::new(1, now_ms()));
-            b.admit(git::prsync::MergeCause::HeadPush, view.n, est, now_ms())
-        });
-        if !ok {
-            shed.push((view.n, head));
-            continue;
-        }
-        let answer = merge(env, &site, repo, base, head).await?;
-        merges.push(answer.test_merge(view.n, base, head).ok_or("the shard named no object id")?);
+        asked += 1;
+        // TEST_MERGE_BUDGET is the shard's: a head push's merge comes back `Shed` past the budget by more than one
+        // merge, and its `mergeable` stays null.
+        let (answer, b) = merge(env, &site, repo, view.n, base, head).await?;
+        budget = b;
+        git::prsync::take(answer, view.n, base, head, &mut merges, &mut shed)?;
     }
     t.push(now_ms());
+    let shed_n = shed.len();
     let cmds = git::prsync::commands(&m.batch, &views, merges, shed);
     let mut events = 0;
     for c in cmds {
@@ -412,26 +405,36 @@ async fn one(env: &Env, m: &Message) -> std::result::Result<Value, String> {
     t.push(now_ms());
     // Milliseconds in each step: record, read, merges, commits.
     let steps: Vec<u64> = t.windows(2).map(|w| w[1] - w[0]).collect();
-    Ok(json!({ "prs": views.len(), "events": events, "ms": steps }))
+    Ok(json!({ "prs": views.len(), "events": events, "ms": steps, "asked": asked, "shed": shed_n, "budget": budget }))
 }
 
-/// The test merge on this site's shard of the network. A site script binds only its own `GitShard` class
-/// (`workers/site/deploy.mjs`), and the queue is the leader's site's, so the merge runs where the leader is; a shard
-/// that does not hold the network yet rehydrates it from the log and the buckets, as any shard does.
+/// The test merge on this site's shard of the network, as a head push's (`MergeCause::HeadPush`), with the network's
+/// budget counts the shard sent (`x-graft-budget`, `graftyard_git::prsync::BudgetStats`). A site script binds only
+/// its own `GitShard` class (`workers/site/deploy.mjs`), and the queue is the leader's site's, so the merge runs
+/// where the leader is; a shard that does not hold the network yet rehydrates it from the log and the buckets, as
+/// any shard does.
 async fn merge(
     env: &Env,
     site: &SiteEnv,
     repo: RepoId,
+    n: git::issues::IssueNumber,
     base: git::refs::ObjectId,
     head: git::refs::ObjectId,
-) -> std::result::Result<git::prsync::MergeAnswer, String> {
+) -> std::result::Result<(git::prsync::MergeAnswer, Value), String> {
     let me = site.id;
     let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
     let stub = env
         .durable_object(&format!("SHARD_{}", me.0))
         .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
         .map_err(|e| e.to_string())?;
-    let url = format!("https://shard/merge?repo={}&base={}&head={}", repo.0.0, base.hex(), head.hex());
+    let url = format!(
+        "https://shard/merge?repo={}&base={}&head={}&n={}&cause={}",
+        repo.0.0,
+        base.hex(),
+        head.hex(),
+        n.0,
+        git::prsync::MergeCause::HeadPush.as_str()
+    );
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
     let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
@@ -440,7 +443,15 @@ async fn merge(
     if r.status_code() != 200 {
         return Err(format!("shard merge: {} {text}", r.status_code()));
     }
-    serde_json::from_str(&text).map_err(|e| format!("shard merge answered {text}: {e}"))
+    let budget = r
+        .headers()
+        .get("x-graft-budget")
+        .ok()
+        .flatten()
+        .and_then(|h| serde_json::from_str(&h).ok())
+        .unwrap_or(Value::Null);
+    let a = serde_json::from_str(&text).map_err(|e| format!("shard merge answered {text}: {e}"))?;
+    Ok((a, budget))
 }
 
 /// The leader's answer to the consumer's read: the cursor and each pull request's view, from the core tier, with the

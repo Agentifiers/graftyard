@@ -142,7 +142,6 @@ Sources: "Open questions and risks" in `design/DESIGN.md` and `design/AGENT-LAYE
 | A21 | From a third-walk report: is it acceptable that an `overlap:` label a human removed comes back only on the next change to its cluster? | `design/AGENT-LAYER.md`, Shape (overlaps block) | The labels users see on agent PRs | No gate row. AM4-WP2 builds the labels |
 | A22 | Would `fanout` up above 0.6 CPU for 1 min, down below 0.3 for 1 h, make the warm hot pool unnecessary? The design keeps 0.75 for 3 min and keeps pool shards warm instead, priced at $433 a month at 2,000 developers. B0-34 did not test 0.6 or 1 min: they are inferred from `b0-34-r7` (one shard at 0.6 to 0.82 CPU gave TTFB p99 0.93 to 1.26 s a minute) and `b0-34-r8` (290 s from saturation to k = 2 serving, cold) [inference] | `design/DESIGN.md`, Shape (`fanout`, `HOT_POOL`); `decisions/DECISIONS.md`, "Idle hot-pool shards keep hot networks warm" | The hot pool line in `scripts/cost.py`, and clone time to first byte on a step in load | M0-WP9, a B0-34 rerun at 0.6 and 1 min with a cold pool |
 | A23 | Should a follower that stops following spread its held-poll answers over FEED_BATCH, or should `place_learners` run before followers take polls? Such a follower answers up to FEED_HELD_MAX held polls in one second, and their re-polls land in the next. In LF-12 `old-r36`'s no-learner phase, 5 seconds, 53 s apart, each had 1,288 to 2,301 feed requests on both followers, a commit median of 1,098 ms against 261 ms in the other seconds, and follower gaps of 450 to 580 ms against 130 to 190 ms; `r35` and `r29` show the same (664 against 318 ms, and 744 against 327 ms). No gate missed on it [measured, `tests/m0/results/m0-wp12.md`, tenth pass, "Tenth-pass proposed design edits" 33] | `design/AGENT-LAYER.md`, Shape (feed block) | LF-12's no-learner phase, and any group whose followers hold polls before learners are placed | No work package yet. An LF-12 variant that spreads the answers |
-| A27 | Is `TEST_MERGE_BUDGET` enforced anywhere? `MergeBudget` is meant to cap test merges per network in shard memory, but `workers/site/src/prsync.rs` admits merges through `MergeBudget::admit` and never calls `charge`, and keeps the budget in an isolate `thread_local`, so nothing spends it and no instrument reports it [measured, `tests/am1/results/lm1-memory.md`, section 8] | `design/DESIGN.md`, Shape (`MergeBudget`, `TEST_MERGE_BUDGET`) | B0-35's test-merge vCPU line, and the git CPU that journey 9's head-push merges are sized at (0.21 vCPU) | AM1-WP1, "Follow-up: the test-merge budget and B0-35's instruments", then B0-35 hosted |
 
 ## Costs
 
@@ -215,6 +214,6 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 | Cloudflare platform facts | 19 |
 | Git and storage | 7 |
 | Release and operations | 14 |
-| Agents | 23 |
+| Agents | 22 |
 | Costs | 8 |
-| Total | 121 |
+| Total | 120 |
