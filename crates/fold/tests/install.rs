@@ -681,6 +681,68 @@ fn bf28_learners_beside_a_voter_and_on_one_site_are_distinct_objects_that_never_
     println!("BF-28: objects {:?}; learner addresses {addrs:?}; installs {:?}", n.objects, n.installed);
 }
 
+/// "Follower read" for a learner (`design/DESIGN.md`): a learner behind never grants a read-index read from its older
+/// fold, exactly as a follower: cut off, it grants nothing and fails the read at CAMPAIGN_DEADLINE (the member then
+/// answers `overloaded` after FOLLOWER_WAIT), and once back its read sees the write made while it was away.
+#[test]
+fn a_learner_behind_grants_no_read_from_its_older_fold() {
+    let mut n = Net::new();
+    n.elect(A);
+    n.write(A, 2);
+    let (p, learners) = with_learners(&n);
+    for l in &learners {
+        n.add(l);
+    }
+    n.on(A, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(p.clone())))).unwrap();
+    for _ in 0..5 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 + 1);
+    }
+    let l = learners[1].addr();
+    n.commit(A, vec![Ev::Core(50, 1)]);
+    // The next entry carries the commit index to the learner.
+    n.write(A, 1);
+    assert_eq!(n.m(l).group_fold().fold.get(50), Some(1), "the learner applied the first write");
+    // Behind by the commit index alone: it holds the next entry but no append has told it the entry committed. Its
+    // read waits for the leader's index and applies through it first, so it sees the new value, never the old one.
+    n.commit(A, vec![Ev::Core(50, 3)]);
+    assert_eq!(n.m(l).group_fold().fold.get(50), Some(1), "the learner has not applied the new entry");
+    let rid = n.on(l, |m, now| m.read_index(now)).expect("a learner reads");
+    for _ in 0..4 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 / 4);
+    }
+    assert_eq!(n.seen.get(&(l, rid)), Some(&Some(3)), "the read saw the entry committed before it");
+    n.commit(A, vec![Ev::Core(50, 1)]);
+    n.write(A, 1);
+    n.cut.insert(l);
+    n.commit(A, vec![Ev::Core(50, 2)]);
+    n.advance(1);
+    assert_eq!(n.m(l).group_fold().fold.get(50), Some(1), "the learner is behind");
+    let rid = n.on(l, |m, now| m.read_index(now)).expect("a learner reads");
+    for _ in 0..4 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 / 2);
+        assert!(!n.seen.contains_key(&(l, rid)), "no grant from the learner's older fold");
+    }
+    n.advance(CALL_DEADLINE.as_millis() as u64 * 4);
+    let failed = n
+        .resolutions
+        .iter()
+        .any(|(s, r)| *s == l && matches!(r, Resolution::Read { id, result: Err(_) } if *id == rid));
+    assert!(failed, "the read failed instead of answering stale");
+    n.cut.clear();
+    let mut seen = None;
+    for _ in 0..6 {
+        let rid = n.on(l, |m, now| m.read_index(now)).ok();
+        for _ in 0..4 {
+            n.advance(CALL_DEADLINE.as_millis() as u64 / 2);
+        }
+        seen = rid.and_then(|r| n.seen.get(&(l, r)).copied());
+        if seen.is_some() {
+            break;
+        }
+    }
+    assert_eq!(seen, Some(Some(2)), "once back, the learner's read sees the write made while it was away");
+}
+
 /// A learner sends one read-index request at a time and at most one every 50 ms; a follower batches every 10 ms.
 #[test]
 fn learner_read_index_keeps_one_in_flight_and_a_50_ms_floor() {

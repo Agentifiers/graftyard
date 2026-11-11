@@ -2114,6 +2114,20 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
 
+### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
+
+Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
+
+**Decision.** `read_spread` asks the group's learners first, then its followers, at most three members. If none answers a value and any sheds the read (`overloaded`, `busy`, a 5xx, or no answer within `FOLLOWER_CALL`), the edge answers 503 with `Retry-After` (1 s when shed, 5 s otherwise) and does not ask the leader. Only a read every member asked declines as not its own (`notLeader`, or a 4xx such as a group not yet created) goes to the leader. Leader-only reads (deps, refs, `ranges`, `/entries`) are unchanged. The lookup learns a config's learners with its voters, and reads a member's `/status` once per config index it has not seen. Rows place learners with the leader's `/learners` route before each row (`tests/fanout/learners.mjs`), and journey 9's reads count 6 times each against `LEARNER_READS` (`design/DESIGN.md`, Scale, learners).
+
+**Why.** A read a follower or learner sheds is load the leader cannot take either: its thread is what moved the leader in every round-3 row. A 503 with `Retry-After` costs a client one retry; a leader step-down costs every client the election.
+
+**Beat.** Retrying the followers after `retryAfterMs` inside the edge, which holds the request and its isolate's memory. A gate decision cache for B0-33 keyed by repository and minute: B0-33's agents share one installation token, so its `jti` cache already holds one decision per isolate, and the 6,925 gate 503s were `call_opt` exhausting 20 s on a leaderless group (term 2 to 19), not cache misses.
+
+**Evidence.** Unit tests `a_shed_read_never_reaches_the_leader`, `spread_reads_go_to_learners_then_followers_and_skip_the_leader`, `a_config_teaches_its_learners`, `a_failed_read_is_503_with_retry_after`, and `a_learner_behind_grants_no_read_from_its_older_fold`; `tests/lm1mem/plant.py`. One learner on `graft-m2b` served 244 to 408 narrow read-index reads/s and 13 to 25 whole-tier reads/s of a 958 KB dump from one client (section 11).
+
+**Flip.** Clients that turn the 503s into a retry storm larger than the shed load, or rows that pass only with reads on the leader.
+
 ### F65 follow-up: API tier reads and the read gate's rows go to followers by read-index, 2026-11-11
 
 Round 2 of `lm1-memory` held memory at 500 agents, but every row failed on the leader's one thread: up to 942 ms of CPU a second in `/read`, so its storage confirms and AppendEntries replies stepped late and `STEP_DOWN` fired (`tests/am1/results/lm1-memory.md`, sections 6d and 9).

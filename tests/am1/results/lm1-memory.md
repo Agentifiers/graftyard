@@ -596,3 +596,193 @@ $1.76 of it, at 11:42Z after the last teardown. Cumulative at each row's end, fr
 $0.36 (09:12Z), B0-29 about $1.37 (09:51Z, before B0-32), B0-32 $1.63, B0-31 $2.50, B0-34 $3.30, B0-33 $3.87, L0-12
 $5.37 (with 26 minutes of setup), B0-35 $6.39. Rounds 1 to 3 together:
 $32.37. Every network from 131237 to 131245 is torn down (8 instances, all 200).
+
+## 11. Round 4: no leader fallback, learners for reads (`lm1-memory` after `6fe479e0`)
+
+### What changed
+
+Round 3's rows failed because a read both followers shed went on to the leader by `call_opt`, retried up to four
+times, so overload anywhere landed on the leader's thread (section 10). Round 4, design first (DESIGN "*Follower
+read.*", Scale "Hot group reads, learners", journey 9 item 1; AGENT-LAYER A1 step 4; DECISIONS "F65 follow-up: a read
+the members shed is 503, never the leader's"):
+- **Edge 503 fallback.** `graftyard_lookup::read_spread` asks at most three members (`SPREAD_TRIES`), learners first,
+  then followers, never the cached leader. If none answers a value and any sheds it (`overloaded`, `busy`, a 5xx, or
+  no answer within `FOLLOWER_CALL`), it fails with an error naming `OVERLOADED` and the edge answers 503 with
+  `Retry-After: 1` (`api::read_failed`; 5 s for any other failed read, on the REST, LFS and git read-gate paths).
+  Only a read every member asked declines as not its own (`notLeader`, or a 4xx such as a group not created yet)
+  goes to the leader (`spread_verdict`). Deps, refs, `ranges` and `/entries` are unchanged.
+- **Learners for reads.** `Known` keeps the config's learners with its voters; a value whose `meta.configIndex` is
+  past the isolate's config makes it read that member's `/status` once (`refresh_config`). Learners already held the
+  same caps: `member::gate` applies `READS_MAX`, `HEAVY_READS` and the dump cache to any index read on a non-leader,
+  and `read_wait` answers `overloaded` after `FOLLOWER_WAIT` to one that has not applied the leader's index.
+  `tests/fanout/learners.mjs` places them with the leader's `/learners` route; `rows.sh` runs it before `k.mjs` when
+  `LEARNERS` is set.
+- No change to `crates/raft/src` or the site script.
+
+### Learners, as measured before the rows
+
+One learner (slot 0, enam, beside the leader) added to old groups on `54c45213`, driven from the orb through the
+tools edge (`/tmp/ipar.mjs`, parallel `/read` with `index: true`):
+
+| Group | Reads | Result |
+| --- | --- | --- |
+| 131244 (500 PRs) | 100 × 10 narrow `access`, one client | 1,000 of 1,000 values, 244 reads/s |
+| 131244 | 300 × 3 narrow | 825 values, 75 `overloaded` (`READS_MAX` 256), 408 reads/s |
+| 131238 (B0-29's, 958 KB dump) | 100 × 10 narrow | 1,000 values, 276 reads/s, 0 late, 0 shed |
+| 131238 | 16 × 8 whole-tier, three clients at once | 318 values, 66 `overloaded` (`HEAVY_READS`), 17 to 25 reads/s each |
+
+The leader answered every learner batch from its lease (`trace`: `IndexTaken` then `ResSent` in the same ms, batches
+50 to 100 ms apart), so a learner costs the leader at most 20 calls/s, as DESIGN says. Whole-tier reads of journey 9's
+1 MB tiers are the binding cost on a learner as on a follower, which is why DESIGN now weights them.
+
+**A new learner refuses reads until an append reaches it.** A learner's `leader` is set only by an `Append`
+(`follower.rs`), so after `/learners` it answered every read `notLeader` naming no leader until the next commit. An
+idle learner also lost the leader after about 25 s: its isolate restarted (a new `boot` each time, same isolate id),
+and it named no leader until the next append. Under a row the group commits several times a second, so this costs
+nothing there; `learners.mjs` runs before `k.mjs`, whose commit is that append, and `spread_verdict` takes a
+learner's `notLeader` as declining, so it never turns a read into a 503 on its own.
+
+### Deployed
+
+| What | Commit | Version |
+| --- | --- | --- |
+| Site day (test-faults, NOROLL, image `…@sha256:1722…f3e9`, `containers/` unchanged since `80d8837`), 14:48 to 14:58Z | `48f8fae1` | a `4ebd36d0`, b `cfc50929`, c `f74b1ff0` |
+| Edge | `48f8fae1` | `460e0956` |
+
+The three PrSync queues were purged after the site day (14:59Z), before the smoke.
+
+### Smoke at 500 agents (131245, 300 s, three learners: two enam, one weur)
+
+`LEARNERS=enam:1500,weur:600` placed l0 and l2 on site a and l1 on site b. Read invocations by 15:05:46 (2.5 minutes
+into load), from `/stats`:
+
+| Member | `/read` in | served by read-index | shed | late |
+| --- | --- | --- | --- | --- |
+| f0 (leader) | 8,031 | — | 572 | 0 |
+| f1, f2 | 1,016, 1,060 | 605, 556 | 647, 720 | 1, 13 |
+| l0, l1, l2 | 26,707, 26,407, 27,291 | 12,101, 5,170, 11,773 | 23,092, 24,078, 23,696 | 0, 173, 0 |
+
+- **The leader held**: term 2 throughout, 0 `/suspect` on any member, 0 leader changes. Its own `/read` was 14,807 over
+  the run (the `ranges` and refs reads that stay on it), against 87,000 to 160,000 per row in rounds 1 to 3.
+- It still stepped down twice by alarm, `CommitErrors` 4 of 76 and 7 of 121 calls failed to *both* followers at
+  once, at 15:03:16 and 15:05:26, each to `Some(SiteId(1))` and back without a term change (`terms` all 2 at the end).
+- Commit p99 3,966 ms (p50 905, n 2,690); agent pushes 1,218 of 1,241 ok (22 timeouts); human pushes 103 ok;
+  feed p99 2,135 ms (11,699 events); ref reads 9,967 of 9,969 200.
+- `read:api` 15,913 200 and 36,422 × 503 with `Retry-After: 1`: the members shed about 70% of 200 API reads/s of whole
+  tiers. Each learner served about 40 to 80 reads/s while shedding 160 a second.
+- Peak MB per member (`durableObjectsPeriodicGroups`): f0 95, followers ≤ 54, learners ≤ 55. No `exceededMemory`.
+
+So the fallback did what it was for (no `suspect`, no term change, the leader's reads cut by 85 to 90%), but
+whole-tier reads at journey 9's rate overran the five non-leaders' `HEAVY_READS`. The rows place eight learners
+(`LEARNERS=enam:4000,weur:2000,apac:2000`, weighted as DESIGN now says) to see whether more members serve more.
+
+### Rows (`rows-m9`, eight learners per row: `LEARNERS=enam:4000,weur:2000,apac:2000`)
+
+`tests/fanout/rows.sh m9`, K = 4, `TEARDOWN=1`, `STOP_USD=11`, cost from `tests/fanout/raw/mem4-t0.t0` (14:48Z).
+`place_learners` gave l0 to l7 on sites a, b, c, a, b, c, a, a (enam owed 4, weur 2, apac 2).
+
+**B0-29, 600 s (131246).** Gate: commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale` on distinct refs, leader < 600
+req/s with zero feed polls / fail commit p99 > 1 s, any queue merge > 10 s, any feed poll on the leader.
+- Commit p99 5,461 ms (p50 834, n 6,793). **Fail.**
+- Leader f0 held term 2 for the whole row (0 → 0); 0 `/suspect` on the group; 3 `StepDown` alarms on f0
+  (15:20:20, 15:22:23, and f1's 15:22:26) were transfers that did not complete, so the term never moved. f0 took
+  31,024 `/read` (the leader-only ones), 120 req/s, 0 feed polls; peak 139 MB, followers 88 and 90, learners 53 to 63,
+  0 `exceededMemory`.
+- Agent pushes 2,250 of 2,500 ok, 174 timeouts, 47 `fetch failed`, 27 `stale`, 2 refused; human pushes 185 ok.
+- `read:api` 51,594 200 and 52,858 503 (`Retry-After: 1`); ref reads 19,443 of 19,778 200; feed p99 2,674 ms.
+- Merges: 13 of 28 `merge:only` 200, 13 × 503, p99 18,971 ms.
+- **The read hotspot moved to the org's `Authz` leader.** Every REST and GraphQL read reads the owner's whole `Authz`
+  fold as a `dep` on its leader (`api::authz`, `call_opt`, no spread). `authz:7100001#1#f0` took 20,962 `/read` in
+  15:16 to 15:20 (87/s, 33 s of CPU) and stepped down; f2 then logged six `StepDown CommitErrors` holds at 15:21:41 to
+  15:25:30, the first with 753 and 950 of 1,411 calls failed. The repository's commits read that same group as a
+  `deps` fold through `fresh`, so its step-downs plausibly set the repository's commit tail [inference: no per-commit
+  dep timing was recorded].
+
+**B0-32, 180 s (131247).** Gate: every push acked within 5 s or `ng … admission full`, merges in the next 2 entries,
+zero leader changes, zero `suspect` / fail any lost ack, other refusal shape, object reset from memory, merge > 2 s,
+leader change or `suspect`.
+- **Zero leader changes (term 2 throughout), zero `/suspect`** on the group; peak MB f0 79, others ≤ 52; no reset.
+- Burst: 49 ok, 446 `refused` (not the `admission full` shape), 5 `fetch failed`, 0 within 5 s (p50 26.6 s).
+  **Fail** (refusal shape, pushes past 5 s, merges).
+- Commit p99 2,318 ms (p50 632, n 1,820); merges `merge:only` 5 of 10 200, p99 3,266 ms.
+- Four `StepDown CommitErrors` holds (f0 at 15:33:25 with 79 of 253 calls to f2 failed, f0 at 15:33:45 and 15:35:18,
+  f1 at 15:33:41), none completed: the term stayed 2.
+
+**B0-31, 600 s (131248, 1 MiB packs, leader moved to site 0 first by `transfer.mjs`: term 2 → 4).** Gate: commit p99
+≤ 1 s with buckets up / fail > 3 s.
+- Commit p99 2,311 ms (p50 658, n 4,421). **Fail** (between the lines).
+- Leader f0 held from the transfer to the end; term 4 → 6 in the row, 29 `/suspect` (against 7,774 to 27,703 per row in
+  round 3); two `StepDown CommitErrors` holds on f0 (15:39:00 with 12 of 221 calls failed to both followers, 15:42:03).
+- Agent pushes 742 ok, 1,702 `refused`, 56 × 503 "every member asked shed the read" from the read gate; feed p99
+  2,482 ms; `read:api` 53,010 200 / 53,172 503; peak f0 79 MB, others ≤ 52; f0 took 17,986 `/read`.
+
+**L0-12 A1 replay, 600 s, leader kill every 60 s (131249).** Gate: no lease overlap over 500 ms, 500 long-pollers see
+each event within 3 s at p99 outside leader kills, 100 of 100 refused for the agent kinds / fail feed p99 over 2 s,
+any overlap, a refusal count off.
+- 500 tasks and 500 leases set up (27 minutes of setup, 15:50 to 16:17Z); feed served by 8 learners and 2 followers.
+- Feed p99 12,984 ms (p50 1,141, 11,398 events); polls 21,434 held, 10,167 `lagging`, 13,863 `gone`, 12,149 with no
+  status. **Fail** (feed p99). Lease overlap is not reported by the driver; not judged.
+- Leader 0 → 2, term 11 at the end (10 kills); 6,575 `/suspect` on the final leader; 38 `StepDown` lines across the
+  three sites in 16:15 to 16:30Z. Peak MB f0 264, f1 278, f2 256, learners 70 to 111; no `exceededMemory` logged.
+- Agent pushes 1,407 of 2,490 ok, 976 × 503 "every member asked shed the read" from the read gate; lease renewals 169
+  200 / 1,098 503; `read:api` 27,519 200 / 83,330 503.
+- The voters' peaks are back near round 1's: under leader kills the access-row reads the gate makes shed on every
+  member, and each new leader rebuilds its dumps.
+
+**B0-34, 600 s, shard kill at 300 s (131250).** Gate: k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB
+p99 ≤ 1 s / fail TTFB p99 > 5 s, k > 8.
+- k 1 → 2 in band (≤ 8, pass); clone TTFB p99 158,542 ms (p50 846, 462 clones). **Fail** (TTFB).
+- Leader f0 held term 2 throughout, 0 `/suspect`; commit p99 5,135 ms (p50 780, n 6,461); human push p99 121 s;
+  agent pushes 2,003 of 2,500 ok, 348 timeouts; feed p99 2,514 ms; peak f0 129 MB, others ≤ 78.
+
+**B0-33, 300 s, 5,000 agents (131251).** Gate: human and merge-queue p99 ≤ 1 s, ≥ 140 agent commands/s admitted,
+zero leader changes and `suspect` / fail any leader change or `suspect`, < 100 commands/s.
+- Term 2 → 8 (f0 leader again at the end), 7,539 `/suspect` on f0; commit p99 8,568 ms (p50 1,288, n 4,466).
+  **Fail.**
+- Agent pushes 2,020 ok of 12,533 (6.7/s), 9,752 `refused`, 454 × 503 "every member asked shed the read" from the
+  read gate (against 6,925 gate 503s in round 3), the rest timeouts; fast user 341 of 494 200, p99 13,580 ms.
+- Peak MB f1 258, f2 147, f0 129, learners 89 to 111.
+
+**B0-35, 600 s, 500 open PRs (131252).** Gate: test-merge vCPU within `TEST_MERGE_BUDGET`, Actions dispatch p99 ≤ 10 s,
+zero computes from list fields / fail over budget, dispatch p99 > 30 s.
+- Test-merge vCPU, list-field computes and dispatch p99 **not measured** (`MergeBudget::charge` is its own work item; no
+  Actions on `graft-m2b`). **Not judged on its gate.**
+- What it measured failed: leader 0 → 1, term 11; 1,252 `/suspect`; commit p99 6,481 ms (n 39); agent pushes 1,481 of
+  2,500 ok; `read:mergeable` 2,454 `MERGEABLE`, 7,453 `UNKNOWN`, 18,870 × 503; `read:api` 14,356 200 / 25,989 503;
+  peak f1 141 MB, others ≤ 110, no `exceededMemory`.
+
+### Verdicts, round 4
+
+| Row | Verdict | Deciding number |
+| --- | --- | --- |
+| B0-29 | Fail | Commit p99 5,461 ms (gate 600 ms); 0 leader changes, 0 `suspect` |
+| B0-32 | Fail | Burst 49 ok / 446 refused, 0 within 5 s; 0 leader changes, 0 `suspect` |
+| B0-31 | Fail | Commit p99 2,311 ms (gate 1 s, fail 3 s) |
+| L0-12 A1 | Fail | Feed p99 12,984 ms (gate 2 s); term 11 under 10 kills |
+| B0-34 | Fail | Clone TTFB p99 158,542 ms (fail 5 s); k 1 → 2 in band |
+| B0-33 | Fail | Term 2 → 8, 7,539 `suspect`, 2,020 of 12,533 agent pushes ok |
+| B0-35 | Not judged | Its gate's instruments are not measured; 18,870 mergeable reads 503 |
+
+### What still bounds the rows
+
+- **Leader reads are gone; the shed moved to the members.** The repository leader took 8,931 to 31,024 `/read` per row
+  (leader-only reads), against 87,000 to 160,000 before round 2. About half of the 200 API reads/s are answered 503
+  with `Retry-After: 1`, because 8 learners and 2 followers together still shed half the whole-tier reads at
+  `HEAVY_READS` and `DUMP_EVERY_MS` (each learner served 40 to 80 reads/s and shed about 160/s on the smoke).
+- **The owner's `Authz` group is the new hot leader.** Every REST and GraphQL read reads its whole fold as a `dep`
+  on its leader, and every repository entry reads it through `fresh` (`host::read_deps`). On B0-29 its leader took
+  20,962 `/read` in four minutes (87/s, 33 s of CPU) and stepped down seven times; the repository's own leader held.
+  Next: those dep reads by read-index on the `Authz` group's followers and learners, with the same caps.
+- **Step-downs with almost no reads on the leader** remain at 5,000 agents (B0-33: 7,539 `suspect`, term 2 → 8) and
+  under leader kills (L0-12), where the commit path itself is the load. Not changed here: a raft change is reported
+  first.
+- **B0-32's burst** is refused rather than answered `admission full`, and the driver does not record the `ng` reason;
+  that refusal shape stays unexplained.
+
+### Cost, round 4
+
+`tests/fanout/cost.sh` with `T0_FILE=tests/fanout/raw/mem4-t0.t0` (14:48Z): **$11.19**, containers $1.93 of it, at
+17:31Z after the last teardown. Cumulative at each row's end: smoke $0.57, B0-29 $1.96, B0-32 $2.38, B0-31 $3.52,
+L0-12 $5.38 (27 minutes of setup), B0-34 $6.63, B0-33 $9.22, B0-35 $11.19. Rounds 1 to 4 together: $43.56. Every
+network from 131245 to 131252 is torn down (smoke and rows each tore down their own; a final pass found 6 more
+instances, all 200, and a second pass none).

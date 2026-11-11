@@ -1,0 +1,66 @@
+2026-11-11T15:12:36Z cost {"workers_requests": 81106, "workers_cpu_ms": 1092109, "do_requests": 648910, "do_rows_written": 203811, "do_active_s": 22857, "containers_cpu_s": 679, "containers_gib_s": 79261, "containers_gb_s": 158522, "containers_usd": 0.22, "usd": 0.6}
+2026-11-11T15:13:04.919Z m3org/fm9-b029 = 131246
+2026-11-11T15:13:10.454Z repo:131246 leader 0: learners [{"addr":192,"doName":"repo:131246#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131246#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131246#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131246#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131246#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131246#2#l5","join":20 config 6
+2026-11-11T15:13:13.096Z repo:131246 leader 0: set k 4: {"k":4,"meta":{"configIndex":6,"leader":0,"term":2}}
+2026-11-11T15:13:13.243Z repo:131246 leader 0: k 4 at 8
+2026-11-11T15:13:13Z b0-29 fm9-b029 131246 start
+2026-11-11T15:28:11.774Z repo:131246 leader 0: k 8 at 1263
+2026-11-11T15:28:11Z b0-29 fm9-b029 131246 done exit 0
+2026-11-11T15:28:16Z torn down 131246
+2026-11-11T15:28:17Z cost {"workers_requests": 243342, "workers_cpu_ms": 3865058, "do_requests": 2019448, "do_rows_written": 1034256, "do_active_s": 50768, "containers_cpu_s": 1750, "containers_gib_s": 135940, "containers_gb_s": 271880, "containers_usd": 0.39, "usd": 1.96}
+2026-11-11T15:28:50.493Z m3org/fm9-b032 = 131247
+2026-11-11T15:28:57.255Z repo:131247 leader 0: learners [{"addr":192,"doName":"repo:131247#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131247#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131247#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131247#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131247#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131247#2#l5","join":20 config 5
+2026-11-11T15:29:00.254Z repo:131247 leader 0: set k 4: {"k":4,"meta":{"configIndex":5,"leader":0,"term":2}}
+2026-11-11T15:29:00.375Z repo:131247 leader 0: k 4 at 6
+2026-11-11T15:29:00Z b0-32 fm9-b032 131247 start
+2026-11-11T15:35:28.107Z repo:131247 leader 0: k 4 at 553
+2026-11-11T15:35:28Z b0-32 fm9-b032 131247 done exit 0
+2026-11-11T15:35:32Z torn down 131247
+2026-11-11T15:35:33Z cost {"workers_requests": 293600, "workers_cpu_ms": 4441102, "do_requests": 2440122, "do_rows_written": 1269228, "do_active_s": 63448, "containers_cpu_s": 2137, "containers_gib_s": 161737, "containers_gb_s": 323475, "containers_usd": 0.47, "usd": 2.38}
+2026-11-11T15:36:07.556Z m3org/fm9-b031 = 131248
+before [[0,"leader",2],[1,"follower",2],[2,"follower",2]]
+transfer from 0 -> 2 {"meta":{"configIndex":1,"leader":0,"term":2},"transfer":{"Ok":"5943088577994773224"}}
+after [[0,"follower",3],[1,"follower",3],[2,"leader",3]]
+2026-11-11T15:36:19.651Z repo:131248 leader 2: learners [{"addr":192,"doName":"repo:131248#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131248#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131248#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131248#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131248#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131248#2#l5","join":20 config 8
+2026-11-11T15:36:34.252Z repo:131248 leader 2: set k 4: {"k":4,"meta":{"configIndex":8,"leader":2,"term":3}}
+2026-11-11T15:36:34.527Z repo:131248 leader 2: k 4 at 9
+2026-11-11T15:36:34Z b0-31 fm9-b031 131248 start
+2026-11-11T15:49:22.254Z repo:131248 leader 0: k 8 at 1374
+2026-11-11T15:49:22Z b0-31 fm9-b031 131248 done exit 0
+2026-11-11T15:49:27Z torn down 131248
+2026-11-11T15:49:29Z cost {"workers_requests": 444768, "workers_cpu_ms": 6942058, "do_requests": 3676845, "do_rows_written": 1922089, "do_active_s": 91174, "containers_cpu_s": 3636, "containers_gib_s": 210966, "containers_gb_s": 421932, "containers_usd": 0.63, "usd": 3.52}
+2026-11-11T15:50:04.600Z m3org/fm9-l012 = 131249
+2026-11-11T15:50:10.914Z repo:131249 leader 0: learners [{"addr":192,"doName":"repo:131249#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131249#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131249#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131249#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131249#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131249#2#l5","join":20 config 5
+2026-11-11T15:50:13.087Z repo:131249 leader 0: set k 4: {"k":4,"meta":{"configIndex":5,"leader":0,"term":2}}
+2026-11-11T15:50:13.207Z repo:131249 leader 0: k 4 at 6
+2026-11-11T15:50:13Z l0-12 fm9-l012 131249 start
+2026-11-11T16:29:41.651Z repo:131249 leader 2: k 4 at 1462
+2026-11-11T16:29:41Z l0-12 fm9-l012 131249 done exit 0
+2026-11-11T16:29:47Z torn down 131249
+2026-11-11T16:29:48Z cost {"workers_requests": 642923, "workers_cpu_ms": 9762414, "do_requests": 5297265, "do_rows_written": 2883855, "do_active_s": 159381, "containers_cpu_s": 5066, "containers_gib_s": 364838, "containers_gb_s": 729676, "containers_usd": 1.06, "usd": 5.38}
+2026-11-11T16:30:23.292Z m3org/fm9-b034 = 131250
+2026-11-11T16:30:29.647Z repo:131250 leader 0: learners [{"addr":192,"doName":"repo:131250#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131250#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131250#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131250#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131250#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131250#2#l5","join":20 config 5
+2026-11-11T16:30:31.804Z repo:131250 leader 0: k 1 at 5
+2026-11-11T16:30:31Z b0-34 fm9-b034 131250 start
+2026-11-11T16:43:54.942Z repo:131250 leader 0: k 2 at 1378
+2026-11-11T16:43:54Z b0-34 fm9-b034 131250 done exit 0
+2026-11-11T16:44:00Z torn down 131250
+2026-11-11T16:44:01Z cost {"workers_requests": 806335, "workers_cpu_ms": 12740361, "do_requests": 6632977, "do_rows_written": 3648990, "do_active_s": 188053, "containers_cpu_s": 5609, "containers_gib_s": 412176, "containers_gb_s": 824353, "containers_usd": 1.2, "usd": 6.63}
+2026-11-11T16:44:33.272Z m3org/fm9-b033 = 131251
+2026-11-11T16:44:39.420Z repo:131251 leader 0: learners [{"addr":192,"doName":"repo:131251#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131251#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131251#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131251#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131251#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131251#2#l5","join":20 config 6
+2026-11-11T16:44:41.493Z repo:131251 leader 0: set k 4: {"k":4,"meta":{"configIndex":6,"leader":0,"term":2}}
+2026-11-11T16:44:41.631Z repo:131251 leader 0: k 4 at 8
+2026-11-11T16:44:41Z b0-33 fm9-b033 131251 start
+2026-11-11T16:54:24.693Z repo:131251 leader 0: k 4 at 411
+2026-11-11T16:54:24Z b0-33 fm9-b033 131251 done exit 0
+2026-11-11T16:54:30Z torn down 131251
+2026-11-11T16:54:32Z cost {"workers_requests": 861872, "workers_cpu_ms": 15316081, "do_requests": 7423071, "do_rows_written": 5858407, "do_active_s": 211529, "containers_cpu_s": 6938, "containers_gib_s": 457779, "containers_gb_s": 915558, "containers_usd": 1.35, "usd": 9.22}
+2026-11-11T16:55:08.293Z m3org/fm9-b035 = 131252
+2026-11-11T16:55:14.001Z repo:131252 leader 0: learners [{"addr":192,"doName":"repo:131252#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131252#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131252#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131252#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131252#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131252#2#l5","join":20 config 5
+2026-11-11T16:55:16.683Z repo:131252 leader 0: set k 4: {"k":4,"meta":{"configIndex":5,"leader":0,"term":2}}
+2026-11-11T16:55:16.805Z repo:131252 leader 0: k 4 at 6
+2026-11-11T16:55:16Z b0-35 fm9-b035 131252 start
+2026-11-11T17:17:11.024Z repo:131252 leader 1: k 8 at 979
+2026-11-11T17:17:11Z b0-35 fm9-b035 131252 done exit 0
+2026-11-11T17:17:18Z torn down 131252
+ALLDONE

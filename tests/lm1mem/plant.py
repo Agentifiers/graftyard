@@ -14,8 +14,12 @@ LK = 'crates/lookup/src/lib.rs'
 MEM = 'workers/site/src/member.rs'
 FAM = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
+API = 'workers/edge/src/api.rs'
+RAFT_INSTALL = 'crates/raft/src/member/install.rs'
 LOOKUP = ['cargo', '-p', 'graftyard-lookup', '--lib', 'tests']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', '']
+EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_failed_read']
+FOLD = ['cargo', '-p', 'graftyard-fold', '--test', 'install', 'a_learner_behind']
 
 MUTANTS = [
     ('lookup: an overloaded answer is taken as a missed member (suspect feeds the storm)', LK,
@@ -55,12 +59,36 @@ MUTANTS = [
      '        None => q.get("refs").is_some(),\n    }\n}', SITE),
     ('follower: whole-tier rows are served while the metadata tier loads', FAM,
      '        Some(Value::Bool(true)) => meta_loaded,', '        Some(Value::Bool(true)) => true,', SITE),
-    ('lookup: the cached leader is asked as a follower first', LK, "        .filter(|(s, _)| Some(*s) != leader)\n",
-     "        .filter(|(s, _)| Some(*s) != leader || true)\n", LOOKUP),
+    ('lookup: the cached leader is asked as a follower first', LK, ".filter(|(s, _)| Some(*s) != leader).collect()",
+     ".filter(|(s, _)| Some(*s) != leader || true).collect()", LOOKUP),
     ('lookup: a follower that names the leader is taken as the answer', LK,
      '&& r.is_some_and(|(_, v)| v.pointer("/error/notLeader").is_none()',
      '&& r.is_some_and(|(_, v)| v.pointer("/error/notLeaderX").is_none()', LOOKUP),
-    ('lookup: no rotation, every caller hits the same follower', LK, '        out.rotate_left(n);', '        let _ = n;', LOOKUP),
+    ('lookup: no rotation, every caller hits the same follower', LK, '            out.rotate_left(n);', '            let _ = n;', LOOKUP),
+    ('round 4: a read the members shed falls back to the leader', LK,
+     'if answers.iter().all(declined) { Spread::Leader } else { Spread::Shed }',
+     'if answers.iter().all(declined) { Spread::Leader } else { Spread::Leader }', LOOKUP),
+    ('round 4: a member that did not answer counts as declining, so the read goes to the leader', LK,
+     '        None => false,\n    };\n    if answers', '        None => true,\n    };\n    if answers', LOOKUP),
+    ('round 4: a 5xx counts as declining', LK, '        Some((s, _)) => (400..500).contains(s),',
+     '        Some((s, _)) => (400..600).contains(s),', LOOKUP),
+    ('round 4: learners are not asked', LK, '    let mut out = rotated(learners);',
+     '    let mut out: Vec<Target> = Vec::new();\n    let _ = rotated(learners);', LOOKUP),
+    ('round 4: followers before learners', LK,
+     '    let mut out = rotated(learners);\n    out.extend(rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect()));',
+     '    let mut out = rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect());\n    out.extend(rotated(learners));',
+     LOOKUP),
+    ('round 4: every learner is asked, however many', LK, '    out.truncate(SPREAD_TRIES);\n', '', LOOKUP),
+    ('round 4: a config\'s learners are not learned', LK, '            e.learners = learners;',
+     '            e.learners = Vec::new();\n            let _: &Vec<(SiteId, String)> = &learners;', LOOKUP),
+    ('round 4: a shed read is 503 without Retry-After', API,
+     '    Reply::error(503, &format!("{why} ({e})"), "rest").with("retry-after", retry)',
+     '    let _ = retry;\n    Reply::error(503, &format!("{why} ({e})"), "rest")', EDGE),
+    ('round 4: a shed read waits the 5 s of a failure, not 1 s', API,
+     'if e.contains(graftyard_lookup::OVERLOADED) { "1" } else { "5" }', '{ "5" }', EDGE),
+    ('round 4: a learner behind grants a read from its older fold', RAFT_INSTALL,
+     '        for id in failed {\n            self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });',
+     '        for id in failed {\n            let g = grant(self);\n            self.out.resolutions.push(Resolution::Read { id, result: Ok(g) });', FOLD),
     ('shared: every read builds its own answer', HOST, '    if let Some(b) = built.get(&key) {',
      '    if let Some(b) = built.get(&key).filter(|_| false) {', SITE),
     ('shared: answers keyed by nothing, so another query gets the first answer', HOST,

@@ -17,6 +17,7 @@ for s in $SMOKES; do
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
   rid=$(id "$repo")
   [ -n "$rid" ] || { echo "$name: no repo" >> "$ST"; continue; }
+  [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
   node tests/fanout/k.mjs "repo:$rid" 4 >> "$ST" 2>&1
   flags="--agents $agents --seconds ${SECONDS_:-300}"
   [ "$reads" = row ] || flags="$flags --api-reads $reads"
