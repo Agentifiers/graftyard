@@ -213,6 +213,35 @@ mod tests {
         assert_eq!(Repo::read_json(&a, &q), second);
     }
 
+    /// A rebuild of a repository's dump is let through at most once per DUMP_EVERY_MS, and a read whose cached dump is
+    /// at the tiers' state is served at once, however soon after the last rebuild.
+    #[test]
+    fn dump_rebuilds_are_spaced_but_cache_hits_are_not() {
+        use crate::family::{DUMP_EVERY_MS, dump_wait};
+        let q = json!({ "rows": true, "ranges": true, "packed": true });
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let first = entry(1, 2, Digest([0; 32]));
+        let mut a = RepoFold::new(RepoId(DbId(41)), AccountId(DbId(1)));
+        a.apply_entry(&first);
+        assert_eq!(dump_wait(&a, 10_000), None, "the first rebuild is due");
+        Repo::read_json(&a, &q);
+        assert_eq!(dump_wait(&a, 10_100), None, "the cached dump is at the tiers' state");
+        a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
+        assert_eq!(dump_wait(&a, 10_300), Some(DUMP_EVERY_MS - 300));
+        assert_eq!(dump_wait(&a, 10_000 + DUMP_EVERY_MS), None, "due again");
+        assert_eq!(dump_wait(&a, 10_001 + DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 1), "and recorded");
+    }
+
     /// A follower's answer to a shard's report names the leader in the shape lookup follows (`/error/notLeader`),
     /// not an error the lookup would count as a missed member.
     #[test]

@@ -969,6 +969,11 @@ impl<F: Family> Routes<F> {
         };
         self.host.served();
         match within(raft::CALL_DEADLINE * 3, rx).await {
+            // A stale dump whose rebuild is not yet due (`family::dump_wait`): the host answered `overloaded`.
+            Some(Ok(Ok((value, _)))) if heavy && value.get("overloaded").is_some() => {
+                self.host.stats.borrow_mut().shed_reads += 1;
+                self.reply(value)
+            }
             Some(Ok(Ok((value, index)))) => match _held {
                 Some(held) => self.reply_held(json!({ "value": value, "index": index.0 }), held),
                 None => self.reply(json!({ "value": value, "index": index.0 })),

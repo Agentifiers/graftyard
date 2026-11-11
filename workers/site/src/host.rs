@@ -1599,6 +1599,10 @@ impl<F: Family> Host<F> {
                                             }),
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
+                                    } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
+                                        // Checked here, where the dump would be built, so one granted batch
+                                        // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
+                                        graftyard_lookup::overloaded_reply(ms)
                                     } else {
                                         F::read_json(f.fold(), &q)
                                     };
