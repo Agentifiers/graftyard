@@ -1,0 +1,9 @@
+2026-11-11T15:00:19.310Z m3org/fs500x = 131245
+2026-11-11T15:00:22.130Z repo:131245 leader 0: learners [{"addr":192,"doName":"repo:131245#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131245#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131245#2#l2","join":200,"site":0,"slot":2}] config 5
+2026-11-11T15:00:24.332Z repo:131245 leader 0: set k 4: {"k":4,"meta":{"configIndex":5,"leader":0,"term":2}}
+2026-11-11T15:00:24.460Z repo:131245 leader 0: k 4 at 6
+2026-11-11T15:00:24Z s500x fs500x 131245 start --agents 500 --seconds 300
+2026-11-11T15:09:45Z s500x fs500x 131245 done exit 0
+2026-11-11T15:09:48Z torn down 131245
+2026-11-11T15:09:48Z cost {"workers_requests": 81064, "workers_cpu_ms": 1091325, "do_requests": 648009, "do_rows_written": 201810, "do_active_s": 22468, "containers_cpu_s": 512, "containers_gib_s": 68732, "containers_gb_s": 137464, "containers_usd": 0.19, "usd": 0.57}
+DONE
