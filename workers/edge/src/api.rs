@@ -421,11 +421,15 @@ pub(crate) async fn tier_rows(
     Ok(match v {
         Ok(Some(v)) => Ok(v),
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
-        Err(e) if e.contains(graftyard_lookup::OVERLOADED) => {
-            Err(Reply::error(503, "the repository's leader is shedding reads; retry", "rest").with("retry-after", "1"))
-        }
-        Err(e) => Err(unavailable(&e)),
+        Err(e) => Err(read_failed("the repository's tier rows did not answer; retry", &e)),
     })
+}
+
+/// A spread or leader read that failed (`graftyard_lookup::read_spread`): 503 with `Retry-After`, 1 s when the
+/// members shed it (`graftyard_lookup::OVERLOADED`), which they answer within about one FOLLOWER_WAIT, else 5 s.
+pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
+    let retry = if e.contains(graftyard_lookup::OVERLOADED) { "1" } else { "5" };
+    Reply::error(503, &format!("{why} ({e})"), "rest").with("retry-after", retry)
 }
 
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
@@ -1520,7 +1524,7 @@ async fn transfer(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, method: 
     match crate::read_gate(c, &repo, Some(&who)).await? {
         Ok(graftyard_identity::Decision::Allow) => {}
         Ok(_) => return Ok(Reply::not_found()),
-        Err(e) => return Ok(unavailable(&format!("the repository's access rows did not answer; retry ({e})"))),
+        Err(e) => return Ok(read_failed("the repository's access rows did not answer; retry", &e)),
     }
     let raw = buckets(c, &repo)?;
     let refs: Vec<(SiteId, &R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
@@ -1617,5 +1621,16 @@ mod tests {
         assert_eq!(q, serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } }));
         let q = super::tier_rows_query(Some(7));
         assert_eq!(q["q"]["rows"], serde_json::json!({ "merge": 7 }));
+    }
+
+    /// A read every member shed is 503 with `Retry-After: 1`; any other failed read is 503 with `Retry-After: 5`;
+    /// neither is a 5xx without one, which a client would not retry on its own.
+    #[test]
+    fn a_failed_read_is_503_with_retry_after() {
+        let shed = format!("repo:9: every member asked shed the read: {}", graftyard_lookup::OVERLOADED);
+        let r = super::read_failed("rows", &shed);
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("1")));
+        let r = super::read_failed("rows", "repo:9: repo:9#1#f0: no answer");
+        assert_eq!((r.status, r.header("retry-after")), (503, Some("5")));
     }
 }

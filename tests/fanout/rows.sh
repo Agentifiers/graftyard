@@ -27,6 +27,8 @@ for row in $ROWS; do
   rid=$(id "$repo")
   [ -n "$rid" ] || { echo "$row: no repo" >> "$ST"; continue; }
   [ "$row" = b0-31 ] && node tests/am1/runs/transfer.mjs "repo:$rid" 2 "$repo" >> "$ST" 2>&1
+  # Learners for reads (design/DESIGN.md, "Follower read"), before k.mjs, whose commit tells them the leader.
+  [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
   # B0-34 leaves k to `fanout` itself (in band, from NetworkLoad); the others start at K.
   if [ "$row" = b0-34 ]; then node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1; else node tests/fanout/k.mjs "repo:$rid" "$K" >> "$ST" 2>&1; fi
   case $row in

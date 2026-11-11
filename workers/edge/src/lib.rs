@@ -1929,7 +1929,12 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             Ok(_) if who.is_none() && push => return unauthorized(rid, "No anonymous write access."),
             Ok(_) if who.is_none() => return unauthorized(rid, "Authentication required\n"),
             Ok(_) => return text(rid, 404, "Repository not found.\n"),
-            Err(e) => return text(rid, 503, &format!("the repository's access rows did not answer; retry ({e})\n")),
+            Err(e) => {
+                let r = api::read_failed("the repository's access rows did not answer; retry", &e);
+                let res = text(rid, 503, &format!("the repository's access rows did not answer; retry ({e})\n"))?;
+                res.headers().set("retry-after", r.header("retry-after").unwrap_or("5"))?;
+                return Ok(res);
+            }
         }
     }
     let r = match route {

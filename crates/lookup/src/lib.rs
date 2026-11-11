@@ -60,10 +60,11 @@ pub async fn within<T>(d: Duration, f: impl Future<Output = T>) -> Option<T> {
     }
 }
 
-/// Per isolate: each chain's voters from its last config, and the leader its replies named.
+/// Per isolate: each chain's voters and learners from its last config, and the leader its replies named.
 #[derive(Clone, Default)]
 struct Known {
     voters: Vec<(SiteId, String)>,
+    learners: Vec<(SiteId, String)>,
     config_index: u64,
     leader: Option<SiteId>,
 }
@@ -95,11 +96,13 @@ fn learn(chain: ChainId, nl: &Value) {
         GroupConfig::Joint { new, .. } => new,
     };
     let voters = p.voters().iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    let learners = p.learners().iter().map(|m| (m.site, m.do_name.to_string())).collect();
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
         let e = k.entry(chain).or_default();
         if index >= e.config_index {
             e.voters = voters;
+            e.learners = learners;
             e.config_index = index;
         }
     });
@@ -374,20 +377,60 @@ pub async fn call_opt(
 /// that has not applied the leader's index answers `overloaded` itself after the site's FOLLOWER_WAIT (1 s).
 pub const FOLLOWER_CALL: Duration = Duration::from_millis(2_000);
 
-/// The followers a read-index read goes to, in order: the cached config's voters, else the record's bootstrap
-/// members, without the cached leader, rotated by `pick` so callers spread over both. With no leader cached every
-/// voter is a candidate: a member that leads serves the read itself.
-fn follower_order(voters: Vec<(SiteId, String)>, leader: Option<SiteId>, pick: usize) -> Vec<Target> {
-    let mut out: Vec<Target> = voters
-        .into_iter()
-        .filter(|(s, _)| Some(*s) != leader)
-        .map(|(site, do_name)| Target { site, do_name })
-        .collect();
-    if !out.is_empty() {
-        let n = pick % out.len();
-        out.rotate_left(n);
-    }
+/// Members `read_spread` asks at most for one read [guess]: as many as the activity feed tries, so a read every one
+/// sheds waits at most about three FOLLOWER_WAITs before its 503.
+const SPREAD_TRIES: usize = 3;
+
+/// The members a read-index read goes to, in order: the cached config's learners, rotated by `pick`, then its
+/// followers (the voters, else the record's bootstrap members, without the cached leader), rotated by `pick` too, at
+/// most SPREAD_TRIES. With no leader cached every voter is a candidate: a member that leads serves the read itself.
+fn spread_order(
+    learners: Vec<(SiteId, String)>,
+    voters: Vec<(SiteId, String)>,
+    leader: Option<SiteId>,
+    pick: usize,
+) -> Vec<Target> {
+    let rotated = |v: Vec<(SiteId, String)>| {
+        let mut out: Vec<Target> = v.into_iter().map(|(site, do_name)| Target { site, do_name }).collect();
+        if !out.is_empty() {
+            let n = pick % out.len();
+            out.rotate_left(n);
+        }
+        out
+    };
+    let mut out = rotated(learners);
+    out.extend(rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect()));
+    out.truncate(SPREAD_TRIES);
     out
+}
+
+/// What `read_spread` does with the answers it got, in order.
+#[derive(Debug, PartialEq, Eq)]
+enum Spread {
+    /// The answer at this position is the read's value.
+    Use(usize),
+    /// None answered a value and at least one could not take it: `overloaded` (at its caps, behind, or installing),
+    /// `busy`, a 5xx, or no answer within FOLLOWER_CALL ("Durable Object is overloaded" is a failed call).
+    /// The caller answers 503 with `Retry-After`, and the leader is not asked, so a read the members shed never lands
+    /// on the leader's thread.
+    Shed,
+    /// Every one asked declined it as not its to serve: it answered `notLeader` (a leader-only query, its metadata
+    /// tier is loading, or it knows no leader) or a 4xx (not joined: a group not created yet), or none was asked. The
+    /// leader by `call_opt`, which finds a group not yet created and reports a leaderless one with `suspect`.
+    Leader,
+}
+
+/// `read_spread`'s choice from the answers of the members `spread_order` named, in order.
+fn spread_verdict(answers: &[Option<(u16, &Value)>]) -> Spread {
+    if let Some(i) = answers.iter().position(|r| follower_answer_usable(*r)) {
+        return Spread::Use(i);
+    }
+    let declined = |r: &Option<(u16, &Value)>| match r {
+        Some((200, v)) => v.pointer("/error/notLeader").is_some() || v.pointer("/done/notLeader").is_some(),
+        Some((s, _)) => (400..500).contains(s),
+        None => false,
+    };
+    if answers.iter().all(declined) { Spread::Leader } else { Spread::Shed }
 }
 
 /// Whether a follower's answer to a read-index read is used. Only a value is. `notLeader` (it names the leader, or its
@@ -400,9 +443,11 @@ fn follower_answer_usable(r: Option<(u16, &Value)>) -> bool {
 }
 
 /// A read off the leader (`design/DESIGN.md`, "Follower read"): `body` (`{"q": ..}`) goes with `"index": true` to
-/// each follower in `follower_order` until one answers with a value, then, if none did, to the leader by `call_opt`.
-/// A follower's answer holds every entry acknowledged before the read arrived: it waited for the leader's confirmed
-/// commit index. Followers never raise `suspect` and never count as missed.
+/// the members `spread_order` names, learners first, until one answers with a value. If none did and one shed it,
+/// the read fails with an error naming OVERLOADED, which the caller answers 503 with `Retry-After`, and the leader is
+/// never asked; only if none shed it does it go to the leader by `call_opt` (`spread_verdict`). A member's answer
+/// holds every entry acknowledged before the read arrived: it waited for the leader's confirmed commit index.
+/// Learners and followers never raise `suspect` and never count as missed.
 pub async fn read_spread(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -419,15 +464,65 @@ pub async fn read_spread(
     let mut indexed = body.clone();
     indexed["index"] = json!(true);
     let bytes = indexed.to_string();
-    for t in follower_order(voters, known.leader, pick) {
+    let mut answers = Vec::new();
+    for t in spread_order(known.learners, voters, known.leader, pick) {
         let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
-        if follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v))) {
-            let v = r.map(|(_, v)| v).unwrap_or_default();
+        if let Some((_, v)) = &r {
+            learn_config(chain, v);
+        }
+        let usable = follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
+        answers.push(r);
+        if usable {
+            let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
             learn_leader(chain, &v);
+            refresh_config(b, chain, &t, &v).await;
             return Ok(Some((v, Step::Cached, t)));
         }
     }
-    call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await
+    let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
+    match spread_verdict(&seen) {
+        Spread::Use(_) => unreachable!("a usable answer returned above"),
+        Spread::Shed => Err(format!("{chain}: every member asked shed the read: {OVERLOADED}")),
+        Spread::Leader => call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await,
+    }
+}
+
+/// Learns the config a member's `notLeader` answer carries.
+fn learn_config(chain: ChainId, v: &Value) {
+    if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
+        learn(chain, nl);
+    }
+}
+
+/// A value's `meta.configIndex` past the config this isolate holds means it has not seen the group's learners, or
+/// learners were added since: the answering member's `/status` names them. Marked before the call, so one isolate
+/// asks once per config, and unmarked if the call fails.
+async fn refresh_config(b: &Bindings<'_>, chain: ChainId, from: &Target, v: &Value) {
+    let Some(index) = v.pointer("/meta/configIndex").and_then(Value::as_u64) else { return };
+    let had = KNOWN.with(|k| {
+        let mut k = k.borrow_mut();
+        let e = k.entry(chain).or_default();
+        let had = e.config_index;
+        if index > had {
+            e.config_index = index;
+        }
+        had
+    });
+    if index <= had {
+        return;
+    }
+    let status = async {
+        let mut r = b.member(from.site, &from.do_name).ok()?.fetch_with_str("https://member/status").await.ok()?;
+        r.json::<Value>().await.ok()
+    };
+    match within(CALL, status).await.flatten().and_then(|st| st.get("config").cloned()).filter(|c| !c.is_null()) {
+        Some(config) => learn(chain, &json!({ "config": config })),
+        None => KNOWN.with(|k| {
+            if let Some(e) = k.borrow_mut().get_mut(&chain).filter(|e| e.config_index == index) {
+                e.config_index = had;
+            }
+        }),
+    }
 }
 
 /// The word in `call_opt`'s error when the leader kept shedding the read (`overloaded_reply`): the caller answers 503
@@ -981,7 +1076,10 @@ mod tests {
         let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(8)));
         assert_eq!(cached_leader(chain), None);
         let voters = vec![(SiteId(0), "a".to_string()), (SiteId(2), "c".to_string())];
-        KNOWN.with(|k| k.borrow_mut().insert(chain, Known { voters, config_index: 1, leader: Some(SiteId(2)) }));
+        KNOWN.with(|k| {
+            k.borrow_mut()
+                .insert(chain, Known { voters, config_index: 1, leader: Some(SiteId(2)), ..Default::default() })
+        });
         assert_eq!(cached_leader(chain), Some(Target { site: SiteId(2), do_name: "c".into() }));
         forget_leader(chain);
         assert_eq!(cached_leader(chain), None);
@@ -1009,19 +1107,85 @@ mod tests {
         assert!(shed.get("busy").is_some());
     }
 
-    /// A read-index read goes to the followers first, never the cached leader, rotated by `pick`; with no leader
-    /// cached every voter is asked.
+    /// A read-index read goes to the learners first, then the followers, never the cached leader, each rotated by
+    /// `pick`, and to at most SPREAD_TRIES members; with no leader cached every voter is a candidate.
     #[test]
-    fn follower_reads_skip_the_leader_and_rotate() {
+    fn spread_reads_go_to_learners_then_followers_and_skip_the_leader() {
         let v = |s: &[(u8, &str)]| s.iter().map(|(i, n)| (SiteId(*i), n.to_string())).collect::<Vec<_>>();
-        let sites = |t: Vec<Target>| t.into_iter().map(|t| t.site.0).collect::<Vec<_>>();
+        let names = |t: Vec<Target>| t.into_iter().map(|t| t.do_name).collect::<Vec<_>>();
         let all = v(&[(0, "a"), (1, "b"), (2, "c")]);
-        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 0)), vec![0, 2]);
-        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 1)), vec![2, 0]);
-        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 4)), vec![0, 2]);
-        assert_eq!(sites(follower_order(all.clone(), None, 2)), vec![2, 0, 1]);
-        assert_eq!(follower_order(Vec::new(), Some(SiteId(1)), 3), Vec::new());
-        assert_eq!(follower_order(all, Some(SiteId(0)), 1)[0].do_name, "c");
+        let none = Vec::new;
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 0)), ["a", "c"]);
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 1)), ["c", "a"]);
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 4)), ["a", "c"]);
+        assert_eq!(names(spread_order(none(), all.clone(), None, 2)), ["c", "a", "b"]);
+        assert_eq!(spread_order(none(), Vec::new(), Some(SiteId(1)), 3), Vec::new());
+        // Learners (on sites 1 and 2, beside voters) come before any follower, rotated on their own.
+        let learners = v(&[(1, "l0"), (2, "l1")]);
+        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 0)), ["l0", "l1", "b"]);
+        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 1)), ["l1", "l0", "c"]);
+        // Four learners: three asked, no follower.
+        let four = v(&[(0, "l0"), (1, "l1"), (2, "l2"), (0, "l3")]);
+        assert_eq!(names(spread_order(four, all, Some(SiteId(0)), 3)), ["l3", "l0", "l1"]);
+    }
+
+    /// When no member asked answers a value: if any shed it (`overloaded`, `busy`, a 5xx, no answer), the read is
+    /// answered 503 and never sent to the leader; only when every one declined it as not its own (`notLeader`, or a
+    /// 4xx) does it go to the leader by `call_opt`.
+    #[test]
+    fn a_shed_read_never_reaches_the_leader() {
+        let value = json!({ "value": 1, "index": 3 });
+        let shed = overloaded_reply(250);
+        let busy = json!({ "busy": true });
+        let named = json!({ "error": { "notLeader": { "term": 3, "leader": 0 } } });
+        // A learner that lost its leader (it answers `notLeader` naming none until the next append) is no reason to
+        // send the read to the leader while another member sheds it.
+        let leaderless = json!({ "error": { "notLeader": { "term": 3, "leader": null } } });
+        let null = Value::Null;
+        assert_eq!(spread_verdict(&[Some((200, &shed)), Some((200, &value))]), Spread::Use(1));
+        for answers in [
+            vec![Some((200, &shed)), Some((200, &shed)), Some((200, &shed))],
+            vec![Some((200, &named)), Some((200, &shed))],
+            vec![Some((200, &shed)), Some((200, &named))],
+            vec![Some((200, &busy)), Some((200, &named))],
+            vec![None, Some((200, &named))],
+            vec![Some((503, &null)), Some((200, &named))],
+            vec![Some((200, &named)), Some((409, &null)), None],
+            vec![Some((200, &leaderless)), Some((200, &shed))],
+        ] {
+            assert_eq!(spread_verdict(&answers), Spread::Shed, "{answers:?}");
+        }
+        for answers in [
+            vec![Some((200, &named)), Some((200, &named))],
+            vec![Some((409, &null)), Some((409, &null))],
+            vec![Some((200, &named)), Some((404, &null))],
+            vec![Some((200, &leaderless)), Some((200, &named))],
+            vec![],
+        ] {
+            assert_eq!(spread_verdict(&answers), Spread::Leader, "{answers:?}");
+        }
+    }
+
+    /// A config's learners are learned with its voters, and an older config never replaces a newer one's.
+    #[test]
+    fn a_config_teaches_its_learners() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(13)));
+        let p = |g: u32, learners: &[(u8, u8)]| {
+            let voters =
+                (0..3).map(|s| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, 0, 1));
+            let l = learners.iter().map(|&(s, k)| {
+                graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Learner, k, g)
+            });
+            json!({ "voters": voters.collect::<Vec<_>>(), "learners": l.collect::<Vec<_>>(), "home": 0, "generation": g })
+        };
+        let nl = |index: u64, placement: Value| json!({ "term": 2, "config": { "index": index, "config": { "normal": placement } } });
+        learn(chain, &nl(5, p(2, &[(1, 0), (2, 1)])));
+        let k = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap();
+        assert_eq!(k.voters.len(), 3);
+        assert_eq!(k.learners.iter().map(|(s, _)| s.0).collect::<Vec<_>>(), [1, 2]);
+        assert!(k.learners[0].1.contains("#l0"), "{:?}", k.learners);
+        learn(chain, &nl(4, p(1, &[])));
+        assert_eq!(KNOWN.with(|k| k.borrow().get(&chain).unwrap().learners.len()), 2, "an older config is ignored");
     }
 
     /// Only a value from a follower is used. A follower that names the leader, sheds or is behind (`overloaded`), is
@@ -1068,6 +1232,7 @@ mod tests {
             voters: vec![(SiteId(0), "a".into()), (SiteId(1), "b".into())],
             config_index: 3,
             leader: Some(SiteId(1)),
+            ..Default::default()
         };
         let Some(Stage::Names(first)) = stage(&known, &record, chain, 0) else { panic!("stage 0 reads names") };
         let order: Vec<(u8, Step)> = first.iter().map(|(s, _, st)| (s.0, *st)).collect();
