@@ -1,0 +1,8 @@
+2026-11-11T09:02:16.354Z m3org/fs500v = 131237
+2026-11-11T09:02:18.431Z repo:131237 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T09:02:18.560Z repo:131237 leader 0: k 4 at 5
+2026-11-11T09:02:18Z s500v fs500v 131237 start --agents 500 --seconds 300
+2026-11-11T09:12:14Z s500v fs500v 131237 done exit 0
+2026-11-11T09:12:19Z torn down 131237
+2026-11-11T09:12:19Z cost {"workers_requests": 76123, "workers_cpu_ms": 863947, "do_requests": 548046, "do_rows_written": 174907, "do_active_s": 13302, "containers_cpu_s": 213, "containers_gib_s": 14521, "containers_gb_s": 29042, "containers_usd": 0.04, "usd": 0.36}
+DONE

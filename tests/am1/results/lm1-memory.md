@@ -33,7 +33,14 @@ guard). Only `graft-m2b` was used. `graft-m1-*` and `graft-m3c-*` were not touch
     leader's one thread.
   - B0-32 had zero leader changes and zero `suspect` reports.
   - L0-12's A1 replay was not run: the round hit its $10 cap.
-- **Cost:** round 1 $15.75 of the $25 cap by `tests/fanout/cost.sh` from `mem-t0`, containers $10.45 of it.
+- **Round 3 (follower reads, `54c45213`, section 10):** API tier reads and the read gate's rows go to followers by
+  read-index. At 500 agents the leader's read load fell to about a third of read invocations, B0-29 held its first
+  leader 7 minutes, B0-32 kept its leader, and no member ran out of memory in B0-29, B0-31, B0-32, B0-33 or B0-34.
+  Every row still fails its gate: leaders still step down on `CommitErrors` and `Confirm`, because the edge sends a
+  read both followers shed to the leader, and followers saturate at about 10,000 reads a minute. B0-35's f1 ran out of
+  memory (812 `/read`), and L0-12's feed p99 was 64 s.
+- **Cost:** round 1 $15.75 of the $25 cap by `tests/fanout/cost.sh` from `mem-t0`, containers $10.45 of it; round 2
+  $10.23; round 3 $6.39 of its $10 cap.
 
 ## 1. Cause
 
@@ -458,3 +465,134 @@ Next fix (not built; no raft change made):
 included. About $1.9 of it accrued before the site day, mostly idle shard containers waking during the idle-shards
 baseline. Rows: B0-29 $1.33, B0-32 $0.40, B0-31 $2.34, B0-33 $0.79, B0-34 $1.33, B0-35 $1.48. Rounds 1 and 2
 together: $25.98.
+
+## 10. Round 3: follower reads (`7bc0ed22`, deployed as `54c45213`)
+
+### What changed
+
+Round 2 bounded memory but every row failed on leader CPU: reads saturated the leader's one thread, so its storage
+confirms and AppendEntries replies stepped late and it stepped down (section 9). Round 3 moves the edge's API tier
+reads off the leader, as journey 9 item 1 and the new DESIGN rule ("*Follower read.*") now say:
+- The edge's whole-tier and merge-row reads (`tier_rows`) and the read gate's access and agent rows (`core_rows`) go
+  to a follower first, then the other follower, then the leader (`graftyard_lookup::read_spread`). A follower answer
+  is used only if it is a value; `notLeader`, `overloaded`, `busy`, a 4xx or 5xx, or no answer within
+  `FOLLOWER_CALL` (2 s) moves on, and none of them is reported with `suspect`.
+- A follower serves such a read by read-index (`Member::read_index`): the leader confirms its commit index by lease or
+  round, and the follower answers once it has applied that index, so the read is `Fresh`. One whose metadata tier is
+  loading names the leader. One that has not applied the index within `FOLLOWER_WAIT` (1 s) answers `overloaded`,
+  never an older fold.
+- `READS_MAX`, `HEAVY_READS` and the dump cache hold on followers too (`member::gate`). Deps, refs, `ranges`,
+  `/entries`, `prsync`, `mergequeue` and alarm reads stay on the leader (`family::follower_query`).
+- `/stats` adds `followerReads`, `followerRefused` and `followerLate`.
+- No change to `crates/raft/src`.
+
+Tests: `follower_reads_skip_the_leader_and_rotate` and `only_a_followers_value_is_used` (lookup);
+`every_read_is_shed_past_reads_max_and_whole_tier_ones_past_the_heavy_cap` (rewritten) and
+`a_follower_serves_only_its_reads_under_the_caps_and_never_stale` (site); `a_follower_serves_only_the_designs_reads`
+(fanout); `a_follower_behind_grants_no_read_from_its_older_fold` (`crates/fold/tests/install.rs`: a cut follower grants
+nothing and fails at `CAMPAIGN_DEADLINE`, then sees the new write after it reconnects). `tests/lm1mem/plant.py`: 29 of
+29 caught. Full checks on `7bc0ed22` and again on `6cdff1b3` (idle-shards merged): fmt, every clippy, `cargo test
+--workspace` (686 passed), `go test`, `check_design`, `check_names`; `check_links` passes on a clean `git archive`
+(2,978 citations).
+
+### Deployed
+
+| What | Commit | Version |
+| --- | --- | --- |
+| Site day (test-faults, NOROLL, image `…@sha256:1722…f3e9`, `containers/` unchanged since `80d8837`), 08:50 to 08:58Z | `54c45213` (`lm1-memory` with `origin/idle-shards` `f6d440a` merged) | first pass a `8a327e48`, b `729d21e8`, c `044474f8`; final a `532e021f`, b `27678409`, c `29a6ebfa` |
+| Edge | `54c45213` | `1e11c400` |
+
+The PrSync queues were purged after the site day (08:58Z) and before the smoke and the rows, as the idle-shards
+thread found an old release can leave thousands of messages on them. `743ad0cc` merges `origin/main` `f3d99ed` after
+the rows started; it changes only the order of two DECISIONS entries, so the deployed code is the same.
+
+### Rows
+
+Smoke at 500 agents (131237, 300 s) then `tests/fanout/rows.sh` (`m7` for B0-29, `m8` for the rest) with K = 4,
+`TEARDOWN=1`, `STOP_USD=9.3`, cost window from `tests/fanout/raw/mem3-t0.t0` (08:50Z). Peak MB per member from
+`durableObjectsPeriodicGroups`.
+
+| Row (repo) | Gate (pass / fail) | Measured | Verdict |
+| --- | --- | --- | --- |
+| Smoke 500, 300 s (131237) | — | Peak 75 / 55 / 112 MB, 0 `exceededMemory`; leader moved at load start: f0 `StepDown CommitErrors` at 09:05:26 (15 s into load), then f2 held with ten `CommitErrors` holds; commit p99 5,675 ms | — |
+| B0-29, 600 s (131238) | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale` on distinct refs, leader < 600 req/s with zero feed polls / commit p99 > 1 s, any queue merge > 10 s, any feed poll on the leader | Commit p99 3,419 ms (p50 662, n 8,167); leader 0 → 1 → 2, term 4, first step-down at 09:38:43 (7 min into load); `/suspect` 7,774 on the old leader; agent pushes 2,412 of 2,500 ok, 61 timeouts, 10 `stale`; merges p99 9,303 ms; `read:api` 69,545 200 / 4,862 503; 306 req/s; 0 feed polls on the leader; peak 145 / 68 / 231 MB, 0 `exceededMemory` on the members | **Fail** (commit p99) |
+| B0-32, 180 s (131239) | Every push acked within 5 s or `ng … admission full`, merges in the next 2 entries, zero leader changes, zero `suspect` / any lost ack, other refusal shape, object reset from memory, merge > 2 s, leader change or `suspect` | **Zero leader changes (term 2), 3 `suspect`**; commit p99 2,396 ms; burst 168 ok, 332 `refused` (not the `admission full` shape), 1 within 5 s; 13 agent and 3 human pushes `fetch failed`; merge p99 41,005 ms; peak 90 / 48 / 50 MB | **Fail** (refusal shape, pushes past 5 s, merges, 3 `suspect`) |
+| B0-31, 600 s (131240) | Commit p99 ≤ 1 s with buckets up / > 3 s | Commit p99 2,541 ms (p50 745, n 8,073); leader 0 → 1, term 7 (two moves, at 10:02:05 `CommitErrors` 3 of 53 and 10:10:26 `Confirm` p99 1,377 ms); agent pushes 967 ok, 1,427 refused, 96 × 503 from the read gate; peak 114 / 115 / 93 MB | **Fail** (commit p99 between the lines) |
+| B0-34, 600 s, shard kill at 300 s (131241) | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s / TTFB p99 > 5 s, k > 8 | k 1 → 2 in band ("k 1 at 4" → "k 2 at 810"); clone TTFB p99 58,554 ms (p50 1,643); human push p99 240 s; commit p99 2,138 ms; leader 0 → 1 → 0, term 5 (`Confirm` p99 1,526 ms at 10:26:07, then 15 `CommitErrors` holds); agent pushes 1,237 ok, 1,168 timeouts; peak 141 / 67 / 168 MB | **Fail** (TTFB) |
+| B0-33, 300 s, 5,000 agents (131242) | Human and merge-queue p99 ≤ 1 s, ≥ 140 agent commands/s, zero leader changes and `suspect` / any leader change or `suspect`, < 100 commands/s | Term 2 → 19 in 5 minutes; `/suspect` 27,703; commit p99 15,980 ms (n 637); agent pushes 127 ok of 12,523 (5,122 + 1,803 × 503 from the read gate, 4,148 timeouts); peak 223 / 102 / 98 MB, 0 `exceededMemory` on members | **Fail** |
+| L0-12 A1 replay, 600 s, leader kill every 60 s (131243) | No lease overlap over 500 ms, 500 long-pollers see each event within 3 s at p99 outside leader kills, 100 of 100 refused for the agent kinds / feed p99 over 2 s, any overlap, a refusal count off | 500 tasks and 500 leases set up (26 min of setup before the window); leader stayed f0 through 10 leader kills, term 2 → 5, with 9 `StepDown` holds (`to: None`, 8 `CommitErrors`, 1 `Confirm` p99 1,015 ms); feed p99 64,031 ms (p50 2,647, 19,472 events); commit p99 4,675 ms (p50 1,154, n 948); agent pushes 2,181 of 2,490 ok, 199 timeouts; `read:api` 28,629 200 / 21,935 503; lease renewals 540 200 / 545 503; f0 peak 275 MB with 711 `aborted` `/read` at 11:15:54, f1 66, f2 69 | **Fail** (feed p99) |
+| B0-35, 600 s, 500 open PRs (131244) | Test-merge vCPU within `TEST_MERGE_BUDGET`, Actions dispatch p99 ≤ 10 s, zero computes from list fields / over budget, dispatch p99 > 30 s | 500 of 500 PRs opened; `read:mergeable` 3,876 `MERGEABLE` and 24,168 × 503 of 58,994 (30,950 skipped by the client cap); `read:api` 3,420 200 / 25,404 503; leader 0 → 1 → 2 → 1 → 0, term 2 → 8, 24 `StepDown` alarms (mostly `CommitErrors` holds on f1 at 11:33 to 11:37); commit p99 5,830 ms; agent pushes 1,464 of 2,500 ok; f1 812 `exceededMemory` on `/read` at 11:35:36 (peak 252 MB), f0 88, f2 102. Test-merge vCPU, list-field computes and dispatch p99 **not measured** (`MergeBudget::charge` is its own work item; no Actions on `graft-m2b`) | **Not judged on its gate**; what it measured failed (mergeable reads mostly 503, a member out of memory) |
+
+Members logged no `exceededMemory` in the smoke, B0-29, B0-32, B0-31, B0-34, B0-33 or L0-12. B0-35's f1 logged 812,
+all `/read`, at 11:35:36, after its peak of 252 MB; L0-12's leader f0 reached 275 MB with 711 `aborted` `/read` at
+11:15:54. Site a also logged 2,341 `exceededMemory` outcomes on two git cache shard objects (`git#…` for 131240 and
+131239, `/upload-pack` and `/validate`), not on any group member.
+
+### Follower reads, as measured
+
+On B0-29 (`/stats` at the end, 131238):
+
+| Member | Role at the end | `/read` in | `followerReads` | `followerLate` | `shedReads` | `sharedReads` |
+| --- | --- | --- | --- | --- | --- | --- |
+| f0 | follower (led to 09:38:43) | 156,820 | 4,547 | 3,575 | 51,510 | 724 |
+| f1 | follower | 101,677 | 22,684 | 6,658 | 72,399 | 12,709 |
+| f2 | leader from 09:38:49 | 37,285 | 0 | 8 | 25,003 | 1,743 |
+
+`followerRefused` was 0 on every member in every row: no follower was asked for a read it may not serve. B0-31 was the
+same shape (f1 led with 20,587 follower reads taken before it led; f2 16,546). Before the first step-down on B0-29 the
+followers took about 10,000 `/read` a minute each and the leader about 8,800 (17,653 in 09:33 to 09:35).
+
+### What still moves the leader
+
+Follower reads did what they were for: the leader's read CPU halved and B0-29 held its first leader for 7 minutes
+instead of seconds, B0-32 held its leader, and no member ran out of memory. But leaders still step down in B0-29,
+B0-31, B0-34 and B0-33, on `CommitErrors` and on `Confirm`. What bounds them, with evidence:
+
+- **The leader still serves most reads.** On B0-29 f0 took 17,653 `/read` in 09:33 to 09:35 (31.9 s of CPU, 0 to 2 ms
+  each for 90%), against 1,168 on a follower (10.2 s). A follower answer that is `overloaded` (sheds, 51,510 to 72,399
+  per member) or late (`followerLate`, 3,575 to 6,658) sends the edge on to the leader, so the leader still receives
+  the overflow of both followers, retried up to 4 times. Read CPU on the B0-31 leader in one 4-minute window: 73.5 s of
+  the 77.7 s it spent on member routes (`/read` 35,805 invocations).
+- **Per second, the leader is busy, not stalled by one input.** On B0-31's leader at the `Confirm` step-down
+  (10:10:00 to 10:10:27) it ran 166 to 516 invocations a second at 200 to 950 ms of CPU a second, wall maxima 0.6 to
+  2.8 s; no invocation over 300 ms of CPU. The isolate's one thread is saturated by hundreds of 1 to 2 ms reads.
+- **The `CommitErrors` holds are a follower going quiet, not the leader.** After f2 took B0-29 at 09:38:49, its
+  calls failed to both followers at once (`(SiteId(0), 1125, 484), (SiteId(1), 1128, 486)`), and f0's `/stats` show
+  `Durable Object is overloaded. Requests queued for too long.` on its own `readIndex` calls to f1. Followers took 150
+  to 600 invocations a second themselves, mostly `/read` and the 7,774 `/suspect` reports the old leader's readers
+  sent. f2 also logged 450 "Internal error in Durable Object storage caused object to be reset" at 09:39 to 09:40 and
+  one `/read` of 3,891 ms CPU (a dump build on a newly elected leader).
+- **Follower read-index costs the leader little.** The first leaders of B0-29 and B0-31 took 2,790 and 3,189
+  follower `ReadIndex` batches (about 5 a second) and answered all but 2 of each inside the call, from the lease
+  (`trace`: `ResSent` in the answer), so they forced no AppendEntries round. Batching them further would not help.
+- **B0-33 is the read gate.** At 5,000 agents the gate's access-row reads and agent pushes overran the members: 6,925
+  pushes were answered 503 "the repository's access rows did not answer", and the leader moved 17 times. Its peak
+  of 223 MB on f0 came at 10:36, with no `exceededMemory`.
+
+So the step-downs are bounded by the leader's thread, which still takes about a third of read invocations plus every command, and by
+followers that saturate in turn once they serve 10,000 reads a minute. What would remove them, in order:
+1. **Let the edge stop retrying an `overloaded` follower on the leader.** Today `read_spread` falls through to
+   `call_opt` on the leader after both followers shed, so overload anywhere lands on the leader. Answering the client
+   503 with `Retry-After` there (or retrying the followers after `retryAfterMs`) keeps the leader for commands and
+   refs. Edge change, no raft change.
+2. **Give followers headroom before the leader takes their overflow.** Followers shed 51,000 to 78,000 reads a row
+   at `READS_MAX` and `HEAVY_READS` while serving 10,000 a minute; learners (DESIGN: "Above 500 reads a second,
+   learners serve them too") would spread the same reads wider. Placement change, no raft change.
+3. **Cache the read gate's access decision per repository and minute at the edge** for B0-33's 5,000 agents, the way
+   installation-token decisions are cached by `jti`.
+4. Excusing busy-isolate confirms in `STEP_DOWN` stays the last resort (a raft change, reported first).
+
+### The two loose ends from the runs
+
+- `a1.mjs` held sockets open for up to 5 minutes after writing its row on B0-29 and B0-31, which stalled `rows.sh`.
+  B0-31's driver was killed at 10:17 after its row was written (its `exit 143` in `rows-m8.status`). The driver now
+  calls `process.exit(0)` after the row (`tests/am1/rest/a1.mjs`).
+- `rows-m7` was stopped after B0-29 for the same stall, so B0-29 is in `rows-m7` and the other rows in `rows-m8`.
+
+### Cost, round 3
+
+`tests/fanout/cost.sh` with `T0_FILE=tests/fanout/raw/mem3-t0.t0` (08:50Z, site day start): **$6.39**, containers
+$1.76 of it, at 11:42Z after the last teardown. Cumulative at each row's end, from the status lines: smoke
+$0.36 (09:12Z), B0-29 about $1.37 (09:51Z, before B0-32), B0-32 $1.63, B0-31 $2.50, B0-34 $3.30, B0-33 $3.87, L0-12
+$5.37 (with 26 minutes of setup), B0-35 $6.39. Rounds 1 to 3 together:
+$32.37. Every network from 131237 to 131245 is torn down (8 instances, all 200).

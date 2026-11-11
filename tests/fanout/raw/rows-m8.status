@@ -1,0 +1,51 @@
+2026-11-11T09:51:20Z cost {"workers_requests": 234733, "workers_cpu_ms": 4220241, "do_requests": 1832082, "do_rows_written": 548094, "do_active_s": 46999, "containers_cpu_s": 1352, "containers_gib_s": 111242, "containers_gb_s": 222484, "containers_usd": 0.32, "usd": 1.37}
+2026-11-11T09:51:52.103Z m3org/fm8-b032 = 131239
+2026-11-11T09:51:53.970Z repo:131239 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T09:51:54.072Z repo:131239 leader 0: k 4 at 5
+2026-11-11T09:51:54Z b0-32 fm8-b032 131239 start
+2026-11-11T09:58:16.432Z repo:131239 leader 0: k 4 at 452
+2026-11-11T09:58:16Z b0-32 fm8-b032 131239 done exit 0
+2026-11-11T09:58:20Z torn down 131239
+2026-11-11T09:58:21Z cost {"workers_requests": 275386, "workers_cpu_ms": 5046079, "do_requests": 2200518, "do_rows_written": 654091, "do_active_s": 56959, "containers_cpu_s": 1487, "containers_gib_s": 129372, "containers_gb_s": 258744, "containers_usd": 0.37, "usd": 1.63}
+2026-11-11T09:58:41.575Z m3org/fm8-b031 = 131240
+before [[0,"leader",2],[1,"follower",2],[2,"follower",2]]
+transfer from 0 -> 2 {"meta":{"configIndex":1,"leader":0,"term":2},"transfer":{"Ok":"9752988967950593926"}}
+after [[0,"follower",3],[1,"follower",3],[2,"leader",3]]
+2026-11-11T09:58:48.119Z repo:131240 leader 2: set k 4: {"k":4,"meta":{"configIndex":1,"leader":2,"term":3}}
+2026-11-11T09:58:48.327Z repo:131240 leader 2: k 4 at 7
+2026-11-11T09:58:48Z b0-31 fm8-b031 131240 start
+2026-11-11T10:17:03.880Z repo:131240 leader 1: k 8 at 1031
+2026-11-11T10:17:03Z b0-31 fm8-b031 131240 done exit 143
+2026-11-11T10:17:10Z torn down 131240
+2026-11-11T10:17:12Z cost {"workers_requests": 405333, "workers_cpu_ms": 8403821, "do_requests": 3435046, "do_rows_written": 967795, "do_active_s": 86706, "containers_cpu_s": 3570, "containers_gib_s": 195513, "containers_gb_s": 391027, "containers_usd": 0.59, "usd": 2.5}
+2026-11-11T10:17:43.806Z m3org/fm8-b034 = 131241
+2026-11-11T10:17:45.200Z repo:131241 leader 0: k 1 at 4
+2026-11-11T10:17:45Z b0-34 fm8-b034 131241 start
+2026-11-11T10:32:08.473Z repo:131241 leader 0: k 2 at 810
+2026-11-11T10:32:08Z b0-34 fm8-b034 131241 done exit 0
+2026-11-11T10:32:14Z torn down 131241
+2026-11-11T10:32:16Z cost {"workers_requests": 551495, "workers_cpu_ms": 10791609, "do_requests": 4653034, "do_rows_written": 1289142, "do_active_s": 113854, "containers_cpu_s": 4149, "containers_gib_s": 252993, "containers_gb_s": 505987, "containers_usd": 0.75, "usd": 3.3}
+2026-11-11T10:32:35.246Z m3org/fm8-b033 = 131242
+2026-11-11T10:32:36.812Z repo:131242 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T10:32:36.936Z repo:131242 leader 0: k 4 at 5
+2026-11-11T10:32:36Z b0-33 fm8-b033 131242 start
+2026-11-11T10:40:42.844Z repo:131242 leader 2: k 4 at 194
+2026-11-11T10:40:42Z b0-33 fm8-b033 131242 done exit 0
+2026-11-11T10:40:47Z torn down 131242
+2026-11-11T10:40:49Z cost {"workers_requests": 584016, "workers_cpu_ms": 11963797, "do_requests": 5813472, "do_rows_written": 1525393, "do_active_s": 131469, "containers_cpu_s": 4506, "containers_gib_s": 289335, "containers_gb_s": 578670, "containers_usd": 0.85, "usd": 3.87}
+2026-11-11T10:41:07.915Z m3org/fm8-l012 = 131243
+2026-11-11T10:41:09.304Z repo:131243 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T10:41:09.417Z repo:131243 leader 0: k 4 at 5
+2026-11-11T10:41:09Z l0-12 fm8-l012 131243 start
+2026-11-11T11:19:07.139Z repo:131243 leader 0: k 6 at 1663
+2026-11-11T11:19:07Z l0-12 fm8-l012 131243 done exit 0
+2026-11-11T11:19:11Z torn down 131243
+2026-11-11T11:19:14Z cost {"workers_requests": 766580, "workers_cpu_ms": 14511644, "do_requests": 6952797, "do_rows_written": 2077294, "do_active_s": 208445, "containers_cpu_s": 5651, "containers_gib_s": 486191, "containers_gb_s": 972382, "containers_usd": 1.4, "usd": 5.37}
+2026-11-11T11:19:34.774Z m3org/fm8-b035 = 131244
+2026-11-11T11:19:36.298Z repo:131244 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T11:19:36.406Z repo:131244 leader 0: k 4 at 5
+2026-11-11T11:19:36Z b0-35 fm8-b035 131244 start
+2026-11-11T11:39:06.150Z repo:131244 leader 0: k 6 at 1085
+2026-11-11T11:39:06Z b0-35 fm8-b035 131244 done exit 0
+2026-11-11T11:39:12Z torn down 131244
+ALLDONE
