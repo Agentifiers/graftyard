@@ -118,6 +118,8 @@ pub struct Stats {
     pub inbound_since: u64,
     pub failed_calls: u32,
     pub dep_reads: u32,
+    /// Whole-tier reads shed past `crate::member::HEAVY_READS`.
+    pub shed_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,
@@ -425,6 +427,8 @@ pub struct Host<F: Family> {
     active_until: Cell<u64>,
     alarm_at: Cell<u64>,
     served_at: Cell<u64>,
+    /// Whole-tier reads in flight on this member (`crate::member::HEAVY_READS`).
+    pub heavy_reads: Rc<Cell<u32>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -1004,6 +1008,7 @@ impl<F: Family> Host<F> {
             active_until: Cell::new(0),
             alarm_at: Cell::new(0),
             served_at: Cell::new(0),
+            heavy_reads: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1572,7 +1577,11 @@ impl<F: Family> Host<F> {
                         }
                     }
                     Resolution::Read { id, result } => {
-                        if let Some((q, tx)) = core.reads.remove(&id) {
+                        // A read whose caller has gone builds nothing: in B0-35 a leader's one alarm input granted
+                        // about 730 reads whose callers had timed out and dumped both tiers for each, 641 s of CPU
+                        // in which the isolate answered nothing, and the group lost its leader for 10 minutes
+                        // (`tests/am1/results/lm1-memory.md`, "The leaderless group").
+                        if let Some((q, tx)) = core.reads.remove(&id).filter(|(_, tx)| !tx.is_canceled()) {
                             // `fresh` only before the member's next input: this runs right after the input. A `dep`
                             // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
@@ -1590,6 +1599,10 @@ impl<F: Family> Host<F> {
                                             }),
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
+                                    } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
+                                        // Checked here, where the dump would be built, so one granted batch
+                                        // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
+                                        graftyard_lookup::overloaded_reply(ms)
                                     } else {
                                         F::read_json(f.fold(), &q)
                                     };
@@ -2295,6 +2308,8 @@ impl<F: Family> Host<F> {
     /// resets; a panic would rebuild the wasm instance and reset every member in the isolate (F47's site a panic).
     fn fail_lost(self: &Rc<Self>, why: &str) {
         console_error!("member reset: fold storage lost: {why}");
+        // A dump read since the loss may lack rows: none is served again from the isolate's cache.
+        crate::family::forget_dumps();
         self.dying.set(true);
         abort(&self.state, "graftyard member fold storage lost");
     }

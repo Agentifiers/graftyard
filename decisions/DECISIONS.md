@@ -2114,6 +2114,20 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
 
+### F65: a leader caches its packed dump, caps whole-tier reads, and sheds without `suspect`, 2026-11-11
+
+Branch `lm1-memory` found what took repository members past 128 MB at 500 agents and changed the read path on the leader and in the lookup (`tests/am1/results/lm1-memory.md`; `design/DESIGN.md`, Scale, journey 9, item 1).
+
+**Decision.** A repository leader builds the packed whole-tier dump once per state of its tiers (each tier's `applied` and row-hash sum, and whether the metadata tier is loaded) and serves later reads at that state from the isolate; it builds nothing for a read whose caller has gone; it serves at most `HEAVY_READS` (16) whole-tier reads at once, each counted until its answer has streamed out of the isolate in 64 KiB pieces, lets a read rebuild a stale dump at most once per `DUMP_EVERY_MS` (1 s) and answers the others `overloaded` until the next rebuild is due, and answers the next at once with a 200 `{"busy": true, "overloaded": {"retryAfterMs": 250}}`. The lookup (`graftyard_lookup::call_opt`) retries an `overloaded` member after its delay, up to four times, never reports it with `suspect`, and then fails with an error the edge answers as 503 with `Retry-After: 1`. Every `suspect` report one isolate sends is damped to one per (chain, member, term, scope) each `SUSPECT_GAP` (500 ms).
+
+**Why.** Memory grew with whole-tier reads in flight, about 1.4 MB each on a 1.18 MB dump (59 MB at 40, 92 MB at 60, an isolate reset at 100), and the reads were the same tiers at the same index. Missed reads became `suspect` reports, which made the leader slower and the storm larger, and a leader that granted about 730 abandoned reads in one input spent 641 s building their dumps, which left B0-35's group with no leader for 10 minutes.
+
+**Beat.** A per-isolate memory budget, which Workers does not expose per object. Serving whole-tier reads from followers by read-index, which moves the same dumps to members that also hold the feed. Answering the cap with 503, which the lookup counts as a missed member and reports. Damping `suspect` inside the Raft core, which changes `crates/raft` and the simulator's histories for a problem the caller makes. Sharing one whole-tier read among an edge isolate's concurrent requests, built and run in the 250-agent smoke: the runtime refuses a promise resolved from another request's context, and 58,783 of 59,239 API reads answered 500.
+
+**Evidence.** `tests/am1/results/lm1-memory.md` [measured]: wasm memory against parallel reads on `graft-m2b`, Workers Logs in-flight and CPU per route on the failed rows' leaders, and the B0-35 leader's 641 s alarm invocation with 41.9 million rows read. Unit tests and planted bugs: `tests/lm1mem/plant.py`.
+
+**Flip.** A row whose leader still exceeds 128 MB with the cache warm and the cap holding, which would move whole-tier reads off the leader; or a `suspect` delay of `SUSPECT_GAP` measured in a leader move, which would shorten the gap.
+
 ### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
 
 `fanout` removed the git shard's per-network validate lock and built `fanout`; its hosted 500-agent reruns on `graft-m2b` then failed on the edge read gate. `04487ca` caches the gate's installation-token decisions, and LM-1's load rows are being rerun. M4-WP1's pure half passed BF-57 and BF-58 in memory (`tests/am1/results/fanout.md`; `tests/m4/results/m4-wp1.md`; `build/BUILD-PLAN.md`, AM1-WP1, AM1-WP6, and M4-WP1).

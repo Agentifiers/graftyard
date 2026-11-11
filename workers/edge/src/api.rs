@@ -400,7 +400,10 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 }
 
 /// The repository's `{"rows": true}` read on its leader, creating its group on first use; `{"rows": {"merge": id}}`
-/// for a merge's rows only, which a member built before it answers with every row.
+/// for a merge's rows only, which a member built before it answers with every row. A leader that kept shedding the
+/// read (`graftyard_lookup::OVERLOADED`) answers 503 with `Retry-After: 1`. Identical reads are not shared across
+/// requests: a Workers isolate refuses a promise resolved from another request's context, and every such read
+/// answered 500 (`tests/am1/results/lm1-memory.md`); the member's dump cache serves them instead.
 pub(crate) async fn tier_rows(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -409,14 +412,20 @@ pub(crate) async fn tier_rows(
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = tier_rows_query(merge);
-    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    let mut v =
+        graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await.map(|o| o.map(|(v, _, _)| v));
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes())
+            .await
+            .map(|o| o.map(|(v, _, _)| v));
     }
     Ok(match v {
-        Ok(Some((v, _, _))) => Ok(v),
+        Ok(Some(v)) => Ok(v),
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
+        Err(e) if e.contains(graftyard_lookup::OVERLOADED) => {
+            Err(Reply::error(503, "the repository's leader is shedding reads; retry", "rest").with("retry-after", "1"))
+        }
         Err(e) => Err(unavailable(&e)),
     })
 }

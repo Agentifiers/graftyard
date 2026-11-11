@@ -139,6 +139,10 @@ pub trait Family: 'static {
     async fn admit(_env: &worker::Env, _chain: ChainId, _cmd: &mut Self::C) {}
     /// What a `fresh` read answers for query `q`.
     fn read_json(fold: &Self::Fold, q: &Value) -> Value;
+    /// For a granted whole-tier read `q` at `now`: the ms until its dump may be rebuilt (`dump_wait`), or `None`.
+    fn heavy_wait(_fold: &Self::Fold, _q: &Value, _now: u64) -> Option<u64> {
+        None
+    }
     /// The fold in the crate's codec, for another group's dependency read (`/dep`).
     fn fold_bytes(fold: &Self::Fold) -> Vec<u8>;
     /// A dependency fold read from `chain`'s leader.
@@ -251,6 +255,67 @@ fn repo_of(join: &Join) -> Option<RepoId> {
         ChainId::Repo(r) => Some(r),
         _ => None,
     }
+}
+
+/// How many repositories' packed dumps one isolate keeps: about 150 KB to 1.2 MB each at journey 9.
+const DUMPS_MAX: usize = 8;
+
+/// The state of both tiers a packed dump was built at: each tier's `applied` and row-hash `sum`, and whether the
+/// metadata tier was loaded, which decides whether the dump holds its rows.
+type DumpKey = (u64, [u8; 32], bool, u64, [u8; 32]);
+
+thread_local! {
+    /// The last packed whole-tier dump per repository (`Repo::read_json`), by `DumpKey`. A dump took up to 7.8 s of
+    /// CPU on a 500-PR repository, and 200 API reads/s mostly read the same tiers at the same index
+    /// (`tests/am1/results/lm1-memory.md`).
+    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, (DumpKey, Value)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn dump_key(fold: &git::repo::RepoFold) -> DumpKey {
+    let (c, m) = (graftyard_fold::meta(&*fold.core), graftyard_fold::meta(&*fold.meta));
+    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)
+}
+
+/// How often a repository leader rebuilds its packed dump at most [guess]: in the 500-agent smoke the tiers changed
+/// with nearly every entry, so the cache missed and each rebuild of a 513 KB dump ran inside the input that granted
+/// the read, up to 1.2 s of CPU in one `/raft` input on the apac leader, which then stepped down on `CommitErrors`
+/// (`tests/am1/results/lm1-memory.md`, "Rebuilds").
+pub const DUMP_EVERY_MS: u64 = 1_000;
+
+thread_local! {
+    /// When each repository's leader last let a whole-tier read rebuild its dump (`dump_wait`).
+    static REBUILT: std::cell::RefCell<std::collections::HashMap<RepoId, u64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// For a packed whole-tier read of `fold` at `now`: `None` to serve it now, because the cached dump is at the tiers'
+/// state or a rebuild is due (which is recorded); else the ms until one is. Either way the read itself still takes the
+/// lease and reads the tiers' meta rows after it, so what it answers is fresh; this only spaces the rebuilds.
+pub fn dump_wait(fold: &git::repo::RepoFold, now: u64) -> Option<u64> {
+    let repo = fold.repo?;
+    let key = dump_key(fold);
+    if DUMPS.with(|d| d.borrow().get(&repo).is_some_and(|(k, _)| *k == key)) {
+        return None;
+    }
+    REBUILT.with(|r| {
+        let mut r = r.borrow_mut();
+        match r.get(&repo) {
+            Some(at) if now < at + DUMP_EVERY_MS => Some(at + DUMP_EVERY_MS - now),
+            _ => {
+                if r.len() >= 64 {
+                    r.clear();
+                }
+                r.insert(repo, now);
+                None
+            }
+        }
+    })
+}
+
+/// Drops every cached dump, for a member whose fold storage refused a read.
+pub fn forget_dumps() {
+    DUMPS.with(|d| d.borrow_mut().clear());
 }
 
 impl Family for Repo {
@@ -675,6 +740,9 @@ impl Family for Repo {
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
+    fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u64> {
+        (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now)).flatten()
+    }
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
         // `Audit` consumer's transfer plans.
@@ -709,6 +777,16 @@ impl Family for Repo {
         }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{ROWS_MAX, TierRows};
+            let packed = q.get("packed").and_then(Value::as_bool) == Some(true);
+            // The packed dump is built once per state of both tiers and served from the isolate after that
+            // (`DUMPS`): the key is read from the tiers' own meta rows after the read's lease check, so a hit
+            // answers exactly what a rebuild would.
+            let key = packed.then(|| dump_key(fold));
+            if let (Some(k), Some(repo)) = (&key, fold.repo)
+                && let Some(v) = DUMPS.with(|d| d.borrow().get(&repo).filter(|(at, _)| at == k).map(|(_, v)| v.clone()))
+            {
+                return v;
+            }
             let mut budget = ROWS_MAX;
             let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
@@ -716,8 +794,18 @@ impl Family for Repo {
             let index = graftyard_fold::meta(&*fold.core).applied.0;
             let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
             // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
-            if q.get("packed").and_then(Value::as_bool) == Some(true) {
-                return rows.packed();
+            if packed {
+                let v = rows.packed();
+                if let (Some(k), Some(repo)) = (key, fold.repo) {
+                    DUMPS.with(|d| {
+                        let mut d = d.borrow_mut();
+                        if d.len() >= DUMPS_MAX && !d.contains_key(&repo) {
+                            d.clear();
+                        }
+                        d.insert(repo, (k, v.clone()));
+                    });
+                }
+                return v;
             }
             return serde_json::to_value(rows).unwrap_or(Value::Null);
         }
