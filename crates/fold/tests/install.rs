@@ -939,3 +939,36 @@ fn b0_30_log_max_bytes_archives_to_two_buckets_and_keeps_every_member_under_the_
     assert!(n.installed.iter().any(|(_, s)| *s == C), "C installed from the archives");
     assert_converged(&n, A, &[B, C]);
 }
+
+/// "Follower read" (`design/DESIGN.md`): a follower that is behind never grants a read-index read from its older
+/// fold. Cut off from the leader, it grants nothing and fails the read at CAMPAIGN_DEADLINE; once it can reach the
+/// leader again, the read it is granted sees the write committed while it was away.
+#[test]
+fn a_follower_behind_grants_no_read_from_its_older_fold() {
+    let mut n = Net::new();
+    n.elect(A);
+    n.commit(A, vec![Ev::Core(50, 1)]);
+    n.write(A, 2);
+    assert_eq!(n.m(C).group_fold().fold.get(50), Some(1), "C applied the first write");
+    n.cut.insert(C);
+    n.commit(A, vec![Ev::Core(50, 2)]);
+    n.advance(1);
+    assert_eq!(n.m(C).group_fold().fold.get(50), Some(1), "C is behind");
+    let rid = n.on(C, |m, now| m.read_index(now)).expect("a follower reads");
+    for _ in 0..4 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 / 2);
+        assert!(!n.seen.contains_key(&(C, rid)), "no grant from C's older fold");
+    }
+    n.advance(CALL_DEADLINE.as_millis() as u64 * 4);
+    let failed = n
+        .resolutions
+        .iter()
+        .any(|(s, r)| *s == C && matches!(r, Resolution::Read { id, result: Err(_) } if *id == rid));
+    assert!(failed, "the read failed instead of answering stale");
+    n.cut.clear();
+    let rid = n.on(C, |m, now| m.read_index(now)).expect("a follower reads");
+    for _ in 0..4 {
+        n.advance(CALL_DEADLINE.as_millis() as u64 / 2);
+    }
+    assert_eq!(n.seen.get(&(C, rid)), Some(&Some(2)), "once back, C's read sees the write made while it was away");
+}

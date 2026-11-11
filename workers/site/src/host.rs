@@ -151,6 +151,11 @@ pub struct Stats {
     pub shed_reads: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
+    /// Read-index reads this member served as a follower, refused to the leader (`Family::follower_serves`), and
+    /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
+    pub follower_reads: u32,
+    pub follower_refused: u32,
+    pub follower_late: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,

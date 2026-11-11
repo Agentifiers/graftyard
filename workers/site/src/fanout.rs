@@ -242,6 +242,40 @@ mod tests {
         assert_eq!(dump_wait(&a, 10_001 + DUMP_EVERY_MS), Some(DUMP_EVERY_MS - 1), "and recorded");
     }
 
+    /// A follower serves by read-index only the reads the design names: whole-tier and merge rows once its metadata
+    /// tier is loaded, and the core-only access and agent rows; refs, `ranges`, deps, and the alarm reads stay on the
+    /// leader.
+    #[test]
+    fn a_follower_serves_only_the_designs_reads() {
+        use crate::family::follower_query;
+        let tier = json!({ "rows": true, "ranges": true, "packed": true });
+        let merge = json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true });
+        for q in [&tier, &merge] {
+            assert!(follower_query(q, true), "{q}");
+            assert!(!follower_query(q, false), "a loading metadata tier sends {q} to the leader");
+        }
+        for q in [
+            json!({ "rows": { "access": true }, "ranges": true }),
+            json!({ "rows": { "agent": true }, "ranges": true }),
+        ] {
+            assert!(follower_query(&q, false), "{q} reads the core tier only");
+        }
+        for q in [
+            json!({}),
+            json!({ "ranges": true }),
+            json!({ "refs": { "limit": 10 } }),
+            json!({ "dep": true }),
+            json!({ "prsync": [1] }),
+            json!({ "mergequeue": "main" }),
+            json!({ "tiers": true }),
+            json!({ "settings": true }),
+            json!({ "request": "01" }),
+            json!({ "probe": true }),
+        ] {
+            assert!(!follower_query(&q, true), "{q} stays on the leader");
+        }
+    }
+
     /// A follower's answer to a shard's report names the leader in the shape lookup follows (`/error/notLeader`),
     /// not an error the lookup would count as a missed member.
     #[test]
