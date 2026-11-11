@@ -998,17 +998,13 @@ fn a_ring_fed_past_a_hole_refuses_cursors_from_before_it() {
 
 /// LF-13 on graft-m3c: the install's own input moves the member's base past the ring with no entry to feed, and the
 /// member follows again at once. A cursor from before the install must get `gone` then, not a `hold` that skips
-/// what the snapshot covered, even before any later entry arrives. The next entry is served from the snapshot's
-/// cursor as usual.
+/// what the snapshot covered, even before any later entry arrives. A lease the snapshot holds and the next entry
+/// releases still reports `Released` (the second hosted batch: 2 such events missing on F).
 #[test]
 fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() {
     let mut w = lease_world();
     create_ext(&mut w, CLAUDE, "skip", Some(WRITER));
-    let mut ring = feed::Ring::default();
-    let mut fed = Vec::new();
-    for k in 0..3 {
-        w.commit(issue(app(CLAUDE), shared(&[&format!("skip/{k}/**")], Some("skip")))).unwrap();
-        let after = w.fold();
+    let last = |w: &mut World| {
         let l = w.repo.leader();
         let e = w.repo.members[l.0 as usize]
             .log()
@@ -1017,38 +1013,38 @@ fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() 
             .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
             .unwrap()
             .clone();
-        let graftyard_raft::EntryBody::Events(evs) = &e.body else { unreachable!() };
-        fed.push((e.index, e.at, evs.clone(), after));
-    }
-    let (i0, at0, evs0, f0) = &fed[0];
-    ring.feed(REPO, &w.ident.owner, &f0.core, &f0.meta, (*i0, *at0, evs0));
+        let graftyard_raft::EntryBody::Events(evs) = e.body else { unreachable!() };
+        (e.index, e.at, evs, w.fold())
+    };
+    let mut ring = feed::Ring::default();
+    w.commit(issue(app(CLAUDE), shared(&["skip/0/**"], Some("skip")))).unwrap();
+    let (i0, at0, evs0, f0) = last(&mut w);
+    ring.feed(REPO, &w.ident.owner, &f0.core, &f0.meta, (i0, at0, &evs0));
     let before = feed::FeedCursor { group: REPO, index: ring.through }.encode();
-    // The snapshot covers the second entry; nothing is fed for it.
-    let through = fed[1].0;
-    ring.skip(through);
+    // The snapshot covers an acquire the ring never saw; the entry after it releases that lease.
+    let id = lease_id(&w.commit(issue(app(CLAUDE), shared(&["skip/1/**"], Some("skip")))));
+    let (through, at1, _, snap) = last(&mut w);
+    ring.skip(REPO, &w.ident.owner, &snap.core, (through, at1));
     let (oldest, newest) = ring.bounds();
     assert!(
         matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
         "a cursor from before the install is gone at once: oldest {oldest:?}, newest {newest:?}"
     );
     assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the install is served");
-    let (i2, at2, evs2, f2) = &fed[2];
+    w.commit(issue(app(CLAUDE), IssueOp::ReleaseLease { id })).unwrap();
+    let (i2, at2, evs2, f2) = last(&mut w);
     assert_eq!(i2.0, through.0 + 1, "the next entry follows the snapshot");
-    ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (*i2, *at2, evs2));
+    ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (i2, at2, &evs2));
     let (oldest, newest) = ring.bounds();
     let at_snapshot = feed::FeedCursor { group: REPO, index: through }.encode();
     assert_eq!(feed::start(REPO, Some(&at_snapshot), oldest, newest), feed::Start::After(through));
-    let served: Vec<(Index, LeaseChange)> = ring
+    let served: Vec<(Index, LeaseId, LeaseChange)> = ring
         .past(through, &[])
         .into_iter()
         .filter_map(|(i, _, e)| match e {
-            ActivityEvent::Lease { change, .. } => Some((i, change)),
+            ActivityEvent::Lease { lease, change } => Some((i, lease.id, change)),
             _ => None,
         })
         .collect();
-    assert_eq!(served, vec![(*i2, LeaseChange::Acquired)], "the entry after the snapshot, and nothing older");
-    assert!(
-        matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
-        "still gone from before"
-    );
+    assert_eq!(served, vec![(i2, id, LeaseChange::Released)], "the snapshot's lease, released after it");
 }

@@ -35,11 +35,15 @@ MUTANTS = [
      '                && ended_later(lease)\n            {\n                now.insert(lease.id, lease.clone());',
      '                && ended_later(lease)\n            {\n                let _ = lease;', GATES),
     ('ring: an install skip leaves the ring where it stood', RING,
-     '        self.events.clear();\n        self.held.clear();\n        self.live.clear();\n        self.through = to;\n        self.first = Some(Index(to.0 + 1));\n',
-     '        let _ = to;\n', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
+     '        if self.first.is_some() && to <= self.through {\n            return;\n        }\n        let view',
+     '        if true {\n            return;\n        }\n        let view',
+     ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
     ('ring: an install skip keeps the events from before it', RING,
-     '        self.events.clear();\n        self.held.clear();\n        self.live.clear();\n',
-     '        self.held.clear();\n        self.live.clear();\n', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
+     '        self.events.clear();\n        self.held.clear();\n        self.live = view.live()',
+     '        self.held.clear();\n        self.live = view.live()', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
+    ('ring: an install skip forgets the snapshot\'s live leases', RING,
+     '        self.live = view.live().into_iter().map(|r| (r.lease.id, r.lease)).collect();\n        self.through = to;',
+     '        let _ = &view;\n        self.live.clear();\n        self.through = to;', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
 ]
 
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])

@@ -496,15 +496,16 @@ impl Ring {
     /// The member's base moved to `to` with no entry fed (an `InstallSnapshot` applied through `to`). The ring
     /// restarts there at once: a cursor from before `to` gets `gone` now, not only once the next entry arrives, which
     /// on a quiet group can be long after the member follows again (LF-13 on graft-m3c: a `hold` from the pre-fault
-    /// cursor skipped 19 and 11 events). The live lease set goes too, so no lease from before the snapshot reads as
-    /// released or expired at the next entry, which the ring then serves as usual.
-    pub fn skip(&mut self, to: Index) {
+    /// cursor skipped 19 and 11 events). The live lease set becomes the one `core`, the installed tier at `to`
+    /// with entry time `at`, holds, so a lease held there and released by the next entry still reports `Released`.
+    pub fn skip(&mut self, repo: RepoId, owner: &dyn AuthzRead, core: &dyn Read, (to, at): (Index, Timestamp)) {
         if self.first.is_some() && to <= self.through {
             return;
         }
+        let view = LeaseView { core, owner, repo, at };
         self.events.clear();
         self.held.clear();
-        self.live.clear();
+        self.live = view.live().into_iter().map(|r| (r.lease.id, r.lease)).collect();
         self.through = to;
         self.first = Some(Index(to.0 + 1));
     }
