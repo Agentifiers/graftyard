@@ -1,10 +1,10 @@
 // idle-shards' active control on graft-m2b: a fresh m3org repository, a push to a branch, a pull request from it, and
-// a head push. Each step's answer, then whether `refs/pull/N/head` reached the head and `mergeable` was computed,
-// which needs the network's git cache shard. Prints JSON lines, no token.
+// a head push. Each step's answer, then whether `refs/pull/N/head` reached the head and `refs/pull/N/merge` exists, a
+// test merge the network's git cache shard computed. Prints JSON lines, no token.
 //   node tests/idleshards/active.mjs NAME
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Git, api, log, sleep, tokens } from "../am1/hosted/lib.mjs";
+import { Git, api, leaderOf, log, member, sleep, tokens } from "../am1/hosted/lib.mjs";
 
 const name = process.argv[2];
 if (!name) throw new Error("usage: active.mjs NAME");
@@ -25,9 +25,12 @@ g.run(["checkout", "-q", "-b", "topic"]);
 commit("a.txt", "one");
 let p = g.run(["push", "-q", "origin", "HEAD:refs/heads/topic"]);
 out("push topic", { ok: p.ok, err: p.ok ? undefined : p.out.slice(0, 200) });
-const pr = await api("POST", `/api/v3/repos/${R}/pulls`, admin, { title: "idle-shards control", head: "topic", base: "main" });
-out("open pr", { status: pr.status, number: pr.body?.number });
-const n = pr.body?.number;
+// The edge serves no `POST /pulls` yet, so the pull request is opened as BF-24 opens it: the leader's test-faults
+// `/bench_seed {"openPr"}` records its `PrOpened`.
+const chain = `repo:${c.body.id}`;
+const n = 1;
+const pr = await member(chain, await leaderOf(chain), "/bench_seed", { openPr: { n, head: "refs/heads/topic", base: "refs/heads/main" } });
+out("open pr", { status: pr.status, v: pr.v });
 commit("b.txt", "two");
 p = g.run(["push", "-q", "origin", "HEAD:refs/heads/topic"]);
 const head = g.run(["rev-parse", "HEAD"]).out.trim();
@@ -35,9 +38,9 @@ out("head push", { ok: p.ok, head });
 for (let i = 0; i < 24 && n; i++) {
   await sleep(5000);
   const ref = g.remoteHead(`refs/pull/${n}/head`);
-  const v = await api("GET", `/api/v3/repos/${R}/pulls/${n}`, admin);
-  if (ref === head && v.body?.mergeable !== null && v.body?.mergeable !== undefined) {
-    out("synced", { after_s: (i + 1) * 5, pull_head: ref === head, mergeable: v.body.mergeable });
+  const merge = g.remoteHead(`refs/pull/${n}/merge`);
+  if (ref === head && merge) {
+    out("synced", { after_s: (i + 1) * 5, pull_head: ref, pull_merge: merge });
     process.exit(0);
   }
 }
