@@ -147,6 +147,13 @@ pub struct Stats {
     pub inbound_since: u64,
     pub failed_calls: u32,
     pub dep_reads: u32,
+    /// Leader: each `DepsWanted` read, `DepsWanted` to `deps_read`, in ms, under `all`, and each chain's own read under
+    /// its kind (`authz`, `identity`, `tokens`, ...); `depFails` counts the chain reads that gave no fold.
+    pub deps_ms: BTreeMap<String, Vec<u32>>,
+    pub dep_fails: BTreeMap<String, u32>,
+    /// Leader: a command's admission to the append of the entry that carries it, in ms: the wait for the entry in
+    /// flight, the cut, and the entry's dep reads. `commit_ms` less this is the entry's confirm and quorum round.
+    pub queue_ms: Vec<u32>,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
@@ -1226,6 +1233,13 @@ impl<F: Family> Host<F> {
                     s.entries += 1;
                     s.commands += e.requests.len() as u32;
                     s.appended.push((e.index.0, t));
+                    for (rid, _) in &e.requests {
+                        if let Some((_, at, _)) = core.admitted.values().find(|(r, _, _)| r == rid)
+                            && s.queue_ms.len() < SAMPLES_MAX
+                        {
+                            s.queue_ms.push(t.saturating_sub(*at) as u32);
+                        }
+                    }
                 }
                 Write::Apply(to) => {
                     for idx in core.applied.0 + 1..=to.0 {
@@ -2132,6 +2146,7 @@ impl<F: Family> Host<F> {
             }
             // Each chain at once, as "The write path" reads them: one after another cost the sum of three reads,
             // about 1.3 s of every merge (`tests/m2/results/m2-wp6.md`, "Merge latency").
+            let began = now_ms();
             let joined = h.core.borrow().as_ref().map(|c| c.join.clone());
             let one = |chain: graftyard_types::ChainId| {
                 let env = &h.env;
@@ -2172,7 +2187,26 @@ impl<F: Family> Host<F> {
             };
             let (deps, reads): (Vec<_>, Vec<_>) = each_at_once(&want.chains, one).await.into_iter().unzip();
             let deps: Vec<_> = deps.into_iter().flatten().collect();
-            h.stats.borrow_mut().dep_reads += 1;
+            {
+                let mut s = h.stats.borrow_mut();
+                s.dep_reads += 1;
+                let all = ("all".to_owned(), Some(now_ms().saturating_sub(began)));
+                let each = reads.iter().map(|r| {
+                    let kind = r["chain"].as_str().and_then(|c| c.split(':').next()).unwrap_or("?").to_owned();
+                    (kind, r["ms"].as_u64())
+                });
+                for (kind, ms) in std::iter::once(all).chain(each) {
+                    match ms {
+                        Some(ms) => {
+                            let v = s.deps_ms.entry(kind).or_default();
+                            if v.len() < SAMPLES_MAX {
+                                v.push(ms as u32);
+                            }
+                        }
+                        None => *s.dep_fails.entry(kind).or_default() += 1,
+                    }
+                }
+            }
             // The entry these reads decide is appended next, at the log's end + 1.
             #[cfg(feature = "test-faults")]
             {

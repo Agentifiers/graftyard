@@ -786,3 +786,136 @@ zero computes from list fields / fail over budget, dispatch p99 > 30 s.
 L0-12 $5.38 (27 minutes of setup), B0-34 $6.63, B0-33 $9.22, B0-35 $11.19. Rounds 1 to 4 together: $43.56. Every
 network from 131245 to 131252 is torn down (smoke and rows each tore down their own; a final pass found 6 more
 instances, all 200, and a second pass none).
+
+## 12. Round 5: where the commit time goes, and `Authz` reads by read-index (`lm1-memory` after `6d1b7458`)
+
+### What changed
+
+- `7583378f`: the leader's `/stats` splits each commit. `queueMs` runs from a command's admission to the append of its
+  entry, which covers the entry in flight, the cut, and the entry's dep reads. `depsMs` holds each `DepsWanted` read,
+  whole (`all`) and by chain kind (`authz`, `names`, `tokens`), and `depFails` counts chain reads that gave no fold.
+  `roundMs` (append to apply) and `confirmMs` already existed. `a1.mjs` reports all of them as `leader.split`. This
+  ships in the site script, so it went out with a site day.
+- `14ad1ee5`: the edge reads an owner's `Authz` fold by read-index, through `graftyard_lookup::read_spread`. That covers
+  `api::authz`, `ident::authz_of`, the read gate, and `install_authz`. A read the members shed is answered 503 and
+  never goes on to the leader, and the read gate keeps the `OVERLOADED` reason, so its 503 carries `Retry-After: 1`.
+  A repository leader's own `fresh` dep read stays on the `Authz` leader. Design changes went in first: DESIGN
+  "Follower read" and "Push", the AGENT-LAYER row for the org `Authz` leader, and a DECISIONS entry. The new test is
+  `a_shed_authz_read_is_a_short_503_at_the_read_gate`, and `tests/lm1mem/plant.py` mutants 29 and 30 are caught.
+  `learners.mjs` now also places learners on `authz:` chains.
+- `2d06eb7d`: the edge's `o/r` lookup (`resolve`, `{"q": {"repo": name}}` on the owner's `Authz` group) also goes by
+  read-index, and a failed lookup answers 503 through `read_failed`.
+- No `crates/raft/src` change.
+
+### Deployed
+
+- Sites: `7583378f` by site day `siteday-m10`, 17:54 to 18:04Z (a, b and c, with the image unchanged). The PrSync queues
+  were purged afterwards.
+- Edge: `e2cfdfba` (`14ad1ee5`) at 19:14Z, then `afb025ac` (`2d06eb7d`) at 19:42Z. The edge is not a site script, so it
+  needs no site day.
+- Learners on `authz:7100001`: 4 (slots 0 to 3), placed at 19:17Z through the leader's `/learners` route, config 702.
+  Before load, each of the two followers and each of the two learners probed returned the leader's exact bytes at
+  index 702 in 190 to 580 ms.
+
+### The measurement: B0-29's shape at 500 agents, before the fix (131253, 300 s, 8 learners)
+
+Leader commit p50 3,970 ms and p99 50,066 ms (n 2,470). The leader moved from site 0 to site 2 (term 4).
+
+| Part of a commit on the leader | n | p50 | p99 |
+| --- | --- | --- | --- |
+| Admission to append (`queueMs`) | 2,162 | 3,451 ms | 32,179 ms |
+| An entry's dep reads, all chains at once | 93 | 634 ms | 46,522 ms |
+| ↳ `Authz` | 182 | 238 ms | 17,713 ms |
+| ↳ `Names` | 69 | 99 ms | 309 ms |
+| ↳ `Tokens` | 159 | 99 ms | 326 ms |
+| Append to apply (`roundMs`) | 92 | 179 ms | 1,000 ms |
+| Storage confirm | 91 | 24 ms | 202 ms |
+
+- The eight slowest whole dep reads were 46.5, 19.1, 17.7, 16.0, 13.3, 12.7, 9.8 and 6.6 s. Reads over 3 s took
+  171.5 s in total, 125.0 s of it in `Authz` reads. `Names` and `Tokens` never passed 0.5 s.
+- With one entry in flight per group, every command queued behind those reads.
+- The owner's `Authz` leader took 140, 126, 127, 120 and 102 `/read`s a second in each minute from 18:19 to 18:23Z
+  (Workers Logs, f1). All of them were the edge's permission and read-gate reads.
+- After the row, the `Authz` group had no leader: three followers at term 53. One `/campaign` elected one.
+
+So the commit p99 at 500 agents was set by the `Authz` dep read. Storage confirm and replication to a quorum were not
+the bound.
+
+### After the fix: the same smoke (131254, edge `e2cfdfba`, 4 learners on `Authz`)
+
+| | Before | After |
+| --- | --- | --- |
+| Commit p50 / p99 | 3,970 / 50,066 ms | 817 / 1,739 ms |
+| `Authz` dep read p99 | 17,713 ms | 366 ms |
+| Admission to append, p90 | 28,323 ms | 730 ms |
+| Leader | site 0 → 2, term 4 | site 0, term 2, held |
+| Agent pushes ok | 682 / 1,247 | 1,238 / 1,253 |
+
+- Append to apply now took about 365 ms per entry. That is the leader cutting six times as many entries (588 against
+  92), not the bound.
+- The `Authz` leader still took about 240 `/read`s a second, while each of its learners took about 52. That was the
+  `o/r` lookup, which `2d06eb7d` moved before the rows.
+- The `Authz` group was leaderless again after this smoke (term 55). One `/campaign` elected a leader.
+
+### Rows (`rows-m10`, 8 learners per repository, edge `afb025ac`)
+
+| Row | Gate / fail line | Result | Verdict |
+| --- | --- | --- | --- |
+| B0-29, 600 s (131255) | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale` on distinct refs, leader < 600 req/s with zero feed polls / commit p99 > 1 s, queue merge > 10 s, feed poll on the leader | Leader held: site 0, term 2, 0 changes, 0 `exceededMemory`, 0 feed polls on the leader. The split was lost: the leader's `/stats` read at the end of the row raised (869 ms, no message), and the isolate reset. 2,305 of 2,500 agent pushes ok (181 client timeouts at 120 s); `merge:only` 4 × 200, 25 × 503; feed p99 2,552 ms | **Not judged** on commit (not captured). Merges fail |
+| B0-32, 180 s (131256) | Every push acked within 5 s or `ng … admission full`, merges in the next 2 entries, zero leader changes, zero `suspect` / other refusal shape, lost ack, merge > 2 s | Commit p50 432, p99 932 ms. Split p99: queue 694, round 304, confirm 38, deps 285 (`Authz` 234) ms. Burst: 147 ok, 352 refused, p50 23,063 ms. Term 2 → 4, leader site 0 at the start and the end; two `StepDown CommitErrors` holds on f0 (20:06:10 with 7 of 126 calls failed to each follower, 20:06:55) | **Fail** (burst refused, not `admission full`; acks past 5 s) |
+| B0-31, 600 s, 1 MiB pushes (131257) | Commit p99 ≤ 1 s / > 3 s | Commit p50 650, p99 1,163 ms (n 5,157). Split p99: queue 872, round 317, confirm 72, deps 432 (`Authz` 419) ms. The leader went to site 2 by transfer, was back on site 0 at term 4 before load, and held. 1 `/suspect`. 976 agent pushes ok, 1,484 refused (reason not recorded by the driver) | **Between the lines** (round 4: 2,311 ms) |
+| L0-12 A1 replay, 600 s, leader kill every 60 s (131258) | No lease overlap over 500 ms, 500 long-pollers see each event within 3 s at p99 outside leader kills / feed p99 over 2 s, any overlap | Feed p99 14,291 ms (p50 1,136; 17,473 events; 1,483 `lagging`, 9,982 with no status). Leader site 0 → 1, term 6. 2,029 of 2,490 agent pushes ok, 365 × 503 from the read gate. The last leadership's `Authz` dep reads had p50 2,246 ms (n 4) and 956 `/suspect`. Lease overlap: not measurable here, because `a1.mjs` takes only Shared leases (lines 334 and 444), and Shared leases never conflict | **Fail** (feed p99). Overlap not measured |
+| B0-34, 600 s, shard kill at 300 s (131259) | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s / TTFB p99 > 5 s, k > 8 | k 1 → 2 (pass). Clone TTFB p50 949, p99 2,253 ms over 572 clones, all 200 (round 4: 158,542 ms). Human push p99 121,020 ms (client timeouts). Commit p99 930 ms; split p99 queue 599, round 356, confirm 39, deps 239 ms. Leader site 0, term 2 throughout, 0 `/suspect` | **Fail** (human push p99). TTFB between the lines |
+| B0-35, 600 s, 500 open PRs (131260) | Test-merge vCPU within `TEST_MERGE_BUDGET`, Actions dispatch p99 ≤ 10 s, zero computes from list fields / over budget, dispatch p99 > 30 s | Test merges used 0.274 vCPU of a 0.25 budget (164,135 ms spent in 600 s on site 0's shard; 707 computed, 6,043 shed); list-field computes 0 (0 asked). Dispatch p99 not instrumented. `read:mergeable` 1,949 `MERGEABLE`, 16,018 `UNKNOWN`, 39,990 × 503. Commit p50 601, p99 1,882 ms; leader site 0, term 2 throughout | **Fail** (over budget). List-field line passes |
+| B0-33, 300 s, 5,000 agents | | Not run: the stop at $10 came first ($10.48 after B0-35) | Not run |
+
+`Authz` group across the rows: leader site 0 at term 57 from B0-29 to the end. No `/campaign` was needed during the
+rows.
+
+### What the timing shows on the commit path
+
+- **With `Authz` off the leader, no part of a commit dominates at 500 agents.** Rows without kills had commit p99 of 930
+  to 1,882 ms. In each one, admission to append was the largest part (p99 599 to 1,151 ms). The dep reads came next (p99
+  239 to 432 ms), then append to apply (p99 304 to 455 ms). Storage confirm stayed at p99 38 to 72 ms; round 4 saw 1.7
+  to 2.1 s.
+- **Every step-down logged in round 5 was `CommitErrors`; none was `Confirm`.** Per row (Workers Logs, "StepDown"):
+  - B0-29: 1, on f0 at 19:49:35, and it did not complete.
+  - B0-31: 1, on f1 before load.
+  - B0-34: 4.
+  - B0-35: 7.
+  - L0-12: 22 in 21:01 to 21:08Z, across the three sites, during the kills.
+
+  The holds listed name 3 to 7 failed calls in 41 to 126 to each follower. The terms in B0-29, B0-34 and B0-35 never
+  moved.
+- **Under leader kills (L0-12) the commit path is the load.** The last leadership's `Authz` dep reads took p50
+  2,246 ms, against 81 to 174 ms in the other rows, and it took 956 `/suspect` reports. The split resets with each kill,
+  so it covers only the last leadership. Per the brief, this is not fixed here.
+- **API reads are still half shed.** In the rows, 29 to 71% of `read:api` answered 503 with `Retry-After: 1` (B0-29:
+  44,992 × 200 and 70,472 × 503). These are the repository's whole-tier reads at `HEAVY_READS` and `DUMP_EVERY_MS` on 8
+  learners and 2 followers.
+
+### Checks
+
+On `2d06eb7d`, every check passed:
+
+- fmt;
+- workspace clippy;
+- wasm32 clippy for site and edge, each with and without `test-faults`, and for ops;
+- `cargo test --workspace`;
+- `check_design`, `check_names`;
+- `check_links` on a clean copy (2,993 citations);
+- `go test` in `containers/git/server`.
+
+The first five came from `tests/am1/runs/checks.sh`; `check_links` and `go test` were run on their own.
+
+`tests/lm1mem/plant.py` 29 and 30 were caught.
+
+### Cost, round 5
+
+`tests/fanout/cost.sh` with `T0_FILE=tests/fanout/raw/mem5-t0.t0` (17:56Z): **$10.56**, of it containers $2.34, at 21:54Z after the
+last teardown. Cumulative at each step: first smoke $0.66, second smoke $2.02, rows start $2.18, B0-29 $3.53,
+B0-32 $4.00, B0-31 $5.24, L0-12 $7.09, B0-34 $8.47, B0-35 $10.48 (the stop). Rounds 1 to 5 together: $54.12 ($43.56 + $10.56).
+
+Teardown: each row's network, then networks 131217 to 131265 with `--pools`, which stopped 9 more instances. They
+were the seven pool shards on site a, 131260, and 131228, which an earlier round had left running. Afterwards,
+`ghosts.py` 21:52 to 21:56Z showed no running instance.

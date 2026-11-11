@@ -226,7 +226,7 @@ pub(crate) async fn read(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, viewer, None, Rows::All, Gate::Readers).await
 }
@@ -242,7 +242,7 @@ pub(crate) async fn read_core(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, viewer, None, Rows::Core, Gate::Readers).await
 }
@@ -258,7 +258,7 @@ pub(crate) async fn read_for_invitee(
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
-        Err(e) => return Ok(Err(unavailable(&format!("the repository lookup failed; retry ({e})")))),
+        Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
     read_repo(c, repo, owner, name, Some(viewer), None, Rows::All, Gate::Invitees).await
 }
@@ -461,18 +461,9 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
     })
 }
 
-/// The owner's `Authz` fold, read as a `dep` through `fresh`, for permissions and `author_association`.
+/// The owner's `Authz` fold by read-index (`crate::authz_read`), for permissions and `author_association`.
 async fn authz(c: &Ctx<'_>, repo: &Repo) -> Option<AuthzFold> {
-    let chain = ChainId::Authz(repo.owner);
-    let q = json!({ "q": { "dep": true } }).to_string();
-    let (v, _, _) =
-        graftyard_lookup::call_opt(&c.bindings(), chain, &repo.record, "/read", q.as_bytes()).await.ok()??;
-    let bytes = hex(v["value"].as_str()?)?;
-    graftyard_raft::codec::from_bytes(&bytes).ok()
-}
-
-fn hex(s: &str) -> Option<Vec<u8>> {
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    crate::authz_read(c, repo.owner, &repo.record).await.ok().flatten()
 }
 
 /// The placement's buckets, home site first.
@@ -1059,7 +1050,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows, Gate::Readers).await?;
             (owner, name, rd)
         }
-        Some(Err(Some(e))) => return Ok(unavailable(&format!("the repository lookup failed; retry ({e})"))),
+        Some(Err(Some(e))) => return Ok(read_failed("the repository lookup failed; retry", &e)),
         Some(Err(None)) => match &target {
             Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found())),
             _ => {

@@ -29,17 +29,10 @@ async fn dep_fold<T: serde::de::DeserializeOwned>(
     graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| format!("{chain}: {e}"))
 }
 
-/// An owner's `Authz` fold through `fresh`, under the owner's `Placement` record.
+/// An owner's `Authz` fold by read-index (`crate::authz_read`), under the owner's `Placement` record.
 pub async fn authz_of(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Option<AuthzFold>, String> {
     let Some(record) = crate::placement(c, owner).await? else { return Ok(None) };
-    let q = json!({ "q": { "dep": true } }).to_string();
-    let Some((v, _, _)) =
-        graftyard_lookup::call_opt(&c.bindings(), ChainId::Authz(owner), &record, "/read", q.as_bytes()).await?
-    else {
-        return Ok(None);
-    };
-    let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
-    graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
+    crate::authz_read(c, owner, &record).await
 }
 
 /// `ghs_` authentication (`design/SHARED.md`, "Identity and tokens"): checked offline against the `kid`'s

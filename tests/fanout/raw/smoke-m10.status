@@ -1,0 +1,8 @@
+2026-11-11T18:15:49.066Z m3org/fs500y = 131253
+2026-11-11T18:15:54.845Z repo:131253 leader 0: learners [{"addr":192,"doName":"repo:131253#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:131253#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:131253#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:131253#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:131253#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:131253#2#l5","join":20 config 5
+2026-11-11T18:15:57.929Z repo:131253 leader 0: set k 4: {"k":4,"meta":{"configIndex":5,"leader":0,"term":2}}
+2026-11-11T18:15:58.058Z repo:131253 leader 0: k 4 at 6
+2026-11-11T18:15:58Z s500y fs500y 131253 start --agents 500 --seconds 300
+2026-11-11T18:24:29Z s500y fs500y 131253 done exit 0
+2026-11-11T18:24:32Z cost {"workers_requests": 32862, "workers_cpu_ms": 804725, "do_requests": 665022, "do_rows_written": 280571, "do_active_s": 22636, "containers_cpu_s": 419, "containers_gib_s": 81395, "containers_gb_s": 162789, "containers_usd": 0.22, "usd": 0.66}
+DONE
