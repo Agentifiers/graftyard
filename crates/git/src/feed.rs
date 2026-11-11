@@ -354,7 +354,7 @@ pub fn events(
 /// A serving member's feed (`design/AGENT-LAYER.md`, "Activity feed": "A serving member answers from its applied log
 /// with no read-index call"): the events of the entries it applied, newest last, at most FEED_RING. The host feeds it
 /// each applied entry in order with the core tier as it stands after the input that applied it, so events of entries
-/// applied in one input read that input's final rows (a lease acquired and released in one input shows as released).
+/// applied in one input read that input's final rows; a lease acquired and released in one input still shows both.
 /// `live` is the lease set held at the last entry, which finds `Released` and `Expired`: a lease held before an entry
 /// and not after it is `Expired` at the first entry whose `at` passes its `expires`, or whose holder lost access.
 #[derive(Clone, Debug, Default)]
@@ -451,6 +451,12 @@ impl Ring {
                 _ => {}
             }
         }
+        // `core` is the tier as the whole input left it, and a follower's catch-up applies many entries in one input.
+        // A lease whose row is gone with nothing in this entry ending it (no release, no final task, not yet expired)
+        // was ended by a later entry of the same input: it stays live until that entry, which reports it.
+        let ended_later =
+            |l: &Lease| crate::lease::lease_row(core, l.id).is_none() && !released.contains(&l.id) && at < l.expires;
+        let mut now = now;
         for (id, l) in &self.live {
             if now.contains_key(id) {
                 continue;
@@ -458,8 +464,20 @@ impl Ring {
             let task_final = l.holder.session.as_ref().is_some_and(|s| {
                 evs.iter().any(|e| matches!(e, RepoEvent::TaskUpdated { session, state: Some(st), .. } if session == s && st.is_final()))
             });
+            if !task_final && ended_later(l) {
+                now.insert(*id, l.clone());
+                continue;
+            }
             let change = if released.contains(id) || task_final { LeaseChange::Released } else { LeaseChange::Expired };
             out.push(ActivityEvent::Lease { lease: l.clone(), change });
+        }
+        for e in evs {
+            if let RepoEvent::LeaseAcquire { lease, .. } = e
+                && !now.contains_key(&lease.id)
+                && ended_later(lease)
+            {
+                now.insert(lease.id, lease.clone());
+            }
         }
         self.live = now;
         self.through = index;
