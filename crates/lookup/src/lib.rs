@@ -370,6 +370,66 @@ pub async fn call_opt(
     Err(format!("{chain}: {last}"))
 }
 
+/// How long the edge waits for one follower's read-index answer before it asks the next member [guess]: a follower
+/// that has not applied the leader's index answers `overloaded` itself after the site's FOLLOWER_WAIT (1 s).
+pub const FOLLOWER_CALL: Duration = Duration::from_millis(2_000);
+
+/// The followers a read-index read goes to, in order: the cached config's voters, else the record's bootstrap
+/// members, without the cached leader, rotated by `pick` so callers spread over both. With no leader cached every
+/// voter is a candidate: a member that leads serves the read itself.
+fn follower_order(voters: Vec<(SiteId, String)>, leader: Option<SiteId>, pick: usize) -> Vec<Target> {
+    let mut out: Vec<Target> = voters
+        .into_iter()
+        .filter(|(s, _)| Some(*s) != leader)
+        .map(|(site, do_name)| Target { site, do_name })
+        .collect();
+    if !out.is_empty() {
+        let n = pick % out.len();
+        out.rotate_left(n);
+    }
+    out
+}
+
+/// Whether a follower's answer to a read-index read is used. Only a value is. `notLeader` (it names the leader, or its
+/// metadata tier is loading), `overloaded` (behind, installing, or at its cap), `busy`, a 4xx or 5xx, and no answer
+/// move to the next member, and none is reported with `suspect`: a follower that cannot serve a read is no evidence
+/// that the leader is down.
+fn follower_answer_usable(r: Option<(u16, &Value)>) -> bool {
+    classify(r, false) == Answer::Reply
+        && r.is_some_and(|(_, v)| v.pointer("/error/notLeader").is_none() && v.pointer("/done/notLeader").is_none())
+}
+
+/// A read off the leader (`design/DESIGN.md`, "Follower read"): `body` (`{"q": ..}`) goes with `"index": true` to
+/// each follower in `follower_order` until one answers with a value, then, if none did, to the leader by `call_opt`.
+/// A follower's answer holds every entry acknowledged before the read arrived: it waited for the leader's confirmed
+/// commit index. Followers never raise `suspect` and never count as missed.
+pub async fn read_spread(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    body: &Value,
+) -> std::result::Result<Option<(Value, Step, Target)>, String> {
+    let known = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap_or_default();
+    let voters = if known.voters.is_empty() {
+        record.bootstrap_members(chain).into_iter().map(|m| (m.site, m.do_name.to_string())).collect()
+    } else {
+        known.voters
+    };
+    let pick = (js_sys::Math::random() * 1024.0) as usize;
+    let mut indexed = body.clone();
+    indexed["index"] = json!(true);
+    let bytes = indexed.to_string();
+    for t in follower_order(voters, known.leader, pick) {
+        let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
+        if follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v))) {
+            let v = r.map(|(_, v)| v).unwrap_or_default();
+            learn_leader(chain, &v);
+            return Ok(Some((v, Step::Cached, t)));
+        }
+    }
+    call_opt(b, chain, record, "/read", body.to_string().as_bytes()).await
+}
+
 /// The word in `call_opt`'s error when the leader kept shedding the read (`overloaded_reply`): the caller answers 503
 /// with a short `Retry-After`.
 pub const OVERLOADED: &str = "overloaded";
@@ -947,6 +1007,41 @@ mod tests {
         assert_eq!(classify(Some((200, &nl)), false), Answer::Reply);
         // A lookup built before `overloaded` reads the same answer as `busy`, so it does not report it either.
         assert!(shed.get("busy").is_some());
+    }
+
+    /// A read-index read goes to the followers first, never the cached leader, rotated by `pick`; with no leader
+    /// cached every voter is asked.
+    #[test]
+    fn follower_reads_skip_the_leader_and_rotate() {
+        let v = |s: &[(u8, &str)]| s.iter().map(|(i, n)| (SiteId(*i), n.to_string())).collect::<Vec<_>>();
+        let sites = |t: Vec<Target>| t.into_iter().map(|t| t.site.0).collect::<Vec<_>>();
+        let all = v(&[(0, "a"), (1, "b"), (2, "c")]);
+        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 0)), vec![0, 2]);
+        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 1)), vec![2, 0]);
+        assert_eq!(sites(follower_order(all.clone(), Some(SiteId(1)), 4)), vec![0, 2]);
+        assert_eq!(sites(follower_order(all.clone(), None, 2)), vec![2, 0, 1]);
+        assert_eq!(follower_order(Vec::new(), Some(SiteId(1)), 3), Vec::new());
+        assert_eq!(follower_order(all, Some(SiteId(0)), 1)[0].do_name, "c");
+    }
+
+    /// Only a value from a follower is used. A follower that names the leader, sheds or is behind (`overloaded`), is
+    /// `busy`, fails, or does not answer moves the read on, and none of these is a `Missed` answer here: the follower
+    /// pass has no `suspect` path at all.
+    #[test]
+    fn only_a_followers_value_is_used() {
+        assert!(follower_answer_usable(Some((200, &json!({ "value": 1, "index": 3 })))));
+        let nl = json!({ "error": { "notLeader": { "term": 3, "leader": 1 } } });
+        for (status, v) in [
+            (200, nl),
+            (200, json!({ "done": { "notLeader": { "term": 3 } } })),
+            (200, overloaded_reply(250)),
+            (200, json!({ "busy": true })),
+            (503, Value::Null),
+            (404, Value::Null),
+        ] {
+            assert!(!follower_answer_usable(Some((status, &v))), "{status} {v}");
+        }
+        assert!(!follower_answer_usable(None));
     }
 
     /// One isolate sends one report per (chain, member, term, scope) per SUSPECT_GAP; another member, another term,

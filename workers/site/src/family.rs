@@ -143,6 +143,10 @@ pub trait Family: 'static {
     fn heavy_wait(_fold: &Self::Fold, _q: &Value, _now: u64) -> Option<u64> {
         None
     }
+    /// Whether a follower serves read `q` by read-index (`design/DESIGN.md`, "Follower read"); else it names the leader.
+    fn follower_serves(_fold: &Self::Fold, _q: &Value) -> bool {
+        true
+    }
     /// The fold in the crate's codec, for another group's dependency read (`/dep`).
     fn fold_bytes(fold: &Self::Fold) -> Vec<u8>;
     /// A dependency fold read from `chain`'s leader.
@@ -311,6 +315,18 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64) -> Option<u64> {
             }
         }
     })
+}
+
+/// The repository reads a follower serves by read-index (`design/DESIGN.md`, "Follower read"): whole-tier and merge
+/// rows once its metadata tier is loaded, and the core-only access and agent rows. Refs, `ranges`, `dep`, `prsync`,
+/// `mergequeue`, `tiers`, and `settings` reads stay on the leader.
+pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
+    match q.get("rows") {
+        Some(Value::Bool(true)) => meta_loaded,
+        Some(r) if r.get("merge").is_some() => meta_loaded,
+        Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
+        None => false,
+    }
 }
 
 /// Drops every cached dump, for a member whose fold storage refused a read.
@@ -747,6 +763,9 @@ impl Family for Repo {
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
     /// `ChainLog` reads; with `{"q": {"tiers": true}}`, each tier's `applied` and `fold_digest`, and the digest after
     /// `{"at": index}` while the tier keeps it (`graftyard_fold::digest_at`), for the fold audit.
+    fn follower_serves(fold: &git::repo::RepoFold, q: &Value) -> bool {
+        follower_query(q, fold.meta.loaded())
+    }
     fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u64> {
         (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now)).flatten()
     }

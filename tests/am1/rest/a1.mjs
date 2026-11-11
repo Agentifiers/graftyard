@@ -520,3 +520,6 @@ const v = {
 };
 writeRow(OUT, v);
 log(JSON.stringify(v).slice(0, 4000));
+// Pushes and polls cut off at the row's end can hold sockets open for minutes, which stalled `rows.sh` on B0-29 and
+// B0-31 (`tests/am1/results/lm1-memory.md`, section 10): the row is written, so end here.
+process.exit(0);

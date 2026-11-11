@@ -399,7 +399,8 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
     out
 }
 
-/// The repository's `{"rows": true}` read on its leader, creating its group on first use; `{"rows": {"merge": id}}`
+/// The repository's `{"rows": true}` read, on a follower by read-index first and then the leader
+/// (`graftyard_lookup::read_spread`), creating its group on first use; `{"rows": {"merge": id}}`
 /// for a merge's rows only, which a member built before it answers with every row. A leader that kept shedding the
 /// read (`graftyard_lookup::OVERLOADED`) answers 503 with `Retry-After: 1`. Identical reads are not shared across
 /// requests: a Workers isolate refuses a promise resolved from another request's context, and every such read
@@ -412,13 +413,10 @@ pub(crate) async fn tier_rows(
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = tier_rows_query(merge);
-    let mut v =
-        graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await.map(|o| o.map(|(v, _, _)| v));
+    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes())
-            .await
-            .map(|o| o.map(|(v, _, _)| v));
+        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     }
     Ok(match v {
         Ok(Some(v)) => Ok(v),
@@ -432,21 +430,22 @@ pub(crate) async fn tier_rows(
 
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
 /// every ref. `packed`: the whole tiers as one JSON string (`TierRows::packed`), which `TierRows::from_value` reads.
-fn tier_rows_query(merge: Option<i64>) -> String {
+fn tier_rows_query(merge: Option<i64>) -> Value {
     let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
-    json!({ "q": { "rows": rows, "ranges": true, "packed": true } }).to_string()
+    json!({ "q": { "rows": rows, "ranges": true, "packed": true } })
 }
 
-/// The repository's narrow `{"rows": {which: true}}` core read on its leader: `access` for `crate::read_gate`, or
+/// The repository's narrow `{"rows": {which: true}}` core read, on a follower by read-index first and then the
+/// leader (`graftyard_lookup::read_spread`): `access` for `crate::read_gate`, or
 /// `agent` for an agent push. `Ok(Err(why))` when the leader cannot answer it now.
 pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<std::result::Result<MemStore, String>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
-    let q = json!({ "q": { "rows": { which: true }, "ranges": true } }).to_string();
-    let mut v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+    let q = json!({ "q": { "rows": { which: true }, "ranges": true } });
+    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.as_bytes()).await;
+        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
     }
     Ok(match v {
         Ok(Some((v, _, _))) => match TierRows::from_value(&v["value"]) {
@@ -1614,9 +1613,9 @@ mod tests {
     /// its size; a merge's narrow read asks for it too, which a member answers unpacked.
     #[test]
     fn the_tier_read_asks_for_packed_rows() {
-        let q: serde_json::Value = serde_json::from_str(&super::tier_rows_query(None)).unwrap();
+        let q = super::tier_rows_query(None);
         assert_eq!(q, serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } }));
-        let q: serde_json::Value = serde_json::from_str(&super::tier_rows_query(Some(7))).unwrap();
+        let q = super::tier_rows_query(Some(7));
         assert_eq!(q["q"]["rows"], serde_json::json!({ "merge": 7 }));
     }
 }

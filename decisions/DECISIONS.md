@@ -2114,6 +2114,20 @@ AM1-WP4's in-memory half passed LF-3, LF-5, and L0-13, and the pure parts of L0-
 
 **Flip.** `fanout`'s rerun passing the load rows at k = 1, which keeps the $0 line; or the rerun needing k above 1 at journey 9, which moves the cost figures through `scripts/cost_agents.py`.
 
+### F65 follow-up: API tier reads and the read gate's rows go to followers by read-index, 2026-11-11
+
+Round 2 of `lm1-memory` held memory at 500 agents, but every row failed on the leader's one thread: up to 942 ms of CPU a second in `/read`, so its storage confirms and AppendEntries replies stepped late and `STEP_DOWN` fired (`tests/am1/results/lm1-memory.md`, sections 6d and 9).
+
+**Decision.** The edge sends a repository's API tier reads (whole-tier and merge rows) and the read gate's access and agent rows to a follower by read-index first, rotated over both followers, then to the leader (`graftyard_lookup::read_spread`). A follower serves only those queries (`family::follower_query`), and whole-tier and merge rows only once its metadata tier is loaded; for anything else it names the leader. `READS_MAX`, `HEAVY_READS`, and the dump cache hold on a follower as on the leader. A follower that has not applied the leader's index within `FOLLOWER_WAIT` (1 s) answers `overloaded`. No follower answer raises `suspect`. A command's deps, refs, `ranges`, `/entries`, and the alarms' reads stay on the leader (`design/DESIGN.md`, "Follower read").
+
+**Why.** A read-index read is `Fresh`: the leader confirms its commit index by the same lease or round as its own reads, and the follower answers only after applying it, so the answer holds every entry acknowledged before the read arrived. The reads moved are about 90% of the leader's inbound requests on B0-29.
+
+**Beat.** Learners, which journey 9's load does not place (`LEARNER_AT` is 500 reads/s). Excusing slow confirms in `STEP_DOWN`, a `crates/raft` change for a cause in the host. A stale mode, which needs the customer-signed flag.
+
+**Evidence.** Unit tests and planted bugs (`tests/lm1mem/plant.py`, 29 of 29), and `a_follower_behind_grants_no_read_from_its_older_fold` in `crates/fold/tests/install.rs`. Rows: `tests/am1/results/lm1-memory.md`, section 10.
+
+**Flip.** Followers that step down or run out of memory in turn, which would move these reads to learners.
+
 ### F65: a leader caches its packed dump, caps whole-tier reads, and sheds without `suspect`, 2026-11-11
 
 Branch `lm1-memory` found what took repository members past 128 MB at 500 agents and changed the read path on the leader and in the lookup (`tests/am1/results/lm1-memory.md`; `design/DESIGN.md`, Scale, journey 9, item 1).

@@ -1,0 +1,5 @@
+2026-11-11T09:28:18Z cost {"workers_requests": 76160, "workers_cpu_ms": 866675, "do_requests": 555147, "do_rows_written": 178906, "do_active_s": 18552, "containers_cpu_s": 346, "containers_gib_s": 42868, "containers_gb_s": 85736, "containers_usd": 0.12, "usd": 0.45}
+2026-11-11T09:28:55.619Z m3org/fm7-b029 = 131238
+2026-11-11T09:28:57.668Z repo:131238 leader 0: set k 4: {"k":4,"meta":{"configIndex":1,"leader":0,"term":2}}
+2026-11-11T09:28:57.758Z repo:131238 leader 0: k 4 at 5
+2026-11-11T09:28:57Z b0-29 fm7-b029 131238 start

@@ -60,10 +60,43 @@ fn heavy_read(q: &Value) -> bool {
     q.get("rows").is_some_and(Value::is_boolean)
 }
 
-/// Whether a read is shed: any read with READS_MAX reads in flight already, or a whole-tier one on a leader with
-/// HEAVY_READS of them in flight.
-fn sheds(heavy: bool, reads: u32, heavies: u32, leading: bool) -> bool {
-    reads >= READS_MAX || (heavy && leading && heavies >= HEAVY_READS)
+/// How long a follower waits to apply the leader's read index before it answers `overloaded` [guess]: one that is
+/// behind or installing a snapshot never answers from an older fold, and the edge asks the next member
+/// (`design/DESIGN.md`, "Follower read"; `graftyard_lookup::read_spread`).
+pub const FOLLOWER_WAIT: Duration = Duration::from_secs(1);
+
+/// What a member does with a `/read` before it starts it.
+#[derive(Debug, PartialEq, Eq)]
+enum Gate {
+    Serve,
+    /// A follower asked for a read only the leader serves, or whose tier it is still loading: it names the leader.
+    NotLeader,
+    /// Past READS_MAX, or a whole-tier read past HEAVY_READS on a member that serves it: `overloaded`.
+    Shed,
+}
+
+/// `index` is a read-index read, `servable` whether a follower serves its query (`Family::follower_serves`), `reads`
+/// and `heavies` the reads and whole-tier reads in flight. The caps hold on every member that serves the read, the
+/// leader or a follower by read-index; a plain read on a follower is not shed, because it answers `NotLeader`.
+fn gate(index: bool, leading: bool, servable: bool, heavy: bool, reads: u32, heavies: u32) -> Gate {
+    if index && !leading && !servable {
+        return Gate::NotLeader;
+    }
+    if reads >= READS_MAX || (heavy && (leading || index) && heavies >= HEAVY_READS) {
+        return Gate::Shed;
+    }
+    Gate::Serve
+}
+
+/// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
+/// FOLLOWER_WAIT and answers `overloaded`, which the edge takes to the next member without `suspect`; a leader's read
+/// waits three call deadlines and answers `busy`.
+fn read_wait(index: bool) -> (Duration, Value) {
+    if index {
+        (FOLLOWER_WAIT, graftyard_lookup::overloaded_reply(OVERLOAD_RETRY_MS))
+    } else {
+        (raft::CALL_DEADLINE * 3, json!({ "busy": true }))
+    }
 }
 
 /// One read in flight on this member, counted in `Host::reads_in_flight` (and a whole-tier one in
@@ -989,14 +1022,32 @@ impl<F: Family> Routes<F> {
         let index = body.get("index").and_then(Value::as_bool).unwrap_or(false);
         // A whole-tier dump past HEAVY_READS in flight on a leader is shed at once, as a 200 the lookup retries
         // without a `suspect` report (`graftyard_lookup::overloaded_reply`): memory grew with these reads in flight
-        // and 100 at once reset the isolate (`tests/am1/results/lm1-memory.md`). A follower still answers
+        // and 100 at once reset the isolate (`tests/am1/results/lm1-memory.md`). A follower answers a plain read
         // `NotLeader`, so the caller finds the leader.
         // Any read past READS_MAX in flight is shed the same way: one quorum round grants every read waiting on it.
+        // A read-index read goes to a follower only for the queries `Family::follower_serves` names; the caps hold on
+        // it too (`gate`).
         let heavy = heavy_read(&q);
-        let leading = self.host.core.borrow().as_ref().is_some_and(|c| c.m.role() == Role::Leader);
-        if sheds(heavy, self.host.reads_in_flight.get(), self.host.heavy_reads.get(), leading) {
-            self.host.stats.borrow_mut().shed_reads += 1;
-            return self.reply(graftyard_lookup::overloaded_reply(OVERLOAD_RETRY_MS));
+        let (leading, servable, nl) = match self.host.core.borrow().as_ref() {
+            Some(c) => {
+                (c.m.role() == Role::Leader, F::follower_serves(&c.m.group_fold().fold, &q), Some(c.m.not_leader()))
+            }
+            None => (false, false, None),
+        };
+        match gate(index, leading, servable, heavy, self.host.reads_in_flight.get(), self.host.heavy_reads.get()) {
+            Gate::Serve => {}
+            Gate::NotLeader => {
+                self.host.stats.borrow_mut().follower_refused += 1;
+                let nl = nl.ok_or_else(|| err("member not joined"))?;
+                return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
+            }
+            Gate::Shed => {
+                self.host.stats.borrow_mut().shed_reads += 1;
+                return self.reply(graftyard_lookup::overloaded_reply(OVERLOAD_RETRY_MS));
+            }
+        }
+        if index && !leading {
+            self.host.stats.borrow_mut().follower_reads += 1;
         }
         let held = (InFlight::new(&self.host.reads_in_flight), heavy.then(|| InFlight::new(&self.host.heavy_reads)));
         let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
@@ -1008,7 +1059,8 @@ impl<F: Family> Routes<F> {
             (Ok(_), None) => unreachable!("a started read has a waiter"),
         };
         self.host.served();
-        match within(raft::CALL_DEADLINE * 3, rx).await {
+        let (wait, late) = read_wait(index);
+        match within(wait, rx).await {
             // A stale dump whose rebuild is not yet due (`family::dump_wait`).
             Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
                 self.host.stats.borrow_mut().shed_reads += 1;
@@ -1017,7 +1069,12 @@ impl<F: Family> Routes<F> {
             Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held),
             Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
             Some(Err(_)) => Response::error("member reset", 503),
-            None => self.reply(json!({ "busy": true })),
+            None => {
+                if index {
+                    self.host.stats.borrow_mut().follower_late += 1;
+                }
+                self.reply(late)
+            }
         }
     }
 
@@ -1124,6 +1181,9 @@ impl<F: Family> Routes<F> {
             "heavyReads": self.host.heavy_reads.get(),
             "readsInFlight": self.host.reads_in_flight.get(),
             "sharedReads": s.shared_reads,
+            "followerReads": s.follower_reads,
+            "followerRefused": s.follower_refused,
+            "followerLate": s.follower_late,
             "catchups": s.catchups,
             "leases": s.leases,
             "markerFailures": s.marker_failures,
@@ -1883,7 +1943,7 @@ mod tests {
     use graftyard_types::SiteId;
     use serde_json::json;
 
-    use super::{HEAVY_READS, InFlight, READS_MAX, heavy_read, sheds, site_field};
+    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, read_wait, site_field};
 
     /// Every read counts against READS_MAX, on any member; whole-tier reads on a leader also count against the lower
     /// HEAVY_READS; and the counts come back down when a read is answered or dropped, so a burst of timed-out callers
@@ -1895,18 +1955,43 @@ mod tests {
         {
             assert!(!heavy_read(&narrow), "{narrow}");
         }
-        assert!(!sheds(true, HEAVY_READS, HEAVY_READS - 1, true));
-        assert!(sheds(true, HEAVY_READS, HEAVY_READS, true));
-        assert!(!sheds(true, HEAVY_READS, HEAVY_READS, false), "a follower answers NotLeader instead");
-        assert!(!sheds(false, HEAVY_READS * 4, HEAVY_READS * 4, true));
-        assert!(!sheds(false, READS_MAX - 1, 0, true));
-        assert!(sheds(false, READS_MAX, 0, true), "a narrow read past READS_MAX");
-        assert!(sheds(false, READS_MAX, 0, false), "on a follower too");
+        // (index, leading, servable, heavy, reads, heavies)
+        assert_eq!(gate(false, true, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
+        assert_eq!(gate(false, true, false, true, HEAVY_READS, HEAVY_READS), Gate::Shed);
+        assert_eq!(
+            gate(false, false, true, true, HEAVY_READS, HEAVY_READS),
+            Gate::Serve,
+            "a plain follower read answers NotLeader"
+        );
+        assert_eq!(gate(false, true, false, false, HEAVY_READS * 4, HEAVY_READS * 4), Gate::Serve);
+        assert_eq!(gate(false, true, false, false, READS_MAX - 1, 0), Gate::Serve);
+        assert_eq!(gate(false, true, false, false, READS_MAX, 0), Gate::Shed, "a narrow read past READS_MAX");
+        assert_eq!(gate(false, false, false, false, READS_MAX, 0), Gate::Shed, "on a follower too");
         let n = std::rc::Rc::new(std::cell::Cell::new(0));
         let held: Vec<_> = (0..READS_MAX).map(|_| InFlight::new(&n)).collect();
-        assert!(sheds(false, n.get(), 0, true));
+        assert_eq!(gate(false, true, false, false, n.get(), 0), Gate::Shed);
         drop(held);
         assert_eq!(n.get(), 0);
+    }
+
+    /// A follower serves a read-index read only for the queries it may serve, under the same caps as the leader; a
+    /// read it may not serve (a leader-only query, or tiers it is still loading) names the leader, before any cap, so
+    /// the edge goes to the leader and does not retry the follower. One that waited FOLLOWER_WAIT without applying the
+    /// leader's index answers `overloaded`, never a value and never a 5xx the edge would report with `suspect`.
+    #[test]
+    fn a_follower_serves_only_its_reads_under_the_caps_and_never_stale() {
+        assert_eq!(gate(true, false, true, true, 0, 0), Gate::Serve);
+        assert_eq!(gate(true, false, false, false, 0, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, false, true, READS_MAX, HEAVY_READS), Gate::NotLeader);
+        assert_eq!(gate(true, false, true, true, 0, HEAVY_READS), Gate::Shed, "HEAVY_READS on a follower");
+        assert_eq!(gate(true, false, true, false, READS_MAX, 0), Gate::Shed, "READS_MAX on a follower");
+        assert_eq!(gate(true, true, false, false, 0, 0), Gate::Serve, "a leader serves every read-index read");
+        let (wait, late) = read_wait(true);
+        assert_eq!(wait, super::FOLLOWER_WAIT);
+        assert!(late.get("overloaded").is_some() && late.get("value").is_none(), "{late}");
+        let (wait, late) = read_wait(false);
+        assert!(wait > super::FOLLOWER_WAIT);
+        assert_eq!(late, json!({ "busy": true }));
     }
 
     /// An answer's body keeps its read counted until its last piece is taken, so answers still streaming to a far
