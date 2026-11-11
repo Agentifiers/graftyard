@@ -74,6 +74,14 @@ pub struct Feed {
     by_ip: BTreeMap<String, u16>,
     /// Woken at each fed entry, or when the member stops following (`true`).
     waiters: Vec<oneshot::Sender<bool>>,
+    /// Counts every input that found the member not following (`fed`). A held poll compares it to its count at
+    /// admission before each wait, so a stop that came between two of its waits, which drained no waiter of it,
+    /// still answers it (`Feed::wait`).
+    stops: u64,
+    /// The last stop that answered held polls: when (this member's clock), how many, and why (`gap`, `install`, or
+    /// `lag`), and when the member next followed again, on `/status` for LF-13.
+    last_stop: Option<(u64, u32, &'static str)>,
+    last_resume: Option<u64>,
     /// The owner's `Authz` read in flight, and the polls waiting for it: a burst of polls after the owner went stale
     /// sends one read, not one per poll (LF-12 hosted: 3,000 polls sent 3,000 reads to the owner's leader, which
     /// then answered the group leader's dep read 6.3 s late and held a commit for it).
@@ -143,6 +151,9 @@ impl Default for Feed {
             by_token: BTreeMap::new(),
             by_ip: BTreeMap::new(),
             waiters: Vec::new(),
+            stops: 0,
+            last_stop: None,
+            last_resume: None,
             refreshing: None,
         }
     }
@@ -164,18 +175,44 @@ impl Feed {
         Following { gap: self.gap, installing: self.installing, lag }
     }
 
-    /// After entries applied: wake every held poll to look at the ring again. A member that is no longer following
-    /// answers them all now with their cursor and no events.
-    pub fn fed(&mut self) {
+    /// After entries applied, or a gap or an install began (at `now`, this member's clock): wake every held poll to
+    /// look at the ring again. A member that is no longer following answers them all now with their cursor and no
+    /// events.
+    pub fn fed(&mut self, now: u64) {
         let stop = !self.following().following();
         for w in self.waiters.drain(..) {
             let _ = w.send(stop);
         }
         if stop {
-            self.serving.drop_all();
+            self.stops += 1;
+            let n = self.serving.drop_all();
+            if n > 0 {
+                let why = if self.gap {
+                    "gap"
+                } else if self.installing {
+                    "install"
+                } else {
+                    "lag"
+                };
+                self.last_stop = Some((now, n, why));
+                self.last_resume = None;
+            }
             self.by_token.clear();
             self.by_ip.clear();
+        } else if self.last_stop.is_some() && self.last_resume.is_none() {
+            self.last_resume = Some(now);
         }
+    }
+
+    /// A held poll admitted at stop count `since` waits for the next fed entry: `None` when the member stopped
+    /// following since then, so the poll answers now with its cursor and no events.
+    fn wait(&mut self, since: u64) -> Option<oneshot::Receiver<bool>> {
+        if self.stops != since {
+            return None;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.waiters.push(tx);
+        Some(rx)
     }
 
     pub fn status(&self) -> Value {
@@ -183,7 +220,10 @@ impl Feed {
         json!({ "held": self.serving.held, "peak": self.serving.peak, "refused": self.serving.refused,
                 "floor": floor.0, "through": newest.0, "events": self.ring.events.len(),
                 "following": self.following().following(), "lagMs": self.following().lag.as_millis() as u64,
-                "polls": self.polls, "leaderPolls": self.leader_polls })
+                "polls": self.polls, "leaderPolls": self.leader_polls, "gap": self.gap, "installing": self.installing,
+                "stops": self.stops,
+                "lastStop": self.last_stop.map(|(at, n, why)| json!({ "at": at, "held": n, "why": why })),
+                "lastResume": self.last_resume })
     }
 }
 
@@ -209,7 +249,7 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
         Start::Gone { oldest } => return json!({ "admit": "gone", "oldest": oldest.encode() }),
         Start::After(i) => i,
     };
-    {
+    let since = {
         let mut f = feed.borrow_mut();
         if f.by_token.get(&p.token).copied().unwrap_or(0) >= FEED_POLLS.0
             || f.by_ip.get(&p.ip).copied().unwrap_or(0) >= FEED_POLLS.1
@@ -225,14 +265,15 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
             Admit::Hold => {}
             Admit::Lagging => {
                 return json!({ "admit": "lagging", "lagMs": following.lag.as_millis() as u64,
-                               "cursor": cursor(repo, after) });
+                               "cursor": cursor(repo, after), "at": now_ms() });
             }
             Admit::Full => return json!({ "admit": "full" }),
             Admit::NotServing => return json!({ "admit": "notServing" }),
         }
         *f.by_token.entry(p.token.clone()).or_default() += 1;
         *f.by_ip.entry(p.ip.clone()).or_default() += 1;
-    }
+        f.stops
+    };
     let refs: Vec<&str> = filter.iter().map(String::as_str).collect();
     let end = now_ms() + q.wait.as_millis() as u64;
     let batch = if filter.is_empty() { FEED_BATCH_ALL } else { FEED_BATCH };
@@ -255,8 +296,10 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
             let _ = through;
             break;
         }
-        let (tx, rx) = oneshot::channel();
-        feed.borrow_mut().waiters.push(tx);
+        let Some(rx) = feed.borrow_mut().wait(since) else {
+            dropped = true;
+            break;
+        };
         if let Some(Ok(true)) = crate::host::within(Duration::from_millis(deadline - now), rx).await {
             dropped = true;
         }
@@ -272,12 +315,14 @@ pub async fn poll(feed: Rc<RefCell<Feed>>, repo: RepoId, role: FeedRole, p: Poll
         *n = n.saturating_sub(1);
     }
     if dropped {
-        // Stopped following: the cursor as the poll gave it, and no events.
-        return json!({ "admit": "hold", "cursor": cursor(repo, after), "events": [], "stopped": true });
+        // Stopped following: the cursor as the poll gave it, and no events. `stoppedAt` and `answeredAt` (on every
+        // answer) are this member's clock, so LF-13 times answers against its stop and its lift on one clock (A26).
+        return json!({ "admit": "hold", "cursor": cursor(repo, after), "events": [], "stopped": true,
+                       "stoppedAt": f.last_stop.map(|s| s.0), "answeredAt": now_ms() });
     }
     let events: Vec<Value> =
         f.ring.past(after, &refs).into_iter().map(|(i, at, e)| json!([i.0, at.0, event_json(&e)])).collect();
-    json!({ "admit": "hold", "cursor": cursor(repo, f.ring.through.max(after)), "events": events })
+    json!({ "admit": "hold", "cursor": cursor(repo, f.ring.through.max(after)), "events": events, "answeredAt": now_ms() })
 }
 
 fn cursor(repo: RepoId, i: Index) -> String {
@@ -365,8 +410,35 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
 #[cfg(test)]
 mod tests {
     use super::{Feed, Refresh, Refreshed};
+    use graftyard_git::feed::{Admit, FeedRole, Following};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::time::Duration;
+
+    /// LF-13: a held poll is woken by every fed entry and waits again, so between two of its waits it holds no waiter.
+    /// A follower that begins an `InstallSnapshot` catch-up in that moment drains no waiter of it, and the poll must
+    /// still answer at once instead of waiting out `wait`. The stop is recorded with what it answered and why.
+    #[test]
+    fn a_stop_between_two_waits_of_a_held_poll_still_answers_it() {
+        let mut f = Feed::default();
+        let following = Following { gap: false, installing: false, lag: Duration::ZERO };
+        assert_eq!(f.serving.admit(FeedRole::Follower, false, following), Admit::Hold);
+        let since = f.stops;
+        let mut rx = f.wait(since).expect("following: the poll waits");
+        f.fed(1_000);
+        assert_eq!(rx.try_recv(), Ok(Some(false)), "an entry fed: woken to look at the ring");
+        // Before the poll waits again, the leader's `InstallSnapshot` arrives.
+        f.installing = true;
+        f.fed(2_000);
+        assert!(f.wait(since).is_none(), "the poll answers now, with its cursor and no events");
+        assert_eq!(f.last_stop, Some((2_000, 1, "install")));
+        assert_eq!(f.serving.held, 0);
+        // Caught up: a poll admitted from now on waits again.
+        f.installing = false;
+        f.fed(3_000);
+        let since = f.stops;
+        assert!(f.wait(since).is_some());
+    }
 
     /// A burst of polls after the owner went stale sends one `Authz` read: the first poll reads, the rest wait for it
     /// and go on when it ends, also when the reading poll is dropped mid-read. Fresh again until the next minute.

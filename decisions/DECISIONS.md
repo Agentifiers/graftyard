@@ -2128,6 +2128,8 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 
 **Flip.** A row whose leader still exceeds 128 MB with the cache warm and the cap holding, which would move whole-tier reads off the leader; or a `suspect` delay of `SUSPECT_GAP` measured in a leader move, which would shorten the gap.
 
+**Status, 2026-11-11: F65 narrowed, not answered.** On `d9ee594` the 500-agent smoke held every member under 80 MB with 1,237 of 1,242 pushes ok, but B0-29's apac leader reached 262 MB, and about 600 cheap reads completed in one millisecond after a stall and then `exceededMemory`; the rows fail on leader step-downs from `Confirm` and `CommitErrors` (`build/BUILD-PLAN.md`, AM1-WP6, "After the read cap"). Next hypothesis [unverified]: one quorum round grants every waiting read and the host builds all their answers before sending any. The round now running caps every leader read in flight and streams the granted answers. The `Fresh` rule in `design/DESIGN.md`, "Commit and read paths", is reworded to admit the dump cache, whose key is read after the lease check.
+
 ### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
 
 `fanout` removed the git shard's per-network validate lock and built `fanout`; its hosted 500-agent reruns on `graft-m2b` then failed on the edge read gate. `04487ca` caches the gate's installation-token decisions, and LM-1's load rows are being rerun. M4-WP1's pure half passed BF-57 and BF-58 in memory (`tests/am1/results/fanout.md`; `tests/m4/results/m4-wp1.md`; `build/BUILD-PLAN.md`, AM1-WP1, AM1-WP6, and M4-WP1).
@@ -2207,6 +2209,34 @@ F59's finisher for repository create and delete merged in memory (`tests/m3/resu
 **Evidence.** `tests/am1/results/am1-runs.md` [measured]: the Graftyard-run kind refused 100 of 100 pushes and 100 of 100 REST ref writes, all by "push needs a live task", in L0-12 and in B0-36's widened run; the session-ref hiding and refusal halves passed, with listing not reachable hosted. `tests/am1/results/am1-rest.md`: session refs advertised only to a v2 `ref-prefix` in the container.
 
 **Flip.** AM3-WP3 slips past the point where LM-1's other rows close, so LM-1 cannot certify the Graftyard-run kind at all; then a test-only task path in AM1 would be worth building.
+
+### `lf13-m3c`: LF-13 passes on its own install, 2026-11-11
+
+Branch `lf13-m3c` ran LF-13 on a new test install, `graft-m3c`, and passed it in both modes, 3 of 3 runs each, on `9d59283` (`tests/am1/results/lf13-m3c.md`, `tests/am1/results/install-m3c.md`; `build/BUILD-PLAN.md`, AM1-WP6; `decisions/OPEN-QUESTIONS.md`, F66).
+
+#### LF-13's 1 s runs from the follower's stop (A26 closes)
+
+**Decision.** The lead's, under the operator's delegation: LF-13's "Every held poll returns within 1 s" is measured from the follower's stop, the moment it learns it is behind (a gap in its AppendEntries, or an `InstallSnapshot`). The time from the fault's lift is recorded beside it but does not gate. The row's fail line keeps "any poll held or accepted while it is behind", with its one opening recorded: between the lift and the stop the follower cannot know it is behind and admits new polls, which its stop then answers.
+
+**Why.** From the lift, the time is bounded by the leader's resend interval to a recovered follower (`CALL_DEADLINE`, 1 s; `CANNOT_FOLLOW_RETRY`, 5 s, for one marked `cannot_follow`), which is Raft's pacing, not the feed's behavior. Until its stop the follower has no evidence that it is behind, so no feed rule can answer earlier.
+
+**Beat.** Timing from the lift, which fails the row on resend timing alone: two earlier gap runs had 0 of 999 within 1 s of the lift (1,099 and 1,177 ms) while every poll came back at F's stop. Shortening the resend to a recovered follower to pass that reading, which adds member calls on every idle group for a test's sake.
+
+**Evidence.** `tests/am1/results/lf13-m3c.md`, batch 4 [measured]: in 6 of 6 runs all 999 held polls returned within 0 ms of F's stop, and within 99 to 799 ms of the lift; F admitted 0 to 2 of 50 probes between the lift and its stop, and none returned an event past the gap or hole. Earlier batches, "A26: within 1 s of what".
+
+**Flip.** A client that needs bounded staleness from the fault itself, not from the follower's knowledge of it, which would move the reference to the lift and the fix to the leader's resend pacing.
+
+#### The feed ring restarts at an install's base at once
+
+**Decision.** The input that installs a snapshot follows again in that same input, so it restarts the feed ring at the snapshot's `through` at once, with the live lease set the installed tier holds, read in `finish_install` after the install's tables are loaded (`7972504`, `606b403`, `9d59283`). A cursor from before gets 410 before the next entry arrives, and a lease the next entry releases still reports `Released`. AGENT-LAYER's activity feed, outside the agent block, now says a member follows only while it is not loading an `InstallSnapshot` and restarts its ring at the install's base. This replaces the hole check of "A cursor inside an `InstallSnapshot` hole gets 410, as one older than the ring", which fired only at the next entry. Two more feed fixes: a stop between two waits of a held poll still answers it (`3597c6f`), and a lease acquired and released in one catch-up batch reports both (`429eede`).
+
+**Why.** AGENT-LAYER said a member holds polls only with "no `InstallSnapshot` catch-up", but a member is following again in the very input that installs a snapshot, before its ring has any entry, so "no event is lost" rested on a check that ran later.
+
+**Beat.** Holding polls off until the first entry after an install, which leaves the member serving nothing on an idle group. Seeding the live set in `Repo::stepped`, which runs before the install's table swap is flushed and read the old tables (batch 3: 1, 0, and 2 `Released` missing).
+
+**Evidence.** `tests/am1/results/lf13-m3c.md` [measured]: batch 1 lost 19 and 11 events from the pre-fault cursor, batch 2 one `Released`, batch 3 up to 2; batch 4 on `9d59283` lost 0 in 3 of 3 install runs. Tests `a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry`, `a_stop_between_two_waits_of_a_held_poll_still_answers_it`, and `a_lease_acquired_and_released_in_one_catch_up_batch_reports_both`; 7 of 7 planted bugs caught.
+
+**Flip.** A feed that serves an install's covered events from the archived log, as in the earlier entry's flip.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 

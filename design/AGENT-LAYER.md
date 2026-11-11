@@ -342,21 +342,21 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 
 // ---- Activity feed (`GET /api/graftyard/v1/repos/{owner}/{repo}/activity?cursor=&wait=&paths=`; `contents: read`) ----
 /// A fold over the group's log. Learners serve it, followers only while no learner answers, never a leader or witness. A
-/// member holds polls only while following: its last AppendEntries left no gap, no `InstallSnapshot` catch-up, and it
-/// applied an entry within FEED_BATCH of the leader's `at` [measured: within 1 s in 98.3 to 99.4% of apply batches near
-/// the leader, 81% in SIN, `tests/m0/results/m0-wp12.md`]. One that stops following or lags further answers held polls at
-/// once with their cursor and no events, refusing new ones; the edge tries up to two others, then, if all refused as
+/// member holds polls only while following: its last AppendEntries left no gap, it is not loading an `InstallSnapshot`,
+/// and it applied an entry within FEED_BATCH of the leader's `at` [measured: within 1 s in 98.3 to 99.4% of apply batches
+/// near the leader, 81% in SIN, `tests/m0/results/m0-wp12.md`]. One that stops following or lags more answers held polls
+/// at once with their cursor and no events, refusing new ones; the edge tries up to two others, then, if all refused as
 /// lagging and the least lagged is a learner, sends it there under FEED_HELD_MAX, else answers 429 with `Retry-After` of
 /// FEED_BATCH_ALL [measured, L0-12 `t6`: p99 1,925 to 2,551 ms; the value [inference]: 5,000 pollers re-send at most 500
-/// polls/s at 10 s, not 2,500/s at 2 s as in LF-12 `r27`'s 243,147 such 429s]. A full member gets the same 429 at once:
-/// its feed calls fell 45 to 55%. Members report peak held, refusals, and reads; `place_learners` adds learners until
-/// held plus refused fit in half of FEED_HELD_MAX each, up to MAX_LEARNERS [measured, LF-12]. A serving member answers
-/// from its applied log with no read-index call and holds a poll until an event past `cursor` overlaps `paths` or
-/// `wait` ends, then waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls
-/// need `contents: read`, take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read
-/// rate; the serving member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15].
-/// `Expired` comes at the first entry with `at >= expires`; clients time it from `expires`. A cursor older than the
-/// ring or in an `InstallSnapshot` hole gets 410 with the oldest (`dfa5410`); the client reloads leases and tasks.
+/// polls/s at 10 s, not 2,500/s at 2 s as in LF-12 `r27`'s 243,147 such 429s]. A full member gets that 429 at once (feed
+/// calls fell 45 to 55%). Members report peak held, refusals, and reads, and `place_learners` adds learners until held
+/// plus refused fit in half of FEED_HELD_MAX each, up to MAX_LEARNERS [measured, LF-12]. A serving member answers from
+/// its applied log with no read-index call and holds a poll until an event past `cursor` overlaps `paths` or `wait` ends,
+/// then waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need `contents:
+/// read`, take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read rate; the serving
+/// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
+/// entry with `at >= expires`; clients time it from `expires`. An install's input restarts the ring at its base with its
+/// live leases (`9d59283`). A cursor older than the ring gets 410 with the oldest; the client reloads leases and tasks.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },
@@ -970,7 +970,7 @@ Rows added after the final pass, by the implementability walk (`history/review/w
 | AM3 | Fork-mode session URL in a trailer, read by a base reader with no access to the fork | The page and JSON serve the log from the fork | 404, or the URL names the fork |
 | AM4 | `graftyard apps init` on an install with no agents account, then the MCP and A5 insights flows | MCP and overlap check runs work. No `Graftyard MCP` or `graftyard-insights` secret exists in any agents account | Either flow needs the agents account |
 | 0 | A1 replay on one `Tri` group with no learners, plus 5,000 held feed polls with `paths`, then again after `place_learners` runs. On the final rules, with the own-stall exclusion and the all-lagging `Retry-After` of `FEED_BATCH_ALL`, 4 runs gave 1 pass and 3 between the lines, with no fail, no step-down, and every other line passing in every phase. The misses trace to Durable Object storage confirm stalls on the leader or the near follower and to the far follower's round trip, as for B0-02 and B0-29 [measured, `tests/m0/results/m0-wp12.md`, LF-12, tenth pass]. The gate is one run, as B0-29's is | Commit p99, measured at the group's leader (admission to resolution), at most 600 ms once `place_learners` has run and at most 1 s before it, zero `overloaded` replies to AppendEntries, at most 1,000 polls held per member with the rest answered 429 with `Retry-After`, zero polls on the leader, and zero on followers after placement | Commit p99 over 1 s once `place_learners` has run or over 2 s before it, any `overloaded` replication reply, any member above 1,000 held, a refused poll without 429 and `Retry-After`, any poll on the leader, or any poll on a follower after placement |
-| 0 | 1,000 polls held on a follower, then its member calls failed while commits run and leadership moves to the other follower, so the new leader's first round leaves a gap, then its log truncated past the follower for an `InstallSnapshot` catch-up (one leader re-sends from the follower's match, so dropped rounds alone leave none; `crates/raft/tests/lf13.rs`, `am1-rest`; hosted, a leader change during the fault left none either, so the gap fault is unproven hosted and is retried on `fanout`, `am1-runs`) | Every held poll returns within 1 s with its cursor and no events, new polls are refused until it catches up, and no event is lost | Any poll held or accepted while it is behind, or any event skipped |
+| 0 | 1,000 polls held on a follower, then its member calls failed while commits run and leadership moves to the other follower, so the new leader's first round leaves a gap, then its log truncated past the follower for an `InstallSnapshot` catch-up (one leader re-sends from the follower's match, so dropped rounds alone leave none, `crates/raft/tests/lf13.rs`; hosted, the follower's calls are severed until it stands behind the other follower, then leadership moves there, `tests/am1/results/lf13-m3c.md`) | Every held poll returns within 1 s of the follower's stop, when it learns it is behind, with its cursor and no events, new polls are refused until it catches up, and no event is lost; the time from the fault's lift is reported too (A26, `decisions/DECISIONS.md`, "LF-13's 1 s runs from the follower's stop") | Any poll held or accepted while it is behind, or any event skipped. Between the lift and its stop the follower cannot know it is behind: it admitted 0 to 2 of 50 probes there, and its stop answered them with nothing skipped [measured, `graft-m3c`] |
 | AM4 | A5 replay with every `InsightJob` delivered twice, plus a stale job after a newer push | One `InsightVerdict` entry per changed result, none for a repeat, 409 for the stale head, one check run per changed check, and every feed `verdict` event at an `InsightVerdict` index | Any duplicate entry or check run, a verdict for a moved head, or a feed `verdict` event at another index |
 | AM4 | 1,000 agent pushes across a leader change | Exactly one `InsightJob` per `PathSet` entry, all from the `Insights` cursor, none from `apply` | Any second job for one entry, an entry with no job, or a job from `apply` |
 | AM4 | PRs 4, 7 and 9, where 4 overlaps 7, 7 overlaps 9, and 4 does not overlap 9. Close 4, then close 7 | `overlap:4` on all three, then `overlap:7` on 7 and 9, then no `overlap:` label on 9. Closed PRs keep their labels | Any other name, or a label on an open PR that is in no cluster |

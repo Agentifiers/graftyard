@@ -8,27 +8,29 @@ import json, os, subprocess, sys, urllib.request
 
 acct, tok = os.environ["CLOUDFLARE_ACCOUNT_ID"], os.environ["CLOUDFLARE_API_TOKEN"]
 a, b = sys.argv[1], sys.argv[2]
+# The install by its script prefix: graft-m2b unless INSTALL names another, such as graft-m3c.
+P = os.environ.get("INSTALL", "graft-m2b")
 H = {"authorization": f"Bearer {tok}", "content-type": "application/json"}
 ns = json.load(urllib.request.urlopen(urllib.request.Request(
     f"https://api.cloudflare.com/client/v4/accounts/{acct}/workers/durable_objects/namespaces?per_page=1000",
     headers=H), timeout=60))["result"]
-mine = {n["id"] for n in ns if (n.get("script") or "").startswith("graft-m2b")}
-q = """query($a: String!, $s: Time!, $e: Time!) { viewer { accounts(filter: {accountTag: $a}) {
-  w: workersInvocationsAdaptive(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e, scriptName_like: "graft-m2b%"}) {
+mine = {n["id"] for n in ns if (n.get("script") or "").startswith(P)}
+q = """query($a: String!, $s: Time!, $e: Time!, $p: String!) { viewer { accounts(filter: {accountTag: $a}) {
+  w: workersInvocationsAdaptive(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e, scriptName_like: $p}) {
     sum { requests cpuTimeUs } }
   d: durableObjectsInvocationsAdaptiveGroups(limit: 100, filter: {datetime_geq: $s, datetime_lt: $e}) {
     sum { requests } dimensions { scriptName } }
   p: durableObjectsPeriodicGroups(limit: 1000, filter: {datetime_geq: $s, datetime_lt: $e}) {
     sum { rowsWritten activeTime } dimensions { namespaceId } } } } }"""
 v = json.load(urllib.request.urlopen(urllib.request.Request("https://api.cloudflare.com/client/v4/graphql",
-    data=json.dumps({"query": q, "variables": {"a": acct, "s": a, "e": b}}).encode(), headers=H), timeout=60))
+    data=json.dumps({"query": q, "variables": {"a": acct, "s": a, "e": b, "p": P + "%"}}).encode(), headers=H), timeout=60))
 if v.get("errors"):
     print(json.dumps(v["errors"])[:800]); sys.exit(1)
 acc = v["data"]["viewer"]["accounts"][0]
 u = {
     "workers_requests": sum(x["sum"]["requests"] for x in acc["w"]),
     "workers_cpu_ms": round(sum(x["sum"]["cpuTimeUs"] for x in acc["w"]) / 1000),
-    "do_requests": sum(x["sum"]["requests"] for x in acc["d"] if (x["dimensions"]["scriptName"] or "").startswith("graft-m2b")),
+    "do_requests": sum(x["sum"]["requests"] for x in acc["d"] if (x["dimensions"]["scriptName"] or "").startswith(P)),
     "do_rows_written": sum(x["sum"]["rowsWritten"] for x in acc["p"] if x["dimensions"]["namespaceId"] in mine),
     "do_active_s": round(sum(x["sum"]["activeTime"] for x in acc["p"] if x["dimensions"]["namespaceId"] in mine) / 1e6),
 }

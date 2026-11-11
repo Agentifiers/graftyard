@@ -401,6 +401,11 @@ impl Family for Repo {
             f.applied_at = f.applied_at.max(e.at);
         }
         let fold = &m.group_fold().fold;
+        // An install's input applies through the snapshot, whose entries this member never holds: entries waiting
+        // from before it are past what the ring serves. `crate::load::finish_install` restarted the ring there.
+        if to > from && m.entry_at(to).is_none() {
+            f.pending.clear();
+        }
         for i in from.0 + 1..=to.0 {
             let Some(e) = m.entry_at(raft::Index(i)) else { continue };
             let evs: Vec<git::repo::RepoEvent> = match &e.body {
@@ -420,7 +425,7 @@ impl Family for Repo {
             }
         }
         if to > from || (gap, !out.install.is_empty()) != (false, false) || was != (f.gap, f.installing) {
-            f.fed();
+            f.fed(crate::now_ms());
         }
     }
     /// The core tier, and the metadata tier marked loaded only if it stands where the core tier does; otherwise the
