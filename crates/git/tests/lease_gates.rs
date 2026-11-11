@@ -995,3 +995,60 @@ fn a_ring_fed_past_a_hole_refuses_cursors_from_before_it() {
     let c2 = feed::FeedCursor { group: REPO, index: *i2 }.encode();
     assert_eq!(feed::start(REPO, Some(&c2), oldest, newest), feed::Start::After(*i2), "the new floor serves");
 }
+
+/// LF-13 on graft-m3c: the install's own input moves the member's base past the ring with no entry to feed, and the
+/// member follows again at once. A cursor from before the install must get `gone` then, not a `hold` that skips
+/// what the snapshot covered, even before any later entry arrives. The next entry is served from the snapshot's
+/// cursor as usual.
+#[test]
+fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "skip", Some(WRITER));
+    let mut ring = feed::Ring::default();
+    let mut fed = Vec::new();
+    for k in 0..3 {
+        w.commit(issue(app(CLAUDE), shared(&[&format!("skip/{k}/**")], Some("skip")))).unwrap();
+        let after = w.fold();
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = &e.body else { unreachable!() };
+        fed.push((e.index, e.at, evs.clone(), after));
+    }
+    let (i0, at0, evs0, f0) = &fed[0];
+    ring.feed(REPO, &w.ident.owner, &f0.core, &f0.meta, (*i0, *at0, evs0));
+    let before = feed::FeedCursor { group: REPO, index: ring.through }.encode();
+    // The snapshot covers the second entry; nothing is fed for it.
+    let through = fed[1].0;
+    ring.skip(through);
+    let (oldest, newest) = ring.bounds();
+    assert!(
+        matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
+        "a cursor from before the install is gone at once: oldest {oldest:?}, newest {newest:?}"
+    );
+    assert!(ring.past(Index(0), &[]).is_empty(), "no event from before the install is served");
+    let (i2, at2, evs2, f2) = &fed[2];
+    assert_eq!(i2.0, through.0 + 1, "the next entry follows the snapshot");
+    ring.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (*i2, *at2, evs2));
+    let (oldest, newest) = ring.bounds();
+    let at_snapshot = feed::FeedCursor { group: REPO, index: through }.encode();
+    assert_eq!(feed::start(REPO, Some(&at_snapshot), oldest, newest), feed::Start::After(through));
+    let served: Vec<(Index, LeaseChange)> = ring
+        .past(through, &[])
+        .into_iter()
+        .filter_map(|(i, _, e)| match e {
+            ActivityEvent::Lease { change, .. } => Some((i, change)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(served, vec![(*i2, LeaseChange::Acquired)], "the entry after the snapshot, and nothing older");
+    assert!(
+        matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }),
+        "still gone from before"
+    );
+}

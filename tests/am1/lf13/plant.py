@@ -34,6 +34,12 @@ MUTANTS = [
     ('ring: a lease acquired in a batch is not kept live past its acquire', RING,
      '                && ended_later(lease)\n            {\n                now.insert(lease.id, lease.clone());',
      '                && ended_later(lease)\n            {\n                let _ = lease;', GATES),
+    ('ring: an install skip leaves the ring where it stood', RING,
+     '        self.events.clear();\n        self.held.clear();\n        self.live.clear();\n        self.through = to;\n        self.first = Some(Index(to.0 + 1));\n',
+     '        let _ = to;\n', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
+    ('ring: an install skip keeps the events from before it', RING,
+     '        self.events.clear();\n        self.held.clear();\n        self.live.clear();\n',
+     '        self.held.clear();\n        self.live.clear();\n', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'skipped']),
 ]
 
 only = sys.argv[1:] and set(int(x) for x in sys.argv[1:])
