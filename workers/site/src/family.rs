@@ -508,9 +508,9 @@ impl Family for Repo {
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
-        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout"];
+        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout", "/prsync"];
         #[cfg(not(feature = "test-faults"))]
-        &["/snapshot_commit", "/fold", "/feed", "/fanout"]
+        &["/snapshot_commit", "/fold", "/feed", "/fanout", "/prsync"]
     }
     /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
     /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
@@ -523,6 +523,8 @@ impl Family for Repo {
         match path {
             "/feed" => Some(crate::feed::route(host, body).await),
             "/fanout" => Some(crate::fanout::report(host, body).await),
+            // The operator's replay of a chain `PrSync` parked (`design/SHARED.md`, "Event fan-out", Isolation).
+            "/prsync" if body["replay"] == json!(true) => Some(crate::prsync::replay(host).await),
             // Test installs: commit k at once, with no load behind it, to drive fan-out without saturating a shard.
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("fanout").is_some() => {

@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 
 use graftyard_git::group::RefsPage;
 use graftyard_git::host::{R2, ShardHost};
-use graftyard_git::{ChainLog, Head, LogPacks, PackId, Promoted, StoreError};
+use graftyard_git::{Caller, ChainLog, Head, LogPacks, PackId, Promoted, Serve, StoreError};
 use graftyard_lookup::Bindings;
 use graftyard_types::{ChainId, DbId, Index, NetworkId, PlacementRecord, RepoId, SiteId, Timestamp};
 use serde_json::{Value, json};
@@ -198,7 +198,15 @@ impl DurableObject for GitShard {
         let log = GroupLog { env: &self.env, sites: &site.sites, chain, record };
         let raw = buckets(&self.env, &site);
         let bs: Vec<&R2> = raw.iter().map(|(_, b)| b).collect();
-        host.touch(Timestamp(now_ms())).await.map_err(se)?;
+        // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
+        // shard and starts no stopped one, and it never counts as the shard's last request.
+        let caller = if path == "/catchup" && q(&url, "warm").is_some() { Caller::Warm } else { Caller::Client };
+        let running = self.state.container().is_some_and(|c| c.running());
+        match graftyard_git::serve(caller, running) {
+            Serve::Skip => return Response::from_json(&json!({ "skipped": "stopped" })),
+            Serve::Run { touch: true } => host.touch(Timestamp(now_ms())).await.map_err(se)?,
+            Serve::Run { touch: false } => {}
+        }
         // Every catch-up is marked running while it runs, so a merge waits for it rather than racing it. A catch-up
         // also waits its turn behind one in flight on the same network, then goes on from the cursor that one saved:
         // two at once each rehydrated repo:65536 from nothing (762 `/entries` calls for 418 pages), and the later one
