@@ -20,7 +20,7 @@
 //!   `dequeuePullRequest` commit a `QueueOp`. All are format 32.4, sent only once `FormatsEnable` enabled it.
 
 use graftyard_api::exec::Request as Gql;
-use graftyard_api::hosted::{HostedDir, Render, TierRows, What, WireReply};
+use graftyard_api::hosted::{HostedDir, MergeOf, Render, TierRows, What, WireReply};
 use graftyard_api::view::{Repo as View, RepoRef};
 use graftyard_api::{graphql, lfs, release, rest};
 use graftyard_fold::MemStore;
@@ -306,7 +306,7 @@ async fn read_repo(
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
         Rows::All | Rows::Core => None,
-        Rows::Merge(id, _) => Some(*id),
+        Rows::Merge(of, _) => Some(*of),
     };
     let core_only = matches!(rows, Rows::Core);
     timing::mark("resolve");
@@ -378,12 +378,12 @@ pub(crate) fn served_meta<'a>(
 }
 
 /// Which tier rows `read_repo` reads: both whole tiers; both, served with an empty metadata view while that tier
-/// loads (`Core`); or a merge's rows (`TierRows::merge_rows`) for the pull request with this database id, with the
-/// leader's answer if the caller already read it.
+/// loads (`Core`); or a merge's rows (`TierRows::merge_rows`) for the pull request it names, with the leader's answer
+/// if the caller already read it.
 enum Rows {
     All,
     Core,
-    Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
+    Merge(MergeOf, Option<Result<std::result::Result<Value, Reply>>>),
 }
 
 /// The logins of every account `rd`'s tiers name, the viewer's, and the owner's from the request path (F50).
@@ -400,7 +400,7 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 }
 
 /// The repository's `{"rows": true}` read, on a follower by read-index first and then the leader
-/// (`graftyard_lookup::read_spread`), creating its group on first use; `{"rows": {"merge": id}}`
+/// (`graftyard_lookup::read_spread`), creating its group on first use; `{"rows": {"merge": id}}` (`MergeOf::query`)
 /// for a merge's rows only, which a member built before it answers with every row. A leader that kept shedding the
 /// read (`graftyard_lookup::OVERLOADED`) answers 503 with `Retry-After: 1`. Identical reads are not shared across
 /// requests: a Workers isolate refuses a promise resolved from another request's context, and every such read
@@ -408,7 +408,7 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 pub(crate) async fn tier_rows(
     c: &Ctx<'_>,
     repo: &Repo,
-    merge: Option<i64>,
+    merge: Option<MergeOf>,
 ) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
@@ -434,8 +434,8 @@ pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
 
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
 /// every ref. `packed`: the whole tiers as one JSON string (`TierRows::packed`), which `TierRows::from_value` reads.
-fn tier_rows_query(merge: Option<i64>) -> Value {
-    let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
+fn tier_rows_query(merge: Option<MergeOf>) -> Value {
+    let rows = merge.map_or(json!(true), MergeOf::query);
     json!({ "q": { "rows": rows, "ranges": true, "packed": true } })
 }
 
@@ -1062,7 +1062,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
                 };
                 let rows = async {
                     match merging {
-                        Some(_) => Some(tier_rows(c, &repo, merging).await),
+                        Some(id) => Some(tier_rows(c, &repo, Some(MergeOf::Id(graftyard_types::DbId(id)))).await),
                         None => None,
                     }
                 };
@@ -1087,7 +1087,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         }
         Some(Ok((owner, name, repo, a, rows))) => {
             let rows = match merging {
-                Some(id) => Rows::Merge(id, rows),
+                Some(id) => Rows::Merge(MergeOf::Id(graftyard_types::DbId(id)), rows),
                 None => Rows::All,
             };
             let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows, Gate::Readers).await?;
@@ -1255,11 +1255,23 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     }
     timing::mark("auth");
     let method = req.method();
+    // A merge reads only the rows it plans from (`TierRows::merge_rows`), as `mergePullRequest` does: read whole,
+    // each one parsed a 1 MB dump at journey 9, and REST merges ran 1.2 to 4.4 s at 500 agents (LM-1 round 7).
+    let rows = || match (&method, tail) {
+        (Method::Put, ["pulls", n, "merge"]) => {
+            n.parse().map_or(Rows::All, |n| Rows::Merge(MergeOf::Number(graftyard_git::issues::IssueNumber(n)), None))
+        }
+        _ => Rows::All,
+    };
     let rd = match at {
-        graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
+        graftyard_wire::RepoPath::Name { owner, name } => match resolve(c, owner, name).await? {
+            Ok(Some(repo)) => read_repo(c, repo, owner, name, who.as_ref(), None, rows(), Gate::Readers).await?,
+            Ok(None) => Err(Reply::not_found()),
+            Err(e) => Err(read_failed("the repository lookup failed; retry", &e)),
+        },
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
             Some((owner, name, repo, a)) => {
-                read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), Rows::All, Gate::Readers).await?
+                read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), rows(), Gate::Readers).await?
             }
             None => return Ok(Reply::not_found()),
         },

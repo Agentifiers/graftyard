@@ -310,6 +310,7 @@ const lat = {};
 const codes = {};
 const note = (k, ms, code) => { (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1; };
 const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
+const mergeSteps = [];
 
 // Tokens: m3-ci installation tokens, refreshed every 40 min; the admin's PAT for humans and merges.
 let app = null;
@@ -534,6 +535,8 @@ const jobs = [
     const s = Date.now();
     const m = await api("PUT", `/api/v3/repos/${R}/pulls/${pr.number}/merge`, admin, { merge_method: "merge" });
     note(half("merge:only"), Date.now() - s, m.status === 200 ? "200" : `${m.status} ${String(m.body?.message ?? "").replace(/\d+/g, "N").slice(0, 70)}`);
+    // Where the merge's time went: the edge's phases (`server-timing`) and the shard's own (`x-graft-shard-timing`).
+    mergeSteps.push({ ms: Date.now() - s, status: m.status, timing: m.headers["server-timing"] ?? null, shard: m.headers["x-graft-shard-timing"] ?? null });
     if (m.status === 200) main = (await tip("refs/heads/main")) ?? main;
     return st(m);
   }, 3),
@@ -742,6 +745,7 @@ const v = {
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
+  ...(mergeSteps.length ? { mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
       maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),

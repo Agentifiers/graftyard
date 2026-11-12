@@ -201,6 +201,15 @@ MUTANTS = [
     ('round 7: lease rows drop the scan value and read nothing', 'crates/git/src/lease.rs',
      '            match v.first() {\n                Some(Val::Blob(b)) => Some(postcard::from_bytes(b).expect("a fold row this release wrote")),',
      '            match v.get(1) {\n                Some(Val::Blob(b)) => Some(postcard::from_bytes(b).expect("a fold row this release wrote")),', ['cargo', '-p', 'graftyard-git', '--test', 'lease_gates', 'a_first_poll']),
+    ('round 7: a REST merge by number reads no pull request rows', 'crates/api/src/hosted.rs',
+     '                MergeOf::Number(n) => Some(n),', '                MergeOf::Number(_) => None,',
+     ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', 'a_merge_plans']),
+    ('round 7: a REST merge by number reads pull request 1, whatever it names', 'crates/api/src/hosted.rs',
+     '                MergeOf::Number(n) => Some(n),', '                MergeOf::Number(_) => Some(IssueNumber(2)),',
+     ['cargo', '-p', 'graftyard-api', '--test', 'surfaces', 'a_merge_plans']),
+    ('round 7: a follower sends a REST merge read to the leader', 'workers/site/src/family.rs',
+     '        Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,',
+     '        Some(r) if r.get("merge").is_some() => meta_loaded,', ['cargo', '-p', 'graftyard-site', '--lib', 'a_follower_serves']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

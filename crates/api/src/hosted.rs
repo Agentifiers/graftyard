@@ -33,6 +33,35 @@ pub const ROWS_MAX: usize = 50_000;
 
 /// Both tiers of a repository at `index`, as the member's `{"q": {"rows": true}}` read answers. `meta` is `None` while
 /// the member's metadata tier is still loading.
+/// The pull request a merge's rows read (`TierRows::merge_rows`): by database id, as `mergePullRequest` names it, or
+/// by number, as REST's `PUT /pulls/{n}/merge` does. Before LM-1 round 7 a REST merge read both whole tiers, about
+/// 1 MB at journey 9, and its p99 was 4.4 s at 500 agents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MergeOf {
+    Id(DbId),
+    Number(IssueNumber),
+}
+
+impl MergeOf {
+    /// The member read's `rows` value: `{"merge": id}` or `{"mergeN": n}`. A member built before `mergeN` answers it
+    /// with both whole tiers.
+    pub fn query(self) -> Value {
+        match self {
+            MergeOf::Id(id) => json!({ "merge": id.0 }),
+            MergeOf::Number(n) => json!({ "mergeN": n.0 }),
+        }
+    }
+
+    /// The pull request a member read's `rows` value names, if it is a merge's.
+    pub fn of_query(rows: &Value) -> Option<MergeOf> {
+        if let Some(id) = rows.get("merge").and_then(Value::as_i64) {
+            return Some(MergeOf::Id(DbId(id)));
+        }
+        let n = rows.get("mergeN").and_then(Value::as_u64)?;
+        Some(MergeOf::Number(IssueNumber(u32::try_from(n).ok()?)))
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TierRows {
     pub index: u64,
@@ -77,21 +106,28 @@ impl TierRows {
         (out, true)
     }
 
-    /// The rows `mergePullRequest` plans from, for the pull request whose database id is `id`: its `issue_by_id`,
+    /// The rows a merge plans from, for the pull request `of` names: its `issue_by_id` (by database id, as
+    /// `mergePullRequest` names it; REST's `PUT /pulls/{n}/merge` names the number),
     /// `issue`, and `pull` rows, its `pull_head`, its base's `ref`, and `settings`, which is all `graphql::plan` and
     /// `graphql::merge_request` read, and the leader renders the reply from its own tiers. One `fresh` read of these
     /// instead of both whole tiers: the whole read of a 1,200-row repository was 570 KB and about 800 ms from LAX to a
     /// weur or apac leader, against 240 ms for a small read (`tests/m2/results/m2-wp6.md`, BM-2). `index` is 0 here;
     /// the member sets it. With the metadata tier still loading, `meta` is `None`, as `dump`'s caller leaves it.
-    pub fn merge_rows(core: &dyn Read, meta: Option<&dyn Read>, id: DbId) -> TierRows {
+    pub fn merge_rows(core: &dyn Read, meta: Option<&dyn Read>, of: MergeOf) -> TierRows {
         use graftyard_git::tiers::{get_rec, n_key, pull_head, ref_key};
         let row = |r: &dyn Read, t: &str, k: Key| r.get(t, &k).map(|cols| (t.to_owned(), k, cols));
         let mut c = TierRows::access_rows(core);
         let mut m = Vec::new();
         if let Some(meta) = meta {
-            let by_id = vec![Val::Int(id.0)];
-            m.extend(row(meta, "issue_by_id", by_id.clone()));
-            if let Some(n) = get_rec::<u32>(meta, "issue_by_id", &by_id).map(IssueNumber) {
+            let n = match of {
+                MergeOf::Id(id) => {
+                    let by_id = vec![Val::Int(id.0)];
+                    m.extend(row(meta, "issue_by_id", by_id.clone()));
+                    get_rec::<u32>(meta, "issue_by_id", &by_id).map(IssueNumber)
+                }
+                MergeOf::Number(n) => Some(n),
+            };
+            if let Some(n) = n {
                 m.extend(row(meta, "issue", vec![n_key(n)]));
                 m.extend(row(meta, "pull", vec![n_key(n)]));
                 c.extend(row(core, "pull_head", vec![n_key(n)]));

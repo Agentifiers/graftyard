@@ -387,7 +387,7 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64, every: u64) -> Option<u64
 pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
     match q.get("rows") {
         Some(Value::Bool(true)) => meta_loaded,
-        Some(r) if r.get("merge").is_some() => meta_loaded,
+        Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,
         Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
         None => false,
     }
@@ -844,9 +844,9 @@ impl Family for Repo {
         if let Some(base) = q.get("mergequeue") {
             return crate::merge_queue::read_json(fold, base);
         }
-        if let Some(id) = q.get("rows").and_then(|r| r.get("merge")).and_then(Value::as_i64) {
+        if let Some(of) = q.get("rows").and_then(graftyard_api::hosted::MergeOf::of_query) {
             let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
-            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, DbId(id));
+            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, of);
             t.index = graftyard_fold::meta(&*fold.core).applied.0;
             return serde_json::to_value(t).unwrap_or(Value::Null);
         }

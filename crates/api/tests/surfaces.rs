@@ -533,10 +533,11 @@ fn a_merge_on_a_stale_plan_or_a_failing_check_renders_githubs_error() {
 
 /// A merge plans from `TierRows::merge_rows` alone exactly as from both whole tiers: the same `Planned`, the same
 /// `MergeRequest`, and the same refusals (a closed pull request, a method the repository does not allow), so the edge
-/// reads only those rows on a fresh leader. The pull request's id names only its own rows.
+/// reads only those rows on a fresh leader. The pull request's id names only its own rows. REST's
+/// `PUT /pulls/{n}/merge` names it by number (`MergeOf::Number`), and plans from those rows as from both tiers too.
 #[test]
 fn a_merge_plans_from_its_rows_as_from_both_tiers() {
-    use graftyard_api::hosted::{HostedDir, TierRows};
+    use graftyard_api::hosted::{HostedDir, MergeOf, TierRows};
     let mut c = seeded();
     // A second open pull request, whose rows a merge of #2 must not need.
     c.push("refs/heads/g", oid(5));
@@ -569,7 +570,7 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
         let r = c.repo(0, &h, &dir);
         (with_ids(&d, &r), r.item(IssueNumber(2)).unwrap().row.id)
     };
-    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), id);
+    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), MergeOf::Id(id));
     let crossed: TierRows = serde_json::from_value(serde_json::to_value(&rows).unwrap()).unwrap();
     let (core, meta) = (TierRows::store(&crossed.core), TierRows::store(crossed.meta.as_ref().unwrap()));
     let small = plan_on(&core, &meta, &vars).unwrap();
@@ -592,14 +593,35 @@ fn a_merge_plans_from_its_rows_as_from_both_tiers() {
     let mut rebase = vars.clone().unwrap();
     rebase["input"]["mergeMethod"] = json!("REBASE");
     assert_eq!(plan_on(&core, &meta, &Some(rebase.clone())), plan_on(&m.core, &m.meta, &Some(rebase)));
+    // REST by number: #2's rows plan as both tiers do, and #3's rows are not #2's.
+    let rest_on = |core: &MemStore, meta: &MemStore, n: &str| {
+        let r = Repo { host: &h, at: dir.home(), core, meta, dir: &hosted };
+        graftyard_api::rest::plan_rest_merge(&r, n, &json!({ "merge_method": "squash" })).map_err(|e| e.status)
+    };
+    let by_n =
+        |m: &graftyard_api::hosted::TierRows| (TierRows::store(&m.core), TierRows::store(m.meta.as_ref().unwrap()));
+    let (core2, meta2) = by_n(&TierRows::merge_rows(&m.core, Some(&m.meta), MergeOf::Number(IssueNumber(2))));
+    let rest = rest_on(&core2, &meta2, "2").unwrap();
+    assert_eq!(rest, rest_on(&m.core, &m.meta, "2").unwrap());
+    assert_eq!((rest.1.base_old, rest.1.head), (oid(1), oid(2)));
+    {
+        use graftyard_fold::Read;
+        assert!(core2.prefix("pull_head", &[]).len() == 1 && meta2.prefix("issue", &[]).len() == 1, "only #2 rows");
+    }
+    let (core3, meta3) = by_n(&TierRows::merge_rows(&m.core, Some(&m.meta), MergeOf::Number(IssueNumber(3))));
+    assert_eq!(rest_on(&core3, &meta3, "2"), Err(404), "#3's rows hold no #2");
+    assert_eq!(rest_on(&core3, &meta3, "3").map(|r| r.1.head), rest_on(&m.core, &m.meta, "3").map(|r| r.1.head));
     // Once #2 merged, its rows refuse a second merge as both tiers do.
     c.commit_merge(merge_command(&merge_of(&small.0), cache_plan(&small.1), who(WRITER))).unwrap();
     let m = &c.members[0];
-    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), id);
+    let rows = TierRows::merge_rows(&m.core, Some(&m.meta), MergeOf::Id(id));
     let (core, meta) = (TierRows::store(&rows.core), TierRows::store(rows.meta.as_ref().unwrap()));
     let refused = plan_on(&core, &meta, &vars).unwrap_err();
     assert_eq!(refused, plan_on(&m.core, &m.meta, &vars).unwrap_err());
     assert_eq!(refused["errors"][0]["message"], "Pull request is not open");
+    let (core2, meta2) = by_n(&TierRows::merge_rows(&m.core, Some(&m.meta), MergeOf::Number(IssueNumber(2))));
+    assert_eq!(rest_on(&core2, &meta2, "2").err(), rest_on(&m.core, &m.meta, "2").err());
+    assert!(rest_on(&core2, &meta2, "2").is_err(), "a merged pull request is refused by number too");
 }
 
 /// An agent push reads its policy and every task, and no settings, open-task index, ref, or issue rows. The narrow

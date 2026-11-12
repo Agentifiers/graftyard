@@ -314,7 +314,8 @@ mod tests {
         use crate::family::follower_query;
         let tier = json!({ "rows": true, "ranges": true, "packed": true });
         let merge = json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true });
-        for q in [&tier, &merge] {
+        let merge_n = json!({ "rows": { "mergeN": 3 }, "ranges": true, "packed": true });
+        for q in [&tier, &merge, &merge_n] {
             assert!(follower_query(q, true), "{q}");
             assert!(!follower_query(q, false), "a loading metadata tier sends {q} to the leader");
         }

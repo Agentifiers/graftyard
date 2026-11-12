@@ -2509,3 +2509,15 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 **Evidence.** `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
 
 **Flip.** A client that must see the events of entries applied before a member's first poll, which needs that member to have read the owner's `Authz` at join.
+
+#### LM-1 round 7: a REST merge reads only its rows, as `mergePullRequest` does
+
+**Decision.** `PUT /pulls/{n}/merge` reads the rows its plan needs by pull request number (`{"rows": {"mergeN": n}}`, `TierRows::merge_rows` with `MergeOf::Number`): the access rows, the pull request's `issue`, `pull`, and `pull_head`, and its base's `ref`. A follower or learner serves it by read-index once its metadata tier is loaded, as it serves `mergePullRequest`'s `{"merge": id}`. A member built before `mergeN` answers it with both whole tiers.
+
+**Why.** BM-2 cut 4 narrowed only the GraphQL merge; the REST route kept reading both whole tiers. At journey 9 that is about a 1 MB packed dump parsed at the edge on every merge, and at 500 agents (`repo:131276`, 180 s) REST merges took 1.2 to 4.4 s at the edge (p99 4.4 s, against B0-29's 2 s), while the shard's merge plan took 68 to 1,232 ms [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Leaving the REST route on the whole tiers until `narrow-reads` serves every route narrowly, which keeps B0-29's merge line failing until then.
+
+**Evidence.** `a_merge_plans_from_its_rows_as_from_both_tiers` (`crates/api/tests/surfaces.rs`) and `a_follower_serves_only_the_designs_reads` (`workers/site/src/fanout.rs`); plants 69 to 71 in `tests/lm1mem/plant.py`.
+
+**Flip.** A REST merge reply that renders rows beyond these, which would need them added to `merge_rows`.
