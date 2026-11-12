@@ -169,6 +169,23 @@ MUTANTS = [
     ('host: the shared dump is skipped, so every grant serializes its own', HOST,
      '    if let Some(b) = F::read_bytes(fold, q) {', '    if let Some(b) = F::read_bytes(fold, q).filter(|_| false) {',
      SITE),
+    # Round 7: request bodies are read before the network's lock (TestValidateBodyHoldsNoLock).
+    ('round 7: validate spools its pack under the network lock', GO,
+     '\tfile, sum, n, err := spool(filepath.Join(data, "spool"), body)\n\tif err != nil {\n\t\tfail(w, 500, "%v", err)\n\t\treturn\n\t}\n\tdefer os.Remove(file)\n\t// Shared: a validate writes only its own quarantine and reads the repository\'s objects and refs, so validates of\n\t// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock\n\t// alone, wait for them. The one shared write, setting the quarantine aside under the pack\'s SHA-256, takes\n\t// `aside` (finishValidate).\n\tl := lock(net)\n\tl.RLock()\n\tdefer l.RUnlock()\n\tif _, err := os.Stat(rp); err != nil {\n\t\tfail(w, 404, "no repository for network %s", net)\n\t\treturn\n\t}\n\tsweepValidated(rp)\n',
+     '\t// Shared: a validate writes only its own quarantine and reads the repository\'s objects and refs, so validates of\n\t// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock\n\t// alone, wait for them. The one shared write, setting the quarantine aside under the pack\'s SHA-256, takes\n\t// `aside` (finishValidate).\n\tl := lock(net)\n\tl.RLock()\n\tdefer l.RUnlock()\n\tif _, err := os.Stat(rp); err != nil {\n\t\tfail(w, 404, "no repository for network %s", net)\n\t\treturn\n\t}\n\tsweepValidated(rp)\n\tfile, sum, n, err := spool(filepath.Join(data, "spool"), body)\n\tif err != nil {\n\t\tfail(w, 500, "%v", err)\n\t\treturn\n\t}\n\tdefer os.Remove(file)\n',
+     ['go', 'TestValidateBodyHoldsNoLock']),
+    ('round 7: POST /refs reads its body under the lock', GO,
+     '\twant, order, err := readRefLines(r.Body, !put)\n\tif err != nil {\n\t\tfail(w, 400, "%v", err)\n\t\treturn\n\t}\n\tl := lock(net)\n\tl.Lock()\n\tdefer l.Unlock()\n',
+     '\tl := lock(net)\n\tl.Lock()\n\tdefer l.Unlock()\n\twant, order, err := readRefLines(r.Body, !put)\n\tif err != nil {\n\t\tfail(w, 400, "%v", err)\n\t\treturn\n\t}\n',
+     ['go', 'TestValidateBodyHoldsNoLock']),
+    ('round 7: the repack holds the network lock alone again', GO,
+     '\t\tif err := runRepack(rp); err != nil {\n',
+     '\t\tl := lock(net)\n\t\tl.Lock()\n\t\tdefer l.Unlock()\n\t\tif err := runRepack(rp); err != nil {\n',
+     ['go', 'TestRepackHoldsNoNetworkLock']),
+    ('round 7: evict no longer waits out a running repack', GO,
+     '\t// A repack holds no network lock (startRepack), so evict also refuses while one runs.\n\tif !repacking.TryLock() {\n',
+     '\t// A repack holds no network lock (startRepack), so evict also refuses while one runs.\n\tif !repacking.TryLock() && false {\n',
+     ['go', 'TestRepackHoldsNoNetworkLock']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

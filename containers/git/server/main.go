@@ -264,6 +264,12 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer l.Unlock()
+	// A repack holds no network lock (startRepack), so evict also refuses while one runs.
+	if !repacking.TryLock() {
+		fail(w, 409, "network %s is in use", net)
+		return
+	}
+	defer repacking.Unlock()
 	rp := repo(net)
 	freed := dirBytes(rp)
 	if err := os.RemoveAll(rp); err != nil {
@@ -370,7 +376,9 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	l.Lock()
 	defer l.Unlock()
 	if r.URL.Query().Get("fresh") == "1" {
+		repacking.Lock() // a repack holds no network lock (startRepack)
 		os.RemoveAll(rp)
+		repacking.Unlock()
 	}
 	if _, err := os.Stat(rp); err == nil {
 		jsonOut(w, map[string]any{"created": false})
@@ -586,6 +594,16 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
+	// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
+	// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at 0.65
+	// vCPU; `TestValidateBodyHoldsNoLock`).
+	file, sum, n, err := spool(filepath.Join(data, "spool"), body)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.Remove(file)
 	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
@@ -593,6 +611,10 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
+	if _, err := os.Stat(rp); err != nil {
+		fail(w, 404, "no repository for network %s", net)
+		return
+	}
 	sweepValidated(rp)
 	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
 	if err != nil {
@@ -608,11 +630,6 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			os.RemoveAll(q)
 		}
 	}()
-	file, sum, n, err := spool(q, body)
-	if err != nil {
-		fail(w, 500, "%v", err)
-		return
-	}
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
 		d, err := details(rp, nil, updates)
@@ -667,7 +684,6 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		out["detail"] = d
 	}
 	// Kept aside under the pack's SHA-256 until /ingest names it.
-	os.Remove(file)
 	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -1100,19 +1116,20 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	l := lock(net)
-	l.Lock()
-	defer l.Unlock()
 	q := r.URL.Query()
 	put := r.Method == http.MethodPut
 	// A PUT with neither flag is the whole set in one body, as before.
 	start, done := !put || q.Get("start") == "1" || (q.Get("start") == "" && q.Get("done") == ""),
 		!put || q.Get("done") == "1" || (q.Get("start") == "" && q.Get("done") == "")
+	// The body is read before the lock, which every upload and validate of the network waits on while it is held.
 	want, order, err := readRefLines(r.Body, !put)
 	if err != nil {
 		fail(w, 400, "%v", err)
 		return
 	}
+	l := lock(net)
+	l.Lock()
+	defer l.Unlock()
 	var dels, ups []string
 	if put && start {
 		have, err := listRefs(rp)
@@ -1176,26 +1193,32 @@ func packCount(rp string) int {
 
 // startRepack runs `git repack -d --geometric=2` on the repository in the background when it holds more than repackAt
 // packs and no repack runs on this shard, and says whether it started one. /refs is the last step of every catch-up
-// and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls small packs into larger
-// ones and keeps every object, so the objects /promote names stay. It holds the network's lock alone while it runs
-// (0.75 s for 2,000 packs the first time, about 10 ms after), so no merge, upload, or ingest reads a pack it deletes.
+// and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls whole packs into larger ones
+// and keeps every object in them, reachable or not, so the objects /promote names stay, a pack ingested meanwhile is
+// left alone, and a ref written meanwhile loses nothing. It takes no network lock: readers keep the packs they opened
+// (unlinked files stay mapped) and git looks a missing pack's objects up again in the new one. Held alone, it stopped
+// every upload, validate, and ingest of the network for its whole run, seconds once the packs reach 100 MB (LM-1
+// round 7, `TestRepackHoldsNoNetworkLock`). Only evict and a fresh init, which delete the repository, wait for it.
 func startRepack(net, rp string) bool {
 	if packCount(rp) <= repackAt || !repacking.TryLock() {
 		return false
 	}
 	go func() {
 		defer repacking.Unlock()
-		l := lock(net)
-		l.Lock()
-		defer l.Unlock()
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}
-		if _, err := git(rp, nil, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
+		if err := runRepack(rp); err != nil {
 			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
 		}
 	}()
 	return true
+}
+
+// runRepack is the repack itself; tests slow it down.
+var runRepack = func(rp string) error {
+	_, err := git(rp, nil, nil, "repack", "-d", "-q", "--geometric=2")
+	return err
 }
 
 func handlePromote(w http.ResponseWriter, r *http.Request) {
@@ -1242,11 +1265,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	if !ok {
 		return
 	}
-	l := lock(net)
-	l.RLock()
-	defer l.RUnlock()
 	// The client's Git-Protocol header, which the object forwards; git 2.26 and later ask for version 2.
 	proto := r.Header.Get("git-protocol")
+	// The body is read before the network's lock, as /validate's is.
 	var body []byte
 	if !advertise {
 		in := io.Reader(r.Body)
@@ -1265,6 +1286,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		}
 		body = b
 	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
 	var sessions []string
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)
