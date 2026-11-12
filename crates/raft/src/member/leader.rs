@@ -239,6 +239,11 @@ pub(super) struct Lead<C: Command> {
     /// Per follower, the failed calls since its last answer: a commit-path call retries at once at most
     /// COMMIT_RETRIES times, then waits for `tick`.
     retries: BTreeMap<SiteId, u8>,
+    /// Since when this leader has had work that needs a quorum's answer (an entry in flight, a read, or a transfer).
+    waiting_since: Option<Timestamp>,
+    /// Per follower, when an AppendEntries answer of this term last arrived, on this leader's clock. Unlike
+    /// `acked_at`, a transfer's lease reset does not clear it.
+    heard: BTreeMap<SiteId, Timestamp>,
 }
 
 impl<C: Command> Lead<C> {
@@ -326,6 +331,8 @@ impl<C: Command> Member<C> {
             lease_floor: Timestamp(0),
             refuser: None,
             retries: BTreeMap::new(),
+            waiting_since: None,
+            heard: BTreeMap::new(),
         });
         if self.state.transfer.is_some() {
             // A transfer this member ran before it restarted is over.
@@ -1163,6 +1170,7 @@ impl<C: Command> Member<C> {
         let last = self.last();
         let lead = self.lead.as_mut().expect("leading");
         lead.retries.remove(&from);
+        lead.heard.insert(from, self.now);
         lead.health.peer_quarantine.insert(from, (res.stepped_down_at, res.boots));
         if lead.sent.get(&from).is_some_and(|s| s.0 == res.round) {
             lead.sent.remove(&from);
@@ -1564,6 +1572,25 @@ impl<C: Command> Member<C> {
         // A leader that has not served within one round's deadline gives up, as a resumed `led_term` does after its
         // round fails. It keeps `led_term`, so a later request may try to resume again.
         if !lead.ready && now >= after(lead.started, CAMPAIGN_DEADLINE) {
+            self.end_leadership();
+            return;
+        }
+        // Check quorum (F67): a leader that no quorum answered for ELECTION_AFTER stops leading and gives up
+        // `led_term`. Its appends still reached followers whose answers were lost (a half-hung site), so they kept
+        // renewing their promises to a leader that could neither commit, serve a read, nor finish a transfer, and no
+        // follower could campaign; stopping lets those promises lapse.
+        let demand = lead.pending.is_some() || !lead.reads.is_empty() || lead.transfer.is_some();
+        let since = match (demand, lead.waiting_since) {
+            (false, _) => None,
+            (true, None) => Some(now),
+            (true, Some(t)) => Some(t),
+        };
+        self.lead.as_mut().expect("leading").waiting_since = since;
+        let Some(lead) = &self.lead else { return };
+        let heard = self.quorum_since(|l| &l.heard).unwrap_or(lead.started).max(lead.started);
+        if lead.ready && since.is_some_and(|w| now >= after(w.max(heard), crate::ELECTION_AFTER)) {
+            self.state.led_term = None;
+            self.dirty = true;
             self.end_leadership();
             return;
         }

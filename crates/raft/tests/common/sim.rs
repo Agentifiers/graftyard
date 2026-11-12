@@ -92,6 +92,16 @@ pub struct Faults {
     /// Per step, per mille, that a member with a storage confirm outstanding crashes: its unconfirmed writes are
     /// lost, while a leader's AppendEntries for them already left.
     pub crash_unconfirmed: u64,
+    /// Per step, per mille, that the host asks the leader to transfer to a random other voter (`/transfer`, as
+    /// B0-30's `keepHome` did): a `STEP_DOWN` with `to`.
+    pub transfer: u64,
+    /// Per step, per mille, that a random site is drained for 2 to 20 s: the leader there hands off with no `to`
+    /// named, and its members may not lead (`SiteMode`).
+    pub drain: u64,
+    /// When a member crashes, the most it stays down, in ms (4,000 unless set): an isolate eviction is back at once.
+    pub down_max_ms: u64,
+    /// Gray faults may also be `HalfHung` (300 per mille).
+    pub half_hung: bool,
 }
 
 impl Faults {
@@ -105,6 +115,10 @@ impl Faults {
         hedge: 0,
         gray: 0,
         crash_unconfirmed: 0,
+        transfer: 0,
+        drain: 0,
+        down_max_ms: 0,
+        half_hung: false,
     };
     pub const HARSH: Faults = Faults {
         drop: 80,
@@ -116,6 +130,10 @@ impl Faults {
         hedge: 20,
         gray: 0,
         crash_unconfirmed: 20,
+        transfer: 0,
+        drain: 0,
+        down_max_ms: 0,
+        half_hung: false,
     };
     /// Gray faults (a site whose calls fail, whose storage confirms are slow, or whose writes fail, one at a time)
     /// with partitions, duplicates, reordering, 1% loss, and no crashes but those the failing writes cause. HARSH's
@@ -131,6 +149,10 @@ impl Faults {
         hedge: 20,
         gray: 2,
         crash_unconfirmed: 0,
+        transfer: 0,
+        drain: 0,
+        down_max_ms: 0,
+        half_hung: false,
     };
     /// No faults, one-way delays of 5 to 150 ms: an intercontinental group at rest, for the liveness runs.
     pub const WAN: Faults = Faults { max_delay_ms: 150, ..Faults::NONE };
@@ -154,7 +176,27 @@ pub enum FaultKind {
     SlowConfirm(u64, u64),
     /// Each input with storage writes on the site fails with this chance per mille, which resets the member.
     FailWrites(u64),
+    /// Half-hung: each call to or from the site runs, but its answer is lost with this chance per mille, so the caller
+    /// sees a missed deadline (B0-07's hung calls, `drop_append_reply`). An edge's `suspect` to the site still starts
+    /// a campaign there; the edge never hears the verdict.
+    HalfHung(u64),
 }
+
+/// The hosted edge's lookup (`crates/lookup`), which the default simulator does not model (F67).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Edge {
+    /// A get goes first to a follower by read-index (`read_spread`). A follower that has not answered within
+    /// FOLLOWER_WAIT (1 s) answers `overloaded`, and the read fails as a 503 with no `suspect` report; only a
+    /// follower's `NotLeader` sends it on to the leader's path, which reports.
+    pub follower_reads: bool,
+    /// One client sends the same report (about, term, scope) at most once per this many ms (`SUSPECT_GAP`).
+    pub suspect_gap_ms: u64,
+    /// Clients only read: an `Authz` group under API load, whose writes are rare (LM-1 round 5).
+    pub reads_only: bool,
+}
+
+/// FOLLOWER_WAIT in `workers/site/src/member.rs`.
+pub const FOLLOWER_WAIT_MS: u64 = 1_000;
 
 /// A member-to-member call the host is timing: its failure report, and when its deadline passes.
 struct PendingCall {
@@ -245,12 +287,16 @@ struct Op {
     term: Term,
     /// A write's command, which only `Receipt::call` releases, to the receipt's one target.
     receipt: Option<Receipt<KvCmd>>,
+    /// A get already asked a follower by read-index (`Edge::follower_reads`).
+    spread: bool,
 }
 
 #[derive(Clone, Copy)]
 enum Wait {
     Ticket(Ticket),
     Read(ReadId),
+    /// A read-index read on a follower, which sheds it at `retry_at`.
+    Spread(SiteId, ReadId),
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -295,6 +341,12 @@ pub struct Stats {
     /// Checks that found a member with entries compacted out of memory, and `Out::catchup` reads served.
     pub compacted: u64,
     pub catchups: u64,
+    /// Gets a follower answered by read-index, and those it shed (503, no report).
+    pub spread_reads: u64,
+    pub shed: u64,
+    /// `suspect` reports the edge's damping held back.
+    pub damped: u64,
+    pub drains: u64,
 }
 
 pub struct Sim {
@@ -355,6 +407,16 @@ pub struct Sim {
     /// Per site, the host's own record of its storage confirms: (the disk's last index once a confirm that appended
     /// ended, the site's clock then), for `Ack::self_synced_at`. Reset on restart.
     synced: [Vec<(u64, u64)>; 3],
+    pub edge: Edge,
+    /// Per client, the last time it sent each report (about, term, all), for `Edge::suspect_gap_ms`.
+    reported: BTreeMap<(usize, SiteId, Term, bool), Timestamp>,
+    /// The drained site and when its drain ends.
+    drained: Option<(SiteId, Timestamp)>,
+    /// The liveness monitor (F67): since when the group has had no leader while a quorum of voters was up, linked,
+    /// and fault-free, and a client request was waiting; and every such stretch that ended, (from, to).
+    stuck_since: Option<Timestamp>,
+    stuck_set: Vec<SiteId>,
+    pub leaderless: Vec<(Timestamp, Timestamp)>,
 }
 
 /// Applied entries each simulated member keeps in memory: small, so compaction and `Out::catchup` run all the time.
@@ -403,6 +465,12 @@ impl Sim {
             confirm_log: Vec::new(),
             catchups: Vec::new(),
             synced: [vec![(0, 0)], vec![(0, 0)], vec![(0, 0)]],
+            edge: Edge::default(),
+            reported: BTreeMap::new(),
+            drained: None,
+            stuck_since: None,
+            stuck_set: Vec::new(),
+            leaderless: Vec::new(),
         };
         for k in 0..3 {
             sim.skew[k] = sim.rng.below(2 * SKEW_MS + 1) as i64 - SKEW_MS as i64;
@@ -451,6 +519,16 @@ impl Sim {
         p > 0 && self.rng.chance(p)
     }
 
+    /// A call between `a` and `b` ran, but its answer is lost: either is half-hung.
+    pub fn answer_lost(&mut self, a: SiteId, b: SiteId) -> bool {
+        let rate = |s: SiteId| match self.fault_on(s) {
+            Some(FaultKind::HalfHung(p)) => p,
+            _ => 0,
+        };
+        let p = rate(a).max(rate(b));
+        p > 0 && self.rng.chance(p)
+    }
+
     /// Queues what a member released, no earlier than its output gate opens. Requests the host times (appends and
     /// pings) get a pending call whose deadline is CALL_DEADLINE after they leave.
     pub fn deliver_out(&mut self, site: SiteId, out: Out<KvCmd>) -> Vec<Resolution<KvCmd>> {
@@ -470,6 +548,12 @@ impl Sim {
             let is_reply = reply_key(&env).is_some()
                 || matches!(env.msg, Message::VoteRes(_) | Message::Proposed { .. } | Message::ProbeRes { .. });
             let failing = !is_reply && self.call_fails(env.from, env.to);
+            // A half-hung site's calls run, and their answers are lost: the caller's deadline passes.
+            let answer = is_reply || matches!(env.msg, Message::TransferRefused { .. } | Message::ReadIndexRes { .. });
+            if answer && self.answer_lost(env.from, env.to) {
+                self.stats.dropped += 1;
+                continue;
+            }
             if std::env::var("RAFT_TRACE_CALLS").is_ok()
                 && matches!(env.msg, Message::Append(_) | Message::AppendRes(_))
             {
@@ -600,7 +684,8 @@ impl Sim {
     }
 
     fn crash(&mut self, s: SiteId) {
-        let down = Timestamp(self.now.0 + 50 + self.rng.below(4_000));
+        let max = if self.faults.down_max_ms > 0 { self.faults.down_max_ms } else { 4_000 };
+        let down = Timestamp(self.now.0 + 50 + self.rng.below(max));
         self.slots[s.0 as usize] = Slot::Down { until: down };
         self.stats.crashes += 1;
         self.reset_site(s);
@@ -749,12 +834,18 @@ impl Sim {
             return;
         }
         let site = SITES[self.rng.below(3) as usize];
-        let kind = match self.rng.below(3) {
+        let kind = match self.rng.below(if self.faults.half_hung { 4 } else { 3 }) {
             0 => FaultKind::Calls(300),
             1 => FaultKind::SlowConfirm(300, 1_000),
-            _ => FaultKind::FailWrites(300),
+            2 => FaultKind::FailWrites(300),
+            _ => FaultKind::HalfHung(800),
         };
-        let until = Timestamp(self.now.0 + 5_000 + self.rng.below(25_000));
+        // A half-hung site lasts 30 to 90 s, longer than any one timer of the protocol, so a stuck state shows as a
+        // stretch past the liveness bound rather than ending with the fault.
+        let until = match kind {
+            FaultKind::HalfHung(_) => Timestamp(self.now.0 + 30_000 + self.rng.below(60_000)),
+            _ => Timestamp(self.now.0 + 5_000 + self.rng.below(25_000)),
+        };
         self.site_faults.push(SiteFault { site, from: self.now, until, kind });
         self.stats.gray_faults += 1;
     }
@@ -776,6 +867,7 @@ impl Sim {
             self.stats.partitions += 1;
         }
         self.draw_gray();
+        self.draw_moves();
         for s in SITES {
             let unconfirmed = self.confirm_ends.iter().any(|c| c.1 == s && c.0 > self.now);
             match &self.slots[s.0 as usize] {
@@ -816,6 +908,17 @@ impl Sim {
                 continue;
             }
             let Envelope { from, to, msg } = probe;
+            if std::env::var("RAFT_TRACE_VOTES").is_ok()
+                && matches!(
+                    msg,
+                    Message::Vote(_)
+                        | Message::VoteRes(_)
+                        | Message::TimeoutNow { .. }
+                        | Message::TransferRefused { .. }
+                )
+            {
+                eprintln!("{} {from:?} -> {to:?} {msg:?}", self.now.0);
+            }
             if let Message::Append(a) = &msg
                 && !self.terms.iter().any(|t| t.0 == a.term)
             {
@@ -852,6 +955,99 @@ impl Sim {
             }
         }
         self.check();
+        self.watch();
+    }
+
+    /// The host's own leadership moves: `/transfer` to a named voter, and a drain whose leader hands off to a target
+    /// it picks. A drain ends after 2 to 20 s, and every member is told the drained set, as `SiteMode` does.
+    fn draw_moves(&mut self) {
+        if self.faults.transfer > 0
+            && self.rng.chance(self.faults.transfer)
+            && let Some(l) = self.leader()
+        {
+            let to = SITES[(l.0 as usize + 1 + self.rng.below(2) as usize) % 3];
+            self.stats.transfers += 1;
+            if let Some((_, res)) = self.call(l, |m, now| m.transfer(now, to)) {
+                self.handle(l, res);
+            }
+        }
+        if let Some((_, end)) = self.drained
+            && self.now >= end
+        {
+            self.drained = None;
+            self.tell_drained();
+        }
+        if self.faults.drain > 0 && self.drained.is_none() && self.rng.chance(self.faults.drain) {
+            let site = SITES[self.rng.below(3) as usize];
+            self.drained = Some((site, Timestamp(self.now.0 + 2_000 + self.rng.below(18_000))));
+            self.stats.drains += 1;
+            self.tell_drained();
+        }
+    }
+
+    fn tell_drained(&mut self) {
+        let set: Vec<SiteId> = self.drained.iter().map(|d| d.0).collect();
+        for s in SITES {
+            let set = set.clone();
+            if let Some((_, res)) = self.call(s, |m, now| m.set_drained(now, set)) {
+                self.handle(s, res);
+            }
+        }
+    }
+
+    /// Voters that are up, under no gray fault, and linked to each other: the most of them in one linked set.
+    pub fn healthy(&self) -> Vec<SiteId> {
+        let ok: Vec<SiteId> =
+            SITES.iter().copied().filter(|s| self.member(*s).is_some() && self.fault_on(*s).is_none()).collect();
+        let mut best: Vec<SiteId> = Vec::new();
+        for a in &ok {
+            let side: Vec<SiteId> = ok.iter().copied().filter(|b| self.linked(*a, *b)).collect();
+            if side.len() > best.len() {
+                best = side;
+            }
+        }
+        best
+    }
+
+    /// A member of `among` that leads and has committed an entry of its own term, so it serves.
+    pub fn serving(&self, among: &[SiteId]) -> Option<SiteId> {
+        among.iter().copied().find(|s| {
+            self.member(*s).is_some_and(|m| {
+                m.role() == Role::Leader && m.log().iter().any(|e| e.term == m.term() && e.index <= m.state().commit)
+            })
+        })
+    }
+
+    /// The liveness monitor (F67), for the property in `tests/m0/results/f67.md`: a stretch over which the same two or
+    /// more voters stayed up, linked, and fault-free (`healthy`), a client request was waiting, and no request
+    /// completed. A change in that set starts a new stretch, since the property assumes it holds. Recorded when it
+    /// ends.
+    fn watch(&mut self) {
+        let h = self.healthy();
+        let waiting = self.ops.iter().any(Option::is_some);
+        let cond = h.len() >= 2 && waiting;
+        if self.stuck_set != h {
+            self.progressed();
+            self.stuck_set = h;
+        }
+        match (cond, self.stuck_since) {
+            (true, None) => self.stuck_since = Some(self.now),
+            (false, Some(_)) => self.progressed(),
+            _ => {}
+        }
+    }
+
+    /// A request completed, or the condition ended: the open stretch ends.
+    fn progressed(&mut self) {
+        if let Some(from) = self.stuck_since.take() {
+            self.leaderless.push((from, self.now));
+        }
+    }
+
+    /// The longest stretch the monitor saw, including one still open, in ms, and when it started.
+    pub fn longest_leaderless(&self) -> (u64, Timestamp) {
+        let open = self.stuck_since.map(|f| (f, self.now));
+        self.leaderless.iter().copied().chain(open).map(|(f, t)| (t.0 - f.0, f)).max().unwrap_or((0, Timestamp(0)))
     }
 
     /// The host recorded a block the `Ids` group leased to this group: usually the next one, sometimes one it already
@@ -930,7 +1126,7 @@ impl Sim {
         let key = format!("k{}", self.rng.below(self.keys as u64));
         self.next_value += 1;
         let value = format!("{client}.{}", self.next_value);
-        let op = match self.rng.below(10) {
+        let op = match if self.edge.reads_only { 0 } else { self.rng.below(10) } {
             0..=3 => HOp::Get { key },
             4..=6 => HOp::Put { key, value },
             _ => {
@@ -955,6 +1151,7 @@ impl Sim {
             missed: false,
             term: Term(0),
             receipt,
+            spread: false,
         });
     }
 
@@ -977,6 +1174,13 @@ impl Sim {
             if self.now < op.retry_at {
                 continue;
             }
+            if matches!(op.wait, Some(Wait::Spread(..))) {
+                // The follower did not answer within FOLLOWER_WAIT: `overloaded`, a 503, no `suspect`.
+                let op = self.ops[c].take().expect("op");
+                self.stats.shed += 1;
+                self.finish(op, None);
+                continue;
+            }
             self.send_op(c);
         }
     }
@@ -990,6 +1194,13 @@ impl Sim {
     /// (Re)sends the client's operation to its target, or polls its ticket. A receipt that missed its deadline is
     /// hedged first: `suspect` reports to the other members, and the command goes to the same target again.
     fn send_op(&mut self, c: usize) {
+        // `read_spread` asks followers first and never the member it last saw lead, live or not.
+        let first_spread = self.ops[c].as_ref().is_some_and(|o| matches!(o.op, HOp::Get { .. }) && !o.spread);
+        if self.edge.follower_reads && first_spread {
+            let fails = self.rng.chance(self.faults.drop);
+            self.spread_read(c, fails);
+            return;
+        }
         let op = self.ops[c].as_ref().expect("op");
         let (target, id, wait, missed) = (op.target, op.id, op.wait, op.missed);
         let hop = op.op.clone();
@@ -1099,6 +1310,36 @@ impl Sim {
         }
     }
 
+    /// `read_spread`: the get goes by read-index to a voter other than the one the edge last saw lead. A `NotLeader`
+    /// sends it on to the leader's path (`call_opt`, which reports with `suspect`); no answer within FOLLOWER_WAIT is
+    /// a shed read, a 503 with no report.
+    fn spread_read(&mut self, c: usize, fails: bool) {
+        let o = self.ops[c].as_mut().expect("op");
+        o.spread = true;
+        o.missed = false;
+        // `spread_order` leaves out the leader the edge last learned: the newest term's leader it saw.
+        let not = self.terms.last().map_or(o.target, |t| t.1);
+        let to = SITES[(not.0 as usize + 1 + self.rng.below(2) as usize) % 3];
+        let (now, down) = (self.now, self.member(to).is_none());
+        let o = self.ops[c].as_mut().expect("op");
+        o.retry_at = Timestamp(now.0 + FOLLOWER_WAIT_MS);
+        if fails || down {
+            o.wait = Some(Wait::Spread(to, ReadId(u64::MAX)));
+            return;
+        }
+        let Some((r, res)) = self.call(to, |m, now| m.read_index(now)) else { return };
+        match r {
+            Ok(rid) => self.ops[c].as_mut().expect("op").wait = Some(Wait::Spread(to, rid)),
+            Err(_) => {
+                // Declined: the leader's path, at once.
+                let o = self.ops[c].as_mut().expect("op");
+                o.wait = None;
+                o.retry_at = self.now;
+            }
+        }
+        self.handle(to, res);
+    }
+
     fn config_of(&self) -> graftyard_raft::GroupConfig {
         SITES
             .iter()
@@ -1127,6 +1368,19 @@ impl Sim {
     }
 
     fn send_suspects(&mut self, c: usize, reports: Vec<graftyard_raft::Suspect>) {
+        let client = self.ops[c].as_ref().map_or(c, |o| o.client);
+        let gap = self.edge.suspect_gap_ms;
+        let all = reports.iter().any(|r| r.to == r.about);
+        if gap > 0
+            && let Some(r) = reports.first()
+        {
+            let key = (client, r.about, r.term, all);
+            if self.reported.get(&key).is_some_and(|t| self.now.0 < t.0 + gap) {
+                self.stats.damped += reports.len() as u64;
+                return;
+            }
+            self.reported.insert(key, self.now);
+        }
         for r in reports {
             if self.call_fails(r.to, r.to) {
                 continue;
@@ -1321,6 +1575,7 @@ impl Sim {
             }
             Err(_) => self.stats.refused += 1,
         }
+        self.progressed();
         let ok = r.as_ref().is_ok_and(|(_, o)| *o);
         self.finish_with(op, Some(HOut::Ok(ok)), ack);
     }
@@ -1331,6 +1586,32 @@ impl Sim {
         id: ReadId,
         result: Result<graftyard_raft::ReadGrant, graftyard_raft::NotLeader>,
     ) {
+        let spread = self
+            .ops
+            .iter()
+            .position(|o| o.as_ref().is_some_and(|o| matches!(o.wait, Some(Wait::Spread(f, r)) if f == s && r == id)));
+        if let Some(c) = spread {
+            match result {
+                Ok(g) => {
+                    let m = self.member(s).expect("up");
+                    let fresh = m.fresh(&g).expect("grant used in the same step");
+                    let HOp::Get { key } = &self.ops[c].as_ref().expect("op").op else { unreachable!() };
+                    let v = fresh.fold().0.get(key).cloned();
+                    let op = self.ops[c].take().expect("op");
+                    self.stats.reads += 1;
+                    self.stats.spread_reads += 1;
+                    self.finish(op, Some(HOut::Value(v)));
+                    self.progressed();
+                }
+                Err(_) => {
+                    // Declined: the leader's path.
+                    let o = self.ops[c].as_mut().expect("op");
+                    o.wait = None;
+                    o.retry_at = self.now;
+                }
+            }
+            return;
+        }
         let Some(c) = self.ops.iter().position(|o| {
             o.as_ref().is_some_and(|o| o.target == s && matches!(o.wait, Some(Wait::Read(r)) if r == id))
         }) else {
@@ -1345,6 +1626,7 @@ impl Sim {
                 let op = self.ops[c].take().expect("op");
                 self.stats.reads += 1;
                 self.finish(op, Some(HOut::Value(v)));
+                self.progressed();
             }
             Err(nl) => self.not_leader(c, &nl),
         }
