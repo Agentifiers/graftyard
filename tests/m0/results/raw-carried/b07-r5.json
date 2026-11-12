@@ -1,0 +1,767 @@
+{
+  "summary": {
+    "run": "r5",
+    "detectMs": 3646,
+    "ledOnCAtDrain": 76,
+    "moved": 76,
+    "p50": 5527,
+    "max": 12712,
+    "over20s": 0,
+    "active": 76,
+    "idle": 0,
+    "gateAsWritten": "76 of 76",
+    "gate": "76 of 76",
+    "writes": 11453,
+    "failed": 0,
+    "writesAroundGray": 6967,
+    "p99": 2405,
+    "max_ms": 21629,
+    "endByLeader": {
+      "0": 200
+    },
+    "polls": 5
+  },
+  "groups": [
+    {
+      "g": "repo:7700012",
+      "movedMs": 7619,
+      "idleMs": 3026,
+      "active": true,
+      "sinceNextRequestMs": 6597,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700013",
+      "movedMs": 11496,
+      "idleMs": 819,
+      "active": true,
+      "sinceNextRequestMs": 9195,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700014",
+      "movedMs": 5527,
+      "idleMs": 1051,
+      "active": true,
+      "sinceNextRequestMs": 5314,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700015",
+      "movedMs": 7619,
+      "idleMs": 5190,
+      "active": true,
+      "sinceNextRequestMs": 5103,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700036",
+      "movedMs": 7619,
+      "idleMs": 3848,
+      "active": true,
+      "sinceNextRequestMs": 1848,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700037",
+      "movedMs": 11496,
+      "idleMs": 1513,
+      "active": true,
+      "sinceNextRequestMs": 11379,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700038",
+      "movedMs": 7619,
+      "idleMs": 3557,
+      "active": true,
+      "sinceNextRequestMs": -9417,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700039",
+      "movedMs": 3961,
+      "idleMs": 8463,
+      "active": true,
+      "sinceNextRequestMs": 2905,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700020",
+      "movedMs": 5527,
+      "idleMs": 691,
+      "active": true,
+      "sinceNextRequestMs": -13864,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700021",
+      "movedMs": 5527,
+      "idleMs": 4097,
+      "active": true,
+      "sinceNextRequestMs": 2800,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700022",
+      "movedMs": 3961,
+      "idleMs": 3247,
+      "active": true,
+      "sinceNextRequestMs": 1175,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700004",
+      "movedMs": 11496,
+      "idleMs": 18,
+      "active": true,
+      "sinceNextRequestMs": 9939,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700005",
+      "movedMs": 3961,
+      "idleMs": 2544,
+      "active": true,
+      "sinceNextRequestMs": 1289,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700006",
+      "movedMs": 5527,
+      "idleMs": 3314,
+      "active": true,
+      "sinceNextRequestMs": 5512,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700007",
+      "movedMs": 11496,
+      "idleMs": 3806,
+      "active": true,
+      "sinceNextRequestMs": 5351,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700024",
+      "movedMs": 3961,
+      "idleMs": 309,
+      "active": true,
+      "sinceNextRequestMs": 2814,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700025",
+      "movedMs": 5527,
+      "idleMs": 4975,
+      "active": true,
+      "sinceNextRequestMs": 167,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700026",
+      "movedMs": 5527,
+      "idleMs": 1600,
+      "active": true,
+      "sinceNextRequestMs": -11758,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700027",
+      "movedMs": 3961,
+      "idleMs": 4156,
+      "active": true,
+      "sinceNextRequestMs": 1885,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700032",
+      "movedMs": 3961,
+      "idleMs": 612,
+      "active": true,
+      "sinceNextRequestMs": -12107,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700033",
+      "movedMs": 11496,
+      "idleMs": 4169,
+      "active": true,
+      "sinceNextRequestMs": 11278,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700034",
+      "movedMs": 7619,
+      "idleMs": 3723,
+      "active": true,
+      "sinceNextRequestMs": -11017,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700035",
+      "movedMs": 5527,
+      "idleMs": 2409,
+      "active": true,
+      "sinceNextRequestMs": 4346,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700008",
+      "movedMs": 5527,
+      "idleMs": 9733,
+      "active": true,
+      "sinceNextRequestMs": 3322,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700009",
+      "movedMs": 11496,
+      "idleMs": 3665,
+      "active": true,
+      "sinceNextRequestMs": 9589,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700010",
+      "movedMs": 3961,
+      "idleMs": 314,
+      "active": true,
+      "sinceNextRequestMs": -1026,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700011",
+      "movedMs": 5527,
+      "idleMs": 4115,
+      "active": true,
+      "sinceNextRequestMs": 5002,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700028",
+      "movedMs": 3961,
+      "idleMs": 9644,
+      "active": true,
+      "sinceNextRequestMs": -9533,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700029",
+      "movedMs": 3961,
+      "idleMs": 3774,
+      "active": true,
+      "sinceNextRequestMs": -8715,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700030",
+      "movedMs": 5527,
+      "idleMs": 1567,
+      "active": true,
+      "sinceNextRequestMs": -7001,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700031",
+      "movedMs": 7619,
+      "idleMs": 7115,
+      "active": true,
+      "sinceNextRequestMs": 7045,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700016",
+      "movedMs": 3961,
+      "idleMs": 4,
+      "active": true,
+      "sinceNextRequestMs": -730,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700017",
+      "movedMs": 5527,
+      "idleMs": 1901,
+      "active": true,
+      "sinceNextRequestMs": 1001,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700018",
+      "movedMs": 3961,
+      "idleMs": 349,
+      "active": true,
+      "sinceNextRequestMs": 1337,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700019",
+      "movedMs": 7619,
+      "idleMs": 3689,
+      "active": true,
+      "sinceNextRequestMs": 6519,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700000",
+      "movedMs": 7619,
+      "idleMs": 4025,
+      "active": true,
+      "sinceNextRequestMs": 4605,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700002",
+      "movedMs": 7619,
+      "idleMs": 3345,
+      "active": true,
+      "sinceNextRequestMs": -8351,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700003",
+      "movedMs": 5527,
+      "idleMs": 538,
+      "active": true,
+      "sinceNextRequestMs": 3188,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700056",
+      "movedMs": 5527,
+      "idleMs": 2123,
+      "active": true,
+      "sinceNextRequestMs": 558,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700057",
+      "movedMs": 11496,
+      "idleMs": 11787,
+      "active": true,
+      "sinceNextRequestMs": 10555,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700058",
+      "movedMs": 11496,
+      "idleMs": 3923,
+      "active": true,
+      "sinceNextRequestMs": -6474,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700059",
+      "movedMs": 7619,
+      "idleMs": 1695,
+      "active": true,
+      "sinceNextRequestMs": 6406,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700044",
+      "movedMs": 3961,
+      "idleMs": 436,
+      "active": true,
+      "sinceNextRequestMs": 3708,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700045",
+      "movedMs": 3961,
+      "idleMs": 2779,
+      "active": true,
+      "sinceNextRequestMs": 3190,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700046",
+      "movedMs": 5527,
+      "idleMs": 11740,
+      "active": true,
+      "sinceNextRequestMs": 4204,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700047",
+      "movedMs": 7619,
+      "idleMs": 690,
+      "active": true,
+      "sinceNextRequestMs": 3658,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700060",
+      "movedMs": 5527,
+      "idleMs": 4749,
+      "active": true,
+      "sinceNextRequestMs": 4824,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700061",
+      "movedMs": 3961,
+      "idleMs": 2782,
+      "active": true,
+      "sinceNextRequestMs": -7705,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700062",
+      "movedMs": 3961,
+      "idleMs": 677,
+      "active": true,
+      "sinceNextRequestMs": 3062,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700063",
+      "movedMs": 3961,
+      "idleMs": 4147,
+      "active": true,
+      "sinceNextRequestMs": 1452,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700040",
+      "movedMs": 5527,
+      "idleMs": 2775,
+      "active": true,
+      "sinceNextRequestMs": 1099,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700041",
+      "movedMs": 11496,
+      "idleMs": 1017,
+      "active": true,
+      "sinceNextRequestMs": -5148,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700042",
+      "movedMs": 7619,
+      "idleMs": 4323,
+      "active": true,
+      "sinceNextRequestMs": -10112,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700043",
+      "movedMs": 3961,
+      "idleMs": 579,
+      "active": true,
+      "sinceNextRequestMs": 1020,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700064",
+      "movedMs": 5527,
+      "idleMs": 8699,
+      "active": true,
+      "sinceNextRequestMs": 4540,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700065",
+      "movedMs": 7619,
+      "idleMs": 827,
+      "active": true,
+      "sinceNextRequestMs": -10898,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700066",
+      "movedMs": 11496,
+      "idleMs": 5986,
+      "active": true,
+      "sinceNextRequestMs": 10068,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700067",
+      "movedMs": 5527,
+      "idleMs": 3947,
+      "active": true,
+      "sinceNextRequestMs": 3055,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700048",
+      "movedMs": 3961,
+      "idleMs": 6431,
+      "active": true,
+      "sinceNextRequestMs": 1837,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700049",
+      "movedMs": 5527,
+      "idleMs": 3942,
+      "active": true,
+      "sinceNextRequestMs": 104,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700050",
+      "movedMs": 7619,
+      "idleMs": 4147,
+      "active": true,
+      "sinceNextRequestMs": 4111,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700051",
+      "movedMs": 12712,
+      "idleMs": 2798,
+      "active": true,
+      "sinceNextRequestMs": 11120,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700068",
+      "movedMs": 3961,
+      "idleMs": 4445,
+      "active": true,
+      "sinceNextRequestMs": -6093,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700069",
+      "movedMs": 5527,
+      "idleMs": 1011,
+      "active": true,
+      "sinceNextRequestMs": 3953,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700071",
+      "movedMs": 5527,
+      "idleMs": 1017,
+      "active": true,
+      "sinceNextRequestMs": 5049,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700077",
+      "movedMs": 12712,
+      "idleMs": 3255,
+      "active": true,
+      "sinceNextRequestMs": 8371,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700078",
+      "movedMs": 7619,
+      "idleMs": 2713,
+      "active": true,
+      "sinceNextRequestMs": 6658,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700079",
+      "movedMs": 11496,
+      "idleMs": 4233,
+      "active": true,
+      "sinceNextRequestMs": 11173,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700052",
+      "movedMs": 3961,
+      "idleMs": 4480,
+      "active": true,
+      "sinceNextRequestMs": -11590,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700053",
+      "movedMs": 5527,
+      "idleMs": 1816,
+      "active": true,
+      "sinceNextRequestMs": 687,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700054",
+      "movedMs": 5527,
+      "idleMs": 650,
+      "active": true,
+      "sinceNextRequestMs": 5364,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700055",
+      "movedMs": 5527,
+      "idleMs": 2735,
+      "active": true,
+      "sinceNextRequestMs": -17553,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700072",
+      "movedMs": 11496,
+      "idleMs": 2757,
+      "active": true,
+      "sinceNextRequestMs": 8751,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700073",
+      "movedMs": 7619,
+      "idleMs": 408,
+      "active": true,
+      "sinceNextRequestMs": 5636,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700074",
+      "movedMs": 7619,
+      "idleMs": 2788,
+      "active": true,
+      "sinceNextRequestMs": 3820,
+      "passWritten": true,
+      "passGate": true
+    },
+    {
+      "g": "repo:7700075",
+      "movedMs": 3961,
+      "idleMs": 341,
+      "active": true,
+      "sinceNextRequestMs": 190,
+      "passWritten": true,
+      "passGate": true
+    }
+  ],
+  "health": [
+    {
+      "observer": 0,
+      "rows": [
+        {
+          "target": 0,
+          "calls": 98,
+          "failed": 0
+        },
+        {
+          "target": 1,
+          "calls": 187,
+          "failed": 3
+        },
+        {
+          "target": 2,
+          "calls": 273,
+          "failed": 84
+        }
+      ]
+    },
+    {
+      "observer": 1,
+      "rows": [
+        {
+          "target": 0,
+          "calls": 103,
+          "failed": 1
+        },
+        {
+          "target": 1,
+          "calls": 8,
+          "failed": 0
+        },
+        {
+          "target": 2,
+          "calls": 56,
+          "failed": 9
+        }
+      ]
+    },
+    {
+      "observer": 2,
+      "rows": [
+        {
+          "target": 0,
+          "calls": 108,
+          "failed": 36
+        },
+        {
+          "target": 1,
+          "calls": 90,
+          "failed": 23
+        }
+      ]
+    }
+  ]
+}

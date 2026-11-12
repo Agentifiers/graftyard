@@ -20,4 +20,4 @@ pub use reply::{
     ApiVersion, Body, ENTERPRISE_VERSION, FieldError, Incoming, MediaType, Meta, Reply, Surface, basic_error,
     counts_against_limit, etag, finish, not_modified, request_id_header, serve, validation_error,
 };
-pub use time::iso;
+pub use time::{iso, parse_iso};

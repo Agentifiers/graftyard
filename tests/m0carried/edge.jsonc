@@ -1,0 +1,15 @@
+{
+  // m0-carried's B0-01/B0-02 test edge on graft-m3c: the M1-WP2 test edge (tests/m1/wp2/edge.ts) bound to the
+  // graft-m3c sites' Member classes. A separate script, so deploying it creates no site version.
+  "name": "graft-m3c-wp2-edge",
+  "main": "../m1/wp2/edge.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m3c-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m3c-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m3c-site-c" }
+  ] },
+  "observability": { "enabled": true }
+}
