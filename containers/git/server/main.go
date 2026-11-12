@@ -8,7 +8,7 @@
 //	                                 IngestCursor describes; region is CLOUDFLARE_REGION, for the start-time check
 //	POST /init?net=N[&fresh=1]       git init --bare --ref-format=reftable; fresh deletes the repository first
 //	POST /validate?net=N[&tips=a,b]  body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
-//	     [&tipsn=K]                  quarantine with the repository as alternate, then every tip must be connected
+//	     [&tipsn=K][&derived=1]      quarantine with the repository as alternate, then every tip must be connected
 //	                                 against the repository's refs. With tipsn, the body's first K bytes are the tips,
 //	                                 one per line, and the pack follows (a 10,000-ref push has too many for a URL).
 //	                                 Answers the PackIndex of the pack's bytes: SHA-256, size, objects, trailer. An
@@ -20,11 +20,14 @@
 //	                                 per update with a new tip, its new commits (raw, newest first), the paths it
 //	                                 changes against its merge base with HEAD and against the old tip, whether it is a
 //	                                 fast-forward, and refs/notes/ai's changed entries. With an empty pack, only
-//	                                 "detail", read from the repository's own objects (a REST ref write)
+//	                                 "detail", read from the repository's own objects (a REST ref write).
+//	                                 derived=1 is the shard's own archive-promotion validate: its CPU is derived
+//	                                 and it does not count in the queue depth
 //	POST /ingest?net=N&sha256=H      body: a committed pack. A pack /validate kept aside under H moves in without a
 //	                                 second index-pack; otherwise verifies H while writing, then index-pack --strict
-//	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet,
-//	                                 422 on a checksum mismatch. Idempotent per H
+//	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet
+//	                                 or an object its objects name is not here yet, 422 on a checksum mismatch.
+//	                                 Idempotent per H
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
 //	                                 neither is one page that is the whole set. Refs naming objects not here are
@@ -33,6 +36,8 @@
 //	GET  /refs?net=N                 every ref, the same lines
 //	POST /promote?net=N              body: SHA-256s of ingested packs, one per line. Answers one complete (not thin)
 //	                                 pack of every object those packs brought
+//	POST /have?net=N                 body: SHA-256s, one per line. {"have": [...]}: those already ingested, so a
+//	                                 resumed rehydrate skips them
 //	GET  /info-refs?net=N            upload-pack's advertisement, in the protocol the git-protocol header asks for
 //	POST /upload-pack?net=N          upload-pack --stateless-rpc, streamed
 //	POST /fsck?net=N                 git fsck --strict, refs, and object counts
@@ -51,7 +56,10 @@
 //	POST /evict?net=N                deletes the repository; 409 while a request holds it, so a clone streaming
 //	                                 from it is never cut
 //	GET  /load                       {"cpu_p99","queue_depth"}: the last minute's p99 busy fraction of the
-//	                                 container's vCPUs, one sample a second, and the validates waiting or running
+//	                                 container's vCPUs, one sample a second, and the client validates waiting or
+//	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
+//	                                 and derived validates): fanout steps k from it, and that work runs on every
+//	                                 shard whatever k is
 package main
 
 import (
@@ -120,6 +128,15 @@ func jsonOut(w http.ResponseWriter, v any) {
 var ident = []string{"GIT_COMMITTER_NAME=graftyard-shard", "GIT_COMMITTER_EMAIL=shard@graftyard.invalid",
 	"GIT_AUTHOR_NAME=graftyard-shard", "GIT_AUTHOR_EMAIL=shard@graftyard.invalid"}
 
+const derivedEnv = "GRAFT_DERIVED=1"
+
+// derived accounts CPU for work replicated on every shard separately from the network's load.
+var derived struct {
+	sync.Mutex
+	procs map[int]int64 // pid -> µs already counted
+	total int64
+}
+
 func git(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
@@ -127,7 +144,36 @@ func git(dir string, env []string, stdin io.Reader, args ...string) ([]byte, err
 	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
+	marked := false
+	for _, e := range env {
+		marked = marked || e == derivedEnv
+	}
+	if marked {
+		if err := cmd.Start(); err != nil {
+			return out.Bytes(), fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
+		}
+		pid := cmd.Process.Pid
+		derived.Lock()
+		if derived.procs == nil {
+			derived.procs = map[int]int64{}
+		}
+		derived.procs[pid] = 0
+		derived.Unlock()
+		err := cmd.Wait()
+		derived.Lock()
+		var usec int64
+		if cmd.ProcessState != nil {
+			usec = (cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()).Microseconds()
+		}
+		if delta := usec - derived.procs[pid]; delta > 0 {
+			derived.total += delta
+		}
+		delete(derived.procs, pid)
+		derived.Unlock()
+		if err != nil {
+			return out.Bytes(), fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
+		}
+	} else if err := cmd.Run(); err != nil {
 		return out.Bytes(), fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
 	}
 	return out.Bytes(), nil
@@ -290,13 +336,13 @@ func indexPack(dir string, env []string, file string) (string, error) {
 }
 
 // idxObjects lists the object ids of an .idx with git show-index, which reads both hash formats.
-func idxObjects(idx string) ([]string, error) {
+func idxObjects(idx string, env []string) ([]string, error) {
 	f, err := os.Open(idx)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	out, err := git(data, nil, f, "show-index")
+	out, err := git(data, env, f, "show-index")
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +357,7 @@ func idxObjects(idx string) ([]string, error) {
 
 // record keeps, per ingested pack (by the SHA-256 of the bytes as sent), the objects it brought, for /promote.
 func record(r, sum, packName string, objDir string) error {
-	objs, err := idxObjects(filepath.Join(objDir, "pack", "pack-"+packName+".idx"))
+	objs, err := idxObjects(filepath.Join(objDir, "pack", "pack-"+packName+".idx"), []string{derivedEnv})
 	if err != nil {
 		return err
 	}
@@ -325,7 +371,8 @@ func record(r, sum, packName string, objDir string) error {
 
 func unresolved(err error) bool {
 	s := err.Error()
-	return strings.Contains(s, "unresolved delta") || strings.Contains(s, "missing")
+	return strings.Contains(s, "unresolved delta") || strings.Contains(s, "missing") ||
+		strings.Contains(s, "did not receive expected object")
 }
 
 func handleInit(w http.ResponseWriter, r *http.Request) {
@@ -343,16 +390,16 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 		jsonOut(w, map[string]any{"created": false})
 		return
 	}
-	if _, err := git(data, nil, nil, "-c", "init.defaultBranch=main", "init", "-q", "--bare", "--ref-format=reftable", rp); err != nil {
+	if _, err := git(data, []string{derivedEnv}, nil, "-c", "init.defaultBranch=main", "init", "-q", "--bare", "--ref-format=reftable", rp); err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	// Shards serve wants by tip; GC never runs here, the repository is rebuilt instead.
-	git(rp, nil, nil, "config", "gc.auto", "0")
-	git(rp, nil, nil, "config", "uploadpack.allowFilter", "true")
+	git(rp, []string{derivedEnv}, nil, "config", "gc.auto", "0")
+	git(rp, []string{derivedEnv}, nil, "config", "uploadpack.allowFilter", "true")
 	// As github.com advertises over v0 (research/wire-census.md#43), and partial clones' lazy fetches need them.
-	git(rp, nil, nil, "config", "uploadpack.allowTipSHA1InWant", "true")
-	git(rp, nil, nil, "config", "uploadpack.allowReachableSHA1InWant", "true")
+	git(rp, []string{derivedEnv}, nil, "config", "uploadpack.allowTipSHA1InWant", "true")
+	git(rp, []string{derivedEnv}, nil, "config", "uploadpack.allowReachableSHA1InWant", "true")
 	jsonOut(w, map[string]any{"created": true})
 }
 
@@ -360,6 +407,11 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
+	}
+	derivedValidate := r.URL.Query().Get("derived") == "1"
+	var validateEnv []string
+	if derivedValidate {
+		validateEnv = []string{derivedEnv}
 	}
 	var tips []string
 	if t := r.URL.Query().Get("tips"); t != "" {
@@ -409,8 +461,10 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
 	// `aside` (finishValidate).
-	validating.Add(1) // waiting or running: the queue
-	defer validating.Add(-1)
+	if !derivedValidate {
+		validating.Add(1) // waiting or running: the queue
+		defer validating.Add(-1)
+	}
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
@@ -436,7 +490,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
-		d, err := details(rp, nil, updates)
+		d, err := details(rp, validateEnv, updates)
 		if err != nil {
 			fail(w, 422, "detail: %v", err)
 			return
@@ -450,6 +504,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// Connectivity is checked against the repository's own objects only, which hold just the committed packs.
 	env := []string{"GIT_OBJECT_DIRECTORY=" + q, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
+	env = append(env, validateEnv...)
 	os.MkdirAll(filepath.Join(q, "pack"), 0o755)
 	name, err := indexPack(rp, env, file)
 	if err != nil {
@@ -464,7 +519,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	objs, err := idxObjects(filepath.Join(q, "pack", "pack-"+name+".idx"))
+	objs, err := idxObjects(filepath.Join(q, "pack", "pack-"+name+".idx"), validateEnv)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -547,18 +602,58 @@ func cgroupCPU() (usec int64, cpus float64, ok bool) {
 	return usec, cpus, true
 }
 
+// sampleDerived adds CPU used by running derived git processes and their waited-for children to the running total.
+func sampleDerived() int64 {
+	derived.Lock()
+	defer derived.Unlock()
+	for pid, counted := range derived.procs {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		if err != nil {
+			continue // The process may have exited.
+		}
+		end := bytes.LastIndexByte(b, ')')
+		if end < 0 {
+			continue
+		}
+		fields := strings.Fields(string(b[end+1:]))
+		if len(fields) < 15 {
+			continue
+		}
+		var usec int64
+		valid := true
+		for _, field := range fields[11:15] { // utime, stime, cutime, cstime (fields 14-17).
+			var ticks int64
+			if _, err := fmt.Sscan(field, &ticks); err != nil {
+				valid = false
+				break
+			}
+			usec += ticks * 10_000 // 100 clock ticks a second.
+		}
+		if valid && usec > counted {
+			derived.total += usec - counted
+			derived.procs[pid] = usec
+		}
+	}
+	return derived.total
+}
+
 // sampleCPU appends one busy fraction a second, keeping the last 60.
 func sampleCPU() {
 	prev, _, ok := cgroupCPU()
 	if !ok {
 		return
 	}
+	derivedPrev := sampleDerived()
 	at := time.Now()
 	for range time.Tick(time.Second) {
 		u, cpus, _ := cgroupCPU()
+		derivedNow := sampleDerived()
 		now := time.Now()
-		busy := float64(u-prev) / (float64(now.Sub(at).Microseconds()) * cpus)
-		prev, at = u, now
+		busy := float64((u-prev)-(derivedNow-derivedPrev)) / (float64(now.Sub(at).Microseconds()) * cpus)
+		if busy < 0 {
+			busy = 0
+		}
+		prev, at, derivedPrev = u, now, derivedNow
 		cpuSamples.Lock()
 		cpuSamples.last = append(cpuSamples.last, busy)
 		if len(cpuSamples.last) > 60 {
@@ -569,8 +664,10 @@ func sampleCPU() {
 }
 
 // handleLoad answers the container's NetworkLoad (design/DESIGN.md, Shape, `NetworkLoad`): cpu_p99, the 99th
-// percentile of the last minute's one-second busy fractions of its vCPUs, and queue_depth, the validates waiting or running now.
-// A container is one network's shard, so its load is the network's on this shard.
+// percentile of the last minute's one-second busy fractions of its vCPUs, and queue_depth, the client validates waiting
+// or running now. CPU excludes derived work (ingest, refs, repack, promotion packs, init, and derived validates), because
+// fanout steps k from it and that work runs on every shard whatever k is. A container is one network's shard, so its load
+// is the network's on this shard.
 func handleLoad(w http.ResponseWriter, r *http.Request) {
 	cpuSamples.Lock()
 	s := append([]float64{}, cpuSamples.last...)
@@ -815,7 +912,7 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 	l.Lock()
 	defer l.Unlock()
-	name, err := indexPack(rp, nil, file)
+	name, err := indexPack(rp, []string{derivedEnv}, file)
 	if err != nil {
 		if unresolved(err) {
 			fail(w, 409, "%v", err)
@@ -831,8 +928,8 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n})
 }
 
-func listRefs(rp string) (map[string]string, error) {
-	out, err := git(rp, nil, nil, "for-each-ref", "--format=%(objectname) %(refname)")
+func listRefs(rp string, env []string) (map[string]string, error) {
+	out, err := git(rp, env, nil, "for-each-ref", "--format=%(objectname) %(refname)")
 	if err != nil {
 		return nil, err
 	}
@@ -882,7 +979,7 @@ func applyRefs(rp string, dels, ups []string) (int, error) {
 		if len(lines) == 0 {
 			continue
 		}
-		out, err := git(rp, nil, strings.NewReader(strings.Join(lines, "")), "update-ref", "--stdin", "--batch-updates")
+		out, err := git(rp, []string{derivedEnv}, strings.NewReader(strings.Join(lines, "")), "update-ref", "--stdin", "--batch-updates")
 		if err != nil {
 			return skipped, err
 		}
@@ -897,8 +994,8 @@ func setHead(rp, head string) {
 	if head == "" {
 		return
 	}
-	if cur, _ := git(rp, nil, nil, "symbolic-ref", "HEAD"); strings.TrimSpace(string(cur)) != head {
-		git(rp, nil, nil, "symbolic-ref", "HEAD", head)
+	if cur, _ := git(rp, []string{derivedEnv}, nil, "symbolic-ref", "HEAD"); strings.TrimSpace(string(cur)) != head {
+		git(rp, []string{derivedEnv}, nil, "symbolic-ref", "HEAD", head)
 	}
 }
 
@@ -911,7 +1008,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodGet {
-		refs, err := listRefs(rp)
+		refs, err := listRefs(rp, []string{derivedEnv})
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -936,7 +1033,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	}
 	var dels, ups []string
 	if put && start {
-		have, err := listRefs(rp)
+		have, err := listRefs(rp, []string{derivedEnv})
 		if err != nil {
 			fail(w, 500, "%v", err)
 			return
@@ -969,7 +1066,7 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 	if done {
 		head := ""
 		if put {
-			if _, err := git(rp, nil, nil, "rev-parse", "-q", "--verify", "refs/heads/main"); err == nil {
+			if _, err := git(rp, []string{derivedEnv}, nil, "rev-parse", "-q", "--verify", "refs/heads/main"); err == nil {
 				head = "refs/heads/main"
 			} else if len(order) > 0 && want[order[0]] != "" {
 				head = order[0]
@@ -1012,7 +1109,7 @@ func startRepack(net, rp string) bool {
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}
-		if _, err := git(rp, nil, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
+		if _, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
 			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
 		}
 	}()
@@ -1049,13 +1146,41 @@ func handlePromote(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Exactly these objects, deltas only within the pack, so it is complete.
-	out, err := git(rp, nil, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+	out, err := git(rp, []string{derivedEnv}, &oids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	w.Header().Set("x-objects", fmt.Sprint(len(seen)))
 	w.Write(out)
+}
+
+// handleHave lists the named pack sums already ingested here, in the request's order.
+func handleHave(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	have := []string{}
+	sc := bufio.NewScanner(r.Body)
+	for sc.Scan() {
+		sum := strings.TrimSpace(sc.Text())
+		if !sumRe.MatchString(sum) {
+			fail(w, 400, "bad sha256 %q", sum)
+			return
+		}
+		if _, err := os.Stat(filepath.Join(rp, "graft", sum+".objs")); err == nil {
+			have = append(have, sum)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		fail(w, 400, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"have": have})
 }
 
 func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
@@ -1384,7 +1509,7 @@ func handleFsck(w http.ResponseWriter, r *http.Request) {
 	l.RLock()
 	defer l.RUnlock()
 	out, err := git(rp, nil, nil, "fsck", "--strict", "--no-progress", "--no-dangling")
-	refs, _ := listRefs(rp)
+	refs, _ := listRefs(rp, nil)
 	count, _ := git(rp, nil, nil, "count-objects", "-v")
 	res := map[string]any{"ok": err == nil, "out": string(out), "refs": refs, "count": string(count)}
 	if err != nil {
@@ -1414,6 +1539,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/ingest", handleIngest)
 	m.HandleFunc("/refs", handleRefs)
 	m.HandleFunc("/promote", handlePromote)
+	m.HandleFunc("/have", handleHave)
 	m.HandleFunc("/info-refs", func(w http.ResponseWriter, r *http.Request) { upload(w, r, true) })
 	m.HandleFunc("/upload-pack", func(w http.ResponseWriter, r *http.Request) { upload(w, r, false) })
 	m.HandleFunc("/fsck", handleFsck)
