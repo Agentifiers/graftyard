@@ -61,7 +61,8 @@ async function groups(n: number, base: number): Promise<string[]> {
     const chain = `repo:${base + g}`;
     const r = await edge("/create", { chain });
     if (!r.warm?.ok) throw new Error(`create ${chain}: ${JSON.stringify(r).slice(0, 400)}`);
-    log(`created ${chain}: ${r.verdict} in ${r.leaderMs} ms`);
+    log(`created ${chain}: ${r.verdict} in ${r.leaderMs} ms; placed ${JSON.stringify(r.placed)}`);
+    writeFileSync(`${RAW}${opt.run}.create.json`, JSON.stringify(r.placed ?? null));
     out.push(chain);
   }
   writeFileSync(path, JSON.stringify(out));
