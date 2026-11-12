@@ -223,6 +223,8 @@ pub struct Stats {
     /// Follower: the last RAFT_IN `/raft` calls of 1 KB or more, each `[at, bytes, body ms, work ms]`: the request
     /// body's arrival, then decode, step, and the output gate (B0-02's per-KB append cost, `tests/m0/results`).
     pub raft_in: VecDeque<[u64; 4]>,
+    /// Leader: groups this member placed with no try within `NEAR_RTT`, keeping the nearest (`Member::replace_on`).
+    pub placed_over_near: u32,
 }
 
 /// `Stats::raft_in`'s length: a minute of a follower's AppendEntries at B0-02's rate, about 8 a second.

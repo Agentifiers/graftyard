@@ -3,7 +3,7 @@
 //
 //   node tests/m1/wp2/run.ts bf12  --run NAME [--kills 10000] [--groups 10] [--down-every 25]
 //   node tests/m1/wp2/run.ts bf13  --run NAME [--rounds 400] [--groups 8] [--early]
-//   node tests/m1/wp2/run.ts bench --run NAME [--seconds 60] [--rate 100] [--bytes 1024]
+//   node tests/m1/wp2/run.ts bench --run NAME [--seconds 60] [--rate 100] [--bytes 1024] [--near-ms MS]
 //   node tests/m1/wp2/run.ts audit --run NAME      # BF-12 audit of every group's three members
 //
 // BF-12: each group appends unique tokens `i,` to one register, one command per kill. Kill modes alternate
@@ -18,7 +18,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   run: { type: "string" }, kills: { type: "string", default: "10000" }, groups: { type: "string" },
   "down-every": { type: "string", default: "25" }, rounds: { type: "string", default: "400" },
   seconds: { type: "string", default: "60" }, rate: { type: "string", default: "100" }, bytes: { type: "string", default: "1024" },
-  early: { type: "boolean", default: false },
+  early: { type: "boolean", default: false }, "near-ms": { type: "string" },
 } });
 const row = positionals[0];
 if (!opt.run || !row) throw new Error("usage: node tests/m1/wp2/run.ts bf12|bf13|bench|audit --run NAME");
@@ -59,7 +59,7 @@ async function groups(n: number, base: number): Promise<string[]> {
   const out: string[] = [];
   for (let g = 0; g < n; g++) {
     const chain = `repo:${base + g}`;
-    const r = await edge("/create", { chain });
+    const r = await edge("/create", { chain, ...(opt["near-ms"] ? { nearMs: Number(opt["near-ms"]) } : {}) });
     if (!r.warm?.ok) throw new Error(`create ${chain}: ${JSON.stringify(r).slice(0, 400)}`);
     log(`created ${chain}: ${r.verdict} in ${r.leaderMs} ms; placed ${JSON.stringify(r.placed)}`);
     writeFileSync(`${RAW}${opt.run}.create.json`, JSON.stringify(r.placed ?? null));

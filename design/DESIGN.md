@@ -164,8 +164,8 @@ pub struct Member { pub site: SiteId, pub kind: MemberKind, pub slot: u8, pub ge
 pub struct Rtt { pub peer: SiteId, pub median_ms: u16 /* of 20 binding round trips */, pub at: Timestamp }
 /// Built only by `Placement::new`, which reads joiners' `Rtt` rows and refuses two voters in one region or site, a
 /// voter pair under MIN_PAIR_RTT, fewer than two Full voters, two voters in one account when accounts are separated,
-/// and, at a create, a replacement, or the daily check, a home with no other voter within its region's NEAR_RTT
-/// (`PlacementError::NoNearFollower`, last; a move's swap and `graftyard placement set` skip it:
+/// and, at a create's tries or the daily check, a home with no other voter within its region's NEAR_RTT
+/// (`PlacementError::NoNearFollower`, last; after PLACE_TRIES the nearest try is kept; a move's swap and `placement set` skip it:
 /// `decisions/DECISIONS.md`, "A group's home must have a voter within `NEAR_RTT`"). `Placement::solo` builds `Solo` and
 /// needs the signed `evaluation` flag; `from_record` builds a first placement from its `PlacementRecord` alone.
 pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 16>,
@@ -203,7 +203,7 @@ pub fn bootstrap(chain: ChainId, record: &PlacementRecord) -> LogEntry;
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);    // [guess]
 /// A home's most RTT to its nearest voter; other regions unbounded [measured: B0-02's tail follows it, B0-12 medians]
 pub const NEAR_RTT: &[(Region, u16)] = &[(Region::Enam, 100), (Region::Weur, 100), (Region::Apac, 198)];
-pub const PLACE_TRIES: usize = 8;    // new generations tried for the near follower before a create fails [inference]
+pub const PLACE_TRIES: usize = 8;    // generations tried for the near follower; then the nearest is kept [inference]
 pub enum PlacementName {
     Tri,     // A enam, B weur, C apac, all Full: survives a region, a continent, a site deploy
     Na3,     // enam, wnam, weur, all Full: lower latency for North America, does not survive an NA-wide event
@@ -1380,7 +1380,7 @@ pub struct LifeboatStatus { pub decoder: ReleaseId, pub cursor_age: Duration }
 - **An event exists if and only if its change committed.** Consumers read the log through cursors, never a separate outbox.
 - **One writer per fold** (`apply` on each member), **one owner per fact.**
 - **Merge-queue tips only fast-forward.** Each queue entry's `parent_tip` equals the previous entry's `group_tip`, checked in `decide`, so a group merge cannot drop an earlier group's changes (`research/uptime.md` finding 49).
-- **Placement is checked by latency.** At join, and at most once a day on a day its group served a request, each member measures round trips to each other voter and keeps them in `Rtt`, outside `GroupConfig`. `graft-ops` checks bucket `location`. A member confirmed misplaced twice 24 h apart is replaced with a new generation. The near bound is part of the check: a new group leads, then its leader re-places the home's nearer follower until the home has a voter within `NEAR_RTT`, up to `PLACE_TRIES` generations, and otherwise restores the old member and fails the create with every try's round trips. The daily check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower by the same path.
+- **Placement is checked by latency.** At join, and at most once a day on a day its group served a request, each member measures round trips to each other voter and keeps them in `Rtt`, outside `GroupConfig`. `graft-ops` checks bucket `location`. A member confirmed misplaced twice 24 h apart is replaced with a new generation. The near bound is a goal, not a gate: a new group leads, then its leader re-places the home's nearer follower until the home has a voter within `NEAR_RTT`, up to `PLACE_TRIES` generations. If none is within it, the leader keeps the try with the lowest near round trip, or the member it started with when no try was nearer, stores that round trip in its `Rtt` rows, and counts the group in `placedOverNear`; the create succeeds. On `graft-m2b` every try of a create measured 108 to 114 ms against enam's 100 ms, and the create failed before this rule [measured, `tests/m0/results/carried-4.md`]. The daily check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower by the same path, keeping a new member only if it is nearer.
 
 **Dominant access patterns:**
 

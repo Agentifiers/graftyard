@@ -105,6 +105,32 @@ The leader trace that found this stays in the site Worker, test installs only: `
 20 ms. `tests/m0carried/stall.py RUN.stats.json` prints the leader's trace and the follower's `/raft` arrivals around
 each slow call to the near follower.
 
+## The near bound no longer fails a create
+
+The operator's addition to this branch. On `graft-m2b`, LM-1's create of `repo:131277` (home enam) ran all 8
+`PLACE_TRIES` against its weur follower at 114, 110, 108, 110, 110, 110, 111 and 111 ms, read 123 ms on the final
+check, and failed; a create a minute later passed. That install's enam to weur pair sits over 100 ms, so the same
+code would refuse creates in production.
+
+The bound is now a goal, not a gate (`design/DESIGN.md`, "Placement is checked by latency"; the amendment to
+`decisions/DECISIONS.md`, "A group's home must have a voter within `NEAR_RTT`"):
+
+- `/place` still re-places the nearer follower up to `PLACE_TRIES` times and takes the first try within the bound.
+- A try refused only by the bound is kept as a candidate. When none passed, the leader puts in the one with the
+  lowest near round trip (`graftyard_types::nearest_try`), if it is nearer than the member it started with;
+  otherwise it keeps that member. The other candidates are cleared, as refused tries were.
+- Either way the create succeeds. The answer carries `nearOver` (the kept try's ms) or `kept` with every try's round
+  trips, the kept round trip is the leader's `Rtt` row, and `/stats` counts the group in `placedOverNear`.
+- The daily check takes the same path, so it keeps trying and moves a member only to a nearer one.
+- Not built: a bound relative to the install's measured baseline for the pair. With the nearest kept it would only
+  save tries on an install like `graft-m2b`, where a create now spends all 8 (about 30 to 40 s), and no component
+  keeps a per-install pair baseline yet. Recorded in the DECISIONS amendment.
+
+Test: `crates/types/src/placement.rs`, `nearest_try_keeps_the_best_when_every_try_is_over_the_bound` (LM-1's eight
+tries keep the 108 ms one, a tie keeps the current member, a tie between tries keeps the earlier). For the hosted
+check, test installs take `{"near_ms": MS}` on `/place` (one bound for every region), and the test edge's create and
+`run.ts --near-ms` pass it.
+
 ## B0-02 on the change
 
 Pending the `graft-m3c` site day.
