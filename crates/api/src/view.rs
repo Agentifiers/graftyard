@@ -4,8 +4,8 @@
 
 use graftyard_fold::{Read, Val};
 use graftyard_git::issues::{
-    AppId, BranchRule, CheckRunUpdate, CheckSuiteUpdate, CommentId, CommentTarget, IssueKind, IssueNumber, PrState,
-    Protection, PullHead, RepoSettings, StatusUpdate,
+    AppId, BranchRule, CheckRunId, CheckRunUpdate, CheckSuiteUpdate, CommentId, CommentTarget, IssueKind, IssueNumber,
+    PrState, Protection, PullHead, RepoSettings, StatusUpdate,
 };
 use graftyard_git::issues::{AssetId, LockId, RepoReleaseId};
 use graftyard_git::refs::{ObjectId, RefName};
@@ -231,6 +231,26 @@ impl Repo<'_> {
             .collect()
     }
 
+    /// Review comments on pull request `n`, oldest first, as GHES lists them (`sort=created`). Ids do not give that
+    /// order: a thread's first comment takes a Core id and a reply a Metadata id.
+    pub fn review_comments_of(&self, n: IssueNumber) -> Vec<(CommentId, CommentRow)> {
+        let mut rows: Vec<(CommentId, CommentRow)> = self
+            .meta
+            .prefix("comment", &[])
+            .into_iter()
+            .filter_map(|(k, _)| match k.first() {
+                Some(Val::Int(id)) => {
+                    let row: CommentRow = get_rec(self.meta, "comment", &k)?;
+                    matches!(row.on, CommentTarget::Review { n: on, .. } if on == n)
+                        .then_some((CommentId(DbId(*id)), row))
+                }
+                _ => None,
+            })
+            .collect();
+        rows.sort_by_key(|(id, row)| (row.created, id.0.0));
+        rows
+    }
+
     pub fn review_requests_of(&self, n: IssueNumber) -> Vec<String> {
         self.meta
             .prefix("review_request", &[n_key(n)])
@@ -249,6 +269,14 @@ impl Repo<'_> {
             .into_iter()
             .filter_map(|(k, _)| get_rec(self.meta, "check_run", &k))
             .collect()
+    }
+
+    pub fn check_run(&self, run: CheckRunId) -> Option<Timed<CheckRunUpdate>> {
+        self.meta
+            .prefix("check_run", &[])
+            .into_iter()
+            .filter_map(|(k, _)| get_rec(self.meta, "check_run", &k))
+            .find(|t: &Timed<CheckRunUpdate>| t.rec.run == run)
     }
 
     pub fn check_suites(&self, sha: &ObjectId) -> Vec<Timed<CheckSuiteUpdate>> {

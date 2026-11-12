@@ -127,6 +127,70 @@ impl DurableObject for Registry {
                     rows.first().map(|r| serde_json::from_str(&r.plan)).transpose()?.unwrap_or_default();
                 Response::from_json(&p)
             }
+            // Test installs only: B0-07's site modes (`crate::faults::SiteModes`), in the object `faults`.
+            #[cfg(feature = "test-faults")]
+            (Method::Get, "/site_modes") | (Method::Put, "/site_modes") => {
+                #[derive(Deserialize)]
+                struct Modes {
+                    modes: String,
+                }
+                sql.exec(
+                    "CREATE TABLE IF NOT EXISTS site_modes (k INTEGER PRIMARY KEY CHECK (k = 0), modes TEXT NOT NULL)",
+                    None,
+                )?;
+                if req.method() == Method::Put {
+                    let m: crate::faults::SiteModes = req.json().await?;
+                    sql.exec(
+                        "INSERT OR REPLACE INTO site_modes (k, modes) VALUES (0, ?)",
+                        vec![serde_json::to_string(&m)?.into()],
+                    )?;
+                }
+                let rows: Vec<Modes> = sql.exec("SELECT modes FROM site_modes WHERE k = 0", None)?.to_array()?;
+                let m: crate::faults::SiteModes =
+                    rows.first().map(|r| serde_json::from_str(&r.modes)).transpose()?.unwrap_or_default();
+                Response::from_json(&m)
+            }
+            // Test installs only: B0-07's `SiteHealth` stand-in, in the object `health` on the observer's site. A PUT
+            // adds `{"counts": [[target, calls, failed], ..]}` to the current second; a GET with `?since=` (epoch ms)
+            // sums every second from then, per target. Seconds older than 10 minutes are dropped.
+            #[cfg(feature = "test-faults")]
+            (Method::Put, "/health") | (Method::Get, "/health") => {
+                sql.exec(
+                    "CREATE TABLE IF NOT EXISTS health (sec INTEGER NOT NULL, target INTEGER NOT NULL, calls INTEGER NOT NULL, failed INTEGER NOT NULL, PRIMARY KEY (sec, target))",
+                    None,
+                )?;
+                let now = crate::now_ms() / 1000;
+                if req.method() == Method::Put {
+                    #[derive(Deserialize)]
+                    struct Put {
+                        counts: Vec<(u8, u64, u64)>,
+                    }
+                    let p: Put = req.json().await?;
+                    for (t, c, f) in p.counts {
+                        sql.exec(
+                            "INSERT INTO health (sec, target, calls, failed) VALUES (?, ?, ?, ?)
+                             ON CONFLICT (sec, target) DO UPDATE SET calls = calls + excluded.calls, failed = failed + excluded.failed",
+                            vec![(now as i64).into(), i64::from(t).into(), (c as i64).into(), (f as i64).into()],
+                        )?;
+                    }
+                    sql.exec("DELETE FROM health WHERE sec < ?", vec![(now as i64 - 600).into()])?;
+                    return Response::empty();
+                }
+                #[derive(Deserialize, serde::Serialize)]
+                struct Sum {
+                    target: i64,
+                    calls: i64,
+                    failed: i64,
+                }
+                let since: i64 = query(&url, "since").ok().and_then(|v| v.parse::<i64>().ok()).unwrap_or(0) / 1000;
+                let rows: Vec<Sum> = sql
+                    .exec(
+                        "SELECT target, SUM(calls) AS calls, SUM(failed) AS failed FROM health WHERE sec >= ? GROUP BY target",
+                        vec![since.into()],
+                    )?
+                    .to_array()?;
+                Response::from_json(&rows)
+            }
             // The sweeper cron's cursor (`crate::sweep`), held only by this site's object `sweep`: the network the next
             // run starts at (null: from the first), and the last run's report.
             // Test installs only: one sweeper run, the cron's own, with its clock at `?now=` ms (BF-19).
