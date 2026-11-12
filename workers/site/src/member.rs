@@ -1178,6 +1178,8 @@ impl<F: Family> Routes<F> {
         if summary {
             let deps: serde_json::Map<String, Value> =
                 s.deps_ms.iter().map(|(k, xs)| (k.clone(), percentiles(xs))).collect();
+            let append: serde_json::Map<String, Value> =
+                s.append_ms.iter().map(|(k, xs)| (k.to_string(), percentiles(xs))).collect();
             let v = json!({
                 "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
                 "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
@@ -1187,6 +1189,8 @@ impl<F: Family> Routes<F> {
                 "roundMs": percentiles(&s.round_ms),
                 "confirmMs": percentiles(&s.confirm_ms),
                 "depsMs": deps,
+                "appendMs": append,
+                "applyMs": percentiles(&s.apply_ms),
                 "depFails": s.dep_fails,
                 "entries": s.entries,
                 "commands": s.commands,
