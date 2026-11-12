@@ -1137,17 +1137,14 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// CPU-s, and a composed miss's time to first byte was 0.35 s [measured, B0-34]. A shard object starts its container
 /// with `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so the
 /// container reaches R2 and members only through its object. It starts one only while its index is under `count +
-/// HOT_POOL`. The policy has no `max_instances`, so this check, over a fixed set of shard names, is each site's start
-/// cap. At start the object reads `CLOUDFLARE_REGION` inside the container and replaces a container outside its site's
-/// container regions, at most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum,
-/// renewed by its alarm hourly until 24 h after its last request. The timeout belongs to the object instance that set
-/// it, so an instance that starts while its container runs sets it again before any event: without that, a `/status`
-/// that woke an evicted shard object left its container to stop about a minute later, on a new disk the next time
-/// [measured, `tests/am1/results/hot-shards.md`]. Each site-script version's image map holds its
-/// release's git image as `git` and the previous release's as `git_prev`. A new version restarts no running container
-/// [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its site's `ContainerDay`
-/// step covers it, and returns to `git_prev` on that day's committed `Rollback { target: Containers(site) }`. Per site,
-/// `count + HOT_POOL` lets any two sites carry every network with both copies warm.
+/// HOT_POOL`. With no `max_instances` in the policy, this check over a fixed set of shard names is each site's start
+/// cap. At start the object reads `CLOUDFLARE_REGION` in the container and replaces one outside its site's regions, at
+/// most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, renewed hourly by its
+/// alarm until 24 h after its last request, and set by any object instance that finds it running [measured,
+/// `hot-shards`]. Each site-script version's image map holds its release's git image as `git` and the prior one's as
+/// `git_prev`. A new version restarts no running container [measured, `container-survival.json`], so a shard changes
+/// image only when its site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed
+/// `Rollback { target: Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
@@ -1161,13 +1158,13 @@ pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cos
 /// first byte p99 at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A
 /// pool warm only for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
 pub const HOT_POOL: u16 = 7;
-/// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard applied each member
-/// chain's `Refs`, `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's
-/// last index, never the range's end (B0-30 blocker 12). A shard behind reads pages from its site's member or the leader,
-/// two at most in memory, before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
-/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object, not its caller: a caller waits its
-/// `wait`, then gets `warming`, and a cold pool shard answers a forwarded push so at once. Only `rehydrate` reads a whole
-/// ref set, in pages of 10,000: no member reply grows with a repository's ref count [measured, `wire-fix`].
+/// Per (shard, network), in the shard's SQLite, derived: the index through which it applied each member chain's `Refs`,
+/// `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's last index,
+/// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
+/// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
+/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
+/// gets `warming`, as a cold pool shard's forwarded push does at once. A push waits 15 s on the home shard, then 60 s
+/// on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs, by 10,000 [measured, `wire-fix`].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or

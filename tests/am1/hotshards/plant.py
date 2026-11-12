@@ -21,6 +21,8 @@ PRSYNC = 'crates/git/src/prsync.rs'
 PRSYNC_T = ('cargo', ['-p', 'graftyard-git', '--test', 'prsync'], 'a_leader_far')
 PACK = 'crates/git/src/pack.rs'
 PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
+EDGE = 'workers/edge/src/lib.rs'
+EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -77,6 +79,12 @@ MUTANTS = [
      '\t\tif _, err := os.Stat(filepath.Join(rp, "graft", sum+".objs")); err == nil {',
      '\t\tif _, err := os.Stat(filepath.Join(rp, "graft")); err == nil {',
      GOTEST),
+    ('a push validate falls back to a Witness site, which has no git cache', EDGE,
+     "**s != record.home && **k == graftyard_types::MemberKind::Full", "**s != record.home", EDGE_T),
+    ('a push validate tries the sites in record order, not the home site first', EDGE,
+     '    std::iter::once(record.home).chain(others).collect()',
+     '    record.sites.iter().copied().filter(|s| others.clone().any(|o| o == *s) || *s == record.home).collect()',
+     EDGE_T),
 ]
 
 

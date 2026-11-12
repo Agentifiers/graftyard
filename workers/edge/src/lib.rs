@@ -1005,10 +1005,35 @@ async fn receive_pack(
     }
 }
 
-/// `GitCacheShard::validate` on the network's home shard: tips in the body ahead of the pack. With `detail` (the
-/// `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also answers each
-/// update's new commits and changed paths; with an empty pack it answers only those, and no index. Without `detail`
-/// the call is the one a default push has always made.
+/// The sites whose shards a validate tries, in order: the home site's, then the record's other Full sites' in record
+/// order (a Witness site holds no content, so it has no git cache), or only the one a test pinned (`x-graft-shard`).
+/// A home shard that rehydrated about 3 GB after a reset took more than 30 min, and every push meanwhile waited on it
+/// until its deadline (`tests/am1/results/hot-shards.md`).
+fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteId> {
+    if let Some(s) = pinned {
+        return vec![s];
+    }
+    let others = record
+        .sites
+        .iter()
+        .zip(record.name.kinds())
+        .filter(|(s, k)| **s != record.home && **k == graftyard_types::MemberKind::Full)
+        .map(|(s, _)| *s);
+    std::iter::once(record.home).chain(others).collect()
+}
+
+/// How long the home shard's catch-up may hold a validate before the edge tries the next site's shard: past it the
+/// shard answers 503 `warming` and goes on catching up in the background. A later site's shard gets
+/// `VALIDATE_WAIT_OTHER`. Both together stay under the push's 180 s deadline.
+const VALIDATE_WAIT_HOME_S: u32 = 15;
+const VALIDATE_WAIT_OTHER_S: u32 = 60;
+
+/// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
+/// another placement site's shard of the network (`validate_sites`): tips in the body ahead of the pack. With
+/// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
+/// answers each update's new commits and changed paths; with an empty pack it answers only those, and no index.
+/// Without `detail` the call is the one a default push has always made. A 422 is the pack's answer and ends the
+/// tries; a 503 `warming`, another status, or a failed call moves to the next site.
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -1016,40 +1041,60 @@ pub(crate) async fn validate(
     tips: &[String],
     detail: &str,
 ) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), String> {
-    let run = async {
-        let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
-        if !tips.is_empty() || detail.is_empty() {
-            head.push(b'\n');
-        }
-        let n = head.len();
-        let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
-        if !detail.is_empty() {
-            url.push_str(&format!("&detailn={}", detail.len()));
-            head.extend_from_slice(detail.as_bytes());
-        }
-        head.extend_from_slice(pack);
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head.as_slice()).into()));
-        let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
-        if r.status_code() != 200 {
-            return Ok(Err(r.text().await.unwrap_or_default()));
-        }
-        if detail.is_empty() {
-            return Ok::<_, Error>(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
-        }
-        #[derive(Deserialize)]
-        struct Detailed {
-            index: Option<PackIndex>,
-            #[serde(default)]
-            detail: Vec<graftyard_git::agent::RefDetail>,
-        }
-        let d: Detailed = r.json().await?;
-        Ok(Ok((d.index, d.detail)))
-    };
-    match run.await {
-        Ok(r) => r,
-        Err(e) => Err(e.to_string()),
+    let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
+    if !tips.is_empty() || detail.is_empty() {
+        head.push(b'\n');
     }
+    let n = head.len();
+    let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
+    if !detail.is_empty() {
+        url.push_str(&format!("&detailn={}", detail.len()));
+        head.extend_from_slice(detail.as_bytes());
+    }
+    head.extend_from_slice(pack);
+    #[cfg(feature = "test-faults")]
+    let pinned = c.shard;
+    #[cfg(not(feature = "test-faults"))]
+    let pinned = None;
+    let mut last = String::new();
+    for (i, site) in validate_sites(&repo.record, pinned).into_iter().enumerate() {
+        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+        match validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await {
+            Ok(Ok(r)) => return Ok(r),
+            Ok(Err((422, e))) => return Err(e),
+            Ok(Err((status, e))) => last = format!("site {}'s shard answered {status}: {e}", site.0),
+            Err(e) => last = format!("site {}'s shard: {e}", site.0),
+        }
+    }
+    Err(last)
+}
+
+/// One validate on site `site`'s shard of the network: `Err((status, body))` for any status but 200.
+async fn validate_on(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    site: SiteId,
+    url: &str,
+    head: &[u8],
+    detail: &str,
+) -> Result<std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), (u16, String)>> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head).into()));
+    let mut r = shard_at(c, repo, Some(site))?.fetch_with_request(Request::new_with_init(url, &init)?).await?;
+    if r.status_code() != 200 {
+        return Ok(Err((r.status_code(), r.text().await.unwrap_or_default())));
+    }
+    if detail.is_empty() {
+        return Ok(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
+    }
+    #[derive(Deserialize)]
+    struct Detailed {
+        index: Option<PackIndex>,
+        #[serde(default)]
+        detail: Vec<graftyard_git::agent::RefDetail>,
+    }
+    let d: Detailed = r.json().await?;
+    Ok(Ok((d.index, d.detail)))
 }
 
 /// `auto_init`'s first commit on a new repository (`crate::repos`): the README commit's pack, validated by the git
@@ -2001,7 +2046,33 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
 mod tests {
     use std::io::Write;
 
-    use super::gunzip;
+    use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
+
+    use super::{gunzip, validate_sites};
+
+    fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
+        PlacementRecord {
+            name,
+            sites: sites.iter().map(|&s| SiteId(s)).collect(),
+            home: SiteId(home),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        }
+    }
+
+    /// A validate tries the home site's shard first even when the record lists it last, then the other Full sites in
+    /// record order. A Witness site has no git cache, so it is never tried, and a test-pinned site is tried alone.
+    #[test]
+    fn a_validate_falls_back_from_the_home_shard_to_the_other_full_sites() {
+        let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 2), None)), [2, 0, 1]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), None)), [0, 1, 2]);
+        // Us2w: the third slot is the Witness, site 1 here.
+        assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
 
     fn gzip(b: &[u8]) -> Vec<u8> {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
