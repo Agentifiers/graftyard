@@ -2444,7 +2444,7 @@ Branch `merge-budget-3` closed the five items the lead left after `merge-budget-
 
 **Beat.** Reporting the counts to the leader before the reset, which needs a write the object cannot schedule once it is idle. Logs alone, which the lead ruled out.
 
-**Evidence.** `a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line`; the hosted read of `/_bed/shard_status` after the object reset.
+**Evidence.** `a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line`. Hosted, repo 65553's counts (973 computed, 1,154 GET and 1,846 list asks) read the same 127 s after the last request and after a site day reset every object, with `vcpu` taken from the new `SHARD_INSTANCE` [measured, `tests/am1/results/merge-budget-3.md`].
 
 **Flip.** A store per ask that loads the shard object at journey 9's GET rate, which would batch the writes per second. Or a shard object reset while it is busy, which would grant a full bucket mid-load and need the bucket stored too.
 
@@ -2456,7 +2456,7 @@ Branch `merge-budget-3` closed the five items the lead left after `merge-budget-
 
 **Beat.** Sending first attempts through the queue, which `2026-11-05` rejected for its latency. Reusing one stub per batch, which passed the probe but depends on how the runtime picks a request to charge.
 
-**Evidence.** The traces and probe above [measured, `tests/am1/results/merge-budget-3.md`]. A service binding call is not billed as a request [doc, Workers pricing], so cost does not change.
+**Evidence.** The traces and probe above, and two hosted runs on cold shards with 0 depth errors where merge-budget-2's logged 16 and 4 [measured, `tests/am1/results/merge-budget-3.md`]. A service binding call is not billed as a request [doc, Workers pricing], so cost does not change.
 
 **Flip.** A runtime that charges a Durable Object's calls to the request that started them, which would let the handler run in the isolate again.
 
