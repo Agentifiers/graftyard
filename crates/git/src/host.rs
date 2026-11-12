@@ -358,13 +358,7 @@ impl ShardHost<'_> {
 
     /// Sets the container's inactivity timeout (the API's maximum, 6 h).
     pub async fn set_inactivity(&self, ms: u64) -> Result<(), StoreError> {
-        let c = self.container()?;
-        let f = js_sys::Reflect::get(c.as_ref(), &"setInactivityTimeout".into())
-            .map_err(|_| StoreError("timeout".into()))?;
-        let p = js_sys::Function::from(f)
-            .call1(c.as_ref(), &(ms as f64).into())
-            .map_err(|e| StoreError(format!("{e:?}")))?;
-        wasm_bindgen_futures_await(p).await
+        set_inactivity(&self.container()?, ms).await
     }
 
     /// Starts the container if it is not running, waits for its server, and applies the start-time region check:
@@ -798,6 +792,17 @@ impl Saved for Io<'_, '_> {
         // An older release kept its resume point here.
         s.delete(&format!("rehydrate:{}", self.network.0.0)).await.map(|_| ()).map_err(worker_err)
     }
+}
+
+/// `setInactivityTimeout` on a container. The timeout belongs to the Durable Object instance that set it: an instance
+/// that restarts while its container runs starts without one, and the runtime then stops the container shortly after
+/// the object goes idle, so the shard object's constructor sets it again (`workers/site/src/shard.rs`).
+pub async fn set_inactivity(c: &Container, ms: u64) -> Result<(), StoreError> {
+    let f =
+        js_sys::Reflect::get(c.as_ref(), &"setInactivityTimeout".into()).map_err(|_| StoreError("timeout".into()))?;
+    let p =
+        js_sys::Function::from(f).call1(c.as_ref(), &(ms as f64).into()).map_err(|e| StoreError(format!("{e:?}")))?;
+    wasm_bindgen_futures_await(p).await
 }
 
 async fn wasm_bindgen_futures_await(p: wasm_bindgen::JsValue) -> Result<(), StoreError> {

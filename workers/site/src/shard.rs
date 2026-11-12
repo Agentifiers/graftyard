@@ -347,6 +347,21 @@ impl DurableObject for GitShard {
     fn new(state: State, env: Env) -> Self {
         // An unknown `SHARD_INSTANCE` budgets nothing here; every route refuses it below.
         let vcpu = instance(&env).map_or(0.0, |(_, v)| v);
+        // The 6 h inactivity timeout belongs to the object instance that set it, so one that restarts while its
+        // container runs sets it again before any event; without it the runtime stopped hot-a's shards about a
+        // minute after their last request, each time on a new disk (`tests/am1/results/hot-shards.md`).
+        if let Some(c) = state.container().filter(|c| c.running()) {
+            let held = state.block_concurrency_while(async move {
+                graftyard_git::host::set_inactivity(&c, graftyard_git::shard::INACTIVITY.as_millis() as u64)
+                    .await
+                    .map_err(|e| Error::RustError(e.0))
+            });
+            wasm_bindgen_futures::spawn_local(async move {
+                if let Err(e) = held.await {
+                    console_error!("shard inactivity timeout: {e}");
+                }
+            });
+        }
         GitShard {
             state: std::rc::Rc::new(state),
             env,
