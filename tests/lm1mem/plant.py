@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """lm1-memory: planted bugs in this branch's new code (the lookup's overload answer and `suspect` damping, the member's
-heavy-read cap with streamed answers, and the packed-dump cache). Plants one mutant at a time, runs the
+heavy-read cap with streamed answers, and the packed-dump cache; learner-dumps: one dump per state shared by every
+read, learners exempt from HEAVY_READS, and a learner read that waits for a due rebuild). Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
 
@@ -44,12 +45,12 @@ MUTANTS = [
     ('damping: the gap never ends', LK, '            Some(at) if now < *at + gap => false,',
      '            Some(_) => false,', LOOKUP),
     ('cap: a plain read on a follower is shed instead of answering NotLeader', MEM,
-     '(heavy && (leading || index) && heavies >= HEAVY_READS)', '(heavy && heavies >= HEAVY_READS)', SITE),
+     '(heavy && (leading || index) && !learner && heavies >= HEAVY_READS)', '(heavy && !learner && heavies >= HEAVY_READS)', SITE),
     ('cap: narrow reads are never capped (heavy only, as before)', MEM, '    if reads >= READS_MAX || (heavy',
      '    if (reads >= READS_MAX && heavy) || (heavy', SITE),
     ('cap: READS_MAX is off by one', MEM, '    if reads >= READS_MAX ||', '    if reads > READS_MAX ||', SITE),
-    ('follower: HEAVY_READS does not hold on a follower', MEM, '(heavy && (leading || index) && heavies',
-     '(heavy && leading && heavies', SITE),
+    ('follower: HEAVY_READS does not hold on a follower', MEM, '(heavy && (leading || index) && !learner && heavies',
+     '(heavy && leading && !learner && heavies', SITE),
     ('follower: a follower serves a read it may not (no NotLeader gate)', MEM,
      '    if index && !leading && !servable {', '    if index && !leading && !servable && false {', SITE),
     ('follower: the NotLeader gate runs after the caps, so a capped follower is retried, not left', MEM,
@@ -117,7 +118,7 @@ MUTANTS = [
     ('rebuilds: a let-through rebuild is not recorded, so every stale read rebuilds', FAM,
      '                r.insert(repo, now);\n                None', '                None', SITE),
     ('cache: a hit is served without comparing its key, so an applied entry is not in the next read', FAM,
-     '.filter(|(at, _)| at == k)', '.filter(|(at, _)| at == k || true)', SITE),
+     '.filter(|(at, _)| *at == key)', '.filter(|(at, _)| *at == key || true)', SITE),
     ('cache: the key is a constant', FAM, '    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)',
      '    let _ = (c, m);\n    (0, [0; 32], false, 0, [0; 32])', SITE),
     ('round 6: the trailer is the pack\'s first 20 bytes, so the shard picks another fan-out shard', EDGE_LIB,
@@ -137,6 +138,37 @@ MUTANTS = [
      '\t\tif w.granted {\n', '\t\tif w.granted && false {\n', ['go', 'TestGate']),
     ('round 6: no refusal at once past 8 per slot', GO, '\tif agent && len(g.agents) >= agentQueuePerSlot*g.slots {',
      '\tif agent && len(g.agents) >= 1<<30 {', ['go', 'TestGate']),
+    # learner-dumps: one dump per state shared by every read, learners without HEAVY_READS, waits for a due rebuild.
+    ('learner: a follower is exempt from HEAVY_READS too', MEM,
+     '    let learner = graftyard_types::learner_slot(me).is_some();\n    if index',
+     '    let learner = !leading;\n    if index', SITE),
+    ('learner: HEAVY_READS still holds on a learner', MEM, '(heavy && (leading || index) && !learner && heavies',
+     '(heavy && (leading || index) && heavies', SITE),
+    ('learner: READS_MAX does not hold on a learner', MEM, '    if reads >= READS_MAX || (heavy',
+     '    if (reads >= READS_MAX && !learner) || (heavy', SITE),
+    ('learner: a voter waits for a rebuild too', MEM, '    learner && index && now + ms < until',
+     '    index && now + ms < until', SITE),
+    ('learner: a read waits for a rebuild past its deadline', MEM, '    learner && index && now + ms < until',
+     '    learner && index && now < until', SITE),
+    ('dump: every read builds its own copy', FAM,
+     '        && let Some(b) = DUMPS.with(|d| d.borrow().get(&repo)',
+     '        && let Some(b) = DUMPS.with(|d| d.borrow().get(&repo).filter(|_| false)', SITE),
+    ('dump: the cache keeps the bytes of another repository', FAM,
+     '            d.insert(repo, (key, bytes.clone()));', '            d.insert(RepoId(DbId(0)), (key, bytes.clone()));', SITE),
+    ('dump: a narrow rows read is answered with the dump', FAM,
+     '    if !q.get("rows").is_some_and(Value::is_boolean) ||', '    if q.get("rows").is_none() ||', SITE),
+    ('dump: learners space rebuilds as voters do', FAM,
+     '    if graftyard_types::learner_slot(me).is_some() { LEARNER_DUMP_EVERY_MS } else { DUMP_EVERY_MS }',
+     '    let _ = me;\n    DUMP_EVERY_MS', SITE),
+    ('dump: voters lose their spacing', FAM,
+     '    if graftyard_types::learner_slot(me).is_some() { LEARNER_DUMP_EVERY_MS } else { DUMP_EVERY_MS }',
+     '    let _ = me;\n    LEARNER_DUMP_EVERY_MS', SITE),
+    ('dump: the spacing ignores the member\'s own interval', FAM,
+     '            Some(at) if now < at + every => Some(at + every - now),',
+     '            Some(at) if now < at + DUMP_EVERY_MS => Some(at + DUMP_EVERY_MS - now),', SITE),
+    ('host: the shared dump is skipped, so every grant serializes its own', HOST,
+     '    if let Some(b) = F::read_bytes(fold, q) {', '    if let Some(b) = F::read_bytes(fold, q).filter(|_| false) {',
+     SITE),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
