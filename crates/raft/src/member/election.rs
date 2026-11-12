@@ -72,7 +72,10 @@ impl<C: Command> Member<C> {
             // Only a report about the leader this member promised and has accepted appends from in this term counts:
             // a late report about a deposed leader, or a `NotLeader` from a candidate this member just voted for in
             // a transfer, withholds nothing from the new leader (found by the liveness runs, calls seed 1039).
-            let leader = self.leader.filter(|l| *l != self.cfg.me && self.state.promised_to == Some(*l));
+            // A follower whose read-index call to that leader failed has forgotten it (`check_remote`) but still
+            // promises it, and reports about it count, or a half-hung leader kept its promises renewed for 47.8 s
+            // (F67, live seed 7337).
+            let leader = self.state.promised_to.filter(|l| *l != self.cfg.me && self.leader.is_none_or(|x| x == *l));
             if let Some(l) = leader.filter(|l| *l == about)
                 && term == self.state.term
             {
@@ -92,7 +95,7 @@ impl<C: Command> Member<C> {
         self.try_campaign()
     }
 
-    fn try_campaign(&mut self) -> Verdict {
+    pub(super) fn try_campaign(&mut self) -> Verdict {
         if self.role == Role::Leader {
             return Verdict::Leader;
         }
@@ -121,7 +124,7 @@ impl<C: Command> Member<C> {
         if self.now < self.state.promise_until {
             return Verdict::Promised;
         }
-        if self.now < self.backoff_until || self.now < self.stand_aside_until {
+        if self.now < self.backoff_until {
             return Verdict::Busy;
         }
         self.start_campaign(true, None);
@@ -374,7 +377,11 @@ impl<C: Command> Member<C> {
         }
         if req.pre {
             let newer = (req.last_term, req.last_index) > (self.last_term(), self.last());
-            if self.campaign.is_some() && req.candidate > self.cfg.me && !newer {
+            // Only a member that may lead contends: one inside its own RESET_QUARANTINE, drained, or under
+            // `no_lead_until` refused every other candidate while no voter would grant it either, until the waiver
+            // after 2 x ELECTION_AFTER (F67). One a voter refused as `Suspected` stands aside the same way.
+            let aside = self.now < self.stand_aside_until;
+            if self.campaign.is_some() && req.candidate > self.cfg.me && !newer && self.may_take_lead() && !aside {
                 return deny(self, Deny::Contending);
             }
             let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
@@ -401,8 +408,11 @@ impl<C: Command> Member<C> {
         // A transfer vote is a promise to the target. Otherwise a follower's promise still names the old leader,
         // which it does not bar, and the old leader, which holds no promise, campaigns on the first `suspect` report
         // after the hand-off and deposes its own target (found by the liveness runs, seed 108).
+        // It runs CAMPAIGN_DEADLINE, not ELECTION_AFTER: a target that wins renews it with its first append, and one
+        // that cannot win (its answers lost on a half-hung site) otherwise held both voters for ELECTION_AFTER with no
+        // leader at all (F67).
         if transfer_vote {
-            self.state.promise_until = self.state.promise_until.max(after(self.now, ELECTION_AFTER));
+            self.state.promise_until = after(self.now, CAMPAIGN_DEADLINE);
             self.state.promised_to = Some(req.candidate);
         }
         VoteRes { term: self.state.term, asked: req.term, pre: false, granted: true, deny: None }
@@ -419,7 +429,10 @@ impl<C: Command> Member<C> {
         }
         c.answered.insert(from);
         if res.pre && res.deny == Some(Deny::Suspected) {
-            // Two colos reported this member as a gray leader: it stands aside instead of contending.
+            // Two colos reported this member as a gray leader: it stands aside, denying no rival as `Contending`. It
+            // still campaigns by pre-vote, which moves no term, so it wins once the refusing voter's bar lapses: a
+            // member that stopped campaigning for the whole 2 x SUSPECT window outlasted that bar and left a group
+            // with requests waiting leaderless for 31.6 s (F67, gray seed 10395).
             self.stand_aside_until = after(self.now, SUSPECT.1 * 2);
         }
         let Some(c) = self.campaign.as_mut() else { return };
