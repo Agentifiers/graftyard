@@ -1049,3 +1049,41 @@ Checks on `3cc1d6c1`: fmt, workspace clippy, wasm32 clippy (site, edge, ops; wit
 `cargo test --workspace`, `check_design`, `check_names`, `go test`: all pass; `check_links` fails only on
 `.worktrees/` cache paths. Raft is unchanged since round 6's sweep (ok, 339 s) and Porcupine (Ok on 151,346 and
 2,029,703 operations), logged in `tests/am1/raw/runs/r6b-*.log`.
+
+## 15. Round 8: merging hot-shards, and why identity groups lose their leaders under load
+
+### Merge
+
+`origin/main` 6f82993 (hot-shards) is merged as `90808bd6`, with `03b66f22` fixing two test beds for
+`ShardHost::validate`'s new `derived` flag and a catch-up test that still counted the merge order before `41f1860d`.
+The edge keeps round 7's streamed validate (trailer and `class=agent` in the URL, 429 as `ShardRefusal::Busy`, the
+`via=0` retry after a failed fan-out) inside hot-shards' per-site loop; a 429, like a 422, ends the tries instead of
+moving to the next site's shard. The container keeps round 7's admission gate and lock-free repack with hot-shards'
+`derived=1` validate, which skips the queue count, and derived repack CPU. Full checks on `03b66f22`: fmt, workspace
+clippy, wasm32 clippy (site, edge, ops; with and without `test-faults`), `cargo test --workspace`, `check_design`,
+`check_names`, and `go test` pass; `check_links` fails only on `.worktrees/` cache paths. Not deployed yet.
+
+### Identity-group step-downs in smoke m16c s500 (131282, 15:19:30Z to 15:23:00Z)
+
+15 `STEP_DOWN` alarms, all `CommitErrors` with 3 to 18 failed calls per follower [measured, Workers Logs]:
+`tokens:2490` f0 → f1 → f2, then f2 held 3 times; `names:152` f0 → f1 → f2, held; `names:708` f0 → f1 → f2;
+`release` f0 → f1; and members of the torn-down `repo:131273`/`131274` groups.
+
+- **Not CPU on the identity members** [measured]: `tokens:2490` f0 used 4.3 CPU-s in 4 min, f1 32 s, f2 12 s; f1's
+  8,000 `/read`s cost 13.5 CPU-s.
+- **Not isolate sharing, as far as it can be read** [measured, idle]: `/isolate` on 11 members (identity voters,
+  `release`, `repo:131273/131274`) answered 11 distinct isolate ids. Under load is not shown.
+- **Synchronized ~3 s walls with no CPU** [measured]: at 15:20:30 both `tokens:2490` followers, on sites b and c,
+  ran one `/raft` of 3,146 and 3,152 ms wall at 19 and 38 ms CPU; at 15:20:42–45 five unrelated objects on site a
+  ran `/raft` calls of 3.05 to 3.07 s at under 20 ms CPU each, and at 15:20:20 two site-c objects did the same
+  (3.3 s). A 1 s `CALL_DEADLINE` misses on each, and three in a 10 s window trip the commit-error rule. That these
+  are storage-confirm (output gate) stalls on the follower is [inference]: the walls are flat at about 3 s, carry no
+  CPU, and hit many objects of one site at once. The own-stall exclusion covers only the leader's own confirms.
+- **Also measured, not yet tied to a trip**: old groups' members (131267–131274, torn-down repos) ran 0.5 to 4.7 s
+  CPU-bound turns at 15:19–15:20 (`repo:131274#1#f1`'s alarm: 4,730 ms CPU), the site-a fold audit cron refolds
+  4 chains every 15 min (logs "database table is locked" on most runs), and other threads' repositories
+  (`repo:65551`, 70 CPU-s per 5 min; `repo:33xx000`/`39xx000` groups, 20 to 30 CPU-s each per 30 min) share the
+  sites.
+
+Next: decide whether a follower's late-but-answered append should count against `STEP_DOWN` (a `crates/raft`
+change: design first, then the sweep and Porcupine), then site day, smokes, and the rows.
