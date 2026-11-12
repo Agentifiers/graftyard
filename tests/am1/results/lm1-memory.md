@@ -1150,8 +1150,18 @@ polls on it.
   without this change (`67e71612`) fails the same test on the same seeds 7, 9 and 11 with the same distribution, so
   those failures are the f67 merge's, not this change's. It has not yet been tested on a tree without f67.
 
-The first fix is withdrawn. The second is retested on a pre-f67 base (`720bdb36` with main f10ea4b, without
-`fa30bff9`). The identity step-downs stay open until it passes there.
+The first fix is withdrawn. The second ships as `0c7cbc23` (branch `lm1-pref67`: `720bdb36` with main f10ea4b,
+`fa30bff9` reverted), merged here as `aba91cbe`. `record_call` excuses a deadline miss sent within `CALL_DEADLINE` of
+the last counted miss to the same follower, so one stall is one failed call. On that base [measured, simulator]:
+
+- `sim::harsh_network_keeps_every_invariant`: 1,233 writes acked (1,212 without the change; the test needs 1,200).
+- `liveness::leaders_leave_a_site_whose_calls_fail`: 12 of 12 seeds moved by `STEP_DOWN`, one leader change each, new
+  leader off the sick site in 3.6 to 7.7 s, as without the change. Gray-failure detection is kept.
+- Long sweep, 2,000 seeds x 10,000 steps, both halves: exit 0. Porcupine: `Ok` on `hist.jsonl` (150,903 operations)
+  and `hist.jsonl.gray` (2,029,109).
+- Test `leadership::one_follower_stall_counts_once_per_deadline`: 30 read rounds missed within 300 ms do not trip
+  the rule; 5 misses a deadline apart do. Plants 74 (no dedupe) and 75 (dedupe forever): 2 of 2 caught.
+- Design: `design/DESIGN.md`, Shape, the `STEP_DOWN` paragraph, one added sentence.
 
 **Merges**: main f10ea4b (merge-budget-4) as `8f54b3b0`, keeping `/stats?summary` beside main's test-faults
 `body=array|stream` switch; main d7ee927 (f67-liveness, a `crates/raft` change) as `77629bc7`. The f67 test
