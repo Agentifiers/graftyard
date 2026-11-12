@@ -10,7 +10,7 @@ mkdir -p tests/nr/raw tests/am1/raw/runs
 [ -e tests/nr/raw/.run-$TAG.started ] && exec sleep infinity
 touch tests/nr/raw/.run-$TAG.started
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
-node tests/am1/runs/mkrepos.mjs "$NAME" >> "$ST" 2>&1
+for i in 1 2 3 4 5 6; do node tests/am1/runs/mkrepos.mjs "$NAME" >> "$ST" 2>&1 && break; sleep 10; done
 rid=$(id "$NAME")
 [ -n "$rid" ] || { echo "no repo" >> "$ST"; exec sleep infinity; }
 echo "$(date -u +%FT%TZ) $NAME = $rid setup" >> "$ST"

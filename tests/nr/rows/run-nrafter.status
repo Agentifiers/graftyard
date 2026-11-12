@@ -1,0 +1,42 @@
+2026-11-12T18:42:24.449Z m3org/nra1 = 65558
+2026-11-12T18:42:24Z nra1 = 65558 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6555":210}
+file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:90
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:65558
+    at leaderOf (file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:90:9)
+    at async file:///home/user/workspace/repo/tests/fanout/learners.mjs:12:16
+
+Node.js v26.12.0
+2026-11-12T18:55:25Z learners try 1 failed
+2026-11-12T18:55:51.371Z repo:65558 leader 0: learners [{"addr":192,"doName":"repo:65558#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65558#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65558#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65558#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65558#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65558#2#l5","join":200,"sit config 1038
+2026-11-12T18:55:57.955Z repo:65558 leader 0: k 1 at 1038
+f0 {"role":true,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":2}
+f1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+f2 {"role":false,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":1,"heavy":0,"inflight":0,"read":1}
+l0 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l2 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l3 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l4 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l5 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l6 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l7 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+{"status":200,"ms":635,"bytes":1080680,"index":1038}
+2026-11-12T18:56:04Z b0-29 start
+2026-11-12T19:04:30Z b0-29 done 0
+f0 {"role":true,"shed":1,"shared":0,"fr":0,"late":0,"refused":0,"waited":9,"builds":8,"heavy":0,"inflight":0,"read":12533}
+f1 {"role":false,"shed":1,"shared":129,"fr":305,"late":2,"refused":0,"waited":7,"builds":10,"heavy":0,"inflight":0,"read":360}
+f2 {"role":false,"shed":0,"shared":160,"fr":316,"late":0,"refused":0,"waited":6,"builds":10,"heavy":0,"inflight":0,"read":371}
+l0 {"role":false,"shed":0,"shared":3877,"fr":7284,"late":3,"refused":0,"waited":462,"builds":197,"heavy":0,"inflight":0,"read":7284}
+l1 {"role":false,"shed":15,"shared":3895,"fr":7482,"late":2564,"refused":0,"waited":302,"builds":121,"heavy":0,"inflight":0,"read":7482}
+l2 {"role":false,"shed":2,"shared":5617,"fr":10150,"late":3458,"refused":0,"waited":417,"builds":151,"heavy":0,"inflight":0,"read":10150}
+l3 {"role":false,"shed":35,"shared":7826,"fr":10843,"late":261,"refused":0,"waited":1048,"builds":267,"heavy":0,"inflight":0,"read":10843}
+l4 {"role":false,"shed":1,"shared":4989,"fr":7759,"late":1183,"refused":0,"waited":394,"builds":177,"heavy":0,"inflight":0,"read":7759}
+l5 {"role":false,"shed":3,"shared":5709,"fr":8574,"late":872,"refused":0,"waited":139,"builds":172,"heavy":0,"inflight":0,"read":8574}
+l6 {"role":false,"shed":3,"shared":4617,"fr":8207,"late":16,"refused":0,"waited":443,"builds":217,"heavy":0,"inflight":0,"read":8207}
+l7 {"role":false,"shed":0,"shared":3862,"fr":7375,"late":2,"refused":0,"waited":414,"builds":181,"heavy":0,"inflight":0,"read":7375}
+2026-11-12T19:04:41Z torn down 65558
+DONE
