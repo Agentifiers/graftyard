@@ -1,7 +1,7 @@
 // hot-shards' push driver on graft-m3c: real git pushes by m3-admin (Human class) to refs/heads/hot/<i> of one fresh
 // repository through graft-m3c-edge, each branch with one push in flight, as tests/am1/b030/load.mjs pushes.
 //
-//   MODE=seed  PUSH_PER_S=1.8 node tests/am1/hotshards/load.mjs   # 900 KB packs until the log above the last Promoted
+//   MODE=seed  PUSH_PER_S=1.6 node tests/am1/hotshards/load.mjs   # 400 KB packs until the log above the last Promoted
 //                                                                  # passes SEED_BYTES (default 2.6e9) on every member
 //   MODE=j9    PUSH_PER_S=4.17 SECONDS=5400 node tests/am1/hotshards/load.mjs   # journey 9: 10 to 70 KB, 5% 1 MiB
 //
@@ -16,16 +16,20 @@ import { EDGE, log, member, row, sleep, tokens } from "../hosted/lib.mjs";
 const R = process.env.HOT_REPO;
 const CHAIN = process.env.HOT_CHAIN;
 const MODE = process.env.MODE ?? "j9";
-const PUSH_PER_S = Number(process.env.PUSH_PER_S ?? (MODE === "seed" ? 1.8 : 4.17));
+// The seed stays under HOT_PUSHES (2/s), so its 900 KB packs stay inline (over INLINE_MAX_HOT a hot group stages them).
+const PUSH_PER_S = Number(process.env.PUSH_PER_S ?? (MODE === "seed" ? 1.6 : 4.17));
 const SECONDS = Number(process.env.SECONDS ?? 5400);
 const SEED_BYTES = Number(process.env.SEED_BYTES ?? 2.6e9);
 const BRANCHES = 500;
+const INFLIGHT = Number(process.env.INFLIGHT ?? 8);
 const OUT = "tests/am1/raw/hotshards/pushes.jsonl";
 mkdirSync("tests/am1/raw/hotshards", { recursive: true });
 if (!R || !CHAIN) throw new Error("HOT_REPO and HOT_CHAIN");
 
 const size = () => {
-  if (MODE === "seed") return 900_000;
+  // 400 KB at 1.6/s is 0.64 MB/s of log, under the 0.8 MB/s B0-30 carried (tests/am1/results/b0-30.md, "Blocked on",
+  // 7); 900 KB packs at that rate reset the leader's isolate.
+  if (MODE === "seed") return Number(process.env.SEED_PACK ?? 400_000);
   return Math.random() < 0.05 ? 1 << 20 : 10_000 + Math.floor(Math.random() * 60_000);
 };
 
@@ -115,6 +119,17 @@ async function push(k) {
   } finally { busy.delete(i); }
 }
 
+// During the seed, each member's archive cap is raised (test-faults `archiveCap`, per isolate) so promote-ahead
+// (log above the last Promoted past max/32) and archiving hold off until the backlog is built; `MODE=uncap` clears it.
+async function cap(max) {
+  return Promise.all([0, 1, 2].map((s) => member(CHAIN, s, "/bench_seed", { archiveCap: max ? { max, range: 2 << 20 } : {} }, 25_000)
+    .then((r) => r.v?.archiveCap ?? r.v).catch((e) => String(e).slice(0, 60))));
+}
+if (MODE === "uncap") {
+  log(`hot uncap: ${JSON.stringify(await cap(null))}`);
+  process.exit(0);
+}
+
 async function unpromoted() {
   const out = [];
   for (const s of [0, 1, 2]) {
@@ -131,9 +146,11 @@ const tally = {}, ms = [];
 let stop = false;
 while (!stop) {
   const now = Date.now();
-  due += PUSH_PER_S * Math.min(5, (now - last) / 1000);
+  due = Math.min(due + PUSH_PER_S * Math.min(5, (now - last) / 1000), PUSH_PER_S * 5);
   last = now;
-  while (due >= 1 && inflight < 64) {
+  // At most INFLIGHT pushes at once (default 8, as tests/am1/b030/load.mjs): 21 seed pushes of 900 KB in flight reset
+  // the edge's isolate ("Cannot invoke closure from previous WASM instance"), and every push in it answered 500.
+  while (due >= 1 && inflight < INFLIGHT) {
     due -= 1;
     inflight++;
     push(k++).then((r) => { tally[r.res] = (tally[r.res] ?? 0) + 1; ms.push(r.ms); })
@@ -150,6 +167,7 @@ while (!stop) {
   }
   if (MODE === "seed" && now - lastCheck >= 120_000) {
     lastCheck = now;
+    await cap(100e9);
     const u = await unpromoted();
     log(`hot seed: ${(u / 1e9).toFixed(3)} GB above the last Promoted on the least member`);
     if (u >= SEED_BYTES) stop = true;
