@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """lf4-rest: planted bugs in the six REST reads LF-4 needed (`crates/api/src/rest.rs`, `view.rs`) and the commit fetch
-from the git cache shard (`crates/git/src/commit_fetch.rs`). Plants one mutant at a time, runs the tests that gate it,
+from the git cache shard (`crates/git/src/commit_fetch.rs`); lf4-rest-2 and lf4-rest-3: in the two REST writes and the
+check-run create's id. Plants one mutant at a time, runs the tests that gate it,
 and restores the file byte for byte. Prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE.
 
     python3 tests/am1/lf4/plant.py          # every mutant
@@ -19,6 +20,9 @@ TIME = 'crates/wire/src/time.rs'
 WRITES = ['-p', 'graftyard-api', '--test', 'surfaces', 'rest_writes']
 GATES = ['-p', 'graftyard-git', '--test', 'agent_gates', 'a_check_run_is_recorded']
 TIMES = ['-p', 'graftyard-wire', '--lib', 'time']
+TIERS = 'crates/git/src/tiers.rs'
+CALL = 'crates/git/src/issue_ops/call.rs'
+IDS = ['-p', 'graftyard-git', '--test', 'agent_gates', 'check_run_creates']
 
 MUTANTS = [
     ('an issue answers as a pull request', REST,
@@ -75,11 +79,24 @@ MUTANTS = [
      '        E::NotFound | E::NotPull => Reply::not_found(),', '        E::NotFound => Reply::not_found(),', WRITES),
     ('a first version may take another run\'s id', ISSUE_OPS,
      'if run.version == 1 && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {',
-     'if false && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {', WRITES),
+     'if false && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {', GATES),
     ('a first version refused on any taken id, a re-delivery too', ISSUE_OPS,
      '(t.rec.head_sha, t.rec.app, &t.rec.name) != (run.head_sha, run.app, &run.name)', 't.rec.version > 0', GATES),
     ('an App records a run as another App', ISSUE_OPS,
      '                    && run.app != app\n', '                    && run.app != app && false\n', GATES),
+    # lf4-rest-3: a create's id from the block, in decide.
+    ('a create keeps the id the edge sent', ISSUE_OPS,
+     '                        let id = v.next_id(Tier::Metadata)?;\n', '                        let id = c.run.0;\n', IDS),
+    ('a created run does not move the cursor', TIERS,
+     '                assigned(w, ev, Tier::Metadata, u.run.0);\n', '', IDS),
+    ('a create\'s suite keeps the id the edge sent', ISSUE_OPS,
+     'suite: crate::issues::CheckSuiteId(id), version: 1', 'version: 1', IDS),
+    ('the 201 renders the minted id, not the acked one', REST,
+     '        graftyard_git::issue_ops::IssueOut::Id(id) => id.0,\n', '', WRITES),
+    ('a re-sent create answers Done', CALL,
+     '            IssueOp::CreateCheck(c) => IssueOp::CreateCheck(c.clone()),\n', '', IDS),
+    ('a create sent in format 32.5', CALL,
+     '        if matches!(self.op, IssueOp::CreateCheck(_)) {\n            return REPO_FORMAT_CHECKS;\n        }\n', '', IDS),
     ('an offset read with the wrong sign', TIME,
      "if *sign == b'+' { seconds } else { -seconds }", "if *sign == b'+' { -seconds } else { seconds }", TIMES),
 ]

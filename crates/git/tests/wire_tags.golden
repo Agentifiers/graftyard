@@ -83,6 +83,7 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 36 RenewLease 241a303030303030303030
 git::issue_ops::IssueOp<git::blob::BlobRef> 37 ReleaseLease 251a3030303030303030303030303030303030303030303030303031
 git::issue_ops::IssueOp<git::blob::BlobRef> 38 PutHook 26000161000000000000
 git::issue_ops::IssueOp<git::blob::BlobRef> 39 DeleteHook 2702
+git::issue_ops::IssueOp<git::blob::BlobRef> 40 CreateCheck 28020202010101010101010101010101010101010101010101610100000000000000
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
