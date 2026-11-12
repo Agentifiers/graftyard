@@ -1305,11 +1305,10 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     "rest/checks/runs#create-a-check-run",
                 ));
             };
-            let now = js_sys::Date::now() as u64;
-            // The edge's millisecond clock shifted by 10 bits, with the request id's low 10 bits; under 2^53 until 2249.
-            let id = ((now << 10) | (c.rid.0.0 as u64 & 0x3ff)) as i64;
-            match rest::plan_create_check_run(&body(req.bytes().await?), app, id, Timestamp(now)) {
-                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id }).await?,
+            // `decide` gives the run its id from the repository's `IdBlock` cursor (format 32.18).
+            let now = Timestamp(js_sys::Date::now() as u64);
+            match rest::plan_create_check_run(&body(req.bytes().await?), app, now) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id: 0 }).await?,
                 Err(x) => x,
             }
         }
