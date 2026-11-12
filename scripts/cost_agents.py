@@ -155,12 +155,12 @@ META_DISK = 1.16           # SQLite bytes on disk per row byte of the metadata t
 SMALL_ROW_DISK = 1.4       # the same for small agent rows (PR, check, provenance, task): 1.27 GB of rows took about
                            # 1.8 GB [measured, tests/m0/results/m0-wp9.md, B0-30]
 
-# ---- learners for the hot group (K9, tests/am1/results/learner-dumps.md) ----
-API_TIER_READS_S = 200     # journey 9's API reads a second at 500 agents, each a whole-tier dump (B0-29's `read:api`)
-LEARNER_TIER_READS = 20    # whole-tier reads a second one learner serves at journey 9's 1 MB dump: on graft-m3c 8 learners
-                           # served 150/s, about 19 each, with 5.3% shed, at 18 to 35% CPU and 61 to 68 MiB, at learner
-                           # read p99 1.2 to 1.3 s [measured, tests/am1/results/learner-dumps.md], so `GroupLoad` counts
-                           # one as LEARNER_READS / 20 = 50 narrow reads
+# ---- learners for the hot group (K9, tests/am1/results/learner-dumps.md, tests/am1/results/narrow-reads.md) ----
+API_TIER_READS_S = 200     # journey 9's API reads a second at 500 agents (B0-29's `read:api`)
+API_READ_WEIGHT = 1        # narrow reads each counts in `GroupLoad`: since narrow-reads an API read answers the rows of
+                           # its page or object, not the 1 MB whole tiers that weighed 50 (a learner served about 20 of
+                           # those a second [measured, tests/am1/results/learner-dumps.md]), so it counts once as every
+                           # other narrow read does [inference, tests/am1/results/narrow-reads.md]
 LEARNER_HOURS = 9          # hours a day the hot group's reads keep its learners active: the 8-hour working day plus the
                            # hour, as the hot pool; a learner with no reads is evicted and bills no duration [guess]
 LEARNER_ROWS_PER_ENTRY = 1 + cf.FOLD_ROWS   # a learner applies every entry: its log row and the fold rows
@@ -296,15 +296,15 @@ def predict_k(agents, vcpu, pushes_per_task=PUSHES):
 
 
 def learner_cost(tier):
-	"""Learners on the tier's largest network: enough to serve its whole-tier API reads at LEARNER_TIER_READS each,
+	"""Learners on the tier's largest network: enough to serve its API reads at API_READ_WEIGHT narrow reads each,
 	scaled by its peak agents against A1's 500, up to MAX_LEARNERS 16. Each holds both tiers in SQLite (the base's
 	4 GB tier, the log at LOG_MAX_BYTES, and 30 days of agent rows), applies every entry, and is active while it serves
 	reads, so it bills storage, duration at 128 MB, applied rows, and its appends and reads as DO requests."""
 	scale = hot_network(tier)["agents"] / 500
 	reads = API_TIER_READS_S * scale
-	# `GroupLoad` counts a whole-tier read as LEARNER_READS / LEARNER_TIER_READS narrow ones, and the group's other
-	# reads (CI ref reads, the rest of A1's) once; `place_learners` adds ceil(load / LEARNER_READS) above LEARNER_AT.
-	load = reads * LEARNER_READS / LEARNER_TIER_READS + (33 + 89) * scale
+	# `GroupLoad` counts an API read as API_READ_WEIGHT narrow ones, and the group's other reads (CI ref reads, the
+	# rest of A1's) once; `place_learners` adds ceil(load / LEARNER_READS) above LEARNER_AT.
+	load = reads * API_READ_WEIGHT + (33 + 89) * scale
 	n = 0 if load < LEARNER_AT else min(16, math.ceil(load / LEARNER_READS))
 	member_gb = BASE_META_GB * META_DISK + LOG_MAX_GB + 1.65
 	active_s = LEARNER_HOURS * 3600 * DAYS
@@ -313,7 +313,7 @@ def learner_cost(tier):
 	# Entries a month on the hot group: its agent pushes at A1's entries per push (10 entries/s for 500 pushes/120 s).
 	entries = hot_storage(tier)["pushes"] * A1_ENTRIES_S / (500 / PUSH_EVERY_S)
 	rows = n * entries * LEARNER_ROWS_PER_ENTRY / 1e6 * price("cf.do.sqlite.rows_written")
-	# One append per entry per learner, and the whole-tier reads they take from the voters while active.
+	# One append per entry per learner, and the API reads they take from the voters while active.
 	reqs = (n * entries + (reads * active_s if n else 0.0)) / 1e6 * price("cf.do.requests")
 	return dict(n=n, reads=reads, load=load, gb=member_gb, storage=storage, duration=duration, rows=rows, reqs=reqs,
 		cost=storage + duration + rows + reqs)
@@ -593,7 +593,7 @@ def main():
 		print(f"| {TIERS[t]['devs']:,} devs | {h['agents']:,.1f} | {h['load']:.2f} | {h['instance']} | {h['k']} "
 			f"| {h['extra']} | ${h['cost']:,.0f} |")
 	print()
-	print("| Learners on the largest network | Whole-tier API reads/s | `GroupLoad` | Learners | GB each | Storage | Duration "
+	print("| Learners on the largest network | API reads/s | `GroupLoad` | Learners | GB each | Storage | Duration "
 		"| Applied rows | Requests | Per month |")
 	print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for t in tiers:
