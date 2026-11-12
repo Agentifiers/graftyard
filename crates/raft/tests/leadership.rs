@@ -656,6 +656,43 @@ fn deadline_misses_during_the_leaders_own_stall_are_excused() {
     assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
 }
 
+/// One stall of a follower counts once per CALL_DEADLINE, however many rounds it missed (LM-1: a 1.9 s stall missed
+/// 17 to 31 per-read rounds at once and moved healthy identity leaders). Misses sent a deadline or more apart still
+/// count, so a follower that keeps failing still trips the rule.
+#[test]
+fn one_follower_stall_counts_once_per_deadline() {
+    let run = |reads: u32, gap_ms: u64| {
+        let mut c = Cluster::new(56);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        // An idle leader's lease lapses, so each read starts a round to each follower; every one misses its deadline.
+        c.advance(graftyard_raft::LEASE.as_millis() as u64);
+        c.deliver_all();
+        c.inbox.clear();
+        let mut misses = Vec::new();
+        for _ in 0..reads {
+            c.now = Timestamp(c.now.0 + gap_ms);
+            let _ = c.on(A, |m, now| m.read(now));
+            misses.extend(c.inbox.drain(..).filter(|e| e.from == A && request(e)));
+        }
+        c.now = Timestamp(c.now.0 + 1_000);
+        for e in misses {
+            let f = e.failure(true).unwrap();
+            c.on(A, |m, now| m.call_failed(now, f));
+        }
+        // A commit-error trip first has the other follower probe each target.
+        drive(&mut c, 2_000, false, &mut id, |_| false);
+        step_downs(&c)
+    };
+    // One stall: 30 rounds sent within 300 ms count as one miss per follower, under `commit_fail_min`.
+    let stall = run(30, 10);
+    assert!(stall.iter().all(|s| !matches!(s.1, StepDownWhy::CommitErrors { .. })), "{stall:?}");
+    // The control: 5 misses a deadline apart are 5 failures per follower and trip the rule.
+    let failing = run(5, graftyard_raft::CALL_DEADLINE.as_millis() as u64);
+    assert!(failing.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{failing:?}");
+}
+
 /// A new leader counts a follower's failed calls only once that follower answered it in its term: a killed leader
 /// still resetting is not a sign of the new leader's sickness (7 of 60 groups changed again without this).
 #[test]

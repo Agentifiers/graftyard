@@ -45,6 +45,8 @@ pub(super) struct LeaderHealth {
     /// Followers that answered an AppendEntries in this leadership. A failed call to one not yet heard from is not
     /// counted: the quorum commits without a follower it has not reached.
     heard: BTreeSet<SiteId>,
+    /// Per follower, the send time of the last deadline miss counted.
+    missed: BTreeMap<SiteId, Timestamp>,
     hold_until: Option<Timestamp>,
     probe: Option<LeaderProbe>,
     /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
@@ -146,7 +148,7 @@ impl<C: Command> Member<C> {
 
     /// One commit-path call by the leader ended: a reply to round `round` (`ok`), or a failure the host reported.
     pub(super) fn record_call(&mut self, to: SiteId, round: u64, ok: bool, deadline: bool, sent_at: Timestamp) {
-        let excused = !ok && deadline && self.own_stall(sent_at);
+        let mut excused = !ok && deadline && self.own_stall(sent_at);
         let now = self.now;
         let Some(lead) = self.lead.as_mut() else { return };
         let h = &mut lead.health;
@@ -155,6 +157,16 @@ impl<C: Command> Member<C> {
         }
         if !h.counted.insert((to, round)) || (!ok && !h.heard.contains(&to)) {
             return;
+        }
+        // One stall of a follower counts once per CALL_DEADLINE: a miss sent within CALL_DEADLINE after the last counted
+        // miss to it is the same stall. A lapsed lease starts a round per read, so a 1.9 s stall missed 17 to 31 calls at
+        // once and moved healthy identity leaders (LM-1, round 8).
+        if !ok && deadline && !excused {
+            if h.missed.get(&to).is_some_and(|l| sent_at >= *l && sent_at < after(*l, CALL_DEADLINE)) {
+                excused = true;
+            } else {
+                h.missed.insert(to, sent_at);
+            }
         }
         h.calls.push_back((now, to, ok, excused));
     }
