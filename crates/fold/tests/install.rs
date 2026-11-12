@@ -609,7 +609,7 @@ fn with_learners(n: &Net) -> (Placement, Vec<MemberRef>) {
     let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
     let rtt: Vec<(SiteId, Rtt)> =
         [(A, B), (A, C), (B, C)].iter().map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) })).collect();
-    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt };
+    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
     let g = p.next_generation();
     let learners: ArrayVec<MemberRef, 16> =
         [(A, 0), (B, 1), (B, 2)].iter().map(|&(s, k)| MemberRef::new(CHAIN, s, MemberKind::Learner, k, g)).collect();

@@ -926,8 +926,9 @@ async fn leaderless(
 
 /// Creates `chain`'s group from `record` if the lookup finds none: joins its bootstrap members with `join` (the
 /// `/join` fields beyond `chain`, `me`, and `record`), each of which checks the record against its source and claims
-/// the generation, then campaigns on the record's home until a member leads. Joins are idempotent, and a member of a
-/// generation that lost the claim refuses, so two callers at once still build one group.
+/// the generation, then campaigns on the record's home until a member leads, and then has the leader run the near
+/// check (`place`), which may re-place a follower and fails the create if no try passes. Joins are idempotent, and a
+/// member of a generation that lost the claim refuses, so two callers at once still build one group.
 pub async fn create(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -965,12 +966,43 @@ pub async fn create(
     let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
     while now_ms() < end {
         let _ = post(b, home.site, &home.do_name, "/campaign", b"{}").await;
-        if let Ok(Some(_)) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
-            return Ok(());
+        if let Ok(Some((_, _, leader))) = call_opt(b, chain, record, "/read", probe.as_bytes()).await {
+            return place(b, chain, record, leader).await;
         }
         Delay::from(Duration::from_millis(200)).await;
     }
     Err(format!("{chain}: created, but no member leads"))
+}
+
+/// How long `create` waits for a new group's `/place`: PLACE_TRIES joins, each measuring two voters 20 times, plus
+/// the leader's own 20 round trips to each, and three config changes [inference from apac round trips of about 250 ms].
+const PLACE_FOR: Duration = Duration::from_secs(240);
+
+/// The near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader re-places a
+/// voter until the home has one within `NEAR_RTT`, or answers the round trips of every try, which fail the create.
+async fn place(
+    b: &Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    leader: Target,
+) -> std::result::Result<(), String> {
+    let mut leader = leader;
+    for _ in 0..3 {
+        match post_within(b, leader.site, &leader.do_name, "/place", b"{}", PLACE_FOR).await {
+            Some((200, v)) if v.get("error").is_none() => return Ok(()),
+            // Leadership moved, as it does to `home` after a create: place from the member that leads now.
+            Some((200, v)) if v.pointer("/error/notLeader").is_some() => {
+                let probe = json!({ "q": { "probe": true } }).to_string();
+                match call_opt(b, chain, record, "/read", probe.as_bytes()).await {
+                    Ok(Some((_, _, t))) => leader = t,
+                    _ => return Err(format!("{chain}: placement: no member leads")),
+                }
+            }
+            Some((status, v)) => return Err(format!("{chain}: placement failed ({status}): {v}")),
+            None => return Err(format!("{chain}: placement: no answer from {} within {PLACE_FOR:?}", leader.do_name)),
+        }
+    }
+    Err(format!("{chain}: placement: leadership kept moving"))
 }
 
 // ---- the `Release` view ----

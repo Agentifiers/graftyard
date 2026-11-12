@@ -91,7 +91,7 @@ pub fn build(
     };
     let rtt = t.rtt_rows();
     let table = t.table();
-    let checks = PlacementChecks { sites: &table, separate_accounts: t.separate_accounts(), rtt: &rtt };
+    let checks = PlacementChecks { sites: &table, separate_accounts: t.separate_accounts(), rtt: &rtt, near: &[] };
     validate_record(owner_id, &record, t.evaluation, &checks).map_err(|e| format!("refused: {e}"))?;
     let cmd = NamesCmd {
         cred: CredentialShard::NONE,

@@ -13,6 +13,18 @@ use crate::site::{Region, SiteId, SiteTable};
 /// [guess]: intra-region round trips are a few ms, enam to weur about 80 ms.
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);
 
+/// The most a group's home may measure to its nearest other voter, by the home's region, in ms. A home's commit
+/// rounds follow that round trip: at 300 commands/s every B0-02 run whose near follower measured 100 ms or less
+/// passed, and 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]. 100 ms is B0-12's median enam to
+/// weur pair, and an apac home's 198 ms is its median enam to apac pair, the same quantile [measured,
+/// `tests/m0/results/b0-12.json`]. A home in a region with no row is not bounded: every other placement's homes have a
+/// nearer voter than `Tri`'s.
+pub const NEAR_RTT: &[(Region, u16)] = &[(Region::Enam, 100), (Region::Weur, 100), (Region::Apac, 198)];
+
+/// New generations a group's leader tries for its nearer follower before it fails loudly (`/place`) [inference: 16
+/// of 35 measured groups had a near follower within 100 ms, so 8 tries leave about 1 in 140 groups unplaced].
+pub const PLACE_TRIES: usize = 8;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MemberKind {
@@ -222,17 +234,37 @@ pub enum PlacementError {
     SameSlot(u8),
     #[error("two members on site {0:?} would share the object {1}")]
     SameObject(SiteId, Box<str>),
+    #[error("home {home:?}'s nearest voter, {nearest:?}, is {ms} ms away, over NEAR_RTT's {bound_ms} ms")]
+    NoNearFollower { home: SiteId, nearest: SiteId, ms: u16, bound_ms: u16 },
 }
 
-/// What `Placement::new` checks a placement against: the install's sites, whether it separates accounts, and the
-/// joining members' `Rtt` rows, each read from the member on site `.0`.
+/// What `Placement::new` checks a placement against: the install's sites, whether it separates accounts, the joining
+/// members' `Rtt` rows, each read from the member on site `.0`, and the near bound by home region (`NEAR_RTT`, or none
+/// where only the site table is known, as in `graftyard placement set`, whose rows are site probes, not members).
 pub struct PlacementChecks<'a> {
     pub sites: &'a SiteTable,
     pub separate_accounts: bool,
     pub rtt: &'a [(SiteId, Rtt)],
+    pub near: &'a [(Region, u16)],
 }
 
 impl PlacementChecks<'_> {
+    /// Refuses a home whose nearest other voter measured over the near bound for the home's region. A pair with no
+    /// row is skipped here; `Placement::new` refuses it as `Unmeasured`.
+    pub fn check_near(&self, voters: &[Member], home: SiteId) -> Result<(), PlacementError> {
+        let region = self.sites.get(home).ok_or(PlacementError::UnknownSite(home))?.region;
+        let Some(&(_, bound_ms)) = self.near.iter().find(|(r, _)| *r == region) else { return Ok(()) };
+        let nearest = voters
+            .iter()
+            .filter(|m| m.site != home)
+            .filter_map(|m| self.pair_ms(home, m.site).map(|ms| (m.site, ms)))
+            .min_by_key(|&(_, ms)| ms);
+        match nearest {
+            Some((nearest, ms)) if ms > bound_ms => Err(PlacementError::NoNearFollower { home, nearest, ms, bound_ms }),
+            _ => Ok(()),
+        }
+    }
+
     fn pair_ms(&self, a: SiteId, b: SiteId) -> Option<u16> {
         self.rtt
             .iter()
@@ -299,7 +331,8 @@ impl TryFrom<PlacementRaw> for Placement {
 
 impl Placement {
     /// Refuses two voters in one region or one site, a voter pair under MIN_PAIR_RTT or unmeasured, fewer than two
-    /// Full voters, and, when the install separates accounts, two voters in one account.
+    /// Full voters, when the install separates accounts two voters in one account, and a home with no other voter
+    /// within `checks.near` (`NoNearFollower`).
     pub fn new(
         voters: ArrayVec<Member, 3>,
         learners: ArrayVec<Member, 16>,
@@ -349,7 +382,9 @@ impl Placement {
                 return Err(PlacementError::SameObject(a.site, a.do_name.clone()));
             }
         }
-        Self::with_home(voters, learners, home)
+        let p = Self::with_home(voters, learners, home)?;
+        checks.check_near(&p.voters, home)?;
+        Ok(p)
     }
 
     /// The one-voter `Solo` placement: one Full member on a known site. It needs the install's signed `evaluation`
@@ -455,7 +490,7 @@ mod tests {
 
     fn new(v: &[(u8, MemberKind)], rtt_rows: &[(SiteId, Rtt)], separate: bool) -> Result<Placement, PlacementError> {
         let t = table();
-        let checks = PlacementChecks { sites: &t, separate_accounts: separate, rtt: rtt_rows };
+        let checks = PlacementChecks { sites: &t, separate_accounts: separate, rtt: rtt_rows, near: &[] };
         Placement::new(voters(v), ArrayVec::new(), SiteId(v[0].0), &checks)
     }
 
@@ -482,6 +517,40 @@ mod tests {
         assert_eq!(
             new(&[(0, Full), (1, Full), (2, Full)], &missing, false),
             Err(PlacementError::Unmeasured(SiteId(1), SiteId(2)))
+        );
+    }
+
+    /// The near bound is on the home's nearest other voter, by the home's region: the far voter may be over it, the
+    /// bound itself passes and one over it does not, an apac home takes its own bound, a row from either side counts,
+    /// and the error names the nearest voter and its round trip.
+    #[test]
+    fn new_refuses_a_home_with_no_voter_within_near_rtt() {
+        let t = table();
+        let tri = |rows: &[(u8, u8, u16)], home: u8| {
+            let r = rtt(rows);
+            let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: NEAR_RTT };
+            Placement::new(voters(&[(0, Full), (1, Full), (2, Full)]), ArrayVec::new(), SiteId(home), &checks)
+        };
+        assert!(tri(&[(0, 1, 100), (0, 2, 240), (1, 2, 260)], 0).is_ok(), "the far voter is not bounded");
+        assert_eq!(
+            tri(&[(0, 1, 101), (0, 2, 240), (1, 2, 260)], 0),
+            Err(PlacementError::NoNearFollower { home: SiteId(0), nearest: SiteId(1), ms: 101, bound_ms: 100 })
+        );
+        // The nearer voter decides, whichever site it is, and the lower of the two sides' readings counts.
+        assert!(tri(&[(0, 1, 150), (2, 0, 95), (1, 2, 260)], 0).is_ok());
+        assert!(tri(&[(0, 1, 140), (1, 0, 99), (0, 2, 240), (1, 2, 260)], 0).is_ok());
+        // A weur home is bounded at 100 too; an apac home at 198, so 150 passes there and not on enam.
+        assert!(tri(&[(0, 1, 120), (1, 2, 150), (0, 2, 150)], 2).is_ok());
+        assert_eq!(
+            tri(&[(0, 1, 120), (1, 2, 240), (0, 2, 199)], 2),
+            Err(PlacementError::NoNearFollower { home: SiteId(2), nearest: SiteId(0), ms: 199, bound_ms: 198 })
+        );
+        assert!(matches!(tri(&[(0, 1, 120), (1, 2, 150), (0, 2, 150)], 1), Err(PlacementError::NoNearFollower { .. })));
+        // Without a bound (`graftyard placement set`, whose rows are site probes) the same set passes.
+        let r = rtt(&[(0, 1, 140), (0, 2, 240), (1, 2, 260)]);
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
+        assert!(
+            Placement::new(voters(&[(0, Full), (1, Full), (2, Full)]), ArrayVec::new(), SiteId(0), &checks).is_ok()
         );
     }
 
@@ -554,7 +623,7 @@ mod tests {
     fn learners_beside_a_voter_and_on_one_site_are_distinct_objects() {
         let t = table();
         let r = rtt(&[(0, 1, 80), (0, 2, 180), (1, 2, 200)]);
-        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
         let v = voters(&[(0, Full), (1, Full), (2, Full)]);
         let p = Placement::new(v.clone(), learners(&[(0, 0), (1, 1), (1, 2)]), SiteId(0), &checks).unwrap();
         let all: Vec<&Member> = p.voters().iter().chain(p.learners()).collect();
@@ -580,7 +649,7 @@ mod tests {
     fn decoding_a_placement_reruns_its_shape_checks() {
         let t = table();
         let r = rtt(&[(0, 1, 80), (0, 2, 180), (1, 2, 200)]);
-        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
         let v = voters(&[(0, Full), (1, Full), (2, Witness)]);
         let p = Placement::new(v.clone(), learners(&[(1, 0), (2, 3)]), SiteId(1), &checks).unwrap();
 
