@@ -505,12 +505,23 @@ fn concurrent_merges_overrun_the_budget_by_at_most_one_merge_and_are_charged_the
     }
     let s = budgets.borrow().stats(net(1)).unwrap();
     println!("A28: {s:?}");
+    // The five that arrived together were all in line at once; the next five arrived while some still were.
+    assert!((5..=10).contains(&s.in_flight_max), "in line at once: {}", s.in_flight_max);
     assert_eq!(s.computed, ran.get());
     assert_eq!(s.computed + s.shed, 10, "every ask is computed or shed");
     assert!(s.computed >= 2, "a refilled bucket admits again");
     assert!(s.low_ms >= -300.0, "overrun by more than one merge: the bucket reached {} ms", s.low_ms);
     assert_eq!((s.spent_ms, s.wall_ms), (300.0 * f64::from(s.computed), 900.0 * f64::from(s.computed)), "CPU charged");
     assert_eq!(s.max_ms, 300.0);
+    // merge-budget-4: each admitted merge's wait from its ask to its start. The first of a burst waits 0; the others
+    // wait their turn behind merges of 900 ms each, so the longest is a whole number of 900 ms turns, and none is near
+    // GET_COALESCE_MS.
+    let waits: u32 = s.wait_hist.iter().sum();
+    assert_eq!(waits, s.computed, "one wait per merge that ran");
+    assert_eq!(s.wait_ms(0.0), Some(10.0), "the first merge of a burst does not wait");
+    assert!(s.wait_max_ms >= 900.0 && s.wait_max_ms % 900.0 == 0.0, "waited whole turns: {}", s.wait_max_ms);
+    assert!(s.wait_ms(0.99).unwrap() >= 900.0);
+    assert_eq!(s.waits_over(graftyard_git::prsync::GET_COALESCE_MS), 0);
     // The bound needs a push refused on a balance below zero: a bucket 10 ms short admits nothing until it refills, so
     // the next merge cannot start 50 ms down and end a whole merge past it.
     let mut b = MergeBudget::new(instance_vcpu("standard-2").unwrap(), 0);
@@ -553,4 +564,82 @@ fn gets_coalesce_per_pr_a_shed_get_frees_its_slot_and_list_asks_are_counted() {
     }
     let s = b.stats();
     assert_eq!((s.list_asked, s.list_computes, s.shed, s.get_computes), (7, 0, 1, 4));
+}
+
+/// Item 4 of merge-budget-3: a shard object resets about 90 s after its last request, so its counts are stored and a
+/// restarted object goes on from them. The restored budget keeps every count and `since`, refills full at the new
+/// time, and takes the shard's vCPU now; a network the object already budgets keeps its own, newer counts; and
+/// `in_flight_max` counts merges in line at once, 1 when they arrive one after another.
+#[test]
+fn a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line() {
+    use std::cell::RefCell;
+    let ok = || async { Ok::<_, ()>((MergeAnswer::Conflict { conflict: vec![] }, Some(30.0))) };
+    let run = |b: &RefCell<Budgets>, n: u32, at: u64, cause: MergeCause| {
+        futures_executor::block_on(budgeted(b, net(7), cause, IssueNumber(n), || at, || async { Ok(()) }, ok))
+    };
+    let old = RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
+    for (i, at) in [(1, 1_000), (2, 1_200), (3, 1_400)] {
+        assert!(run(&old, i, at, MergeCause::HeadPush).unwrap().is_some());
+    }
+    run(&old, 9, 1_500, MergeCause::List).unwrap();
+    let stored = old.borrow().stats(net(7)).unwrap();
+    assert_eq!((stored.computed, stored.list_asked, stored.since, stored.in_flight_max), (3, 1, 1_000, 1));
+    // The object resets; the next one, on a `standard-4`, restores what was stored.
+    let new = RefCell::new(Budgets::new(instance_vcpu("standard-4").unwrap()));
+    new.borrow_mut().restore(net(7), stored.clone(), 200_000);
+    let back = new.borrow().stats(net(7)).unwrap();
+    assert_eq!((back.computed, back.spent_ms, back.list_asked, back.since), (3, 90.0, 1, 1_000), "counts go on");
+    assert_eq!(back.vcpu, 1.0, "the budget is the shard's now");
+    assert!(run(&new, 4, 200_000, MergeCause::HeadPush).unwrap().is_some(), "full at restart");
+    assert_eq!(new.borrow().stats(net(7)).unwrap().computed, 4);
+    // A second restore of older counts does not undo what this object counted since.
+    new.borrow_mut().restore(net(7), stored, 200_100);
+    assert_eq!(new.borrow().stats(net(7)).unwrap().computed, 4);
+    // Another network's stored counts stay its own.
+    assert_eq!(new.borrow().stats(net(8)), None);
+    // Waits are counts too: four merges, none waiting, all in the first bucket, and they survive the restore.
+    let s = new.borrow().stats(net(7)).unwrap();
+    assert_eq!((s.wait_hist.first().copied(), s.wait_hist.iter().sum::<u32>()), (Some(4), 4));
+}
+
+/// The wait histogram's quantiles and the count past GET_COALESCE_MS, from known waits: an edge value lands in its
+/// own bucket, one past the last edge in the overflow bucket, and a quantile answers its bucket's upper edge (or the
+/// largest wait, if that is lower).
+#[test]
+fn merge_waits_are_counted_in_buckets_and_read_against_the_coalescing_window() {
+    use graftyard_git::prsync::{BudgetStats, GET_COALESCE_MS};
+    let mut b = MergeBudget::new(instance_vcpu("standard-2").unwrap(), 0);
+    let empty = b.stats();
+    assert_eq!((empty.wait_ms(0.5), empty.waits_over(GET_COALESCE_MS)), (None, 0));
+    let s: BudgetStats = serde_json::from_value(serde_json::json!({ "waitHist": [], "waitMaxMs": 0.0 })).unwrap();
+    assert_eq!(s.wait_ms(0.99), None, "an older shard's stats read as no waits");
+    // 97 merges at 3 ms, one at exactly GET_COALESCE_MS, two past it.
+    let waits = [3u64; 97].into_iter().chain([GET_COALESCE_MS, GET_COALESCE_MS + 1, 200_000]);
+    waits.for_each(|w| b.record_wait(w));
+    let s = b.stats();
+    assert_eq!(s.wait_hist.iter().sum::<u32>(), 100);
+    assert_eq!(s.waits_over(GET_COALESCE_MS), 2, "exactly GET_COALESCE_MS is not past it");
+    assert_eq!(s.wait_ms(0.5), Some(10.0));
+    assert_eq!(s.wait_ms(0.98), Some(GET_COALESCE_MS as f32));
+    assert_eq!(s.wait_ms(0.99), Some(60_000.0));
+    assert_eq!(s.wait_ms(1.0), Some(200_000.0));
+    assert_eq!(s.wait_max_ms, 200_000.0);
+    // Through `budgeted`: a cold shard's 3 s catch-up is part of the wait, which runs from the ask to the merge's start.
+    let budgets = std::cell::RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
+    let now = std::cell::Cell::new(1_000u64);
+    let r = futures_executor::block_on(budgeted(
+        &budgets,
+        net(3),
+        MergeCause::HeadPush,
+        IssueNumber(1),
+        || now.get(),
+        || async {
+            now.set(now.get() + 3_000);
+            Ok::<(), ()>(())
+        },
+        || async { Ok((MergeAnswer::Conflict { conflict: vec![] }, Some(20.0))) },
+    ));
+    assert!(r.unwrap().is_some());
+    let s = budgets.borrow().stats(net(3)).unwrap();
+    assert_eq!((s.wait_max_ms, s.wait_ms(1.0)), (3_000.0, Some(3_000.0)), "the catch-up is waited");
 }

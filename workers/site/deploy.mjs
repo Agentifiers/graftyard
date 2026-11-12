@@ -67,7 +67,8 @@ function bindings(self, targets) {
   );
 }
 
-function config(site, targets) {
+// `own`: the script exists, so it can bind itself; a site new to the install gets its `SITE` binding in phase 2.
+function config(site, targets, own = true) {
   return {
     name: site.script,
     main: "../build/index.js",
@@ -82,6 +83,8 @@ function config(site, targets) {
       ...Object.fromEntries(Object.entries(extraVars).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])),
     },
     durable_objects: { bindings: bindings(site, targets) },
+    // The script's own fetch handler, which runs each `PrSync` first attempt in a new invocation (prsync.rs, `in_band`).
+    ...(own ? { services: [{ binding: "SITE", service: site.script }] } : {}),
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
     containers: [{
       class_name: "GitShard",
@@ -135,7 +138,7 @@ for (const s of sites.filter((s) => !queues.includes(queueOf(s)))) wrangler(["qu
 // registry bindings to the sites that exist).
 for (const site of sites) {
   const targets = listed.includes(site.script) ? sites.filter((s) => s === site || listed.includes(s.script)) : [site];
-  writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, targets), null, 2));
+  writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, targets, listed.includes(site.script)), null, 2));
   wrangler(["deploy", "-c", `${site.script}.jsonc`]);
 }
 for (const site of sites) {

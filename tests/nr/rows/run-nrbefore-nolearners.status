@@ -1,0 +1,18 @@
+2026-11-12T08:49:33.006Z m3org/nr-before = 65552
+2026-11-12T08:49:33Z nr-before = 65552 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6555":222}
+file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:90
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:65552
+    at leaderOf (file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:90:9)
+    at async file:///home/user/workspace/repo/tests/fanout/learners.mjs:12:16
+
+Node.js v26.12.0
+2026-11-12T09:02:58.884Z repo:65552 leader 0: k 1 at 1069
+{"status":200,"ms":518,"bytes":1092663,"index":1069}
+2026-11-12T09:02:59Z b0-29 start
+2026-11-12T09:12:05Z b0-29 done 0
+2026-11-12T09:12:09Z torn down 65552
+DONE

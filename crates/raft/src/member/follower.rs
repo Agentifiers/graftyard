@@ -55,7 +55,12 @@ impl<C: Command> Member<C> {
             self.dirty = true;
         }
         self.leader = Some(req.leader);
-        self.last_leader_seen = self.now;
+        // A leader two colos reported, from which this member withholds promises, does not count as seen, or its
+        // appends, still arriving from a half-hung site, kept the 2 x ELECTION_AFTER waiver from ever freeing two
+        // healthy voters that quarantined each other (F67, live seed 11089: 32.9 s).
+        if !withholding {
+            self.last_leader_seen = self.now;
+        }
         res.term = self.state.term;
         // The transfer id of the last AppendEntries accepted, in the leader's send order: a voter disregards its promise
         // only for a transfer vote naming it.

@@ -298,9 +298,24 @@ impl<C: Command> Member<C> {
         let r = &mut self.remote;
         let mut failed = Vec::new();
         r.queued.retain(|(id, at)| !late(*at) || (failed.push(*id), false).1);
+        let unanswered = failed.len();
         if let Some((_, _, reads)) = &mut r.inflight {
             reads.retain(|(id, at)| !late(*at) || (failed.push(*id), false).1);
         }
+        // The leader left a read-index batch unanswered for CAMPAIGN_DEADLINE (F67): the design's "read-index call to
+        // the leader fails". This member forgets that leader, so its reads answer `NotLeader` naming none, which the
+        // edge reports with `suspect`, and a voter whose promise has lapsed campaigns now. Without it a group read
+        // only through followers and learners never elects: their reads shed with no report.
+        let failed_call = failed.len() > unanswered;
+        let nl = if failed_call {
+            self.leader = None;
+            if self.role == Role::Follower {
+                let _ = self.try_campaign();
+            }
+            self.not_leader()
+        } else {
+            nl
+        };
         for id in failed {
             self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });
         }

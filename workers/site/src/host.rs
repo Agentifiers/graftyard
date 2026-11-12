@@ -223,6 +223,8 @@ pub struct Stats {
     /// Follower: the last RAFT_IN `/raft` calls of 1 KB or more, each `[at, bytes, body ms, work ms]`: the request
     /// body's arrival, then decode, step, and the output gate (B0-02's per-KB append cost, `tests/m0/results`).
     pub raft_in: VecDeque<[u64; 4]>,
+    /// Leader: groups this member placed with no try within `NEAR_RTT`, keeping the nearest (`Member::replace_on`).
+    pub placed_over_near: u32,
 }
 
 /// `Stats::raft_in`'s length: a minute of a follower's AppendEntries at B0-02's rate, about 8 a second.
@@ -278,6 +280,17 @@ pub enum Trace {
     /// A learner's call to `peer` had no answer within `HEDGE`, and the same envelope was sent again; `index` is 1 if
     /// the copy was answered, `ms` its time.
     Hedge = 11,
+    /// B0-02's leader trace (`tests/m0/results/carried-4.md`). An AppendEntries with entries to `peer` was handed to
+    /// `call`; `batch` is its round, `index` its last entry, `ms` its bytes.
+    AppendQueued = 12,
+    /// That call's fetch was issued (its encoded body built and the stub's `fetch` called): `ms` since `AppendQueued`.
+    AppendIssued = 13,
+    /// That call ended: `index` 0 ok, 1 failed; `ms` since `AppendIssued`.
+    AppendEnded = 14,
+    /// An input that wrote: `ms` its synchronous step and persist, `index` the last entry it queued.
+    Stepped = 15,
+    /// The deferred transaction ran: `ms` how long after it was deferred, `index` its statements.
+    Flushed = 16,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -559,6 +572,15 @@ pub struct Host<F: Family> {
     /// (`/sever`). Set and lifted in this object at once, with no plan cache in between.
     #[cfg(feature = "test-faults")]
     pub severed_until: Cell<u64>,
+    /// Test installs, B0-02's A/B (`tests/m0/results/carried-5.md`): member calls send their body as one array, as
+    /// before `m0-carried-4`, instead of a stream (`/stats?body=array`). A reset object streams again.
+    #[cfg(feature = "test-faults")]
+    pub array_body: Cell<bool>,
+    /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the
+    /// follower ran it, so its appends still renew the followers' promises while it commits nothing: the
+    /// simulator's `HalfHung` on one member (`/sever` with `half`).
+    #[cfg(feature = "test-faults")]
+    pub half_hung_until: Cell<u64>,
     /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
     /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
@@ -1141,6 +1163,10 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             severed_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
+            array_body: Cell::new(false),
+            #[cfg(feature = "test-faults")]
+            half_hung_until: Cell::new(0),
+            #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
             drained: RefCell::new(None),
@@ -1163,17 +1189,22 @@ impl<F: Family> Host<F> {
     }
 
     /// Test installs: one `Stats::trace` entry, timed now.
-    #[cfg(feature = "test-faults")]
     pub fn trace(&self, kind: Trace, peer: u8, batch: u64, index: u64, ms: u64) {
+        self.trace_at(now_ms(), kind, peer, batch, index, ms);
+    }
+
+    /// Test installs: one `Stats::trace` entry, timed `at`.
+    #[cfg(feature = "test-faults")]
+    pub fn trace_at(&self, at: u64, kind: Trace, peer: u8, batch: u64, index: u64, ms: u64) {
         let mut s = self.stats.borrow_mut();
         if s.trace.len() >= TRACE_MAX {
             s.trace.pop_front();
         }
-        s.trace.push_back([now_ms(), kind as u64, u64::from(peer), batch, index, ms]);
+        s.trace.push_back([at, kind as u64, u64::from(peer), batch, index, ms]);
     }
 
     #[cfg(not(feature = "test-faults"))]
-    pub fn trace(&self, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
+    pub fn trace_at(&self, _: u64, _: Trace, _: u8, _: u64, _: u64, _: u64) {}
 
     /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
     pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
@@ -1404,6 +1435,9 @@ impl<F: Family> Host<F> {
             self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
         }
         drop(guard);
+        if wrote {
+            self.trace(Trace::Stepped, 0, 0, self.queued_last.get().unwrap_or(0), now_ms().saturating_sub(t));
+        }
         self.queue.borrow_mut().extend(stmts);
         let defer = !early.is_empty() && wrote;
         // The leader's AppendEntries leave now. Each `send` issues its fetch in a microtask, before the deferred
@@ -1549,11 +1583,14 @@ impl<F: Family> Host<F> {
             return;
         }
         let h = self.clone();
+        let deferred = now_ms();
         spawn_local(async move {
             Delay::from(Duration::ZERO).await;
             if h.dying.get() {
                 return;
             }
+            let n = h.queue.borrow().len() as u64;
+            h.trace(Trace::Flushed, 0, 0, n, now_ms().saturating_sub(deferred));
             if let Err(e) = h.flush() {
                 console_error!("deferred storage write failed: {e}");
                 h.full(&e);
@@ -1882,9 +1919,14 @@ impl<F: Family> Host<F> {
     /// Sends `e` as a member-to-member call and steps the replies.
     fn call(self: &Rc<Self>, e: Envelope<F>) {
         let h = self.clone();
+        let queued = now_ms();
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
             let call = Call::of(&e, body.len());
+            let traced = call.append.filter(|_| call.entries > 0);
+            if let Some((round, _, last)) = traced {
+                h.trace_at(queued, Trace::AppendQueued, call.to, round, last, body.len() as u64);
+            }
             match (&e.msg, call.batch) {
                 (raft::Message::ReadIndex { .. }, Some(b)) => h.trace(Trace::IndexSent, e.to.0, b, 0, 0),
                 (raft::Message::ReadIndexRes { index, .. }, Some(b)) => {
@@ -1934,6 +1976,10 @@ impl<F: Family> Host<F> {
                 h.call_failed(on_miss);
             };
             // `answer` starts the limit's timer only once the deadline passed.
+            let issued = now_ms();
+            if let Some((round, _, last)) = traced {
+                h.trace(Trace::AppendIssued, call.to, round, last, issued.saturating_sub(queued));
+            }
             let (late, r) = match answer(
                 h.call_peer(to, body, call.hop.get()),
                 Delay::from(raft::CALL_DEADLINE),
@@ -1946,6 +1992,9 @@ impl<F: Family> Host<F> {
                 Answer::Late(r) => (true, r),
                 Answer::Missed => return,
             };
+            if let Some((round, _, _)) = traced {
+                h.trace(Trace::AppendEnded, call.to, round, u64::from(r.is_err()), now_ms().saturating_sub(issued));
+            }
             answered.set(true);
             let replies = match r {
                 Ok(replies) => replies,
@@ -1958,7 +2007,7 @@ impl<F: Family> Host<F> {
             };
             // The callee ran the call and its answer is lost: the leader sees a call that missed its deadline.
             #[cfg(feature = "test-faults")]
-            if drop_reply && crate::faults::drop_append_reply(&h.env, to.0) {
+            if drop_reply && (now_ms() < h.half_hung_until.get() || crate::faults::drop_append_reply(&h.env, to.0)) {
                 if !late {
                     h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "drop_append_reply")));
                     h.stats.borrow_mut().failed_calls += 1;
@@ -2090,9 +2139,31 @@ impl<F: Family> Host<F> {
             self.peer_name(to).ok_or_else(|| PeerErr::new(CallFail::Peer, format!("no member at address {}", to.0)))?;
         let site = SiteEnv::read(&self.env).map_err(|x| PeerErr::new(CallFail::SiteEnv, x))?;
         let stub = site.member(&self.env, at, &name).map_err(|x| PeerErr::new(CallFail::Stub, x))?;
+        // The body leaves through a fixed-length stream, not as one array: a SQLite write that starts while an
+        // array body is still in flight stalled that body 100 to 1,000 ms in about 1% of calls, and a streamed body
+        // did not stall more than a call with no write at all (`tests/m0/results/carried-4.md`, B0-02's leader stall).
         let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(JsValue::from(js_sys::Uint8Array::from(body.as_slice()))));
+        let chunk = js_sys::Uint8Array::from(body.as_slice());
         drop(body);
+        #[cfg(feature = "test-faults")]
+        let array = self.array_body.get();
+        #[cfg(not(feature = "test-faults"))]
+        let array = false;
+        if array {
+            init.with_method(Method::Post).with_body(Some(chunk.into()));
+        } else {
+            let stream = worker::worker_sys::FixedLengthStream::new(chunk.length())
+                .map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
+            let writer =
+                stream.writable().get_writer().map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
+            init.with_method(Method::Post).with_body(Some(stream.readable().into()));
+            // A write or close refused (the call failed and its body was dropped) surfaces as the fetch's own error.
+            let (wrote, closed) = (writer.write_with_chunk(&chunk), writer.close());
+            spawn_local(async move {
+                let _ = wasm_bindgen_futures::JsFuture::from(wrote).await;
+                let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
+            });
+        }
         #[cfg(feature = "test-faults")]
         {
             let h = Headers::new();
@@ -2363,7 +2434,7 @@ impl<F: Family> Host<F> {
                 Delay::from(TICK).await;
                 let Some(h) = w.upgrade() else { return };
                 let lag = now_ms().saturating_sub(due);
-                if lag >= 50 {
+                if lag >= 20 {
                     h.trace(Trace::Lag, 0, 0, 0, lag);
                 }
                 if h.dying.get() || (now_ms() > h.active_until.get() && !h.has_waiters()) || h.tick_once().is_err() {

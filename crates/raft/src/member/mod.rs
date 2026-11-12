@@ -678,7 +678,7 @@ pub struct Member<C: Command> {
     /// Sites whose members may not lead: drained, or under the first day's lead limit. The host sets it from the
     /// `Release` group's site modes.
     drained: BTreeSet<SiteId>,
-    /// A voter refused this member's pre-vote as `Suspected`: it stands aside until then.
+    /// A voter refused this member's pre-vote as `Suspected`: until then it denies no rival as `Contending`.
     stand_aside_until: Timestamp,
     /// The highest index of this member's log that it knows is durable on its own storage: the stored log at
     /// `restore`, then raised only by `self_ack`. A leader counts itself toward a commit only up to here.

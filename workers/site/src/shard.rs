@@ -330,6 +330,34 @@ impl Jobs {
     }
 }
 
+/// Storage key of a network's test-merge counts on this shard object (`graftyard_git::prsync::BudgetStats`).
+fn budget_key(net: NetworkId) -> String {
+    format!("budget:{}", net.0.0)
+}
+
+impl GitShard {
+    /// Puts back `net`'s counts this object stored before it last reset, the first time the object sees `net`
+    /// (`Budgets::restore`). The object resets about 90 s after its last request, and B0-35's gate reads the counts
+    /// after the load (`tests/am1/results/merge-budget-2.md`, design change 5).
+    async fn restore_budget(&self, net: NetworkId) {
+        if self.budgets.borrow().stats(net).is_some() {
+            return;
+        }
+        if let Ok(Some(stats)) = self.state.storage().get::<graftyard_git::prsync::BudgetStats>(&budget_key(net)).await
+        {
+            self.budgets.borrow_mut().restore(net, stats, now_ms());
+        }
+    }
+
+    /// Stores `net`'s counts as they are now, one row per network, before the reply that carries them leaves.
+    async fn save_budget(&self, net: NetworkId) {
+        let Some(stats) = self.budgets.borrow().stats(net) else { return };
+        if let Err(e) = self.state.storage().put(&budget_key(net), stats).await {
+            console_error!("shard budget {}: {e}", net.0.0);
+        }
+    }
+}
+
 fn se(e: StoreError) -> Error {
     Error::RustError(e.0)
 }
@@ -378,9 +406,11 @@ impl DurableObject for GitShard {
         // With `?repo=`, also the network's test-merge budget here (`testMerges`, B0-35's instruments).
         if path == "/status" {
             let running = self.state.container().is_some_and(|c| c.running());
-            let budget = q(&url, "repo")
-                .and_then(|v| v.parse().ok())
-                .and_then(|r| self.budgets.borrow().stats(NetworkId(DbId(r))));
+            let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
+            if let Some(net) = net {
+                self.restore_budget(net).await;
+            }
+            let budget = net.and_then(|net| self.budgets.borrow().stats(net));
             return Response::from_json(
                 &json!({ "running": running, "alarm": self.state.storage().get_alarm().await?, "testMerges": budget }),
             );
@@ -407,21 +437,30 @@ impl DurableObject for GitShard {
             h.set("x-graft-budget", &serde_json::to_string(&b.stats(net).unwrap_or_default())?)?;
             Ok(h)
         };
+        // The counts this object stored before its last reset, before any route below counts or charges.
+        if matches!(path.as_str(), "/ask" | "/demand" | "/merge") && q(&url, "method").is_none() {
+            self.restore_budget(net).await;
+        }
         // B0-35's list-field instrument (A29): the edge's one ask for a list read that rendered `count` pull
         // requests' `mergeable` without a current test merge. Counted, never computed, and no container is woken.
         if path == "/ask" {
             let count: u32 = q(&url, "count").and_then(|v| v.parse().ok()).unwrap_or(1).min(100);
-            let mut b = self.budgets.borrow_mut();
-            for _ in 0..count {
-                b.of(net, now_ms()).ask(cause, n, now_ms());
+            {
+                let mut b = self.budgets.borrow_mut();
+                for _ in 0..count {
+                    b.of(net, now_ms()).ask(cause, n, now_ms());
+                }
             }
-            return Ok(Response::from_json(&json!({ "asked": count }))?.with_headers(stats(&b)?));
+            self.save_budget(net).await;
+            let h = stats(&self.budgets.borrow())?;
+            return Ok(Response::from_json(&json!({ "asked": count }))?.with_headers(h));
         }
         // An on-demand merge's ask (`cause=get` from the edge, `dispatch` from `crate::prsync::demand`) is counted and
         // coalesced before anything else runs, so a GET inside GET_COALESCE_MS costs this answer alone.
         if path == "/demand" && !self.budgets.borrow_mut().of(net, now_ms()).ask(cause, n, now_ms()) {
-            let b = self.budgets.borrow();
-            return Ok(Response::from_json(&json!({ "coalesced": true }))?.with_headers(stats(&b)?));
+            self.save_budget(net).await;
+            let h = stats(&self.budgets.borrow())?;
+            return Ok(Response::from_json(&json!({ "coalesced": true }))?.with_headers(h));
         }
         // The caller's copy of the owner's record saves the two `Names` reads, about 400 ms once the shard's isolate
         // forgot the leaders (`tests/m2/results/m2-wp6.md`, "Merge latency"). A record that no longer finds the
@@ -676,6 +715,7 @@ impl DurableObject for GitShard {
                     || host.merge(net, base, head),
                 )
                 .await;
+                self.save_budget(net).await;
                 let a = match a {
                     Err(e) if e.0 == "warming" => return warming(),
                     a => a.map_err(se)?,

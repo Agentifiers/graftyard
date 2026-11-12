@@ -107,9 +107,13 @@ impl SiteEnv {
     }
 }
 
-/// No public route. A request that reaches the script's fetch handler is refused.
+/// No public route: `workers_dev` and preview URLs are off, so only this script's own `SITE` binding reaches the handler,
+/// with a `PrSync` first attempt (`prsync::in_band`). Anything else is refused.
 #[event(fetch)]
-async fn fetch(_req: Request, _env: Env, _ctx: Context) -> Result<Response> {
+async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    if req.method() == Method::Post && req.path() == prsync::FIRST_PATH {
+        return prsync::first_handled(req, env, &ctx).await;
+    }
     Response::error("not found", 404)
 }
 

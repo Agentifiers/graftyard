@@ -21,9 +21,19 @@ pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);
 /// nearer voter than `Tri`'s.
 pub const NEAR_RTT: &[(Region, u16)] = &[(Region::Enam, 100), (Region::Weur, 100), (Region::Apac, 198)];
 
-/// New generations a group's leader tries for its nearer follower before it fails loudly (`/place`) [inference: 16
-/// of 35 measured groups had a near follower within 100 ms, so 8 tries leave about 1 in 140 groups unplaced].
+/// New generations a group's leader tries for its nearer follower before it keeps the nearest it found (`/place`)
+/// [inference: 16 of 35 measured groups had a near follower within 100 ms on `graft-m3c`, so 8 tries leave about 1
+/// in 140 groups there over the bound; on an install whose pair sits over it, every create spends all 8].
 pub const PLACE_TRIES: usize = 8;
+
+/// When no try met `NEAR_RTT`, the one `/place` keeps: the index of the try whose home measured the lowest near
+/// round trip, or `None` to keep the member those tries would have replaced, which measured `current_ms`. A tie
+/// keeps the earlier one, and the current member over any try, so a recheck never moves a member for nothing. The
+/// bound is a goal, not a gate: a create never fails on it, since some installs' pairs sit over it every time.
+pub fn nearest_try(current_ms: u16, tries: &[u16]) -> Option<usize> {
+    let (i, &ms) = tries.iter().enumerate().min_by_key(|&(i, ms)| (*ms, i))?;
+    (ms < current_ms).then_some(i)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -92,8 +102,8 @@ pub fn learner_slot(addr: SiteId) -> Option<u8> {
 pub const LEARNER_AT: u32 = 500;
 pub const MAX_LEARNERS: usize = 16;
 /// Narrow reads a second one learner takes [inference: `design/DESIGN.md`, Scale, "1,000 req/s per learner"]. A
-/// whole-tier read of journey 9's 1 MB dump counts as 50: one learner served about 20 a second
-/// (`tests/am1/results/learner-dumps.md`).
+/// whole-tier read of journey 9's 1 MB dump counted as 50, since one learner served about 20 a second
+/// (`tests/am1/results/learner-dumps.md`); its API reads are now narrow and count once (`graftyard_api::narrow`).
 pub const LEARNER_READS: u32 = 1_000;
 
 /// One group's reads, as `graft-ops` sums them from Analytics Engine counters: per region the edges' read rate
@@ -552,6 +562,19 @@ mod tests {
         assert!(
             Placement::new(voters(&[(0, Full), (1, Full), (2, Full)]), ArrayVec::new(), SiteId(0), &checks).is_ok()
         );
+    }
+
+    /// `graft-m2b`'s `repo:131277`: all 8 tries over enam's 100 ms. The create keeps the nearest try, not the first
+    /// or the last, and keeps the member it started with when no try beat it.
+    #[test]
+    fn nearest_try_keeps_the_best_when_every_try_is_over_the_bound() {
+        let tries = [114, 110, 108, 110, 110, 110, 111, 111];
+        assert!(tries.iter().all(|ms| *ms > 100));
+        assert_eq!(nearest_try(123, &tries), Some(2));
+        assert_eq!(nearest_try(108, &tries), None, "a tie keeps the current member");
+        assert_eq!(nearest_try(105, &tries), None);
+        assert_eq!(nearest_try(130, &[120, 109, 109]), Some(1), "a tie between tries keeps the earlier");
+        assert_eq!(nearest_try(130, &[]), None);
     }
 
     #[test]

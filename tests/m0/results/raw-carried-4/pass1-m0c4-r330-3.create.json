@@ -1,0 +1,1 @@
+{"configIndex":4,"meta":{"configIndex":4,"leader":0,"term":2},"ms":20909,"old":"repo:3303000#1#f1","over":{"boundMs":100,"ms":119,"site":1},"tried":[{"member":"repo:3303000#2#f1","result":"home SiteId(0)'s nearest voter, SiteId(1), is 101 ms away, over NEAR_RTT's 100 ms","rtt":[[0,101],[2,209]]},{"member":"repo:3303000#3#f1","result":null,"rtt":[[0,106],[2,270]]}]}

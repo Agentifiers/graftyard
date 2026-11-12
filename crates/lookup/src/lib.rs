@@ -979,7 +979,8 @@ pub async fn create(
 const PLACE_FOR: Duration = Duration::from_secs(240);
 
 /// The near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader re-places a
-/// voter until the home has one within `NEAR_RTT`, or answers the round trips of every try, which fail the create.
+/// voter until the home has one within `NEAR_RTT`, or keeps the nearest try; only an error such as a lost leader or
+/// a refused config change fails the create, never the bound alone.
 async fn place(
     b: &Bindings<'_>,
     chain: ChainId,

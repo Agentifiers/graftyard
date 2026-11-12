@@ -68,8 +68,8 @@ impl Bed {
     /// Each member truncates through the newest archive once both its keys' buckets hold it.
     fn truncate(&self) {
         let w = self.w.borrow();
-        for m in 0..3 {
-            let f = &w.repo.members[m].group_fold().fold;
+        for (m, member) in w.repo.members.iter().enumerate().take(3) {
+            let f = &member.group_fold().fold;
             let Some(a) = f.archived() else { continue };
             let key = a.key.to_string();
             let held = self.buckets.iter().filter(|b| block_on(b.head(&key)).unwrap().is_some()).count();
@@ -271,8 +271,8 @@ fn the_archive_alarm_promotes_then_archives_to_two_buckets_and_holds_every_membe
     assert!(archives.iter().all(|a| a.1 <= promotions.last().unwrap().1));
     // Every member agrees on the last archive and promotion, and every member truncated to the last archive.
     let f0 = w.repo.members[0].group_fold().fold.archived();
-    for m in 0..3 {
-        assert_eq!(w.repo.members[m].group_fold().fold.archived(), f0);
+    for (m, member) in w.repo.members.iter().enumerate().take(3) {
+        assert_eq!(member.group_fold().fold.archived(), f0);
         assert_eq!(b.held_from.borrow()[m], archives.last().unwrap().1);
     }
     // Each promotion named every pack its range's entries name, once each.

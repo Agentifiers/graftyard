@@ -1,0 +1,154 @@
+{
+ "what": "graft-m4-gateprobe bare-object control, 2026-11-12 19:11-19:49Z, enam leader, weur peer, 60 KB bodies of x",
+ "m0c5-bigwrite-1000000": {
+  "nogate": {
+   "rounds": 149,
+   "syncP50": 34,
+   "syncP99": 87,
+   "syncMax": 106,
+   "arriveP50": 78,
+   "arriveP99": 242,
+   "callP99": 271
+  },
+  "nowrite": {
+   "rounds": 148,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 79,
+   "arriveP99": 89,
+   "callP99": 126
+  }
+ },
+ "m0c5-bigwrite-250000": {
+  "nogate": {
+   "rounds": 149,
+   "syncP50": 33,
+   "syncP99": 47,
+   "syncMax": 52,
+   "arriveP50": 62,
+   "arriveP99": 93,
+   "callP99": 129
+  },
+  "nowrite": {
+   "rounds": 148,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 62,
+   "arriveP99": 214,
+   "callP99": 249
+  }
+ },
+ "m0c5-gap0": {
+  "nogate": {
+   "rounds": 296,
+   "syncP50": 44,
+   "syncP99": 109,
+   "syncMax": 129,
+   "arriveP50": 101,
+   "arriveP99": 308,
+   "callP99": 350
+  }
+ },
+ "m0c5-gap10": {
+  "nogate": {
+   "rounds": 298,
+   "syncP50": 36,
+   "syncP99": 57,
+   "syncMax": 96,
+   "arriveP50": 102,
+   "arriveP99": 247,
+   "callP99": 256
+  }
+ },
+ "alongside": {
+  "nogate": {
+   "rounds": 2224,
+   "syncP50": 21,
+   "syncP99": 36,
+   "syncMax": 162,
+   "arriveP50": 88,
+   "arriveP99": 95,
+   "callP99": 152
+  },
+  "stream": {
+   "rounds": 2215,
+   "syncP50": 21,
+   "syncP99": 34,
+   "syncMax": 92,
+   "arriveP50": 89,
+   "arriveP99": 97,
+   "callP99": 150
+  },
+  "nowrite": {
+   "rounds": 2209,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 88,
+   "arriveP99": 95,
+   "callP99": 152
+  }
+ },
+ "m0c5-shape-k3000": {
+  "nogate": {
+   "rounds": 165,
+   "syncP50": 21,
+   "syncP99": 61,
+   "syncMax": 103,
+   "arriveP50": 76,
+   "arriveP99": 244,
+   "callP99": 286
+  },
+  "nowrite": {
+   "rounds": 165,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 76,
+   "arriveP99": 85,
+   "callP99": 124
+  }
+ },
+ "m0c5-shape-s250": {
+  "nogate": {
+   "rounds": 163,
+   "syncP50": 24,
+   "syncP99": 56,
+   "syncMax": 915,
+   "arriveP50": 85,
+   "arriveP99": 259,
+   "callP99": 296
+  },
+  "nowrite": {
+   "rounds": 163,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 87,
+   "arriveP99": 121,
+   "callP99": 156
+  }
+ },
+ "m0c5-shape-s250k": {
+  "nogate": {
+   "rounds": 166,
+   "syncP50": 31,
+   "syncP99": 59,
+   "syncMax": 88,
+   "arriveP50": 66,
+   "arriveP99": 231,
+   "callP99": 260
+  },
+  "nowrite": {
+   "rounds": 166,
+   "syncP50": null,
+   "syncP99": null,
+   "syncMax": -1,
+   "arriveP50": 67,
+   "arriveP99": 80,
+   "callP99": 112
+  }
+ }
+}

@@ -1,0 +1,1 @@
+{"at":1794515613044,"before":[[0,"follower",3,null],[1,"follower",3,3],[2,"follower",3,null]],"write":{"status":422,"ms":6883},"after":[[0,"follower",3,null],[1,"leader",3,3],[2,"follower",3,null]]}

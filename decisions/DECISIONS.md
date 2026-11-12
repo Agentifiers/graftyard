@@ -1221,6 +1221,18 @@ M1-WP8 ran BM-1's git half on the test install with one site's member class fail
 
 **Flip.** A user-visible request that waits longer than about 11.5 s plus its commit after a site loss, or an idle-group move that a client needs before its first request.
 
+#### F67: a group with a request waiting elects within 30 s, and campaigns stay request-driven
+
+**Decision.** Liveness is a property of the core: while the same two or more voters stay up, linked, and free of gray faults, and a client request waits on the group, some request completes within T = 30 s (LEASE 9 s, the 2 x ELECTION_AFTER waivers of RESET_QUARANTINE and the drain bar, and about 1 s of campaign and round). An idle group is still never woken. Seven rules in `crates/raft` make it hold. (1) Check quorum: a ready leader with an entry, read, or transfer waiting that no quorum has answered for ELECTION_AFTER stops leading and clears `led_term`; an idle leader is never moved. (2) A follower's read-index batch unanswered for CAMPAIGN_DEADLINE (3 s) is the read-index call failing: the follower forgets the leader, campaigns if its promise lapsed, and fails the reads `NotLeader` naming none, which the edge reports with `suspect`. (3) A granted transfer vote promises the target for CAMPAIGN_DEADLINE, not ELECTION_AFTER. (4) A pre-vote is denied as `Contending` only by a voter that may lead itself and has not been refused as `Suspected`. (5) A member refused as `Suspected` keeps campaigning by pre-vote instead of answering `Busy` for 2 x SUSPECT's window. (6) A `suspect` report about the leader a follower promised counts even after the follower forgot it under (2). (7) Appends from a leader a follower withholds promises from do not count as a leader seen, so the 2 x ELECTION_AFTER waiver runs.
+
+**Why.** Seven paths left a group with traffic leaderless past the bound in the simulator (`tests/m0/results/f67.md`). A half-hung leader, whose appends arrived and whose answers were lost, kept its followers' promises renewed, so every `suspect` answered `Promised` and a reads-only group never elected. Follower reads shed with no report, so a group read only through followers had no trigger at all. A transfer target that could not win held both voters for ELECTION_AFTER. A quarantined campaigner refused every rival while every voter refused it. A member refused as `Suspected` stood aside for 20 s, outlasting the voter's bar on it, while the other member was `LogBehind`. A follower that forgot a half-hung leader under (2) stopped counting reports about it while still promising it. A half-hung leader's appends kept two healthy voters that quarantined each other from ever reaching the waiver.
+
+**Beat.** Alarm-driven campaigns, which wake idle groups ("The site-loss bound is per request, and a total loss is left by `suspect`"). Promising only after a commit of the leader's term, which broke the promise-bar and lease scenarios. Letting a bar yield to a newer log, which the rules made unnecessary. Check quorum by progress (commits and grants) in place of answers heard, which changed no stuck seed.
+
+**Evidence.** `tests/m0/results/f67.md` [measured, simulator]: one regression test per path that fails on the core before the fix, the 30 s bound asserted per seed in the CI sweep (`live_network_elects_within_the_bound`, which the old core fails on seed 7180 at 32.6 s), and the long sweep with Porcupine.
+
+**Flip.** A group with a request waiting and a healthy quorum that stays leaderless past 30 s, in the sweep or hosted; or a check-quorum step-down of a leader a quorum was still answering.
+
 #### BM-1's git half passes with one site's member class failing
 
 **Decision.** BM-1's git half is recorded as passing. `clients.sh` passed 29 of 29 on git 2.39.5 and 2.51.0, and `t/` on 2.51.0 and 2.56.0 lost no baseline pass except t5549 #2, with site 0's member class failing every call for the rest of each run. The 24-hour linearizability half is pending until 2026-11-02T18:27Z. A gray partial-error fault and a 2.39.5 `t/` baseline are not covered and go to BM-1's next rerun.
@@ -2324,7 +2336,33 @@ Branch `learner-dumps` ran journey 9's API reads on `graft-m3c` with 8 learners 
 
 **Evidence.** `tests/am1/results/learner-dumps.md` [measured]. Same install, repository shape (500 open PRs, 1.06 to 1.08 MB dump), 8 learners, and 300 s B0-29 load. Before: `read:api` 13,305 answered and 38,485 shed (25.7% of answered), `read:ref` 72.7%, agent pushes 761 of 1,251, the leader moved, voters peaked at 264 and 302 MiB, and the feed answered `lagging` 8,543 times. After: `read:api` 45,194 answered and 2,552 shed (94.7%), `read:ref` 99.8%, agent pushes 1,183 of 1,234, no leader change, voters at most 128 MiB, no `lagging`. Learners used 18 to 35% CPU at 61 to 68 MiB, built 88 to 132 dumps each, and served 1,102 to 1,929 reads each after a wait. API read p99 stayed 5.0 s, edge-bound, against learner reads at p99 1.2 to 1.3 s. 12 planted bugs caught (`tests/lm1mem/plant.py`, 41 to 52).
 
-**Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners.
+**Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners: met on 2026-11-12 by `narrow-reads` ("`narrow-reads`: REST and GraphQL reads answer only the rows their reply renders"), which counts an API read once.
+
+### `narrow-reads`: REST and GraphQL reads answer only the rows their reply renders, 2026-11-12
+
+Branch `narrow-reads` served journey 9's API reads from narrow member reads (`tests/am1/results/narrow-reads.md`; F65; K9's flip).
+
+**Decision.** A repository `GET` that `graftyard_api::narrow::rest_serves` names, and every GraphQL query, reads `{"rows": {"api": spec}}`, where the spec is the route: the REST tail, query, path, and trust opt-in, or the GraphQL document, variables, and operation. The member runs the same renderer over its own fold through a recorder, and answers the rows the renderer read, the read gate's access rows, and its selections (`Directory::pick`): a list's filter, sort, and page, a connection's page and `totalCount`, a lookup by a non-key column, and which of the reply's accounts the whole tiers name, with their lowest name shards, so the edge reads the same logins. The edge renders the route over those rows with those selections. A member caches each answer per query and tier state and builds one query's at most every `NARROW_EVERY_MS` (200 ms [guess]); a follower holds a read whose build is not due within `FOLLOWER_WAIT`, as a learner holds a dump read. `GroupLoad` counts an API read once, so `scripts/cost_agents.py` places no learners for the largest network at any tier, and the agent layer is $21, $274, and $2,572 a month.
+
+**Why.** At journey 9 every API read fetched and parsed the 1.06 MB packed dump. With learners serving them (K9), learner `/read` p99 was 1.2 to 1.3 s and the edge spent 68 to 77 ms of CPU and about 2 s of wall per answer, so API p99 was 5.0 s against B0-18's 1 s learner read gate [measured, `tests/am1/results/learner-dumps.md`]. A page of 30 issues or 10 pull requests renders a few KB.
+
+**Beat.** Per-route narrow queries, each with its own member code that selects the rows a route reads. That is a second renderer per route, and every one could drift from the whole-tier bytes. Recording keeps one renderer, so a reply is byte-identical by construction, and the tests compare the bytes over 480 REST list cases and every captured gh document. Caching whole-tier renders on the edge, which still parses 1 MB per state and isolate. Sharing one read across edge requests, which a Workers isolate refuses (F65).
+
+**Evidence.** `crates/api/tests/narrow.rs`: replies are byte-identical to whole-tier replies, and pages, `Link` headers, `totalCount`, and `pageInfo` are checked against expectations derived independently from the rows. Narrow answers hold only their page's or object's rows, and stale and mismatched answers are tested. `tests/nr/plant.py` catches 29 of 29 planted bugs. `crates/api/gh/validate.py` passes on 80 GraphQL and 495 REST narrow replies. Hosted on `graft-m3c` with 8 learners and 300 s of B0-29 at 500 agents [measured, `tests/am1/results/narrow-reads.md`]: `read:api` served 93.1% before and 99.8% after (503s 3,271 and 85), p50/p99 1,902/4,982 and 1,714/4,370 ms. Edge CPU per answer fell from 66 to 67 ms p50 (170 ms p99) to 11 to 13 ms p50 (76 to 102 ms p99). Learners shed 706 to 2,824 reads each before and 0 to 35 after. There was no leader change in either load window. API p99 stays over 1 s, now set by the reads before the tier read (F65).
+
+**Flip.** A route whose selection the recorder cannot see, which would answer different bytes from the whole-tier reply. A member whose narrow builds at journey 9 cost more CPU than a shared dump did, which would bring back the dump on learners for that route. Or a GraphQL client that sends `filterBy` or login qualifiers at journey 9's rate, which still read the whole tiers.
+
+### `m0-carried-4`: a member call streams its request body, 2026-11-12
+
+**Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
+
+**Why.** B0-02's last miss on `m0-carried-3` was a 337 ms pause of the leader's AppendEntries to a healthy near follower. A bare-object control with no Raft code, on the same account and hints, sends a body and starts a SQLite write one macrotask later, as the member does. With bodies of 250 to 400 KB the body's arrival at the callee took over 150 ms (up to 1,079 ms) in 78 of 5,782 calls (1.3%). With no write it did in 12 of 5,727 (0.2%), and through a `FixedLengthStream` in 6 of 5,491 (0.1%) with the write after the stream closed and 5 of 3,569 (0.14%) with it one macrotask after the send, as the member does. Calls over 400 ms were 42, 14, 5 and 6 [measured, `tests/m0/results/carried-4.md`]. workerd checks the output gate once, when the fetch starts, and pumps the body with no gate check after that, so an array body is not held by the gate; what stalls it is the platform's, below the API [inference, workerd `22a428de`, `api/http.c++` `fetchImpl`].
+
+**Beat.** Moving the log and state writes to KV with `allowUnconfirmed` and an explicit `sync()`, which also stalled nothing in the control but rewrites the storage layer. Holding the write until the body has left, which the platform gives no signal for. Accepting the stall as F35.
+
+**Evidence.** `tests/m0/results/carried-4.md`; `tests/m0carried/gateprobe/probe.ts` [measured].
+
+**Flip.** Hosted B0-02 runs whose stall windows still line up with a write during a body, which would argue for the KV path. Or a platform change that ends the stall for array bodies.
 
 ### `m0-carried-3`: F68 closed by a near round-trip bound at placement, 2026-11-12
 
@@ -2332,7 +2370,7 @@ The operator chose F68's option (a), with (b) investigated, and rejected reading
 
 #### A group's home must have a voter within `NEAR_RTT`
 
-**Decision.** `Placement::new` refuses a voter set whose home's nearest other voter measured over `NEAR_RTT` for the home's region: 100 ms for an enam or weur home and 198 ms for an apac home, with no bound for other regions (`PlacementError::NoNearFollower`, appended last). A new group's leader runs `/place` once it leads: if the home is over the bound, it re-places that nearer follower with new generations through the replacement path (`Degraded`, then `Normal`), up to `PLACE_TRIES` (8), and at the cap restores the old member and fails the create with every try's round trips. The daily latency check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower the same way. A move's swap and `graftyard placement set` check without the bound.
+**Decision.** `Placement::new` refuses a voter set whose home's nearest other voter measured over `NEAR_RTT` for the home's region: 100 ms for an enam or weur home and 198 ms for an apac home, with no bound for other regions (`PlacementError::NoNearFollower`, appended last). A new group's leader runs `/place` once it leads: if the home is over the bound, it re-places that nearer follower with new generations through the replacement path (`Degraded`, then `Normal`), up to `PLACE_TRIES` (8). At the cap it keeps the try with the lowest near round trip, or the member it started with when no try was nearer, and the create succeeds: the bound is a goal, not a gate (`m0-carried-4`, below). The daily latency check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower the same way. A move's swap and `graftyard placement set` check without the bound.
 
 **Why.** B0-02's commit p99 follows the leader's round trip to its nearer follower: 0.93 correlation over 35 runs, every run at 100 ms or less passed, and 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]. Durable Object hints place a member in a region, not a city, so a new group's near RTT varied 75 to 144 ms with the same hints. 100 ms is B0-12's median enam to weur pair and 198 ms its median enam to apac pair, the same quantile [measured, `tests/m0/results/b0-12.json`]. The B0-02 rerun on groups created this way passed 15 of 16 runs, at 249 to 540 ms. Every near follower was at 75 to 100 ms, and 5 groups were re-placed in 1 to 4 tries. The one miss, 614 ms, was a single stall on the leader about 20 s in, with the near follower at 97 ms (`tests/m0/results/carried-3.md`).
 
@@ -2340,7 +2378,9 @@ The operator chose F68's option (a), with (b) investigated, and rejected reading
 
 **Evidence.** `tests/m0/results/carried-3.md`; `crates/types/src/placement.rs`, `new_refuses_a_home_with_no_voter_within_near_rtt`.
 
-**Flip.** Misses that track the near RTT inside the bound, rather than one-off leader stalls, which would argue for a lower bound (90 ms costs about 1.6 times the tries). Or creates that fail at `PLACE_TRIES` often enough to matter, more than about 1 in 100.
+**Flip.** Misses that track the near RTT inside the bound, rather than one-off leader stalls, which would argue for a lower bound (90 ms costs about 1.6 times the tries). Creates no longer fail on the bound; groups kept over it (`placedOverNear`) on more than about 1 in 100 creates of an install would argue for a bound relative to that install's pair.
+
+**Amended by `m0-carried-4`, 2026-11-12: a create never fails on the near bound alone.** On `graft-m2b`, `repo:131277` (home enam) re-placed its weur follower 8 times at 114, 110, 108, 110, 110, 110, 111 and 111 ms, the last check read 123 ms, and the create failed; a create a minute later passed. That install's enam to weur pair sits over 100 ms, so failing would refuse creates in production. Now, after `PLACE_TRIES`, the leader keeps the nearest try (`graftyard_types::nearest_try`), or the member it started with when it was nearer than every try, stores that try's round trip in its `Rtt` rows, counts the group in the member's `placedOverNear` (`/stats`), and logs it; the daily check keeps trying on the same path and keeps a new member only if it is nearer. A bound relative to each install's measured baseline (its minimum for the pair plus a margin) was considered and not built: with the nearest kept, it would only save tries on an install like `graft-m2b`, where each create now spends all 8 (about 30 to 40 s), and it needs a per-install baseline that no component keeps yet. Evidence: `crates/types/src/placement.rs`, `nearest_try_keeps_the_best_when_every_try_is_over_the_bound`; `tests/m0/results/carried-4.md`.
 
 #### The per-KB append cost is the request body's transfer
 
@@ -2400,7 +2440,7 @@ Branch `merge-budget-2` closed A28, A29 and A30 (`tests/am1/results/merge-budget
 
 #### A30 closes: single-PR GETs compute through the shard, and Actions dispatch has its hook
 
-**Decision.** After it answers a GraphQL read, the edge asks the leader site's shard of the network for the merges the read's `mergeable` or `mergeStateStatus` lacked (`graftyard_api::gql::MergeAsks`, `workers/edge/src/api.rs`, `ask_merges`), in `wait_until`, so the reply never waits. A single-PR read by a writer or an App token goes to `POST /demand?cause=get` with the (base tip, head) its merge lacks. There the shard counts the GET, coalesces it per PR for `GET_COALESCE_MS`, admits it under the budget with its reserve, computes it in its turn, and commits it as a `PrSync` with no cursor and no head moves (`graftyard_git::prsync::on_demand`), whose request id is its content's. The read itself answers `UNKNOWN`, as GHES 3.22 does while its background job computes, and the next poll reads the merge. Another reader's single-PR read is counted as a list's. `crate::prsync::demand` (`workers/site/src/prsync.rs`) is the hook M4's `ActionsTrigger` calls with `MergeCause::Dispatch`: it reads the PR fresh and sends the same `/demand`. REST `GET pulls/{n}` keeps `mergeable: null` and does not ask, because its renderer, shared with webhooks, never reads the merge [inference: a REST poller sees null either way].
+**Decision.** After it answers a GraphQL read, the edge asks the leader site's shard of the network for the merges the read's `mergeable` or `mergeStateStatus` lacked (`graftyard_api::gql::MergeAsks`, `workers/edge/src/api.rs`, `ask_merges`), in `wait_until`, so the reply never waits. A single-PR read by a writer or an App token goes to `POST /demand?cause=get` with the (base tip, head) its merge lacks. There the shard counts the GET, coalesces it per PR for `GET_COALESCE_MS`, admits it under the budget with its reserve, computes it in its turn, and commits it as a `PrSync` with no cursor and no head moves (`graftyard_git::prsync::on_demand`), whose request id is its content's. The read itself answers `UNKNOWN`, as GHES 3.22 does while its background job computes, and the next poll reads the merge. Another reader's single-PR read is counted as a list's. `crate::prsync::demand` (`workers/site/src/prsync.rs`) is the hook M4's `ActionsTrigger` calls with `MergeCause::Dispatch`: it reads the PR fresh and sends the same `/demand`. REST `GET pulls/{n}` keeps `mergeable: null` and does not ask, because its renderer, shared with webhooks, never reads the merge [inference: a REST poller sees null either way]. (Reversed by `merge-budget-3`: REST asks too.)
 
 **Why.** DESIGN names three causes, and only the head push was wired, so a polled PR past the budget stayed null until its next push.
 
@@ -2421,6 +2461,74 @@ Branch `merge-budget-2` closed A28, A29 and A30 (`tests/am1/results/merge-budget
 **Evidence.** As for A30, and the hosted run's `listAsked`.
 
 **Flip.** A list read rate whose asks load the shard object, which would sample them.
+
+### `merge-budget-3`: REST polls compute, counts outlive the shard object, and `PrSync`'s first attempt gets its own invocation, 2026-11-12
+
+Branch `merge-budget-3` closed the five items the lead left after `merge-budget-2` (`tests/am1/results/merge-budget-3.md`).
+
+#### REST `GET pulls/{n}` asks for its merge as GraphQL's single-PR read does
+
+**Decision.** `rest::get_pull_asks` returns the (base tip, head) a pull request's merge lacks from the same `gql::test_merge` GraphQL's `Node` reads, and the edge sends it with `ask_merges` after the reply: a writer's or an App's poll as `/demand?cause=get`, anyone else's as a list's count. Until the merge is recorded the reply keeps GHES 3.22's `mergeable: null` and `mergeable_state: "unknown"`; once it is, `mergeable` is the result and `mergeable_state` the lower case of `mergeStateStatus` (`gql::merge_state`), and a base that moves past the record makes both null and unknown again. `rebaseable` stays null.
+
+**Why.** Agents and CI poll REST `pulls/{n}` far more than GraphQL, so with REST silent a polled PR past the budget stayed null until its next push, and a computed merge was never shown to a REST poller. That met A30's flip.
+
+**Beat.** Counting REST polls without computing, which leaves the most common poller null forever. Rendering the merge in the webhook payload too, which GHES 3.22 sends as null [unverified: a GHES 3.22 webhook that carries a computed `mergeable`].
+
+**Evidence.** `a_rest_pull_read_asks_for_the_merge_graphql_asks_for_and_keeps_mergeable_null`; planted bugs in `tests/budget/plant.py`; the hosted run's `restPollAnswers` and `getAsked`.
+
+**Flip.** A GHES 3.22 capture whose `pulls/{n}` answers a different `mergeable_state` for a computed merge, such as `blocked` where GraphQL says `BLOCKED` but REST says `clean`.
+
+#### The counts the gate reads are stored on the shard
+
+**Decision.** The shard stores each network's `BudgetStats` under `budget:<network>` after every ask, coalesce, and merge result, and restores them before it serves `/status`, `/ask`, `/demand`, or a budget `/merge` (`MergeBudget::restored`, `Budgets::restore`). A restore never overwrites a network the object already budgets. The bucket itself is not stored: a restarted object starts it full, since it holds one second of refill and the object resets only after about 90 s idle.
+
+**Why.** The shard object resets about 90 s after its last request, and with it the counts, so B0-35's row read them from Workers Logs.
+
+**Beat.** Reporting the counts to the leader before the reset, which needs a write the object cannot schedule once it is idle. Logs alone, which the lead ruled out.
+
+**Evidence.** `a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line`. Hosted, repo 65553's counts (973 computed, 1,154 GET and 1,846 list asks) read the same 127 s after the last request and after a site day reset every object, with `vcpu` taken from the new `SHARD_INSTANCE` [measured, `tests/am1/results/merge-budget-3.md`].
+
+**Flip.** A store per ask that loads the shard object at journey 9's GET rate, which would batch the writes per second. Or a shard object reset while it is busy, which would grant a full bucket mid-load and need the bucket stored too.
+
+#### `PrSync`'s first attempt runs in a new invocation through the site's own service binding
+
+**Decision.** The leader's alarm sends each `PrSync` batch's first attempt to `POST /prsync/first` on its own site script through the `SITE` service binding, which runs the handler under `wait_until` in a new invocation. Re-sends still go through the queue. Under `test-faults`, `/bench_seed {"prsyncFirstFor": ms}` cuts the first attempt's deadline, so its abandoned merges and the queue's re-sends overlap.
+
+**Why.** Run in the leader's isolate, every call the handler made was charged to the member's newest request. Each test merge's shard read back from the member (`/read`, `/entries`), so each merge made that request one hop deeper, and a cold shard's catch-up failed its eighth `/merge` with "Subrequest depth limit exceeded" (traces 62b928c0, 77603e9e, b3ec102d). A probe Worker reproduced it: a Durable Object looping cross-region calls that call back failed at the eighth in 3 of 3 runs, and the same loop through a self service binding made 20 in 3 of 3.
+
+**Beat.** Sending first attempts through the queue, which `2026-11-05` rejected for its latency. Reusing one stub per batch, which passed the probe but depends on how the runtime picks a request to charge.
+
+**Evidence.** The traces and probe above, and two hosted runs on cold shards with 0 depth errors where merge-budget-2's logged 16 and 4 [measured, `tests/am1/results/merge-budget-3.md`]. A service binding call is not billed as a request [doc, Workers pricing], so cost does not change.
+
+**Flip.** A runtime that charges a Durable Object's calls to the request that started them, which would let the handler run in the isolate again.
+
+### `merge-budget-4`: merge waits are measured, a late older-base merge no longer replaces the current one, and the shard size is read, 2026-11-12
+
+Branch `merge-budget-4` closed the three items the lead left after `merge-budget-3` (`tests/am1/results/merge-budget-4.md`).
+
+#### A test merge at an older base never replaces the head's merge at the base tip
+
+**Decision.** `PrSync::decide_sync` skips a `TestMerged` whose head already has a recorded merge when its base is not the base branch's tip. A merge of a new head records as before, even at an older tip, and a merge at the tip replaces any older one.
+
+**Why.** `merge-budget-3`'s run 2 was thought to commit each batch twice, its abandoned first attempt and its re-send, so the duplicates slowed the leader. The leader's stored log says otherwise. No request id is at two indexes, and no (PR, head, base) was recorded twice, because content-keyed request ids and `decide_sync`'s `recorded` check already make the commit idempotent per (PR, head, base). What the log shows is a different fault. In run 1, 32 `TestMerged` events recorded a merge at an older base over the same head's merge at a newer one: a slow merge planned before a base move committed after its faster re-send. Each put `mergeable` back to null and the merge ref on a stale base until the next push.
+
+**Beat.** Keying commits per (PR, head, base) with an ack-without-entry path, which the lead proposed for duplicates the log does not show. Ordering merges by base in the shard, which cannot see what the leader has committed.
+
+**Evidence.** The stored logs of repos 65553 and 65554, and the hosted run's 0 such merges on repo 65559 [measured, `tests/am1/results/merge-budget-4.md`]. The container sizes are read from the Containers API: run 1's shard ran on 4 vCPU, 12 GiB, 20 GB. `an_older_base_merge_committed_late_does_not_replace_the_current_one`, and planted bugs in `tests/budget/plant.py`.
+
+**Flip.** A base branch that moves backward, such as a force-push to an older commit, which would make the tip's merge the older one. The check compares with the tip, not ancestry, so it already holds then.
+
+#### A28's flip, measured: merges do not wait past GET_COALESCE_MS
+
+**Decision.** `BudgetStats` counts each admitted merge's wait, from its ask to its start, in buckets with `GET_COALESCE_MS` as an edge. GETs keep coalescing on the clock.
+
+**Why.** With first attempts cut to 3 s, 68 of them given up and up to 44 merges in line at once, 1,993 merges waited p99 5.8 s and at most 5.8 s, a fifth of the 30 s window, so a GET's slot never expired while its merge was still queued.
+
+**Beat.** Coalescing on the queue, so a GET joins the pending merge, which the lead proposed in case waits passed the window. They did not.
+
+**Evidence.** `tests/am1/results/merge-budget-4.md` [measured]; `merge_waits_are_counted_in_buckets_and_read_against_the_coalescing_window`.
+
+**Flip.** A merge wait past `GET_COALESCE_MS` (`waits_over`), such as a network whose catch-ups are slow, which would coalesce on the queue.
 
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 

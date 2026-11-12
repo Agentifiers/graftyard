@@ -1,0 +1,13 @@
+{
+  // m0-carried-4's bare-object control (probe.ts). A separate script: no binding to any graft-m3c site.
+  "name": "graft-m4-gateprobe",
+  "main": "probe.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "LEADER", "class_name": "Leader" },
+    { "name": "PEER", "class_name": "Peer" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Leader", "Peer"] }]
+}

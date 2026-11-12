@@ -93,11 +93,12 @@ fn gate(index: bool, leading: bool, me: SiteId, servable: bool, heavy: bool, rea
     Gate::Serve
 }
 
-/// Whether a granted whole-tier read whose dump rebuild is due in `ms` waits for it and is granted again, rather than
-/// shed: only a learner's read-index read, and only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline.
-/// A voter's is shed, so the edge's next member or a 503 answers it at once.
-fn waits_for_rebuild(learner: bool, index: bool, now: u64, ms: u64, until: u64) -> bool {
-    learner && index && now + ms < until
+/// Whether a granted read whose answer's rebuild is due in `ms` waits for it and is granted again, rather than shed:
+/// only a read-index read, only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline, and for a whole-tier
+/// dump only on a learner. A voter's dump read is shed, so the edge's next member or a 503 answers it at once; a narrow
+/// API read (`narrow`) costs a page's rows, not a dump, so a follower holds it too (`family::narrow_wait`).
+fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64, until: u64) -> bool {
+    (learner || narrow) && index && now + ms < until
 }
 
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
@@ -557,7 +558,18 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.replace(body)).await
             }
-            (Method::Post, "/place") => self.ready_or(|| self.place()).await,
+            (Method::Post, "/place") => {
+                // Test installs: `{"near_ms": MS}` bounds every region at MS, so a hosted run can make every try miss.
+                #[cfg(feature = "test-faults")]
+                let near = req.json::<Value>().await.ok().and_then(|b| b["near_ms"].as_u64()).map(|ms| {
+                    [graftyard_types::Region::Enam, graftyard_types::Region::Weur, graftyard_types::Region::Apac]
+                        .map(|r| (r, ms as u16))
+                        .to_vec()
+                });
+                #[cfg(not(feature = "test-faults"))]
+                let near = None;
+                self.ready_or(|| self.place(near)).await
+            }
             (Method::Post, "/move") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.move_step(body)).await
@@ -587,7 +599,15 @@ impl<F: Family> Routes<F> {
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX))?;
                 self.reply(json!({ "entries": e }))
             }
-            (Method::Get, "/stats") => self.stats(crate::registry::query(&url, "reset").is_ok()),
+            (Method::Get, "/stats") => {
+                // Test installs, B0-02's A/B: `body=array` or `body=stream` sets how this member's calls send their
+                // body until it changes or the object resets (`Host::array_body`).
+                #[cfg(feature = "test-faults")]
+                if let Ok(b) = crate::registry::query(&url, "body") {
+                    self.host.array_body.set(b == "array");
+                }
+                self.stats(crate::registry::query(&url, "reset").is_ok())
+            }
             (Method::Post, p) if F::route_paths().contains(&p) => {
                 let body: Value = req.json().await?;
                 let path = p.to_owned();
@@ -631,12 +651,20 @@ impl<F: Family> Routes<F> {
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
             // LF-13: `{"for_ms": MS}` severs this member for MS ms (`Host::severed_until`); 0 lifts it. Answers
-            // this member's clock, so a driver times the lift on the clock the feed's `stoppedAt` uses.
+            // this member's clock, so a driver times the lift on the clock the feed's `stoppedAt` uses. F67: with
+            // `"half": true` the member is half-hung instead (`Host::half_hung_until`).
             (Method::Post, "/sever") => {
-                let ms = req.json::<Value>().await?["for_ms"].as_u64().unwrap_or(0);
+                let body = req.json::<Value>().await?;
+                let ms = body["for_ms"].as_u64().unwrap_or(0);
                 let now = now_ms();
-                self.host.severed_until.set(if ms == 0 { 0 } else { now + ms });
-                Response::from_json(&json!({ "now": now, "until": self.host.severed_until.get() }))
+                let until = if ms == 0 { 0 } else { now + ms };
+                let cell = if body["half"].as_bool() == Some(true) {
+                    &self.host.half_hung_until
+                } else {
+                    &self.host.severed_until
+                };
+                cell.set(until);
+                Response::from_json(&json!({ "now": now, "until": cell.get() }))
             }
             // B0-18's depth gauge: how many nested object calls are left from this member's ambient context. After
             // `afterMs`, a task (charged, as every send is, to the newest incoming request) starts a chain of calls
@@ -1064,6 +1092,7 @@ impl<F: Family> Routes<F> {
         // A read-index read goes to a follower only for the queries `Family::follower_serves` names; the caps hold on
         // it too (`gate`).
         let heavy = heavy_read(&q);
+        let narrow = q.get("rows").and_then(|r| r.get("api")).is_some();
         let (leading, me, servable, nl) = match self.host.core.borrow().as_ref() {
             Some(c) => (
                 c.m.role() == Role::Leader,
@@ -1110,7 +1139,7 @@ impl<F: Family> Routes<F> {
                 // A stale dump whose rebuild is not yet due (`family::dump_wait`). A learner's read waits for the
                 // rebuild and is granted again, so it answers the state at its new grant; a voter's is shed.
                 Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
-                    if waits_for_rebuild(learner, index, now_ms(), ms, until) {
+                    if waits_for_rebuild(learner, narrow, index, now_ms(), ms, until) {
                         self.host.stats.borrow_mut().waited_reads += 1;
                         worker::Delay::from(Duration::from_millis(ms)).await;
                         continue;
@@ -1266,6 +1295,11 @@ impl<F: Family> Routes<F> {
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
         v["raftIn"] = json!(s.raft_in);
+        v["placedOverNear"] = json!(s.placed_over_near);
+        #[cfg(feature = "test-faults")]
+        {
+            v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
+        }
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
             s.commit_ms.clear();
@@ -1456,7 +1490,7 @@ impl<F: Family> Routes<F> {
             }
             (true, Some(t)) if now.saturating_sub(t) >= DAY_MS => {
                 sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
-                let r = self.place_inner().await?;
+                let r = self.place_inner(graftyard_types::NEAR_RTT).await?;
                 console_log!("daily near check re-placed: {r:?}");
             }
             (true, Some(_)) => {}
@@ -1657,7 +1691,7 @@ impl<F: Family> Routes<F> {
         let fail_first = body.get("fail_first").and_then(Value::as_bool).unwrap_or(false);
         #[cfg(not(feature = "test-faults"))]
         let fail_first = false;
-        match self.replace_on(to, &[], 3, fail_first).await? {
+        match self.replace_on(to, &[], 3, fail_first, None).await? {
             Ok(v) | Err(v) => self.reply(v),
         }
     }
@@ -1666,13 +1700,17 @@ impl<F: Family> Routes<F> {
     /// successive generations, each joined and checked by `Placement::new` with the near bound `near`, up to `tries`;
     /// the first that passes goes in by `Normal`. `Err` when none passed: the config goes back to `Normal` with the
     /// old member, so a group that could not be placed keeps serving where it was, and the answer lists every try with
-    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared.
+    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared. With
+    /// `keep_below` (the near round trip of the member being replaced, from `/place`), a try refused only by the near
+    /// bound is a candidate: when none passed, the nearest goes in if it is nearer than `keep_below`, and otherwise the
+    /// old member stays with an `Ok` answer, so the bound alone never fails a create.
     async fn replace_on(
         &self,
         to: SiteId,
         near: &[(graftyard_types::Region, u16)],
         tries: usize,
         fail_first: bool,
+        keep_below: Option<u16>,
     ) -> Result<std::result::Result<Value, Value>> {
         let (chain, record, me, cfg, c_owner, c_genesis) = {
             let core = self.host.core.borrow();
@@ -1705,6 +1743,9 @@ impl<F: Family> Routes<F> {
         let others: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != to).cloned().collect();
         let mut generation = p.next_generation();
         let mut tried = Vec::new();
+        // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest
+        // goes in when none passed (`graftyard_types::nearest_try`).
+        let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
         let placed = loop {
             let new = MemberRef::new(chain, to, old.kind, old.slot, generation);
             let join = Join {
@@ -1736,8 +1777,18 @@ impl<F: Family> Routes<F> {
             let r = if fail_first && tried.is_empty() {
                 Err("injected: latency check failed".to_owned())
             } else if status == 200 {
-                graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), p.home(), &checks)
-                    .map_err(|e| e.to_string())
+                match graftyard_types::Placement::new(voters.clone(), arrayvec::ArrayVec::new(), p.home(), &checks) {
+                    Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if keep_below.is_some() => {
+                        let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
+                        if let Ok(np) =
+                            graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), p.home(), &unbounded)
+                        {
+                            over.push((new.clone(), np, ms, fresh.first().map(|f| f.1)));
+                        }
+                        Err(e.to_string())
+                    }
+                    r => r.map_err(|e| e.to_string()),
+                }
             } else {
                 Err(format!("join answered {status}: {rows}"))
             };
@@ -1748,45 +1799,79 @@ impl<F: Family> Routes<F> {
                     for (_, r) in &fresh {
                         self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                     }
-                    break Some(np);
+                    break Some((np, None));
                 }
                 Err(_) => {
+                    // A refused try is cleared at once, unless it is kept as a candidate for the nearest.
                     #[cfg(feature = "test-faults")]
-                    let _ = self.post_member(&new, "/retire", &json!({})).await;
+                    if !over.last().is_some_and(|o| o.0 == new) {
+                        let _ = self.post_member(&new, "/retire", &json!({})).await;
+                    }
                     if tried.len() >= tries {
-                        break None;
+                        // No try met the bound: the nearest goes in if it beats the member it replaces, so a create
+                        // never fails on the bound alone (`design/DESIGN.md`, "Placement is checked by latency").
+                        let pick = keep_below.and_then(|c| {
+                            graftyard_types::nearest_try(c, &over.iter().map(|o| o.2).collect::<Vec<_>>())
+                        });
+                        let best = pick.map(|i| over.swap_remove(i));
+                        #[cfg(feature = "test-faults")]
+                        for (m, ..) in &over {
+                            let _ = self.post_member(m, "/retire", &json!({})).await;
+                        }
+                        if let Some((_, _, _, Some(r))) = &best {
+                            self.store_rtt(r.peer, r.median_ms, r.at.0)?;
+                        }
+                        break best.map(|(_, np, ms, _)| (np, Some(ms)));
                     }
                     generation += 1;
                 }
             }
         };
-        let Some(np) = placed else {
+        let Some((np, near_ms)) = placed else {
             // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
             let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
+            if keep_below.is_some() {
+                // The bound is a goal: the member already placed stays, nearer than every try.
+                self.host.stats.borrow_mut().placed_over_near += 1;
+                let kept = json!({ "kept": old.do_name, "tried": tried, "restored": back.as_ref().err() });
+                console_log!("placement of {chain}: no try nearer than the current member: {kept}");
+                return Ok(match back {
+                    Ok(_) => Ok(kept),
+                    Err(e) => Err(json!({ "error": format!("restore: {e}"), "tried": tried })),
+                });
+            }
             let e = json!({ "error": "no placement passed", "tried": tried, "restored": back.as_ref().err() });
             console_error!("placement of {chain} failed: {e}");
             return Ok(Err(e));
         };
+        if let Some(ms) = near_ms {
+            self.host.stats.borrow_mut().placed_over_near += 1;
+            console_log!("placement of {chain}: no try within NEAR_RTT; kept the nearest, {ms} ms");
+        }
         let index = match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
             Ok(i) => i,
             Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
         };
-        Ok(Ok(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 })))
+        let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 });
+        if let Some(ms) = near_ms {
+            v["nearOver"] = json!(ms);
+        }
+        Ok(Ok(v))
     }
 
     /// The near check on the leader (`design/DESIGN.md`, Shape, `Placement` and `NEAR_RTT`): reads the home's round
     /// trips to the other voters (this member's own when it is the home) and, when the home's nearest voter is over
     /// `NEAR_RTT` for the home's region, re-places that voter with new generations through `replace_on`, up to
-    /// `PLACE_TRIES`. `{"placed": false}` when the group already passes; `{"error", "tried"}` with each try's round
-    /// trips when none passed. `graftyard_lookup::create` calls it once a new group leads, and the daily recheck when
+    /// `PLACE_TRIES`. `{"placed": false}` when the group already passes; when no try passed, the nearest try
+    /// (`nearOver`), or `{"kept"}` with the member it started with when that was nearer, with each try's round trips. `graftyard_lookup::create` calls it once a new group leads, and the daily recheck when
     /// a home was over the bound twice a day apart.
-    async fn place(&self) -> Result<Response> {
-        match self.place_inner().await? {
+    async fn place(&self, near: Option<Vec<(graftyard_types::Region, u16)>>) -> Result<Response> {
+        match self.place_inner(near.as_deref().unwrap_or(graftyard_types::NEAR_RTT)).await? {
             Ok(v) | Err(v) => self.reply(v),
         }
     }
 
-    async fn place_inner(&self) -> Result<std::result::Result<Value, Value>> {
+    async fn place_inner(&self, near: &[(graftyard_types::Region, u16)]) -> Result<std::result::Result<Value, Value>> {
         let (me, cfg) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
@@ -1806,19 +1891,13 @@ impl<F: Family> Routes<F> {
             let h = p.voters().iter().find(|m| m.site == home).ok_or_else(|| err("no member on the home"))?;
             site.member(&self.host.env, home, &h.do_name)?.fetch_with_str("https://member/rtt").await?.json().await?
         };
-        let checks = graftyard_types::PlacementChecks {
-            sites: &site.sites,
-            separate_accounts: false,
-            rtt: &rtt,
-            near: graftyard_types::NEAR_RTT,
-        };
+        let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt, near };
         match checks.check_near(p.voters(), home) {
             Ok(()) => Ok(Ok(
                 json!({ "placed": false, "rtt": rtt.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect::<Vec<_>>() }),
             )),
             Err(graftyard_types::PlacementError::NoNearFollower { nearest, ms, bound_ms, .. }) => {
-                let mut r =
-                    self.replace_on(nearest, graftyard_types::NEAR_RTT, graftyard_types::PLACE_TRIES, false).await?;
+                let mut r = self.replace_on(nearest, near, graftyard_types::PLACE_TRIES, false, Some(ms)).await?;
                 let over = json!({ "site": nearest.0, "ms": ms, "boundMs": bound_ms });
                 match &mut r {
                     Ok(v) | Err(v) => v["over"] = over,
@@ -2250,10 +2329,13 @@ mod tests {
         assert_eq!(gate(true, false, L, false, true, 0, 0), Gate::NotLeader, "a learner's leader-only read");
         assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a plain read answers NotLeader");
         // (learner, index, now, ms until the rebuild, deadline)
-        assert!(waits_for_rebuild(true, true, 1_000, 499, 1_500));
-        assert!(!waits_for_rebuild(true, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
-        assert!(!waits_for_rebuild(false, true, 1_000, 10, 1_500), "a follower sheds");
-        assert!(!waits_for_rebuild(true, false, 1_000, 10, 1_500), "a plain read never waits");
+        assert!(waits_for_rebuild(true, false, true, 1_000, 499, 1_500));
+        assert!(!waits_for_rebuild(true, false, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
+        assert!(!waits_for_rebuild(false, false, true, 1_000, 10, 1_500), "a follower sheds a dump read");
+        assert!(!waits_for_rebuild(true, false, false, 1_000, 10, 1_500), "a plain read never waits");
+        assert!(waits_for_rebuild(false, true, true, 1_000, 10, 1_500), "a follower holds a narrow API read");
+        assert!(!waits_for_rebuild(false, true, true, 1_000, 500, 1_500), "but not past its deadline");
+        assert!(!waits_for_rebuild(false, true, false, 1_000, 10, 1_500), "nor a leader's plain read");
     }
 
     /// An answer's body keeps its read counted until its last piece is taken, so answers still streaming to a far

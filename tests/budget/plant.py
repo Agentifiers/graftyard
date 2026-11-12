@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """merge-budget: planted bugs in the test-merge budget (`graftyard_git::prsync::MergeBudget`, `Budgets`, `budgeted`,
 `take`, `on_demand`), the edge's GraphQL merge asks (`graftyard_api::gql::MergeAsks`), the leader's `/stats` field,
-and the A1 driver's B0-35 window. Plants one mutant at a time, runs the tests
+the A1 driver's B0-35 window, and merge-budget-3's REST asks, stored counts, and in-line count. Plants one mutant at a time, runs the tests
 that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the
 worktree root:
 
@@ -15,6 +15,7 @@ PS = 'crates/git/src/prsync.rs'
 HOST = 'workers/site/src/host.rs'
 A1 = 'tests/am1/rest/a1.mjs'
 GQL = 'crates/api/src/gql.rs'
+REST = 'crates/api/src/rest.rs'
 GIT = ['cargo', '-p', 'graftyard-git', '--test', 'agent_load']
 SYNC = ['cargo', '-p', 'graftyard-git', '--test', 'prsync']
 SITE = ['cargo', '-p', 'graftyard-site', '--lib', 'first_attempts']
@@ -101,11 +102,53 @@ MUTANTS = [
      '    if false && matches!(&m.pack, Some(PackRef::Inline(b)) if b.len() > MERGE_BYTES_PER_COMMAND) {', SYNC),
     # A29 and A30 on the edge's read.
     ('A29: a list read asks for computes', GQL, '                    if self.listed {', '                    if false {', API),
-    ('A30: a PR with its current merge recorded still asks', GQL, '        if let (None, true, Some(base)) = (got, open, base) {',
-     '        if let (_, true, Some(base)) = (got, open, base) {', API),
+    ('A30: a PR with its current merge recorded still asks', GQL, '        (None, true, Some(base)) => Some((base, head.head_sha)),',
+     '        (_, true, Some(base)) => Some((base, head.head_sha)),', API),
     ('A30: the ask names the recorded base, not the tip', GQL,
-     '                        a.single.insert(self.it.n, (base, head.head_sha));',
-     '                        a.single.insert(self.it.n, (pull.base_sha, head.head_sha));', API),
+     '        (None, true, Some(base)) => Some((base, head.head_sha)),',
+     '        (None, true, Some(_)) => Some((pull.base_sha, head.head_sha)),', API),
+    # merge-budget-3.
+    ('mb3 1: REST asks nothing', REST, '            if let Some(pair) = ask {\n                asks.single.insert(n, pair);',
+     '            if let Some(pair) = ask.filter(|_| false) {\n                asks.single.insert(n, pair);', API),
+    ('mb3 1: REST never renders a computed merge (always null)', REST,
+     '            if let (Some(ok), Some((_, head))) = (got, open) {',
+     '            if let (Some(ok), Some((_, head))) = (got.filter(|_| false), open) {', API),
+    ('mb3 1: REST renders a computed merge as clean whatever blocks it', REST,
+     '                    _ => crate::gql::merge_state(r, &it, got).to_ascii_lowercase(),',
+     '                    _ => if ok { "clean".to_owned() } else { "dirty".to_owned() },', API),
+    ('mb3 1: REST renders a stale merge (ignores the base tip)', GQL,
+     '    let got = graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, base);',
+     '    let got = graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, m.as_ref().map(|m| m.base));', API),
+    ('mb3 4: a restore overwrites the newer counts this object holds', PS,
+     '        self.of.entry(net).or_insert_with(|| MergeBudget::restored(vcpu, now, stats));',
+     '        self.of.insert(net, MergeBudget::restored(vcpu, now, stats));', GIT),
+    ('mb3 4: a restore drops the stored counts', PS, '        b.stats = BudgetStats { vcpu: b.rate / 1000.0, ..stats };',
+     '        let _ = stats;', GIT),
+    ('mb3 4: a restore keeps the stored vCPU, not the shard\'s now', PS,
+     '        b.stats = BudgetStats { vcpu: b.rate / 1000.0, ..stats };', '        b.stats = stats;', GIT),
+    ('mb3 3: in_flight_max never counted', PS, '        b.stats.in_flight_max = b.stats.in_flight_max.max(b.in_flight);', '', GIT),
+    ('mb3 3: in_flight never left (counts every merge ever)', PS, '                b.in_flight = b.in_flight.saturating_sub(1);',
+     '', GIT),
+    # merge-budget-4.
+    ('mb4 1: a merge\'s wait is never counted', PS, '        b.record_wait(t0.saturating_sub(asked_at));', '        let _ = asked_at;', GIT),
+    ('mb4 1: the wait is timed from after the catch-up, not the ask', PS,
+     [('    let asked_at = clock();\n    prepare().await?;', '    prepare().await?;\n    let asked_at = clock();')], None, GIT),
+    ('mb4 1: a wait on an edge lands in the bucket above', PS, '        let i = WAIT_EDGES_MS.iter().position(|e| ms <= *e)',
+     '        let i = WAIT_EDGES_MS.iter().position(|e| ms < *e)', GIT),
+    ('mb4 1: waits past GET_COALESCE_MS count from the edge\'s own bucket', PS,
+     '        self.wait_hist.iter().skip(i + 1).sum()', '        self.wait_hist.iter().skip(i).sum()', GIT),
+    ('mb4 1: driver drops the wait histogram from the window', A1,
+     '      waitHist: hist, waitMaxMs: a.waitMaxMs ?? 0,', '      waitHist: hist.map(() => 0), waitMaxMs: a.waitMaxMs ?? 0,', NODE),
+    ('mb4 2: an older base\'s merge replaces the current head\'s merge again', PS,
+     '            if head != m.head || recorded || older {', '            if head != m.head || recorded {', SYNC),
+    ('mb4 2: any recorded merge of the head blocks a new one, even at the tip', PS,
+     '            let older = have.as_ref().is_some_and(|r| r.head == m.head) && s.get(&base) != Some(m.base);',
+     '            let older = have.as_ref().is_some_and(|r| r.head == m.head);', SYNC),
+    ('mb4 2: a new head\'s first merge is blocked when the base moved', PS,
+     '            let older = have.as_ref().is_some_and(|r| r.head == m.head) && s.get(&base) != Some(m.base);',
+     '            let older = s.get(&base) != Some(m.base);', SYNC),
+    ('mb3 3: driver drops inFlightMax from the window', A1,
+     '    inFlightMax: Math.max(0, ...sites.map((x) => x.inFlightMax)),', '    inFlightMax: 0,', NODE),
 ]
 
 
