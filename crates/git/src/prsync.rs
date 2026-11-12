@@ -334,6 +334,48 @@ pub struct BudgetStats {
     /// The most merges at once that had passed the first look at the budget and were catching up, waiting for the
     /// network's turn, or running: above 1, merges arrived concurrently and the turn put them in line.
     pub in_flight_max: u32,
+    /// Each admitted merge's wait, from its ask reaching the shard to its start (catch-up, turn, and the second look
+    /// at the budget), counted in the buckets of WAIT_EDGES_MS: `wait_hist[i]` holds waits up to `WAIT_EDGES_MS[i]`,
+    /// and one more bucket holds the rest. A28's flip reads it against GET_COALESCE_MS, an edge (`waits_over`).
+    pub wait_hist: Vec<u32>,
+    pub wait_max_ms: f32,
+}
+
+/// The upper edges, in ms, of `BudgetStats::wait_hist`'s buckets. GET_COALESCE_MS is one, so the count of waits past
+/// it is exact.
+pub const WAIT_EDGES_MS: [u64; 14] =
+    [10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 20_000, GET_COALESCE_MS, 60_000, 120_000];
+
+impl BudgetStats {
+    fn wait(&mut self, ms: u64) {
+        let i = WAIT_EDGES_MS.iter().position(|e| ms <= *e).unwrap_or(WAIT_EDGES_MS.len());
+        if self.wait_hist.len() <= WAIT_EDGES_MS.len() {
+            self.wait_hist.resize(WAIT_EDGES_MS.len() + 1, 0);
+        }
+        self.wait_hist[i] += 1;
+        self.wait_max_ms = self.wait_max_ms.max(ms as f32);
+    }
+
+    /// The wait at quantile `q` (0 to 1), as its bucket's upper edge, or `wait_max_ms` in the last bucket. `None`
+    /// with no merge counted.
+    pub fn wait_ms(&self, q: f64) -> Option<f32> {
+        let total: u64 = self.wait_hist.iter().map(|c| u64::from(*c)).sum();
+        let rank = ((q * total as f64).ceil() as u64).max(1);
+        let mut seen = 0;
+        for (i, c) in self.wait_hist.iter().enumerate() {
+            seen += u64::from(*c);
+            if total > 0 && seen >= rank {
+                return Some(WAIT_EDGES_MS.get(i).map_or(self.wait_max_ms, |e| (*e as f32).min(self.wait_max_ms)));
+            }
+        }
+        None
+    }
+
+    /// How many admitted merges waited longer than `ms`, which must be one of WAIT_EDGES_MS.
+    pub fn waits_over(&self, ms: u64) -> u32 {
+        let i = WAIT_EDGES_MS.iter().position(|e| *e == ms).expect("an edge of WAIT_EDGES_MS");
+        self.wait_hist.iter().skip(i + 1).sum()
+    }
 }
 
 /// The test-merge budget of one network on one site: a bucket of vCPU-milliseconds that refills at TEST_MERGE_BUDGET
@@ -452,6 +494,11 @@ impl MergeBudget {
         }
     }
 
+    /// Counts one admitted merge's wait, from its ask to its start (`asked` does).
+    pub fn record_wait(&mut self, ms: u64) {
+        self.stats.wait(ms);
+    }
+
     /// The budget, in vCPU.
     pub fn vcpu(&self) -> f32 {
         self.rate / 1000.0
@@ -553,6 +600,7 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
         }
     }
     let _in_flight = InFlight(budgets, net);
+    let asked_at = clock();
     prepare().await?;
     let turn = budgets.borrow_mut().turn(net);
     let _turn = turn.turn().await;
@@ -561,6 +609,9 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
         return Ok(None);
     }
     let t0 = clock();
+    if let Some(b) = budgets.borrow_mut().of.get_mut(&net) {
+        b.record_wait(t0.saturating_sub(asked_at));
+    }
     let r = run().await;
     let wall = clock().saturating_sub(t0) as f32;
     let cpu = r.as_ref().ok().and_then(|(_, c)| *c).unwrap_or(wall);
@@ -860,11 +911,17 @@ impl PrSync {
             events.push(RepoEvent::Refs { push: self.request, actor: None, updates, pack: None });
         }
         // A merge of the pull request's current head is recorded even when its base has moved since: the row is keyed
-        // by the SHA pair, so `mergeable` shows it stale rather than leaving the merge ref on an older head.
+        // by the SHA pair, so `mergeable` shows it stale rather than leaving the merge ref on an older head. Once the
+        // current head has a merge recorded, only one at the base's tip replaces it: a merge planned on an older tip,
+        // such as a first attempt's that finished after its re-send, would put `mergeable` back to null and the merge
+        // ref on an older base. merge-budget-3's run 1 recorded 32 such over a current merge
+        // (`tests/am1/results/merge-budget-4.md`).
         for m in &self.merges {
-            let Some((head, _)) = open_head(m.n) else { continue };
-            let recorded = mergeability(core, m.n).is_some_and(|r| r.base == m.base && r.head == m.head);
-            if head != m.head || recorded {
+            let Some((head, base)) = open_head(m.n) else { continue };
+            let have = mergeability(core, m.n);
+            let recorded = have.as_ref().is_some_and(|r| r.base == m.base && r.head == m.head);
+            let older = have.as_ref().is_some_and(|r| r.head == m.head) && s.get(&base) != Some(m.base);
+            if head != m.head || recorded || older {
                 continue;
             }
             events.push(RepoEvent::TestMerged {

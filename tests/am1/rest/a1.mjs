@@ -108,6 +108,23 @@ export function offered(p) {
 }
 
 const FIELDS = ["spentMs", "wallMs", "computed", "shed", "getAsked", "getComputes", "listAsked", "listComputes"];
+// `graftyard_git::prsync::WAIT_EDGES_MS`: the upper edges of `waitHist`'s buckets, then one bucket past the last.
+export const WAIT_EDGES_MS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000];
+const COALESCE_MS = 30000;
+/** A merge-wait histogram's quantile `q`, as its bucket's upper edge (or `maxMs` past the last), and the count past
+ * GET_COALESCE_MS; as `BudgetStats::wait_ms` and `waits_over`. */
+export function waitSummary(hist, maxMs) {
+  const total = hist.reduce((n, c) => n + c, 0);
+  const at = (q) => {
+    if (!total) return null;
+    const rank = Math.max(1, Math.ceil(q * total));
+    let seen = 0;
+    for (let i = 0; i < hist.length; i++) { seen += hist[i]; if (seen >= rank) return i < WAIT_EDGES_MS.length ? Math.min(WAIT_EDGES_MS[i], maxMs) : maxMs; }
+    return maxMs;
+  };
+  const over = hist.slice(WAIT_EDGES_MS.indexOf(COALESCE_MS) + 1).reduce((n, c) => n + c, 0);
+  return { merges: total, p50Ms: at(0.5), p99Ms: at(0.99), maxMs, overCoalesceMs: over };
+}
 /** The window's counts per site: `after` less `before`, or `after` alone if the shard object restarted (`since`). */
 export function budgetWindow(before, after, seconds) {
   const sites = after.map((a, site) => {
@@ -116,7 +133,9 @@ export function budgetWindow(before, after, seconds) {
     const restarted = !b || b.since !== a.since;
     // `lowMs` and `maxMs` are the bucket's lowest and the largest charge since `since`, so they cover the window only
     // on a shard that restarted for it; otherwise they are an upper bound on the overrun over the shard's life.
+    const hist = WAIT_EDGES_MS.concat([0]).map((_, i) => (a.waitHist?.[i] ?? 0) - (restarted ? 0 : b.waitHist?.[i] ?? 0));
     return { site, vcpu: a.vcpu, restarted, lowMs: a.lowMs ?? 0, maxMs: a.maxMs ?? 0, inFlightMax: a.inFlightMax ?? 0,
+      waitHist: hist, waitMaxMs: a.waitMaxMs ?? 0,
       ...Object.fromEntries(FIELDS.map((f) => [f, (a[f] ?? 0) - (restarted ? 0 : b[f] ?? 0)])) };
   }).filter(Boolean);
   const sum = (f) => sites.reduce((n, x) => n + x[f], 0);
@@ -126,6 +145,9 @@ export function budgetWindow(before, after, seconds) {
   const overrun = sites.some((x) => x.lowMs < -Math.max(x.maxMs, 50) - 0.5);
   return { sites, vcpuUsed, budgetVcpu, withinBudget: budgetVcpu !== null && vcpuUsed <= budgetVcpu, overrun,
     inFlightMax: Math.max(0, ...sites.map((x) => x.inFlightMax)),
+    // `waitMaxMs` covers the shard's life since `since`, as `lowMs` does: the window's own max is at most it.
+    wait: waitSummary(WAIT_EDGES_MS.concat([0]).map((_, i) => sites.reduce((n, x) => n + x.waitHist[i], 0)),
+      Math.max(0, ...sites.map((x) => x.waitMaxMs))),
     computed: sum("computed"), shed: sum("shed"), getAsked: sum("getAsked"), getComputes: sum("getComputes"),
     listAsked: sum("listAsked"), listComputes: sum("listComputes"), cpuToWall: sum("wallMs") ? +(sum("spentMs") / sum("wallMs")).toFixed(3) : null };
 }
@@ -254,9 +276,15 @@ if (opt.selftest) {
     // An older shard (no `getAsked`) reads as 0, and a bucket 400 ms below zero with 100 ms merges is an overrun.
     const old = budgetWindow([null], [{ since: 1, vcpu: 0.25, spentMs: 60, computed: 1, shed: 0, listAsked: 0, listComputes: 0 }], 60);
     const over = budgetWindow([null], [bs(1, 600, 6, 0, { lowMs: -400, maxMs: 100 })], 60);
+    const h = (m) => WAIT_EDGES_MS.concat([0]).map((_, i) => m[i] ?? 0);
+    const waitWin = budgetWindow([bs(1, 0, 0, 0, { waitHist: h({ 0: 50, 11: 1 }) }), null],
+      [bs(1, 0, 0, 0, { waitHist: h({ 0: 147, 11: 2, 12: 2 }), waitMaxMs: 70000 }), null], 60);
     const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted
       && w.getAsked === 20 && w.getComputes === 4 && w.listAsked === 7 && w.cpuToWall === 0.5 && !w.overrun
       && old.getAsked === 0 && !old.overrun && over.overrun && w.inFlightMax === 3 && old.inFlightMax === 0
+      // Waits: the window's delta on a kept shard, all of a restarted one; 2 of 100 past 30 s.
+      && JSON.stringify(waitWin.wait) === JSON.stringify({ merges: 100, p50Ms: 10, p99Ms: 60000, maxMs: 70000, overCoalesceMs: 2 })
+      && old.wait.merges === 0 && old.wait.p99Ms === null
       // A shard object that restarted after the load keeps the run's last sample; one still up reads now.
       && latestBudget([bs(9, 0, 0, 0), null, bs(1, 700, 7, 0)], [bs(1, 600, 6, 0), null, bs(1, 600, 6, 0)])
         .map((b) => b?.computed ?? null).join() === "6,,7";
