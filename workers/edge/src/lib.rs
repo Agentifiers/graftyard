@@ -749,6 +749,8 @@ fn gunzip(b: &[u8], cap: u64) -> Result<Vec<u8>> {
 
 struct Ctx<'a> {
     env: &'a Env,
+    /// The request's context, for work that outlives the reply (`api::ask_merges`).
+    ctx: &'a Context,
     cfg: &'a Config,
     rid: RequestId,
     /// The install's sites, from `GRAFTYARD_SITES`.
@@ -1003,10 +1005,72 @@ async fn receive_pack(
     }
 }
 
-/// `GitCacheShard::validate` on the network's home shard: tips in the body ahead of the pack. With `detail` (the
-/// `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also answers each
-/// update's new commits and changed paths; with an empty pack it answers only those, and no index. Without `detail`
-/// the call is the one a default push has always made.
+/// The sites whose shards a validate tries, in order: the home site's, then the record's other Full sites' in record
+/// order (a Witness site holds no content, so it has no git cache), or only the one a test pinned (`x-graft-shard`).
+/// A home shard that rehydrated about 3 GB after a reset took more than 30 min, and every push meanwhile waited on it
+/// until its deadline (`tests/am1/results/hot-shards.md`).
+fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteId> {
+    if let Some(s) = pinned {
+        return vec![s];
+    }
+    let others = record
+        .sites
+        .iter()
+        .zip(record.name.kinds())
+        .filter(|(s, k)| **s != record.home && **k == graftyard_types::MemberKind::Full)
+        .map(|(s, _)| *s);
+    std::iter::once(record.home).chain(others).collect()
+}
+
+/// After a shard of a network answers anything but 200 or 422, this isolate tries it last for this long, so pushes
+/// during a 30 min rehydrate do not each wait out the home shard first: j9d's pushes took about 21 s each, 15 of them
+/// the home's `wait` (`tests/am1/results/hot-shards.md`). Past it the home is tried first again.
+const COLD_SHARD_MS: u64 = 30_000;
+
+thread_local! {
+    static COLD: std::cell::RefCell<std::collections::BTreeMap<(i64, u8), u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// `sites` with the ones marked cold at `now` moved to the end, keeping the order within each part.
+fn warm_first(sites: Vec<SiteId>, cold: impl Fn(SiteId) -> bool) -> Vec<SiteId> {
+    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));
+    warm.into_iter().chain(cold).collect()
+}
+
+/// `validate_sites` for `repo`, with the shards this isolate saw cold in the last `COLD_SHARD_MS` last.
+fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
+    let t = now().0;
+    let net = repo.id.0.0;
+    COLD.with(|m| {
+        let m = m.borrow();
+        warm_first(validate_sites(&repo.record, pinned), |s| m.get(&(net, s.0)).is_some_and(|until| *until > t))
+    })
+}
+
+fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
+    COLD.with(|m| {
+        let mut m = m.borrow_mut();
+        if cold {
+            m.insert((repo.id.0.0, site.0), now().0 + COLD_SHARD_MS);
+        } else {
+            m.remove(&(repo.id.0.0, site.0));
+        }
+    });
+}
+
+/// How long the first shard tried, usually the home's, may hold a validate in its catch-up before the edge tries the
+/// next: past it the shard answers 503 `warming` and goes on catching up in the background. Each later shard gets
+/// `VALIDATE_WAIT_OTHER_S`. With three Full sites they stay under the push's 180 s deadline.
+const VALIDATE_WAIT_HOME_S: u32 = 15;
+const VALIDATE_WAIT_OTHER_S: u32 = 60;
+
+/// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
+/// another placement site's shard of the network (`shard_order`): tips in the body ahead of the pack. With
+/// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
+/// answers each update's new commits and changed paths; with an empty pack it answers only those, and no index.
+/// Without `detail` the call is the one a default push has always made. A 422 is the pack's answer and ends the
+/// tries; a 503 `warming`, another status, or a failed call moves to the next site.
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -1014,40 +1078,97 @@ pub(crate) async fn validate(
     tips: &[String],
     detail: &str,
 ) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), String> {
-    let run = async {
-        let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
-        if !tips.is_empty() || detail.is_empty() {
-            head.push(b'\n');
-        }
-        let n = head.len();
-        let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
-        if !detail.is_empty() {
-            url.push_str(&format!("&detailn={}", detail.len()));
-            head.extend_from_slice(detail.as_bytes());
-        }
-        head.extend_from_slice(pack);
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head.as_slice()).into()));
-        let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
-        if r.status_code() != 200 {
-            return Ok(Err(r.text().await.unwrap_or_default()));
-        }
-        if detail.is_empty() {
-            return Ok::<_, Error>(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
-        }
-        #[derive(Deserialize)]
-        struct Detailed {
-            index: Option<PackIndex>,
-            #[serde(default)]
-            detail: Vec<graftyard_git::agent::RefDetail>,
-        }
-        let d: Detailed = r.json().await?;
-        Ok(Ok((d.index, d.detail)))
-    };
-    match run.await {
-        Ok(r) => r,
-        Err(e) => Err(e.to_string()),
+    let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
+    if !tips.is_empty() || detail.is_empty() {
+        head.push(b'\n');
     }
+    let n = head.len();
+    let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
+    if !detail.is_empty() {
+        url.push_str(&format!("&detailn={}", detail.len()));
+        head.extend_from_slice(detail.as_bytes());
+    }
+    head.extend_from_slice(pack);
+    #[cfg(feature = "test-faults")]
+    let pinned = c.shard;
+    #[cfg(not(feature = "test-faults"))]
+    let pinned = None;
+    let mut last = String::new();
+    for (i, site) in shard_order(repo, pinned).into_iter().enumerate() {
+        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+        let r = validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await;
+        mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422, _)))));
+        match r {
+            Ok(Ok(r)) => return Ok(r),
+            Ok(Err((422, e))) => return Err(e),
+            Ok(Err((status, e))) => last = format!("site {}'s shard answered {status}: {e}", site.0),
+            Err(e) => last = format!("site {}'s shard: {e}", site.0),
+        }
+    }
+    Err(last)
+}
+
+/// A read on the network's shards (`upload-pack`, `info-refs`) in `shard_order`: the first with
+/// `wait=VALIDATE_WAIT_HOME_S`, then each other with `wait=VALIDATE_WAIT_OTHER_S`, until one answers 200.
+/// The last answer otherwise. A fetch, like a push, waited on a home shard's 30 min rehydrate until its deadline.
+pub(crate) async fn shard_read(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    url: &str,
+    method: Method,
+    proto: &str,
+    body: Option<&[u8]>,
+) -> Result<Response> {
+    #[cfg(feature = "test-faults")]
+    let pinned = c.shard;
+    #[cfg(not(feature = "test-faults"))]
+    let pinned = None;
+    let sites = shard_order(repo, pinned);
+    for (i, site) in sites.iter().enumerate() {
+        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+        let h = Headers::new();
+        h.set("git-protocol", proto)?;
+        let mut init = RequestInit::new();
+        init.with_method(method.clone()).with_headers(h);
+        if let Some(b) = body {
+            init.with_body(Some(js_sys::Uint8Array::from(b).into()));
+        }
+        let req = Request::new_with_init(&format!("{url}&wait={wait}"), &init)?;
+        let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
+        mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
+        if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
+            return r;
+        }
+    }
+    unreachable!("validate_sites always holds the home site")
+}
+
+/// One validate on site `site`'s shard of the network: `Err((status, body))` for any status but 200.
+async fn validate_on(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    site: SiteId,
+    url: &str,
+    head: &[u8],
+    detail: &str,
+) -> Result<std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), (u16, String)>> {
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head).into()));
+    let mut r = shard_at(c, repo, Some(site))?.fetch_with_request(Request::new_with_init(url, &init)?).await?;
+    if r.status_code() != 200 {
+        return Ok(Err((r.status_code(), r.text().await.unwrap_or_default())));
+    }
+    if detail.is_empty() {
+        return Ok(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
+    }
+    #[derive(Deserialize)]
+    struct Detailed {
+        index: Option<PackIndex>,
+        #[serde(default)]
+        detail: Vec<graftyard_git::agent::RefDetail>,
+    }
+    let d: Detailed = r.json().await?;
+    Ok(Ok((d.index, d.detail)))
 }
 
 /// `auto_init`'s first commit on a new repository (`crate::repos`): the README commit's pack, validated by the git
@@ -1147,12 +1268,8 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
             return Ok(Response::from_bytes(b)?.with_headers(h));
         }
     }
-    let mut init = RequestInit::new();
-    let h = Headers::new();
-    h.set("git-protocol", &proto)?;
-    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
-    let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
+    let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         return text(c.rid, 503, &format!("git cache: {} {}\n", r.status_code(), r.text().await.unwrap_or_default()));
@@ -1200,12 +1317,8 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
         }
         Service::UploadPack => {
             // v0: the shard's own advertisement, after it caught up to the leader's refs.
-            let h = Headers::new();
-            h.set("git-protocol", proto.as_deref().unwrap_or(""))?;
-            let mut init = RequestInit::new();
-            init.with_method(Method::Get).with_headers(h);
             let url = format!("https://shard/info-refs?repo={}", repo.id.0.0);
-            let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
+            let mut r = shard_read(c, repo, &url, Method::Get, proto.as_deref().unwrap_or(""), None).await?;
             let b = r.bytes().await?;
             Ok(Response::from_bytes(b)?.with_headers(git_headers(c.rid, &service.advertisement_type())?))
         }
@@ -1861,6 +1974,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     graftyard_lookup::set_colo(colo_id(&req));
     let c = Ctx {
         env: &env,
+        ctx: &ctx,
         cfg: &cfg,
         rid,
         sites: &sites,
@@ -1998,7 +2112,46 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
 mod tests {
     use std::io::Write;
 
-    use super::gunzip;
+    use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
+
+    use super::{gunzip, validate_sites, warm_first};
+
+    fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
+        PlacementRecord {
+            name,
+            sites: sites.iter().map(|&s| SiteId(s)).collect(),
+            home: SiteId(home),
+            generation: 1,
+            moving_from: None,
+            at: Timestamp(1),
+        }
+    }
+
+    /// A validate tries the home site's shard first even when the record lists it last, then the other Full sites in
+    /// record order. A Witness site has no git cache, so it is never tried, and a test-pinned site is tried alone.
+    #[test]
+    fn a_validate_falls_back_from_the_home_shard_to_the_other_full_sites() {
+        let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 2), None)), [2, 0, 1]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), None)), [0, 1, 2]);
+        // Us2w: the third slot is the Witness, site 1 here.
+        assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
+        assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// A shard seen cold goes last and the rest keep their order: the home first among the warm ones, and the cold
+    /// ones in their own order. With none cold the order is unchanged.
+    #[test]
+    fn a_cold_shard_is_tried_last_and_the_rest_keep_their_order() {
+        let s = |v: &[u8]| v.iter().map(|&i| SiteId(i)).collect::<Vec<_>>();
+        let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 == 2)), [0, 1, 2]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 == 0)), [2, 1, 0]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 != 1)), [1, 2, 0]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |_| false)), [2, 0, 1]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |_| true)), [2, 0, 1]);
+    }
 
     fn gzip(b: &[u8]) -> Vec<u8> {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

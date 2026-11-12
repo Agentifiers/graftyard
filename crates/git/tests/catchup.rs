@@ -353,7 +353,14 @@ impl Bed {
     /// Promotes entries 1..=to into one stored, complete pack, as the archive alarm does, and records `Promoted` at a
     /// new entry.
     fn promote(&self, to: u64) {
-        let p = Pack { brings: (1..=to).collect(), needs: vec![], pad: 0 };
+        self.promote_range(1, to);
+    }
+
+    /// Promotes `from..=to`: a complete pack, whose objects name the last object of the promotion before it, as
+    /// `index-pack --strict` checks.
+    fn promote_range(&self, from: u64, to: u64) {
+        let needs = if from > 1 { vec![from - 1] } else { vec![] };
+        let p = Pack { brings: (from..=to).collect(), needs, pad: 0 };
         let b = bytes_of(&p);
         let id = PackId(Ulid(1_000_000 + to as u128));
         self.disk.bucket.borrow_mut().insert(id, b.clone());
@@ -363,7 +370,7 @@ impl Bed {
             .borrow_mut()
             .push((id, Marker { chain: CHAIN, index: Index(at), checksum: sum(&b), bytes: b.len() as u64 }));
         let pack = PackRef::Stored { id, checksum: sum(&b), bytes: b.len() as u64, sites: SiteSet(3) };
-        let pr = Promoted { from: Index(1), to: Index(to), pack };
+        let pr = Promoted { from: Index(from), to: Index(to), pack };
         self.log.entries.borrow_mut().push(LogPacks {
             index: Index(at),
             packs: vec![],
@@ -478,12 +485,15 @@ fn a_cut_off_rehydrate_resumes_and_never_starts_again_from_nothing() {
         assert!(b.disk.fetched.get() <= stored + attempts, "cut {cut}: {} stored fetches", b.disk.fetched.get());
         assert!(b.disk.ingests.get() <= stored + 267 + attempts, "cut {cut}: {} ingests", b.disk.ingests.get());
         assert!(b.store.rehydrating.borrow().is_none());
-        // The 301 tail entries above the promotion read about once: a cut-off run re-reads at most the two pages it held.
         // The 301 tail entries above the promotion are read about once: each cut-off run re-reads at most the two pages
-        // it held (15 of these 40 KB entries a page).
+        // it held (15 of these 40 KB entries a page), and a run still in the marked phase reads the entry of each of the
+        // 33 markers in the tail, one entry a read.
         let page = PAGE_BYTES / 40_000;
         let read = b.log.served.get();
-        assert!(read <= 301 + (attempts + 1) * 2 * page, "cut {cut}: {read} entries read in {attempts} attempts");
+        assert!(
+            read <= 301 + (attempts + 1) * (2 * page + 33),
+            "cut {cut}: {read} entries read in {attempts} attempts"
+        );
         // The marked phase runs to its end once: a resumed run past it does not list the stored packs again. Each
         // attempt asks `have` about once for the page it resumes on; the tail's 301 entries are about 21 pages.
         let asks = b.disk.asks.borrow().len();
@@ -542,5 +552,25 @@ fn a_new_disk_or_an_archived_cursor_rehydrates_and_a_failed_read_keeps_the_curso
     b.promote(60);
     b.log.first.set(61);
     assert!(b.run().unwrap().rehydrated.is_some());
+    b.assert_serves_head();
+}
+
+/// Promotion runs ahead of archiving, so a hot group's earlier promotions are recorded in the log above the last one's
+/// range, where the tail starts. The last promoted pack names objects only they bring: a rehydrate that loaded it alone
+/// in its marked phase failed every run on graft-m3c with "1 marked packs have bases no pack provides"
+/// (`tests/am1/results/hot-shards.md`). A pushed stored pack in the tail, thin against the inline pack before it, is
+/// still left to the tail.
+#[test]
+fn a_rehydrate_loads_every_promotion_still_in_the_log_before_the_last_one() {
+    let b = bed(300, 1_000, 9);
+    b.promote_range(1, 100);
+    b.promote_range(101, 180);
+    b.promote_range(181, 240);
+    let r = b.run().unwrap();
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!(h.entries, 63, "the tail is 241..=303");
+    assert_eq!(b.disk.inits.get(), 1);
+    // Each stored pack fetched once: 33 pushed, 3 promoted.
+    assert_eq!(b.disk.fetched.get(), 36);
     b.assert_serves_head();
 }

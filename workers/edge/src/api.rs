@@ -845,6 +845,49 @@ async fn merge_plan(
     Ok(a.merge_plan(req))
 }
 
+/// After a GraphQL read's reply, what its `mergeable` fields lacked (`graftyard_api::gql::MergeAsks`), to the leader
+/// site's shard of the network, as `merge_plan` finds it: each single-PR read's merge as a GET's (`/demand?cause=get`),
+/// which the shard coalesces per PR, budgets, computes, and commits, so a later poll reads it, and one count of the PRs
+/// a list rendered (`/ask?cause=list`), which never computes. A GET computes only for a writer or an App token (CI);
+/// another reader's is counted as a list's, a field that does not compute. The reply never waits on the shard.
+fn ask_merges(c: &Ctx<'_>, repo: &Repo, asks: graftyard_api::gql::MergeAsks, computes: bool) {
+    use graftyard_git::prsync::MergeCause;
+    if asks.single.is_empty() && asks.listed.is_empty() {
+        return;
+    }
+    let leader = graftyard_lookup::cached_leader(ChainId::Repo(repo.id)).map(|t| t.site);
+    let Ok(stub) = crate::shard_at(c, repo, leader) else { return };
+    let Ok(record) = serde_json::to_string(&repo.record) else { return };
+    let record = String::from(js_sys::encode_uri_component(&record));
+    let id = repo.id.0.0;
+    let mut urls: Vec<String> = Vec::new();
+    let mut listed = asks.listed.len();
+    for (n, (base, head)) in &asks.single {
+        if computes {
+            let (b, h, cause) = (base.hex(), head.hex(), MergeCause::Get.as_str());
+            urls.push(format!(
+                "https://shard/demand?repo={id}&n={}&base={b}&head={h}&cause={cause}&record={record}",
+                n.0
+            ));
+        } else {
+            listed += 1;
+        }
+    }
+    if listed > 0 {
+        urls.push(format!("https://shard/ask?repo={id}&cause={}&count={listed}", MergeCause::List.as_str()));
+    }
+    c.ctx.wait_until(async move {
+        for url in urls {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let Ok(req) = Request::new_with_init(&url, &init) else { continue };
+            if let Err(e) = stub.fetch_with_request(req).await {
+                console_error!("merge ask {}: {e}", url.split('&').next().unwrap_or(""));
+            }
+        }
+    });
+}
+
 /// Commits a merge or merge-queue command and returns the reply its leader rendered from the `&Acked`, once
 /// `FormatsEnable` has enabled 32.4; until then 503.
 async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Result<Reply> {
@@ -1082,7 +1125,9 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     };
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
-        return Ok(Reply::json(200, graphql::query(&gq, Some(&r))));
+        let (v, asks) = graphql::query_asks(&gq, Some(&r));
+        ask_merges(c, &rd.repo, asks, can_write(&r, Some(&who)) || matches!(who.actor, Actor::App { .. }));
+        return Ok(Reply::json(200, v));
     }
     let p = match graphql::plan(&gq, &r) {
         Ok(p) => p,
@@ -1636,14 +1681,9 @@ async fn commit_object(
 ) -> std::result::Result<Option<Vec<u8>>, String> {
     use graftyard_git::commit_fetch;
     let err = |e: worker::Error| e.to_string();
-    let mut init = RequestInit::new();
-    let h = Headers::new();
-    h.set("git-protocol", "version=2").map_err(err)?;
     let body = commit_fetch::request(sha);
-    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
-    let req = Request::new_with_init(&url, &init).map_err(err)?;
-    let mut r = crate::shard(c, repo).map_err(err)?.fetch_with_request(req).await.map_err(err)?;
+    let mut r = crate::shard_read(c, repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
     if r.status_code() != 200 {
         return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
     }

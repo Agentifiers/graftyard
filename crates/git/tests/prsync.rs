@@ -336,7 +336,8 @@ impl Pipe {
         let cursor = consumer_cursor(&*fold.core, Consumer::PrSync);
         let applied = m.state().applied;
         for _ in 0..4 {
-            scan(&mut self.disp, &fold.core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
+            scan(&mut self.disp, &fold.core, REPO, cursor, applied, |i| m.entry_at(i).map(|e| (e.clone(), 0)))
+                .expect("in memory");
         }
         if let Some((b, how)) = self.disp.batch(cursor, g.now) {
             self.sent.push(how);
@@ -369,14 +370,16 @@ impl Pipe {
                 || async {
                     clock.set(clock.get() + cost);
                     cache.runs += 1;
-                    Ok(if cache.conflicts.contains(&head) {
+                    let a = if cache.conflicts.contains(&head) {
                         MergeAnswer::Conflict { conflict: vec!["f".into()] }
                     } else {
                         MergeAnswer::Clean {
                             merge: Cache::merge_commit(base, head).hex(),
                             pack: vec![0x50; cache.pack_bytes],
                         }
-                    })
+                    };
+                    // No CPU reported, so the shard charges the merge's wall time on its clock.
+                    Ok((a, None))
                 },
             ))
             .unwrap()
@@ -866,7 +869,7 @@ fn a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes() {
 #[test]
 fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     let (mut g, mut p) = setup();
-    let budgets = graftyard_git::prsync::Budgets::new(graftyard_git::prsync::instance_vcpu("standard-2"));
+    let budgets = graftyard_git::prsync::Budgets::new(graftyard_git::prsync::instance_vcpu("standard-2").unwrap());
     p.budget = Some((std::cell::RefCell::new(budgets), std::cell::Cell::new(g.now.0), 10_000));
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
@@ -881,4 +884,91 @@ fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     assert_eq!(g.get(&head_ref(IssueNumber(1))), Some(oid(3)), "the head ref still moves");
     let st = p.budget.as_ref().unwrap().0.borrow().stats(graftyard_types::NetworkId(REPO.0)).unwrap();
     assert_eq!((st.computed, st.shed, st.spent_ms), (1, 1, 10_000.0), "one charged at its measured time, one shed");
+}
+
+/// A30: an on-demand merge (a single-PR GET's or Actions dispatch's, `on_demand`) records the PR's current test merge
+/// without moving the consumer's cursor, so the batches go on as before. The same merge asked twice commits once, a
+/// merge of a head the PR has since left records nothing, and a shed answer commits nothing.
+#[test]
+fn an_on_demand_merge_records_the_current_head_and_moves_no_cursor() {
+    use graftyard_git::prsync::on_demand;
+    let (mut g, _p) = setup();
+    let cursor = consumer_cursor(&*g.fold().core, Consumer::PrSync);
+    let clean = |base: ObjectId, head: ObjectId| MergeAnswer::Clean {
+        merge: Cache::merge_commit(base, head).hex(),
+        pack: vec![0x50; 8],
+    };
+    assert_eq!(on_demand(IssueNumber(1), oid(1), oid(2), MergeAnswer::Shed { shed: true }), None, "shed: no command");
+    let c = on_demand(IssueNumber(1), oid(1), oid(2), clean(oid(1), oid(2))).unwrap();
+    assert_eq!(c, on_demand(IssueNumber(1), oid(1), oid(2), clean(oid(1), oid(2))).unwrap(), "one request id");
+    assert!(matches!(g.commit(c.clone()), RepoOut::Sync(o) if o.events == 1));
+    let core = &*g.fold().core;
+    assert_eq!(
+        graftyard_git::prsync::mergeable(mergeability(core, IssueNumber(1)).as_ref(), oid(2), Some(oid(1))),
+        Some(true)
+    );
+    assert_eq!(consumer_cursor(core, Consumer::PrSync), cursor, "no cursor moved");
+    g.commit(c);
+    let merged = |g: &G| g.committed().iter().filter(|e| matches!(e, RepoEvent::TestMerged { .. })).count();
+    assert_eq!(merged(&g), 1, "asked twice, recorded once");
+    // The head moved before the GET's merge committed: nothing of the old head is recorded.
+    g.push("refs/heads/f", oid(3));
+    let stale =
+        on_demand(IssueNumber(1), oid(1), oid(2), MergeAnswer::Conflict { conflict: vec!["f".into()] }).unwrap();
+    assert!(matches!(g.commit(stale), RepoOut::Sync(o) if o.events == 0));
+    assert_eq!(merged(&g), 1);
+    let m = mergeability(&*g.fold().core, IssueNumber(1)).unwrap();
+    assert_eq!(
+        (m.head, m.result.clone()),
+        (oid(2), MergeabilityResult::Clean { merge: Cache::merge_commit(oid(1), oid(2)) })
+    );
+    let big =
+        MergeAnswer::Clean { merge: oid(7).hex(), pack: vec![0; graftyard_git::prsync::MERGE_BYTES_PER_COMMAND + 1] };
+    assert_eq!(on_demand(IssueNumber(1), oid(1), oid(3), big), None, "a pack past the command bound commits nothing");
+}
+
+/// A new leader of a hot group reads entries from the stored log, each row with its inline packs, from a committed
+/// cursor far behind. One alarm reads at most `SCAN_BYTES` of rows and says more are left; the alarms after it read
+/// the rest in order, so the batch still names every pull request and the whole read is never one alarm's work. On
+/// graft-m3c an unbounded read of 362 MB took 30 to 34 s of a leader's alarm CPU, and every leader reset (hot-shards).
+#[test]
+fn a_leader_far_behind_reads_the_stored_log_a_bounded_slice_per_alarm() {
+    use graftyard_git::prsync::SCAN_BYTES;
+    let (mut g, _) = setup();
+    for i in 0..40 {
+        g.push("refs/heads/f", oid(10 + i));
+    }
+    g.open(2, "refs/heads/f");
+    let l = g.leader();
+    let m = g.m(l);
+    let fold = &m.group_fold().fold;
+    let applied = m.state().applied;
+    // Every entry above 2 is a stored row of a 900 KB push; entries 1 and 2 are in memory.
+    let row = 900_000usize;
+    let mut d = Dispatcher::default();
+    let (mut alarms, mut read) = (0, Vec::new());
+    loop {
+        alarms += 1;
+        let mut bytes = 0;
+        let more = scan(&mut d, &fold.core, REPO, Index(0), applied, |i| {
+            let e = m.entry_at(i).cloned()?;
+            let n = if i.0 > 2 { row } else { 0 };
+            bytes += n;
+            read.push(i.0);
+            Some((e, n))
+        })
+        .expect("in memory");
+        assert!(bytes <= SCAN_BYTES + row, "alarm {alarms} read {bytes} bytes of rows");
+        if !more {
+            break;
+        }
+        assert!(alarms < 100, "no progress");
+    }
+    let rows = applied.0.saturating_sub(2) as usize;
+    assert!(alarms >= rows * row / (SCAN_BYTES + row), "{alarms} alarms for {rows} rows");
+    assert!(alarms > 1, "the read was cut at least once");
+    assert_eq!(read, (1..=applied.0).collect::<Vec<_>>(), "each entry read once, in order");
+    let (b, _) = d.batch(Index(0), g.now).expect("the pushes and openings touched pull requests");
+    assert_eq!(b.through, applied);
+    assert_eq!(b.prs, vec![IssueNumber(1), IssueNumber(2)]);
 }

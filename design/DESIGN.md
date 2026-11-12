@@ -645,12 +645,12 @@ pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k, less derived work (A31) */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
-/// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
-/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute.
-/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first), refills at
-/// TEST_MERGE_BUDGET of its vCPU and is charged each merge's measured time; pushes and dispatch may run one merge into
-/// deficit, GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
-/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU.
+/// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for a `pull_request`-family event
+/// (`demand`, which `ActionsTrigger` calls), and on a single-PR GraphQL read by a writer or CI token with no current merge,
+/// at most once per PR per 30 s. List fields never compute; the shard counts each PR a list read rendered without one.
+/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first, at the tier's instance size), refills at TEST_MERGE_BUDGET of its vCPU. Its merges run one at a time, each admitted only once the one before was charged its CPU, so pushes and dispatch, run from a positive balance, pass the budget by at most one merge; GETs leave half a second's. Admitted at an estimate while earlier merges ran, LM-1 round 5 spent 0.274 vCPU of 0.25 [measured, `tests/am1/results/merge-budget-2.md`].
+/// Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
+/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU of a `standard-4`'s 1.
 pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
@@ -1076,7 +1076,7 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each member chain's entries name after its last `Promoted`, read a page at a time with the next read meanwhile, so it
 /// holds two pages. It saves its place per page with its disk id, so a cut-off run resumes, never anew (B0-30, 9 to 11).
-/// Pushed packs are thin, so each ingest re-indexes with `--fix-thin` [inference from git]; promotion is self-contained (BF-18; G5).
+/// Pushed packs are thin, so ingest uses `--fix-thin` [inference]. A promotion names the prior one's objects: all load first (hot-shards).
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
@@ -1136,14 +1136,14 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// CPU-s, and a composed miss's time to first byte was 0.35 s [measured, B0-34]. A shard object starts its container
 /// with `ctx.container.start()`, naming its image, the tier's instance size, and `enableInternet: false`, so the
 /// container reaches R2 and members only through its object. It starts one only while its index is under `count +
-/// HOT_POOL`. The policy has no `max_instances`, so this check, over a fixed set of shard names, is each site's start
-/// cap. At start the object reads `CLOUDFLARE_REGION` inside the container and replaces a container outside its site's
-/// container regions, at most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum,
-/// renewed by its alarm hourly until 24 h after its last request. Each site-script version's image map holds its
-/// release's git image as `git` and the previous release's as `git_prev`. A new version restarts no running container
-/// [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its site's `ContainerDay`
-/// step covers it, and returns to `git_prev` on that day's committed `Rollback { target: Containers(site) }`. Per site,
-/// `count + HOT_POOL` lets any two sites carry every network with both copies warm.
+/// HOT_POOL`. With no `max_instances` in the policy, this check over a fixed set of shard names is each site's start
+/// cap. At start the object reads `CLOUDFLARE_REGION` in the container and replaces one outside its site's regions, at
+/// most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum, renewed hourly by its
+/// alarm until 24 h after its last request, and set by any object instance that finds it running [measured,
+/// `hot-shards`]. Each site-script version's image map holds its release's git image as `git` and the prior one's as
+/// `git_prev`. A new version restarts no running container [measured, `container-survival.json`], so a shard changes
+/// image only when its site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed
+/// `Rollback { target: Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
 pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
@@ -1157,13 +1157,13 @@ pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cos
 /// first byte p99 at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A
 /// pool warm only for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
 pub const HOT_POOL: u16 = 7;
-/// Per (shard, network), in the shard's own SQLite, derived: the index through which the shard applied each member
-/// chain's `Refs`, `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's
-/// last index, never the range's end (B0-30 blocker 12). A shard behind reads pages from its site's member or the leader,
-/// two at most in memory, before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
-/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object, not its caller: a caller waits its
-/// `wait`, then gets `warming`, and a cold pool shard answers a forwarded push so at once. Only `rehydrate` reads a whole
-/// ref set, in pages of 10,000: no member reply grows with a repository's ref count [measured, `wire-fix`].
+/// Per (shard, network), in the shard's SQLite, derived: the index through which it applied each member chain's `Refs`,
+/// `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's last index,
+/// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
+/// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
+/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
+/// gets `warming`, as a cold pool shard's forwarded push does at once. Pushes and fetches wait 15 s on the home shard,
+/// then 60 s on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs [measured, wire-fix].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or

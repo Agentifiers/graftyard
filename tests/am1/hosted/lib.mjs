@@ -91,7 +91,7 @@ export async function leaderOf(chain) {
 }
 /** The leader's stored log from `from` with the family's fields (test-faults `/log`). */
 export async function logFrom(chain, from, n = 500) {
-  const s = await leaderOf(chain);
+  const s = Number(process.env.LOG_SITE ?? await leaderOf(chain));
   const r = await fetch(`${TOOLS}/member`, { method: "POST", headers: { authorization: `Bearer ${TOOLS_TOKEN}`, "content-type": "application/json", "user-agent": "graftyard-am1" },
     body: JSON.stringify({ chain, site: s, path: `/log?from=${from}&n=${n}`, deadline: 30_000, gen: 1 }) });
   return (await r.json()).v ?? [];
