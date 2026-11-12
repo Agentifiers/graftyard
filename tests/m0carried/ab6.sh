@@ -8,7 +8,7 @@
 #   PREFIX=m0c6g GATE=1 ARRIVAL=mem bash tests/m0carried/ab6.sh
 set -u
 cd "$(dirname "$0")/../.."
-export EDGE_URL=https://graft-m3c-wp2-edge.<workers-subdomain>.workers.dev BENCH_RAW=1
+export EDGE_URL=${EDGE_URL:-https://graft-m3c-wp2-edge.<workers-subdomain>.workers.dev} BENCH_RAW=1
 P=${PREFIX:-m0c6}
 RAW=tests/m1/wp2/raw
 mkdir -p tests/m0carried/raw
