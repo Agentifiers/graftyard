@@ -97,7 +97,7 @@ let acked = match group(ChainId::Repo(repo)).commit(push).await? {
 | DNS | GA | Authoritative DNS, including the DNS-only lifeboat hostname and the CNAME that delegates its `_acme-challenge` name to a validation zone in a separate account |
 | WAF and rate limiting rules | GA | Abuse limits on clone, API, and login at the edge |
 | Queues | GA | Webhook, notification, search-index, and lifeboat-feed fan-out from chain cursors |
-| Workflows | GA | `ReplaceMember` and `RestorePlacement`, imports, network compaction, `MetaSplitter` for child groups, and the `LeaveEvaluation` group moves |
+| Workflows | GA | `ReplaceMember` and `RestorePlacement`, imports, network compaction, and the `LeaveEvaluation` group moves |
 | Cron Triggers | GA | In `graft-ops`, every job that calls the Cloudflare API (bucket location, Analytics Engine reads for learners); in site scripts, pack sweeper (including orphan multipart aborts), GC, fold audit; in `graft-runners`, the 5-minute hosted-runner sweep |
 | Secrets Store | beta | `graft-ops` API tokens, the Tunnel token, and the key that wraps the installation-token signing key, which puts it on the minting path; `SecretsWrapKey` for Actions secrets and hook secrets; `HostedRunnersAppKey` in the runner account; rotation without a new script version |
 | Email Routing | GA | Reply-by-email for issues and pull requests |
@@ -353,37 +353,36 @@ pub const SUSPECT: (usize, Duration) = (2, Duration::from_secs(10));  // distinc
 /// Pre-vote and transfers refuse a candidate whose two `boots`, or whose `stepped_down_at`, fall inside it. A voter that
 /// has seen no leader for 2 x ELECTION_AFTER waives it. Where every site resets often, every `STEP_DOWN` holds (F42).
 pub const RESET_QUARANTINE: Duration = Duration::from_secs(300);
-/// Member SQLite bytes at which a repository's metadata tier moves to a child group (Milestone 7). It caps the tier at
-/// 10 GB minus LOG_MAX_BYTES, the core tier, and a margin [guess margin]. Split. The leader reads
-/// `ctx.storage.sql.databaseSize` (https://developers.cloudflare.com/durable-objects/api/storage-api/) after each
-/// snapshot, once `LOG_MAX_BYTES` archiving has run, because the log stands above its cap by the entries since the last
-/// archive pass: B0-30 peaked at 9.09 GB before a pass and settled at 8.45 GB after it [measured,
-/// `tests/m0/results/m0-wp9.md`, B0-30]. At CHILD_GROUP_AT it commits `MetaSplit { child: RepoMeta(repo), at }` (no
-/// member hosts `RepoMeta` yet, G6) on `Repo(repo)`, a core entry and the commit point, with `at` its own index. From
-/// `at` the parent refuses a metadata-only command or read with `Moved { child }`, and the edge caches that and routes
-/// metadata work to the child, found through the owner's record like `Repo(repo)`. A transfer moves both groups. Seed.
-/// The follower that writes snapshots takes a metadata snapshot at `at`. The `Audit` consumer starts one `MetaSplitter`
-/// Workflow per split, with the repository id as instance id. Once that snapshot is in two buckets, it has the child
-/// commit `MetaSeed { at, snapshot }` after its bootstrap `Config` and `Noop`. Child members install the snapshot as
-/// their fold, and the child decides nothing before `MetaSeed`. Then it commits `MetaDropped` on the parent, whose
-/// `apply` drops its metadata tables. Metadata writes get 503 with `Retry-After` from `at` to `MetaSeed`. Tiers. The
-/// parent keeps only the core tier and the child only the metadata tier. A child command lists `Repo(repo)` in `deps`
-/// for collaborators, rules, and settings. `tier_of` tags `IssueOpened` Core plus Metadata after a split, so the parent
-/// keeps the issue-number counter. Both tiers. A command that touches both tiers commits its whole entry on the parent
-/// first, and the parent applies only the core rows. The finisher `meta_finish` appends the entry's metadata events to
-/// the child as `MetaHalf`. `prev` is the parent's previous both-tier index (`at` for the first), so the child refuses
-/// a half out of parent order and a duplicate changes nothing. The edge runs `meta_finish` before it answers. An edge
-/// whose child command names an issue number the child lacks runs it and retries, and `Audit` runs it for any half
-/// missing after a minute. Consumers. An event is delivered from the parent entry that carries it, so consumers skip
-/// `MetaHalf`. A consumer's child cursor passes `MetaHalf { parent: k }` only after its parent cursor passes k, so a
-/// comment on #n is never delivered before #n was opened. Repair. `RestoredTo` touches only refs and runs on the
-/// parent. `RepoReset` to time t runs `ResetTo` on each chain at its own last index with `at <= t`. For t before the
-/// split, the child loads the parent's newest metadata snapshot at or below the parent's index for t and replays the
-/// parent's archived entries to it, inside the 35-day window. Feed. The parent keeps its log, indexes, and feed ring,
-/// and every `ActivityEvent` comes from a parent entry, so a split changes no feed cursor and causes no 410.
+/// Member SQLite bytes no member of a repository's groups passes, because the metadata tier moves to a child group
+/// first. It caps the tier at 10 GB minus LOG_MAX_BYTES, the core tier, and a margin [guess margin]. The parent
+/// leader's alarm runs each step in band; there is no `MetaSplitter` Workflow. Start. At SPLIT_AT of
+/// `ctx.storage.sql.databaseSize` (https://developers.cloudflare.com/durable-objects/api/storage-api/), which leaves
+/// out free pages [doc: workerd `getDatabaseSize`], the leader records `MetaSplit { child: RepoMeta(repo) }`, and the
+/// snapshot writer snapshots the metadata tier at an index p after it. B0-30 peaked at 9.09 GB before an archive pass
+/// and settled at 8.45 GB after it [measured, `tests/m0/results/m0-wp9.md`, B0-30]. Seed. The leader records `MetaSeed
+/// { at: p, key }`, creates `RepoMeta(repo)` on the parent's placement record, and records the same `MetaSeed` there.
+/// Each child member restores that snapshot in the background, restamps the tier at its own `MetaSeed` entry, and
+/// replays its log from there; until then its metadata tier answers nothing. Halves. From `MetaSeed` on, the parent
+/// leader records the parent's committed entries on the child in order as `MetaHalf { parent, prev, at, block, events
+/// }`: an entry's metadata events and id block, and an empty half that marks how far a batch reached. The child refuses
+/// a half whose `prev` is not its last, so after half k its tier holds the parent's rows after entry k. The child
+/// decides no command, and the parent archives nothing past the child's last half. Commit point. Once the child
+/// leader's tier is loaded and its halves reach the parent's commit, the parent leader records `MetaDropped`; from it
+/// the parent applies only the core tier and deletes its metadata rows in batches. Every command still commits on the
+/// parent, so consumers, the feed, ids, `RestoredTo`, and `RepoReset` keep the parent's log and indexes, and no write
+/// gets 503. Reads. After `MetaDropped` a command that reads the metadata tier lists `RepoMeta(repo)` in `deps` and
+/// names the keys and prefixes its `decide` reads (`dep_keys`). The leader's host sends the child its halves through
+/// the parent's applied index k, reads just those rows once through the child leader's `fresh` at half k, and `decide`
+/// reads them under the entry's earlier events; a read of a row not fetched makes the command `Unavailable`. Its reply
+/// renders over rows read from the child at the entry's half, fetched again for each row the renderer missed. The child
+/// archives its log at CHILD_LOG_MAX with nothing to promote, since halves carry no packs (G4, G6).
 pub const CHILD_GROUP_AT: u64 = 8 << 30;
-pub enum SplitEntry { MetaSplit { child: ChainId, at: Index }, MetaSeed { at: Index, snapshot: Digest },
-                      MetaHalf { parent: Index, prev: Index, events: Vec<Event> }, MetaDropped }
+pub const SPLIT_AT: u64 = 7 << 30;         // a seed restores the whole tier on each child member, for hours [guess]
+pub const CHILD_LOG_MAX: u64 = 256 << 20;  // a child's log holds only halves [guess]
+pub enum SplitEntry { MetaSplit { child: ChainId }, MetaSeed { at: Index, key: R2Key },
+                      MetaHalf { parent: Index, prev: Index, at: Timestamp, block: Option<IdBlock>,
+                                 events: Vec<Event> },
+                      MetaDropped }
 /// One import entry (SHARED, `rest:migrations`). `apply` applies each `event` with `created` and `author` in place of the
 /// entry's `at` and actor, and `merged` records a merged pull request with no tree-diff check.
 pub struct ImportBatch { pub import: Ulid, pub items: Vec<ImportItem> }
@@ -1068,16 +1067,17 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 /// first placement's orphan). When one exists, it writes the missing marker. An object older than REQUEST_RETENTION
 /// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed].
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
-/// Before the leader archives a range, the home shard packs the objects of every pack, inline or stored, the range
-/// names into one self-contained `DurablePack`, and the leader commits `Promoted`; `Archived` follows only once
-/// `Promoted` covers the range, so a range naming no pack gets an empty one. `Compacted.consumed` names promoted packs,
-/// never an inline one. `produced` may repeat later inline packs' objects, which GC drops [inference]. An inline pack
-/// has no `checksum`, so restore verifies it through its entry's digest chain.
+/// Before the leader archives a range, the home shard packs every pack it names into one self-contained `DurablePack`
+/// and the leader commits `Promoted`; `Archived` follows once `Promoted` covers the range (an empty pack if it names
+/// none). It promotes ahead too, once the log above the last `Promoted` passes LOG_MAX_BYTES / 32 [guess], so rehydrate
+/// tails stay small (`tests/am1/results/b0-30.md`, blockers 9 to 11). `Compacted.consumed` names only promoted packs,
+/// and restore checks an inline pack, which has no `checksum`, by its entry's digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each member chain's entries name after its last `Promoted`, read a page at a time with the next read meanwhile, so it
-/// holds two pages. It saves its place per page with its disk id, so a cut-off run resumes, never anew (B0-30, 9 to 11).
-/// Pushed packs are thin, so ingest uses `--fix-thin` [inference]. A promotion names the prior one's objects: all load first (hot-shards).
+/// holds two pages. It saves its place per page with its disk id and loaded promotions, so a cut-off run resumes, never
+/// anew, and loads later promotions (B0-30, 9 to 11). Ingest uses `--fix-thin`; promotions all load first. A midx every
+/// 50 ingests keeps ingest flat: 2.05 GB rehydrated in 20 to 22 min, from 30 to 43 [measured, `hot-shards-2`].
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
@@ -1163,8 +1163,8 @@ pub const HOT_POOL: u16 = 7;
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
-/// gets `warming`, as a cold pool shard's forwarded push does at once. Pushes and fetches wait 15 s on the home shard,
-/// then 60 s on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs [measured, wire-fix].
+/// gets `warming`; a rehydrating shard says so at once to a caller with another shard next. Pushes, fetches and the
+/// archive's promotion try the home or own site, then other Full sites [measured, `hot-shards`]. Only `rehydrate` reads all refs.
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
@@ -1913,7 +1913,7 @@ Milestone 0 answers four platform questions from research and its own measuremen
 | 4, events, webhooks, Actions | Webhooks and the other Queues consumers with per-owner `HookSequencer` delivery stores and hook records, user records, the watcher index, the `Inbox`, and `SearchShard` search, the Actions engine with run, job, runner, and session events, `RunnerBroker`, `LogRelay`, and sealed secrets and variables, Sandboxes runners in the runner account started by `graft-runners`, and the web app [inference]. T0 surfaces `webhooks`, `rest:actions`, `actions-runner-protocol`, `actions-workflow-syntax`, `actions-cache`, `actions-artifacts`, `actions-oidc`, and `actions-logs-results` [inference] | An unmodified `actions/runner` runs a matrix, and a site is failed mid-run with no lost job state |
 | 5, release control and site days | `Release` group with genesis against the trust anchor, `Keys` with the executor key, `ReleaseUploaded`, `IntentStep`, `IntentDone`, `SiteRelease`, `SiteMode`, pin-only `Pointers` set by undos, `graft-front`, `graft-ops` with the release bucket, `POST /api/graftyard/v1/release/entries`, `FrontRoll` and `OpsRoll`, `verify`-gated formats, gradual edge deploys, gated site days with pre-signed `Rollback`s, the Workflows script's day included, `SiteHealth` drain and undrain, `StaleMode`, the revocation and rotation runbooks, the change feed and export endpoints, and the vault with `graftyard vault upgrade` | A deliberately unreadable format released to `graft-site-a` commits nothing and moves A's groups. With the vendor token revoked mid-roll, `Halt`, `Keys { vendor: None }`, then `Abort { intent, target: N }` returns every site and pinned script to N, and a vendor-signed intent submitted after `Keys { vendor: None }` is refused. A bad `graft-ops` at 1% swaps back by `OpsPointer` with the API blocked |
 | 6, region loss, SSH, and lifeboat | `ReplaceMember` signed by the executor key and `RestorePlacement`, both finding groups through `MemberRegistry`, `Degraded`, lifeboat tail and pack pulls over the Milestone 5 export endpoints, `graft-blob`, lifeboat registration, `lifeboat:read` enroll, and workerd bundle, SSH through the outbound handler with host keys from Secrets Store if Milestone 0 passed. T0 surface `git-ssh`, and the SSH parts of `lfs` and `rest:deploy-keys` [inference] | After two release rolls and one `FormatsEnable`, in a journey 5 drill, one site's member and container classes fail for a day, and `ReplaceMember` runs with every account API token revoked. It passes only if no script version is created, the spare reads every enabled format, every acknowledged write is present, groups return home, and enrolled `gh pr list` works against the lifeboat with the edge blocked |
-| 7, breadth and modes | BYOC and self-hosted through Terraform and Wrangler, account-separated sites, managed front and cell accounts, `RateCounter` rate limits, `Solo` and workerd for evaluation with the `LeaveEvaluation` move to `Tri`, child groups for oversized metadata (`RepoMeta` chains seeded by the `MetaSplitter` Workflow), import from GHES as `Imported` entries with the plan preflight | A self-hosted install with no vendor key passes milestones 1 to 6 gates and enables a new format. A vault restore to a chosen cutoff and a lifeboat-export restore into new accounts each lose no entry up to their cutoff, and afterward a developer's PAT and SSH key, a user-owned repository, and an org name all work, while a PAT revoked after the cutoff fails. A `Solo` group moves to `Tri` under load with no failed write |
+| 7, breadth and modes | BYOC and self-hosted through Terraform and Wrangler, account-separated sites, managed front and cell accounts, `RateCounter` rate limits, `Solo` and workerd for evaluation with the `LeaveEvaluation` move to `Tri`, child groups for oversized metadata (`RepoMeta` chains the parent leader seeds in band), import from GHES as `Imported` entries with the plan preflight | A self-hosted install with no vendor key passes milestones 1 to 6 gates and enables a new format. A vault restore to a chosen cutoff and a lifeboat-export restore into new accounts each lose no entry up to their cutoff, and afterward a developer's PAT and SSH key, a user-owned repository, and an org name all work, while a PAT revoked after the cutoff fails. A `Solo` group moves to `Tri` under load with no failed write |
 
 Rows added after the final pass gate the milestone named in the first column. The first nine come from the final pass (`history/review/final-interrogate.md`). The next 44 come from the implementability walk (`history/review/walk-interrogate.md`), whose writers reported them. The last 15 come from the third walk (`history/review/walk-rest-interrogate.md`), as writers X1 and X2 reported them in `history/review/walk-rest-reports.md`. Where a reported Fail value left out a Pass clause, the integrator added that clause to the Fail value [inference]. Where this document moved a reported row to a later milestone, or split one, the placement is [inference].
 
@@ -1980,7 +1980,7 @@ Rows added after the final pass gate the milestone named in the first column. Th
 | 4 | `gh secret set` for a repository, an environment, and an org, then a job reading all three; then rotate the `SealKey` and the wrapping key | The job sees all three values before and after both rotations, and a fork-PR job sees none | A wrong value, a value shown to a fork PR, or a plaintext secret found in any entry or log |
 | 4 | 50 `ubuntu-latest` jobs queued for one owner with the cap at 20, while two `graft-runners` sweeps overlap | At most 20 hosted runners at once; every job finishes; no Sandbox is left 10 minutes after the last job | More than 20 at once, a job that never finishes, or a leaked Sandbox |
 | 4 | View a running job's live log in the web app, then kill its `LogRelay` | Lines appear within 2 s; after the kill, the viewer falls back to step log blobs and the final log is complete | A line later than 2 s, no fallback after the kill, or missing lines in the final log |
-| 7 | Monorepo member reaches `CHILD_GROUP_AT` under 300 commands/s with comments, PR opens, merges and releases with tags | Zero `SQLITE_FULL`. Metadata 503 window at most 10 min [guess]. Every both-tier entry has its `MetaHalf` within 60 s, with zero lost or doubled. A comment on #n is never delivered before #n opened, 100 of 100. Pre-split feed cursors continue with no 410 | Any `SQLITE_FULL`, a 503 window over 10 min, a lost or doubled half, an out-of-order delivery, or a 410 |
+| 7 | Monorepo member reaches `CHILD_GROUP_AT` under 300 commands/s with comments, PR opens, merges and releases with tags | Zero `SQLITE_FULL`. No metadata write gets 503. Every both-tier entry has its `MetaHalf` within 60 s, with zero lost or doubled. A comment on #n is never delivered before #n opened, 100 of 100. Pre-split feed cursors continue with no 410 | Any `SQLITE_FULL`, any metadata 503, a lost or doubled half, an out-of-order delivery, or a 410 |
 | 7 | `RepoReset` to a t before the split and to a t after it, on a split repository | Both tiers equal a refold at t | Any tier differs |
 | 7 | `LeaveEvaluation` on a Cloudflare `Solo` install under write load. Separately, a vendor-signed `LeaveEvaluation` | System groups and owners end on `Tri` with `moving_from` cleared, zero lost acknowledged writes, `Placement::solo` refused afterwards. The vendor-signed one is refused | Any lost write, a group left on `Solo`, or the vendor-signed one accepted |
 | 7 | GHES archive import with hooks, a workflow, watchers, merged PRs and `#N` links, on a synthetic `ghe-migrator` archive built from the documented format while no GHES instance exists [inference] | Zero webhook deliveries, runs or notifications. Numbers, `created_at` and authors match. Merged PRs show merged. `legacy_id` resolves every id | Any delivery, run or notification, or any mismatch |
