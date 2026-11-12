@@ -69,7 +69,7 @@ mod tests {
             .iter()
             .map(|&(a, b, ms)| (SiteId(a), Rtt { peer: SiteId(b), median_ms: ms, at: Timestamp(0) }))
             .collect();
-        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &rtt };
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &rtt, near: &[] };
         let owner = AccountId(DbId(1 << 16));
         assert!(validate_record(owner, &rec(PlacementName::Tri, &[0, 1, 2], 0), false, &checks).is_ok());
         assert_eq!(

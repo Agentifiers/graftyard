@@ -56,7 +56,7 @@ fn system_record(t: &InstallToml, sites: Option<&[SiteId]>) -> Res<PlacementReco
     };
     let rtt = t.rtt_rows();
     let table = t.table();
-    let checks = PlacementChecks { sites: &table, separate_accounts: t.separate_accounts(), rtt: &rtt };
+    let checks = PlacementChecks { sites: &table, separate_accounts: t.separate_accounts(), rtt: &rtt, near: &[] };
     validate_record(install_account(), &record, t.evaluation, &checks)
         .map_err(|e| format!("system-chain placement {:?} on {:?}: {e}", record.name, record.sites))?;
     debug_assert!(name != PlacementName::Na3 || name.kinds().iter().all(|k| *k == MemberKind::Full));
