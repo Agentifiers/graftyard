@@ -2366,6 +2366,46 @@ Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/
 
 **Flip.** A run where a capped entry lowers commit p99 at the same near RTT and rate.
 
+### `merge-budget-2`: the budget holds under concurrency, GETs compute, and list fields are counted, 2026-11-12
+
+Branch `merge-budget-2` closed A28, A29 and A30 (`tests/am1/results/merge-budget-2.md`; `build/BUILD-PLAN.md`, AM1-WP1).
+
+#### A28 closes: a network's merges run one at a time, charged their CPU, on the tier's instance size
+
+**Decision.** A network's test merges on its shard run one at a time (`graftyard_git::prsync::asked`, a per-network turn in `Budgets`). Each is admitted only after the one before it was charged, and pushes and dispatch are admitted from a positive balance, not from minus the estimate. So the bucket goes below zero by at most one merge's cost. A merge the budget would not admit is shed before its catch-up; one admitted then is decided again after its catch-up and its turn. Each merge is charged the CPU of its own git processes, which the container reports as `cpuMs` (user plus system time); wall time is the fallback when the container sends none. `BudgetStats` adds `wallMs`, `lowMs` (the bucket's lowest) and `maxMs` (the largest charge), so "never overrun beyond one merge" is `lowMs >= -max(maxMs, 50)`. The shard instance follows the tier: the site reads `SHARD_INSTANCE` (`standard-2` when unset, as the 50-developer tier and every test install run), and `instance_vcpu` refuses a name that is not a Containers instance type instead of budgeting it as `standard-4`. Journey 9's sizing stands: at 2,000 developers the shard is a `standard-4`, so the budget is 1 vCPU and head-push merges use 0.21 of it. `scripts/cost_agents.py` no longer counts k shards' budget, since merges run on one shard; its figures do not change, because k = 1 at journey 9.
+
+**Why.** LM-1 round 5's Workers Logs for `graft-m2b-site-a`, repo 131260, show the cause. First attempts timed out at 25 s and their queued re-sends ran side by side: up to 5 consumer handlers overlapped, each with a merge step of 60 to 240 s. Each merge was admitted at the 50 ms estimate while earlier merges were still uncharged. In the worst window the shard spent 31,928 ms in 107.8 s against an allowance of 26,950 ms (21:44:04 to 21:45:52). Charges were wall time, about 232 ms a merge (164,135 ms over 707), while a test merge costs 23.5 ms of CPU in a one-vCPU container bench, so wall time also over-charged merges that waited for the container's vCPUs. The design's sizing was right; the code's `SHARD_VCPU` = 4 and the site's fixed `standard-2` disagreed with each other, not with the design.
+
+**Beat.** Charging the estimate at admission and reconciling later, which is what overran. A reservation per merge in flight (admit while the balance covers every in-flight estimate), which bounds the spend only if the estimate bounds the cost, and a 338 ms p99 merge is 7 estimates. Sizing journey 9's budget on `standard-2` (0.25 vCPU), which leaves 0.04 vCPU for GETs at 500 pollers. Raising `TEST_MERGE_BUDGET`, which takes vCPU from validates on the one shard that does both.
+
+**Evidence.** Round 5's logs, above [measured]. `concurrent_merges_overrun_the_budget_by_at_most_one_merge_and_are_charged_their_cpu`: 10 merges of 300 ms CPU in two bursts of 5 on a 0.25 vCPU budget. Admitting at the estimate would let a burst of 5 run and leave the bucket 1.25 s short; the test sees 4 computed, 6 shed, the low at -275 ms, and 1,200 ms charged for 3,600 ms of wall time. Planted bugs in `tests/budget/plant.py`. The hosted run is in the results file.
+
+**Flip.** A merge's CPU that the container cannot see, such as work in the shard object outside its git processes, which would charge more than `cpuMs`. Or a network whose merges queue past their usefulness behind one turn (a merge's wait past `GET_COALESCE_MS`), which would admit a second merge while one runs and accept an overrun of two.
+
+#### A30 closes: single-PR GETs compute through the shard, and Actions dispatch has its hook
+
+**Decision.** After it answers a GraphQL read, the edge asks the leader site's shard of the network for the merges the read's `mergeable` or `mergeStateStatus` lacked (`graftyard_api::gql::MergeAsks`, `workers/edge/src/api.rs`, `ask_merges`), in `wait_until`, so the reply never waits. A single-PR read by a writer or an App token goes to `POST /demand?cause=get` with the (base tip, head) its merge lacks. There the shard counts the GET, coalesces it per PR for `GET_COALESCE_MS`, admits it under the budget with its reserve, computes it in its turn, and commits it as a `PrSync` with no cursor and no head moves (`graftyard_git::prsync::on_demand`), whose request id is its content's. The read itself answers `UNKNOWN`, as GHES 3.22 does while its background job computes, and the next poll reads the merge. Another reader's single-PR read is counted as a list's. `crate::prsync::demand` (`workers/site/src/prsync.rs`) is the hook M4's `ActionsTrigger` calls with `MergeCause::Dispatch`: it reads the PR fresh and sends the same `/demand`. REST `GET pulls/{n}` keeps `mergeable: null` and does not ask, because its renderer, shared with webhooks, never reads the merge [inference: a REST poller sees null either way].
+
+**Why.** DESIGN names three causes, and only the head push was wired, so a polled PR past the budget stayed null until its next push.
+
+**Beat.** Computing in the read, which would hold a GraphQL reply for a catch-up and a merge, seconds on a cold shard. Committing the GET's merge from the edge, which would send the pack through the edge twice.
+
+**Evidence.** `a_read_asks_for_the_merge_its_mergeable_lacks_and_a_list_only_counts`, `an_on_demand_merge_records_the_current_head_and_moves_no_cursor`, `gets_coalesce_per_pr_a_shed_get_frees_its_slot_and_list_asks_are_counted`; the hosted run's `getAsked` and `getComputes`.
+
+**Flip.** Clients that poll REST `pulls/{n}` for `mergeable`, which would wire the same ask into `rest::get_pull` and render the recorded merge there.
+
+#### A29 closes: list fields are counted where they render
+
+**Decision.** A list read that renders a PR's `mergeable` with no current merge (a `pullRequests` connection or search) sends the shard one `POST /ask?cause=list&count=k` after its reply, and the shard counts k list asks without waking the container. A list never sends a compute. B0-35's clause reads `listAsked > 0` with `listComputes = 0`.
+
+**Why.** The shard never heard of list fields, so `listAsked` was 0 by construction and the clause was shown by structure alone.
+
+**Beat.** An edge-side counter, which no one reads with the budget, and a lead decision that the structure suffices, which leaves the instrument meaningless.
+
+**Evidence.** As for A30, and the hosted run's `listAsked`.
+
+**Flip.** A list read rate whose asks load the shard object, which would sample them.
+
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 
 B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on its fail line at simulated day 27.52 (`tests/am1/results/b0-30.md`; `build/BUILD-PLAN.md`, AM1-WP6, B0-30).

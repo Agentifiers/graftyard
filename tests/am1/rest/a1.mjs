@@ -25,12 +25,14 @@
 //   node tests/am1/rest/a1.mjs --selftest                               # the pack builder against git, offline
 //   node tests/am1/rest/a1.mjs <row> --repo NAME --chain repo:ID [--seconds 600] [--agents 500] [--kill-every 60]
 //     [--push-every S]   # each agent's push interval, for a scaled run (default the row's 120 s)
-//     [--as-admin]       # every request under the admin's PAT, for installs that cannot mint App tokens (graft-m3c)
+//     [--as-admin]       # every request under the admin's PAT, for installs that cannot mint App tokens
 //
 // B0-35 pushes to its open PRs' head branches, so each push asks the network's shard for a test merge, adds `mergeable`
 // to its list reads, and writes `testMerges`: each site's shard budget over the window (`/_bed/shard_status`, the
 // shard's `graftyard_git::prsync::BudgetStats`), the vCPU used against the budget, list-field computes, and the
-// leader's `/stats` `testMerges` (asked and shed by its first attempts).
+// leader's `/stats` `testMerges` (asked and shed by its first attempts). Its `mergeable` polls are single-PR GraphQL
+// reads under the App's token, which the edge turns into GET merges (`getAsked`, `getComputes`); its list reads under
+// the admin's PAT are counted (`listAsked`). `overrun` is whether any shard's bucket went more than one merge below zero.
 //
 // Long runs go in an orb service: amp orb service start a1-<row> --command "node tests/am1/rest/a1.mjs <row> ... >
 // tests/am1/raw/a1-<row>.log 2>&1; sleep infinity". Environment as `tests/am1/hosted/lib.mjs` (GRAFT_EDGE,
@@ -102,20 +104,26 @@ export function offered(p) {
   };
 }
 
-const FIELDS = ["spentMs", "computed", "shed", "listAsked", "listComputes"];
+const FIELDS = ["spentMs", "wallMs", "computed", "shed", "getAsked", "getComputes", "listAsked", "listComputes"];
 /** The window's counts per site: `after` less `before`, or `after` alone if the shard object restarted (`since`). */
 export function budgetWindow(before, after, seconds) {
   const sites = after.map((a, site) => {
     if (!a) return null;
     const b = before[site];
     const restarted = !b || b.since !== a.since;
-    return { site, vcpu: a.vcpu, restarted, ...Object.fromEntries(FIELDS.map((f) => [f, restarted ? a[f] : a[f] - b[f]])) };
+    // `lowMs` and `maxMs` are the bucket's lowest and the largest charge since `since`, so they cover the window only
+    // on a shard that restarted for it; otherwise they are an upper bound on the overrun over the shard's life.
+    return { site, vcpu: a.vcpu, restarted, lowMs: a.lowMs ?? 0, maxMs: a.maxMs ?? 0,
+      ...Object.fromEntries(FIELDS.map((f) => [f, (a[f] ?? 0) - (restarted ? 0 : b[f] ?? 0)])) };
   }).filter(Boolean);
   const sum = (f) => sites.reduce((n, x) => n + x[f], 0);
   const vcpuUsed = +(sum("spentMs") / (seconds * 1000)).toFixed(4);
   const budgetVcpu = sites.length ? Math.max(...sites.map((x) => x.vcpu)) : null;
-  return { sites, vcpuUsed, budgetVcpu, withinBudget: budgetVcpu !== null && vcpuUsed <= budgetVcpu, computed: sum("computed"),
-    shed: sum("shed"), listComputes: sum("listComputes") };
+  // Overrun beyond one merge: the bucket went lower than the largest single charge (or the 50 ms estimate) below zero.
+  const overrun = sites.some((x) => x.lowMs < -Math.max(x.maxMs, 50) - 0.5);
+  return { sites, vcpuUsed, budgetVcpu, withinBudget: budgetVcpu !== null && vcpuUsed <= budgetVcpu, overrun,
+    computed: sum("computed"), shed: sum("shed"), getAsked: sum("getAsked"), getComputes: sum("getComputes"),
+    listAsked: sum("listAsked"), listComputes: sum("listComputes"), cpuToWall: sum("wallMs") ? +(sum("spentMs") / sum("wallMs")).toFixed(3) : null };
 }
 
 // ---- L0-12's lease overlap ----
@@ -235,9 +243,19 @@ if (opt.selftest) {
     const band = pushResult(s("\x02remote: hi\n", `\x01${s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr123\n")}`));
     // B0-35's window: a delta on a shard that kept its budget, the whole count on one that restarted, none on a site
     // whose shard never merged.
-    const bs = (since, spentMs, computed, shed) => ({ since, vcpu: 0.25, spentMs, computed, shed, listAsked: 0, listComputes: 0 });
-    const w = budgetWindow([bs(1, 100, 2, 0), bs(5, 900, 9, 9), null], [bs(1, 6100, 52, 3), bs(7, 400, 4, 1), null], 60);
-    const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted;
+    const bs = (since, spentMs, computed, shed, x = {}) => ({ since, vcpu: 0.25, spentMs, wallMs: spentMs * 2, computed, shed,
+      getAsked: 0, getComputes: 0, listAsked: 0, listComputes: 0, lowMs: -40, maxMs: 30, ...x });
+    const w = budgetWindow([bs(1, 100, 2, 0, { getAsked: 5, listAsked: 3 }), bs(5, 900, 9, 9), null],
+      [bs(1, 6100, 52, 3, { getAsked: 25, getComputes: 4, listAsked: 10 }), bs(7, 400, 4, 1), null], 60);
+    // An older shard (no `getAsked`) reads as 0, and a bucket 400 ms below zero with 100 ms merges is an overrun.
+    const old = budgetWindow([null], [{ since: 1, vcpu: 0.25, spentMs: 60, computed: 1, shed: 0, listAsked: 0, listComputes: 0 }], 60);
+    const over = budgetWindow([null], [bs(1, 600, 6, 0, { lowMs: -400, maxMs: 100 })], 60);
+    const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted
+      && w.getAsked === 20 && w.getComputes === 4 && w.listAsked === 7 && w.cpuToWall === 0.5 && !w.overrun
+      && old.getAsked === 0 && !old.overrun && over.overrun
+      // A shard object that restarted after the load keeps the run's last sample; one still up reads now.
+      && latestBudget([bs(9, 0, 0, 0), null, bs(1, 700, 7, 0)], [bs(1, 600, 6, 0), null, bs(1, 600, 6, 0)])
+        .map((b) => b?.computed ?? null).join() === "6,,7";
     // Lease ids: 01ARYZ6S41 is 1469918176385 ms (`graftyard_types::Ulid::new` encodes it so); a grant 300 ms before
     // the held lease's end is a 300 ms overlap, and one 1 ms after it is none.
     const held = "01ARYZ6S41TSV4RRFFQ69G5FAV";
@@ -668,6 +686,14 @@ const budgets = () => Promise.all([0, 1, 2].map(async (s) => {
   try { return JSON.parse((await bedGet(`/_bed/shard_status?repo=${CHAIN.split(":")[1]}&shard=${s}`)).body).testMerges ?? null; } catch { return null; }
 }));
 const budgetBefore = plan.openPrs ? await budgets() : null;
+// The shard object keeps its counts in memory, and hosted it restarted 10 to 30 s after the load stopped
+// (`tests/am1/results/merge-budget-2.md`), so the run samples them every 15 s and keeps the latest of each site.
+const budgetSeen = plan.openPrs ? [...budgetBefore] : null;
+/** Each site's counts after the window: the read now, or, for a site whose object restarted since (a later `since`
+ *  with fewer merges, or none), the last sample of the run. */
+function latestBudget(now, seen) {
+  return now.map((b, s) => (!b || (seen[s] && b.since !== seen[s].since && b.computed < seen[s].computed)) ? seen[s] ?? b : b);
+}
 const leaderBefore = await statuses(CHAIN);
 const leader = leaderBefore.find((s) => s.role === "leader")?.site;
 if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
@@ -681,9 +707,15 @@ if (leader !== undefined) jobs.push((async () => {
   await sleep(Math.max(0, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
+if (plan.openPrs) jobs.push((async () => {
+  while (Date.now() < end) {
+    await sleep(15_000);
+    (await budgets()).forEach((b, s) => { if (b && (!budgetSeen[s] || b.since === budgetSeen[s].since || b.computed >= budgetSeen[s].computed)) budgetSeen[s] = b; });
+  }
+})());
 await Promise.all(jobs);
 // Give the last pushes' first attempts time to reach the shard.
-const budgetAfter = plan.openPrs ? (await sleep(15_000), await budgets()) : null;
+const budgetAfter = plan.openPrs ? latestBudget((await sleep(15_000), await budgets()), budgetSeen) : null;
 const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 // Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).

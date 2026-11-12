@@ -845,6 +845,49 @@ async fn merge_plan(
     Ok(a.merge_plan(req))
 }
 
+/// After a GraphQL read's reply, what its `mergeable` fields lacked (`graftyard_api::gql::MergeAsks`), to the leader
+/// site's shard of the network, as `merge_plan` finds it: each single-PR read's merge as a GET's (`/demand?cause=get`),
+/// which the shard coalesces per PR, budgets, computes, and commits, so a later poll reads it, and one count of the PRs
+/// a list rendered (`/ask?cause=list`), which never computes. A GET computes only for a writer or an App token (CI);
+/// another reader's is counted as a list's, a field that does not compute. The reply never waits on the shard.
+fn ask_merges(c: &Ctx<'_>, repo: &Repo, asks: graftyard_api::gql::MergeAsks, computes: bool) {
+    use graftyard_git::prsync::MergeCause;
+    if asks.single.is_empty() && asks.listed.is_empty() {
+        return;
+    }
+    let leader = graftyard_lookup::cached_leader(ChainId::Repo(repo.id)).map(|t| t.site);
+    let Ok(stub) = crate::shard_at(c, repo, leader) else { return };
+    let Ok(record) = serde_json::to_string(&repo.record) else { return };
+    let record = String::from(js_sys::encode_uri_component(&record));
+    let id = repo.id.0.0;
+    let mut urls: Vec<String> = Vec::new();
+    let mut listed = asks.listed.len();
+    for (n, (base, head)) in &asks.single {
+        if computes {
+            let (b, h, cause) = (base.hex(), head.hex(), MergeCause::Get.as_str());
+            urls.push(format!(
+                "https://shard/demand?repo={id}&n={}&base={b}&head={h}&cause={cause}&record={record}",
+                n.0
+            ));
+        } else {
+            listed += 1;
+        }
+    }
+    if listed > 0 {
+        urls.push(format!("https://shard/ask?repo={id}&cause={}&count={listed}", MergeCause::List.as_str()));
+    }
+    c.ctx.wait_until(async move {
+        for url in urls {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let Ok(req) = Request::new_with_init(&url, &init) else { continue };
+            if let Err(e) = stub.fetch_with_request(req).await {
+                console_error!("merge ask {}: {e}", url.split('&').next().unwrap_or(""));
+            }
+        }
+    });
+}
+
 /// Commits a merge or merge-queue command and returns the reply its leader rendered from the `&Acked`, once
 /// `FormatsEnable` has enabled 32.4; until then 503.
 async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Result<Reply> {
@@ -1082,7 +1125,9 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     };
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
-        return Ok(Reply::json(200, graphql::query(&gq, Some(&r))));
+        let (v, asks) = graphql::query_asks(&gq, Some(&r));
+        ask_merges(c, &rd.repo, asks, can_write(&r, Some(&who)) || matches!(who.actor, Actor::App { .. }));
+        return Ok(Reply::json(200, v));
     }
     let p = match graphql::plan(&gq, &r) {
         Ok(p) => p,
@@ -1305,11 +1350,10 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     "rest/checks/runs#create-a-check-run",
                 ));
             };
-            let now = js_sys::Date::now() as u64;
-            // The edge's millisecond clock shifted by 10 bits, with the request id's low 10 bits; under 2^53 until 2249.
-            let id = ((now << 10) | (c.rid.0.0 as u64 & 0x3ff)) as i64;
-            match rest::plan_create_check_run(&body(req.bytes().await?), app, id, Timestamp(now)) {
-                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id }).await?,
+            // `decide` gives the run its id from the repository's `IdBlock` cursor (format 32.18).
+            let now = Timestamp(js_sys::Date::now() as u64);
+            match rest::plan_create_check_run(&body(req.bytes().await?), app, now) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id: 0 }).await?,
                 Err(x) => x,
             }
         }

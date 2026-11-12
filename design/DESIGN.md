@@ -321,34 +321,30 @@ pub const LOG_WINDOW: u64 = 1_000; pub const LOG_BYTES: usize = 8_000_000;  // `
 /// 10 s window, so 6 leaves a margin of two [measured, `tests/m0/results/m0-wp4.md`, "F35"]. A store with fewer than 6
 /// slow confirmations a window never moves its leader. A `STEP_DOWN` transfer targets a follower outside
 /// RESET_QUARANTINE of its own `stepped_down_at`, which every AppendEntries reply carries. On a confirm trip the
-/// leader's own calls to the target must not fail over `commit_errors` with `commit_fail_min` failed, as the commit-error
-/// rule counts a failing link, and no probe runs. On the rate alone a stalled leader held with `to: None` and kept its
-/// stall [measured, `tests/m0/results/carried-2.md`, r330-9]; with no drain, boots, or earlier step-down in that group,
-/// the rate filter is the only rule that empties the candidates, and one or two missed calls in a window of about 21
-/// pass 5% [inference]. With the count, two missed calls to each follower transfer [measured, simulator]. On a commit-error trip the
-/// leader's calls fail over `commit_errors` to every follower by definition, so the target qualifies instead on the
-/// other follower's calls to it: that follower runs a `linkErrors` probe of the target, which must read under
-/// `commit_errors`, and a probe that cannot run disqualifies it. Among those it takes the one with the fewest failed
-/// calls, then the most caught up, and holds if none qualifies. A target's own calls to the other follower measure that
-/// follower too: after an election left a failing-write site as a follower, that reading qualified only the sick site,
-/// and a group moved onto it three times; the other follower's probe of the target picked the healthy site in the same
-/// case (`dr-writes2` moved to C), and B0-06 passed 12 of 12 runs, 6 of them failing-write, with leaders off slow
-/// storage in 2.3 to 5.6 s, off failing calls in 2.4 to 5.2 s, and off failing writes by election in 4.9 to 13.3 s
-/// [measured, `tests/m0/results/m0-wp4.md`, "`STEP_DOWN` target on the leader's calls and the other follower's probe"].
-/// A sick prober can refuse a healthy target, and then the leader holds; it never transfers onto the sick site
-/// [measured, same]. Without the quarantine two healthy sites passed a group back and forth on call errors while a
-/// third was sick. In B0-33 p4r4, a leader whose calls to SIN had failed 60% of the time quarantined its only healthy
-/// peer, transferred to SIN, and SIN, overloaded as leader, cost 6,188 `suspect` reports and every remaining commit
-/// [measured, `tests/m0/results/m0-wp9.md`, fourth pass]. Judging commit-error targets on the leader's calls could
-/// never transfer, because the trip needs both followers over `commit_errors`: p5r1 and p5r2 logged 26 holds and 0
-/// transfers [measured, fifth pass]. The first measured transfer on the other-follower probe was B0-33 p6r2: a leader
-/// whose appends to apac missed CALL_DEADLINE for 30 s tripped at 0.06/0.09, the probes read 0.00, and it moved to the
-/// weur follower, which held [measured, sixth pass]. With `AGENT_INLINE_ENTRY` on every group, an apac leader's agent
-/// pushes of 1 MiB are all staged, its entries stay under 20 KB, and it held 600 s with commit p99 598 ms. While
-/// placement fails, Human and MergeQueue packs up to 1 MiB still go inline, and the apac leader stepped down once in 9
-/// s by the commit-error rule (6 and 3 failed calls, so `commit_fail_min` was met) [measured,
-/// `tests/m0/results/m0-wp9.md`, B0-31, eighth pass]. Before the budget applied on every group, a fresh group's first 1
-/// MiB agent packs went inline and the apac leader stepped down within 10 s in both halves (fourth pass).
+/// leader's calls to the target must not fail over `commit_errors` with `commit_fail_min` failed (rate alone held a stall
+/// with `to: None`, `tests/m0/results/carried-2.md`), and no probe runs. On a commit-error trip the leader's calls fail
+/// over `commit_errors` to every follower by definition, so the target qualifies instead on the other follower's calls
+/// to it: that follower runs a `linkErrors` probe of the target, which must read under `commit_errors`, and a probe that
+/// cannot run disqualifies it. Among those it takes the one with the fewest failed calls, then the most caught up, and
+/// holds if none qualifies. A target's own calls to the other follower measure that follower too: after an election
+/// left a failing-write site as a follower, that reading qualified only the sick site, and a group moved onto it three
+/// times; the other follower's probe of the target picked the healthy site in the same case (`dr-writes2` moved to C),
+/// and B0-06 passed 12 of 12 runs, 6 of them failing-write, with leaders off slow storage in 2.3 to 5.6 s, off failing
+/// calls in 2.4 to 5.2 s, and off failing writes by election in 4.9 to 13.3 s [measured, `tests/m0/results/m0-wp4.md`,
+/// "`STEP_DOWN` target on the leader's calls and the other follower's probe"]. A sick prober can refuse a healthy
+/// target, and then the leader holds; it never transfers onto the sick site [measured, same]. Without the quarantine
+/// two healthy sites passed a group back and forth on call errors while a third was sick. In B0-33 p4r4, a leader whose
+/// calls to SIN had failed 60% of the time quarantined its only healthy peer, transferred to SIN, and SIN, overloaded
+/// as leader, cost 6,188 `suspect` reports and every remaining commit [measured, `tests/m0/results/m0-wp9.md`, fourth
+/// pass]. Judging commit-error targets on the leader's calls could never transfer, because the trip needs both
+/// followers over `commit_errors`: p5r1 and p5r2 logged 26 holds and 0 transfers [measured, fifth pass]. The first
+/// measured transfer on the other-follower probe was B0-33 p6r2: a leader whose appends to apac missed CALL_DEADLINE
+/// for 30 s tripped at 0.06/0.09, the probes read 0.00, and it moved to the weur follower, which held [measured, sixth
+/// pass]. With `AGENT_INLINE_ENTRY` on every group, an apac leader's agent pushes of 1 MiB are all staged, its entries
+/// stay under 20 KB, and it held 600 s with commit p99 598 ms. While placement fails, Human and MergeQueue packs up to
+/// 1 MiB still go inline, and the apac leader stepped down once in 9 s by the commit-error rule (6 and 3 failed calls,
+/// so `commit_fail_min` was met) [measured, `tests/m0/results/m0-wp9.md`, B0-31, eighth pass; the fourth pass, before
+/// the budget applied on every group, stepped down within 10 s in both halves].
 pub struct Health { pub window_s: u16, pub commit_errors: f32, pub commit_fail_min: u8, pub confirm_p99_ms: u32,
                     pub confirm_slow_min: u8 }
 pub const STEP_DOWN: Health = Health { window_s: 10, commit_errors: 0.05, commit_fail_min: 3, confirm_p99_ms: 500,
@@ -650,12 +646,12 @@ pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
-/// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
-/// event, and on a single-PR GET by a writer or CI token at most once per PR per 30 s. List fields never compute.
-/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first), refills at
-/// TEST_MERGE_BUDGET of its vCPU and is charged each merge's measured time; pushes and dispatch may run one merge into
-/// deficit, GETs leave half a second's budget. Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
-/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU.
+/// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for a `pull_request`-family event
+/// (`demand`, which `ActionsTrigger` calls), and on a single-PR GraphQL read by a writer or CI token with no current merge,
+/// at most once per PR per 30 s. List fields never compute; the shard counts each PR a list read rendered without one.
+/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first, at the tier's instance size), refills at TEST_MERGE_BUDGET of its vCPU. Its merges run one at a time, each admitted only once the one before was charged its CPU, so pushes and dispatch, run from a positive balance, pass the budget by at most one merge; GETs leave half a second's. Admitted at an estimate while earlier merges ran, LM-1 round 5 spent 0.274 vCPU of 0.25 [measured, `tests/am1/results/merge-budget-2.md`].
+/// Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
+/// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU of a `standard-4`'s 1.
 pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),

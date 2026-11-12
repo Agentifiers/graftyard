@@ -766,6 +766,8 @@ fn gunzip(b: &[u8], cap: u64) -> Result<Vec<u8>> {
 
 struct Ctx<'a> {
     env: &'a Env,
+    /// The request's context, for work that outlives the reply (`api::ask_merges`).
+    ctx: &'a Context,
     cfg: &'a Config,
     rid: RequestId,
     /// The install's sites, from `GRAFTYARD_SITES`.
@@ -1954,6 +1956,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     graftyard_lookup::set_colo(colo_id(&req));
     let c = Ctx {
         env: &env,
+        ctx: &ctx,
         cfg: &cfg,
         rid,
         sites: &sites,

@@ -1045,6 +1045,9 @@ impl RepoTiers {
             },
             RepoEvent::Settings(s) => put_rec(w, "retention", Vec::new(), &s.check_retention_days),
             RepoEvent::CheckRun(u) => {
+                // A REST create's run id is this tier's next one (`IssueOp::CreateCheck`), which the cursor passes; an
+                // id from outside the tier's block moves nothing.
+                assigned(w, ev, Tier::Metadata, u.run.0);
                 put_newer(w, KIND_RUN, vec![sha_key(&u.head_sha), int(u.run.0.0)], at, u, |u: &CheckRunUpdate| {
                     u.version
                 })

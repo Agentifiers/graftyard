@@ -421,12 +421,6 @@ async fn merge(
     base: git::refs::ObjectId,
     head: git::refs::ObjectId,
 ) -> std::result::Result<(git::prsync::MergeAnswer, Value), String> {
-    let me = site.id;
-    let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-    let stub = env
-        .durable_object(&format!("SHARD_{}", me.0))
-        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
-        .map_err(|e| e.to_string())?;
     let url = format!(
         "https://shard/merge?repo={}&base={}&head={}&n={}&cause={}",
         repo.0.0,
@@ -435,13 +429,59 @@ async fn merge(
         n.0,
         git::prsync::MergeCause::HeadPush.as_str()
     );
+    let (v, budget) = shard_post(env, site, repo, &url).await?;
+    let a = serde_json::from_value(v.clone()).map_err(|e| format!("shard merge answered {v}: {e}"))?;
+    Ok((a, budget))
+}
+
+/// The test merge Actions dispatch asks for (`design/DESIGN.md`, Shape, `demand`): M4's `ActionsTrigger` calls it for a
+/// `pull_request`-family event before it dispatches, with `MergeCause::Dispatch`. It reads the pull request fresh from
+/// the group's leader, and if it lacks a current test merge has this site's shard of the network compute it under the
+/// budget and commit it (`/demand`, as a single-PR GET does from the edge). `Ok(false)` when there was nothing to
+/// compute, or the shard shed it, so `mergeable` stays null; `Ok(true)` once the merge is recorded.
+#[allow(dead_code)] // M4's `ActionsTrigger` is its caller; nothing dispatches before Milestone 4.
+pub async fn demand(
+    env: &Env,
+    repo: RepoId,
+    n: git::issues::IssueNumber,
+    cause: git::prsync::MergeCause,
+) -> std::result::Result<bool, String> {
+    let chain = ChainId::Repo(repo);
+    let record = record_of(env, repo).await?;
+    let site = SiteEnv::read(env).map_err(|e| e.to_string())?;
+    let b = Bindings { env, sites: &site.sites };
+    let (v, _) = graftyard_lookup::call(&b, chain, &record, "/read", &json!({ "q": { "prsync": [n] } })).await?;
+    let read: git::prsync::SyncRead =
+        serde_json::from_value(v["value"].clone()).map_err(|e| format!("prsync read answered {v}: {e}"))?;
+    let Some((base, head)) = read.views.first().and_then(git::prsync::PrView::needs_merge) else { return Ok(false) };
+    let rec = js_sys::encode_uri_component(&serde_json::to_string(&record).map_err(|e| e.to_string())?);
+    let url = format!(
+        "https://shard/demand?repo={}&n={}&base={}&head={}&cause={}&record={rec}",
+        repo.0.0,
+        n.0,
+        base.hex(),
+        head.hex(),
+        cause.as_str()
+    );
+    let v = shard_post(env, &site, repo, &url).await?.0;
+    Ok(v["committed"].as_bool() == Some(true))
+}
+
+/// A POST to this site's shard of the network, with the budget counts it sent (`x-graft-budget`).
+async fn shard_post(env: &Env, site: &SiteEnv, repo: RepoId, url: &str) -> std::result::Result<(Value, Value), String> {
+    let me = site.id;
+    let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+    let stub = env
+        .durable_object(&format!("SHARD_{}", me.0))
+        .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
+        .map_err(|e| e.to_string())?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post);
-    let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
+    let req = Request::new_with_init(url, &init).map_err(|e| e.to_string())?;
     let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
     let text = r.text().await.map_err(|e| e.to_string())?;
     if r.status_code() != 200 {
-        return Err(format!("shard merge: {} {text}", r.status_code()));
+        return Err(format!("shard {}: {} {text}", url.split('?').next().unwrap_or(""), r.status_code()));
     }
     let budget = r
         .headers()
@@ -450,8 +490,8 @@ async fn merge(
         .flatten()
         .and_then(|h| serde_json::from_str(&h).ok())
         .unwrap_or(Value::Null);
-    let a = serde_json::from_str(&text).map_err(|e| format!("shard merge answered {text}: {e}"))?;
-    Ok((a, budget))
+    let v = serde_json::from_str(&text).map_err(|e| format!("shard answered {text}: {e}"))?;
+    Ok((v, budget))
 }
 
 /// The leader's answer to the consumer's read: the cursor and each pull request's view, from the core tier, with the
