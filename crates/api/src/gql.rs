@@ -18,7 +18,7 @@ use graftyard_types::{AccountId, DbId, RepoId};
 use serde_json::{Value, json};
 
 use crate::exec::{Args, Obj, Out, leaf, obj};
-use crate::view::{Item, Repo, RepoRef, StateFilter};
+use crate::view::{Item, Pick, Repo, RepoRef, StateFilter};
 use crate::wire::{NodeId, NodeType, account_node, association, color, cursor, iso, parse_cursor, scoped};
 
 fn branch(name: &RefName) -> String {
@@ -301,16 +301,20 @@ fn list<'r>(r: &'r Repo<'r>, kind: IssueKind, a: &Args) -> Conn<'r> {
             && base.as_deref().is_none_or(|b| pull.is_some_and(|(p, _)| branch(&p.base) == b))
     };
     let after = a.get("after").and_then(Value::as_str).and_then(parse_cursor).map(|n| IssueNumber(n as u32));
-    let (all, _) = r.list(kind, state, None, usize::MAX, &keep);
-    let total = all.len();
-    let page: Vec<Item> = all.into_iter().filter(|i| after.is_none_or(|a| i.n < a)).collect();
     let n = first_or_last(a);
-    let more = page.len() > n;
-    let page: Vec<Item> = page.into_iter().take(n).collect();
+    // Filter, then the page after the cursor, over every item: a selection (`crate::narrow`).
+    let mut select = || {
+        let (all, _) = r.list(kind, state, None, usize::MAX, &keep);
+        let total = all.len();
+        let page: Vec<IssueNumber> = all.into_iter().map(|i| i.n).filter(|i| after.is_none_or(|a| *i < a)).collect();
+        Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)
+    };
+    let pick = r.dir.pick(&format!("{kind:?}{}", serde_json::to_string(a).unwrap_or_default()), &mut select);
+    let page: Vec<Item> = pick.numbers().into_iter().filter_map(|n| r.item(n)).collect();
     let end = page.last().map(|i| cursor(i64::from(i.n.0)));
     let ty = if kind == IssueKind::Issue { "IssueConnection" } else { "PullRequestConnection" };
     let nodes = page.into_iter().map(|it| Box::new(Node { r, it }) as Box<dyn Obj + 'r>).collect();
-    Conn { ty, nodes, total, more, end, extra: Vec::new() }
+    Conn { ty, nodes, total: pick.total, more: pick.more, end, extra: Vec::new() }
 }
 
 // ---- issues and pull requests ----
@@ -905,11 +909,29 @@ pub fn search<'r>(r: &'r Repo<'r>, a: &Args) -> Out<'r> {
             && assignee.is_none_or(|w| w.is_some_and(|w| r.assignees_of(it.n).contains(&w)))
             && draft.is_none_or(|d| matches!(it.pr_state(), Some(PrState::Open { draft }) if draft == d))
     };
-    let (all, _) = r.list(kind, state, None, usize::MAX, &keep);
-    let total = all.len();
-    let nodes: Vec<Box<dyn Obj + 'r>> = all.into_iter().map(|it| Box::new(Node { r, it }) as Box<dyn Obj>).collect();
-    let mut c = Conn::window("SearchResultItemConnection", nodes, a);
-    c.extra.push(("issueCount", json!(total)));
+    // `Conn::window` over every match: a selection (`crate::narrow`).
+    let mut select = || {
+        let (all, _) = r.list(kind, state, None, usize::MAX, &keep);
+        let (total, n) = (all.len(), first_or_last(a));
+        let mut page: Vec<IssueNumber> = all.into_iter().map(|i| i.n).collect();
+        if a.contains_key("last") && !a.contains_key("first") {
+            page.drain(..total.saturating_sub(n));
+        } else {
+            page.truncate(n);
+        }
+        Pick::of_numbers(page, total, total > n)
+    };
+    let pick = r.dir.pick(&format!("search{}", serde_json::to_string(a).unwrap_or_default()), &mut select);
+    let nodes: Vec<Box<dyn Obj + 'r>> = pick
+        .numbers()
+        .into_iter()
+        .filter_map(|n| r.item(n))
+        .map(|it| Box::new(Node { r, it }) as Box<dyn Obj>)
+        .collect();
+    let end = (!nodes.is_empty()).then(|| cursor(nodes.len() as i64));
+    let mut c =
+        Conn { ty: "SearchResultItemConnection", nodes, total: pick.total, more: pick.more, end, extra: Vec::new() };
+    c.extra.push(("issueCount", json!(pick.total)));
     obj(c)
 }
 

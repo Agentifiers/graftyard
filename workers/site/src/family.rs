@@ -311,7 +311,7 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
     let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
     let index = graftyard_fold::meta(&*fold.core).applied.0;
-    let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
+    let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
     // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
     let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows.packed()).unwrap_or_else(|_| b"null".to_vec()).into();
     BUILDS.with(|b| b.set(b.get() + 1));
@@ -325,6 +325,121 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
         });
     }
     Some(bytes)
+}
+
+/// One repository's narrow answers at one `DumpKey`, by query text.
+type NarrowAnswers = (DumpKey, Vec<(String, std::rc::Rc<[u8]>)>);
+
+thread_local! {
+    /// The last narrow API answers per repository (`narrow_bytes`), at one `DumpKey`, by query.
+    static NARROW: std::cell::RefCell<std::collections::HashMap<RepoId, NarrowAnswers>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Narrow answers kept per repository and state [guess]: journey 9's API reads are a handful of distinct queries.
+const NARROW_PER_STATE: usize = 32;
+
+/// How often a member builds one narrow API answer (one query of one repository) at most [guess]: an answer reads
+/// only the page it renders but selects over the whole table (500 PRs' rows for journey 9's lists), and the tiers
+/// change with nearly every entry, so without spacing every read would rebuild. A read whose rebuild is not due waits
+/// for it as a whole-tier read does (`crate::member`).
+pub const NARROW_EVERY_MS: u64 = 200;
+
+thread_local! {
+    /// When each repository's member last built each narrow answer, by query (`narrow_wait`).
+    static NARROW_BUILT: std::cell::RefCell<std::collections::HashMap<(RepoId, String), u64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// For a narrow API read of `fold` at `now`: `None` to serve it now, because its cached answer is at the tiers' state
+/// or a build of it is due (which is recorded); else the ms until one is, as `dump_wait` spaces dumps.
+pub fn narrow_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u64> {
+    let repo = fold.repo?;
+    let (key, text) = (dump_key(fold), q.to_string());
+    let cached =
+        NARROW.with(|n| n.borrow().get(&repo).is_some_and(|(k, v)| *k == key && v.iter().any(|(t, _)| *t == text)));
+    if cached {
+        return None;
+    }
+    NARROW_BUILT.with(|b| {
+        let mut b = b.borrow_mut();
+        let k = (repo, text);
+        match b.get(&k) {
+            Some(at) if now < at + NARROW_EVERY_MS => Some(at + NARROW_EVERY_MS - now),
+            _ => {
+                if b.len() >= 256 {
+                    b.clear();
+                }
+                b.insert(k, now);
+                None
+            }
+        }
+    })
+}
+
+/// The answer to a narrow API read (`{"rows": {"api": ..}}`, `graftyard_api::narrow::answer`) as serialized bytes:
+/// the cached ones when the same query was answered at the tiers' state, else built now and cached, as `dump_bytes`
+/// keys its dump. `None` for any other query.
+pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
+    q.get("rows")?.get("api")?;
+    let (repo, key, text) = (fold.repo?, dump_key(fold), q.to_string());
+    let hit = NARROW.with(|n| {
+        n.borrow()
+            .get(&repo)
+            .filter(|(k, _)| *k == key)
+            .and_then(|(_, v)| v.iter().find(|(t, _)| *t == text).map(|(_, b)| b.clone()))
+    });
+    if let Some(b) = hit {
+        return Some(b);
+    }
+    let bytes: std::rc::Rc<[u8]> =
+        serde_json::to_vec(&<Repo as Family>::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into();
+    NARROW.with(|n| {
+        let mut n = n.borrow_mut();
+        if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {
+            n.clear();
+        }
+        let e = n.entry(repo).or_insert_with(|| (key, Vec::new()));
+        if e.0 != key {
+            *e = (key, Vec::new());
+        }
+        if e.1.len() < NARROW_PER_STATE {
+            e.1.push((text, bytes.clone()));
+        }
+    });
+    Some(bytes)
+}
+
+/// The accounts one repository's whole tiers name, at one `DumpKey`.
+type Named = (DumpKey, std::rc::Rc<std::collections::BTreeSet<AccountId>>);
+
+thread_local! {
+    /// Every account each repository's whole tiers name, at one `DumpKey` (`named_accounts`).
+    static NAMED: std::cell::RefCell<std::collections::HashMap<RepoId, Named>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Every account `fold`'s whole tiers name (`graftyard_api::hosted::accounts`), which a narrow API answer
+/// needs to tell the edge the logins a whole-tier read knew; built once per state of the tiers, as the dump is.
+fn named_accounts(fold: &git::repo::RepoFold) -> std::collections::BTreeSet<AccountId> {
+    let key = dump_key(fold);
+    let hit = fold
+        .repo
+        .and_then(|repo| NAMED.with(|n| n.borrow().get(&repo).filter(|(k, _)| *k == key).map(|(_, v)| v.clone())));
+    if let Some(v) = hit {
+        return (*v).clone();
+    }
+    let v = graftyard_api::hosted::accounts(&fold.core, &fold.meta);
+    if let Some(repo) = fold.repo {
+        NAMED.with(|n| {
+            let mut n = n.borrow_mut();
+            if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {
+                n.clear();
+            }
+            n.insert(repo, (key, std::rc::Rc::new(v.clone())));
+        });
+    }
+    v
 }
 
 /// How often a learner rebuilds its packed dump at most [guess]: a learner never votes, so a rebuild delays no
@@ -388,6 +503,7 @@ pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
     match q.get("rows") {
         Some(Value::Bool(true)) => meta_loaded,
         Some(r) if r.get("merge").is_some() => meta_loaded,
+        Some(r) if r.get("api").is_some() => meta_loaded,
         Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
         None => false,
     }
@@ -396,6 +512,7 @@ pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
 /// Drops every cached dump, for a member whose fold storage refused a read.
 pub fn forget_dumps() {
     DUMPS.with(|d| d.borrow_mut().clear());
+    NARROW.with(|n| n.borrow_mut().clear());
 }
 
 impl Family for Repo {
@@ -822,7 +939,8 @@ impl Family for Repo {
     /// page, and with `{"q": {"refs": {..}}}` one page of them (`graftyard_git::group::refs_read`); with `{"q":
     /// {"rows": true}}`, both tiers' rows at this index, at most `graftyard_api::hosted::ROWS_MAX`
     /// (`graftyard_api::hosted::TierRows`), which the edge's `Repo` view reads, as one JSON string with `"packed":
-    /// true` (`TierRows::packed`); with `{"q": {"rows": {"access":
+    /// true` (`TierRows::packed`); with `{"q": {"rows": {"api": spec}}}`, only the rows one API reply reads
+    /// (`graftyard_api::narrow::answer`); with `{"q": {"rows": {"access":
     /// true}}}`, only the core rows the edge's read gate reads (`TierRows::access_rows`); with `{"q": {"rows":
     /// {"agent": true}}}`, only the core rows an agent push reads (`TierRows::agent_rows`); with `{"q":
     /// {"ranges": true}}`, the last `Promoted` and `Archived` and the first index still in the log, what the shard's
@@ -832,10 +950,13 @@ impl Family for Repo {
         follower_query(q, fold.meta.loaded())
     }
     fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64, every: u64) -> Option<u64> {
+        if q.get("rows").and_then(|r| r.get("api")).is_some() {
+            return narrow_wait(fold, q, now);
+        }
         (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now, every)).flatten()
     }
     fn read_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
-        dump_bytes(fold, q)
+        dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q))
     }
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
@@ -857,17 +978,35 @@ impl Family for Repo {
             t.index = graftyard_fold::meta(&*fold.core).applied.0;
             return serde_json::to_value(t).unwrap_or(Value::Null);
         }
+        // A narrow API read (`graftyard_api::narrow`): the rows one REST or GraphQL reply reads, not both whole tiers.
+        if let Some(spec) = q.get("rows").and_then(|r| r.get("api")) {
+            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
+            let index = graftyard_fold::meta(&*fold.core).applied.0;
+            return graftyard_api::narrow::answer(&fold.core, meta, index, spec, &|| named_accounts(fold));
+        }
         if q.get("rows").and_then(|r| r.get("access")).is_some() {
             let core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
             let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(graftyard_api::hosted::TierRows { index, core, meta: None, complete: true })
-                .unwrap_or(Value::Null);
+            return serde_json::to_value(graftyard_api::hosted::TierRows {
+                index,
+                core,
+                meta: None,
+                complete: true,
+                picks: None,
+            })
+            .unwrap_or(Value::Null);
         }
         if q.get("rows").and_then(|r| r.get("agent")).is_some() {
             let core = graftyard_api::hosted::TierRows::agent_rows(&fold.core);
             let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(graftyard_api::hosted::TierRows { index, core, meta: None, complete: true })
-                .unwrap_or(Value::Null);
+            return serde_json::to_value(graftyard_api::hosted::TierRows {
+                index,
+                core,
+                meta: None,
+                complete: true,
+                picks: None,
+            })
+            .unwrap_or(Value::Null);
         }
         // The packed dump, as `read_bytes` shares it (`dump_bytes`).
         if let Some(b) = dump_bytes(fold, q) {
@@ -880,7 +1019,7 @@ impl Family for Repo {
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
             let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
             let index = graftyard_fold::meta(&*fold.core).applied.0;
-            let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
+            let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
             return serde_json::to_value(rows).unwrap_or(Value::Null);
         }
         if q.get("ranges").is_some() {

@@ -80,8 +80,8 @@ pub fn learner_slot(addr: SiteId) -> Option<u8> {
 pub const LEARNER_AT: u32 = 500;
 pub const MAX_LEARNERS: usize = 16;
 /// Narrow reads a second one learner takes [inference: `design/DESIGN.md`, Scale, "1,000 req/s per learner"]. A
-/// whole-tier read of journey 9's 1 MB dump counts as 50: one learner served about 20 a second
-/// (`tests/am1/results/learner-dumps.md`).
+/// whole-tier read of journey 9's 1 MB dump counted as 50, since one learner served about 20 a second
+/// (`tests/am1/results/learner-dumps.md`); its API reads are now narrow and count once (`graftyard_api::narrow`).
 pub const LEARNER_READS: u32 = 1_000;
 
 /// One group's reads, as `graft-ops` sums them from Analytics Engine counters: per region the edges' read rate
