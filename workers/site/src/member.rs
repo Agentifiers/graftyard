@@ -173,6 +173,8 @@ fn held_body<G: 'static>(
 }
 /// A member measures again only on a day it served a request and has not measured yet.
 const DAY_MS: u64 = 86_400_000;
+/// How long the daily near check's marker holds off another check: past PLACE_TRIES re-placements.
+const NEAR_CHECK_FOR: u64 = 600_000;
 
 #[durable_object(alarm)]
 pub struct Member {
@@ -351,7 +353,12 @@ impl DurableObject for Member {
     async fn alarm(&self) -> Result<Response> {
         let hosted = self.hosts.borrow().as_ref().map(Hosted::clone);
         if let Some(h) = hosted {
-            each!(&h, x => if x.joined() { x.alarm().await });
+            each!(&h, x => if x.joined() {
+                x.alarm().await;
+                if let Err(e) = (Routes { host: x.clone() }).recheck().await {
+                    console_error!("daily near check: {e}");
+                }
+            });
         }
         Response::empty()
     }
@@ -471,8 +478,14 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/ping") => Response::empty(),
             (Method::Get, "/rtt") => Response::from_json(&rtt_rows(&self.host.state, &self.host.env)?),
             (Method::Post, "/raft") => {
+                // B0-02's per-KB append cost: the body's arrival and this member's work, split (`Stats::raft_in`).
+                // The isolate's clock moves only across I/O, so `work` is decode, step, and the output gate together.
+                let t0 = now_ms();
                 let body = req.bytes().await?;
-                self.raft(&body).await
+                let t1 = now_ms();
+                let r = self.raft(&body).await;
+                self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
+                r
             }
             (Method::Post, "/commit") => {
                 let body = match self.decode::<CommitReq<F>>(&req.bytes().await?) {
@@ -545,6 +558,7 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.replace(body)).await
             }
+            (Method::Post, "/place") => self.ready_or(|| self.place()).await,
             (Method::Post, "/move") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.move_step(body)).await
@@ -1246,6 +1260,7 @@ impl<F: Family> Routes<F> {
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
+        v["raftIn"] = json!(s.raft_in);
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
             s.commit_ms.clear();
@@ -1254,6 +1269,7 @@ impl<F: Family> Routes<F> {
             s.apply_steps.clear();
             s.confirm_ms.clear();
             s.append_ms.clear();
+            s.raft_in.clear();
             s.deps_ms.clear();
             s.dep_fails.clear();
             s.queue_ms.clear();
@@ -1351,10 +1367,7 @@ impl<F: Family> Routes<F> {
         if !(fresh && measured == peers.len()) {
             for peer in &peers {
                 let median = self.measure(&site, peer).await?;
-                self.host.state.storage().sql().exec(
-                    "INSERT OR REPLACE INTO rtt (peer, median_ms, at) VALUES (?, ?, ?)",
-                    vec![i64::from(peer.site.0).into(), i64::from(median).into(), (now as i64).into()],
-                )?;
+                self.store_rtt(peer.site, median, now)?;
             }
         }
         Response::from_json(&rtt_rows(&self.host.state, env)?)
@@ -1369,6 +1382,81 @@ impl<F: Family> Routes<F> {
         if !self.host.joined() {
             self.host.restore()?;
         }
+        Ok(())
+    }
+
+    fn store_rtt(&self, peer: SiteId, median_ms: u16, at: u64) -> Result<()> {
+        self.host.state.storage().sql().exec(
+            "INSERT OR REPLACE INTO rtt (peer, median_ms, at) VALUES (?, ?, ?)",
+            vec![i64::from(peer.0).into(), i64::from(median_ms).into(), (at as i64).into()],
+        )?;
+        Ok(())
+    }
+
+    /// The daily near check (`design/DESIGN.md`, "Placement is checked by latency"), on the leader's alarm, which
+    /// runs only while the leader serves, so it never wakes an idle group. A leader on its group's home whose rows
+    /// are a day old measures the other voters again; a home over `NEAR_RTT` is noted (`near_over`), and over again
+    /// at the next day's measurement it re-places the nearest voter (`place_inner`). A home back under the bound
+    /// clears the note.
+    async fn recheck(&self) -> Result<()> {
+        let (me, cfg) = {
+            let core = self.host.core.borrow();
+            let Some(c) = core.as_ref().filter(|c| c.m.role() == Role::Leader) else { return Ok(()) };
+            (c.m.me(), c.m.committed_config().map(|c| c.1.clone()))
+        };
+        let Some(raft::GroupConfig::Normal(p)) = cfg else { return Ok(()) };
+        if p.home() != me || p.voters().len() < 2 {
+            return Ok(());
+        }
+        let now = now_ms();
+        let rows = rtt_rows(&self.host.state, &self.host.env)?;
+        if !rows.is_empty() && rows.iter().all(|r| now.saturating_sub(r.1.at.0) < DAY_MS) {
+            return Ok(());
+        }
+        // One check at a time: the alarm fires again while this one measures. The marker is read and written with no
+        // await between, and a check that died leaves it to expire.
+        let sql = self.host.state.storage().sql();
+        let busy: Option<u64> = host::rows(&sql, "SELECT v FROM me WHERE k = 'near_check'", vec![])?
+            .first()
+            .and_then(|r| host::text(&r[0]).ok().and_then(|t| t.parse().ok()));
+        if busy.is_some_and(|t| now.saturating_sub(t) < NEAR_CHECK_FOR) {
+            return Ok(());
+        }
+        sql.exec("INSERT OR REPLACE INTO me (k, v) VALUES ('near_check', ?)", vec![now.to_string().into()])?;
+        let site = SiteEnv::read(&self.host.env)?;
+        for v in p.voters().iter().filter(|v| v.site != me) {
+            let ms = self.measure(&site, v).await;
+            if ms.is_err() {
+                sql.exec("DELETE FROM me WHERE k = 'near_check'", None)?;
+            }
+            self.store_rtt(v.site, ms?, now)?;
+        }
+        let rows = rtt_rows(&self.host.state, &self.host.env)?;
+        let checks = graftyard_types::PlacementChecks {
+            sites: &site.sites,
+            separate_accounts: false,
+            rtt: &rows,
+            near: graftyard_types::NEAR_RTT,
+        };
+        let over = checks.check_near(p.voters(), me).is_err();
+        let since: Option<u64> = host::rows(&sql, "SELECT v FROM me WHERE k = 'near_over'", vec![])?
+            .first()
+            .and_then(|r| host::text(&r[0]).ok().and_then(|t| t.parse().ok()));
+        match (over, since) {
+            (false, _) => {
+                sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
+            }
+            (true, None) => {
+                sql.exec("INSERT OR REPLACE INTO me (k, v) VALUES ('near_over', ?)", vec![now.to_string().into()])?;
+            }
+            (true, Some(t)) if now.saturating_sub(t) >= DAY_MS => {
+                sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
+                let r = self.place_inner().await?;
+                console_log!("daily near check re-placed: {r:?}");
+            }
+            (true, Some(_)) => {}
+        }
+        sql.exec("DELETE FROM me WHERE k = 'near_check'", None)?;
         Ok(())
     }
 
@@ -1564,12 +1652,28 @@ impl<F: Family> Routes<F> {
         let fail_first = body.get("fail_first").and_then(Value::as_bool).unwrap_or(false);
         #[cfg(not(feature = "test-faults"))]
         let fail_first = false;
+        match self.replace_on(to, &[], 3, fail_first).await? {
+            Ok(v) | Err(v) => self.reply(v),
+        }
+    }
+
+    /// The re-placement loop `/replace` and `/place` share: `Degraded { lost: to }`, then new members on `to` at
+    /// successive generations, each joined and checked by `Placement::new` with the near bound `near`, up to `tries`;
+    /// the first that passes goes in by `Normal`. `Err` when none passed: the config goes back to `Normal` with the
+    /// old member, so a group that could not be placed keeps serving where it was, and the answer lists every try with
+    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared.
+    async fn replace_on(
+        &self,
+        to: SiteId,
+        near: &[(graftyard_types::Region, u16)],
+        tries: usize,
+        fail_first: bool,
+    ) -> Result<std::result::Result<Value, Value>> {
         let (chain, record, me, cfg, c_owner, c_genesis) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
             if c.m.role() != Role::Leader {
-                drop(core);
-                return self.reply(json!({ "error": { "notLeader": host::nl_json(&self.host.core.borrow().as_ref().unwrap().m.not_leader()) } }));
+                return Ok(Err(json!({ "error": { "notLeader": host::nl_json(&c.m.not_leader()) } })));
             }
             (
                 c.join.chain,
@@ -1581,15 +1685,15 @@ impl<F: Family> Routes<F> {
             )
         };
         let Some(raft::GroupConfig::Normal(p)) = cfg else {
-            return self.reply(json!({ "error": "the committed config is not Normal" }));
+            return Ok(Err(json!({ "error": "the committed config is not Normal" })));
         };
         if to == me {
-            return self.reply(json!({ "error": "transfer first: the leader's own site" }));
+            return Ok(Err(json!({ "error": "transfer first: the leader's own site" })));
         }
         let old = p.voters().iter().find(|m| m.site == to).cloned().ok_or_else(|| err("no member on that site"))?;
         let t0 = now_ms();
         if let Err(e) = self.change(raft::GroupConfig::Degraded { placement: p.clone(), lost: to }).await {
-            return self.reply(json!({ "error": format!("degraded: {e}") }));
+            return Ok(Err(json!({ "error": format!("degraded: {e}") })));
         }
         let site = SiteEnv::read(&self.host.env)?;
         let mine = rtt_rows(&self.host.state, &self.host.env)?;
@@ -1612,8 +1716,18 @@ impl<F: Family> Routes<F> {
             let theirs: Vec<(SiteId, Rtt)> = serde_json::from_value(rows.clone()).unwrap_or_default();
             let voters: arrayvec::ArrayVec<MemberRef, 3> =
                 p.voters().iter().map(|m| if m.site == to { new.clone() } else { m.clone() }).collect();
-            let all: Vec<(SiteId, Rtt)> = mine.iter().chain(&theirs).copied().collect();
-            let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &all };
+            // This member's row for `to` measured the member being replaced: measure the new one instead, so the
+            // check, and the daily recheck after it, read the pair as it now is.
+            let fresh = if status == 200 {
+                let ms = self.measure(&site, &new).await?;
+                vec![(me, Rtt { peer: to, median_ms: ms, at: Timestamp(now_ms()) })]
+            } else {
+                Vec::new()
+            };
+            let all: Vec<(SiteId, Rtt)> =
+                mine.iter().filter(|(_, r)| r.peer != to).chain(&fresh).chain(&theirs).copied().collect();
+            let checks =
+                graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &all, near };
             let r = if fail_first && tried.is_empty() {
                 Err("injected: latency check failed".to_owned())
             } else if status == 200 {
@@ -1622,27 +1736,92 @@ impl<F: Family> Routes<F> {
             } else {
                 Err(format!("join answered {status}: {rows}"))
             };
-            tried.push(json!({ "member": new.do_name, "result": r.as_ref().err() }));
+            let ms: Vec<(u8, u16)> = theirs.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect();
+            tried.push(json!({ "member": new.do_name, "rtt": ms, "result": r.as_ref().err() }));
             match r {
-                Ok(np) => break Some(np),
-                Err(_) if tried.len() < 3 => {
-                    // The refused member never joins the group; with `test-faults` it is also cleared, so the test
-                    // install keeps no dead objects.
+                Ok(np) => {
+                    for (_, r) in &fresh {
+                        self.store_rtt(r.peer, r.median_ms, r.at.0)?;
+                    }
+                    break Some(np);
+                }
+                Err(_) => {
                     #[cfg(feature = "test-faults")]
                     let _ = self.post_member(&new, "/retire", &json!({})).await;
+                    if tried.len() >= tries {
+                        break None;
+                    }
                     generation += 1;
                 }
-                Err(_) => break None,
             }
         };
         let Some(np) = placed else {
-            return self.reply(json!({ "error": "no placement passed", "tried": tried }));
+            // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
+            let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
+            let e = json!({ "error": "no placement passed", "tried": tried, "restored": back.as_ref().err() });
+            console_error!("placement of {chain} failed: {e}");
+            return Ok(Err(e));
         };
         let index = match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
             Ok(i) => i,
-            Err(e) => return self.reply(json!({ "error": format!("normal: {e}"), "tried": tried })),
+            Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
         };
-        self.reply(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 }))
+        Ok(Ok(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 })))
+    }
+
+    /// The near check on the leader (`design/DESIGN.md`, Shape, `Placement` and `NEAR_RTT`): reads the home's round
+    /// trips to the other voters (this member's own when it is the home) and, when the home's nearest voter is over
+    /// `NEAR_RTT` for the home's region, re-places that voter with new generations through `replace_on`, up to
+    /// `PLACE_TRIES`. `{"placed": false}` when the group already passes; `{"error", "tried"}` with each try's round
+    /// trips when none passed. `graftyard_lookup::create` calls it once a new group leads, and the daily recheck when
+    /// a home was over the bound twice a day apart.
+    async fn place(&self) -> Result<Response> {
+        match self.place_inner().await? {
+            Ok(v) | Err(v) => self.reply(v),
+        }
+    }
+
+    async fn place_inner(&self) -> Result<std::result::Result<Value, Value>> {
+        let (me, cfg) = {
+            let core = self.host.core.borrow();
+            let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
+            if c.m.role() != Role::Leader {
+                return Ok(Err(json!({ "error": { "notLeader": host::nl_json(&c.m.not_leader()) } })));
+            }
+            (c.m.me(), c.m.committed_config().map(|c| c.1.clone()))
+        };
+        let Some(raft::GroupConfig::Normal(p)) = cfg else {
+            return Ok(Err(json!({ "error": "the committed config is not Normal" })));
+        };
+        let site = SiteEnv::read(&self.host.env)?;
+        let home = p.home();
+        let rtt = if home == me {
+            rtt_rows(&self.host.state, &self.host.env)?
+        } else {
+            let h = p.voters().iter().find(|m| m.site == home).ok_or_else(|| err("no member on the home"))?;
+            site.member(&self.host.env, home, &h.do_name)?.fetch_with_str("https://member/rtt").await?.json().await?
+        };
+        let checks = graftyard_types::PlacementChecks {
+            sites: &site.sites,
+            separate_accounts: false,
+            rtt: &rtt,
+            near: graftyard_types::NEAR_RTT,
+        };
+        match checks.check_near(p.voters(), home) {
+            Ok(()) => Ok(Ok(
+                json!({ "placed": false, "rtt": rtt.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect::<Vec<_>>() }),
+            )),
+            Err(graftyard_types::PlacementError::NoNearFollower { nearest, ms, bound_ms, .. }) => {
+                let mut r =
+                    self.replace_on(nearest, graftyard_types::NEAR_RTT, graftyard_types::PLACE_TRIES, false).await?;
+                let over = json!({ "site": nearest.0, "ms": ms, "boundMs": bound_ms });
+                match &mut r {
+                    Ok(v) | Err(v) => v["over"] = over,
+                }
+                Ok(r)
+            }
+            Err(e) => Ok(Err(json!({ "error": e.to_string() }))),
+        }
     }
 
     /// One step of the group's move to `{"to": PlacementRecord}` (`graftyard_identity::group_move`), on the leader:
@@ -1675,7 +1854,8 @@ impl<F: Family> Routes<F> {
         let t0 = now_ms();
         let site = SiteEnv::read(&self.host.env)?;
         let checked = |voters: arrayvec::ArrayVec<MemberRef, 3>, home: SiteId, rtt: &[(SiteId, Rtt)]| {
-            let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt };
+            let checks =
+                graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt, near: &[] };
             graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), home, &checks).map_err(|e| e.to_string())
         };
         let mut rtt = rtt_rows(&self.host.state, &self.host.env)?;
@@ -1863,7 +2043,8 @@ impl<F: Family> Routes<F> {
             let rows: Vec<(SiteId, Rtt)> = stub.fetch_with_str("https://member/rtt").await?.json().await?;
             rtt.extend(rows);
         }
-        let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt };
+        let checks =
+            graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt, near: &[] };
         let voters: arrayvec::ArrayVec<MemberRef, 3> = p.voters().iter().cloned().collect();
         let np = match graftyard_types::Placement::new(voters, learners, p.home(), &checks) {
             Ok(np) => np,

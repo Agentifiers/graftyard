@@ -5,12 +5,15 @@
 
 use graftyard_git::issues::IssueNumber;
 use graftyard_git::prsync::{
-    Budgets, MERGE_EST_MS, MergeAnswer, MergeBudget, MergeCause, SHARD_VCPU, TEST_MERGE_BUDGET, budgeted, instance_vcpu,
+    Budgets, MERGE_EST_MS, MergeAnswer, MergeBudget, MergeCause, TEST_MERGE_BUDGET, budgeted, instance_vcpu,
 };
 use graftyard_git::{
     FANOUT_DOWN_FOR, FANOUT_MAX, FANOUT_UP_FOR, Fanout, HOT_POOL, NetworkLoad, clone_cache_buckets, fanout, pool_grants,
 };
 use std::collections::BTreeMap;
+
+/// The tiers' shard at 2,000 developers, `standard-4`, which journey 9 is sized on.
+const SHARD_VCPU: f32 = 4.0;
 
 use graftyard_types::{DbId, NetworkId, SiteId, Timestamp};
 
@@ -203,7 +206,7 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
             let n = IssueNumber((next() % 500) as u32);
             if b.admit(MergeCause::HeadPush, n, MERGE_EST_MS, ms) {
                 let c = cost(next());
-                b.charge(MergeCause::HeadPush, MERGE_EST_MS, c);
+                b.charge(MergeCause::HeadPush, MERGE_EST_MS, c, c);
                 per_sec_ms[s] += f64::from(c);
                 push_ok += 1;
                 dispatch_wait.push(c as u64);
@@ -216,7 +219,7 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
             let n = IssueNumber((next() % 500) as u32);
             if b.admit(MergeCause::Get, n, MERGE_EST_MS, ms) {
                 let c = cost(next());
-                b.charge(MergeCause::Get, MERGE_EST_MS, c);
+                b.charge(MergeCause::Get, MERGE_EST_MS, c, c);
                 per_sec_ms[s] += f64::from(c);
                 get_ok += 1;
             } else {
@@ -243,7 +246,10 @@ fn b0_35_lazy_test_merges_stay_within_the_budget_serve_dispatch_first_and_never_
     assert_eq!(list_computes, 0);
     // The instruments B0-35 reads count what the run did.
     let st = b.stats();
-    assert_eq!((st.computed, st.shed, st.list_computes), (push_ok + get_ok, push_shed + get_null, 0));
+    assert_eq!((st.computed, st.get_computes, st.list_computes), (push_ok + get_ok, get_ok, 0));
+    assert_eq!(st.get_asked, get_ok + get_null, "every GET is counted, coalesced or not");
+    // A GET inside GET_COALESCE_MS of its PR's last is refused before the budget is asked, so it is not shed.
+    assert!(st.shed > push_shed && st.shed < push_shed + get_null, "shed {} of {get_null} null GETs", st.shed);
     assert_eq!(st.list_asked, (secs * 10) as u32, "every list ask is counted, none computed");
     assert_eq!(push_shed, 0, "journey 9's head pushes fit the budget, so dispatch is never shed");
     assert!(dispatch_p99 <= 10_000);
@@ -259,14 +265,14 @@ fn over_budget_pushes_go_first_and_gets_are_null() {
     for ms in (0..120_000u64).step_by(10) {
         if ms % 240 == 0 {
             if b.admit(MergeCause::HeadPush, IssueNumber((ms / 240 % 500) as u32), MERGE_EST_MS, ms) {
-                b.charge(MergeCause::HeadPush, MERGE_EST_MS, 100.0);
+                b.charge(MergeCause::HeadPush, MERGE_EST_MS, 100.0, 100.0);
                 push_ok += 1;
             } else {
                 push_shed += 1;
             }
         }
         if b.admit(MergeCause::Get, IssueNumber((ms / 10 % 500) as u32), MERGE_EST_MS, ms) {
-            b.charge(MergeCause::Get, MERGE_EST_MS, 100.0);
+            b.charge(MergeCause::Get, MERGE_EST_MS, 100.0, 100.0);
             get_ok += 1;
         } else {
             get_null += 1;
@@ -292,7 +298,7 @@ fn over_budget_pushes_go_first_and_gets_are_null() {
 #[test]
 fn the_shard_budgets_each_network_once_for_all_its_callers() {
     use std::cell::{Cell, RefCell};
-    let budgets = RefCell::new(Budgets::new(instance_vcpu("standard-2")));
+    let budgets = RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
     let clock = Cell::new(0u64);
     let catch_ups = Cell::new(0u32);
     let (n1, n2) = (net(1), net(2));
@@ -311,7 +317,7 @@ fn the_shard_budgets_each_network_once_for_all_its_callers() {
             },
             || async {
                 clock.set(clock.get() + cost);
-                Ok(MergeAnswer::Conflict { conflict: vec![] })
+                Ok((MergeAnswer::Conflict { conflict: vec![] }, None))
             },
         ))
         .unwrap()
@@ -349,8 +355,8 @@ fn the_shard_budgets_each_network_once_for_all_its_callers() {
 #[test]
 fn a_compute_charged_to_a_list_field_is_counted() {
     let mut b = MergeBudget::new(SHARD_VCPU, 0);
-    b.charge(MergeCause::Get, MERGE_EST_MS, 20.0);
-    b.charge(MergeCause::List, MERGE_EST_MS, 30.0);
+    b.charge(MergeCause::Get, MERGE_EST_MS, 20.0, 20.0);
+    b.charge(MergeCause::List, MERGE_EST_MS, 30.0, 30.0);
     let st = b.stats();
     assert_eq!((st.computed, st.list_computes, st.spent_ms), (2, 1, 50.0));
 }
@@ -432,4 +438,119 @@ fn a_site_reports_its_most_loaded_shard_and_the_summed_queue() {
     let c = graftyard_git::combine(&[l(0.2, 3), l(0.9, 1), l(0.5, 0)]);
     assert_eq!(c, l(0.9, 4));
     assert_eq!(graftyard_git::combine(&[]), NetworkLoad::default());
+}
+
+/// A28: LM-1 round 5's shard spent 0.274 vCPU of 0.25 because each merge was admitted at its 50 ms estimate while the
+/// ones before it still ran uncharged, up to five batches' merges at once. Five callers ask at once here, each merge
+/// 300 ms of CPU, so admitting at the estimate would let all five run and leave the bucket 1.25 s short. The shard
+/// runs one at a time, admitting each only after the one before was charged, so the bucket never goes lower than one
+/// merge's cost below zero, and the merges admitted are charged their CPU, not the longer wall time they took.
+#[test]
+fn concurrent_merges_overrun_the_budget_by_at_most_one_merge_and_are_charged_their_cpu() {
+    use futures_util::task::LocalSpawnExt;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    struct Sleep(Rc<Clock>, u64);
+    #[derive(Default)]
+    struct Clock {
+        now: Cell<u64>,
+        waiting: RefCell<Vec<(u64, std::task::Waker)>>,
+    }
+    impl std::future::Future for Sleep {
+        type Output = ();
+        fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+            if self.0.now.get() >= self.1 {
+                return std::task::Poll::Ready(());
+            }
+            self.0.waiting.borrow_mut().push((self.1, cx.waker().clone()));
+            std::task::Poll::Pending
+        }
+    }
+    let budgets = Rc::new(RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap())));
+    let clock = Rc::new(Clock::default());
+    let ran = Rc::new(Cell::new(0u32));
+    let mut pool = futures_executor::LocalPool::new();
+    // Five batches at once, then five more two seconds later, each merge 300 ms of CPU over 900 ms of wall time.
+    for (i, at) in (0..10u32).map(|i| (i, if i < 5 { 0 } else { 2_000 })) {
+        let (budgets, clock, ran) = (budgets.clone(), clock.clone(), ran.clone());
+        pool.spawner()
+            .spawn_local(async move {
+                Sleep(clock.clone(), at).await;
+                let c = clock.clone();
+                let r = budgeted(
+                    &budgets,
+                    net(1),
+                    MergeCause::HeadPush,
+                    IssueNumber(i),
+                    || c.now.get(),
+                    || async { Ok::<(), ()>(()) },
+                    || async {
+                        ran.set(ran.get() + 1);
+                        Sleep(clock.clone(), clock.now.get() + 900).await;
+                        Ok((MergeAnswer::Conflict { conflict: vec![] }, Some(300.0)))
+                    },
+                )
+                .await;
+                assert!(r.is_ok());
+            })
+            .unwrap();
+    }
+    loop {
+        pool.run_until_stalled();
+        let next = clock.waiting.borrow().iter().map(|(t, _)| *t).min();
+        let Some(next) = next else { break };
+        clock.now.set(next);
+        let due: Vec<_> = clock.waiting.borrow_mut().drain(..).collect();
+        due.into_iter().for_each(|(_, w)| w.wake());
+    }
+    let s = budgets.borrow().stats(net(1)).unwrap();
+    println!("A28: {s:?}");
+    assert_eq!(s.computed, ran.get());
+    assert_eq!(s.computed + s.shed, 10, "every ask is computed or shed");
+    assert!(s.computed >= 2, "a refilled bucket admits again");
+    assert!(s.low_ms >= -300.0, "overrun by more than one merge: the bucket reached {} ms", s.low_ms);
+    assert_eq!((s.spent_ms, s.wall_ms), (300.0 * f64::from(s.computed), 900.0 * f64::from(s.computed)), "CPU charged");
+    assert_eq!(s.max_ms, 300.0);
+    // The bound needs a push refused on a balance below zero: a bucket 10 ms short admits nothing until it refills, so
+    // the next merge cannot start 50 ms down and end a whole merge past it.
+    let mut b = MergeBudget::new(instance_vcpu("standard-2").unwrap(), 0);
+    assert!(b.admit(MergeCause::HeadPush, IssueNumber(1), MERGE_EST_MS, 0));
+    b.charge(MergeCause::HeadPush, MERGE_EST_MS, 260.0, 260.0);
+    assert_eq!(b.stats().low_ms, -10.0);
+    assert!(!b.admit(MergeCause::HeadPush, IssueNumber(2), MERGE_EST_MS, 0), "a push past zero waits for the refill");
+    assert!(b.admit(MergeCause::HeadPush, IssueNumber(2), MERGE_EST_MS, 100), "and runs once the bucket is positive");
+}
+
+/// A30 and A29's asks: a single-PR GET computes once per PR per GET_COALESCE_MS and is counted either way, a GET the
+/// budget shed gives its slot back so the next GET may compute, and a list field's ask is counted and never computes.
+#[test]
+fn gets_coalesce_per_pr_a_shed_get_frees_its_slot_and_list_asks_are_counted() {
+    use graftyard_git::prsync::GET_COALESCE_MS;
+    let mut b = MergeBudget::new(instance_vcpu("standard-2").unwrap(), 0);
+    let get = |b: &mut MergeBudget, n: u32, at: u64| {
+        let ok = b.admit(MergeCause::Get, IssueNumber(n), MERGE_EST_MS, at);
+        if ok {
+            b.charge(MergeCause::Get, MERGE_EST_MS, 20.0, 20.0);
+        }
+        ok
+    };
+    assert!(get(&mut b, 1, 0), "a full bucket computes a GET");
+    assert!(!get(&mut b, 1, 1_000), "the same PR inside GET_COALESCE_MS does not compute");
+    assert!(get(&mut b, 2, 1_000), "another PR does");
+    assert!(get(&mut b, 1, GET_COALESCE_MS), "the same PR after GET_COALESCE_MS computes again");
+    let s = b.stats();
+    assert_eq!((s.get_asked, s.get_computes, s.shed), (4, 3, 0), "a coalesced GET is asked, not shed");
+    // A push takes the bucket to zero: a GET is shed, and its PR's next GET, once the bucket refilled, computes.
+    let t = GET_COALESCE_MS + 1;
+    assert!(b.admit(MergeCause::HeadPush, IssueNumber(9), MERGE_EST_MS, t));
+    b.charge(MergeCause::HeadPush, MERGE_EST_MS, 400.0, 400.0);
+    assert!(!get(&mut b, 3, t), "a GET leaves the reserve to pushes");
+    assert_eq!(b.stats().shed, 1);
+    assert!(get(&mut b, 3, t + 3_000), "a shed GET held no coalescing slot");
+    // List asks: each counted, none computed, none shed.
+    for i in 0..7 {
+        assert!(!b.admit(MergeCause::List, IssueNumber(i), MERGE_EST_MS, t + 4_000));
+    }
+    let s = b.stats();
+    assert_eq!((s.list_asked, s.list_computes, s.shed, s.get_computes), (7, 0, 1, 4));
 }

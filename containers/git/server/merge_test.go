@@ -47,6 +47,7 @@ type mergeOut struct {
 	Merge    string   `json:"merge"`
 	Pack     []byte   `json:"pack"`
 	Conflict []string `json:"conflict"`
+	CPUMs    float64  `json:"cpuMs"`
 }
 
 func merge(t *testing.T, url, base, head string) (int, mergeOut, string) {
@@ -84,6 +85,9 @@ func TestMerge(t *testing.T) {
 	if code != 200 || o.Merge == "" || len(o.Conflict) != 0 {
 		t.Fatalf("clean merge: %d %s", code, body)
 	}
+	if o.CPUMs <= 0 || o.CPUMs >= 10000 {
+		t.Fatalf("clean merge cpuMs %v", o.CPUMs)
+	}
 	// The pack holds the merge commit and its new trees and blobs, not base's or head's: it indexes against the
 	// repository and adds exactly the merge.
 	idx := t.TempDir()
@@ -117,6 +121,9 @@ func TestMerge(t *testing.T) {
 	if code != 200 || o.Merge != "" || len(o.Conflict) != 1 || o.Conflict[0] != "g" {
 		t.Fatalf("conflict: %d %s", code, body)
 	}
+	if o.CPUMs <= 0 || o.CPUMs >= 10000 {
+		t.Fatalf("conflict cpuMs %v", o.CPUMs)
+	}
 
 	if code, _, _ := merge(t, s.URL, base, strings.Repeat("e", 40)); code != 409 {
 		t.Fatalf("a missing head answered %d", code)
@@ -129,10 +136,10 @@ func TestMerge(t *testing.T) {
 		return run(t, repo("7"), "m\n", "commit-tree", tree, "-p", base, "-p", head)
 	}
 	extra := run(t, wt, "", "rev-parse", root+"^{tree}")
-	if err := treeDiffCheck(repo("7"), env, base, head, bad(extra)); err == nil {
+	if err := treeDiffCheck(repo("7"), env, base, head, bad(extra), nil); err == nil {
 		t.Fatal("a merge with root's tree passed the tree-diff check")
 	}
-	if err := treeDiffCheck(repo("7"), env, base, head, bad(run(t, wt, "", "rev-parse", base+"^{tree}"))); err == nil {
+	if err := treeDiffCheck(repo("7"), env, base, head, bad(run(t, wt, "", "rev-parse", base+"^{tree}")), nil); err == nil {
 		t.Fatal("a merge that drops head's change passed the tree-diff check")
 	}
 }

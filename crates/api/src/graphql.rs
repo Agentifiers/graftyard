@@ -90,7 +90,7 @@ impl Obj for QueryRoot<'_> {
                 }
             }
             "node" => match str_arg(a, "id").and_then(|id| item_of(r, id)) {
-                Some(n) => obj(Node { r, it: r.item(n)? }),
+                Some(n) => obj(Node { r, it: r.item(n)?, listed: false }),
                 None => Out::Err(
                     "NOT_FOUND",
                     format!("Could not resolve to a node with the global id of '{}'", {
@@ -156,6 +156,13 @@ pub fn query_viewer(req: &Request<'_>, viewer: Option<&Viewer>) -> Value {
         Ok(true) => json!({ "errors": [{ "type": "unsupported", "message": "a mutation runs through plan" }] }),
         Err(e) => json!({ "errors": [e.json()] }),
     }
+}
+
+/// `query`, with the pull requests it rendered `mergeable` for with no current test merge (`crate::gql::MergeAsks`).
+pub fn query_asks(req: &Request<'_>, r: Option<&Repo<'_>>) -> (Value, crate::gql::MergeAsks) {
+    crate::gql::ASKS.with(|a| *a.borrow_mut() = Some(crate::gql::MergeAsks::default()));
+    let v = query(req, r);
+    (v, crate::gql::ASKS.with(|a| a.borrow_mut().take()).unwrap_or_default())
 }
 
 /// Runs a query. `r` is the repository `route` named, read through `fresh`, or `None` when it named none.
@@ -541,7 +548,7 @@ impl Obj for Payload<'_> {
     fn field<'s>(&'s self, f: &str, _: &Args) -> Option<Out<'s>> {
         use graftyard_git::issue_ops::IssueOut;
         let r = self.root.r;
-        let node = |n: IssueNumber| r.item(n).map(|it| obj(Node { r, it })).unwrap_or(Out::Null);
+        let node = |n: IssueNumber| r.item(n).map(|it| obj(Node { r, it, listed: false })).unwrap_or(Out::Null);
         Some(match (f, self.root.out) {
             ("clientMutationId", _) => leaf(Value::Null),
             ("issue" | "pullRequest", IssueOut::Number(n)) => node(*n),
@@ -670,7 +677,7 @@ impl Obj for MergedPayload<'_> {
     fn field<'s>(&'s self, f: &str, a: &Args) -> Option<Out<'s>> {
         let _ = a;
         let pr = || match (self.p.r, self.p.n) {
-            (Some(r), Some(n)) => r.item(n).map(|it| obj(Node { r, it })),
+            (Some(r), Some(n)) => r.item(n).map(|it| obj(Node { r, it, listed: false })),
             _ => None,
         };
         match f {

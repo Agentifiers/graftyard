@@ -15,6 +15,8 @@ use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::tiers::{CommentRow, LabelRow, ReleaseRow, ReviewRow, Timed};
 use graftyard_identity::RepoPermission;
 use graftyard_types::{AccountId, DbId, RepoId};
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Value, json};
 
 use crate::exec::{Args, Obj, Out, leaf, obj};
@@ -220,7 +222,7 @@ impl Obj for Repository<'_> {
                     _ => None,
                 };
                 match r.item(IssueNumber(n)).filter(|i| want.is_none_or(|k| i.row.kind == k)) {
-                    Some(it) => obj(Node { r, it }),
+                    Some(it) => obj(Node { r, it, listed: false }),
                     None => Out::Err(
                         "NOT_FOUND",
                         format!(
@@ -313,16 +315,34 @@ fn list<'r>(r: &'r Repo<'r>, kind: IssueKind, a: &Args) -> Conn<'r> {
     let page: Vec<Item> = pick.numbers().into_iter().filter_map(|n| r.item(n)).collect();
     let end = page.last().map(|i| cursor(i64::from(i.n.0)));
     let ty = if kind == IssueKind::Issue { "IssueConnection" } else { "PullRequestConnection" };
-    let nodes = page.into_iter().map(|it| Box::new(Node { r, it }) as Box<dyn Obj + 'r>).collect();
+    let nodes = page.into_iter().map(|it| Box::new(Node { r, it, listed: true }) as Box<dyn Obj + 'r>).collect();
     Conn { ty, nodes, total: pick.total, more: pick.more, end, extra: Vec::new() }
 }
 
 // ---- issues and pull requests ----
 
-/// An `Issue` or a `PullRequest`, whichever the item is.
+/// An `Issue` or a `PullRequest`, whichever the item is. `listed` when a connection or search rendered it, not a
+/// read of this one pull request.
 pub struct Node<'r> {
     pub r: &'r Repo<'r>,
     pub it: Item,
+    pub listed: bool,
+}
+
+/// The pull requests a GraphQL read rendered `mergeable` or `mergeStateStatus` for with no current test merge
+/// (`design/DESIGN.md`, Shape, `TestMerge`): each asked for alone, with the (base tip, head) its merge lacks, which the
+/// edge asks the shard to compute as a GET's (`MergeCause::Get`), and those a list rendered, which never compute and
+/// which the shard only counts (`MergeCause::List`, A29). Only open pull requests whose head is a branch of this
+/// repository, as `PrSync` merges them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MergeAsks {
+    pub single: BTreeMap<IssueNumber, (ObjectId, ObjectId)>,
+    pub listed: BTreeSet<IssueNumber>,
+}
+
+thread_local! {
+    /// Set only while `crate::graphql::query_asks` runs, so a reply rendered anywhere else records nothing.
+    pub(crate) static ASKS: std::cell::RefCell<Option<MergeAsks>> = const { std::cell::RefCell::new(None) };
 }
 
 impl Node<'_> {
@@ -453,10 +473,25 @@ impl<'r> Node<'r> {
 
     /// The recorded test merge (`TestMerged`), while it is of the pull request's current head and its base's current
     /// tip (`graftyard_git::prsync::mergeable`); `None` until `PrSync` records the next one.
+    /// With none, an open same-repository pull request is recorded in `MergeAsks`.
     fn test_merge(&self) -> Option<bool> {
         let (pull, head) = self.it.pull.as_ref().expect("a pull request");
         let m = graftyard_git::tiers::mergeability(self.r.core, self.it.n);
-        graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, self.r.ref_value(&pull.base))
+        let base = self.r.ref_value(&pull.base);
+        let got = graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, base);
+        let open = matches!(head.state, PrState::Open { .. }) && pull.head.repo == self.r.at.id;
+        if let (None, true, Some(base)) = (got, open, base) {
+            ASKS.with(|a| {
+                if let Some(a) = a.borrow_mut().as_mut() {
+                    if self.listed {
+                        a.listed.insert(self.it.n);
+                    } else {
+                        a.single.insert(self.it.n, (base, head.head_sha));
+                    }
+                }
+            });
+        }
+        got
     }
 
     /// GraphQL's `mergeable`: `MERGEABLE` or `CONFLICTING` from the current test merge, `UNKNOWN` until one is recorded.
@@ -926,7 +961,7 @@ pub fn search<'r>(r: &'r Repo<'r>, a: &Args) -> Out<'r> {
         .numbers()
         .into_iter()
         .filter_map(|n| r.item(n))
-        .map(|it| Box::new(Node { r, it }) as Box<dyn Obj>)
+        .map(|it| Box::new(Node { r, it, listed: true }) as Box<dyn Obj>)
         .collect();
     let end = (!nodes.is_empty()).then(|| cursor(nodes.len() as i64));
     let mut c =
