@@ -220,9 +220,25 @@ pub struct Stats {
     pub trace: VecDeque<[u64; 6]>,
     /// Test installs: member-to-member calls by modelled hop (`Host::hop`): `[ok, failed for depth, failed otherwise]`.
     pub hops: BTreeMap<u64, [u32; 3]>,
+    /// Follower: the last RAFT_IN `/raft` calls of 1 KB or more, each `[at, bytes, body ms, work ms]`: the request
+    /// body's arrival, then decode, step, and the output gate (B0-02's per-KB append cost, `tests/m0/results`).
+    pub raft_in: VecDeque<[u64; 4]>,
 }
 
+/// `Stats::raft_in`'s length: a minute of a follower's AppendEntries at B0-02's rate, about 8 a second.
+const RAFT_IN: usize = 512;
+
 impl Stats {
+    pub fn raft_in(&mut self, at: u64, bytes: usize, body_ms: u64, work_ms: u64) {
+        if bytes < 1024 {
+            return;
+        }
+        self.raft_in.push_back([at, bytes as u64, body_ms, work_ms]);
+        if self.raft_in.len() > RAFT_IN {
+            self.raft_in.pop_front();
+        }
+    }
+
     /// A first attempt's answer (`crate::prsync::one`): its shard's budget counts, and its asks and sheds.
     pub fn test_merges(&mut self, v: &serde_json::Value) {
         if !v["budget"].is_null() {
@@ -240,6 +256,7 @@ impl Stats {
         self.apply_steps.clear();
         self.confirm_ms.clear();
         self.append_ms.clear();
+        self.raft_in.clear();
         self.deps_ms.clear();
         self.dep_fails.clear();
         self.queue_ms.clear();

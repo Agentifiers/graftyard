@@ -1012,7 +1012,7 @@ fn a_member_is_replaced_on_its_own_site_in_two_config_changes() {
     let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
     let rtt: Vec<(SiteId, Rtt)> =
         [(A, B), (A, C), (B, C)].iter().map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) })).collect();
-    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt };
+    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
     let new_b = MemberRef::new(CHAIN, B, MemberKind::Full, 1, p.next_generation());
     let voters = p.voters().iter().map(|m| if m.site == B { new_b.clone() } else { m.clone() }).collect();
     let np = Placement::new(voters, Default::default(), p.home(), &checks).unwrap();
