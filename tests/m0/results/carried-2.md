@@ -8,7 +8,7 @@ run of three passed 600 ms. Branch `m0-carried-2`, from `main` at `0a1d60c`. Sam
 
 ## What sets the tail
 
-Ten more one-minute runs on graft-m3c's sites at the time (lf4-rest-2's site day, 04:32 to 04:51Z), with every
+Ten one-minute runs on graft-m3c's sites at the time (lf4-rest-2's site day, unchanged raft; 04:32 to 04:51Z), with every
 member's `/stats` saved (`BENCH_RAW=1`) and each leader's `Rtt` read after the run (`/rtt`, the median of 20 binding
 round trips the member measured at join):
 
@@ -95,4 +95,62 @@ On `m0-carried-2` with the fix (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, release, `RA
 
 ## B0-02 rerun
 
-Not run yet: graft-m3c was held by learner-dumps' site day and run from 05:00Z. See "Rerun" below once run.
+16 one-minute runs, 8 at 300 offered and 8 at 330, alternating, 05:44 to 06:06Z, on a site day from `m0-carried-2`
+`5fb175f` merged with `origin/lf4-rest-2` `9612268` (`test-faults`, same shard image; sites a/b/c `c26e6cae` /
+`429347f8` / `f646fb11`, deployed 05:36 to 05:44Z). No other thread ran on graft-m3c from 05:36 to 06:13Z. Each run
+is a new group; `rtt` is the leader's `Rtt` to each follower.
+
+| Run | Carried /s | Near / far RTT (ms) | Commands / entry | Round p50 | Leader confirm p99 | Commit p99 (ms) | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| r300-1 | 279 | 106 / 153 | 47.4 | 154 | 146 | **542** | Pass |
+| r300-2 | 278 | 87 / 203 | 37.4 | 125 | 50 | **276** | Pass |
+| r300-3 | 280 | 82 / 233 | 37.4 | 125 | 45 | **299** | Pass |
+| r300-4 | 279 | 144 / 210 | 73.5 | 231 | 37 | **790** | Between |
+| r300-5 | 279 | 90 / 200 | 38.7 | 129 | 109 | **329** | Pass |
+| r300-6 | 280 | 102 / 159 | 54.5 | 178 | 47 | **515** | Pass |
+| r300-7 | 279 | 90 / 172 | 38.0 | 126 | 73 | **358** | Pass |
+| r300-8 | 280 | 107 / 241 | 58.3 | 188 | 63 | **563** | Pass |
+| r330-1 | 308 | 121 / 157 | 75.9 | 218 | 144 | **678** | Between |
+| r330-2 | 308 | 101 / 146 | 58.8 | 168 | 297 | **549** | Pass |
+| r330-3 | 308 | 133 / 176 | 80.2 | 225 | 51 | **722** | Between |
+| r330-4 | 308 | 115 / 242 | 61.9 | 177 | 48 | **579** | Pass |
+| r330-5 | 308 | 86 / 184 | 41.3 | 126 | 35 | **309** | Pass |
+| r330-6 | 308 | 99 / 227 | 50.0 | 147 | 43 | **445** | Pass |
+| r330-7 | 308 | 102 / 232 | 56.4 | 165 | 160 | **498** | Pass |
+| r330-8 | 308 | 132 / 178 | 78.3 | 224 | 90 | **703** | Between |
+
+- **Verdict: not every run.** 12 of 16 pass 600 ms: 7 of 8 at 300 offered, 5 of 8 at 330. The 4 others are between
+  the lines (678 to 790 ms), none over 1 s, none under 100 commands/s, 0 failed commands in all 16.
+- **Every miss is placement.** The misses' near RTTs are 121 to 144 ms; every run at 115 ms or less passed. Over all
+  35 runs on both days without a leader stall, commit p99 correlates 0.93 with the near RTT, and all 16 at 100 ms or
+  less passed (276 to 445 ms). From 101 to 110 ms, 8 of 9 passed; from 111 ms up, 3 of 10.
+- **The `STEP_DOWN` fix was not exercised hosted.** No run tripped `STEP_DOWN`; the highest leader confirm p99 was 297
+  ms. Its evidence is the simulator case and the sweep above.
+- **What placement would give.** One extra run on a group re-created until its near RTT was at most 100 ms
+  (`m0c2-sel330-1`, 98 ms, the third of 3 tries) passed at 511 ms. Of 8 candidate groups made with the same hints, 2
+  had a near RTT of 100 ms or less, and 16 of the 35 measured groups did. The run was stopped there to free graft-m3c.
+
+### What closing it would take
+
+The two causes the operator named are not what sets the tail. A command or byte cap does not shorten a round (above),
+and the storage-stall hold is fixed but rare. The tail is set by where Durable Objects place a new group's members
+inside the hinted regions, which `Placement::new` checks only for a 30 ms floor (`MIN_PAIR_RTT`). Three options, each a
+design change, none made here:
+
+1. **Bound the near RTT at placement.** `Placement::new` (`crates/types/src/placement.rs`) also refuses a `Tri` voter
+   set whose leader's home has no follower within a bound (about 100 ms enam to weur), and the create path retries
+   new generations, as the move path already does up to 3 times. Cost: about 2 to 4 tries per new group at today's
+   placement (16 of 35 groups would pass), each try a join and 20 round trips, and some groups never pass; a home on
+   apac would need its own bound. A new `PlacementError` variant goes at the end of the enum.
+2. **Lower the per-KB cost of an append** (about 1 ms per KB, `carried-2.md` above), which amplifies the RTT by about
+   1.5 at 330 commands/s. Its cause is not measured; the follower's own confirm is 10 to 13 ms at p50.
+3. **Read B0-02 per placement**, as B0-12 already reads placement: pass on groups whose near RTT is within the bound,
+   which needs an operator decision on the gate as written.
+
+## Cost and checks
+
+graft-m3c usage in this branch's windows (`INSTALL=graft-m3c python3 tests/fanout/m2bcost.py`): $2.53 from 04:30 to
+05:00Z (the 10 diagnostic runs, on lf4-rest-2's sites) and $4.24 from 05:36 to 06:14Z (the site day and the 17
+runs), $6.77 in all. Full checks on `5fb175f`: `cargo fmt --check`, workspace clippy, wasm32 clippy for site, edge,
+and ops (with `test-faults` for site and edge; ops has no such feature), `cargo test --workspace` (698 passed, 0
+failed), `go test ./...` in `containers/git/server`, and the three `scripts/check_*.py`: all pass.
