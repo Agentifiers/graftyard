@@ -341,6 +341,47 @@ thread_local! {
     pub(crate) static ASKS: std::cell::RefCell<Option<MergeAsks>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Pull request `it`'s recorded test merge, while it is of its current head and its base's current tip
+/// (`graftyard_git::prsync::mergeable`), and, with none, the (base tip, head) a merge is asked for: only for an open pull
+/// request whose head is a branch of this repository, as `PrSync` merges them. GraphQL's `Node` and REST's
+/// `rest::get_pull_asks` both read it, so the two surfaces ask for the same merges.
+pub fn test_merge(r: &Repo<'_>, it: &Item) -> (Option<bool>, Option<(ObjectId, ObjectId)>) {
+    let Some((pull, head)) = it.pull.as_ref() else { return (None, None) };
+    let m = graftyard_git::tiers::mergeability(r.core, it.n);
+    let base = r.ref_value(&pull.base);
+    let got = graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, base);
+    let open = matches!(head.state, PrState::Open { .. }) && pull.head.repo == r.at.id;
+    let ask = match (got, open, base) {
+        (None, true, Some(base)) => Some((base, head.head_sha)),
+        _ => None,
+    };
+    (got, ask)
+}
+
+/// `mergeStateStatus` of non-draft pull request `it` whose test merge reads `merge` (`test_merge`): `DIRTY` on a
+/// conflict, `BLOCKED` while a protection's checks, reviews, or threads are unmet, then `CLEAN`, or `UNKNOWN` with no
+/// merge yet. REST's `mergeable_state` is its lower case (`crate::rest::get_pull_asks`).
+pub fn merge_state(r: &Repo<'_>, it: &Item, merge: Option<bool>) -> &'static str {
+    let (pull, head) = it.pull.as_ref().expect("a pull request");
+    if merge == Some(false) {
+        return "DIRTY";
+    }
+    let ps = r.protections(&pull.base);
+    let req = r.required(&head.head_sha);
+    let checks_ok = ps.iter().filter_map(|p| p.checks.as_ref()).all(|c| {
+        c.checks.iter().all(|(name, _)| {
+            req.iter().any(|(n, row)| n == &**name && row.conclusion.is_some_and(CheckConclusion::passes))
+        })
+    });
+    let approvals = r.verdicts(it.n).iter().filter(|v| v.state == ReviewState::Approved).count();
+    let reviews_ok = ps.iter().filter_map(|p| p.reviews.as_ref()).all(|v| approvals >= usize::from(v.count));
+    let threads_ok = !ps.iter().any(|p| p.conversation_resolution) || r.unresolved_threads(it.n) == 0;
+    if !(checks_ok && reviews_ok && threads_ok) {
+        return "BLOCKED";
+    }
+    if merge == Some(true) { "CLEAN" } else { "UNKNOWN" }
+}
+
 impl Node<'_> {
     fn pull_number_id(&self) -> String {
         scoped(if self.it.is_pull() { NodeType::PullRequest } else { NodeType::Issue }, self.r, self.it.row.id.0)
@@ -471,18 +512,14 @@ impl<'r> Node<'r> {
     /// tip (`graftyard_git::prsync::mergeable`); `None` until `PrSync` records the next one.
     /// With none, an open same-repository pull request is recorded in `MergeAsks`.
     fn test_merge(&self) -> Option<bool> {
-        let (pull, head) = self.it.pull.as_ref().expect("a pull request");
-        let m = graftyard_git::tiers::mergeability(self.r.core, self.it.n);
-        let base = self.r.ref_value(&pull.base);
-        let got = graftyard_git::prsync::mergeable(m.as_ref(), head.head_sha, base);
-        let open = matches!(head.state, PrState::Open { .. }) && pull.head.repo == self.r.at.id;
-        if let (None, true, Some(base)) = (got, open, base) {
+        let (got, ask) = test_merge(self.r, &self.it);
+        if let Some(pair) = ask {
             ASKS.with(|a| {
                 if let Some(a) = a.borrow_mut().as_mut() {
                     if self.listed {
                         a.listed.insert(self.it.n);
                     } else {
-                        a.single.insert(self.it.n, (base, head.head_sha));
+                        a.single.insert(self.it.n, pair);
                     }
                 }
             });
@@ -503,29 +540,11 @@ impl<'r> Node<'r> {
     /// a conflicting test merge (`DIRTY`), then failing or missing required checks and reviews and unresolved threads
     /// (`BLOCKED`), then `CLEAN` on a clean test merge, else `UNKNOWN` while the current one has not run.
     fn merge_state(&self) -> &'static str {
-        let (pull, head) = self.it.pull.as_ref().expect("a pull request");
+        let (_, head) = self.it.pull.as_ref().expect("a pull request");
         if matches!(head.state, PrState::Open { draft: true }) {
             return "DRAFT";
         }
-        let merge = self.test_merge();
-        if merge == Some(false) {
-            return "DIRTY";
-        }
-        let r = self.r;
-        let ps = r.protections(&pull.base);
-        let req = r.required(&head.head_sha);
-        let checks_ok = ps.iter().filter_map(|p| p.checks.as_ref()).all(|c| {
-            c.checks.iter().all(|(name, _)| {
-                req.iter().any(|(n, row)| n == &**name && row.conclusion.is_some_and(CheckConclusion::passes))
-            })
-        });
-        let approvals = r.verdicts(self.it.n).iter().filter(|v| v.state == ReviewState::Approved).count();
-        let reviews_ok = ps.iter().filter_map(|p| p.reviews.as_ref()).all(|v| approvals >= usize::from(v.count));
-        let threads_ok = !ps.iter().any(|p| p.conversation_resolution) || r.unresolved_threads(self.it.n) == 0;
-        if !(checks_ok && reviews_ok && threads_ok) {
-            return "BLOCKED";
-        }
-        if merge == Some(true) { "CLEAN" } else { "UNKNOWN" }
+        merge_state(self.r, &self.it, self.test_merge())
     }
 
     fn review_decision(&self) -> Option<&'static str> {

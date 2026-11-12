@@ -83,9 +83,9 @@ pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k, less d
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for a `pull_request`-family event
-/// (`demand`, which `ActionsTrigger` calls), and on a single-PR GraphQL read by a writer or CI token with no current merge,
+/// (`demand`, which `ActionsTrigger` calls), and on a single-PR read, GraphQL or REST, by a writer or CI token with no current merge,
 /// at most once per PR per 30 s. List fields never compute; the shard counts each PR a list read rendered without one.
-/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first, at the tier's instance size), refills at TEST_MERGE_BUDGET of its vCPU. Its merges run one at a time, each admitted only once the one before was charged its CPU, so pushes and dispatch, run from a positive balance, pass the budget by at most one merge; GETs leave half a second's. Admitted at an estimate while earlier merges ran, LM-1 round 5 spent 0.274 vCPU of 0.25 [measured, `tests/am1/results/merge-budget-2.md`].
+/// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first, at the tier's instance size; its counts are stored, so they outlive the object's reset), refills at TEST_MERGE_BUDGET of its vCPU. Its merges run one at a time, each admitted only once the one before was charged its CPU, so pushes and dispatch, run from a positive balance, pass the budget by at most one merge; GETs leave half a second's. Admitted at an estimate while earlier merges ran, LM-1 round 5 spent 0.274 vCPU of 0.25 [measured, `tests/am1/results/merge-budget-2.md`].
 /// Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
 /// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU of a `standard-4`'s 1.
 pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`

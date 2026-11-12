@@ -3,9 +3,10 @@
 //! `graftyard_git::prsync`.
 //!
 //! - **Leader alarm.** A repository member that leads runs its `Dispatcher` on the alarm after it applies entries. It
-//!   reads the log from the group's committed `PrSync` cursor. Each batch's first attempt runs in band: the alarm
-//!   spawns the consumer's handler (`one`) in this isolate, in the background, so the alarm, the member's Raft inputs,
-//!   and its replies never wait on the git cache. One first attempt runs at a time per member; batches meanwhile wait
+//!   reads the log from the group's committed `PrSync` cursor. Each batch's first attempt runs at once, without a queue
+//!   hop: the alarm sends it, in the background, to a new invocation of this site script through its own `SITE`
+//!   binding (`in_band`), which runs the consumer's handler (`one`), so the alarm, the member's Raft inputs, and its
+//!   replies never wait on the git cache, and the handler's calls are not charged to the member's requests. One first attempt runs at a time per member; batches meanwhile wait
 //!   and go out as one. Work the cursor has not passed `REDELIVER_AFTER_MS` after it was handed out is sent again
 //!   through the site's queue (`PRSYNC`), as is a first attempt that failed. The dispatcher lives in this isolate's
 //!   memory for one leadership, so a reset member or a new leader starts again at the cursor.
@@ -14,8 +15,8 @@
 //!   commits the batch's `PrSync` commands under their deterministic request ids. The queue handler acks a message
 //!   only once its last command, which moves the cursor, committed; anything else is retried by Queues. Neither path
 //!   is needed for correctness: a duplicate commits nothing, and work no attempt finished is covered by the cursor and
-//!   the re-send. No path calls the Cloudflare API: the first attempt uses the member's own bindings, the re-send the
-//!   queue binding.
+//!   the re-send. No path calls the Cloudflare API: the first attempt uses the script's own service binding, the
+//!   re-send the queue binding.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -53,6 +54,19 @@ thread_local! {
     /// Test installs: first attempts to drop, per member object, as if each was lost with its isolate.
     #[cfg(feature = "test-faults")]
     static DROP_FIRST: RefCell<HashMap<String, u32>> = RefCell::default();
+    /// Test installs: a shorter FIRST_FOR, per member object (`first_for`).
+    #[cfg(feature = "test-faults")]
+    static FIRST_FOR_MS: RefCell<HashMap<String, u64>> = RefCell::default();
+}
+
+/// Test installs: this member gives each first attempt `ms` before it counts as failed and is sent again through the
+/// queue (`/bench_seed {"prsyncFirstFor": ms}`, 0 to clear). The attempt it gave up on runs on, so its merges and the
+/// re-send's reach the shard at once, as LM-1 round 5's re-sends did (`tests/am1/results/merge-budget-3.md`).
+#[cfg(feature = "test-faults")]
+pub fn first_for(h: &Rc<Host<Repo>>, ms: u64) -> Value {
+    let key = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()).unwrap_or_default();
+    FIRST_FOR_MS.with(|d| if ms == 0 { d.borrow_mut().remove(&key) } else { d.borrow_mut().insert(key, ms) });
+    json!({ "prsyncFirstFor": ms })
 }
 
 /// Test installs: this member drops its next `n` first attempts unrun (`/bench_seed {"prsyncDrop": n}`), so only the
@@ -157,11 +171,19 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         // Weak, as `Host::kick`'s loop: a member reset while its attempt runs must not stay alive for it (F47).
         let w = Rc::downgrade(h);
         let env = h.env.clone();
+        #[allow(unused_mut)]
+        let mut first_for = FIRST_FOR;
+        #[cfg(feature = "test-faults")]
+        if let Some(ms) = FIRST_FOR_MS.with(|d| d.borrow().get(&key).copied()) {
+            first_for = std::time::Duration::from_millis(ms);
+        }
         spawn_local(async move {
             let t0 = now_ms();
-            let r = crate::host::within(FIRST_FOR, one(&env, &m))
+            // A first attempt past `first_for` is not cancelled: the stateless invocation `in_band` started runs to its
+            // end under its own `wait_until`, and only this member stops waiting for it.
+            let r = crate::host::within(first_for, in_band(&env, &m))
                 .await
-                .unwrap_or_else(|| Err(format!("no answer in {} s", FIRST_FOR.as_secs())));
+                .unwrap_or_else(|| Err(format!("no answer in {} ms", first_for.as_millis())));
             let ms = now_ms() - t0;
             let (from, through) = (m.batch.from.0, m.batch.through.0);
             match &r {
@@ -186,6 +208,44 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     }
     if waiting {
         h.arm_in(WAIT_MS);
+    }
+}
+
+/// The path of a first attempt on the site script's own fetch handler (`in_band`).
+pub const FIRST_PATH: &str = "/prsync/first";
+
+/// Runs a first attempt in a new invocation of this site script, through its own service binding (`SITE`), not in the
+/// leader's: the Workers runtime charges every call an object makes to the newest request the object received
+/// (`tests/m3/results/m3-wp5.md`, "Where the depth comes from"), so one attempt's `/merge` calls, each answered after the
+/// shard's own reads of this member, left one hop deeper per merge and failed "Subrequest depth limit exceeded" at its
+/// eighth (`tests/am1/results/merge-budget-3.md`). A stateless invocation starts its calls at depth 1 and receives
+/// none. Its handler is `one`, as the queue's is.
+async fn in_band(env: &Env, m: &Message) -> std::result::Result<Value, String> {
+    let body = serde_json::to_string(m).map_err(|e| e.to_string())?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(body.into()));
+    let req = Request::new_with_init(&format!("https://site{FIRST_PATH}"), &init).map_err(|e| e.to_string())?;
+    let mut r = env.service("SITE").map_err(|e| e.to_string())?.fetch_request(req).await.map_err(|e| e.to_string())?;
+    let text = r.text().await.map_err(|e| e.to_string())?;
+    match r.status_code() {
+        200 => serde_json::from_str(&text).map_err(|e| format!("first attempt answered {text}: {e}")),
+        s => Err(format!("first attempt: {s} {text}")),
+    }
+}
+
+/// The site script's fetch handler for `in_band`: one batch, answered with what `one` returned. A 500 carries its error.
+pub async fn first_handled(mut req: Request, env: Env, ctx: &Context) -> Result<Response> {
+    let m: Message = req.json().await?;
+    // The attempt runs under `wait_until`, so a leader that stops waiting (`FIRST_FOR`) does not cancel it halfway
+    // between two commits; its commands are idempotent either way.
+    let (tx, rx) = futures_channel::oneshot::channel();
+    ctx.wait_until(async move {
+        let _ = tx.send(one(&env, &m).await);
+    });
+    match rx.await {
+        Ok(Ok(v)) => Response::from_json(&v),
+        Ok(Err(e)) => Response::error(e, 500),
+        Err(_) => Response::error("first attempt dropped", 500),
     }
 }
 

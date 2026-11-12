@@ -505,6 +505,8 @@ fn concurrent_merges_overrun_the_budget_by_at_most_one_merge_and_are_charged_the
     }
     let s = budgets.borrow().stats(net(1)).unwrap();
     println!("A28: {s:?}");
+    // The five that arrived together were all in line at once; the next five arrived while some still were.
+    assert!((5..=10).contains(&s.in_flight_max), "in line at once: {}", s.in_flight_max);
     assert_eq!(s.computed, ran.get());
     assert_eq!(s.computed + s.shed, 10, "every ask is computed or shed");
     assert!(s.computed >= 2, "a refilled bucket admits again");
@@ -553,4 +555,37 @@ fn gets_coalesce_per_pr_a_shed_get_frees_its_slot_and_list_asks_are_counted() {
     }
     let s = b.stats();
     assert_eq!((s.list_asked, s.list_computes, s.shed, s.get_computes), (7, 0, 1, 4));
+}
+
+/// Item 4 of merge-budget-3: a shard object resets about 90 s after its last request, so its counts are stored and a
+/// restarted object goes on from them. The restored budget keeps every count and `since`, refills full at the new
+/// time, and takes the shard's vCPU now; a network the object already budgets keeps its own, newer counts; and
+/// `in_flight_max` counts merges in line at once, 1 when they arrive one after another.
+#[test]
+fn a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line() {
+    use std::cell::RefCell;
+    let ok = || async { Ok::<_, ()>((MergeAnswer::Conflict { conflict: vec![] }, Some(30.0))) };
+    let run = |b: &RefCell<Budgets>, n: u32, at: u64, cause: MergeCause| {
+        futures_executor::block_on(budgeted(b, net(7), cause, IssueNumber(n), || at, || async { Ok(()) }, ok))
+    };
+    let old = RefCell::new(Budgets::new(instance_vcpu("standard-2").unwrap()));
+    for (i, at) in [(1, 1_000), (2, 1_200), (3, 1_400)] {
+        assert!(run(&old, i, at, MergeCause::HeadPush).unwrap().is_some());
+    }
+    run(&old, 9, 1_500, MergeCause::List).unwrap();
+    let stored = old.borrow().stats(net(7)).unwrap();
+    assert_eq!((stored.computed, stored.list_asked, stored.since, stored.in_flight_max), (3, 1, 1_000, 1));
+    // The object resets; the next one, on a `standard-4`, restores what was stored.
+    let new = RefCell::new(Budgets::new(instance_vcpu("standard-4").unwrap()));
+    new.borrow_mut().restore(net(7), stored.clone(), 200_000);
+    let back = new.borrow().stats(net(7)).unwrap();
+    assert_eq!((back.computed, back.spent_ms, back.list_asked, back.since), (3, 90.0, 1, 1_000), "counts go on");
+    assert_eq!(back.vcpu, 1.0, "the budget is the shard's now");
+    assert!(run(&new, 4, 200_000, MergeCause::HeadPush).unwrap().is_some(), "full at restart");
+    assert_eq!(new.borrow().stats(net(7)).unwrap().computed, 4);
+    // A second restore of older counts does not undo what this object counted since.
+    new.borrow_mut().restore(net(7), stored, 200_100);
+    assert_eq!(new.borrow().stats(net(7)).unwrap().computed, 4);
+    // Another network's stored counts stay its own.
+    assert_eq!(new.borrow().stats(net(8)), None);
 }
