@@ -41,6 +41,38 @@ pub trait Directory {
     fn agent_app(&self, _app: AppId) -> bool {
         false
     }
+    /// The selection `key` names: `select`'s, over the tiers, unless this directory holds the one a member made over
+    /// its whole fold (`crate::narrow`), because the rows the edge holds are only the selected ones.
+    fn pick(&self, _key: &str, select: &mut dyn FnMut() -> Pick) -> Pick {
+        select()
+    }
+}
+
+/// A selection over a whole table, made where the whole fold is: the keys of the rows a reply renders, in order, how
+/// many matched, and whether more follow the page (`crate::narrow`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Pick {
+    pub items: Vec<graftyard_fold::Key>,
+    pub total: usize,
+    pub more: bool,
+}
+
+impl Pick {
+    /// A page of issue numbers, each keyed `[n]`.
+    pub fn of_numbers(items: impl IntoIterator<Item = IssueNumber>, total: usize, more: bool) -> Pick {
+        Pick { items: items.into_iter().map(|n| vec![n_key(n)]).collect(), total, more }
+    }
+
+    /// The items as issue numbers, for a pick of `[n]` keys.
+    pub fn numbers(&self) -> Vec<IssueNumber> {
+        self.items
+            .iter()
+            .filter_map(|k| match k.first() {
+                Some(Val::Int(n)) => u32::try_from(*n).ok().map(IssueNumber),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 /// The git cache's diff summary of a pull request.
@@ -125,12 +157,16 @@ impl Repo<'_> {
         Some(Item { n, row, pull })
     }
 
-    /// Open issues and pull requests, as GitHub's `open_issues_count` counts them.
+    /// Open issues and pull requests, as GitHub's `open_issues_count` counts them: a count over every open item, so a
+    /// selection (`Directory::pick`).
     pub fn issue_count(&self) -> usize {
-        [IssueKind::Issue, IssueKind::PullRequest]
-            .iter()
-            .map(|k| self.meta.prefix("issue_order", &order_key(*k, true, IssueNumber(0))[..2]).len())
-            .sum()
+        let count = || {
+            [IssueKind::Issue, IssueKind::PullRequest]
+                .iter()
+                .map(|k| self.meta.prefix("issue_order", &order_key(*k, true, IssueNumber(0))[..2]).len())
+                .sum()
+        };
+        self.dir.pick("issue_count", &mut || Pick { total: count(), ..Pick::default() }).total
     }
 
     pub fn item_by_id(&self, id: DbId) -> Option<Item> {
@@ -233,22 +269,32 @@ impl Repo<'_> {
 
     /// Review comments on pull request `n`, oldest first, as GHES lists them (`sort=created`). Ids do not give that
     /// order: a thread's first comment takes a Core id and a reply a Metadata id.
+    /// No index finds them, so which comments they are is a selection over every comment (`Directory::pick`).
     pub fn review_comments_of(&self, n: IssueNumber) -> Vec<(CommentId, CommentRow)> {
-        let mut rows: Vec<(CommentId, CommentRow)> = self
-            .meta
-            .prefix("comment", &[])
-            .into_iter()
-            .filter_map(|(k, _)| match k.first() {
-                Some(Val::Int(id)) => {
-                    let row: CommentRow = get_rec(self.meta, "comment", &k)?;
-                    matches!(row.on, CommentTarget::Review { n: on, .. } if on == n)
-                        .then_some((CommentId(DbId(*id)), row))
-                }
+        let mut select = || {
+            let mut rows: Vec<(i64, CommentRow)> = self
+                .meta
+                .prefix("comment", &[])
+                .into_iter()
+                .filter_map(|(k, _)| match k.first() {
+                    Some(Val::Int(id)) => {
+                        let row: CommentRow = get_rec(self.meta, "comment", &k)?;
+                        matches!(row.on, CommentTarget::Review { n: on, .. } if on == n).then_some((*id, row))
+                    }
+                    _ => None,
+                })
+                .collect();
+            rows.sort_by_key(|(id, row)| (row.created, *id));
+            Pick { total: rows.len(), items: rows.into_iter().map(|(id, _)| vec![int(id)]).collect(), more: false }
+        };
+        let pick = self.dir.pick(&format!("review_comments/{}", n.0), &mut select);
+        pick.items
+            .iter()
+            .filter_map(|k| match k.first() {
+                Some(Val::Int(id)) => Some((CommentId(DbId(*id)), get_rec(self.meta, "comment", k)?)),
                 _ => None,
             })
-            .collect();
-        rows.sort_by_key(|(id, row)| (row.created, id.0.0));
-        rows
+            .collect()
     }
 
     pub fn review_requests_of(&self, n: IssueNumber) -> Vec<String> {
@@ -271,12 +317,17 @@ impl Repo<'_> {
             .collect()
     }
 
+    /// The run with this id, whatever its commit: keyed by commit first, so found by a selection over every run
+    /// (`Directory::pick`).
     pub fn check_run(&self, run: CheckRunId) -> Option<Timed<CheckRunUpdate>> {
-        self.meta
-            .prefix("check_run", &[])
-            .into_iter()
-            .filter_map(|(k, _)| get_rec(self.meta, "check_run", &k))
-            .find(|t: &Timed<CheckRunUpdate>| t.rec.run == run)
+        let mut select = || {
+            let key = self.meta.prefix("check_run", &[]).into_iter().map(|(k, _)| k).find(|k| {
+                get_rec::<Timed<CheckRunUpdate>>(self.meta, "check_run", k).is_some_and(|t| t.rec.run == run)
+            });
+            Pick { total: usize::from(key.is_some()), items: key.into_iter().collect(), more: false }
+        };
+        let pick = self.dir.pick(&format!("check_run/{}", run.0.0), &mut select);
+        get_rec(self.meta, "check_run", pick.items.first()?)
     }
 
     pub fn check_suites(&self, sha: &ObjectId) -> Vec<Timed<CheckSuiteUpdate>> {
