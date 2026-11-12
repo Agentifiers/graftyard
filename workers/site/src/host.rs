@@ -576,6 +576,11 @@ pub struct Host<F: Family> {
     /// before `m0-carried-4`, instead of a stream (`/stats?body=array`). A reset object streams again.
     #[cfg(feature = "test-faults")]
     pub array_body: Cell<bool>,
+    /// Test installs, B0-02 (`tests/m0/results/carried-6.md`): BF-14's `arrival` rows kept in memory instead of
+    /// written to SQLite (`/stats?arrival=mem`), so no write a production member does not make sits before the
+    /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
+    #[cfg(feature = "test-faults")]
+    pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
     /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
     /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
@@ -1159,6 +1164,8 @@ impl<F: Family> Host<F> {
             severed_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             array_body: Cell::new(false),
+            #[cfg(feature = "test-faults")]
+            arrivals_mem: RefCell::new(None),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
