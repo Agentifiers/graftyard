@@ -231,8 +231,9 @@ impl ArchiveHost for SiteHost<'_> {
         let pack = self.shard("/promote?wait=60&", body).await?;
         // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
         // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
+        // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
         let ix: PackIndex =
-            serde_json::from_slice(&self.shard("/validate?tipsn=0&via=0&wait=60&", pack.clone()).await?)
+            serde_json::from_slice(&self.shard("/validate?tipsn=0&via=0&derived=1&wait=60&", pack.clone()).await?)
                 .map_err(|e| e.to_string())?;
         let raw = self.buckets()?;
         let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();

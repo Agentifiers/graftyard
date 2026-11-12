@@ -802,7 +802,7 @@ impl Family for Repo {
                 .unwrap_or(Value::Null);
         }
         if q.get("rows").is_some() {
-            use graftyard_api::hosted::{ROWS_MAX, TierRows};
+            use graftyard_api::hosted::{Budget, TierRows};
             let packed = q.get("packed").and_then(Value::as_bool) == Some(true);
             // The packed dump is built once per state of both tiers and served from the isolate after that
             // (`DUMPS`): the key is read from the tiers' own meta rows after the read's lease check, so a hit
@@ -813,7 +813,7 @@ impl Family for Repo {
             {
                 return v;
             }
-            let mut budget = ROWS_MAX;
+            let mut budget = Budget::READ;
             let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
             let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
