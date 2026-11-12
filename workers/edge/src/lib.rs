@@ -1069,6 +1069,40 @@ pub(crate) async fn validate(
     Err(last)
 }
 
+/// A read on the network's shards (`upload-pack`, `info-refs`) in `validate_sites` order: the home site's with
+/// `wait=VALIDATE_WAIT_HOME_S`, then each other Full site's with `wait=VALIDATE_WAIT_OTHER_S`, until one answers 200.
+/// The last answer otherwise. A fetch, like a push, waited on a home shard's 30 min rehydrate until its deadline.
+pub(crate) async fn shard_read(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    url: &str,
+    method: Method,
+    proto: &str,
+    body: Option<&[u8]>,
+) -> Result<Response> {
+    #[cfg(feature = "test-faults")]
+    let pinned = c.shard;
+    #[cfg(not(feature = "test-faults"))]
+    let pinned = None;
+    let sites = validate_sites(&repo.record, pinned);
+    for (i, site) in sites.iter().enumerate() {
+        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+        let h = Headers::new();
+        h.set("git-protocol", proto)?;
+        let mut init = RequestInit::new();
+        init.with_method(method.clone()).with_headers(h);
+        if let Some(b) = body {
+            init.with_body(Some(js_sys::Uint8Array::from(b).into()));
+        }
+        let req = Request::new_with_init(&format!("{url}&wait={wait}"), &init)?;
+        let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
+        if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
+            return r;
+        }
+    }
+    unreachable!("validate_sites always holds the home site")
+}
+
 /// One validate on site `site`'s shard of the network: `Err((status, body))` for any status but 200.
 async fn validate_on(
     c: &Ctx<'_>,
@@ -1194,12 +1228,8 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
             return Ok(Response::from_bytes(b)?.with_headers(h));
         }
     }
-    let mut init = RequestInit::new();
-    let h = Headers::new();
-    h.set("git-protocol", &proto)?;
-    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
-    let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
+    let mut r = shard_read(c, repo, &url, Method::Post, &proto, Some(&body)).await?;
     let hh = git_headers(c.rid, &Service::UploadPack.result_type())?;
     if r.status_code() != 200 {
         return text(c.rid, 503, &format!("git cache: {} {}\n", r.status_code(), r.text().await.unwrap_or_default()));
@@ -1247,12 +1277,8 @@ async fn info_refs(c: &Ctx<'_>, req: &Request, repo: &Repo, service: Service, si
         }
         Service::UploadPack => {
             // v0: the shard's own advertisement, after it caught up to the leader's refs.
-            let h = Headers::new();
-            h.set("git-protocol", proto.as_deref().unwrap_or(""))?;
-            let mut init = RequestInit::new();
-            init.with_method(Method::Get).with_headers(h);
             let url = format!("https://shard/info-refs?repo={}", repo.id.0.0);
-            let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
+            let mut r = shard_read(c, repo, &url, Method::Get, proto.as_deref().unwrap_or(""), None).await?;
             let b = r.bytes().await?;
             Ok(Response::from_bytes(b)?.with_headers(git_headers(c.rid, &service.advertisement_type())?))
         }

@@ -1163,8 +1163,8 @@ pub const HOT_POOL: u16 = 7;
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
-/// gets `warming`, as a cold pool shard's forwarded push does at once. A push waits 15 s on the home shard, then 60 s
-/// on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs, by 10,000 [measured, `wire-fix`].
+/// gets `warming`, as a cold pool shard's forwarded push does at once. Pushes and fetches wait 15 s on the home shard,
+/// then 60 s on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs [measured, wire-fix].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
