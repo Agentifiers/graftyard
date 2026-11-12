@@ -355,8 +355,8 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// then waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need `contents:
 /// read`, take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read rate; the serving
 /// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
-/// entry with `at >= expires`; clients time it from `expires`. An install's input restarts the ring at its base with its
-/// live leases (`9d59283`). A cursor older than the ring gets 410 with the oldest; the client reloads leases and tasks.
+/// entry with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
+/// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },

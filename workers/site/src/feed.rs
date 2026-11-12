@@ -396,9 +396,8 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             let empty = graftyard_fold::MemStore::default();
             let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
             let mut fd = feed.borrow_mut();
-            for (i, at, evs) in std::mem::take(&mut fd.pending) {
-                fd.ring.feed(repo, &o, &fold.core, meta, (i, at, &evs));
-            }
+            let pending = std::mem::take(&mut fd.pending);
+            fd.ring.backfill(repo, &o, &fold.core, meta, pending);
         }
     }
     if feed.borrow().owner.is_none() {

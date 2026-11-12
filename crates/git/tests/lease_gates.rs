@@ -1048,3 +1048,67 @@ fn a_ring_skipped_past_an_install_refuses_older_cursors_before_the_next_entry() 
         .collect();
     assert_eq!(served, vec![(i2, id, LeaseChange::Released)], "the snapshot's lease, released after it");
 }
+
+/// LM-1 round 7: a learner applies entries before its first poll reads the owner's `Authz`, then backfills its ring.
+/// A ring that never served starts after the last waiting entry with the leases live there, so a later release still
+/// reports `Released`, and a cursor from before gets 410 instead of a hold that served nothing it skipped. A ring
+/// already serving feeds every waiting entry, so an acquire among them is served.
+#[test]
+fn a_backfill_starts_a_new_ring_at_the_last_waiting_entry_and_feeds_a_serving_one() {
+    let mut w = lease_world();
+    create_ext(&mut w, CLAUDE, "fill", Some(WRITER));
+    let last = |w: &mut World| {
+        let l = w.repo.leader();
+        let e = w.repo.members[l.0 as usize]
+            .log()
+            .iter()
+            .rev()
+            .find(|e| matches!(e.body, graftyard_raft::EntryBody::Events(_)))
+            .unwrap()
+            .clone();
+        let graftyard_raft::EntryBody::Events(evs) = e.body else { unreachable!() };
+        (e.index, e.at, evs.to_vec(), w.fold())
+    };
+    let mut waiting = Vec::new();
+    let mut ids = Vec::new();
+    for k in 0..3 {
+        ids.push(lease_id(&w.commit(issue(app(CLAUDE), shared(&[&format!("fill/{k}/**")], Some("fill"))))));
+        let (i, at, evs, _) = last(&mut w);
+        waiting.push((i, at, evs));
+    }
+    let (through, _, _, f) = last(&mut w);
+    let mut fresh = feed::Ring::default();
+    fresh.backfill(REPO, &w.ident.owner, &f.core, &f.meta, waiting.clone());
+    assert_eq!(fresh.through, through, "a new ring starts at the last waiting entry");
+    assert!(fresh.past(Index(0), &[]).is_empty(), "and serves no event from before it");
+    let (oldest, newest) = fresh.bounds();
+    let before = feed::FeedCursor { group: REPO, index: Index(through.0 - 1) }.encode();
+    assert!(matches!(feed::start(REPO, Some(&before), oldest, newest), feed::Start::Gone { .. }), "{oldest:?}");
+    w.commit(issue(app(CLAUDE), IssueOp::ReleaseLease { id: ids[0] })).unwrap();
+    let (i, at, evs, f2) = last(&mut w);
+    fresh.feed(REPO, &w.ident.owner, &f2.core, &f2.meta, (i, at, &evs));
+    let changes: Vec<(LeaseId, LeaseChange)> = fresh
+        .past(through, &[])
+        .into_iter()
+        .filter_map(|(_, _, e)| match e {
+            ActivityEvent::Lease { lease, change } => Some((lease.id, change)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes, vec![(ids[0], LeaseChange::Released)], "the live set came from the backfill");
+
+    // A ring that already serves: the waiting entries are fed, so every acquire among them is served.
+    let mut serving = feed::Ring::default();
+    let (i0, at0, evs0) = waiting[0].clone();
+    serving.feed(REPO, &w.ident.owner, &f.core, &f.meta, (i0, at0, &evs0));
+    serving.backfill(REPO, &w.ident.owner, &f.core, &f.meta, waiting[1..].to_vec());
+    let acquired: Vec<LeaseId> = serving
+        .past(i0, &[])
+        .into_iter()
+        .filter_map(|(_, _, e)| match e {
+            ActivityEvent::Lease { lease, change: LeaseChange::Acquired } => Some(lease.id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(acquired, ids[1..].to_vec(), "a serving ring skips no waiting entry");
+}
