@@ -133,7 +133,7 @@ Account-scoped faults reach all three sites in the default. These are a bad acco
 
 **Account-separated sites (option).** A customer who wants account isolation puts each site script in its own account and the zone, `graft-front`, and the edge in a fourth. Members then reach each other over HTTPS through each site's Worker, with Ed25519-signed requests. That contains account faults to one voter, except in the fourth account, which holds the zone and edge and carries all client traffic. It costs replication over the public proxy. A December 2025 class failure on the ring hostnames stalls commits for its duration, and each member call adds a site Worker request and its latency: Milestone 0 measured a median of 7 ms (4 to 16 ms over 17 of 18 site pairs) at p50 and up to 51 ms at p99 over a cross-script binding, with signing under 1 ms [measured] (`tests/m0/results/m0-wp5.md`).
 
-Location comes from documented controls plus direct measurement. DO jurisdictions pin `eu` and `us` (https://developers.cloudflare.com/durable-objects/reference/data-location/), and they stay wherever residency allows. Hints are "best effort" (same page). So when a member joins, it takes the median of 20 binding round trips to each other voter, and `Placement::new` refuses a pair under 30 ms [guess threshold: intra-region round trips are a few ms, enam to weur about 80 ms]. `Placement::new` also refuses a group whose home has no other voter within `NEAR_RTT` for the home's region, because a home leader's commit round is one round trip to its nearer follower: at 300 commands/s every B0-02 run whose near follower measured 100 ms or less passed, and only 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]; on groups placed within the bound, 15 of 16 passed, and the miss was one leader stall [measured, `tests/m0/results/carried-3.md`]. The bound is 100 ms for an enam or weur home, B0-12's median enam to weur pair, and 198 ms for an apac home, its median enam to apac pair [measured, `tests/m0/results/b0-12.json`]. Location hints place a member in a region, not a city, so a new group's leader re-places its nearer follower with new generations until one passes, up to `PLACE_TRIES`, and the create fails with every try's round trips if none does. A member repeats the check at most once a day, and only on a day its group served a request, so the check never wakes an idle group. Each member keeps its own measurements (`Rtt`), outside `GroupConfig`, so a check commits no entry. R2's get-bucket API returns the bucket's `location` (https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/), so `graft-ops` refuses a misplaced bucket at install. A check that fails or errors is a no-op plus an alarm. Only a positive mismatch read twice 24 h apart starts a repair.
+Location comes from documented controls plus direct measurement. DO jurisdictions pin `eu` and `us` (https://developers.cloudflare.com/durable-objects/reference/data-location/), and they stay wherever residency allows. Hints are "best effort" (same page). So when a member joins, it takes the median of 20 binding round trips to each other voter, and `Placement::new` refuses a pair under 30 ms [guess threshold: intra-region round trips are a few ms, enam to weur about 80 ms]. `Placement::new` also refuses a group whose home has no other voter within `NEAR_RTT` for the home's region, because a home leader's commit round is one round trip to its nearer follower: at 300 commands/s every B0-02 run whose near follower measured 100 ms or less passed, and only 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]; on groups placed within the bound, 15 of 16 passed, and the miss was one leader stall [measured, `tests/m0/results/carried-3.md`]. The bound is 100 ms for an enam or weur home, B0-12's median enam to weur pair, and 198 ms for an apac home, its median enam to apac pair [measured, `tests/m0/results/b0-12.json`]. Location hints place a member in a region, not a city, so a new group's leader re-places its nearer follower with new generations until one passes, up to `PLACE_TRIES`, and the create fails with every try's round trips if none does. A move's swap and `graftyard placement set`'s site probes check without the bound, and the next daily check catches a move that broke it. A member repeats the check at most once a day, and only on a day its group served a request, so the check never wakes an idle group. Each member keeps its own measurements (`Rtt`), outside `GroupConfig`, so a check commits no entry. R2's get-bucket API returns the bucket's `location` (https://developers.cloudflare.com/api/resources/r2/subresources/buckets/methods/get/), so `graft-ops` refuses a misplaced bucket at install. A check that fails or errors is a no-op plus an alarm. Only a positive mismatch read twice 24 h apart starts a repair.
 
 ```rust
 // ---- Sites and placement ----
@@ -155,60 +155,53 @@ pub enum MemberKind {
     Witness,   // stores (term, index, digest), never content: used for residency
     Learner,   // stores content, never votes, serves read-index reads: hot groups only; slot k is `SiteId(192 + k)`
 }
-/// `do_name` is "{chain}#{generation}#{kind}{slot}": `kind` is `f`, `w`, or `l`, and `slot` is the member's voter or
-/// learner position, so a learner beside its group's voter on one site, or two learners on one site, never share an
-/// object. Bootstrap members take the record's generation. A member added later, by a retry, a replacement, or a move,
-/// takes one above `Placement.generation`, so it never wakes a removed member's object. Round trips are in `Rtt`.
+/// `do_name` is "{chain}#{generation}#{kind}{slot}": `kind` is `f`, `w`, or `l`, and `slot` the voter or learner
+/// position, so members on one site never share an object. Bootstrap members take the record's generation; later ones
+/// (a retry, a replacement, a move) take one above `Placement.generation`, so none wakes a removed member's object.
 pub struct Member { pub site: SiteId, pub kind: MemberKind, pub slot: u8, pub generation: u32, pub do_name: Box<str> }
-/// One row per other voter in each member's own SQLite, outside `GroupConfig` and the log, so a check writes no entry.
-/// A member measures when it joins. After that it measures again only after it serves a request on a day it has not
-/// measured yet, inside that request's work, so it never wakes an idle group. `Placement::new` reads joiners' rows.
+/// One row per other voter in the member's own SQLite, outside `GroupConfig` and the log, so a check writes no entry;
+/// taken at join, then only inside a request served on an unmeasured day, so it never wakes an idle group.
 pub struct Rtt { pub peer: SiteId, pub median_ms: u16 /* of 20 binding round trips */, pub at: Timestamp }
-/// Built only by `Placement::new`, which refuses two voters in one region or one site, a voter pair under MIN_PAIR_RTT,
-/// fewer than two Full voters, when the install separates accounts two voters in one account, and a home whose nearest
-/// other voter measured over its region's `NEAR_RTT` (`PlacementError::NoNearFollower`, the enum's last variant). The
-/// bound applies where members measured each other: a create, a replacement, and the daily check; a move's swap and
-/// `graftyard placement set`'s site probes check without it, and the next daily check catches a move that broke it. `Placement::solo`
-/// builds the one-voter `Solo` placement and needs the install's signed `evaluation` flag. `Placement::from_record`
-/// builds a group's first placement from its `PlacementRecord` and nothing else.
+/// Built only by `Placement::new`, which reads joiners' `Rtt` rows and refuses two voters in one region or site, a
+/// voter pair under MIN_PAIR_RTT, fewer than two Full voters, two voters in one account when accounts are separated,
+/// and, at a create, a replacement, or the daily check, a home with no other voter within its region's NEAR_RTT
+/// (`PlacementError::NoNearFollower`, last; a move's swap and `graftyard placement set` skip it:
+/// `decisions/DECISIONS.md`, "A group's home must have a voter within `NEAR_RTT`"). `Placement::solo` builds `Solo` and
+/// needs the signed `evaluation` flag; `from_record` builds a first placement from its `PlacementRecord` alone.
 pub struct Placement { voters: ArrayVec<Member, 3>, learners: ArrayVec<Member, 16>,
                        home: SiteId /* preferred leader site; transfer restores it; wins over the record's */,
                        generation: u32 /* highest member generation this group has named */, _private: () }
-/// Where one owner's chains, or one system chain, live. An owner's record is the `NamesEvent::Placement` row on
-/// `account_shard(owner)`. It covers the owner's `Authz`, `Identity`, `Actions`, and repository chains, and the network
-/// chain of every network whose root repository the owner holds. `graftyard placement set <owner>` writes it; signup
-/// copies the install's default as `InitPlacement`. A system chain's record is in the signed genesis
-/// (`Genesis.placements`), and only a customer-signed `LeaveEvaluation` changes it. `sites` are logical: `from_record`
-/// swaps a site that `Release` records lost for the spare its `ReplaceMember` named. Changing an owner's record bumps
-/// `generation` and keeps the old record in `moving_from`. A Workflow then moves each of its groups, child groups
-/// included, from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`, then `Normal`;
-/// leadership leaves a site before it is dropped), because `reconfigure` refuses a disjoint `Joint` (BF-30), and clears
-/// `moving_from` last; `home` alone is one change and a transfer. A record's `home` only seeds bootstrap (BF-11).
+/// Where one owner's chains, or a system chain, live. An owner's record, the `NamesEvent::Placement` row on
+/// `account_shard(owner)`, covers its `Authz`, `Identity`, `Actions`, and repository chains, and each network chain
+/// whose root repository it holds. `graftyard placement set <owner>` writes it; signup copies the default
+/// (`InitPlacement`). A system chain's is in the signed `Genesis.placements`, and only a customer-signed
+/// `LeaveEvaluation` changes it. `sites` are logical: `from_record` swaps a site `Release` records lost for its
+/// `ReplaceMember` spare. A change bumps `generation` and keeps the old record in `moving_from`. A Workflow then moves
+/// each group and child group from the old sites' `MemberRegistry` rows, one voter site per change (a one-site `Joint`,
+/// then `Normal`; leadership leaves a site before it is dropped; `reconfigure` refuses a disjoint `Joint`, BF-30), then
+/// clears `moving_from`; `home` alone is one change and a transfer. A record's `home` only seeds bootstrap (BF-11).
 pub struct PlacementRecord { pub name: PlacementName, pub sites: SmallVec<[SiteId; 3]>, pub home: SiteId,
                              pub generation: u32, pub moving_from: Option<Box<PlacementRecord>>, pub at: Timestamp }
 pub enum SystemChain { Release, Names, Tokens, Ids }
-/// How a caller finds a group. It uses the `GroupConfig` it cached from the group's last `NotLeader` or `ReplyMeta`.
-/// Without one, it builds the bootstrap voter names from the chain's record and calls them in record order. If none
-/// answers with a config, it reads the chain's row in the `MemberRegistry` of each record site, then repeats both steps
-/// for `moving_from`. Any member that holds a config, a removed one included, answers with its latest committed one.
-/// The edge finds the record from the route: the owner's `Names` rows for `o/r` and owner routes,
-/// `NamesEvent::RepoOwner` for `/repositories/{id}` and for a network's root repository, and the cached `Release` view
-/// (genesis, or a later `LeaveEvaluation`) for system chains. Carried by every member reply. A caller whose cached
-/// config is older than `config_index` takes the config from the next `NotLeader`, or asks that member for it.
+/// How a caller finds a group: by the `GroupConfig` cached from its last `NotLeader` or `ReplyMeta`. Without one, it
+/// calls the bootstrap voters named by the chain's record, in record order. If none answers with a config, it reads the
+/// chain's `MemberRegistry` row on each record site, then repeats both for `moving_from`. Any member holding a config,
+/// even a removed one, answers with its latest committed one. The edge finds the record by route: the owner's `Names`
+/// rows for `o/r` and owner routes, `NamesEvent::RepoOwner` for `/repositories/{id}` and a network's root repository,
+/// and the cached `Release` view (genesis, or a later `LeaveEvaluation`) for system chains. Every member reply carries
+/// it; a caller whose cache predates `config_index` takes the next `NotLeader`'s config or asks that member.
 pub struct ReplyMeta { pub term: Term, pub leader: Option<SiteId>, pub config_index: Index }
-/// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`,
-/// no requests, and `at` taken from the record, so every voter builds the same bytes and any voter may propose it.
-/// Term 1 holds only that entry. A member with no committed config serves no read, grants no vote, and stores only
-/// that entry, after it reads the same record generation from the record's source itself (the `Names` leader, or
-/// genesis) and claims its chain in the `MemberRegistry` of the oldest record's first site; the first generation to
-/// claim wins and any other stores nothing. Without it, two generations during a move built two groups in 20 of 20
-/// rounds [measured, `tests/m1/results/m1-wp7.md`, BF-10]. Two edges that create a group at once propose identical entries. The member that took the creating call
-/// campaigns for term 2 once a quorum stores the entry, commits its `Noop`, then decides the call's command, and
-/// leadership moves to `home` by transfer. The `Release` group's record comes from the genesis it accepts.
+/// Bootstrap. A group's first entry is `Config(Normal(from_record(record)))` at term 1, index 1, with a zero `prev`, no
+/// requests, and the record's `at`, so every voter builds and may propose the same bytes. A member with no committed
+/// config serves no read, grants no vote, and stores only that entry (term 1's only one) after reading the same record
+/// generation from its source (`Names` leader or genesis) and claiming its chain in the oldest record's first site's
+/// `MemberRegistry`; the first generation to claim wins; others store nothing. Unclaimed, a move's two generations
+/// built two groups in 20 of 20 rounds [measured, `tests/m1/results/m1-wp7.md`, BF-10]. Two edges creating a group at
+/// once propose the same entry; the member called to create it campaigns for term 2 once a quorum stores it, commits
+/// its `Noop`, decides the call's command, and transfers leadership to `home`. `Release`'s record is its genesis.
 pub fn bootstrap(chain: ChainId, record: &PlacementRecord) -> LogEntry;
 pub const MIN_PAIR_RTT: Duration = Duration::from_millis(30);    // [guess]
-/// The most a home may measure to its nearest other voter, by the home's region; homes in other regions are not
-/// bounded. [measured: B0-02's tail follows that round trip; the bounds are B0-12's median pairs]
+/// A home's most RTT to its nearest voter; other regions unbounded [measured: B0-02's tail follows it, B0-12 medians]
 pub const NEAR_RTT: &[(Region, u16)] = &[(Region::Enam, 100), (Region::Weur, 100), (Region::Apac, 198)];
 pub const PLACE_TRIES: usize = 8;    // new generations tried for the near follower before a create fails [inference]
 pub enum PlacementName {
