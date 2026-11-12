@@ -58,10 +58,15 @@ export class Leader {
       const mode = modes[k++ % modes.length];
       const t0 = Date.now();
       lagMax = 0;
+      // `stmts=N` splits the row over N inserts, as a member's transaction carries 80 to 400 statements; `keep=N` keeps
+      // N rows (default 20), so `keep` large lets the database grow as a member's log and fold do.
+      const stmts = Number(u.searchParams.get("stmts") ?? 1), keep = Number(u.searchParams.get("keep") ?? 20);
+      const part = row.subarray(0, Math.ceil(row.length / stmts));
       const write = () => {
         this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec("INSERT INTO log (i, b) VALUES (?, ?)", i, row);
-          this.ctx.storage.sql.exec("DELETE FROM log WHERE i < ?", i - 20);
+          if (stmts <= 1) this.ctx.storage.sql.exec("INSERT INTO log (i, b) VALUES (?, ?)", i, row);
+          else for (let s = 0; s < stmts; s++) this.ctx.storage.sql.exec("INSERT INTO log (i, b) VALUES (?, ?)", i * 1000 + s, part);
+          this.ctx.storage.sql.exec("DELETE FROM log WHERE i < ?", stmts <= 1 ? i - keep : (i - keep) * 1000);
         });
         i++;
       };
@@ -109,7 +114,8 @@ export class Leader {
       } else {
         send = peer.fetch("https://peer/r", { method: "POST", body });
         if (mode === "nogate") {
-          await new Promise((r) => setTimeout(r, 0));
+          // `gapMs`: how long after the send the write starts (the member's `defer_flush` uses 0).
+          await new Promise((r) => setTimeout(r, Number(u.searchParams.get("gapMs") ?? 0)));
           write();
           wroteAt = Date.now();
         }
