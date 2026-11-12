@@ -10,7 +10,8 @@
 // read `trusted: false`; the admin writes the releases (they need Write), pushes the commits, and records the check
 // runs (as App m3-ci). Issues, pull requests, comments, and reviews go through the edge's GraphQL, releases through
 // `POST releases`, commits through git. The edge serves no REST or GraphQL write of a review comment or a check run,
-// so those two are committed on the repository's group through the tools edge with the writer's own credential
+// so those two are committed on the repository's group through the edge's test-faults `/_bed/identity` with the
+// writer's own credential
 // (`IssueOp::Comment` on a review line, `IssueOp::RecordCheck`), which `decide` checks as it checks any write.
 //
 //   node tests/am1/rest/lf4.mjs --repo NAME --chain repo:ID
@@ -20,7 +21,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { Git, OP, accountShard, api, commit, log, loginShard, must, pat, rid, row, state, tokens } from "../hosted/lib.mjs";
+import { Git, OP, accountShard, api, bed, log, loginShard, must, pat, rid, row, state, tokens } from "../hosted/lib.mjs";
 
 const { values: opt } = parseArgs({ options: { repo: { type: "string" }, chain: { type: "string" } } });
 if (!opt.repo || !opt.chain) throw new Error("usage: lf4.mjs --repo NAME --chain repo:ID");
@@ -58,8 +59,8 @@ row(OUT, { step: "untrusted user", id: uid });
 
 const issueCall = (account, token, op) => ({ issue: { format: [32, 5], op, account, scopes: 1, token, sso: [], request: rid(), render: null } });
 const memberCommit = async (account, token, op) => {
-  const o = await commit(opt.chain, issueCall(account, token, op));
-  return o?.ok?.out ? "ok" : JSON.stringify(o).slice(0, 200);
+  const r = await bed({ chain: opt.chain, cmd: issueCall(account, token, op) });
+  return r.outcome?.ok ? "ok" : JSON.stringify(r.outcome ?? r.error).slice(0, 200);
 };
 
 // ---- writes ----
@@ -132,7 +133,7 @@ for (const c of HIDDEN) {
 // Review comments by the untrusted user on a line of the admin's pull request (member commit, its own PAT).
 const hostHead = [...Buffer.from(hostSha, "hex")];
 for (const [i, c] of HIDDEN.entries()) {
-  const at = { commit: hostHead, path: "lf4/host.txt", line: i + 1, start_line: null, side: "Right" };
+  const at = { commit: hostHead, path: `lf4/${tag}/host.txt`, line: 1, start_line: null, side: "Right" };
   wrote("review comment", (await memberCommit(uid, patHash, { Comment: { on: { Review: { n: hostPr.number, review: null, at } }, body: text(c), reply_to: null } })) === "ok" || "refused");
 }
 // Check runs on the commits tip, by App m3-ci, recorded under the admin's PAT (member commit; `RecordCheck` needs Write).

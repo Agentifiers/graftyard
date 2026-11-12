@@ -10,7 +10,7 @@
 //   node tests/am1/lf4/b036-labels.mjs --repo NAME [--n 100]
 // Environment as tests/am1/hosted/lib.mjs. Rows: tests/am1/raw/b036-labels.jsonl.
 import { parseArgs } from "node:util";
-import { api, ghs, log, row, sleep, state, tokens } from "../hosted/lib.mjs";
+import { OP, api, ghs, log, must, row, sleep, state, tokens } from "../hosted/lib.mjs";
 import { agentToken } from "../rest/apps.mjs";
 import { execFileSync } from "node:child_process";
 
@@ -34,8 +34,10 @@ for (const name of [ok, no]) {
 }
 const pol = await api("PUT", `/api/graftyard/v1/repos/${R}/agents/policy`, admin, { labels: [ok] });
 row(OUT, { step: "policy", status: pol.status, labels: pol.body?.labels });
-const flag = await api("PUT", `/api/graftyard/v1/agents/apps/${state.app}`, admin, { kind: "third_party", confine: "refs/heads/claude/**" });
-row(OUT, { step: "flag m3-ci confined", status: flag.status });
+// m3-ci's `AgentApp` row, as the operator on the install's chain the way tests/am1/rest/apps.mjs writes its rows: on
+// graft-m3c the m3 admin is not a site admin of `authz:1`, so `PUT /api/graftyard/v1/agents/apps/{id}` answers 403.
+const flag = await must("authz:1", { cred: OP, op: { PutAgentApp: { app: state.app, kind: "ThirdParty", confine: "refs/heads/claude/**" } } });
+row(OUT, { step: "flag m3-ci confined", ok: !!flag?.ok });
 await sleep(2000);
 const issue = (await gql(admin, "mutation($i: CreateIssueInput!) { createIssue(input: $i) { issue { id number } } }",
   { i: { repositoryId: (await gql(admin, `query { repository(owner: "m3org", name: "${opt.repo}") { id } }`)).body.data.repository.id, title: `b036 labels ${tag}`, body: "b036" } })).body.data.createIssue.issue;
