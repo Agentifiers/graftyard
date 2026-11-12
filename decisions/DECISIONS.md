@@ -2500,9 +2500,21 @@ Branch `merge-budget-4` closed the three items the lead left after `merge-budget
 
 **Beat.** Keying commits per (PR, head, base) with an ack-without-entry path, which the lead proposed for duplicates the log does not show. Ordering merges by base in the shard, which cannot see what the leader has committed.
 
-**Evidence.** The stored logs of repos 65553 and 65554 [measured, `tests/am1/results/merge-budget-4.md`]. `an_older_base_merge_committed_late_does_not_replace_the_current_one`, and planted bugs in `tests/budget/plant.py`.
+**Evidence.** The stored logs of repos 65553 and 65554, and the hosted run's 0 such merges on repo 65559 [measured, `tests/am1/results/merge-budget-4.md`]. The container sizes are read from the Containers API: run 1's shard ran on 4 vCPU, 12 GiB, 20 GB. `an_older_base_merge_committed_late_does_not_replace_the_current_one`, and planted bugs in `tests/budget/plant.py`.
 
 **Flip.** A base branch that moves backward, such as a force-push to an older commit, which would make the tip's merge the older one. The check compares with the tip, not ancestry, so it already holds then.
+
+#### A28's flip, measured: merges do not wait past GET_COALESCE_MS
+
+**Decision.** `BudgetStats` counts each admitted merge's wait, from its ask to its start, in buckets with `GET_COALESCE_MS` as an edge. GETs keep coalescing on the clock.
+
+**Why.** With first attempts cut to 3 s, 68 of them given up and up to 44 merges in line at once, 1,993 merges waited p99 5.8 s and at most 5.8 s, a fifth of the 30 s window, so a GET's slot never expired while its merge was still queued.
+
+**Beat.** Coalescing on the queue, so a GET joins the pending merge, which the lead proposed in case waits passed the window. They did not.
+
+**Evidence.** `tests/am1/results/merge-budget-4.md` [measured]; `merge_waits_are_counted_in_buckets_and_read_against_the_coalescing_window`.
+
+**Flip.** A merge wait past `GET_COALESCE_MS` (`waits_over`), such as a network whose catch-ups are slow, which would coalesce on the queue.
 
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 
