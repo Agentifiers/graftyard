@@ -29,6 +29,7 @@ SHARD_T = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_promotion')
 SHARD_W = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_warming')
 EDGE_N = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'every_shard_try')
 SITEHOST = 'workers/site/src/host.rs'
+GOMIDX = ('go', [], 'Midx')
 SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
 
 # (name, file, old, new, tests)
@@ -122,6 +123,9 @@ MUTANTS = [
     ('a local /entries read is not capped', SITEHOST,
      'b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize',
      'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
+    ('ingest never writes a multi-pack-index', GO, '\tmidxAfterIngest(net, rp)\n', '', GOMIDX),
+    ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
+     '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
 ]
 
 
