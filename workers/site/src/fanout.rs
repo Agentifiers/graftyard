@@ -306,6 +306,61 @@ mod tests {
         const { assert!(LEARNER_DUMP_EVERY_MS < DUMP_EVERY_MS) };
     }
 
+    /// A narrow API read (`graftyard_api::narrow`) is built once per query and state of the tiers, never served from
+    /// an older state or another query's answer, and spaced by NARROW_EVERY_MS; a follower serves it only once its
+    /// metadata tier is loaded, and it is never a whole-tier read.
+    #[test]
+    fn a_narrow_read_is_cached_per_query_and_state_and_spaced() {
+        use crate::family::{NARROW_EVERY_MS, follower_query, narrow_bytes, narrow_wait};
+        use graftyard_api::narrow::{Route, Spec};
+        use graftyard_api::view::RepoRef;
+        let at = RepoRef { id: RepoId(DbId(61)), owner: "o".into(), owner_id: AccountId(DbId(1)), name: "r".into() };
+        let q = |tail: &[&str]| {
+            let route = Route::Rest {
+                tail: tail.iter().map(|s| (*s).to_owned()).collect(),
+                query: String::new(),
+                path: String::new(),
+                agent: false,
+            };
+            json!({ "rows": { "api": Spec { at: at.clone(), route } } })
+        };
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let first = entry(1, 2, Digest([0; 32]));
+        let mut a = RepoFold::new(RepoId(DbId(61)), AccountId(DbId(1)));
+        a.apply_entry(&first);
+        let (repo, pulls) = (q(&[]), q(&["pulls", "1"]));
+        assert_eq!(narrow_wait(&a, &repo, 5_000), None, "the first build is due");
+        let one = narrow_bytes(&a, &repo).expect("a narrow read");
+        assert!(std::rc::Rc::ptr_eq(&one, &narrow_bytes(&a, &repo).unwrap()), "one copy per query and state");
+        assert_eq!(narrow_wait(&a, &repo, 5_001), None, "a cached answer is served at once");
+        assert_ne!(narrow_bytes(&a, &pulls).unwrap(), one, "another query is its own answer");
+        assert_eq!(serde_json::to_vec(&Repo::read_json(&a, &repo)).unwrap(), one.to_vec(), "the bytes are the answer");
+        a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
+        assert_eq!(narrow_wait(&a, &repo, 5_050), Some(NARROW_EVERY_MS - 50), "a rebuild waits its spacing");
+        assert_eq!(narrow_wait(&a, &repo, 5_000 + NARROW_EVERY_MS), None, "then is due");
+        let two = narrow_bytes(&a, &repo).unwrap();
+        assert_ne!(two, one, "an applied entry is in the next answer, never the older state's");
+        assert_eq!(
+            graftyard_api::hosted::TierRows::from_value(&serde_json::from_slice(&two).unwrap()).unwrap().index,
+            2
+        );
+        assert!(crate::family::dump_bytes(&a, &repo).is_none(), "not a dump");
+        assert!(
+            follower_query(&repo, true) && !follower_query(&repo, false),
+            "served once the metadata tier is loaded"
+        );
+    }
+
     /// A follower serves by read-index only the reads the design names: whole-tier and merge rows once its metadata
     /// tier is loaded, and the core-only access and agent rows; refs, `ranges`, deps, and the alarm reads stay on the
     /// leader.

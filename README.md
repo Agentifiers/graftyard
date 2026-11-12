@@ -161,8 +161,8 @@ Monthly Cloudflare list prices for one install of the default shape (one account
 | Developers | Base | Agent layer added | Base plus agents | Added share |
 | --- | --- | --- | --- | --- |
 | 50 | $231 | $21 | $252 | 9% |
-| 300 | $1,189 | $289 | $1,478 | 24% |
-| 2,000 | $9,187 | $2,808 | $11,995 | 31% |
+| 300 | $1,189 | $274 | $1,463 | 23% |
+| 2,000 | $9,187 | $2,572 | $11,759 | 28% |
 
 The totals exclude an Enterprise contract, which managed cells and pushes over 200 MB need and which has no list price. They also exclude Actions runner compute. Sandbox compute and model tokens for Graftyard-run agents sit outside the agent column: $2,827 and $182,400 a month at 2,000 developers, at a guessed $2 of tokens a task (`design/DESIGN.md`, "Cost"). Container memory for warm git cache shards is the largest line at every size.
 
