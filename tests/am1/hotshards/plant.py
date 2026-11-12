@@ -17,6 +17,13 @@ GO = 'containers/git/server/main.go'
 CATCHUP = ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], '')
 SURFACES = ('cargo', ['-p', 'graftyard-api', '--test', 'surfaces'], 'tier')
 GOTEST = ('go', [], 'Derived|Have|409|Ingest')
+PRSYNC = 'crates/git/src/prsync.rs'
+PRSYNC_T = ('cargo', ['-p', 'graftyard-git', '--test', 'prsync'], 'a_leader_far')
+PACK = 'crates/git/src/pack.rs'
+PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
+EDGE = 'workers/edge/src/lib.rs'
+EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
+EDGE_C = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'cold_shard_is_tried_last')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -55,6 +62,13 @@ MUTANTS = [
      '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))',
      '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).map(|i| u64::MAX - i.0)))',
      CATCHUP),
+    ('a leader scan reads every stored row in one alarm', PRSYNC,
+     '        if bytes >= SCAN_BYTES {\n            return Ok(true);\n        }\n', '', PRSYNC_T),
+    ('a scan cut at its byte budget says nothing is left', PRSYNC,
+     '        if bytes >= SCAN_BYTES {\n            return Ok(true);\n', '        if bytes >= SCAN_BYTES {\n            return Ok(false);\n',
+     PRSYNC_T),
+    ('base64 decode accepts a byte outside the alphabet', PACK,
+     'Some(VALUE[*b as usize]).filter(|v| *v != 0xff)?', 'Some(VALUE[*b as usize] & 63)?', PACK_T),
     ('a whole-tier read counts rows only (blocker 5)', HOSTED,
      '                    if budget.rows == 0 || budget.bytes < bytes {',
      '                    if budget.rows == 0 {', SURFACES),
@@ -66,6 +80,18 @@ MUTANTS = [
      '\t\tif _, err := os.Stat(filepath.Join(rp, "graft", sum+".objs")); err == nil {',
      '\t\tif _, err := os.Stat(filepath.Join(rp, "graft")); err == nil {',
      GOTEST),
+    ('a push validate falls back to a Witness site, which has no git cache', EDGE,
+     "**s != record.home && **k == graftyard_types::MemberKind::Full", "**s != record.home", EDGE_T),
+    ('a push validate tries the sites in record order, not the home site first', EDGE,
+     '    std::iter::once(record.home).chain(others).collect()',
+     '    record.sites.iter().copied().filter(|s| others.clone().any(|o| o == *s) || *s == record.home).collect()',
+     EDGE_T),
+    ('a cold shard is skipped altogether rather than tried last', EDGE,
+     '    warm.into_iter().chain(cold).collect()', '    if warm.is_empty() { cold } else { warm }', EDGE_C),
+    ('the warm shards are reordered by site id, losing the home-first order', EDGE,
+     "    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));",
+     "    let (mut warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));\n    warm.sort();",
+     EDGE_C),
 ]
 
 

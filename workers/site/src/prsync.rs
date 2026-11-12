@@ -123,8 +123,11 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         warm(h, repo, &record);
     }
     let was_parked = d.parked(cursor);
-    if let Err(e) = scan(h, &mut d, repo, cursor, applied) {
-        note(h, format!("prsync scan: {e}"));
+    // A scan cut at `SCAN_BYTES` comes back at once for the rest.
+    match scan(h, &mut d, repo, cursor, applied) {
+        Ok(true) => h.arm_in(LEADER_ALARM_MS),
+        Ok(false) => {}
+        Err(e) => note(h, format!("prsync scan: {e}")),
     }
     // A scan that lost a fold read may have missed a pull request an entry touched; a batch past it would skip it.
     if h.fold_lost() {
@@ -309,7 +312,7 @@ async fn enqueue(h: &Rc<Host<Repo>>, m: &Message) -> Result<()> {
     Ok(())
 }
 
-fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher, repo: RepoId, cursor: Index, applied: Index) -> Result<()> {
+fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher, repo: RepoId, cursor: Index, applied: Index) -> Result<bool> {
     let core = h.core.borrow();
     let c = core.as_ref().ok_or_else(|| crate::host::err("not joined"))?;
     let fold = &c.m.group_fold().fold;
@@ -319,7 +322,7 @@ fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher, repo: RepoId, cursor: Index, app
     // from the stored log.
     let from = cursor.max(Index(fold.first_index().0.saturating_sub(1)));
     git::prsync::scan(d, &fold.core, repo, from, applied, |i| {
-        c.m.entry_at(i).cloned().or_else(|| crate::host::stored_entry::<Repo>(&sql, i))
+        c.m.entry_at(i).map(|e| (e.clone(), 0)).or_else(|| crate::host::stored_entry_sized::<Repo>(&sql, i))
     })
     .map_err(|i| crate::host::err(format!("entry {} is in neither the member nor the stored log", i.0)))
 }

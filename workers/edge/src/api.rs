@@ -1693,14 +1693,9 @@ async fn commit_object(
 ) -> std::result::Result<Option<Vec<u8>>, String> {
     use graftyard_git::commit_fetch;
     let err = |e: worker::Error| e.to_string();
-    let mut init = RequestInit::new();
-    let h = Headers::new();
-    h.set("git-protocol", "version=2").map_err(err)?;
     let body = commit_fetch::request(sha);
-    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
-    let req = Request::new_with_init(&url, &init).map_err(err)?;
-    let mut r = crate::shard(c, repo).map_err(err)?.fetch_with_request(req).await.map_err(err)?;
+    let mut r = crate::shard_read(c, repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
     if r.status_code() != 200 {
         return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
     }

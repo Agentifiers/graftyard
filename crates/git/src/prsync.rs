@@ -51,6 +51,10 @@ pub const CURSOR_STRIDE: u64 = 1_000;
 pub const MERGE_BYTES_PER_COMMAND: usize = 900_000;
 /// Entries one leader alarm reads for the dispatcher [guess]; the alarm comes back for the rest.
 pub const SCAN_MAX: u64 = 2_000;
+/// Stored row bytes one leader alarm reads for a dispatcher [guess], however few entries that is. A row's inline packs
+/// decode on every read: a new leader of a hot group with 362 MB of log above a cursor that never moved spent 30 to
+/// 34 s of one alarm's CPU on its two scans, reset, and so did each leader after it (hot-shards, graft-m3c).
+pub const SCAN_BYTES: usize = 16 << 20;
 /// How soon after the leader applies entries its alarm runs the dispatcher [guess]: BF-24's 10 s holds the queue's
 /// delivery, the test merge, and a commit round as well.
 pub const ALARM_MS: i64 = 50;
@@ -225,22 +229,39 @@ impl<T: Ord + Clone> Dispatcher<T> {
     }
 }
 
-/// The leader alarm's read: up to `SCAN_MAX` entries past what `d` has read, from the committed cursor on, each by
-/// `entry`. Stops at an entry `entry` cannot give (`Err` names it), so nothing past a missing entry is read.
+/// The leader alarm's read: up to `SCAN_MAX` entries and `SCAN_BYTES` of stored rows past what `d` has read, from the
+/// committed cursor on, each by `entry` with the bytes it read. Stops at an entry `entry` cannot give (`Err` names it),
+/// so nothing past a missing entry is read. `Ok(true)` when entries up to `applied` are left for the next alarm.
 pub fn scan(
     d: &mut Dispatcher,
     core: &dyn Read,
     repo: RepoId,
     cursor: Index,
     applied: Index,
-    mut entry: impl FnMut(Index) -> Option<LogEntry<RepoEvent>>,
-) -> Result<(), Index> {
-    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(()) };
+    entry: impl FnMut(Index) -> Option<(LogEntry<RepoEvent>, usize)>,
+) -> Result<bool, Index> {
+    scan_with(d, cursor, applied, entry, |e| touched(core, repo, e))
+}
+
+/// `scan`'s loop, for any consumer's dispatcher and what it records of each entry.
+pub fn scan_with<T: Ord + Clone>(
+    d: &mut Dispatcher<T>,
+    cursor: Index,
+    applied: Index,
+    mut entry: impl FnMut(Index) -> Option<(LogEntry<RepoEvent>, usize)>,
+    mut touched: impl FnMut(&LogEntry<RepoEvent>) -> Vec<T>,
+) -> Result<bool, Index> {
+    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(false) };
+    let mut bytes = 0usize;
     for i in from.0 + 1..=to.0.min(from.0 + SCAN_MAX) {
-        let e = entry(Index(i)).ok_or(Index(i))?;
-        d.read(Index(i), touched(core, repo, &e));
+        if bytes >= SCAN_BYTES {
+            return Ok(true);
+        }
+        let (e, n) = entry(Index(i)).ok_or(Index(i))?;
+        bytes += n;
+        d.read(Index(i), touched(&e));
     }
-    Ok(())
+    Ok(d.scanned < applied)
 }
 
 /// REST's `mergeable` (GraphQL `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`): the recorded test merge, only while it is of
