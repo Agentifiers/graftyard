@@ -63,11 +63,16 @@ pub trait ShardIo {
     async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError>;
 }
 
-/// A rehydrate in progress on one disk: whether its marked phase finished, and how far its tail got.
+/// A rehydrate in progress on one disk: whether its marked phase finished, how far its tail got, and per chain the
+/// tail start its marked phase loaded through (every promotion up to there is on the disk).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rehydrating {
     pub marked: bool,
     pub tail: IngestCursor,
+    /// Missing in a place an older release saved: read as nothing loaded, so a resumed run loads the marked phase
+    /// again, which `have` makes cheap.
+    #[serde(default)]
+    pub loaded: Vec<(ChainId, Index)>,
 }
 
 /// The shard object's own storage for one network, each value with the id of the disk it describes.
@@ -402,7 +407,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         Some(s) => s,
         None => {
             io.init(true).await?;
-            let s = Rehydrating { marked: false, tail: IngestCursor::new(network) };
+            let s = Rehydrating { marked: false, tail: IngestCursor::new(network), loaded: Vec::new() };
             saved.put_rehydrating(&disk, &s).await?;
             s
         }
@@ -417,6 +422,17 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     let mut last: Vec<(ChainId, Option<Promoted>)> = Vec::with_capacity(chains.len());
     for chain in chains {
         last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
+    }
+    // Promotion goes on while a shard rehydrates, on another site's shard (`git::promote_sites`), so a resumed run can
+    // find the last `Promoted` past where its tail got. Its tail then starts past the new promotion, whose pack the
+    // marked phase never loaded: every later pack thin against the entries in between failed "have bases no pack
+    // provides" (`tests/am1/results/hot-shards-2.md`). The marked phase runs again; `have` skips what the disk holds.
+    let gap = last.iter().any(|(c, p)| {
+        let through = state.loaded.iter().find(|(x, _)| x == c).map_or(Index(1), |(_, i)| *i);
+        tail_start(p.as_ref()) > through.max(Index(state.tail.at(*c).0 + 1))
+    });
+    if state.marked && gap {
+        state.marked = false;
     }
     let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
     let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
@@ -465,6 +481,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             Err(n) => return Err(StoreError(format!("{n} marked packs have bases no pack provides"))),
         }
         state.marked = true;
+        state.loaded = last.iter().map(|(c, p)| (*c, tail_start(p.as_ref()))).collect();
         saved.put_rehydrating(&disk, &state).await?;
     }
     lap(&mut ms, "marked");

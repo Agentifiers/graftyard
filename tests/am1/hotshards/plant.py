@@ -123,6 +123,8 @@ MUTANTS = [
     ('a local /entries read is not capped', SITEHOST,
      'b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize',
      'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
+    ('a resumed rehydrate never loads a promotion recorded after its marked phase', CU,
+     '    if state.marked && gap {', '    if false && gap {', CATCHUP),
     ('ingest never writes a multi-pack-index', GO, '\tmidxAfterIngest(net, rp)\n', '', GOMIDX),
     ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
      '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),

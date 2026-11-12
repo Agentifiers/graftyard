@@ -14,5 +14,6 @@ mkdir -p "$(dirname "$L")"
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
   node workers/site/deploy.mjs $HOME/.graft-m3c/sites.json --test-faults --anchor $HOME/.graft-m3c/install.toml --image "$IMG" ${SKIP_BUILD:-}
   echo "site exit $?"; date -u +%FT%TZ
-  python3 tests/fanout/teardown.py --all-nets --pools
-  echo "teardown exit $?"; date -u +%FT%TZ; echo DONE; } > "$L" 2>&1
+  # KEEP_SHARDS=1: the image is unchanged, so running shards keep their disks (a resume across the deploy).
+  if [ -z "${KEEP_SHARDS:-}" ]; then python3 tests/fanout/teardown.py --all-nets --pools; echo "teardown exit $?"; fi
+  date -u +%FT%TZ; echo DONE; } > "$L" 2>&1

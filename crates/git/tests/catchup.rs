@@ -502,6 +502,30 @@ fn a_cut_off_rehydrate_resumes_and_never_starts_again_from_nothing() {
     }
 }
 
+/// Promotion keeps running while a shard rehydrates (on another site's shard), so a cut-off rehydrate resumes after
+/// the last `Promoted` has moved past where its tail got. It must not start its tail at the new promotion's end without
+/// that promotion's pack: the entries in between are never read, and the next tail pack fails "have bases no pack
+/// provides" on every call, as site a's shard did after the kill on graft-m3c (`tests/am1/results/hot-shards-2.md`).
+#[test]
+fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
+    for cut in [40, 60, 90] {
+        let b = bed(400, 1_000, 9);
+        b.promote(100);
+        b.disk.cut_after.set(Some(cut));
+        assert!(b.run().is_err(), "cut {cut}: the first run is cut off in its tail");
+        let (_, s) = b.store.rehydrating.borrow().clone().expect("a saved place");
+        assert!(s.marked, "cut {cut}: cut after the marked phase");
+        let got = s.tail.at(CHAIN).0;
+        // The archive promotes past where the tail got while the shard is cut off.
+        b.promote_range(101, got + 150);
+        b.disk.cut_after.set(None);
+        let r = b.run().unwrap_or_else(|e| panic!("cut {cut}: {}", e.0));
+        assert!(r.rehydrated.expect("a rehydrate").resumed, "cut {cut}");
+        assert_eq!(b.disk.inits.get(), 1, "cut {cut}: the repository was started again");
+        b.assert_serves_head();
+    }
+}
+
 /// A rehydrate reads only the tail above the last `Promoted`: the promoted pack brings everything below it.
 #[test]
 fn a_rehydrate_reads_the_log_only_above_the_last_promoted() {
