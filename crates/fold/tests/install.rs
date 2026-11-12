@@ -1027,7 +1027,9 @@ fn a_follower_behind_grants_no_read_from_its_older_fold() {
         .iter()
         .any(|(s, r)| *s == C && matches!(r, Resolution::Read { id, result: Err(_) } if *id == rid));
     assert!(failed, "the read failed instead of answering stale");
+    // The failed read-index call made C forget A (F67): it names a leader again once A's next round reaches it.
     n.cut.clear();
+    n.advance(CALL_DEADLINE.as_millis() as u64 + 1);
     let rid = n.on(C, |m, now| m.read_index(now)).expect("a follower reads");
     for _ in 0..4 {
         n.advance(CALL_DEADLINE.as_millis() as u64 / 2);

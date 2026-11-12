@@ -1219,6 +1219,18 @@ M1-WP8 ran BM-1's git half on the test install with one site's member class fail
 
 **Flip.** A user-visible request that waits longer than about 11.5 s plus its commit after a site loss, or an idle-group move that a client needs before its first request.
 
+#### F67: a group with a request waiting elects within 30 s, and campaigns stay request-driven
+
+**Decision.** Liveness is a property of the core: while the same two or more voters stay up, linked, and free of gray faults, and a client request waits on the group, some request completes within T = 30 s (LEASE 9 s, the 2 x ELECTION_AFTER waivers of RESET_QUARANTINE and the drain bar, and about 1 s of campaign and round). An idle group is still never woken. Seven rules in `crates/raft` make it hold. (1) Check quorum: a ready leader with an entry, read, or transfer waiting that no quorum has answered for ELECTION_AFTER stops leading and clears `led_term`; an idle leader is never moved. (2) A follower's read-index batch unanswered for CAMPAIGN_DEADLINE (3 s) is the read-index call failing: the follower forgets the leader, campaigns if its promise lapsed, and fails the reads `NotLeader` naming none, which the edge reports with `suspect`. (3) A granted transfer vote promises the target for CAMPAIGN_DEADLINE, not ELECTION_AFTER. (4) A pre-vote is denied as `Contending` only by a voter that may lead itself and has not been refused as `Suspected`. (5) A member refused as `Suspected` keeps campaigning by pre-vote instead of answering `Busy` for 2 x SUSPECT's window. (6) A `suspect` report about the leader a follower promised counts even after the follower forgot it under (2). (7) Appends from a leader a follower withholds promises from do not count as a leader seen, so the 2 x ELECTION_AFTER waiver runs.
+
+**Why.** Seven paths left a group with traffic leaderless past the bound in the simulator (`tests/m0/results/f67.md`). A half-hung leader, whose appends arrived and whose answers were lost, kept its followers' promises renewed, so every `suspect` answered `Promised` and a reads-only group never elected. Follower reads shed with no report, so a group read only through followers had no trigger at all. A transfer target that could not win held both voters for ELECTION_AFTER. A quarantined campaigner refused every rival while every voter refused it. A member refused as `Suspected` stood aside for 20 s, outlasting the voter's bar on it, while the other member was `LogBehind`. A follower that forgot a half-hung leader under (2) stopped counting reports about it while still promising it. A half-hung leader's appends kept two healthy voters that quarantined each other from ever reaching the waiver.
+
+**Beat.** Alarm-driven campaigns, which wake idle groups ("The site-loss bound is per request, and a total loss is left by `suspect`"). Promising only after a commit of the leader's term, which broke the promise-bar and lease scenarios. Letting a bar yield to a newer log, which the rules made unnecessary. Check quorum by progress (commits and grants) in place of answers heard, which changed no stuck seed.
+
+**Evidence.** `tests/m0/results/f67.md` [measured, simulator]: one regression test per path that fails on the core before the fix, the 30 s bound asserted per seed in the CI sweep (`live_network_elects_within_the_bound`, which the old core fails on seed 7180 at 32.6 s), and the long sweep with Porcupine.
+
+**Flip.** A group with a request waiting and a healthy quorum that stays leaderless past 30 s, in the sweep or hosted; or a check-quorum step-down of a leader a quorum was still answering.
+
 #### BM-1's git half passes with one site's member class failing
 
 **Decision.** BM-1's git half is recorded as passing. `clients.sh` passed 29 of 29 on git 2.39.5 and 2.51.0, and `t/` on 2.51.0 and 2.56.0 lost no baseline pass except t5549 #2, with site 0's member class failing every call for the rest of each run. The 24-hour linearizability half is pending until 2026-11-02T18:27Z. A gray partial-error fault and a 2.39.5 `t/` baseline are not covered and go to BM-1's next rerun.
@@ -2487,6 +2499,34 @@ Branch `merge-budget-3` closed the five items the lead left after `merge-budget-
 **Evidence.** The traces and probe above, and two hosted runs on cold shards with 0 depth errors where merge-budget-2's logged 16 and 4 [measured, `tests/am1/results/merge-budget-3.md`]. A service binding call is not billed as a request [doc, Workers pricing], so cost does not change.
 
 **Flip.** A runtime that charges a Durable Object's calls to the request that started them, which would let the handler run in the isolate again.
+
+### `merge-budget-4`: merge waits are measured, a late older-base merge no longer replaces the current one, and the shard size is read, 2026-11-12
+
+Branch `merge-budget-4` closed the three items the lead left after `merge-budget-3` (`tests/am1/results/merge-budget-4.md`).
+
+#### A test merge at an older base never replaces the head's merge at the base tip
+
+**Decision.** `PrSync::decide_sync` skips a `TestMerged` whose head already has a recorded merge when its base is not the base branch's tip. A merge of a new head records as before, even at an older tip, and a merge at the tip replaces any older one.
+
+**Why.** `merge-budget-3`'s run 2 was thought to commit each batch twice, its abandoned first attempt and its re-send, so the duplicates slowed the leader. The leader's stored log says otherwise. No request id is at two indexes, and no (PR, head, base) was recorded twice, because content-keyed request ids and `decide_sync`'s `recorded` check already make the commit idempotent per (PR, head, base). What the log shows is a different fault. In run 1, 32 `TestMerged` events recorded a merge at an older base over the same head's merge at a newer one: a slow merge planned before a base move committed after its faster re-send. Each put `mergeable` back to null and the merge ref on a stale base until the next push.
+
+**Beat.** Keying commits per (PR, head, base) with an ack-without-entry path, which the lead proposed for duplicates the log does not show. Ordering merges by base in the shard, which cannot see what the leader has committed.
+
+**Evidence.** The stored logs of repos 65553 and 65554, and the hosted run's 0 such merges on repo 65559 [measured, `tests/am1/results/merge-budget-4.md`]. The container sizes are read from the Containers API: run 1's shard ran on 4 vCPU, 12 GiB, 20 GB. `an_older_base_merge_committed_late_does_not_replace_the_current_one`, and planted bugs in `tests/budget/plant.py`.
+
+**Flip.** A base branch that moves backward, such as a force-push to an older commit, which would make the tip's merge the older one. The check compares with the tip, not ancestry, so it already holds then.
+
+#### A28's flip, measured: merges do not wait past GET_COALESCE_MS
+
+**Decision.** `BudgetStats` counts each admitted merge's wait, from its ask to its start, in buckets with `GET_COALESCE_MS` as an edge. GETs keep coalescing on the clock.
+
+**Why.** With first attempts cut to 3 s, 68 of them given up and up to 44 merges in line at once, 1,993 merges waited p99 5.8 s and at most 5.8 s, a fifth of the 30 s window, so a GET's slot never expired while its merge was still queued.
+
+**Beat.** Coalescing on the queue, so a GET joins the pending merge, which the lead proposed in case waits passed the window. They did not.
+
+**Evidence.** `tests/am1/results/merge-budget-4.md` [measured]; `merge_waits_are_counted_in_buckets_and_read_against_the_coalescing_window`.
+
+**Flip.** A merge wait past `GET_COALESCE_MS` (`waits_over`), such as a network whose catch-ups are slow, which would coalesce on the queue.
 
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 

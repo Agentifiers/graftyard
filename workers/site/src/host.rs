@@ -581,6 +581,11 @@ pub struct Host<F: Family> {
     /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
     #[cfg(feature = "test-faults")]
     pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
+    /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the
+    /// follower ran it, so its appends still renew the followers' promises while it commits nothing: the
+    /// simulator's `HalfHung` on one member (`/sever` with `half`).
+    #[cfg(feature = "test-faults")]
+    pub half_hung_until: Cell<u64>,
     /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
     /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
@@ -1166,6 +1171,8 @@ impl<F: Family> Host<F> {
             array_body: Cell::new(false),
             #[cfg(feature = "test-faults")]
             arrivals_mem: RefCell::new(None),
+            #[cfg(feature = "test-faults")]
+            half_hung_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
@@ -2007,7 +2014,7 @@ impl<F: Family> Host<F> {
             };
             // The callee ran the call and its answer is lost: the leader sees a call that missed its deadline.
             #[cfg(feature = "test-faults")]
-            if drop_reply && crate::faults::drop_append_reply(&h.env, to.0) {
+            if drop_reply && (now_ms() < h.half_hung_until.get() || crate::faults::drop_append_reply(&h.env, to.0)) {
                 if !late {
                     h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "drop_append_reply")));
                     h.stats.borrow_mut().failed_calls += 1;

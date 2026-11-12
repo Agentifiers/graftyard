@@ -368,6 +368,29 @@ fn flapping_member_is_quarantined() {
     assert_eq!(c.m(B).role(), Role::Leader);
 }
 
+/// A quarantined member campaigning does not contend: B, flapping, refuses no rival, so C wins at once with B's vote.
+/// Before F67's fix B denied C as `Contending` while every voter refused B, and with A down nothing led until the
+/// waiver after 2 x ELECTION_AFTER (`tests/m0/results/f67.md`, path 4).
+#[test]
+fn a_quarantined_campaigner_does_not_contend() {
+    let mut c = Cluster::new(12);
+    c.elect(A);
+    for _ in 0..2 {
+        c.on(B, |m, now| m.tick(now));
+        c.crash(B);
+        c.advance(100);
+        c.restart(B);
+        c.deliver_all();
+    }
+    c.crash(A);
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 10);
+    c.inbox.clear();
+    c.on(B, |m, now| m.campaign(now));
+    c.on(C, |m, now| m.campaign(now));
+    c.deliver_all();
+    assert_eq!(c.m(C).role(), Role::Leader, "the flapping member blocked the only candidate that may lead");
+}
+
 /// Reads: within the lease from the fold, after it lapses only via a round, never on a minority leader.
 #[test]
 fn reads_need_the_lease_or_a_round() {

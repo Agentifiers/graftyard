@@ -927,6 +927,46 @@ fn an_on_demand_merge_records_the_current_head_and_moves_no_cursor() {
     assert_eq!(on_demand(IssueNumber(1), oid(1), oid(3), big), None, "a pack past the command bound commits nothing");
 }
 
+/// merge-budget-4: a first attempt that outlives its deadline and its re-send both merge the same head, the re-send at
+/// the base's new tip. When the slower, older-base merge commits second it must not replace the current one: that put
+/// `mergeable` back to null and the merge ref on the older base 32 times in merge-budget-3's run 1. A merge of a new
+/// head, or of a head whose recorded merge is itself stale, still records as before.
+#[test]
+fn an_older_base_merge_committed_late_does_not_replace_the_current_one() {
+    use graftyard_git::prsync::on_demand;
+    let (mut g, _p) = setup();
+    let n = IssueNumber(1);
+    let clean = |base: ObjectId, head: ObjectId| MergeAnswer::Clean {
+        merge: Cache::merge_commit(base, head).hex(),
+        pack: vec![0x50; 8],
+    };
+    let commit = |g: &mut G, base: u32, head: u32| match g
+        .commit(on_demand(n, oid(base), oid(head), clean(oid(base), oid(head))).unwrap())
+    {
+        RepoOut::Sync(o) => o.events,
+        other => panic!("{other:?}"),
+    };
+    let pair = |g: &G| mergeability(&*g.fold().core, n).map(|m| (m.base, m.head));
+    // The base moves from 1 to 9 while the first attempt still merges at 1; the re-send's merge at 9 commits first.
+    g.push("refs/heads/main", oid(9));
+    assert_eq!(commit(&mut g, 9, 2), 1);
+    assert_eq!(pair(&g), Some((oid(9), oid(2))));
+    // The abandoned first attempt's merge at the old tip arrives last: nothing changes.
+    assert_eq!(commit(&mut g, 1, 2), 0, "an older base's merge is not recorded over the tip's");
+    assert_eq!(pair(&g), Some((oid(9), oid(2))));
+    assert_eq!(g.get(&merge_ref(n)), Some(Cache::merge_commit(oid(9), oid(2))));
+    let m = mergeability(&*g.fold().core, n);
+    assert_eq!(graftyard_git::prsync::mergeable(m.as_ref(), oid(2), Some(oid(9))), Some(true));
+    // A new head with a merge planned before the base moved again still records, stale, as before.
+    g.push("refs/heads/f", oid(3));
+    g.push("refs/heads/main", oid(10));
+    assert_eq!(commit(&mut g, 9, 3), 1, "the new head's first merge records even at an older tip");
+    assert_eq!(pair(&g), Some((oid(9), oid(3))));
+    // And the tip's merge then replaces it.
+    assert_eq!(commit(&mut g, 10, 3), 1);
+    assert_eq!(pair(&g), Some((oid(10), oid(3))));
+}
+
 /// A new leader of a hot group reads entries from the stored log, each row with its inline packs, from a committed
 /// cursor far behind. One alarm reads at most `SCAN_BYTES` of rows and says more are left; the alarms after it read
 /// the rest in order, so the batch still names every pull request and the whole read is never one alarm's work. On

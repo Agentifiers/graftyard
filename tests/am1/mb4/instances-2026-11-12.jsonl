@@ -1,0 +1,2 @@
+{"app": "graft-m3c-site-a-gitshard", "name": "git#0#net:65554", "started": "2026-11-12T17:44:18.831Z", "state": "stopped", "configuration": {"vcpu": 1, "memory": 6144, "disk": 12000}}
+{"app": "graft-m3c-site-a-gitshard", "name": "git#0#net:65553", "started": "2026-11-12T17:26:35.644Z", "state": "stopped", "configuration": {"vcpu": 4, "memory": 12288, "disk": 20000}}

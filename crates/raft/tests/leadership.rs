@@ -1034,3 +1034,78 @@ fn home_follows_the_config_not_the_bootstrap_record() {
     drive(&mut c, 30_000, true, &mut id, |_| false);
     assert_eq!(c.leader(), Some(B), "leadership left the config's home");
 }
+
+// ---- F67: a leaderless group with requests waiting ----
+
+/// Check quorum: A's AppendEntries reach B and C but every answer is lost (a half-hung site), so B and C keep
+/// renewing their promises to A while A commits nothing. A must stop leading within ELECTION_AFTER of the write it
+/// cannot commit, so the promises lapse and a `suspect` report elects B. Before the fix A led forever and every report
+/// answered `Promised` (`tests/m0/results/f67.md`, path 1).
+#[test]
+fn a_leader_no_quorum_answers_stops_so_the_followers_can_elect() {
+    let mut c = Cluster::new(67);
+    c.elect(A);
+    c.sync(A);
+    let _ = c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(1)), put("k", "v")));
+    let half_hung = |e: &Envelope<KvEvent>| !(e.to == A && matches!(e.msg, Message::AppendRes(_)));
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 500, 100, half_hung);
+    assert_ne!(c.m(A).role(), Role::Leader, "A still leads with no quorum answering");
+    // Its followers' promises lapse once A's appends stop; one report then elects B.
+    c.run(ms(graftyard_raft::ELECTION_AFTER), 100, half_hung);
+    let term = c.m(B).term();
+    assert_eq!(c.on(B, |m, now| m.suspect(now, Colo(1), A, term)), Verdict::Started);
+    c.run(2_000, 100, half_hung);
+    assert_eq!(c.leader(), Some(B));
+}
+
+/// An idle leader whose answers are lost keeps leading: check quorum holds only while a write, read, or transfer
+/// waits on a quorum, so a group with no requests is never moved (campaigns stay request-driven).
+#[test]
+fn an_idle_leader_with_lost_answers_keeps_leading() {
+    let mut c = Cluster::new(68);
+    c.elect(A);
+    c.sync(A);
+    c.run(3 * ms(graftyard_raft::ELECTION_AFTER), 500, |e| !(e.to == A && matches!(e.msg, Message::AppendRes(_))));
+    assert_eq!(c.m(A).role(), Role::Leader);
+}
+
+/// A follower's read-index batch the leader never answers counts as the read-index call failing: the follower names
+/// no leader, so the edge's next read reports `suspect`, and with its promise lapsed it campaigns at once. Before the
+/// fix the follower kept naming A, its reads shed with no report, and a group read only by read-index never elected
+/// (`tests/m0/results/f67.md`, path 2).
+#[test]
+fn an_unanswered_read_index_batch_forgets_the_leader_and_campaigns() {
+    let mut c = Cluster::new(69);
+    c.elect(A);
+    c.sync(A);
+    c.crash(A);
+    c.advance(ms(graftyard_raft::ELECTION_AFTER) + 1);
+    assert_eq!(c.m(B).leader(), Some(A));
+    c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    c.run(4_000, 100, |_| true);
+    assert_eq!(c.leader(), Some(B), "B never campaigned on its failed read-index call");
+}
+
+/// A transfer vote promises the target only for the campaign's own deadline: a target that cannot win (here its
+/// requests to C are lost and A has stepped aside) leaves C free to vote within seconds, not ELECTION_AFTER. Before
+/// the fix C refused every other candidate as `Promised` for 10 s while nothing led (`tests/m0/results/f67.md`,
+/// path 3).
+#[test]
+fn a_transfer_vote_promises_the_target_only_for_its_campaign() {
+    let mut c = Cluster::new(70);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    // B's campaign reaches C, which grants it; C's answer is lost, and A's answer too, so B cannot win.
+    let lost = |e: &Envelope<KvEvent>| !(e.to == B && matches!(e.msg, Message::VoteRes(_)));
+    c.run(3_000, 100, lost);
+    assert!(c.m(C).state().promised_to == Some(B) || c.m(B).role() != Role::Leader);
+    assert_ne!(c.m(B).role(), Role::Leader);
+    // B's campaign ended; C has granted it nothing more, and within a few seconds C votes for A again.
+    c.crash(B);
+    c.run(3_000, 100, |_| true);
+    let term = c.m(C).term();
+    let v = c.on(C, |m, now| m.suspect(now, Colo(1), B, term));
+    c.run(3_000, 100, |_| true);
+    assert!(c.leader() == Some(C) || c.leader() == Some(A), "{v:?}: nobody led 6 s after a failed transfer");
+}
