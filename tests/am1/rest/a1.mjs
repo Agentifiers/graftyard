@@ -427,6 +427,11 @@ function every(kind, perS, f, cap = 400) {
 }
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)];
 const st = (r) => String(r.status);
+// A test edge's `server-timing` on each answered API read: each stage's ms, kept as `api:<stage>` (narrow-reads-2).
+const stages = (r) => {
+  if (r.status === 200) for (const m of (r.headers?.["server-timing"] ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)) note(`api:${m[1]}`, Number(m[2]), "200");
+  return st(r);
+};
 let pushN = 0;
 let labelN = 0;
 const jobs = [
@@ -490,7 +495,7 @@ const jobs = [
     return st(m);
   }, 3),
   every("read:ref", plan.refReads, async () => st(await lsRefs(admin, "refs/heads/"))),
-  every("read:api", plan.apiReads, async () => st(Math.random() < 0.5
+  every("read:api", plan.apiReads, async () => stages(Math.random() < 0.5
     ? await api("GET", `/api/v3/repos/${R}/issues?per_page=30`, admin)
     : await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { pullRequests(last: 10) { nodes { number isDraft${plan.openPrs ? " mergeable" : ""} } } } }` }))),
   every("read:clone", plan.clones, async () => {
