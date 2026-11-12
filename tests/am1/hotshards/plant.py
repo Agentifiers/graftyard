@@ -24,6 +24,13 @@ PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
 EDGE = 'workers/edge/src/lib.rs'
 EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
 EDGE_C = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'cold_shard_is_tried_last')
+SHARD = 'crates/git/src/shard.rs'
+SHARD_T = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_promotion')
+SHARD_W = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_warming')
+EDGE_N = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'every_shard_try')
+SITEHOST = 'workers/site/src/host.rs'
+GOMIDX = ('go', [], 'Midx')
+SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -92,6 +99,37 @@ MUTANTS = [
      "    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));",
      "    let (mut warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));\n    warm.sort();",
      EDGE_C),
+    ('a promotion falls back to a Witness site, which has no git cache', SHARD,
+     '        .filter(|(_, k)| **k == graftyard_types::MemberKind::Full)\n', '', SHARD_T),
+    ('a promotion tries the home site first, not the leader\'s own', SHARD,
+     '    std::iter::once(me).chain(full.filter(|s| *s != me)).collect()',
+     '    let _ = me;\n    std::iter::once(record.home).chain(full.filter(|s| *s != record.home)).collect()', SHARD_T),
+    ('a promotion moves on after the packs\' own 422', SHARD, '    status != 422', '    status != 0', SHARD_T),
+    ('a promotion gives up on its own shard\'s 503 warming', SHARD, '    status != 422',
+     '    status != 422 && status != 503', SHARD_T),
+    ('a rehydrating shard answers warming at once even to a caller\'s last try', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    pool_cold || rehydrating', SHARD_W),
+    ('a shard answers warming at once to any caller with somewhere else to go, rehydrating or not', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    pool_cold || follows', SHARD_W),
+    ('a cold pool shard waits on a forwarded push', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    follows && rehydrating', SHARD_W),
+    ('the edge\'s last shard try also says another follows', EDGE,
+     '    let next = if i + 1 < n { "&next=1" } else { "" };', '    let next = "&next=1";', EDGE_N),
+    ('the edge\'s home try waits as long as the others', EDGE,
+     '    let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };\n    let next',
+     '    let wait = VALIDATE_WAIT_OTHER_S;\n    let next', EDGE_N),
+    ('a remote /entries read gets the large page too', SITEHOST, '        Some(b) if local =>', '        Some(b) =>',
+     SITE_P),
+    ('a local /entries read is not capped', SITEHOST,
+     'b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize',
+     'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
+    ('a resumed rehydrate never loads a promotion recorded after its marked phase', CU,
+     '    if state.marked && gap {', '    if false && gap {', CATCHUP),
+    ('a place an older release saved is trusted to have loaded up to its tail cursor', CU,
+     '        None => true,', '        None => tail_start(p.as_ref()) > Index(state.tail.at(*c).0 + 1),', CATCHUP),
+    ('ingest never writes a multi-pack-index', GO, '\tmidxAfterIngest(net, rp)\n', '', GOMIDX),
+    ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
+     '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
 ]
 
 

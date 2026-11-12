@@ -14,8 +14,9 @@
 //! caller (`tests/am1/results/b0-30.md`, "Blocked on", 9 to 11). So a catch-up runs inside the object, not inside the
 //! call that started it: it goes on after its caller stops waiting, saving every page, and the shard's alarm restarts
 //! one an isolate reset cut off. A caller that passes `wait=<s>` waits at most that long and is answered 503
-//! `{"warming": true}` after it; a pool shard asked to validate a push while it has no cursor answers that at once, and
-//! the first shard validates the push itself.
+//! `{"warming": true}` after it. A caller with another shard to try (`next=1`) gets that at once while a rehydrate runs
+//! here, and so does a pool shard asked to validate a push while it has no cursor; the first shard validates the push
+//! itself.
 
 use std::collections::BTreeSet;
 
@@ -107,9 +108,11 @@ impl GroupLog<'_> {
 
     /// One `/entries` page: from this site's member of the group when it has committed `from` (committed entries are
     /// the same on every member, and the local one is a call inside the site rather than across regions to the
-    /// leader), else from the leader.
+    /// leader), as a page of up to `ENTRIES_LOCAL_PAGE_BYTES_MAX`; else, or when that read misses the lookup's CALL,
+    /// a standard page from the leader.
     async fn page(&self, from: Index, to: Index) -> std::result::Result<Value, StoreError> {
         let path = format!("/entries?from={}&to={}", from.0, to.0);
+        let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
         let b = Bindings { env: self.env, sites: self.sites };
         let me = Some(self.me);
         let local = graftyard_lookup::known_voters(self.chain)
@@ -118,7 +121,7 @@ impl GroupLog<'_> {
             .chain(self.record.bootstrap_members(self.chain).into_iter().map(|m| (m.site, m.do_name.to_string())))
             .find(|(s, _)| Some(*s) == me);
         if let Some((site, name)) = local
-            && let Some((200, v)) = graftyard_lookup::post(&b, site, &name, &format!("{path}&local=1"), b"{}").await
+            && let Some((200, v)) = graftyard_lookup::post(&b, site, &name, &local_path, b"{}").await
             && v["entries"].as_array().and_then(|a| a.first()).and_then(|e| e["index"].as_u64()) == Some(from.0)
         {
             return Ok(v);
@@ -411,9 +414,19 @@ impl DurableObject for GitShard {
                 self.restore_budget(net).await;
             }
             let budget = net.and_then(|net| self.budgets.borrow().stats(net));
-            return Response::from_json(
-                &json!({ "running": running, "alarm": self.state.storage().get_alarm().await?, "testMerges": budget }),
-            );
+            // A31's instruments: the container's `NetworkLoad` as `fanout` reads it (derived work left out) and the k
+            // this isolate last read from the group, so a run shows what each minute's report was and whether k moved.
+            let load = match net {
+                Some(_) => host.load().await.ok(),
+                None => None,
+            };
+            return Response::from_json(&json!({
+                "running": running,
+                "alarm": self.state.storage().get_alarm().await?,
+                "testMerges": budget,
+                "load": load,
+                "k": net.map(fanout_k),
+            }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
         if path == "/load" {
@@ -498,16 +511,22 @@ impl DurableObject for GitShard {
             record: log.record.clone(),
         };
         let caught_up = || jobs.wait(wait);
+        // A rehydrate here takes tens of minutes on a hot group, so a caller with another site's shard to try next
+        // (`next=1`) is answered 503 `warming` at once, whichever isolate it comes from, rather than waiting out its
+        // `wait`. A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk answers that too: a
+        // rehydrate of a hot group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"), and the
+        // first shard validates the push itself. Either way the catch-up goes on in the background.
+        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote") {
+            let follows = q(&url, "next").is_some();
+            let rehydrating = follows && host.rehydrating(net).await;
+            let pool_cold = path == "/validate" && q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false);
+            if graftyard_git::warming_now(follows, rehydrating, pool_cold) {
+                jobs.start();
+                return warming();
+            }
+        }
         match path.as_str() {
             "/validate" => {
-                // A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk: a rehydrate of a hot
-                // group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"). It warms in the
-                // background and the first shard validates this push itself. Other `via` callers, such as the
-                // archive's promotion validate, wait as any caller does.
-                if q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false) {
-                    jobs.start();
-                    return warming();
-                }
                 if let Err(r) = caught_up().await {
                     return r;
                 }
