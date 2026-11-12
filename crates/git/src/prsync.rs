@@ -399,8 +399,8 @@ impl MergeBudget {
     }
 
     /// A merge for `cause` admitted at `est_ms` ran, used `cpu_ms` of CPU, and took `wall_ms`. The bucket is charged the
-    /// CPU: the wall time of a merge that waited for the container's vCPUs behind validates and catch-ups was about ten
-    /// times its CPU hosted (`tests/am1/results/merge-budget-2.md`).
+    /// CPU: hosted, a merge's wall time, which includes waiting for the container's vCPUs behind validates and
+    /// catch-ups, was 1.9 to 4.4 times its CPU (`tests/am1/results/merge-budget-2.md`).
     pub fn charge(&mut self, cause: MergeCause, est_ms: f32, cpu_ms: f32, wall_ms: f32) {
         self.ms -= cpu_ms - est_ms;
         let s = &mut self.stats;

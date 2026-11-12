@@ -66,6 +66,8 @@ MUTANTS = [
      '    const restarted = !b || b.since !== a.since;', '    const restarted = !b;', NODE),
     ('driver: the overrun line ignores the bucket low', A1,
      '  const overrun = sites.some((x) => x.lowMs < -Math.max(x.maxMs, 50) - 0.5);', '  const overrun = false;', NODE),
+    ('driver: a shard restarted after the load loses the run\'s last sample', A1,
+     '? seen[s] ?? b : b);', '? b : b);', NODE),
     ('driver: vCPU over the window counts only one site', A1,
      '  const vcpuUsed = +(sum("spentMs") / (seconds * 1000)).toFixed(4);',
      '  const vcpuUsed = +(sites[0].spentMs / (seconds * 1000)).toFixed(4);', NODE),

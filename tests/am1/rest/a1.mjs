@@ -218,7 +218,10 @@ if (opt.selftest) {
     const over = budgetWindow([null], [bs(1, 600, 6, 0, { lowMs: -400, maxMs: 100 })], 60);
     const win = w.sites.length === 2 && w.computed === 54 && w.shed === 4 && w.vcpuUsed === 0.1067 && w.withinBudget && w.sites[1].restarted
       && w.getAsked === 20 && w.getComputes === 4 && w.listAsked === 7 && w.cpuToWall === 0.5 && !w.overrun
-      && old.getAsked === 0 && !old.overrun && over.overrun;
+      && old.getAsked === 0 && !old.overrun && over.overrun
+      // A shard object that restarted after the load keeps the run's last sample; one still up reads now.
+      && latestBudget([bs(9, 0, 0, 0), null, bs(1, 700, 7, 0)], [bs(1, 600, 6, 0), null, bs(1, 600, 6, 0)])
+        .map((b) => b?.computed ?? null).join() === "6,,7";
     console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win }));
     if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win) process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -560,13 +563,27 @@ const budgets = () => Promise.all([0, 1, 2].map(async (s) => {
   try { return JSON.parse((await bedGet(`/_bed/shard_status?repo=${CHAIN.split(":")[1]}&shard=${s}`)).body).testMerges ?? null; } catch { return null; }
 }));
 const budgetBefore = plan.openPrs ? await budgets() : null;
+// The shard object keeps its counts in memory, and hosted it restarted 10 to 30 s after the load stopped
+// (`tests/am1/results/merge-budget-2.md`), so the run samples them every 15 s and keeps the latest of each site.
+const budgetSeen = plan.openPrs ? [...budgetBefore] : null;
+/** Each site's counts after the window: the read now, or, for a site whose object restarted since (a later `since`
+ *  with fewer merges, or none), the last sample of the run. */
+function latestBudget(now, seen) {
+  return now.map((b, s) => (!b || (seen[s] && b.since !== seen[s].since && b.computed < seen[s].computed)) ? seen[s] ?? b : b);
+}
 const leaderBefore = await statuses(CHAIN);
 const leader = leaderBefore.find((s) => s.role === "leader")?.site;
 if (leader !== undefined) await member(CHAIN, leader, "/stats?reset=1", undefined, 15_000);
 log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).toISOString()}, leader site ${leader}`);
+if (plan.openPrs) jobs.push((async () => {
+  while (Date.now() < end) {
+    await sleep(15_000);
+    (await budgets()).forEach((b, s) => { if (b && (!budgetSeen[s] || b.since === budgetSeen[s].since || b.computed >= budgetSeen[s].computed)) budgetSeen[s] = b; });
+  }
+})());
 await Promise.all(jobs);
 // Give the last pushes' first attempts time to reach the shard.
-const budgetAfter = plan.openPrs ? (await sleep(15_000), await budgets()) : null;
+const budgetAfter = plan.openPrs ? latestBudget((await sleep(15_000), await budgets()), budgetSeen) : null;
 const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 const lstats = (leader !== undefined ? (await member(CHAIN, leader, "/stats", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
