@@ -340,6 +340,14 @@ pub enum What {
     Hook {
         created: bool,
     },
+    /// POST /repos/{o}/{r}/pulls/{n}/comments.
+    ReviewCommentCreated {
+        n: u32,
+    },
+    /// POST /repos/{o}/{r}/check-runs: the run's id, minted by the edge.
+    CheckRunCreated {
+        id: i64,
+    },
 }
 
 /// The render request an issue command carries to its leader.
@@ -454,6 +462,8 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         }
         What::IssueLabels { n, empty } => WireReply::of(&crate::rest::issue_labels_ok(&r, *n, *empty)),
         What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
+        What::ReviewCommentCreated { n } => WireReply::of(&crate::rest::review_comment_created(acked, &r, *n)),
+        What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(&r, *id)),
     }
 }
 
@@ -473,6 +483,13 @@ pub fn render_err(render: &Render, e: &IssueErr) -> WireReply {
         What::Lease { .. } => WireReply::of(&crate::leases::refused(None, e)),
         What::IssueLabels { .. } => WireReply::of(&crate::rest::issue_labels_refused(e)),
         What::Hook { .. } => WireReply::of(&crate::webhooks::refused(e)),
+        What::ReviewCommentCreated { .. } => WireReply::of(&crate::rest::write_refused(
+            e,
+            "rest/pulls/comments#create-a-review-comment-for-a-pull-request",
+        )),
+        What::CheckRunCreated { .. } => {
+            WireReply::of(&crate::rest::write_refused(e, "rest/checks/runs#create-a-check-run"))
+        }
     }
 }
 

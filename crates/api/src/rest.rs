@@ -9,7 +9,8 @@
 //! calls before `gh issue create -l bug`.
 
 use graftyard_git::issues::{
-    CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CommentId, DiffSide, IssueNumber, ReviewState,
+    AnnotationLevel, CheckAnnotation, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus,
+    CheckSuiteId, CommentId, CommentTarget, DiffSide, IssueNumber, LineAnchor, ReviewState, Url,
 };
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::tiers::CommentRow;
@@ -489,51 +490,144 @@ pub fn list_reviews(r: &Repo<'_>, n: &str, query: &str) -> Reply {
     paged_values(r, &format!("/pulls/{}/reviews", num.0), query, all)
 }
 
+/// The pinned `pull-request-review-comment` schema's object.
+pub(crate) fn review_comment_json(r: &Repo<'_>, num: IssueNumber, id: CommentId, row: &CommentRow) -> Option<Value> {
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let CommentTarget::Review { review, at, .. } = &row.on else {
+        return None;
+    };
+    let url = format!("{api}/repos/{o}/{name}/pulls/comments/{}", id.0.0);
+    let html = format!("{web}/{o}/{name}/pull/{}#discussion_r{}", num.0, id.0.0);
+    let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
+    let side = match at.side {
+        DiffSide::Left => "LEFT",
+        DiffSide::Right => "RIGHT",
+    };
+    let mut v = json!({
+        "url": url, "id": id.0.0, "node_id": scoped(NodeType::IssueComment, r, id.0.0),
+        "pull_request_review_id": review.map(|id| id.0.0),
+        "diff_hunk": "", "path": &*at.path,
+        "commit_id": at.commit.hex(), "original_commit_id": at.commit.hex(),
+        "user": simple_user(r.host, r.dir, row.author), "body": &*row.body,
+        "created_at": iso(row.created), "updated_at": iso(row.updated),
+        "html_url": html, "pull_request_url": pull,
+        "author_association": crate::wire::association(r, row.author),
+        "_links": {
+            "self": { "href": url }, "html": { "href": html }, "pull_request": { "href": pull },
+        },
+        "line": at.line, "original_line": at.line,
+        "start_line": at.start_line, "original_start_line": at.start_line,
+        "side": side, "start_side": at.start_line.map(|_| side), "subject_type": "line",
+    });
+    if let Some(reply) = row.reply_to {
+        v["in_reply_to_id"] = json!(reply.0.0);
+    }
+    Some(v)
+}
+
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments`, oldest first.
 pub fn list_review_comments(r: &Repo<'_>, n: &str, query: &str) -> Reply {
     let Some(num) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
     if r.item(num).is_none_or(|it| !it.is_pull()) {
         return Reply::not_found();
     }
-    let (api, web) = (r.host.api(), r.host.web());
-    let (o, name) = (&r.at.owner, &r.at.name);
-    let all = r
-        .review_comments_of(num)
-        .into_iter()
-        .filter_map(|(id, row)| {
-            let graftyard_git::issues::CommentTarget::Review { review, at, .. } = &row.on else {
+    let all =
+        r.review_comments_of(num).into_iter().filter_map(|(id, row)| review_comment_json(r, num, id, &row)).collect();
+    paged_values(r, &format!("/pulls/{}/comments", num.0), query, all)
+}
+
+/// `POST /repos/{owner}/{repo}/pulls/{pull_number}/comments`: a new review thread, or a reply that inherits its
+/// parent's line anchor.
+pub fn plan_create_review_comment(
+    r: &Repo<'_>,
+    n: &str,
+    body: &Value,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    const DOC: &str = "rest/pulls/comments#create-a-review-comment-for-a-pull-request";
+    let invalid = || Reply::error(422, "Validation Failed", DOC);
+    let Some(num) = n.parse::<u32>().ok().map(IssueNumber) else { return Err(Reply::not_found()) };
+    if r.item(num).is_none_or(|it| !it.is_pull()) {
+        return Err(Reply::not_found());
+    }
+    let text = body.get("body").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(invalid)?;
+    if let Some(parent) = body.get("in_reply_to") {
+        let parent = parent.as_i64().ok_or_else(invalid)?;
+        let Some((id, at)) = r.review_comments_of(num).into_iter().find_map(|(id, row)| {
+            if id.0.0 != parent {
                 return None;
-            };
-            let url = format!("{api}/repos/{o}/{name}/pulls/comments/{}", id.0.0);
-            let html = format!("{web}/{o}/{name}/pull/{}#discussion_r{}", num.0, id.0.0);
-            let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
-            let side = match at.side {
+            }
+            let CommentTarget::Review { at, .. } = row.on else { return None };
+            Some((id, at))
+        }) else {
+            return Err(Reply::not_found());
+        };
+        return Ok(graftyard_git::issue_ops::IssueOp::Comment {
+            on: CommentTarget::Review { n: num, review: None, at },
+            body: text.into(),
+            reply_to: Some(id),
+        });
+    }
+    let commit = body
+        .get("commit_id")
+        .and_then(Value::as_str)
+        .and_then(|s| ObjectId::parse_hex(s.as_bytes()))
+        .ok_or_else(invalid)?;
+    let path = body.get("path").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(invalid)?;
+    let positive = |v: Option<&Value>| -> Option<u32> {
+        v?.as_u64().filter(|n| *n > 0 && *n <= u64::from(u32::MAX)).map(|n| n as u32)
+    };
+    let line = positive(body.get("line")).ok_or_else(invalid)?;
+    let side = match body.get("side") {
+        None => DiffSide::Right,
+        Some(Value::String(s)) if s == "RIGHT" => DiffSide::Right,
+        Some(Value::String(s)) if s == "LEFT" => DiffSide::Left,
+        _ => return Err(invalid()),
+    };
+    let start_line = match body.get("start_line") {
+        None => None,
+        Some(v) => Some(positive(Some(v)).filter(|start| *start < line).ok_or_else(invalid)?),
+    };
+    if body.get("start_side").is_some_and(|v| {
+        v.as_str()
+            != Some(match side {
                 DiffSide::Left => "LEFT",
                 DiffSide::Right => "RIGHT",
-            };
-            let mut v = json!({
-                "url": url, "id": id.0.0, "node_id": scoped(NodeType::IssueComment, r, id.0.0),
-                "pull_request_review_id": review.map(|id| id.0.0),
-                "diff_hunk": "", "path": &*at.path,
-                "commit_id": at.commit.hex(), "original_commit_id": at.commit.hex(),
-                "user": simple_user(r.host, r.dir, row.author), "body": &*row.body,
-                "created_at": iso(row.created), "updated_at": iso(row.updated),
-                "html_url": html, "pull_request_url": pull,
-                "author_association": crate::wire::association(r, row.author),
-                "_links": {
-                    "self": { "href": url }, "html": { "href": html }, "pull_request": { "href": pull },
-                },
-                "line": at.line, "original_line": at.line,
-                "start_line": at.start_line, "original_start_line": at.start_line,
-                "side": side, "start_side": at.start_line.map(|_| side), "subject_type": "line",
-            });
-            if let Some(reply) = row.reply_to {
-                v["in_reply_to_id"] = json!(reply.0.0);
-            }
-            Some(v)
-        })
-        .collect();
-    paged_values(r, &format!("/pulls/{}/comments", num.0), query, all)
+            })
+    }) {
+        return Err(invalid());
+    }
+    if body.get("subject_type").is_some_and(|v| v.as_str() != Some("line")) {
+        return Err(invalid());
+    }
+    Ok(graftyard_git::issue_ops::IssueOp::Comment {
+        on: CommentTarget::Review {
+            n: num,
+            review: None,
+            at: LineAnchor { commit, path: path.into(), line, start_line, side },
+        },
+        body: text.into(),
+        reply_to: None,
+    })
+}
+
+/// The 201 of a committed review comment, read from the member after the entry applied.
+pub fn review_comment_created(
+    acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+    n: u32,
+) -> Reply {
+    let graftyard_git::issue_ops::IssueOut::Id(id) = acked.out else {
+        return Reply::error(500, "Internal Server Error", "rest");
+    };
+    let id = CommentId(id);
+    match after.review_comments_of(IssueNumber(n)).into_iter().find(|(found, _)| *found == id) {
+        Some((id, row)) => match review_comment_json(after, IssueNumber(n), id, &row) {
+            Some(v) => Reply::json(201, v),
+            None => Reply::error(500, "Internal Server Error", "rest"),
+        },
+        None => Reply::error(500, "Internal Server Error", "rest"),
+    }
 }
 
 /// `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`.
@@ -627,6 +721,168 @@ pub(crate) fn conclusion(c: CheckConclusion) -> &'static str {
         CheckConclusion::Stale => "stale",
         CheckConclusion::TimedOut => "timed_out",
         CheckConclusion::StartupFailure => "startup_failure",
+    }
+}
+
+/// `POST /repos/{owner}/{repo}/check-runs`'s command. The edge supplies the App and mints the run and suite id.
+pub fn plan_create_check_run(
+    body: &Value,
+    app: graftyard_identity::AppId,
+    id: i64,
+    now: Timestamp,
+) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
+    const DOC: &str = "rest/checks/runs#create-a-check-run";
+    let invalid = || Reply::error(422, "Validation Failed", DOC);
+    let name = body.get("name").and_then(Value::as_str).filter(|s| !s.is_empty()).ok_or_else(invalid)?;
+    let head_sha = body
+        .get("head_sha")
+        .and_then(Value::as_str)
+        .and_then(|s| ObjectId::parse_hex(s.as_bytes()))
+        .ok_or_else(invalid)?;
+    let status_text = match body.get("status") {
+        None => "queued",
+        Some(Value::String(s)) => s,
+        Some(_) => return Err(invalid()),
+    };
+    let mut status = match status_text {
+        "queued" => CheckStatus::Queued,
+        "in_progress" => CheckStatus::InProgress,
+        "completed" => CheckStatus::Completed,
+        "waiting" => CheckStatus::Waiting,
+        "requested" => CheckStatus::Requested,
+        "pending" => CheckStatus::Pending,
+        _ => return Err(invalid()),
+    };
+    let conclusion = match body.get("conclusion") {
+        None => None,
+        Some(Value::String(s)) => Some(match s.as_str() {
+            "action_required" => CheckConclusion::ActionRequired,
+            "cancelled" => CheckConclusion::Cancelled,
+            "failure" => CheckConclusion::Failure,
+            "neutral" => CheckConclusion::Neutral,
+            "success" => CheckConclusion::Success,
+            "skipped" => CheckConclusion::Skipped,
+            "stale" => CheckConclusion::Stale,
+            "timed_out" => CheckConclusion::TimedOut,
+            _ => return Err(invalid()),
+        }),
+        Some(_) => return Err(invalid()),
+    };
+    if conclusion.is_some() {
+        status = CheckStatus::Completed;
+    }
+    if status == CheckStatus::Completed && conclusion.is_none() {
+        return Err(invalid());
+    }
+    let time = |key: &str| -> Result<Option<Timestamp>, Reply> {
+        match body.get(key) {
+            None => Ok(None),
+            Some(Value::String(s)) => graftyard_wire::parse_iso(s).map(Some).ok_or_else(invalid),
+            Some(_) => Err(invalid()),
+        }
+    };
+    let started = Some(time("started_at")?.unwrap_or(now));
+    let completed = match time("completed_at")? {
+        Some(at) => Some(at),
+        None if status == CheckStatus::Completed => Some(now),
+        None => None,
+    };
+    let details_url = match body.get("details_url") {
+        None => None,
+        Some(Value::String(s)) => Some(Url(s.as_str().into())),
+        Some(_) => return Err(invalid()),
+    };
+    let external_id = match body.get("external_id") {
+        None => None,
+        Some(Value::String(s)) => Some(s.as_str().into()),
+        Some(_) => return Err(invalid()),
+    };
+    let output = match body.get("output") {
+        None => None,
+        Some(Value::Object(o)) => {
+            let required = |key: &str| o.get(key).and_then(Value::as_str).map(Box::<str>::from).ok_or_else(invalid);
+            let text = match o.get("text") {
+                None => None,
+                Some(Value::String(s)) => Some(s.as_str().into()),
+                Some(_) => return Err(invalid()),
+            };
+            let annotations = match o.get("annotations") {
+                None => Vec::new(),
+                Some(Value::Array(rows)) if rows.len() <= 50 => rows
+                    .iter()
+                    .map(|row| {
+                        let Some(row) = row.as_object() else { return Err(invalid()) };
+                        let positive = |key: &str| -> Result<u32, Reply> {
+                            row.get(key)
+                                .and_then(Value::as_u64)
+                                .filter(|n| *n > 0 && *n <= u64::from(u32::MAX))
+                                .map(|n| n as u32)
+                                .ok_or_else(invalid)
+                        };
+                        let path = row.get("path").and_then(Value::as_str).ok_or_else(invalid)?;
+                        let message = row.get("message").and_then(Value::as_str).ok_or_else(invalid)?;
+                        let level = match row.get("annotation_level").and_then(Value::as_str) {
+                            Some("notice") => AnnotationLevel::Notice,
+                            Some("warning") => AnnotationLevel::Warning,
+                            Some("failure") => AnnotationLevel::Failure,
+                            _ => return Err(invalid()),
+                        };
+                        let title = match row.get("title") {
+                            None => None,
+                            Some(Value::String(s)) => Some(s.as_str().into()),
+                            Some(_) => return Err(invalid()),
+                        };
+                        Ok(CheckAnnotation {
+                            path: path.into(),
+                            start_line: positive("start_line")?,
+                            end_line: positive("end_line")?,
+                            level,
+                            message: message.into(),
+                            title,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, Reply>>()?,
+                Some(_) => return Err(invalid()),
+            };
+            Some(CheckOutput { title: required("title")?, summary: required("summary")?, text, annotations })
+        }
+        Some(_) => return Err(invalid()),
+    };
+    Ok(graftyard_git::issue_ops::IssueOp::RecordCheck(CheckRunUpdate {
+        run: CheckRunId(DbId(id)),
+        suite: CheckSuiteId(DbId(id)),
+        app,
+        head_sha,
+        name: name.into(),
+        version: 1,
+        status,
+        conclusion,
+        started,
+        completed,
+        external_id,
+        details_url,
+        output,
+    }))
+}
+
+/// The 201 of a committed check-run create, rendered from its row after the entry applied.
+pub fn check_run_created(after: &Repo<'_>, id: i64) -> Reply {
+    match after.check_run(CheckRunId(DbId(id))) {
+        Some(t) => Reply::json(201, check_run_json(after, &t.rec, t.at)),
+        None => Reply::error(500, "Internal Server Error", "rest"),
+    }
+}
+
+/// A refused REST review-comment or check-run write.
+pub fn write_refused(e: &graftyard_git::issue_ops::IssueErr, doc: &str) -> Reply {
+    use graftyard_git::issue_ops::IssueErr as E;
+    match e {
+        E::Unauthorized(_) => Reply::error(401, "Bad credentials", doc),
+        E::Forbidden => Reply::error(403, "Resource not accessible by integration", doc),
+        E::Agent(a) => Reply::error(403, &a.text, doc),
+        E::NotFound | E::NotPull => Reply::not_found(),
+        E::NeedIdBlock | E::Unavailable => Reply::error(503, "Service Unavailable", doc),
+        _ => Reply::error(422, "Validation Failed", doc),
     }
 }
 

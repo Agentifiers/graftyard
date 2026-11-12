@@ -1516,3 +1516,189 @@ fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
     assert_eq!(views("/repos/o/r/check-runs/41", &one), [t("test output\n\none failure\n\ndetails", false)]);
     assert_eq!(views("/repos/o/r/commits/x", &commit), [t("commit subject\n\ncommit body", false)]);
 }
+
+/// lf4-rest-2: `POST pulls/{n}/comments` and `POST check-runs` plan a command from GHES 3.22's body, commit it, and
+/// render the pinned 201 from the tiers after the entry applied, the way the member does (`hosted::render_ok`).
+#[test]
+fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
+    use graftyard_api::hosted::{HostedDir, Render, What, render_err, render_ok};
+    use graftyard_api::rest::{
+        check_run_created, plan_create_check_run, plan_create_review_comment, review_comment_created, write_refused,
+    };
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(READER));
+    let sha = oid(2).hex();
+    let plan_rc = |c: &Chain, n: &str, body: Value| {
+        let r = c.repo(0, &h, &dir);
+        plan_create_review_comment(&r, n, &body)
+    };
+
+    // A new thread on pull #2 by a reader, over lines 5 to 7 on the right.
+    let body = json!({ "body": "rename this", "commit_id": sha, "path": "src/a.rs", "line": 7, "start_line": 5,
+        "side": "RIGHT", "start_side": "RIGHT" });
+    let op = plan_rc(&c, "2", body).unwrap();
+    let first = c.commit(READER, op).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let created = review_comment_created(&ack(first.clone()), &r, 2);
+    let v = created.value();
+    assert_eq!(created.status, 201);
+    assert_eq!(
+        (&v["body"], &v["path"], &v["line"], &v["start_line"], &v["side"], &v["start_side"], &v["commit_id"]),
+        (
+            &json!("rename this"),
+            &json!("src/a.rs"),
+            &json!(7),
+            &json!(5),
+            &json!("RIGHT"),
+            &json!("RIGHT"),
+            &json!(sha)
+        )
+    );
+    assert_eq!((&v["user"]["login"], v.get("in_reply_to_id")), (&json!("bob"), None));
+    let parent = v["id"].as_i64().unwrap();
+    keep_rest_as("review-comment-created", "POST", "/repos/{owner}/{repo}/pulls/{pull_number}/comments", &created);
+    let listed = list_review_comments(&r, "2", "");
+    assert!(listed.value().as_array().unwrap().iter().any(|x| x["id"] == json!(parent)));
+    drop(r);
+
+    // A reply takes its parent's anchor, whatever line, path, or side the body names.
+    let body = json!({ "body": "done", "in_reply_to": parent, "path": "other.rs", "line": 99, "side": "LEFT" });
+    let out = c.commit(WRITER, plan_rc(&c, "2", body).unwrap()).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let reply = review_comment_created(&ack(out), &r, 2);
+    let v = reply.value();
+    assert_eq!(reply.status, 201);
+    assert_eq!(
+        (&v["in_reply_to_id"], &v["path"], &v["line"], &v["start_line"], &v["side"]),
+        (&json!(parent), &json!("src/a.rs"), &json!(7), &json!(5), &json!("RIGHT"))
+    );
+    keep_rest_as("review-comment-reply", "POST", "/repos/{owner}/{repo}/pulls/{pull_number}/comments", &reply);
+    let issue_comment = r.comments_of(IssueNumber(1)).first().map(|(id, _)| id.0.0).unwrap();
+    drop(r);
+
+    // Refusals before any command.
+    let ok = || json!({ "body": "x", "commit_id": sha, "path": "a", "line": 3 });
+    let with = |k: &str, v: Value| {
+        let mut b = ok();
+        if v.is_null() {
+            b.as_object_mut().unwrap().remove(k);
+        } else {
+            b[k] = v;
+        }
+        b
+    };
+    let status = |n: &str, b: Value| plan_rc(&c, n, b).err().map(|r| r.status);
+    assert_eq!(status("2", ok()), None);
+    assert_eq!(status("1", ok()), Some(404), "issue #1 is not a pull request");
+    assert_eq!(status("99", ok()), Some(404));
+    assert_eq!(status("2", with("commit_id", Value::Null)), Some(422));
+    assert_eq!(status("2", with("commit_id", json!("abc"))), Some(422));
+    assert_eq!(status("2", with("path", Value::Null)), Some(422));
+    assert_eq!(status("2", with("body", json!(""))), Some(422));
+    assert_eq!(
+        status("2", json!({ "body": "x", "commit_id": sha, "path": "a", "position": 3 })),
+        Some(422),
+        "position only"
+    );
+    assert_eq!(status("2", with("side", json!("MIDDLE"))), Some(422));
+    assert_eq!(status("2", with("start_line", json!(3))), Some(422), "start_line must be below line");
+    assert_eq!(status("2", with("start_line", json!(2))), None);
+    assert_eq!(status("2", with("start_side", json!("LEFT"))), Some(422), "start_side on another side");
+    assert_eq!(status("2", with("subject_type", json!("file"))), Some(422));
+    assert_eq!(status("2", json!({ "body": "x", "in_reply_to": 424242 })), Some(404));
+    assert_eq!(status("2", json!({ "body": "x", "in_reply_to": issue_comment })), Some(404), "an issue comment");
+    let left = plan_rc(&c, "2", ok()).unwrap();
+    let IssueOp::Comment { on: CommentTarget::Review { at, .. }, .. } = left else { panic!() };
+    assert_eq!(at.side, DiffSide::Right, "side defaults to RIGHT");
+
+    // A check run by App 5, with a hidden character in its summary.
+    let now = Timestamp(1_800_000_000_000);
+    let body = json!({ "name": "lint2", "head_sha": sha, "status": "in_progress", "started_at": "2026-11-12T01:00:00Z",
+        "details_url": "https://ci.example/7", "external_id": "e7",
+        "output": { "title": "t", "summary": "s\u{200b}", "annotations": [
+            { "path": "a.rs", "start_line": 1, "end_line": 2, "annotation_level": "warning", "message": "m" } ] } });
+    let op = plan_create_check_run(&body, AppId(DbId(5)), 7_000_001, now).unwrap();
+    c.commit(WRITER, op).unwrap();
+    let r = c.repo(0, &h, &dir);
+    let run = check_run_created(&r, 7_000_001);
+    let v = run.value();
+    assert_eq!(run.status, 201);
+    assert_eq!(
+        (&v["id"], &v["name"], &v["status"], &v["conclusion"], &v["started_at"], &v["completed_at"]),
+        (
+            &json!(7_000_001),
+            &json!("lint2"),
+            &json!("in_progress"),
+            &Value::Null,
+            &json!("2026-11-12T01:00:00Z"),
+            &Value::Null
+        )
+    );
+    assert_eq!((&v["output"]["annotations_count"], &v["external_id"]), (&json!(1), &json!("e7")));
+    keep_rest_as("check-run-created", "POST", "/repos/{owner}/{repo}/check-runs", &run);
+    assert_eq!(get_check_run(&r, "7000001").value()["id"], json!(7_000_001));
+    drop(r);
+
+    // A conclusion completes the run at `now`, as GitHub does.
+    let op = plan_create_check_run(
+        &json!({ "name": "done", "head_sha": sha, "conclusion": "success" }),
+        AppId(DbId(5)),
+        7_000_002,
+        now,
+    )
+    .unwrap();
+    let IssueOp::RecordCheck(u) = &op else { panic!() };
+    assert_eq!(
+        (u.status, u.conclusion, u.completed, u.started),
+        (CheckStatus::Completed, Some(CheckConclusion::Success), Some(now), Some(now))
+    );
+    let bad = |b: Value| plan_create_check_run(&b, AppId(DbId(5)), 1, now).err().map(|r| r.status);
+    let base = || json!({ "name": "n", "head_sha": sha });
+    let mut b = base();
+    b["status"] = json!("completed");
+    assert_eq!(bad(b), Some(422), "completed without a conclusion");
+    assert_eq!(bad(json!({ "name": "n", "head_sha": "abc" })), Some(422));
+    assert_eq!(bad(json!({ "head_sha": sha })), Some(422));
+    let mut b = base();
+    b["started_at"] = json!("yesterday");
+    assert_eq!(bad(b), Some(422));
+    let mut b = base();
+    b["conclusion"] = json!("great");
+    assert_eq!(bad(b), Some(422));
+    let mut b = base();
+    b["output"] = json!({ "title": "t" });
+    assert_eq!(bad(b), Some(422), "output without summary");
+    let mut b = base();
+    let one = json!({ "path": "a", "start_line": 1, "end_line": 1, "annotation_level": "notice", "message": "m" });
+    b["output"] = json!({ "title": "t", "summary": "s", "annotations": vec![one; 51] });
+    assert_eq!(bad(b), Some(422), "more than 50 annotations");
+
+    // The edge's id is unused only once: version 1 under it again, on another commit, is refused and renders 422.
+    let mut again =
+        plan_create_check_run(&json!({ "name": "lint2", "head_sha": oid(1).hex() }), AppId(DbId(5)), 7_000_001, now)
+            .unwrap();
+    let e = c.commit(WRITER, again.clone()).unwrap_err();
+    assert_eq!(e, IssueErr::Exists);
+    assert_eq!(write_refused(&e, "rest/checks/runs#create-a-check-run").status, 422);
+    let IssueOp::RecordCheck(u) = &mut again else { panic!() };
+    (u.head_sha, u.version, u.status, u.conclusion) =
+        (oid(2), 2, CheckStatus::Completed, Some(CheckConclusion::Success));
+    c.commit(WRITER, again).unwrap();
+    assert_eq!(get_check_run(&c.repo(0, &h, &dir), "7000001").value()["status"], json!("completed"));
+
+    // The member's render, through the `What` each route sends, equals the in-process one.
+    let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(READER))), ..Default::default() };
+    let render = |what: What| -> Render {
+        let r = Render { host: h.name().to_owned(), isolation: false, dir: hosted.clone(), what };
+        serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap()
+    };
+    let m = &c.members[0];
+    let wire = render_ok(&render(What::CheckRunCreated { id: 7_000_002 }), &ack(IssueOut::Done), &m.core, &m.meta);
+    assert_eq!(wire.status, 500, "7000002 was planned, never committed");
+    let wire = render_ok(&render(What::ReviewCommentCreated { n: 2 }), &ack(first), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body.as_ref().map(|b| &b["id"])), (201, Some(&json!(parent))));
+    let e = render_err(&render(What::ReviewCommentCreated { n: 2 }), &IssueErr::NotPull);
+    assert_eq!(e.status, 404);
+    let e = render_err(&render(What::CheckRunCreated { id: 1 }), &IssueErr::Forbidden);
+    assert_eq!(e.status, 403);
+}
