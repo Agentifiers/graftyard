@@ -69,6 +69,11 @@ streamed body sent during a SQLite write would do if the stream, unlike the arra
 before anything else [inference]. Comparing near-call tails across the two code versions: carried-3 (array bodies, three
 runs with stats) had 0 to 5 near calls over p50 + 100 ms per run; pass 1 (streamed) had 0 to 31, median 8.
 
+A second install points the same way (LM-1, `graft-m2b`, B0-29's smoke at 500 agents, 8 learners, k 4, 180 s; one
+run each side, hours apart, so not an A/B): before `m0-carried-4` (smoke m16c, `repo:131282`, 15:17Z) the leader's
+confirm was p50 30 / p99 89 ms (n 634) and its round p99 316 ms; after (site day m17 from `lm1-memory` `c756014d`,
+which holds `main` `4265f3d`; smoke m17, `repo:131284`, 18:07Z) p50 37 / p99 121 ms (n 673) and round p99 507 ms.
+
 ## Same-window A/B: streamed vs array bodies
 
 `m0-carried-5` adds a test-installs switch, `Host::array_body`: `/stats?body=array` (or `stream`) on each member sets
