@@ -2324,6 +2324,18 @@ Branch `learner-dumps` ran journey 9's API reads on `graft-m3c` with 8 learners 
 
 **Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners.
 
+### `m0-carried-4`: a member call streams its request body, 2026-11-12
+
+**Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
+
+**Why.** B0-02's last miss on `m0-carried-3` was a 337 ms pause of the leader's AppendEntries to a healthy near follower. A bare-object control with no Raft code, on the same account and hints, sends a body and starts a SQLite write one macrotask later, as the member does. With bodies of 250 to 400 KB the body's arrival at the callee took over 150 ms (up to 1,079 ms) in 78 of 5,782 calls (1.3%). With no write it did in 12 of 5,727 (0.2%), and through a `FixedLengthStream` in 6 of 5,491 (0.1%) with the write after the stream closed and 5 of 3,569 (0.14%) with it one macrotask after the send, as the member does. Calls over 400 ms were 42, 14, 5 and 6 [measured, `tests/m0/results/carried-4.md`]. workerd checks the output gate once, when the fetch starts, and pumps the body with no gate check after that, so an array body is not held by the gate; what stalls it is the platform's, below the API [inference, workerd `22a428de`, `api/http.c++` `fetchImpl`].
+
+**Beat.** Moving the log and state writes to KV with `allowUnconfirmed` and an explicit `sync()`, which also stalled nothing in the control but rewrites the storage layer. Holding the write until the body has left, which the platform gives no signal for. Accepting the stall as F35.
+
+**Evidence.** `tests/m0/results/carried-4.md`; `tests/m0carried/gateprobe/probe.ts` [measured].
+
+**Flip.** Hosted B0-02 runs whose stall windows still line up with a write during a body, which would argue for the KV path. Or a platform change that ends the stall for array bodies.
+
 ### `m0-carried-3`: F68 closed by a near round-trip bound at placement, 2026-11-12
 
 The operator chose F68's option (a), with (b) investigated, and rejected reading B0-02 per placement (`tests/m0/results/carried-3.md`).
