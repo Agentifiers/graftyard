@@ -1580,6 +1580,24 @@ impl<F: Family> Host<F> {
         });
     }
 
+    /// Test installs' own rows (BF-14's `arrival`): queued for the member's next transaction, which a leader runs
+    /// after that input's AppendEntries leave. Written on their own, each `/commit` reply's row was a confirmed write
+    /// between two rounds, and the next round's AppendEntries waited at the output gate for its confirm
+    /// (`tests/m0/results/carried-4.md`). `flush_queued` writes what is left before the rows are read.
+    #[cfg(feature = "test-faults")]
+    pub fn write_later(&self, stmt: Stmt) {
+        self.queue.borrow_mut().push(stmt);
+    }
+
+    /// Runs the queued statements now unless a transaction is already due (`write_later`).
+    #[cfg(feature = "test-faults")]
+    pub fn flush_queued(self: &Rc<Self>) -> Result<()> {
+        if self.flush_due.get() || self.queue.borrow().is_empty() {
+            return Ok(());
+        }
+        self.flush().map_err(|e| err(format!("storage write failed: {e}")))
+    }
+
     /// Resolves once no transaction is deferred, so a response sent after it is held by the output gate until the
     /// writes it may depend on are durable.
     pub async fn settled(&self) {
