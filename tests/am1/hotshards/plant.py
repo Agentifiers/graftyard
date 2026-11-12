@@ -17,6 +17,10 @@ GO = 'containers/git/server/main.go'
 CATCHUP = ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], '')
 SURFACES = ('cargo', ['-p', 'graftyard-api', '--test', 'surfaces'], 'tier')
 GOTEST = ('go', [], 'Derived|Have|409|Ingest')
+PRSYNC = 'crates/git/src/prsync.rs'
+PRSYNC_T = ('cargo', ['-p', 'graftyard-git', '--test', 'prsync'], 'a_leader_far')
+PACK = 'crates/git/src/pack.rs'
+PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -55,6 +59,13 @@ MUTANTS = [
      '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))',
      '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).map(|i| u64::MAX - i.0)))',
      CATCHUP),
+    ('a leader scan reads every stored row in one alarm', PRSYNC,
+     '        if bytes >= SCAN_BYTES {\n            return Ok(true);\n        }\n', '', PRSYNC_T),
+    ('a scan cut at its byte budget says nothing is left', PRSYNC,
+     '        if bytes >= SCAN_BYTES {\n            return Ok(true);\n', '        if bytes >= SCAN_BYTES {\n            return Ok(false);\n',
+     PRSYNC_T),
+    ('base64 decode accepts a byte outside the alphabet', PACK,
+     'Some(VALUE[*b as usize]).filter(|v| *v != 0xff)?', 'Some(VALUE[*b as usize] & 63)?', PACK_T),
     ('a whole-tier read counts rows only (blocker 5)', HOSTED,
      '                    if budget.rows == 0 || budget.bytes < bytes {',
      '                    if budget.rows == 0 {', SURFACES),

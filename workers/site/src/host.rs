@@ -1040,8 +1040,14 @@ fn load<F: Family>(storage: &worker::Storage, join: &Join, retention: Duration) 
 /// if a row is missing, as it is while its transaction waits.
 /// One stored log entry, if the log still holds it.
 pub fn stored_entry<F: Family>(sql: &SqlStorage, at: Index) -> Option<Entry<F>> {
+    stored_entry_sized::<F>(sql, at).map(|(e, _)| e)
+}
+
+/// `stored_entry` with its row's bytes, for a reader that bounds what one alarm reads (`graftyard_git::prsync::scan`).
+pub fn stored_entry_sized<F: Family>(sql: &SqlStorage, at: Index) -> Option<(Entry<F>, usize)> {
     let r = rows(sql, "SELECT row FROM log WHERE idx = ?", vec![i(at.0)]).ok()?;
-    codec::from_bytes(blob(&r.first()?[0]).ok()?).ok()
+    let row = blob(&r.first()?[0]).ok()?;
+    Some((codec::from_bytes(row).ok()?, row.len()))
 }
 
 fn stored_range<F: Family>(sql: &SqlStorage, from: Index, through: Index) -> Option<Vec<Entry<F>>> {
