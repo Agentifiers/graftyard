@@ -577,16 +577,19 @@ impl ShardHost<'_> {
     }
 
     /// The test merge of `head` into `base` (`GitCacheShard::merge` without the plan): the container's `/merge`, which
-    /// runs merge-tree, commit-tree, and the tree-diff check in a quarantine and leaves the repository unchanged.
+    /// runs merge-tree, commit-tree, and the tree-diff check in a quarantine and leaves the repository unchanged. With
+    /// the answer, the CPU ms of the merge's own git processes (`cpuMs`), which TEST_MERGE_BUDGET is charged.
     pub async fn merge(
         &self,
         network: NetworkId,
         base: crate::refs::ObjectId,
         head: crate::refs::ObjectId,
-    ) -> Result<crate::prsync::MergeAnswer, StoreError> {
+    ) -> Result<(crate::prsync::MergeAnswer, Option<f32>), StoreError> {
         let path = format!("/merge?net={}&base={}&head={}", network.0.0, base.hex(), head.hex());
         let mut r = self.ok(Method::Post, &path, None).await?;
-        r.json().await.map_err(worker_err)
+        let v: serde_json::Value = r.json().await.map_err(worker_err)?;
+        let cpu = v["cpuMs"].as_f64().map(|c| c as f32);
+        Ok((serde_json::from_value(v).map_err(|e| StoreError(format!("{path}: {e}")))?, cpu))
     }
 
     /// `GitCacheShard::merge` for a real merge or a merge-queue group: each head in turn on the previous result, from

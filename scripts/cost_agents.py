@@ -132,7 +132,8 @@ FANOUT_TARGET = 0.75       # share of the most loaded shard's vCPU that fan-out 
 PART_VCPU_S = 0.5          # one composed-miss part per tip move, built once per network by the shard that took the merge:
                            # 0.3 to 0.8 CPU-s a part, 2 to 2.3 for a 400 to 650 object move, about 0.5 at the mean
                            # [measured, tests/m0/results/m0-wp9.md, B0-34, third pass]
-TEST_MERGE_BUDGET = 0.25   # compiled share of the k shards' vCPU that test merges may use (AG-ACT-13)
+TEST_MERGE_BUDGET = 0.25   # compiled share of the merging shard's vCPU that test merges may use (AG-ACT-13): a network's
+                           # merges all run on its first shard on the leader's site, so k does not raise the budget
 FANOUT_MAX = 8
 WARM_SITES = 2
 
@@ -258,13 +259,18 @@ def shard_vcpu(agents, merges_per_min, pushes_per_task):
 
 
 def fanout(vcpu_load, vcpu):
-	"""k per warm site: the most loaded shard under FANOUT_TARGET, and head-push test merges inside TEST_MERGE_BUDGET.
-	Validation, test merges, and misses spread over the k by rendezvous, so the most loaded shard carries about the
-	average [inference]; Milestone 0 measures the skew."""
+	"""k per warm site: the most loaded shard under FANOUT_TARGET. Validation and misses spread over the k by
+	rendezvous, so the most loaded shard carries about the average [inference]; Milestone 0 measures the skew. Test
+	merges run on the network's first shard alone, so k does not raise TEST_MERGE_BUDGET: head-push merges must fit one
+	shard's share, which `merge_budget_fits` checks."""
 	load = sum(vcpu_load.values())
-	merges = vcpu_load["test merge per head push"]
-	k = max(math.ceil(load / (FANOUT_TARGET * vcpu)), math.ceil(merges / (TEST_MERGE_BUDGET * vcpu)))
-	return min(FANOUT_MAX, max(1, k))
+	return min(FANOUT_MAX, max(1, math.ceil(load / (FANOUT_TARGET * vcpu))))
+
+
+def merge_budget_fits(vcpu_load, vcpu):
+	"""Head-push test merges inside TEST_MERGE_BUDGET of the one shard that runs them (`design/DESIGN.md`, Shape,
+	`MergeBudget`)."""
+	return vcpu_load["test merge per head push"] <= TEST_MERGE_BUDGET * vcpu
 
 
 def instance_month(tier):
@@ -467,7 +473,8 @@ def a1_rates():
 	k = fanout(vl, 4)
 	monthly_k = hot_network("large")["k"]
 	per = instance_month("large")[2]
-	budget = TEST_MERGE_BUDGET * k * 4
+	budget = TEST_MERGE_BUDGET * 4
+	assert merge_budget_fits(vl, 4), "journey 9's head-push merges past one standard-4's TEST_MERGE_BUDGET"
 	predict = pushes * PREDICT_PAIRS * PREDICT_VCPU_S
 	predict_mean = pushes * PREDICT_MEAN_PAIRS * PREDICT_VCPU_S
 	k2 = max(k, predict_k(agents, 4, per_task))
