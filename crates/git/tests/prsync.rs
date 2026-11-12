@@ -369,14 +369,16 @@ impl Pipe {
                 || async {
                     clock.set(clock.get() + cost);
                     cache.runs += 1;
-                    Ok(if cache.conflicts.contains(&head) {
+                    let a = if cache.conflicts.contains(&head) {
                         MergeAnswer::Conflict { conflict: vec!["f".into()] }
                     } else {
                         MergeAnswer::Clean {
                             merge: Cache::merge_commit(base, head).hex(),
                             pack: vec![0x50; cache.pack_bytes],
                         }
-                    })
+                    };
+                    // No CPU reported, so the shard charges the merge's wall time on its clock.
+                    Ok((a, None))
                 },
             ))
             .unwrap()
@@ -866,7 +868,7 @@ fn a_first_attempt_lost_with_its_isolate_does_not_hold_later_pushes() {
 #[test]
 fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     let (mut g, mut p) = setup();
-    let budgets = graftyard_git::prsync::Budgets::new(graftyard_git::prsync::instance_vcpu("standard-2"));
+    let budgets = graftyard_git::prsync::Budgets::new(graftyard_git::prsync::instance_vcpu("standard-2").unwrap());
     p.budget = Some((std::cell::RefCell::new(budgets), std::cell::Cell::new(g.now.0), 10_000));
     p.drain(&mut g);
     assert_synced(&g, &p.cache, &[1]);
@@ -881,4 +883,45 @@ fn a_head_push_past_the_test_merge_budget_leaves_mergeable_null() {
     assert_eq!(g.get(&head_ref(IssueNumber(1))), Some(oid(3)), "the head ref still moves");
     let st = p.budget.as_ref().unwrap().0.borrow().stats(graftyard_types::NetworkId(REPO.0)).unwrap();
     assert_eq!((st.computed, st.shed, st.spent_ms), (1, 1, 10_000.0), "one charged at its measured time, one shed");
+}
+
+/// A30: an on-demand merge (a single-PR GET's or Actions dispatch's, `on_demand`) records the PR's current test merge
+/// without moving the consumer's cursor, so the batches go on as before. The same merge asked twice commits once, a
+/// merge of a head the PR has since left records nothing, and a shed answer commits nothing.
+#[test]
+fn an_on_demand_merge_records_the_current_head_and_moves_no_cursor() {
+    use graftyard_git::prsync::on_demand;
+    let (mut g, _p) = setup();
+    let cursor = consumer_cursor(&*g.fold().core, Consumer::PrSync);
+    let clean = |base: ObjectId, head: ObjectId| MergeAnswer::Clean {
+        merge: Cache::merge_commit(base, head).hex(),
+        pack: vec![0x50; 8],
+    };
+    assert_eq!(on_demand(IssueNumber(1), oid(1), oid(2), MergeAnswer::Shed { shed: true }), None, "shed: no command");
+    let c = on_demand(IssueNumber(1), oid(1), oid(2), clean(oid(1), oid(2))).unwrap();
+    assert_eq!(c, on_demand(IssueNumber(1), oid(1), oid(2), clean(oid(1), oid(2))).unwrap(), "one request id");
+    assert!(matches!(g.commit(c.clone()), RepoOut::Sync(o) if o.events == 1));
+    let core = &*g.fold().core;
+    assert_eq!(
+        graftyard_git::prsync::mergeable(mergeability(core, IssueNumber(1)).as_ref(), oid(2), Some(oid(1))),
+        Some(true)
+    );
+    assert_eq!(consumer_cursor(core, Consumer::PrSync), cursor, "no cursor moved");
+    g.commit(c);
+    let merged = |g: &G| g.committed().iter().filter(|e| matches!(e, RepoEvent::TestMerged { .. })).count();
+    assert_eq!(merged(&g), 1, "asked twice, recorded once");
+    // The head moved before the GET's merge committed: nothing of the old head is recorded.
+    g.push("refs/heads/f", oid(3));
+    let stale =
+        on_demand(IssueNumber(1), oid(1), oid(2), MergeAnswer::Conflict { conflict: vec!["f".into()] }).unwrap();
+    assert!(matches!(g.commit(stale), RepoOut::Sync(o) if o.events == 0));
+    assert_eq!(merged(&g), 1);
+    let m = mergeability(&*g.fold().core, IssueNumber(1)).unwrap();
+    assert_eq!(
+        (m.head, m.result.clone()),
+        (oid(2), MergeabilityResult::Clean { merge: Cache::merge_commit(oid(1), oid(2)) })
+    );
+    let big =
+        MergeAnswer::Clean { merge: oid(7).hex(), pack: vec![0; graftyard_git::prsync::MERGE_BYTES_PER_COMMAND + 1] };
+    assert_eq!(on_demand(IssueNumber(1), oid(1), oid(3), big), None, "a pack past the command bound commits nothing");
 }
