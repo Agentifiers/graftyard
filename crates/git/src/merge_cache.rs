@@ -429,7 +429,8 @@ mod tests {
             (r, merges.get(), catchups.get())
         };
         assert_eq!(run(true), (Ok(answer()), 1, 0), "both commits held: no catch-up");
-        assert_eq!(run(false), (Ok(answer()), 2, 1), "a commit missing: one catch-up, then the merge again");
+        // Missing: the merge, again after any catch-up in flight (none here), then one catch-up and the merge again.
+        assert_eq!(run(false), (Ok(answer()), 3, 1), "a commit missing: one catch-up, then the merge again");
         let still_missing = futures_executor::block_on(merge_then_catch_up(
             || async { Ok(()) },
             || async {},
