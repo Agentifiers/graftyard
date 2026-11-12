@@ -82,6 +82,20 @@ pub fn shared_answer(
     (b, false)
 }
 
+/// A granted read's answer from the group's fold at `now`, for a member that spaces dump rebuilds by `every`
+/// (`family::dump_every`): `Shed` when a stale dump's rebuild is not due (checked here, where the dump would be
+/// built, so one granted batch rebuilds at most once per `every`); else the family's shared bytes (`read_bytes`, one
+/// copy for every read at this state, from any input); else `read_json` serialized.
+pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, now: u64, every: u64) -> ReadBody {
+    if let Some(ms) = F::heavy_wait(fold, q, now, every) {
+        return ReadBody::Shed(ms);
+    }
+    if let Some(b) = F::read_bytes(fold, q) {
+        return ReadBody::Json(b);
+    }
+    ReadBody::Json(serde_json::to_vec(&F::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into())
+}
+
 const TICK: Duration = Duration::from_millis(100);
 const ACTIVE_FOR_MS: u64 = 3_000;
 const DRAIN_CHECK_MS: i64 = 2_000;
@@ -158,6 +172,8 @@ pub struct Stats {
     pub shed_reads: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
+    /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
+    pub waited_reads: u32,
     /// Read-index reads this member served as a follower, refused to the leader (`Family::follower_serves`), and
     /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
     pub follower_reads: u32,
@@ -1627,6 +1643,7 @@ impl<F: Family> Host<F> {
             let now = now_ms();
             // The answers this input built, by query: valid only at this input's grants (`shared_answer`).
             let mut built: HashMap<String, ReadBody> = HashMap::new();
+            let every = crate::family::dump_every(core.m.me());
             for r in out.resolutions {
                 match r {
                     Resolution::Ticket { ticket, result } => {
@@ -1694,12 +1711,8 @@ impl<F: Family> Host<F> {
                                             }),
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
-                                        } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
-                                            // Checked here, where the dump would be built, so one granted batch
-                                            // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
-                                            return ReadBody::Shed(ms);
                                         } else {
-                                            F::read_json(f.fold(), &q)
+                                            return fold_answer::<F>(f.fold(), &q, now, every);
                                         };
                                         ReadBody::Json(
                                             serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()).into(),
