@@ -638,7 +638,8 @@ mod tests {
     fn a_core_only_read_is_served_while_the_metadata_tier_loads() {
         let empty = Vec::new();
         let row = || ("lease".to_owned(), Vec::new(), Vec::new());
-        let loading = graftyard_api::hosted::TierRows { index: 1, core: vec![row()], meta: None, complete: true };
+        let loading =
+            graftyard_api::hosted::TierRows { index: 1, core: vec![row()], meta: None, complete: true, picks: None };
         assert_eq!(crate::api::served_meta(&loading, true, &empty).map(Vec::len), Some(0));
         assert!(crate::api::served_meta(&loading, false, &empty).is_none());
         let loaded = graftyard_api::hosted::TierRows { meta: Some(vec![row(), row()]), ..loading };

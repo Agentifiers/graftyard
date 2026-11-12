@@ -99,6 +99,10 @@ pub struct TierRows {
     pub meta: Option<Vec<(String, Key, Vec<Val>)>>,
     /// False when the tiers hold more than `ROWS_MAX` rows; the rows are then cut short and must not be served.
     pub complete: bool,
+    /// A narrow API read's selections (`crate::narrow`), which the rows alone cannot answer: present only on the
+    /// answer to `{"rows": {"api": ..}}`, so every other answer's bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picks: Option<Vec<(String, crate::view::Pick)>>,
 }
 
 /// Metadata tables no `Repo` view, directory, or planner reads, which `TierRows::dump` leaves out: each agent ref's
@@ -168,7 +172,7 @@ impl TierRows {
                 }
             }
         }
-        TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true }
+        TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true, picks: None }
     }
 
     /// The core rows `graftyard_identity::authorize_read` reads through `graftyard_git::issue_ops::Access`: `settings`
@@ -279,6 +283,10 @@ pub struct HostedDir {
     /// agent media type, and it never crosses the binding, so a `Render` is the same bytes with or without it.
     #[serde(skip)]
     pub install: Option<AuthzFold>,
+    /// The selections of a narrow read's member (`crate::narrow::Picks`); none on a whole-tier read. Never crosses the
+    /// binding: a write's leader renders over its own whole tiers.
+    #[serde(skip)]
+    pub picks: crate::narrow::Picks,
 }
 
 mod authz_hex {
@@ -342,6 +350,9 @@ impl Directory for HostedDir {
     }
     fn agent_app(&self, app: graftyard_identity::AppId) -> bool {
         self.install.as_ref().is_some_and(|a| a.agent_app(app).is_some())
+    }
+    fn pick(&self, key: &str, select: &mut dyn FnMut() -> crate::view::Pick) -> crate::view::Pick {
+        self.picks.get(key, select)
     }
 }
 

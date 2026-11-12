@@ -102,11 +102,12 @@ fn percentiles(xs: &[u32]) -> Value {
     json!({ "n": s.len(), "p50": at(0.5), "p99": at(0.99), "max": s.last() })
 }
 
-/// Whether a granted whole-tier read whose dump rebuild is due in `ms` waits for it and is granted again, rather than
-/// shed: only a learner's read-index read, and only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline.
-/// A voter's is shed, so the edge's next member or a 503 answers it at once.
-fn waits_for_rebuild(learner: bool, index: bool, now: u64, ms: u64, until: u64) -> bool {
-    learner && index && now + ms < until
+/// Whether a granted read whose answer's rebuild is due in `ms` waits for it and is granted again, rather than shed:
+/// only a read-index read, only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline, and for a whole-tier
+/// dump only on a learner. A voter's dump read is shed, so the edge's next member or a 503 answers it at once; a narrow
+/// API read (`narrow`) costs a page's rows, not a dump, so a follower holds it too (`family::narrow_wait`).
+fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64, until: u64) -> bool {
+    (learner || narrow) && index && now + ms < until
 }
 
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
@@ -1085,6 +1086,7 @@ impl<F: Family> Routes<F> {
         // A read-index read goes to a follower only for the queries `Family::follower_serves` names; the caps hold on
         // it too (`gate`).
         let heavy = heavy_read(&q);
+        let narrow = q.get("rows").and_then(|r| r.get("api")).is_some();
         let (leading, me, servable, nl) = match self.host.core.borrow().as_ref() {
             Some(c) => (
                 c.m.role() == Role::Leader,
@@ -1131,7 +1133,7 @@ impl<F: Family> Routes<F> {
                 // A stale dump whose rebuild is not yet due (`family::dump_wait`). A learner's read waits for the
                 // rebuild and is granted again, so it answers the state at its new grant; a voter's is shed.
                 Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
-                    if waits_for_rebuild(learner, index, now_ms(), ms, until) {
+                    if waits_for_rebuild(learner, narrow, index, now_ms(), ms, until) {
                         self.host.stats.borrow_mut().waited_reads += 1;
                         worker::Delay::from(Duration::from_millis(ms)).await;
                         continue;
@@ -2347,10 +2349,13 @@ mod tests {
         assert_eq!(gate(true, false, L, false, true, 0, 0), Gate::NotLeader, "a learner's leader-only read");
         assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a plain read answers NotLeader");
         // (learner, index, now, ms until the rebuild, deadline)
-        assert!(waits_for_rebuild(true, true, 1_000, 499, 1_500));
-        assert!(!waits_for_rebuild(true, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
-        assert!(!waits_for_rebuild(false, true, 1_000, 10, 1_500), "a follower sheds");
-        assert!(!waits_for_rebuild(true, false, 1_000, 10, 1_500), "a plain read never waits");
+        assert!(waits_for_rebuild(true, false, true, 1_000, 499, 1_500));
+        assert!(!waits_for_rebuild(true, false, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
+        assert!(!waits_for_rebuild(false, false, true, 1_000, 10, 1_500), "a follower sheds a dump read");
+        assert!(!waits_for_rebuild(true, false, false, 1_000, 10, 1_500), "a plain read never waits");
+        assert!(waits_for_rebuild(false, true, true, 1_000, 10, 1_500), "a follower holds a narrow API read");
+        assert!(!waits_for_rebuild(false, true, true, 1_000, 500, 1_500), "but not past its deadline");
+        assert!(!waits_for_rebuild(false, true, false, 1_000, 10, 1_500), "nor a leader's plain read");
     }
 
     /// An answer's body keeps its read counted until its last piece is taken, so answers still streaming to a far

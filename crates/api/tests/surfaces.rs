@@ -874,7 +874,7 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
         let (mut budget, m) = (Budget::rows(100_000), &c.members[0]);
         let (core, ok1) = TierRows::dump(&m.core, &CORE, &mut budget);
         let (meta, ok2) = TierRows::dump(&m.meta, &METADATA, &mut budget);
-        let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2 };
+        let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2, picks: None };
         serde_json::from_value::<TierRows>(serde_json::to_value(&t).unwrap()).unwrap()
     };
     let t = rows(&c);
