@@ -2474,6 +2474,22 @@ Branch `merge-budget-3` closed the five items the lead left after `merge-budget-
 
 **Flip.** A runtime that charges a Durable Object's calls to the request that started them, which would let the handler run in the isolate again.
 
+### `merge-budget-4`: merge waits are measured, a late older-base merge no longer replaces the current one, and the shard size is read, 2026-11-12
+
+Branch `merge-budget-4` closed the three items the lead left after `merge-budget-3` (`tests/am1/results/merge-budget-4.md`).
+
+#### A test merge at an older base never replaces the head's merge at the base tip
+
+**Decision.** `PrSync::decide_sync` skips a `TestMerged` whose head already has a recorded merge when its base is not the base branch's tip. A merge of a new head records as before, even at an older tip, and a merge at the tip replaces any older one.
+
+**Why.** `merge-budget-3`'s run 2 was thought to commit each batch twice, its abandoned first attempt and its re-send, so the duplicates slowed the leader. The leader's stored log says otherwise. No request id is at two indexes, and no (PR, head, base) was recorded twice, because content-keyed request ids and `decide_sync`'s `recorded` check already make the commit idempotent per (PR, head, base). What the log shows is a different fault. In run 1, 32 `TestMerged` events recorded a merge at an older base over the same head's merge at a newer one: a slow merge planned before a base move committed after its faster re-send. Each put `mergeable` back to null and the merge ref on a stale base until the next push.
+
+**Beat.** Keying commits per (PR, head, base) with an ack-without-entry path, which the lead proposed for duplicates the log does not show. Ordering merges by base in the shard, which cannot see what the leader has committed.
+
+**Evidence.** The stored logs of repos 65553 and 65554 [measured, `tests/am1/results/merge-budget-4.md`]. `an_older_base_merge_committed_late_does_not_replace_the_current_one`, and planted bugs in `tests/budget/plant.py`.
+
+**Flip.** A base branch that moves backward, such as a force-push to an older commit, which would make the tip's merge the older one. The check compares with the tip, not ancestry, so it already holds then.
+
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 
 B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on its fail line at simulated day 27.52 (`tests/am1/results/b0-30.md`; `build/BUILD-PLAN.md`, AM1-WP6, B0-30).

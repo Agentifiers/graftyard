@@ -652,7 +652,7 @@ pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), 
 /// `MergeBudget`, per network in the memory of the shard that runs its merges (the leader site's first, at the tier's instance size; its counts are stored, so they outlive the object's reset), refills at TEST_MERGE_BUDGET of its vCPU. Its merges run one at a time, each admitted only once the one before was charged its CPU, so pushes and dispatch, run from a positive balance, pass the budget by at most one merge; GETs leave half a second's. Admitted at an estimate while earlier merges ran, LM-1 round 5 spent 0.274 vCPU of 0.25 [measured, `tests/am1/results/merge-budget-2.md`].
 /// Past it `mergeable` is null, or GraphQL `UNKNOWN`, as GHES 3.22 says. A test merge on torvalds/linux costs 5 to 50 ms at p50 and at most 338 ms at p99
 /// [measured, `tests/m0/results/m0-wp9.md`, B0-34], so journey 9's head-push merges need 0.21 vCPU of a `standard-4`'s 1.
-pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`
+pub struct TestMerge { pub n: IssueNumber, pub base: Oid, pub head: Oid, pub result: MergeabilityResult } // `TestMerged`; never over the head's merge at the base tip
 pub const TEST_MERGE_BUDGET: f32 = 0.25;
 /// An App is `ActorKind::Agent` when it is one of Graftyard's GraftyardRun Apps (`graftyard-agent`, `graftyard-workspace`),
 /// or when an admin flagged it as an `AgentApp` and set `confine`. A flagged App without `confine` is `Bot`, though its
