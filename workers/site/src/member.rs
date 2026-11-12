@@ -569,11 +569,18 @@ impl<F: Family> Routes<F> {
             (Method::Get, "/status") => Response::from_json(&self.status()),
             // The committed entries `from..=to` with the family's fields (a repository's packs): the git cache
             // shard's `ChainLog::entries`.
-            // Leader only, so the entries reach the commit index a `fresh` read just reported.
+            // Leader only, so the entries reach the commit index a `fresh` read just reported, unless `local`: then
+            // any member answers from its own committed log, which may end below the leader's.
             (_, "/entries") => {
                 let q = |k: &str| crate::registry::query(&url, k).ok().and_then(|v| v.parse::<u64>().ok());
-                let nl =
-                    self.host.core.borrow().as_ref().filter(|c| c.m.role() != Role::Leader).map(|c| c.m.not_leader());
+                let local = q("local") == Some(1);
+                let nl = self
+                    .host
+                    .core
+                    .borrow()
+                    .as_ref()
+                    .filter(|c| !local && c.m.role() != Role::Leader)
+                    .map(|c| c.m.not_leader());
                 if let Some(nl) = nl {
                     return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }

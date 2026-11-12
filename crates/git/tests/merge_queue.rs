@@ -1303,7 +1303,7 @@ fn the_merge_queue_cursor_names_touched_bases_and_moves_only_forward() {
     let (cursor, applied) = (read(&g).cursor, g.m(g.leader()).state().applied);
     assert_eq!(cursor, Index(0));
     let m = g.m(g.leader());
-    scan(&mut d, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
+    scan(&mut d, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).map(|e| (e.clone(), 0))).expect("in memory");
     let (b, how) = d.batch(cursor, g.now).expect("the enqueues touched main");
     assert_eq!((b.prs.as_slice(), how), (&[main_ref()][..], Delivery::First));
     assert_eq!(g.commit(MergeCmd::Cursor(b.through)).unwrap(), MergeCmdOut::Cursor(b.through));
@@ -1316,7 +1316,8 @@ fn the_merge_queue_cursor_names_touched_bases_and_moves_only_forward() {
     let mut fresh: Dispatcher<RefName> = Dispatcher::default();
     let (cursor, applied) = (read(&g).cursor, g.m(g.leader()).state().applied);
     let m = g.m(g.leader());
-    scan(&mut fresh, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).cloned()).expect("in memory");
+    scan(&mut fresh, &g.fold().core, REPO, cursor, applied, |i| m.entry_at(i).map(|e| (e.clone(), 0)))
+        .expect("in memory");
     assert!(fresh.batch(cursor, g.now).is_none_or(|(b, _)| b.prs.is_empty()));
     g.assert_agree();
 }
