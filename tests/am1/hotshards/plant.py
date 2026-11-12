@@ -23,6 +23,7 @@ PACK = 'crates/git/src/pack.rs'
 PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
 EDGE = 'workers/edge/src/lib.rs'
 EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
+EDGE_C = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'cold_shard_is_tried_last')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -85,6 +86,12 @@ MUTANTS = [
      '    std::iter::once(record.home).chain(others).collect()',
      '    record.sites.iter().copied().filter(|s| others.clone().any(|o| o == *s) || *s == record.home).collect()',
      EDGE_T),
+    ('a cold shard is skipped altogether rather than tried last', EDGE,
+     '    warm.into_iter().chain(cold).collect()', '    if warm.is_empty() { cold } else { warm }', EDGE_C),
+    ('the warm shards are reordered by site id, losing the home-first order', EDGE,
+     "    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));",
+     "    let (mut warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));\n    warm.sort();",
+     EDGE_C),
 ]
 
 

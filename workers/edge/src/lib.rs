@@ -1022,14 +1022,51 @@ fn validate_sites(record: &PlacementRecord, pinned: Option<SiteId>) -> Vec<SiteI
     std::iter::once(record.home).chain(others).collect()
 }
 
-/// How long the home shard's catch-up may hold a validate before the edge tries the next site's shard: past it the
-/// shard answers 503 `warming` and goes on catching up in the background. A later site's shard gets
-/// `VALIDATE_WAIT_OTHER`. Both together stay under the push's 180 s deadline.
+/// After a shard of a network answers anything but 200 or 422, this isolate tries it last for this long, so pushes
+/// during a 30 min rehydrate do not each wait out the home shard first: j9d's pushes took about 21 s each, 15 of them
+/// the home's `wait` (`tests/am1/results/hot-shards.md`). Past it the home is tried first again.
+const COLD_SHARD_MS: u64 = 30_000;
+
+thread_local! {
+    static COLD: std::cell::RefCell<std::collections::BTreeMap<(i64, u8), u64>> =
+        const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// `sites` with the ones marked cold at `now` moved to the end, keeping the order within each part.
+fn warm_first(sites: Vec<SiteId>, cold: impl Fn(SiteId) -> bool) -> Vec<SiteId> {
+    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));
+    warm.into_iter().chain(cold).collect()
+}
+
+/// `validate_sites` for `repo`, with the shards this isolate saw cold in the last `COLD_SHARD_MS` last.
+fn shard_order(repo: &Repo, pinned: Option<SiteId>) -> Vec<SiteId> {
+    let t = now().0;
+    let net = repo.id.0.0;
+    COLD.with(|m| {
+        let m = m.borrow();
+        warm_first(validate_sites(&repo.record, pinned), |s| m.get(&(net, s.0)).is_some_and(|until| *until > t))
+    })
+}
+
+fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
+    COLD.with(|m| {
+        let mut m = m.borrow_mut();
+        if cold {
+            m.insert((repo.id.0.0, site.0), now().0 + COLD_SHARD_MS);
+        } else {
+            m.remove(&(repo.id.0.0, site.0));
+        }
+    });
+}
+
+/// How long the first shard tried, usually the home's, may hold a validate in its catch-up before the edge tries the
+/// next: past it the shard answers 503 `warming` and goes on catching up in the background. Each later shard gets
+/// `VALIDATE_WAIT_OTHER_S`. With three Full sites they stay under the push's 180 s deadline.
 const VALIDATE_WAIT_HOME_S: u32 = 15;
 const VALIDATE_WAIT_OTHER_S: u32 = 60;
 
 /// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
-/// another placement site's shard of the network (`validate_sites`): tips in the body ahead of the pack. With
+/// another placement site's shard of the network (`shard_order`): tips in the body ahead of the pack. With
 /// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
 /// answers each update's new commits and changed paths; with an empty pack it answers only those, and no index.
 /// Without `detail` the call is the one a default push has always made. A 422 is the pack's answer and ends the
@@ -1057,9 +1094,11 @@ pub(crate) async fn validate(
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
     let mut last = String::new();
-    for (i, site) in validate_sites(&repo.record, pinned).into_iter().enumerate() {
+    for (i, site) in shard_order(repo, pinned).into_iter().enumerate() {
         let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
-        match validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await {
+        let r = validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await;
+        mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422, _)))));
+        match r {
             Ok(Ok(r)) => return Ok(r),
             Ok(Err((422, e))) => return Err(e),
             Ok(Err((status, e))) => last = format!("site {}'s shard answered {status}: {e}", site.0),
@@ -1069,8 +1108,8 @@ pub(crate) async fn validate(
     Err(last)
 }
 
-/// A read on the network's shards (`upload-pack`, `info-refs`) in `validate_sites` order: the home site's with
-/// `wait=VALIDATE_WAIT_HOME_S`, then each other Full site's with `wait=VALIDATE_WAIT_OTHER_S`, until one answers 200.
+/// A read on the network's shards (`upload-pack`, `info-refs`) in `shard_order`: the first with
+/// `wait=VALIDATE_WAIT_HOME_S`, then each other with `wait=VALIDATE_WAIT_OTHER_S`, until one answers 200.
 /// The last answer otherwise. A fetch, like a push, waited on a home shard's 30 min rehydrate until its deadline.
 pub(crate) async fn shard_read(
     c: &Ctx<'_>,
@@ -1084,7 +1123,7 @@ pub(crate) async fn shard_read(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let sites = validate_sites(&repo.record, pinned);
+    let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().enumerate() {
         let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
         let h = Headers::new();
@@ -1096,6 +1135,7 @@ pub(crate) async fn shard_read(
         }
         let req = Request::new_with_init(&format!("{url}&wait={wait}"), &init)?;
         let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
+        mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
         if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
             return r;
         }
@@ -2074,7 +2114,7 @@ mod tests {
 
     use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
 
-    use super::{gunzip, validate_sites};
+    use super::{gunzip, validate_sites, warm_first};
 
     fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
         PlacementRecord {
@@ -2098,6 +2138,19 @@ mod tests {
         assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// A shard seen cold goes last and the rest keep their order: the home first among the warm ones, and the cold
+    /// ones in their own order. With none cold the order is unchanged.
+    #[test]
+    fn a_cold_shard_is_tried_last_and_the_rest_keep_their_order() {
+        let s = |v: &[u8]| v.iter().map(|&i| SiteId(i)).collect::<Vec<_>>();
+        let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 == 2)), [0, 1, 2]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 == 0)), [2, 1, 0]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |x| x.0 != 1)), [1, 2, 0]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |_| false)), [2, 0, 1]);
+        assert_eq!(ids(warm_first(s(&[2, 0, 1]), |_| true)), [2, 0, 1]);
     }
 
     fn gzip(b: &[u8]) -> Vec<u8> {
