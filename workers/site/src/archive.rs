@@ -15,8 +15,12 @@
 //! - **Idempotent.** Request ids come from the range and the object's digest, so a run re-sent after a lost answer
 //!   or a new leadership is answered from the `request` row and records nothing twice.
 //!
-//! The run is spawned, not awaited, so the alarm's Raft tick is never held behind the shard or R2. A run that fails
-//! notes why in the member's alarms and is retried on a later alarm.
+//! The run is spawned, not awaited, so the alarm's Raft tick is never held behind the shard or R2. A run drains: it
+//! takes steps one after another until nothing is due or `DRAIN_FOR` has passed, and each step commits on its own, so
+//! a run cut off anywhere keeps every step before it. A run that fails notes why in the member's alarms and is
+//! retried on a later alarm. One step that outlasts `STEP_FOR` is abandoned; a fixed deadline on the whole run
+//! (`RUN_FOR`, 120 s) stopped B0-30's archive for good once each promotion's validate went to a cold shard
+//! (`tests/am1/results/b0-30.md`, "Verdict").
 
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -37,9 +41,12 @@ use crate::{SiteEnv, now_ms};
 const SUM_EVERY_MS: u64 = 60_000;
 /// After a run that did work, the next alarm comes this soon, so a due range drains piece by piece.
 const BUSY_MS: i64 = 200;
-/// A run that has not finished in this long is abandoned by the next alarm [guess]: a cold shard's catch-up and a
-/// promotion of `PROMOTE_MAX` bytes.
-const RUN_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+/// A run starts no new step after this long [guess], so a member's isolate is not held by one drain for ever.
+const DRAIN_FOR_MS: u64 = 90_000;
+/// One step that has not finished in this long is abandoned [guess]: a shard's catch-up behind it saves its cursor
+/// piece by piece, so the next step resumes the work. Over a push's 180 s, because a promotion waits on the same
+/// catch-up a push would.
+const STEP_FOR: std::time::Duration = std::time::Duration::from_secs(600);
 
 thread_local! {
     /// Test installs: the cap and range size in place of `LOG_MAX_BYTES` and `ARCHIVE_RANGE_MAX`, for this isolate
@@ -74,7 +81,7 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let r = match w.upgrade() {
-            Some(h) => crate::host::within(RUN_FOR, run(&h)).await.unwrap_or_else(|| Err("the run timed out".into())),
+            Some(h) => drain(&h).await,
             None => Ok(Step::Idle),
         };
         RUNNING.with(|r| r.borrow_mut().remove(&key));
@@ -84,17 +91,30 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
             Ok(Step::Idle) => {
                 SUMMED.with(|s| s.borrow_mut().insert(key, now_ms()));
             }
-            Ok(s) => {
-                console_log!("archive {s:?}");
-                h.stats.borrow_mut().archive_steps += 1;
-                h.arm_in(BUSY_MS);
-            }
+            // The drain stopped at its budget with work left: the next run starts at once.
+            Ok(_) => h.arm_in(BUSY_MS),
             Err(e) => {
                 SUMMED.with(|s| s.borrow_mut().insert(key, now_ms()));
                 note(&h, format!("archive: {e}"));
             }
         }
     });
+}
+
+/// Steps until nothing is due, a step fails, or `DRAIN_FOR_MS` has passed: the last step's result.
+async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
+    let began = now_ms();
+    loop {
+        let s = crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
+        if s == Step::Idle {
+            return Ok(s);
+        }
+        console_log!("archive {s:?}");
+        h.stats.borrow_mut().archive_steps += 1;
+        if now_ms() >= began + DRAIN_FOR_MS {
+            return Ok(s);
+        }
+    }
 }
 
 fn note(h: &Rc<Host<Repo>>, m: String) {
@@ -180,10 +200,13 @@ impl ArchiveHost for SiteHost<'_> {
         let core = self.h.core.borrow();
         let c = core.as_ref().filter(|c| c.m.role() == Role::Leader)?;
         let fold = &c.m.group_fold().fold;
-        let after = fold.archived().map_or(0, |a| a.to.0);
-        let q = "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?";
-        let total = rows(&self.sql, q, vec![crate::host::i(after)]).ok()?.first().and_then(|r| int(&r[0]).ok())? as u64;
-        Some(View::of(c.join.chain, fold, c.m.state().commit, total))
+        let sum = |after: u64| -> Option<u64> {
+            let q = "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?";
+            Some(rows(&self.sql, q, vec![crate::host::i(after)]).ok()?.first().and_then(|r| int(&r[0]).ok())? as u64)
+        };
+        let total = sum(fold.archived().map_or(0, |a| a.to.0))?;
+        let unpromoted = sum(fold.promoted().map_or(0, |p| p.to.0))?;
+        Some(View::of(c.join.chain, fold, c.m.state().commit, total, unpromoted))
     }
 
     fn rows(&self, after: Index) -> std::result::Result<log_archive::Rows<'_>, String> {
@@ -203,9 +226,14 @@ impl ArchiveHost for SiteHost<'_> {
         let (chain, _) = self.chain()?;
         let ChainId::Repo(repo) = chain else { return Err("not a repository chain".into()) };
         let body = serde_json::to_vec(&sums.iter().map(|s| s.hex()).collect::<Vec<_>>()).map_err(|e| e.to_string())?;
-        let pack = self.shard("/promote?", body).await?;
-        let ix: PackIndex = serde_json::from_slice(&self.shard("/validate?tipsn=0&", pack.clone()).await?)
-            .map_err(|e| e.to_string())?;
+        // `wait=60`: a shard still catching up answers 503 "warming" after a minute and goes on in the background, so a
+        // cold shard costs a step a minute rather than `STEP_FOR` (the git cache shard's bounded wait).
+        let pack = self.shard("/promote?wait=60&", body).await?;
+        // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
+        // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
+        let ix: PackIndex =
+            serde_json::from_slice(&self.shard("/validate?tipsn=0&via=0&wait=60&", pack.clone()).await?)
+                .map_err(|e| e.to_string())?;
         let raw = self.buckets()?;
         let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let store = git::PackStore { sites: &self.site.sites, buckets: &refs, copies: git::Copies::TwoRegions };

@@ -97,9 +97,10 @@ impl ArchiveHost for Bed {
         let w = self.w.borrow();
         let m = &w.repo.members[l];
         let fold = &m.group_fold().fold;
-        let after = fold.archived().map_or(0, |a| a.to.0);
-        let total = self.stored(l).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum();
-        Some(View::of(ChainId::Repo(REPO), fold, m.state().commit, total))
+        let sum = |after: u64| self.stored(l).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum();
+        let total = sum(fold.archived().map_or(0, |a| a.to.0));
+        let unpromoted = sum(fold.promoted().map_or(0, |p| p.to.0));
+        Some(View::of(ChainId::Repo(REPO), fold, m.state().commit, total, unpromoted))
     }
 
     fn rows(&self, after: Index) -> Result<log_archive::Rows<'_>, String> {
@@ -427,4 +428,58 @@ fn one_tier_s_snapshot_alone_archives_nothing() {
     assert_eq!(b.step(CAP / 5), Step::Idle, "the core tier alone");
     snapshot_of(&b, &[Tier::Metadata]);
     assert!(matches!(b.step(CAP / 5), Step::Promoted { .. }), "both tiers");
+}
+
+/// Promotion runs ahead of archiving: with the log far under its cap, so no range is due, the leader still promotes
+/// once the log above the last `Promoted` passes `cap / PROMOTE_AHEAD`, so a git cache shard's rehydrate, which reads
+/// every entry above the last promotion, never faces more than that and one promotion's range. B0-30 promoted only
+/// what was due to archive, and the tail above the last promotion stood near the whole 2 GiB cap (blockers 9 to 11).
+/// Each promotion takes several archive ranges' worth of log, with no gap.
+#[test]
+fn promotion_runs_ahead_of_archiving_and_bounds_the_tail_a_rehydrate_reads() {
+    let b = Bed::new();
+    let cap = 20 * CAP;
+    let range_max = CAP / 10;
+    let ahead = cap / log_archive::PROMOTE_AHEAD;
+    let tail = |b: &Bed| b.w.borrow().repo.members[b.leader()].group_fold().fold.promoted().map_or(0, |p| p.to.0);
+    let unpromoted = |b: &Bed| {
+        let after = tail(b);
+        b.stored(b.leader()).iter().filter(|e| e.index.0 > after).map(|e| row(e).len() as u64).sum::<u64>()
+    };
+    // Before both tiers have a snapshot nothing runs ahead, as nothing archives.
+    for k in 0..30 {
+        push(&b, k, 1_500);
+    }
+    assert!(unpromoted(&b) > ahead);
+    let s = block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap();
+    assert_eq!(s, Step::Idle, "no snapshot yet");
+    snapshot(&b);
+    let (mut promotions, mut worst, mut largest) = (Vec::new(), 0u64, 0u64);
+    for k in 30..400 {
+        push(&b, k, 300 + (k as usize * 37) % 2_000);
+        for _ in 0..20 {
+            match block_on(log_archive::step(&b, cap, range_max, log_archive::PROMOTE_MAX)).unwrap() {
+                Step::Idle => break,
+                Step::Promoted { from, to, .. } => promotions.push((from.0, to.0)),
+                Step::Archived { .. } => panic!("nothing is due under a cap of {cap}"),
+            }
+        }
+        worst = worst.max(unpromoted(&b));
+        largest = largest.max(b.stored(b.leader()).iter().map(|e| row(e).len() as u64).max().unwrap_or(0));
+    }
+    assert!(b.bytes(b.leader()) < cap, "the log stays under its cap, so every promotion ran ahead");
+    assert!(worst <= ahead + 2 * largest, "the tail above the last promotion reached {worst} bytes against {ahead}");
+    assert!(promotions.len() >= 3, "{promotions:?}");
+    assert_eq!(promotions[0].0, 1);
+    assert!(promotions.windows(2).all(|p| p[1].0 == p[0].1 + 1), "{promotions:?}");
+    // A promotion takes more than one archive range of log when that much is waiting: the first one, which starts
+    // with the whole pre-snapshot backlog above the bound.
+    let all = b.w.borrow().repo.disks[0].log.clone();
+    let first: u64 = all
+        .iter()
+        .filter(|e| e.index.0 >= promotions[0].0 && e.index.0 <= promotions[0].1)
+        .map(|e| row(e).len() as u64)
+        .sum();
+    assert!(first > range_max, "the first promotion took {first} bytes of log, one range is {range_max}");
+    assert!(first <= range_max * log_archive::PROMOTE_RANGES + largest);
 }

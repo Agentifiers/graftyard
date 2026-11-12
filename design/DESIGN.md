@@ -1068,10 +1068,11 @@ pub struct Archived { pub key: R2Key, pub from: Index, pub to: Index, pub from_a
 /// first placement's orphan). When one exists, it writes the missing marker. An object older than REQUEST_RETENTION
 /// with neither is kept and alarmed [measured, `tests/m1/results/m1-wp4.md`, BF-19, `request` table stubbed].
 pub fn sweep(network: NetworkId) -> Result<SweepReport, SweepError>;
-/// Before the leader archives a range, the home shard packs the objects of every pack, inline or stored, the range
-/// names into one self-contained `DurablePack`, and the leader commits `Promoted`; `Archived` follows only once
-/// `Promoted` covers the range, so a range naming no pack gets an empty one. `Compacted.consumed` names promoted packs,
-/// never an inline one. `produced` may repeat later inline packs' objects, which GC drops [inference]. An inline pack
+/// Before the leader archives a range, the home shard packs every pack the range names into one self-contained
+/// `DurablePack`, and the leader commits `Promoted`; `Archived` follows once `Promoted` covers the range, and a range
+/// naming none gets an empty one. It also promotes ahead once the log above the last `Promoted` passes LOG_MAX_BYTES /
+/// 32 [guess], so a rehydrate's tail stays small (`tests/am1/results/b0-30.md`, blockers 9 to 11). `Compacted.consumed`
+/// names promoted packs only; `produced` may repeat later inline objects, which GC drops [inference]. An inline pack
 /// has no `checksum`, so restore verifies it through its entry's digest chain.
 pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* always Stored */ }
 /// A shard rehydrates a network from every stored pack with a marker, minus the packs a `Compacted` consumed, plus the
