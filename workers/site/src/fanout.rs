@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(dump_every(graftyard_types::learner_addr(0)), LEARNER_DUMP_EVERY_MS);
         assert_eq!(dump_every(graftyard_types::learner_addr(15)), LEARNER_DUMP_EVERY_MS);
         assert_eq!(dump_every(graftyard_types::SiteId(2)), DUMP_EVERY_MS);
-        assert!(LEARNER_DUMP_EVERY_MS < DUMP_EVERY_MS);
+        const { assert!(LEARNER_DUMP_EVERY_MS < DUMP_EVERY_MS) };
     }
 
     /// A follower serves by read-index only the reads the design names: whole-tier and merge rows once its metadata

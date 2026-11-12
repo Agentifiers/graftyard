@@ -273,13 +273,15 @@ const DUMPS_MAX: usize = 8;
 /// The state of both tiers a packed dump was built at: each tier's `applied` and row-hash `sum`, and whether the
 /// metadata tier was loaded, which decides whether the dump holds its rows.
 type DumpKey = (u64, [u8; 32], bool, u64, [u8; 32]);
+/// A cached dump's key and its answer bytes (`DUMPS`).
+type Dump = (DumpKey, std::rc::Rc<[u8]>);
 
 thread_local! {
     /// The last packed whole-tier dump per repository (`dump_bytes`), by `DumpKey`, as the answer's serialized bytes,
     /// which every read at that state shares, whichever input granted it. A dump took up to 7.8 s of CPU on a 500-PR
     /// repository, and 200 API reads/s mostly read the same tiers at the same index (`tests/am1/results/
     /// lm1-memory.md`); a copy per input that granted reads was what `HEAVY_READS` bounded.
-    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, (DumpKey, std::rc::Rc<[u8]>)>> =
+    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, Dump>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Packed dumps this isolate built (`/stats` `dumpBuilds`).
     static BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
