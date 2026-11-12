@@ -7,21 +7,19 @@
 //
 // Writers: an untrusted account (a fresh user with no org membership and Read on the public repository, under its
 // own PAT) writes the issues, pull requests, issue comments, reviews, and review comments, so their views must also
-// read `trusted: false`; the admin writes the releases (they need Write), pushes the commits, and records the check
-// runs (as App m3-ci). Issues, pull requests, comments, and reviews go through the edge's GraphQL, releases through
-// `POST releases`, commits through git. The edge serves no REST or GraphQL write of a review comment or a check run,
-// so those two are committed on the repository's group through the edge's test-faults `/_bed/identity` with the
-// writer's own credential
-// (`IssueOp::Comment` on a review line, `IssueOp::RecordCheck`), which `decide` checks as it checks any write.
+// read `trusted: false`; the admin writes the releases (they need Write) and pushes the commits, and App m3-ci records
+// the check runs under its own installation token. Issues, pull requests, comments, and reviews go through the edge's
+// GraphQL; review comments through REST `POST pulls/{n}/comments` (lf4-rest-2); check runs through REST
+// `POST check-runs`; releases through `POST releases`; commits through git. Each write must answer 201 with the
+// object as written, so the run also checks the two REST writes' replies.
 //
 //   node tests/am1/rest/lf4.mjs --repo NAME --chain repo:ID
 // Environment as tests/am1/hosted/lib.mjs. Rows: tests/am1/raw/lf4.jsonl.
 
-import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { Git, OP, accountShard, api, bed, log, loginShard, must, pat, rid, row, state, tokens } from "../hosted/lib.mjs";
+import { Git, OP, accountShard, api, ghs, log, loginShard, must, pat, row, state, tokens } from "../hosted/lib.mjs";
 
 const { values: opt } = parseArgs({ options: { repo: { type: "string" }, chain: { type: "string" } } });
 if (!opt.repo || !opt.chain) throw new Error("usage: lf4.mjs --repo NAME --chain repo:ID");
@@ -51,17 +49,7 @@ await must(`names:${accountShard(uid)}`, { cred: OP, op: { InitPlacement: { owne
 await must(`authz:${uid}`, { cred: OP, op: { Open: { kind: "User", enterprise: null } } }, "AlreadyOpened");
 await must(`identity:${uid}`, { cred: OP, op: { Create: { login: ulogin, kind: "User", created: Date.now() } } }, "AlreadyCreated");
 const untrusted = await pat(uid, `lf4 ${tag}`);
-// The PAT's stored form, for the two member commits: SHA-256 of "graftyard/token/" and its 30-character secret.
-const patHash = [...createHash("sha256").update("graftyard/token/").update(untrusted.slice(4, 34)).digest()];
-const adminAccount = state.admin;
-const adminHash = [...createHash("sha256").update("graftyard/token/").update(admin.slice(4, 34)).digest()];
 row(OUT, { step: "untrusted user", id: uid });
-
-const issueCall = (account, token, op) => ({ issue: { format: [32, 5], op, account, scopes: 1, token, sso: [], request: rid(), render: null } });
-const memberCommit = async (account, token, op) => {
-  const r = await bed({ chain: opt.chain, cmd: issueCall(account, token, op) });
-  return r.outcome?.ok ? "ok" : JSON.stringify(r.outcome ?? r.error).slice(0, 200);
-};
 
 // ---- writes ----
 const repo = await gql(admin, `query { repository(owner: "m3org", name: "${opt.repo}") { id } }`);
@@ -130,24 +118,33 @@ for (const c of HIDDEN) {
     { i: { pullRequestId: hostPr.id, event: "COMMENT", body: text(c) } });
   wrote("review", r.body?.data?.addPullRequestReview ? true : JSON.stringify(r.body).slice(0, 160));
 }
-// Review comments by the untrusted user on a line of the admin's pull request (member commit, its own PAT).
-const hostHead = [...Buffer.from(hostSha, "hex")];
-for (const [i, c] of HIDDEN.entries()) {
-  const at = { commit: hostHead, path: `lf4/${tag}/host.txt`, line: 1, start_line: null, side: "Right" };
-  wrote("review comment", (await memberCommit(uid, patHash, { Comment: { on: { Review: { n: hostPr.number, review: null, at } }, body: text(c), reply_to: null } })) === "ok" || "refused");
+// Review comments by the untrusted user on a line of the admin's pull request: REST, its own PAT. The 201 must be
+// the comment as written, on that line.
+const created = {};
+for (const c of HIDDEN) {
+  const r = await api("POST", `/api/v3/repos/${R}/pulls/${hostPr.number}/comments`, untrusted,
+    { body: text(c), commit_id: hostSha, path: `lf4/${tag}/host.txt`, line: 1, side: "RIGHT" });
+  const ok = r.status === 201 && r.body?.body === text(c) && r.body?.line === 1 && r.body?.user?.id === uid;
+  wrote("review comment", ok || `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+  (created["review comment"] ??= []).push(r.status);
 }
-// Check runs on the commits tip, by App m3-ci, recorded under the admin's PAT (member commit; `RecordCheck` needs Write).
-const runBase = 900000 + (Date.now() % 90000) * 10;
+// Check runs on the commits tip by App m3-ci, under its own installation token: REST `POST check-runs`.
+const ci = await ghs({});
+if (ci.status !== 201) throw new Error(`m3-ci token: ${ci.status}`);
 const runIds = [];
-for (const [i, c] of HIDDEN.entries()) {
-  const id = runBase + i;
-  const op = { RecordCheck: { run: id, suite: runBase, app: state.app, head_sha: [...Buffer.from(tip, "hex")], name: `lf4-${c.toString(16)}`, version: 1,
-    status: "Completed", conclusion: "Success", started: Date.now() - 1000, completed: Date.now(), external_id: null, details_url: null,
-    output: { title: `lf4 ${c.toString(16)}`, summary: text(c), text: null, annotations: [] } } };
-  const r = await memberCommit(adminAccount, adminHash, op);
-  if (r === "ok") runIds.push([c, id]);
-  wrote("check run", r === "ok" || r);
+for (const c of HIDDEN) {
+  const r = await api("POST", `/api/v3/repos/${R}/check-runs`, ci.body.token, { name: `lf4-${c.toString(16)}`, head_sha: tip,
+    conclusion: "success", output: { title: `lf4 ${c.toString(16)}`, summary: text(c) } });
+  const ok = r.status === 201 && r.body?.output?.summary === text(c) && r.body?.status === "completed" && r.body?.head_sha === tip;
+  if (ok) runIds.push([c, r.body.id]);
+  wrote("check run", ok || `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+  (created["check run"] ??= []).push(r.status);
 }
+// The controls on the two writes: a check run under a user's PAT is GHES's 403, and a review comment on an issue 404.
+const userRun = await api("POST", `/api/v3/repos/${R}/check-runs`, admin, { name: "pat", head_sha: tip });
+const onIssue = await api("POST", `/api/v3/repos/${R}/pulls/${issues[0]?.[1] ?? 1}/comments`, untrusted,
+  { body: "x", commit_id: hostSha, path: "a", line: 1 });
+row(OUT, { step: "write controls", userCheckRun: userRun.status, reviewCommentOnIssue: onIssue.status });
 // Releases by the admin.
 const releases = [];
 for (const c of HIDDEN) {
@@ -155,7 +152,7 @@ for (const c of HIDDEN) {
   if (r.status === 201) releases.push([c, r.body.id]);
   wrote("release", r.status === 201 || r.status);
 }
-row(OUT, { step: "writes", writes });
+row(OUT, { step: "writes", writes, created });
 log(`writes ${JSON.stringify(writes)}`);
 
 // ---- reads ----

@@ -135,6 +135,9 @@ async function main() {
   const { log, must, tools } = await import("../hosted/lib.mjs");
   // The install's chain is an org whose operator acts as its site admin; an install that already opened it says so.
   await must(`authz:${INSTALL}`, { cred: { account: null, key: null }, op: { Open: { kind: "Org", enterprise: null } } }, "AlreadyOpened");
+  // The install's admin (m3-admin) is a site admin, an `Admin` of the install org, as tests/m3/hosted/rows.ts makes it:
+  // `/api/graftyard/v1/agents/apps/{id}` needs one. `SetMember` again with the same role commits nothing new.
+  await must(`authz:${INSTALL}`, { cred: { account: null, key: null }, op: { SetMember: { user: state.admin, role: "Admin" } } });
   for (const a of APPS) {
     const der = keyOf(a.slug);
     let app = state.agentApps[a.slug]?.app;

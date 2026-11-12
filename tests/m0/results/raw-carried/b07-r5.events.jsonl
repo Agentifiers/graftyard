@@ -1,0 +1,12 @@
+{"at":1794451671355,"what":"led","byLeader":{"0":104,"1":20,"2":76}}
+{"at":1794451681368,"what":"drain B"}
+{"at":1794451706441,"what":"uploaded B","v":"50c03115-04c3-4cee-92de-2ba0c0d20fcc","old":"7866b0b2-8a5a-4da4-b256-7130996dfd43"}
+{"at":1794451710530,"what":"deployed B at 10%","v":"50c03115-04c3-4cee-92de-2ba0c0d20fcc","old":"7866b0b2-8a5a-4da4-b256-7130996dfd43"}
+{"at":1794451727737,"what":"gray fault set on C","from":1794451731181,"ledOnC":75}
+{"at":1794451734387,"what":"C burning on A and B","a":{"target":2,"calls":273,"failed":84},"b":{"target":2,"calls":56,"failed":9},"sinceGrayMs":3206}
+{"at":1794451734827,"what":"B undrained under the 1% lead limit"}
+{"at":1794451735043,"what":"C drained","detectMs":3646}
+{"at":1794451736937,"what":"led on C at the drain","n":76}
+{"at":1794451772157,"what":"fault off, undrained"}
+{"at":1794451776178,"what":"B back on its old version at 100%","old":"7866b0b2-8a5a-4da4-b256-7130996dfd43"}
+{"at":1794451776196,"what":"result","run":"r5","detectMs":3646,"ledOnCAtDrain":76,"moved":76,"p50":5527,"max":12712,"over20s":0,"active":76,"idle":0,"gateAsWritten":"76 of 76","gate":"76 of 76","writes":11453,"failed":0,"writesAroundGray":6967,"p99":2405,"max_ms":21629,"endByLeader":{"0":200},"polls":5}

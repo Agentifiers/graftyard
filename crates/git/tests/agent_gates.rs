@@ -763,3 +763,56 @@ fn an_agent_may_not_edit_webhooks() {
     assert_eq!(agent_rule(&w.commit(issue(app(CLAUDE), IssueOp::DeleteHook { id }))), Some(AgentRule::Rules));
     assert!(graftyard_git::hooks::hook(&*w.fold().core, id).is_some(), "the agent deleted nothing");
 }
+
+// ---- REST check runs ----
+
+/// `POST /repos/{o}/{r}/check-runs` (lf4-rest-2): an installation token records a check run only as its own App, and
+/// a first version must name a run id no row holds yet, on any head SHA, because the edge mints it.
+#[test]
+fn a_check_run_is_recorded_only_as_its_own_app_and_under_an_unused_id() {
+    let mut w = World::new();
+    w.set("refs/heads/main", oid(20));
+    let check = |a: AppId, run: i64, sha: u32, version: u64| -> IssueOp<graftyard_git::blob::BlobRef> {
+        IssueOp::RecordCheck(CheckRunUpdate {
+            run: CheckRunId(DbId(run)),
+            suite: CheckSuiteId(DbId(run)),
+            app: a,
+            head_sha: oid(sha),
+            name: "ci".into(),
+            version,
+            status: CheckStatus::InProgress,
+            conclusion: None,
+            started: None,
+            completed: None,
+            external_id: None,
+            details_url: None,
+            output: None,
+        })
+    };
+    let refusal = |o: Result<RepoOut, RepoErr>| match o {
+        Err(RepoErr::Issue { err, .. }) => Some(err),
+        Ok(_) => None,
+        Err(e) => panic!("{e:?}"),
+    };
+    assert_eq!(
+        refusal(w.commit(issue(app(PLAIN), check(CLAUDE, 900, 20, 1)))),
+        Some(IssueErr::Invalid("a check run's app is its actor")),
+        "an App may not record a run as another App"
+    );
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 1)))), None, "its own App");
+    assert_eq!(
+        refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 21, 1)))),
+        Some(IssueErr::Exists),
+        "a first version under a taken id, even on another commit"
+    );
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 2)))), None, "an update of the same run");
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 1)))), None, "a late re-delivery of version 1");
+    let mut renamed = check(PLAIN, 900, 20, 1);
+    if let IssueOp::RecordCheck(c) = &mut renamed {
+        c.name = "lint".into();
+    }
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), renamed))), Some(IssueErr::Exists), "another run's id, same commit");
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 901, 21, 1)))), None, "a new id");
+    // A user's command names its App, as before.
+    assert_eq!(refusal(w.commit(issue(user(OWNER), check(CLAUDE, 902, 20, 1)))), None, "a user records any App's run");
+}

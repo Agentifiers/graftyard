@@ -458,8 +458,11 @@ impl<F: Family> Routes<F> {
                 crate::faults::count("severed:in");
                 return Response::error("member severed (injected)", 503);
             }
-            if !observe && crate::faults::site_down(&self.host.env).await {
+            if !observe && let Some(hang) = crate::faults::site_fault(&self.host.env).await {
                 crate::faults::count("site_fault:in");
+                if hang > 0 {
+                    Delay::from(Duration::from_millis(hang)).await;
+                }
                 return Response::error("member class failing (injected site fault)", 503);
             }
         }
