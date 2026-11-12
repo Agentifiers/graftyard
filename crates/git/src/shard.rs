@@ -420,3 +420,28 @@ pub fn evict_plan(repos: &[DiskRepo], disk_bytes: u64, incoming: u64, keep: Netw
     }
     out
 }
+
+/// How long the archive's promotion waits on one site's shard before it tries the next: a shard still catching up
+/// answers 503 `warming` past it and goes on in the background.
+pub const PROMOTE_WAIT_S: u32 = 60;
+
+/// The sites whose shards a promotion tries, in order: `me` (the leader's site, whose shard the alarm calls) first,
+/// then the record's other Full sites in record order. A Witness holds no content, so it has no git cache. A shard
+/// rehydrating after a reset answered every promotion 503 `warming` for 30 minutes and more, and archiving stopped
+/// behind it (`tests/am1/results/hot-shards.md`).
+pub fn promote_sites(record: &graftyard_types::PlacementRecord, me: SiteId) -> Vec<SiteId> {
+    let full = record
+        .sites
+        .iter()
+        .zip(record.name.kinds())
+        .filter(|(_, k)| **k == graftyard_types::MemberKind::Full)
+        .map(|(s, _)| *s);
+    std::iter::once(me).chain(full.filter(|s| *s != me)).collect()
+}
+
+/// Whether a promotion that one shard answered with `status` goes on to the next site's shard: a 422 is the packs'
+/// own answer (a base no ingested pack provides), the same on every shard, so it ends the step; anything else (503
+/// `warming`, a 409 for a pack that shard never ingested, a failed call as 0) is that shard's.
+pub fn promote_moves_on(status: u16) -> bool {
+    status != 422
+}

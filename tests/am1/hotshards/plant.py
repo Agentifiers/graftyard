@@ -24,6 +24,8 @@ PACK_T = ('cargo', ['-p', 'graftyard-git', '--lib'], 'base64')
 EDGE = 'workers/edge/src/lib.rs'
 EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
 EDGE_C = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'cold_shard_is_tried_last')
+SHARD = 'crates/git/src/shard.rs'
+SHARD_T = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_promotion')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -92,6 +94,14 @@ MUTANTS = [
      "    let (warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));",
      "    let (mut warm, cold): (Vec<_>, Vec<_>) = sites.into_iter().partition(|s| !cold(*s));\n    warm.sort();",
      EDGE_C),
+    ('a promotion falls back to a Witness site, which has no git cache', SHARD,
+     '        .filter(|(_, k)| **k == graftyard_types::MemberKind::Full)\n', '', SHARD_T),
+    ('a promotion tries the home site first, not the leader\'s own', SHARD,
+     '    std::iter::once(me).chain(full.filter(|s| *s != me)).collect()',
+     '    let _ = me;\n    std::iter::once(record.home).chain(full.filter(|s| *s != record.home)).collect()', SHARD_T),
+    ('a promotion moves on after the packs\' own 422', SHARD, '    status != 422', '    status != 0', SHARD_T),
+    ('a promotion gives up on its own shard\'s 503 warming', SHARD, '    status != 422',
+     '    status != 422 && status != 503', SHARD_T),
 ]
 
 

@@ -160,28 +160,46 @@ impl SiteHost<'_> {
         Ok((c.join.chain, c.join.record.clone()))
     }
 
-    /// This site's git cache shard of the network, whose catch-up reads the group through the record.
-    async fn shard(&self, path: &str, body: Vec<u8>) -> std::result::Result<Vec<u8>, String> {
-        let (chain, record) = self.chain()?;
-        let ChainId::Repo(repo) = chain else { return Err("not a repository chain".into()) };
-        let me = self.site.id;
-        let region = self.site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+    /// Site `at`'s git cache shard of the network, whose catch-up reads the group through the record: `Err((status,
+    /// body))` for an answer other than 200, status 0 for a failed call.
+    async fn shard(&self, at: SiteId, path: &str, body: Vec<u8>) -> std::result::Result<Vec<u8>, (u16, String)> {
+        let fail = |e: String| (0, e);
+        let (chain, record) = self.chain().map_err(fail)?;
+        let ChainId::Repo(repo) = chain else { return Err(fail("not a repository chain".into())) };
+        let region =
+            self.site.sites.get(at).ok_or_else(|| fail(format!("site {} is not in GRAFTYARD_SITES", at.0)))?.region;
         let stub = self
             .h
             .env
-            .durable_object(&format!("SHARD_{}", me.0))
-            .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint()))
-            .map_err(|e| e.to_string())?;
-        let rec = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+            .durable_object(&format!("SHARD_{}", at.0))
+            .and_then(|ns| ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint()))
+            .map_err(|e| fail(e.to_string()))?;
+        let rec = serde_json::to_string(&record).map_err(|e| fail(e.to_string()))?;
         let url = format!("https://shard{path}repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
-        let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
-        let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
+        let req = Request::new_with_init(&url, &init).map_err(|e| fail(e.to_string()))?;
+        let mut r = stub.fetch_with_request(req).await.map_err(|e| fail(e.to_string()))?;
         if r.status_code() != 200 {
-            return Err(format!("shard {path}: {} {}", r.status_code(), r.text().await.unwrap_or_default()));
+            return Err((
+                r.status_code(),
+                format!("shard {path}: {} {}", r.status_code(), r.text().await.unwrap_or_default()),
+            ));
         }
-        r.bytes().await.map_err(|e| e.to_string())
+        r.bytes().await.map_err(|e| fail(e.to_string()))
+    }
+
+    /// `/promote` and the `/validate` of its pack on one site's shard, the validate on the shard that built the pack.
+    async fn promote_on(&self, at: SiteId, body: &[u8]) -> std::result::Result<(Vec<u8>, PackIndex), (u16, String)> {
+        // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
+        // (`git::promote_sites`).
+        let pack = self.shard(at, &format!("/promote?wait={}&", git::PROMOTE_WAIT_S), body.to_vec()).await?;
+        // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
+        // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
+        // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
+        let path = format!("/validate?tipsn=0&via=0&derived=1&wait={}&", git::PROMOTE_WAIT_S);
+        let ix = serde_json::from_slice(&self.shard(at, &path, pack.clone()).await?).map_err(|e| (0, e.to_string()))?;
+        Ok((pack, ix))
     }
 
     /// The record's sites' buckets.
@@ -226,15 +244,24 @@ impl ArchiveHost for SiteHost<'_> {
         let (chain, _) = self.chain()?;
         let ChainId::Repo(repo) = chain else { return Err("not a repository chain".into()) };
         let body = serde_json::to_vec(&sums.iter().map(|s| s.hex()).collect::<Vec<_>>()).map_err(|e| e.to_string())?;
-        // `wait=60`: a shard still catching up answers 503 "warming" after a minute and goes on in the background, so a
-        // cold shard costs a step a minute rather than `STEP_FOR` (the git cache shard's bounded wait).
-        let pack = self.shard("/promote?wait=60&", body).await?;
-        // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
-        // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
-        // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
-        let ix: PackIndex =
-            serde_json::from_slice(&self.shard("/validate?tipsn=0&via=0&derived=1&wait=60&", pack.clone()).await?)
-                .map_err(|e| e.to_string())?;
+        // This site's shard first, then each other Full site's of the record while the one before answers anything
+        // but a 200 or the pack's 422 (`git::promote_sites`, `git::promote_moves_on`): after a reset this site's shard
+        // rehydrates the tail for half an hour, and every promotion meanwhile answered 503 warming, so archiving
+        // stopped behind it (`tests/am1/results/hot-shards.md`).
+        let (_, record) = self.chain()?;
+        let mut last = String::new();
+        let mut built = None;
+        for at in git::promote_sites(&record, self.site.id) {
+            match self.promote_on(at, &body).await {
+                Ok(r) => {
+                    built = Some(r);
+                    break;
+                }
+                Err((status, e)) if git::promote_moves_on(status) => last = e,
+                Err((_, e)) => return Err(e),
+            }
+        }
+        let (pack, ix) = built.ok_or(last)?;
         let raw = self.buckets()?;
         let refs: Vec<(SiteId, &git::host::R2)> = raw.iter().map(|(s, b)| (*s, b)).collect();
         let store = git::PackStore { sites: &self.site.sites, buckets: &refs, copies: git::Copies::TwoRegions };

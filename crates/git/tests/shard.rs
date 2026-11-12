@@ -235,3 +235,27 @@ fn evict_plan_breaks_ties_by_network_and_counts_the_incoming_rehydrate() {
     // A rehydrate of 750 MiB into a disk holding 900 MiB: everything not kept must go.
     assert_eq!(evict_plan(&tie, disk, 750 << 20, net(6)), [net(4), net(5)]);
 }
+
+/// The archive's promotion tries the leader's own site's shard first, even when the record lists it last or it is not
+/// the home, then the other Full sites in record order, and never a Witness, which has no git cache.
+#[test]
+fn a_promotion_tries_its_own_site_then_the_other_full_sites() {
+    use graftyard_types::{PlacementName, PlacementRecord};
+    let rec = |name, sites: &[u8], home: u8| PlacementRecord {
+        name,
+        sites: sites.iter().map(|&s| SiteId(s)).collect(),
+        home: SiteId(home),
+        generation: 1,
+        moving_from: None,
+        at: Timestamp(1),
+    };
+    let ids = |v: Vec<SiteId>| v.into_iter().map(|s| s.0).collect::<Vec<_>>();
+    assert_eq!(ids(promote_sites(&rec(PlacementName::Tri, &[0, 1, 2], 0), SiteId(2))), [2, 0, 1]);
+    assert_eq!(ids(promote_sites(&rec(PlacementName::Tri, &[0, 1, 2], 0), SiteId(0))), [0, 1, 2]);
+    // Us2w: the third slot is the Witness, site 1 here; a leader on site 4 tries 4 then 3.
+    assert_eq!(ids(promote_sites(&rec(PlacementName::Us2w, &[3, 4, 1], 3), SiteId(4))), [4, 3]);
+    assert_eq!(ids(promote_sites(&rec(PlacementName::Solo, &[5], 5), SiteId(5))), [5]);
+    // A shard's warming, a pack it never ingested, or a failed call moves on; the packs' own 422 does not.
+    assert!(promote_moves_on(503) && promote_moves_on(409) && promote_moves_on(0) && promote_moves_on(500));
+    assert!(!promote_moves_on(422));
+}
