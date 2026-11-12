@@ -2324,6 +2324,34 @@ Branch `learner-dumps` ran journey 9's API reads on `graft-m3c` with 8 learners 
 
 **Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners.
 
+### `m0-carried-3`: F68 closed by a near round-trip bound at placement, 2026-11-12
+
+The operator chose F68's option (a), with (b) investigated, and rejected reading B0-02 per placement (`tests/m0/results/carried-3.md`).
+
+#### A group's home must have a voter within `NEAR_RTT`
+
+**Decision.** `Placement::new` refuses a voter set whose home's nearest other voter measured over `NEAR_RTT` for the home's region: 100 ms for an enam or weur home and 198 ms for an apac home, with no bound for other regions (`PlacementError::NoNearFollower`, appended last). A new group's leader runs `/place` once it leads: if the home is over the bound, it re-places that nearer follower with new generations through the replacement path (`Degraded`, then `Normal`), up to `PLACE_TRIES` (8), and at the cap restores the old member and fails the create with every try's round trips. The daily latency check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower the same way. A move's swap and `graftyard placement set` check without the bound.
+
+**Why.** B0-02's commit p99 follows the leader's round trip to its nearer follower: 0.93 correlation over 35 runs, every run at 100 ms or less passed, and 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]. Durable Object hints place a member in a region, not a city, so a new group's near RTT varied 75 to 144 ms with the same hints. 100 ms is B0-12's median enam to weur pair and 198 ms its median enam to apac pair, the same quantile [measured, `tests/m0/results/b0-12.json`]. The B0-02 rerun on groups created this way passed 15 of 16 runs, at 249 to 540 ms. Every near follower was at 75 to 100 ms, and 5 groups were re-placed in 1 to 4 tries. The one miss, 614 ms, was a single stall on the leader about 20 s in, with the near follower at 97 ms (`tests/m0/results/carried-3.md`).
+
+**Beat.** Reading B0-02 per placement (rejected by the operator). A tighter bound, which costs more tries for no measured gain: no run at 100 ms or less missed. One bound for every region, which an apac home could never meet against enam's 133 ms floor (B0-12's p0).
+
+**Evidence.** `tests/m0/results/carried-3.md`; `crates/types/src/placement.rs`, `new_refuses_a_home_with_no_voter_within_near_rtt`.
+
+**Flip.** Misses that track the near RTT inside the bound, rather than one-off leader stalls, which would argue for a lower bound (90 ms costs about 1.6 times the tries). Or creates that fail at `PLACE_TRIES` often enough to matter, more than about 1 in 100.
+
+#### The per-KB append cost is the request body's transfer
+
+**Decision.** Nothing changes for the about 1 ms per KB an AppendEntries call costs. It is recorded as the binding's transfer of the request body to the follower.
+
+**Why.** Followers now time each `/raft` call: the body's arrival (`req.bytes()`), then decode, step, and the output gate. The work measured 0 ms in every call (the isolate's clock moves only across I/O), and the body's arrival grows with its size, at a median 0.54 ms/KB against 0.76 ms/KB for the whole call over 34 run-peers, with 0.14 ms/KB left for the network and the reply [measured, `tests/m0/results/carried-3.md`, "The per-KB append cost"]. So the cost is not serialization or the SQLite write but the platform moving the body, which the code cannot make cheaper short of sending fewer bytes, such as compressing entries, which B0-02's random-free 1 KB values would flatter and real pack bytes would not.
+
+**Beat.** Compressing AppendEntries bodies, unmeasured on real entries and a wire change. Lowering the body by a cap, which `m0-carried-2` showed does not shorten a round.
+
+**Evidence.** `tests/m0/results/carried-3.md`, "The per-KB append cost" [measured].
+
+**Flip.** A transport whose per-KB cost is measurably lower, or entries that compress well enough to matter at B0-02's rate.
+
 ### `m0-carried-2`: B0-02's tail, 2026-11-12
 
 Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/carried-2.md`).

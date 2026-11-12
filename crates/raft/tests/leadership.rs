@@ -1024,7 +1024,7 @@ fn home_follows_the_config_not_the_bootstrap_record() {
     let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
     let rtt: Vec<(SiteId, Rtt)> =
         [(A, B), (A, C), (B, C)].iter().map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) })).collect();
-    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt };
+    let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
     let rehomed = Placement::new(p.voters().iter().cloned().collect(), Default::default(), B, &checks).unwrap();
     c.on(A, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(rehomed)))).unwrap();
     c.deliver_all();

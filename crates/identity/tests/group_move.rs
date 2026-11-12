@@ -230,7 +230,7 @@ impl G {
     fn perform(&mut self, step: MoveStep, to: &PlacementRecord) {
         let t = table();
         let r = rtt();
-        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+        let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
         match (step, self.cfg()) {
             (MoveStep::Transfer { to }, _) => {
                 let l = self.leader();
@@ -357,7 +357,7 @@ fn a_joint_of_two_placements_differing_by_two_sites_is_refused() {
     let GroupConfig::Normal(p) = g.cfg() else { panic!() };
     let t = table();
     let r = rtt();
-    let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r };
+    let checks = PlacementChecks { sites: &t, separate_accounts: false, rtt: &r, near: &[] };
     let new: arrayvec::ArrayVec<MemberRef, 3> = [(0u8, 0u8), (3, 1), (4, 2)]
         .iter()
         .map(|&(s, slot)| MemberRef::new(CHAIN, SiteId(s), MemberKind::Full, slot, p.next_generation()))
