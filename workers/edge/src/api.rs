@@ -1744,8 +1744,13 @@ mod tests {
     fn the_tier_read_asks_for_packed_rows() {
         let q = super::tier_rows_query(None);
         assert_eq!(q, serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } }));
-        let q = super::tier_rows_query(Some(7));
+        use graftyard_api::hosted::MergeOf;
+        let q = super::tier_rows_query(Some(MergeOf::Id(graftyard_types::DbId(7))));
         assert_eq!(q["q"]["rows"], serde_json::json!({ "merge": 7 }));
+        // REST's merge names the pull request by number, which the member reads apart from an id.
+        let q = super::tier_rows_query(Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3))));
+        assert_eq!(q["q"]["rows"], serde_json::json!({ "mergeN": 3 }));
+        assert_eq!(MergeOf::of_query(&q["q"]["rows"]), Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3))));
     }
 
     /// A read every member shed is 503 with `Retry-After: 1`; any other failed read is 503 with `Retry-After: 5`;
