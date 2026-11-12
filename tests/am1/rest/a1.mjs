@@ -311,6 +311,7 @@ const codes = {};
 const note = (k, ms, code) => { (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1; };
 const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
 const mergeSteps = [];
+const humanInFlight = {};
 
 // Tokens: m3-ci installation tokens, refreshed every 40 min; the admin's PAT for humans and merges.
 let app = null;
@@ -521,7 +522,19 @@ const jobs = [
     const a = pick(agents.filter((x) => x.lease));
     return a ? st(await api("POST", `${V1}/leases/${a.lease}/renew`, app, { ttl_seconds: 600 }, { "x-graftyard-agent-session": a.task })) : "no lease";
   }),
-  every("push:human", plan.human / 2, async () => { const k = Math.floor(Math.random() * 20); const ref = `refs/heads/a1h-${RUN}-${k}`; const [res] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000)); return res; }, 5),
+  // Humans share 20 refs, so two pushes to one ref can race and the later one is `Stale`, as git's own lease is. B0-29's
+  // gate is zero `Stale` on distinct refs: a `stale` whose ref had another human push in flight is `stale:race`.
+  every("push:human", plan.human / 2, async () => {
+    const k = Math.floor(Math.random() * 20);
+    const ref = `refs/heads/a1h-${RUN}-${k}`;
+    humanInFlight[k] = (humanInFlight[k] ?? 0) + 1;
+    let raced = humanInFlight[k] > 1;
+    try {
+      const [res] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000));
+      raced ||= humanInFlight[k] > 1;
+      return res === "stale" && raced ? "stale:race" : res;
+    } finally { humanInFlight[k]--; }
+  }, 5),
   every("side:human", plan.human / 2 + plan.bot, async () => {
     const r = await api("POST", "/api/graphql", admin, { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: "a1 human" } } });
     return r.body?.data?.addComment ? "ok" : `gql ${r.status}`;
