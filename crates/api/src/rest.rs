@@ -403,10 +403,37 @@ pub fn issue_json(r: &Repo<'_>, it: &Item) -> Value {
 
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
 pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
-    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    get_pull_asks(r, n).0
+}
+
+/// `get_pull`, with the test merge its `mergeable` lacks, as GraphQL's single-PR read asks for it
+/// (`crate::gql::test_merge`): the edge sends it to the shard as a GET's (`MergeCause::Get`) after the reply. Until the
+/// merge is recorded the reply keeps the webhook payload's `mergeable: null` and `mergeable_state: "unknown"`, as GHES
+/// 3.22 answers while its background job computes; once it is, `mergeable` is its result and `mergeable_state` the
+/// lower case of GraphQL's `mergeStateStatus` (`crate::gql::merge_state`). `rebaseable` stays null, since no rebase
+/// is tried [unverified: what GHES 3.22 answers for `rebaseable` beside a computed `mergeable`].
+pub fn get_pull_asks(r: &Repo<'_>, n: &str) -> (Reply, crate::gql::MergeAsks) {
+    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return (Reply::not_found(), Default::default()) };
     match r.item(n) {
-        Some(it) if it.is_pull() => Reply::json(200, crate::webhooks::pull_request(r, &it)),
-        _ => Reply::not_found(),
+        Some(it) if it.is_pull() => {
+            let mut asks = crate::gql::MergeAsks::default();
+            let (got, ask) = crate::gql::test_merge(r, &it);
+            if let Some(pair) = ask {
+                asks.single.insert(n, pair);
+            }
+            let mut v = crate::webhooks::pull_request(r, &it);
+            let open = it.pull.as_ref().filter(|(_, h)| matches!(h.state, graftyard_git::issues::PrState::Open { .. }));
+            if let (Some(ok), Some((_, head))) = (got, open) {
+                let state = match head.state {
+                    graftyard_git::issues::PrState::Open { draft: true } => "draft".to_owned(),
+                    _ => crate::gql::merge_state(r, &it, got).to_ascii_lowercase(),
+                };
+                v["mergeable"] = json!(ok);
+                v["mergeable_state"] = json!(state);
+            }
+            (Reply::json(200, v), asks)
+        }
+        _ => (Reply::not_found(), Default::default()),
     }
 }
 
