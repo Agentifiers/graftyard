@@ -73,59 +73,57 @@ fn frame(i: &Incoming<'_>, r: Reply, s: Surface, m: &Meta) -> Result<Response> {
     Ok(resp.with_status(r.status).with_headers(h))
 }
 
-/// Each stage of one request and its own time in ms: `serve` clears the list first, and reads that run at once each
-/// record their own wall (`timed`), so stages may overlap and `total` is the request's. Test installs send it back as
-/// `server-timing`; every install logs it for 1 request in `TIMING_SAMPLE` (Workers Observability), so a latency gate
-/// can say where the time went (`design/DESIGN.md`, "Follower read"). A worker isolate runs one request's future at a
-/// time per `serve` call chain.
-mod timing {
-    use std::cell::RefCell;
-    /// The request's start, the last mark, and each stage with its ms.
-    type Phases = (f64, f64, Vec<(&'static str, f64)>);
-    thread_local! { static PHASES: RefCell<Phases> = RefCell::default(); }
-    pub fn start() {
+/// Each stage of one request and its own time in ms, held in the request's `Ctx` (a Workers isolate serves many
+/// requests at once, so no isolate-wide list can hold them). Reads that run at once each record their own wall
+/// (`timed`), so stages may overlap and `total` is the request's. Test installs send it back as `server-timing`; every
+/// install logs it for 1 request in `TIMING_SAMPLE` (Workers Observability), so a latency gate can say where the time
+/// went (`design/DESIGN.md`, "Follower read").
+#[derive(Default)]
+pub(crate) struct Timing {
+    start: std::cell::Cell<f64>,
+    last: std::cell::Cell<f64>,
+    phases: std::cell::RefCell<Vec<(&'static str, f64)>>,
+}
+
+impl Timing {
+    fn start(&self) {
         let now = js_sys::Date::now();
-        PHASES.with(|p| *p.borrow_mut() = (now, now, Vec::new()));
-    }
-    pub fn now() -> f64 {
-        js_sys::Date::now()
+        self.start.set(now);
+        self.last.set(now);
+        self.phases.borrow_mut().clear();
     }
     /// Closes the phase that ends now.
-    pub fn mark(name: &'static str) {
-        PHASES.with(|p| {
-            let mut p = p.borrow_mut();
-            let now = js_sys::Date::now();
-            let last = p.1;
-            p.2.push((name, now - last));
-            p.1 = now;
-        });
+    pub(crate) fn mark(&self, name: &'static str) {
+        let now = js_sys::Date::now();
+        self.phases.borrow_mut().push((name, now - self.last.get()));
+        self.last.set(now);
     }
-    /// A stage that ran from `since` to now, whatever ran beside it.
-    /// The next `mark` measures from the later of the last mark and now.
-    pub fn add(name: &'static str, since: f64) {
-        PHASES.with(|p| {
-            let mut p = p.borrow_mut();
-            let now = js_sys::Date::now();
-            p.2.push((name, now - since));
-            p.1 = p.1.max(now);
-        });
+    /// A stage that ran from `since` to now, whatever ran beside it; the next `mark` measures from the later of the
+    /// last mark and now.
+    fn add(&self, name: &'static str, since: f64) {
+        let now = js_sys::Date::now();
+        self.phases.borrow_mut().push((name, now - since));
+        self.last.set(self.last.get().max(now));
     }
     /// Each stage and its ms, then `total`.
-    pub fn phases() -> Vec<(&'static str, f64)> {
-        PHASES.with(|p| {
-            let p = p.borrow();
-            let mut out = p.2.clone();
-            out.push(("total", js_sys::Date::now() - p.0));
-            out
-        })
+    fn phases(&self) -> Vec<(&'static str, f64)> {
+        let mut out = self.phases.borrow().clone();
+        out.push(("total", js_sys::Date::now() - self.start.get()));
+        out
     }
     #[cfg(feature = "test-faults")]
-    pub fn header() -> String {
-        phases().iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
+    fn header(&self) -> String {
+        self.phases().iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
     }
+}
+
+/// Test installs: a commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
+/// (`x-graft-shard-timing`).
+mod timing {
+    #[cfg(feature = "test-faults")]
+    use std::cell::RefCell;
     #[cfg(feature = "test-faults")]
     thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
-    /// The commit's hedge steps, sent back as `x-graft-trace`.
     #[cfg(feature = "test-faults")]
     pub fn trace(t: Vec<serde_json::Value>) {
         TRACE.with(|x| *x.borrow_mut() = t);
@@ -134,7 +132,6 @@ mod timing {
     pub fn trace(_: Vec<serde_json::Value>) {}
     #[cfg(feature = "test-faults")]
     thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
-    /// The shard's own timing of its merge plan, sent back as `x-graft-shard-timing`.
     #[cfg(feature = "test-faults")]
     pub fn note(t: String) {
         NOTE.with(|n| *n.borrow_mut() = t);
@@ -149,11 +146,11 @@ mod timing {
     }
 }
 
-/// `f`, with its own wall time recorded as stage `name`.
-pub(crate) async fn timed<F: std::future::Future>(name: &'static str, f: F) -> F::Output {
-    let since = timing::now();
+/// `f`, with its own wall time recorded as stage `name` of `c`'s request.
+pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static str, f: F) -> F::Output {
+    let since = js_sys::Date::now();
     let out = f.await;
-    timing::add(name, since);
+    c.timing.add(name, since);
     out
 }
 
@@ -200,7 +197,7 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     // The colo this edge ran in, so a latency gate can show where the client entered (BM-2's home-site clause).
     #[cfg(feature = "test-faults")]
     let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
-    timing::start();
+    c.timing.start();
     let kind = match &e {
         Endpoint::Graphql => "graphql",
         Endpoint::Rest(p) if p.starts_with("/repos/") => "rest-repo",
@@ -212,12 +209,12 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     };
     if js_sys::Math::random() * TIMING_SAMPLE < 1.0 {
         let stages: serde_json::Map<String, Value> =
-            timing::phases().into_iter().map(|(n, d)| (n.to_owned(), json!(d.round()))).collect();
+            c.timing.phases().into_iter().map(|(n, d)| (n.to_owned(), json!(d.round()))).collect();
         worker::console_log!("{}", json!({ "apiTiming": stages, "kind": kind, "status": r.status }));
     }
     #[cfg(feature = "test-faults")]
     let r = r
-        .with("server-timing", timing::header())
+        .with("server-timing", c.timing.header())
         .with("x-graft-trace", timing::take_trace())
         .with("x-graft-shard-timing", timing::take_note())
         .with("x-graft-colo", colo);
@@ -384,7 +381,7 @@ async fn read_repo(
     };
     let core_only = matches!(rows, Rows::Core);
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
-    let read_authz = timed("authz", async {
+    let read_authz = timed(c, "authz", async {
         match known {
             Some(a) => Some(a),
             None => authz(c, &repo).await,
@@ -406,7 +403,7 @@ async fn read_repo(
             _ => tier_rows(c, &repo, merge).await,
         }
     };
-    let (v, mut authz) = futures_util::future::join(timed("tier", read_rows), read_authz).await;
+    let (v, mut authz) = futures_util::future::join(timed(c, "tier", read_rows), read_authz).await;
     let v = match v? {
         Ok(v) => v,
         Err(r) => return Ok(Err(r)),
@@ -432,7 +429,7 @@ async fn read_repo(
         && c.read_class.get()
         && may_read(c, &repo, &core, authz.as_ref(), viewer) != graftyard_identity::Decision::Allow
     {
-        authz = timed("authz_fresh", crate::authz_read_as(c, repo.owner, &repo.record, false)).await.ok().flatten();
+        authz = timed(c, "authz_fresh", crate::authz_read_as(c, repo.owner, &repo.record, false)).await.ok().flatten();
     }
     if gate == Gate::Readers {
         match may_read(c, &repo, &core, authz.as_ref(), viewer) {
@@ -450,7 +447,7 @@ async fn read_repo(
     let meta = TierRows::store(meta);
     let mut rd = Read { repo, at, core, meta, dir, index: rows.index };
     if merge.is_none() {
-        rd.dir.logins = timed("logins", read_logins(c, &rd)).await;
+        rd.dir.logins = timed(c, "logins", read_logins(c, &rd)).await;
     }
     Ok(Ok(rd))
 }
@@ -966,7 +963,7 @@ async fn merge_plan(
         return Err(format!("{} {text}", r.status_code()));
     }
     let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
-    timing::mark("merge_plan");
+    c.timing.mark("merge_plan");
     #[cfg(feature = "test-faults")]
     if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
         timing::note(t);
@@ -1054,7 +1051,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
-    timing::mark("plan");
+    c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace = std::cell::RefCell::new(Vec::new());
     let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
@@ -1068,7 +1065,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         hooks,
     )
     .await;
-    timing::mark("commit");
+    c.timing.mark("commit");
     timing::trace(trace.into_inner());
     Ok(match r {
         Ok(done) => {
@@ -1205,7 +1202,8 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             }
         }
     };
-    let (who, found) = futures_util::future::join(timed("auth", authenticate(c, req)), timed("resolve", find)).await;
+    let (who, found) =
+        futures_util::future::join(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find)).await;
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd, found) = match found? {
         None => {
@@ -1262,11 +1260,11 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     };
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
-        let rendered = timing::now();
+        let rendered = js_sys::Date::now();
         let (v, asks) = graphql::query_asks(&gq, Some(&r));
         if !rd.dir.picks.missed() {
             ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
-            timing::add("render", rendered);
+            c.timing.add("render", rendered);
             return Ok(Reply::json(200, v));
         }
         // The render asked for a selection the member did not make (a member of another release): both whole tiers.
@@ -1419,7 +1417,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             _ => None,
         }
     };
-    let (who, found) = futures_util::future::join(timed("auth", authenticate(c, req)), timed("resolve", find)).await;
+    let (who, found) =
+        futures_util::future::join(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find)).await;
     let who = who?;
     let found = found.transpose()?;
     // A credential the edge refuses (revoked, lapsed, unknown) is 401, as on GitHub, not an anonymous caller whom the
@@ -1742,7 +1741,7 @@ async fn rest_narrow(
         rd.dir.install = crate::install_authz(c).await;
     }
     let r = rd.view(host);
-    let rendered = timing::now();
+    let rendered = js_sys::Date::now();
     let reply = match tail {
         ["commits", reference] => match rest::resolve(&r, reference) {
             Some(sha) => match commit_object(c, &rd.repo, sha).await {
@@ -1758,7 +1757,7 @@ async fn rest_narrow(
         },
     };
     let reply = graftyard_api::trust::layer(accept, p, &r, reply);
-    timing::add("render", rendered);
+    c.timing.add("render", rendered);
     Ok((!rd.dir.picks.missed()).then_some(reply))
 }
 

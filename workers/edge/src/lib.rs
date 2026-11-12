@@ -814,6 +814,8 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// This request's stages, for `server-timing` and the sampled log (`api::Timing`).
+    timing: api::Timing,
 }
 
 impl Ctx<'_> {
@@ -2024,6 +2026,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
         #[cfg(feature = "test-faults")]
