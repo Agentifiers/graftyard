@@ -1,0 +1,7 @@
+Local rehydrate-ingest benchmarks for hot-shards-2 (tests/am1/results/hot-shards-2.md), one CPU via taskset. Each
+script works in $BENCH (default /tmp/rhbench). Make packs first:
+  node gen.mjs $BENCH/packs 600 500000      # 600 packs of one ~500 KB blob each, like the hot-a seed
+  node gen.mjs $BENCH/small9 9000 20000     # 9,000 packs of ~20 KB, journey 9's small pushes
+Then: bench.sh (per-pack options), growth9.sh (per-pack time as packs pile up; MIDX=k writes a multi-pack-index every k,
+MIDXFLAGS=--incremental, STRICT=0), batch.sh (DIR=, BATCH=: concatenated batches via concat.py), geo.sh. Logs from the
+runs reported are in tests/am1/raw/hotshards2/.

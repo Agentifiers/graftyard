@@ -1076,7 +1076,8 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each member chain's entries name after its last `Promoted`, read a page at a time with the next read meanwhile, so it
 /// holds two pages. It saves its place per page with its disk id, so a cut-off run resumes, never anew (B0-30, 9 to 11).
-/// Pushed packs are thin, so ingest uses `--fix-thin` [inference]. A promotion names the prior one's objects: all load first (hot-shards).
+/// Pushed packs are thin, so ingest uses `--fix-thin`. A promotion names the prior one's objects: all load first. A
+/// multi-pack-index every 50 ingests keeps per-pack ingest flat as packs pile up [measured, `hot-shards-2`].
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
@@ -1162,8 +1163,8 @@ pub const HOT_POOL: u16 = 7;
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
-/// gets `warming`, as a cold pool shard's forwarded push does at once. Pushes and fetches wait 15 s on the home shard,
-/// then 60 s on each other Full site's [measured, `hot-shards`]. Only `rehydrate` reads all refs [measured, wire-fix].
+/// gets `warming`; a rehydrating shard says so at once to a caller with another shard next. Pushes, fetches and the
+/// archive's promotion try the home or own site, then other Full sites [measured, `hot-shards`]. Only `rehydrate` reads all refs.
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
