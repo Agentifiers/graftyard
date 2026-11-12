@@ -1244,6 +1244,14 @@ impl<F: Family> Routes<F> {
                 "waitedReads": s.waited_reads,
                 "dumpBuilds": crate::family::dump_builds(),
                 "testMerges": { "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed },
+                // Round 7's memory instruments: the isolate's wasm memory (it only grows), the leader's queued
+                // commands and agent bytes, and the commands this host holds a copy of until they resolve.
+                "wasmMemMb": crate::load::wasm_mem_mb(),
+                "admission": self.host.core.borrow().as_ref().and_then(|c| c.m.admission()).map(|a| json!({
+                    "queued": a.queued, "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot,
+                    "pressure": a.pressure,
+                })),
+                "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
             });
             if reset {
                 s.reset();

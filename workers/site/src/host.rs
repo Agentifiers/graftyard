@@ -513,7 +513,7 @@ pub struct Core<F: Family> {
     waiters: HashMap<Ticket, Vec<oneshot::Sender<Outcome<F>>>>,
     /// The request id, admission time, and command of each ticket this boot admitted, for kills, latency, and the
     /// id-block lease loop's re-send.
-    admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
+    pub admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
     reads: HashMap<ReadId, (Value, oneshot::Sender<ReadResult>)>,
     #[cfg(feature = "test-faults")]
     pub kills: HashMap<RequestId, (Kill, u64)>,
