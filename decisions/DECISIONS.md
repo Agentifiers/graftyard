@@ -2428,7 +2428,7 @@ Branch `merge-budget-2` closed A28, A29 and A30 (`tests/am1/results/merge-budget
 
 #### A30 closes: single-PR GETs compute through the shard, and Actions dispatch has its hook
 
-**Decision.** After it answers a GraphQL read, the edge asks the leader site's shard of the network for the merges the read's `mergeable` or `mergeStateStatus` lacked (`graftyard_api::gql::MergeAsks`, `workers/edge/src/api.rs`, `ask_merges`), in `wait_until`, so the reply never waits. A single-PR read by a writer or an App token goes to `POST /demand?cause=get` with the (base tip, head) its merge lacks. There the shard counts the GET, coalesces it per PR for `GET_COALESCE_MS`, admits it under the budget with its reserve, computes it in its turn, and commits it as a `PrSync` with no cursor and no head moves (`graftyard_git::prsync::on_demand`), whose request id is its content's. The read itself answers `UNKNOWN`, as GHES 3.22 does while its background job computes, and the next poll reads the merge. Another reader's single-PR read is counted as a list's. `crate::prsync::demand` (`workers/site/src/prsync.rs`) is the hook M4's `ActionsTrigger` calls with `MergeCause::Dispatch`: it reads the PR fresh and sends the same `/demand`. REST `GET pulls/{n}` keeps `mergeable: null` and does not ask, because its renderer, shared with webhooks, never reads the merge [inference: a REST poller sees null either way].
+**Decision.** After it answers a GraphQL read, the edge asks the leader site's shard of the network for the merges the read's `mergeable` or `mergeStateStatus` lacked (`graftyard_api::gql::MergeAsks`, `workers/edge/src/api.rs`, `ask_merges`), in `wait_until`, so the reply never waits. A single-PR read by a writer or an App token goes to `POST /demand?cause=get` with the (base tip, head) its merge lacks. There the shard counts the GET, coalesces it per PR for `GET_COALESCE_MS`, admits it under the budget with its reserve, computes it in its turn, and commits it as a `PrSync` with no cursor and no head moves (`graftyard_git::prsync::on_demand`), whose request id is its content's. The read itself answers `UNKNOWN`, as GHES 3.22 does while its background job computes, and the next poll reads the merge. Another reader's single-PR read is counted as a list's. `crate::prsync::demand` (`workers/site/src/prsync.rs`) is the hook M4's `ActionsTrigger` calls with `MergeCause::Dispatch`: it reads the PR fresh and sends the same `/demand`. REST `GET pulls/{n}` keeps `mergeable: null` and does not ask, because its renderer, shared with webhooks, never reads the merge [inference: a REST poller sees null either way]. (Reversed by `merge-budget-3`: REST asks too.)
 
 **Why.** DESIGN names three causes, and only the head push was wired, so a polled PR past the budget stayed null until its next push.
 
@@ -2449,6 +2449,46 @@ Branch `merge-budget-2` closed A28, A29 and A30 (`tests/am1/results/merge-budget
 **Evidence.** As for A30, and the hosted run's `listAsked`.
 
 **Flip.** A list read rate whose asks load the shard object, which would sample them.
+
+### `merge-budget-3`: REST polls compute, counts outlive the shard object, and `PrSync`'s first attempt gets its own invocation, 2026-11-12
+
+Branch `merge-budget-3` closed the five items the lead left after `merge-budget-2` (`tests/am1/results/merge-budget-3.md`).
+
+#### REST `GET pulls/{n}` asks for its merge as GraphQL's single-PR read does
+
+**Decision.** `rest::get_pull_asks` returns the (base tip, head) a pull request's merge lacks from the same `gql::test_merge` GraphQL's `Node` reads, and the edge sends it with `ask_merges` after the reply: a writer's or an App's poll as `/demand?cause=get`, anyone else's as a list's count. Until the merge is recorded the reply keeps GHES 3.22's `mergeable: null` and `mergeable_state: "unknown"`; once it is, `mergeable` is the result and `mergeable_state` the lower case of `mergeStateStatus` (`gql::merge_state`), and a base that moves past the record makes both null and unknown again. `rebaseable` stays null.
+
+**Why.** Agents and CI poll REST `pulls/{n}` far more than GraphQL, so with REST silent a polled PR past the budget stayed null until its next push, and a computed merge was never shown to a REST poller. That met A30's flip.
+
+**Beat.** Counting REST polls without computing, which leaves the most common poller null forever. Rendering the merge in the webhook payload too, which GHES 3.22 sends as null [unverified: a GHES 3.22 webhook that carries a computed `mergeable`].
+
+**Evidence.** `a_rest_pull_read_asks_for_the_merge_graphql_asks_for_and_keeps_mergeable_null`; planted bugs in `tests/budget/plant.py`; the hosted run's `restPollAnswers` and `getAsked`.
+
+**Flip.** A GHES 3.22 capture whose `pulls/{n}` answers a different `mergeable_state` for a computed merge, such as `blocked` where GraphQL says `BLOCKED` but REST says `clean`.
+
+#### The counts the gate reads are stored on the shard
+
+**Decision.** The shard stores each network's `BudgetStats` under `budget:<network>` after every ask, coalesce, and merge result, and restores them before it serves `/status`, `/ask`, `/demand`, or a budget `/merge` (`MergeBudget::restored`, `Budgets::restore`). A restore never overwrites a network the object already budgets. The bucket itself is not stored: a restarted object starts it full, since it holds one second of refill and the object resets only after about 90 s idle.
+
+**Why.** The shard object resets about 90 s after its last request, and with it the counts, so B0-35's row read them from Workers Logs.
+
+**Beat.** Reporting the counts to the leader before the reset, which needs a write the object cannot schedule once it is idle. Logs alone, which the lead ruled out.
+
+**Evidence.** `a_restarted_shard_goes_on_from_its_stored_counts_and_counts_merges_in_line`. Hosted, repo 65553's counts (973 computed, 1,154 GET and 1,846 list asks) read the same 127 s after the last request and after a site day reset every object, with `vcpu` taken from the new `SHARD_INSTANCE` [measured, `tests/am1/results/merge-budget-3.md`].
+
+**Flip.** A store per ask that loads the shard object at journey 9's GET rate, which would batch the writes per second. Or a shard object reset while it is busy, which would grant a full bucket mid-load and need the bucket stored too.
+
+#### `PrSync`'s first attempt runs in a new invocation through the site's own service binding
+
+**Decision.** The leader's alarm sends each `PrSync` batch's first attempt to `POST /prsync/first` on its own site script through the `SITE` service binding, which runs the handler under `wait_until` in a new invocation. Re-sends still go through the queue. Under `test-faults`, `/bench_seed {"prsyncFirstFor": ms}` cuts the first attempt's deadline, so its abandoned merges and the queue's re-sends overlap.
+
+**Why.** Run in the leader's isolate, every call the handler made was charged to the member's newest request. Each test merge's shard read back from the member (`/read`, `/entries`), so each merge made that request one hop deeper, and a cold shard's catch-up failed its eighth `/merge` with "Subrequest depth limit exceeded" (traces 62b928c0, 77603e9e, b3ec102d). A probe Worker reproduced it: a Durable Object looping cross-region calls that call back failed at the eighth in 3 of 3 runs, and the same loop through a self service binding made 20 in 3 of 3.
+
+**Beat.** Sending first attempts through the queue, which `2026-11-05` rejected for its latency. Reusing one stub per batch, which passed the probe but depends on how the runtime picks a request to charge.
+
+**Evidence.** The traces and probe above, and two hosted runs on cold shards with 0 depth errors where merge-budget-2's logged 16 and 4 [measured, `tests/am1/results/merge-budget-3.md`]. A service binding call is not billed as a request [doc, Workers pricing], so cost does not change.
+
+**Flip.** A runtime that charges a Durable Object's calls to the request that started them, which would let the handler run in the isolate again.
 
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 

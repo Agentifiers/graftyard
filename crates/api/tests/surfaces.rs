@@ -1017,6 +1017,80 @@ fn a_read_asks_for_the_merge_its_mergeable_lacks_and_a_list_only_counts() {
     assert_eq!(run(&c, single).single.get(&IssueNumber(2)), Some(&(oid(5), oid(2))));
 }
 
+/// merge-budget-3 item 1: REST `GET pulls/{n}` asks for the same test merge GraphQL's single-PR read asks for, at the
+/// same (base tip, head), and only when that read would: a PR with its current merge recorded, an issue, an unknown
+/// number, or a PR from another repository asks nothing. Until the merge is recorded the reply is GHES 3.22's
+/// `mergeable` null and `mergeable_state` "unknown"; once it is, `mergeable` is its result and `mergeable_state` the
+/// lower case of GraphQL's `mergeStateStatus` (blocked by an unmet required check), and a base that moves past the
+/// record makes it null again.
+#[test]
+fn a_rest_pull_read_asks_for_the_merge_graphql_asks_for_and_keeps_mergeable_null() {
+    use graftyard_api::graphql::query_asks;
+    use graftyard_api::rest::{get_pull, get_pull_asks};
+    use graftyard_git::issues::MergeabilityResult;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let gql = |c: &Chain| {
+        let r = c.repo(0, &h, &dir);
+        let q = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeable } } }"#;
+        query_asks(&Request::parse(q, None, None).unwrap(), Some(&r)).1
+    };
+    let rest = |c: &Chain, n: &str| {
+        let r = c.repo(0, &h, &dir);
+        let (reply, asks) = get_pull_asks(&r, n);
+        assert_eq!(reply.value(), get_pull(&r, n).value(), "the same bytes as before");
+        (reply, asks)
+    };
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!(asks, gql(&c), "the merge GraphQL asks for");
+    assert_eq!(asks.single.into_iter().collect::<Vec<_>>(), vec![(IssueNumber(2), (oid(1), oid(2)))], "base tip, head");
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(null), &json!("unknown")));
+    assert_eq!(rest(&c, "1").1, Default::default(), "an issue asks nothing");
+    assert_eq!(rest(&c, "99").1, Default::default());
+    // The base moves: the ask names the new tip.
+    c.push("refs/heads/main", oid(5));
+    assert_eq!(rest(&c, "2").1.single.get(&IssueNumber(2)), Some(&(oid(5), oid(2))));
+    let state = |c: &Chain| {
+        let r = c.repo(0, &h, &dir);
+        let q = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeStateStatus } } }"#;
+        let v = graftyard_api::graphql::query_asks(&Request::parse(q, None, None).unwrap(), Some(&r)).0;
+        v["data"]["repository"]["pullRequest"]["mergeStateStatus"].as_str().unwrap().to_ascii_lowercase()
+    };
+    let merged = |c: &mut Chain, base: u8, result: MergeabilityResult| {
+        let ev = graftyard_git::repo::RepoEvent::TestMerged {
+            n: IssueNumber(2),
+            base: oid(base),
+            head: oid(2),
+            result,
+            pack: None,
+        };
+        c.entry(EntryBody::Events(vec![ev]), TierSet::CORE);
+    };
+    // Its current merge recorded: nothing to ask, and REST answers the result as GraphQL does.
+    merged(&mut c, 5, MergeabilityResult::Clean { merge: oid(9) });
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!(asks, Default::default());
+    assert_eq!(asks, gql(&c));
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(true), &json!("clean")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // The required `ci` re-run, in progress: still mergeable, but blocked, as GraphQL says.
+    c.commit(WRITER, run(30, 2, "ci", None)).unwrap();
+    let reply = rest(&c, "2").0;
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(true), &json!("blocked")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // A conflict at a newer base tip: false and dirty.
+    c.push("refs/heads/main", oid(6));
+    merged(&mut c, 6, MergeabilityResult::Conflict { paths: Default::default() });
+    let reply = rest(&c, "2").0;
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(false), &json!("dirty")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // The base moves past the record: null again, and the ask names the new tip.
+    c.push("refs/heads/main", oid(7));
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(null), &json!("unknown")));
+    assert_eq!(asks.single.get(&IssueNumber(2)), Some(&(oid(7), oid(2))));
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.
