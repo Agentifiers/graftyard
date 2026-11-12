@@ -1087,3 +1087,24 @@ clippy, wasm32 clippy (site, edge, ops; with and without `test-faults`), `cargo 
 
 Next: decide whether a follower's late-but-answered append should count against `STEP_DOWN` (a `crates/raft`
 change: design first, then the sweep and Porcupine), then site day, smokes, and the rows.
+
+### Round 8b: smokes m17 and a correction
+
+Site day m17 from `c756014d` (main 4265f3d merged: `NEAR_RTT` keeps the nearest try, member calls stream bodies),
+image `57ceedbb`, edge `70832204`.
+
+- **m17 s250**: no run. The create of `fm17s250` (131283) landed, its answer was lost, and `lib.mjs`'s re-send got
+  422 `name already exists`; `mkrepos.mjs` now reads the repository then (`a8d10cee`).
+- **m17 s500 (131284, 180 s, 8 learners, k 4)**: leader held at term 2, 107 req/s, 0 feed polls on it; commit
+  p50/p99 495/7,485 ms (queue p99 7,144, round p99 507, confirm p50/p99 37/121, `deps:tokens` p99 575); 722 of 736
+  agent pushes ok (12 client fetch failures, 2 × 503 `release: not leader`); merge:only p99 6.3 s with `resolve` up to
+  4.9 s of it; human push 69 ok, 2 `stale`, 5 `stale:race`; most side and read rows' p99 13 to 41 s. 3 `STEP_DOWN`s:
+  `tokens:2490` f0 (3 and 6 failed of 19 and 18 calls), `names:708` f0, and `names:708` f2 held. Leader confirm p99
+  121 ms against 89 ms in m16c before streamed bodies, sent to m0-carried-5 (one smoke each, not an A/B).
+
+**Correction to section 15.** The flat 3,101 to 3,103 ms `/raft` walls at about 10 ms CPU on followers are not
+stalls or holds: a follower replies at once, and the 100 ms ticker each input starts (`Host::kick`, `ACTIVE_FOR_MS`
+3,000 ms, exiting on the 31st tick) keeps the invocation open after the reply, which Workers Logs counts as wall time
+[inference from code, `workers/site/src/host.rs`; workerd's actor timers hold the request's drain]. So those walls do
+not show why identity leaders' calls miss `CALL_DEADLINE`. `tests/fanout/idstats.mjs` now saves each identity
+member's `/stats` peer calls after every smoke (each failed call's kind, size and time on the leader's side).
