@@ -427,9 +427,11 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     // find the last `Promoted` past where its tail got. Its tail then starts past the new promotion, whose pack the
     // marked phase never loaded: every later pack thin against the entries in between failed "have bases no pack
     // provides" (`tests/am1/results/hot-shards-2.md`). The marked phase runs again; `have` skips what the disk holds.
-    let gap = last.iter().any(|(c, p)| {
-        let through = state.loaded.iter().find(|(x, _)| x == c).map_or(Index(1), |(_, i)| *i);
-        tail_start(p.as_ref()) > through.max(Index(state.tail.at(*c).0 + 1))
+    // A place an older release saved records nothing loaded, and its tail cursor may already sit past entries it
+    // skipped that way, so it loads the marked phase again too.
+    let gap = last.iter().any(|(c, p)| match state.loaded.iter().find(|(x, _)| x == c) {
+        Some((_, through)) => tail_start(p.as_ref()) > (*through).max(Index(state.tail.at(*c).0 + 1)),
+        None => true,
     });
     if state.marked && gap {
         state.marked = false;

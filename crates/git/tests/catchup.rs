@@ -526,6 +526,28 @@ fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
     }
 }
 
+/// A place saved by a release that skipped that way records nothing loaded and a tail cursor past entries the disk
+/// never ingested (site a's shard on graft-m3c resumed at 16,600 with 6,171 onwards missing). A resumed run loads the
+/// marked phase again, which brings every promotion still in the log, and the disk serves the head.
+#[test]
+fn a_rehydrate_resumed_from_an_older_place_loads_the_marked_phase_again() {
+    let b = bed(400, 1_000, 9);
+    b.promote(100);
+    b.disk.cut_after.set(Some(40));
+    assert!(b.run().is_err());
+    let (disk, mut s) = b.store.rehydrating.borrow().clone().expect("a saved place");
+    let got = s.tail.at(CHAIN).0;
+    b.promote_range(101, got + 150);
+    // The older release resumed at the new tail start and saved its tail past the entries it skipped.
+    s.tail.advance(CHAIN, Index(got + 150));
+    s.loaded.clear();
+    *b.store.rehydrating.borrow_mut() = Some((disk, s));
+    b.disk.cut_after.set(None);
+    b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    assert_eq!(b.disk.inits.get(), 1, "the repository was started again");
+    b.assert_serves_head();
+}
+
 /// A rehydrate reads only the tail above the last `Promoted`: the promoted pack brings everything below it.
 #[test]
 fn a_rehydrate_reads_the_log_only_above_the_last_promoted() {

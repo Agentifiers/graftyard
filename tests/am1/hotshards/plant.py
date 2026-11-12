@@ -125,6 +125,8 @@ MUTANTS = [
      'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
     ('a resumed rehydrate never loads a promotion recorded after its marked phase', CU,
      '    if state.marked && gap {', '    if false && gap {', CATCHUP),
+    ('a place an older release saved is trusted to have loaded up to its tail cursor', CU,
+     '        None => true,', '        None => tail_start(p.as_ref()) > Index(state.tail.at(*c).0 + 1),', CATCHUP),
     ('ingest never writes a multi-pack-index', GO, '\tmidxAfterIngest(net, rp)\n', '', GOMIDX),
     ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
      '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
