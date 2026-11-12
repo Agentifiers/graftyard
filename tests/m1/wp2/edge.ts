@@ -401,7 +401,12 @@ export default {
         case "/audit": return json(await e.all(`/audit?prefix=${encodeURIComponent(url.searchParams.get("prefix") ?? "")}`, 20_000));
         case "/log": return json(await e.all(`/log?from=${url.searchParams.get("from") ?? 1}&n=${url.searchParams.get("n") ?? 500}`, 20_000));
         case "/faults": return json(await e.all("/faults", 20_000));
-        case "/stats": await e.learnVoters(); return json(await e.all(`/stats${body.reset ? "?reset=1" : ""}`, 20_000));
+        case "/stats": {
+          await e.learnVoters();
+          // B0-02's A/B (`tests/m0/results/carried-5.md`): `body` "array" or "stream" sets how each member sends calls.
+          const q = [body.reset ? "reset=1" : "", body.body ? `body=${body.body}` : ""].filter(Boolean).join("&");
+          return json(await e.all(`/stats${q ? `?${q}` : ""}`, 20_000));
+        }
         case "/bf12": return json({ colo, kills: await bf12(e, body.key, body.from ?? 0, body.plan ?? [{ mode: "after_quorum" }]) });
         case "/bf13": return json({ colo, ...(await bf13(e, body.key, body.client0 ?? 0, body.mode ?? "before_commit", body.down_ms ?? 0)) });
         case "/bench": return json({ colo, ...(await bench(e, body.n ?? 100, body.concurrency ?? 5, body.ratePerWorker ?? 0, body.bytes ?? 1024)) });

@@ -599,7 +599,15 @@ impl<F: Family> Routes<F> {
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX))?;
                 self.reply(json!({ "entries": e }))
             }
-            (Method::Get, "/stats") => self.stats(crate::registry::query(&url, "reset").is_ok()),
+            (Method::Get, "/stats") => {
+                // Test installs, B0-02's A/B: `body=array` or `body=stream` sets how this member's calls send their
+                // body until it changes or the object resets (`Host::array_body`).
+                #[cfg(feature = "test-faults")]
+                if let Ok(b) = crate::registry::query(&url, "body") {
+                    self.host.array_body.set(b == "array");
+                }
+                self.stats(crate::registry::query(&url, "reset").is_ok())
+            }
             (Method::Post, p) if F::route_paths().contains(&p) => {
                 let body: Value = req.json().await?;
                 let path = p.to_owned();
@@ -1280,6 +1288,10 @@ impl<F: Family> Routes<F> {
         v["waitedReads"] = json!(s.waited_reads);
         v["raftIn"] = json!(s.raft_in);
         v["placedOverNear"] = json!(s.placed_over_near);
+        #[cfg(feature = "test-faults")]
+        {
+            v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
+        }
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
             s.commit_ms.clear();
