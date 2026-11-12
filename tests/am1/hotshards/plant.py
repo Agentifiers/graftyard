@@ -26,6 +26,8 @@ EDGE_T = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'validate_falls_back')
 EDGE_C = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'cold_shard_is_tried_last')
 SHARD = 'crates/git/src/shard.rs'
 SHARD_T = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_promotion')
+SHARD_W = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_warming')
+EDGE_N = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'every_shard_try')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -102,6 +104,17 @@ MUTANTS = [
     ('a promotion moves on after the packs\' own 422', SHARD, '    status != 422', '    status != 0', SHARD_T),
     ('a promotion gives up on its own shard\'s 503 warming', SHARD, '    status != 422',
      '    status != 422 && status != 503', SHARD_T),
+    ('a rehydrating shard answers warming at once even to a caller\'s last try', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    pool_cold || rehydrating', SHARD_W),
+    ('a shard answers warming at once to any caller with somewhere else to go, rehydrating or not', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    pool_cold || follows', SHARD_W),
+    ('a cold pool shard waits on a forwarded push', SHARD,
+     '    pool_cold || (follows && rehydrating)', '    follows && rehydrating', SHARD_W),
+    ('the edge\'s last shard try also says another follows', EDGE,
+     '    let next = if i + 1 < n { "&next=1" } else { "" };', '    let next = "&next=1";', EDGE_N),
+    ('the edge\'s home try waits as long as the others', EDGE,
+     '    let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };\n    let next',
+     '    let wait = VALIDATE_WAIT_OTHER_S;\n    let next', EDGE_N),
 ]
 
 

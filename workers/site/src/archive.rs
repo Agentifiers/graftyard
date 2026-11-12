@@ -190,10 +190,17 @@ impl SiteHost<'_> {
     }
 
     /// `/promote` and the `/validate` of its pack on one site's shard, the validate on the shard that built the pack.
-    async fn promote_on(&self, at: SiteId, body: &[u8]) -> std::result::Result<(Vec<u8>, PackIndex), (u16, String)> {
+    /// `next`: another site's shard follows, so a shard that is rehydrating answers 503 `warming` at once.
+    async fn promote_on(
+        &self,
+        at: SiteId,
+        body: &[u8],
+        next: bool,
+    ) -> std::result::Result<(Vec<u8>, PackIndex), (u16, String)> {
         // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
         // (`git::promote_sites`).
-        let pack = self.shard(at, &format!("/promote?wait={}&", git::PROMOTE_WAIT_S), body.to_vec()).await?;
+        let path = format!("/promote?wait={}&{}", git::PROMOTE_WAIT_S, if next { "next=1&" } else { "" });
+        let pack = self.shard(at, &path, body.to_vec()).await?;
         // `via=0`: the shard that built the pack validates it. Through `fanout` it went to a pool shard, whose
         // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
         // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
@@ -251,8 +258,9 @@ impl ArchiveHost for SiteHost<'_> {
         let (_, record) = self.chain()?;
         let mut last = String::new();
         let mut built = None;
-        for at in git::promote_sites(&record, self.site.id) {
-            match self.promote_on(at, &body).await {
+        let sites = git::promote_sites(&record, self.site.id);
+        for (i, at) in sites.iter().copied().enumerate() {
+            match self.promote_on(at, &body, i + 1 < sites.len()).await {
                 Ok(r) => {
                     built = Some(r);
                     break;

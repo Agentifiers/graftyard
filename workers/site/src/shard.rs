@@ -14,8 +14,9 @@
 //! caller (`tests/am1/results/b0-30.md`, "Blocked on", 9 to 11). So a catch-up runs inside the object, not inside the
 //! call that started it: it goes on after its caller stops waiting, saving every page, and the shard's alarm restarts
 //! one an isolate reset cut off. A caller that passes `wait=<s>` waits at most that long and is answered 503
-//! `{"warming": true}` after it; a pool shard asked to validate a push while it has no cursor answers that at once, and
-//! the first shard validates the push itself.
+//! `{"warming": true}` after it. A caller with another shard to try (`next=1`) gets that at once while a rehydrate runs
+//! here, and so does a pool shard asked to validate a push while it has no cursor; the first shard validates the push
+//! itself.
 
 use std::collections::BTreeSet;
 
@@ -459,16 +460,22 @@ impl DurableObject for GitShard {
             record: log.record.clone(),
         };
         let caught_up = || jobs.wait(wait);
+        // A rehydrate here takes tens of minutes on a hot group, so a caller with another site's shard to try next
+        // (`next=1`) is answered 503 `warming` at once, whichever isolate it comes from, rather than waiting out its
+        // `wait`. A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk answers that too: a
+        // rehydrate of a hot group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"), and the
+        // first shard validates the push itself. Either way the catch-up goes on in the background.
+        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote") {
+            let follows = q(&url, "next").is_some();
+            let rehydrating = follows && host.rehydrating(net).await;
+            let pool_cold = path == "/validate" && q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false);
+            if graftyard_git::warming_now(follows, rehydrating, pool_cold) {
+                jobs.start();
+                return warming();
+            }
+        }
         match path.as_str() {
             "/validate" => {
-                // A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk: a rehydrate of a hot
-                // group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"). It warms in the
-                // background and the first shard validates this push itself. Other `via` callers, such as the
-                // archive's promotion validate, wait as any caller does.
-                if q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false) {
-                    jobs.start();
-                    return warming();
-                }
                 if let Err(r) = caught_up().await {
                     return r;
                 }

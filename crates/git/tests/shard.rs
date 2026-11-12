@@ -259,3 +259,15 @@ fn a_promotion_tries_its_own_site_then_the_other_full_sites() {
     assert!(promote_moves_on(503) && promote_moves_on(409) && promote_moves_on(0) && promote_moves_on(500));
     assert!(!promote_moves_on(422));
 }
+
+/// A shard answers `warming` at once only when the caller has another shard to try and a rehydrate runs here, or when
+/// it is a cold pool shard asked to validate a forwarded push. A caller's last try waits even on a rehydrating shard,
+/// and a shard that is only catching up (no rehydrate) lets every caller wait.
+#[test]
+fn a_shard_answers_warming_at_once_only_to_a_caller_with_somewhere_else_to_go() {
+    assert!(warming_now(true, true, false));
+    assert!(!warming_now(false, true, false), "the last try waits");
+    assert!(!warming_now(true, false, false), "a catch-up, not a rehydrate, is short");
+    assert!(warming_now(false, false, true) && warming_now(true, false, true));
+    assert!(!warming_now(false, false, false));
+}

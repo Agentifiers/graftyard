@@ -445,3 +445,13 @@ pub fn promote_sites(record: &graftyard_types::PlacementRecord, me: SiteId) -> V
 pub fn promote_moves_on(status: u16) -> bool {
     status != 422
 }
+
+/// Whether a shard answers a call 503 `warming` at once rather than waiting out the call's `wait` on its catch-up.
+/// `follows`: the caller has another site's shard to try after this one (`next=1`; never on its last try, which
+/// waits, so a call never runs out of shards that would serve it). `rehydrating`: a rehydrate of the network is under
+/// way on this shard, which takes tens of minutes on a hot group. `pool_cold`: a pool shard forwarded a push holds no
+/// cursor for its disk. The edge learned "cold" per isolate, so after a home-shard kill each new isolate waited the
+/// home's 15 s once, 11% of j9e's pushes (`tests/am1/results/hot-shards.md`); the shard's own mark is one for all.
+pub fn warming_now(follows: bool, rehydrating: bool, pool_cold: bool) -> bool {
+    pool_cold || (follows && rehydrating)
+}
