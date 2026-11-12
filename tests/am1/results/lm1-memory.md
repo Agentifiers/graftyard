@@ -1145,13 +1145,13 @@ polls on it.
   quorum, requests waiting and none completing, over the 30 s bound. A same-machine A/B of the harsh sweep on main
   d7ee927 alone passed. The per-read forced rounds also stand in for retransmission after dropped calls.
 - Not committed: count a deadline miss to a follower only if it was sent at least `CALL_DEADLINE` after the last miss
-  counted to it (`health.rs`, `record_call`). `liveness::leaders_leave_a_site_whose_calls_fail` then failed: 3 of 12
-  seeds changed leader 3 times (the limit is 2), and the harsh sweep still acked only 1,088. Thinning the count at a
-  site failing 30% of calls delays the move off it.
+  counted to it (`health.rs`, `record_call`). On the f67-merged tree, `liveness::leaders_leave_a_site_whose_calls_fail`
+  failed (3 of 12 seeds with 3 leader changes, limit 2) and the harsh sweep acked 1,088. **Correction:** the same tree
+  without this change (`67e71612`) fails the same test on the same seeds 7, 9 and 11 with the same distribution, so
+  those failures are the f67 merge's, not this change's. It has not yet been tested on a tree without f67.
 
-Both cost liveness under the simulator's faults, which f67-liveness has just tightened, so neither ships in LM-1. The
-identity step-downs stay open. Next: the site day on the merged tree (narrow reads cut the leader reads the edge
-sends, f67-liveness changes leadership), then smokes, to measure whether the step-downs still cost the rows.
+The first fix is withdrawn. The second is retested on a pre-f67 base (`720bdb36` with main f10ea4b, without
+`fa30bff9`). The identity step-downs stay open until it passes there.
 
 **Merges**: main f10ea4b (merge-budget-4) as `8f54b3b0`, keeping `/stats?summary` beside main's test-faults
 `body=array|stream` switch; main d7ee927 (f67-liveness, a `crates/raft` change) as `77629bc7`. The f67 test
@@ -1163,7 +1163,8 @@ the test now uses that cadence and keeps its 1 s bound. It fails the same way wi
 **The merged tree fails raft's checks** [measured, simulator, `77629bc7`/`67e71612`]: with main d7ee927 (f67-liveness)
 merged into this branch, `sim::harsh_network_keeps_every_invariant` acks 1,102 writes (needs 1,200) and
 `liveness::leaders_leave_a_site_whose_calls_fail` gives 3 leader changes on seeds 7, 9 and 11 (limit 2). Main alone and
-this branch before the merge (`720bdb36`: 1,212 acked) pass both. Seed 107 traced: S1 leads at term 3 after a
+this branch before the merge (`720bdb36`: 1,212 acked) pass both. **Correction:** `8f54b3b0` (main f10ea4b merged)
+is not a green pre-f67 tree: it still holds `fa30bff9`, and its harsh sweep acked 858. Seed 107 traced: S1 leads at term 3 after a
 transfer and holds the only copy of entry 160 (this branch's dep reads let the leader append while an entry is in
 flight). From 43.6 s S2 campaigns, both other voters refuse S1's pre-votes as `Suspected` for 2 x SUSPECT, and S1 refuses
-theirs as `LogBehind`, so no member can win until 60.4 s. Sent to f67-liveness. Not deployed.
+theirs as `LogBehind`, so no member can win until 60.4 s. Sent to f67-liveness, which owns the fix. Not deployed.
