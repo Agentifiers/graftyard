@@ -79,7 +79,7 @@ pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 /// lost; it raises its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time
 /// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step up takes
 /// an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`.
-pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k */, pub queue_depth: u32 }
+pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k, less derived work (A31) */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
 /// Lazy test merges, one compute per (PR, base tip), run on a head push, on Actions dispatch for any `pull_request`-family
