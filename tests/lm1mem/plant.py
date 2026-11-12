@@ -217,6 +217,12 @@ MUTANTS = [
     ('round 7: a merge that misses catches up at once, racing the catch-up in flight', 'crates/git/src/merge_cache.rs',
      '        return Ok(a);\n    }\n    in_flight().await;', '        return Ok(a);\n    }',
      ['cargo', '-p', 'graftyard-git', '--lib', 'a_merge_waits']),
+    ('round 8: every deadline miss of one follower stall counts (no dedupe)', 'crates/raft/src/member/health.rs',
+     '                excused = true;\n', '                excused = false;\n',
+     ['cargo', '-p', 'graftyard-raft', '--test', 'leadership', 'one_follower_stall']),
+    ('round 8: misses are deduped forever, so a follower that keeps failing never trips', 'crates/raft/src/member/health.rs',
+     'sent_at >= *l && sent_at < after(*l, CALL_DEADLINE)', 'sent_at >= *l',
+     ['cargo', '-p', 'graftyard-raft', '--test', 'leadership', 'one_follower_stall']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
