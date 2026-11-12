@@ -619,6 +619,8 @@ A fresh read-only agent, WalkRest, walked Milestone 4, Milestone 7, AM4, and the
 
 ### A metadata split commits on the parent, and the parent keeps the feed
 
+**Superseded in part, 2026-11-12.** See "A metadata split runs in band on the parent leader, keeps every commit on the parent, and reads the child narrowly": no 503 window, no `Moved` routing, and no `MetaSplitter` Workflow.
+
 **Decision.** At `CHILD_GROUP_AT` the parent commits `MetaSplit { child: RepoMeta(repo), at }`, a core entry and the commit point. The child starts from the parent's metadata snapshot at `at` and decides nothing before `MetaSeed`, so metadata writes get 503 until then. A command that touches both tiers commits whole on the parent first, and `meta_finish` appends its metadata half to the child as an ordered `MetaHalf`. The parent keeps its log, indexes, feed ring, and issue-number counter.
 
 **Why.** Child groups had no `ChainId`, commit point, or routing, which was the walk's one blocker (W1). Committing on the parent first keeps one commit point per command, so consumers deliver every event from the parent entry and a split changes no feed cursor.
@@ -2541,6 +2543,20 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 **Evidence.** `tests/am1/results/b0-30.md` [measured]: site 0 read 8,591,708,160 B at 23:09:41Z on 2026-11-11 against 8,589,934,592 B; `SQLITE_FULL` 0 throughout; the final verify read 81 of 81 sampled archived ranges from both buckets and resolved 10 of 10 `RestoredTo` lookups; SQLite grew 0.0585 GB a simulated day while archiving kept up, projecting about 8.21 GB at day 30 [inference, linear], and 0.184 GB a day during the stall; from about 17:13Z `fanout` at k = 6 forwarded the archive promotion's validate to cold pool shards, and site a's promotion validate median went from 0.17 s at 16Z to 7,551 s at 21Z. Cost $64.90.
 
 **Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
+
+### A metadata split runs in band on the parent leader, keeps every commit on the parent, and reads the child narrowly (2026-11-12)
+
+This supersedes "A metadata split commits on the parent, and the parent keeps the feed" where the two differ. Branch `b030-split` builds it for B0-30's rerun (`build/BUILD-PLAN.md`, M7-WP4).
+
+**Decision.** The parent leader's alarm runs the split's steps, with no `MetaSplitter` Workflow: `MetaSplit` at `SPLIT_AT` of `databaseSize`, a metadata snapshot at an index p, `MetaSeed { at: p, key }` on the parent, the `RepoMeta(repo)` group created on the parent's placement record with the same `MetaSeed`, the child seeded from that snapshot, then each committed parent entry recorded on the child as an ordered `MetaHalf`, and `MetaDropped` on the parent once the child is loaded and caught up. Every command, metadata-only ones included, still commits on the parent, so no write gets 503 and nothing answers `Moved`. After `MetaDropped` a command that reads the metadata tier lists `RepoMeta(repo)` in `deps` and names the keys it reads, and the host reads those rows through the child leader's `fresh`. The child decides nothing, so it needs no core mirror. `RestoredTo`, the feed, consumer cursors, and ids stay on the parent.
+
+**Why.** The operator vetoed a 503 for both-tier commands after a split and asked for narrow `deps` reads of `RepoMeta` instead (2026-11-12, relayed by the B0-30 lead). Committing every command on the parent keeps one commit point and one log for consumers, the feed, and `RestoredTo`, so the split changes no cursor and needs no edge routing. A child that decides nothing replays the parent's halves in order, so it holds the parent's rows after entry k with no core state of its own. Running the steps on the leader's alarm needs no new Workflow, Durable Object class, or failure domain.
+
+**Beat.** The 503 window from `MetaSplit` to `MetaSeed` and `Moved` routing (the earlier decision), vetoed. A core mirror on the child through `MetaHalf` so the child could decide metadata-only commands, which the operator approved but which no command needs once every command commits on the parent. A `MetaSplitter` Workflow, which adds the Workflows script to B0-30's site day for steps the alarm already sequences.
+
+**Evidence.** `design/DESIGN.md`, Shape, "Chains" (`CHILD_GROUP_AT`). Seven both-tier commands read metadata in `decide`, each by at most three keyed rows or one bounded scan, and none keyed by another metadata read (code read of `crates/git/src/issue_ops.rs` on `b030-split`). workerd's `getDatabaseSize` leaves out freelist pages, so deleting the parent's rows lowers the reading at once [doc: workerd `src/workerd/api/sql.c++`, `getDatabaseSize`; commit 7354f512c]. The tests and the hosted split on `repo:1048586` are in `tests/am1/results/b030-split.md`.
+
+**Flip.** A read path the renderers need that cannot name its keys before the entry commits, such as an unbounded GraphQL selection, measured slow when fetched row by row from the child; or a parent whose core tier alone nears `CHILD_GROUP_AT`, which needs a second split axis rather than this one.
 
 ### A git cache shard catches up a page at a time, in the background, and resumes where it stopped (2026-11-12)
 

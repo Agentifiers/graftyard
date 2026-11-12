@@ -7,7 +7,8 @@
 //! gigabytes of inline packs above its last `Promoted` (`tests/am1/results/b0-30.md`, "Blocked on", 8 to 12):
 //!
 //! - **Memory.** At most two log pages are held at once: the one being applied and the next, read meanwhile. A page is
-//!   what one `/entries` call answers, at most `ENTRIES_PAGE_BYTES` of entries on a member. Stored packs go from a
+//!   what one `/entries` call answers, at most `ENTRIES_PAGE_BYTES` of entries on a member, or
+//!   `ENTRIES_LOCAL_PAGE_BYTES_MAX` from the shard's own site's member. Stored packs go from a
 //!   bucket to the container without passing through the shard object's memory (`ShardIo::ingest_stored`).
 //! - **The cursor moves only past what was applied.** Each page's packs are ingested and its ref changes applied
 //!   before the cursor moves, and only to the last index the page held, never to the end of the range asked for. A
@@ -62,11 +63,16 @@ pub trait ShardIo {
     async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError>;
 }
 
-/// A rehydrate in progress on one disk: whether its marked phase finished, and how far its tail got.
+/// A rehydrate in progress on one disk: whether its marked phase finished, how far its tail got, and per chain the
+/// tail start its marked phase loaded through (every promotion up to there is on the disk).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rehydrating {
     pub marked: bool,
     pub tail: IngestCursor,
+    /// Missing in a place an older release saved: read as nothing loaded, so a resumed run loads the marked phase
+    /// again, which `have` makes cheap.
+    #[serde(default)]
+    pub loaded: Vec<(ChainId, Index)>,
 }
 
 /// The shard object's own storage for one network, each value with the id of the disk it describes.
@@ -401,7 +407,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         Some(s) => s,
         None => {
             io.init(true).await?;
-            let s = Rehydrating { marked: false, tail: IngestCursor::new(network) };
+            let s = Rehydrating { marked: false, tail: IngestCursor::new(network), loaded: Vec::new() };
             saved.put_rehydrating(&disk, &s).await?;
             s
         }
@@ -416,6 +422,19 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     let mut last: Vec<(ChainId, Option<Promoted>)> = Vec::with_capacity(chains.len());
     for chain in chains {
         last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
+    }
+    // Promotion goes on while a shard rehydrates, on another site's shard (`git::promote_sites`), so a resumed run can
+    // find the last `Promoted` past where its tail got. Its tail then starts past the new promotion, whose pack the
+    // marked phase never loaded: every later pack thin against the entries in between failed "have bases no pack
+    // provides" (`tests/am1/results/hot-shards-2.md`). The marked phase runs again; `have` skips what the disk holds.
+    // A place an older release saved records nothing loaded, and its tail cursor may already sit past entries it
+    // skipped that way, so it loads the marked phase again too.
+    let gap = last.iter().any(|(c, p)| match state.loaded.iter().find(|(x, _)| x == c) {
+        Some((_, through)) => tail_start(p.as_ref()) > (*through).max(Index(state.tail.at(*c).0 + 1)),
+        None => true,
+    });
+    if state.marked && gap {
+        state.marked = false;
     }
     let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
     let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
@@ -464,6 +483,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             Err(n) => return Err(StoreError(format!("{n} marked packs have bases no pack provides"))),
         }
         state.marked = true;
+        state.loaded = last.iter().map(|(c, p)| (*c, tail_start(p.as_ref()))).collect();
         saved.put_rehydrating(&disk, &state).await?;
     }
     lap(&mut ms, "marked");

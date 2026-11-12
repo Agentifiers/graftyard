@@ -1065,6 +1065,15 @@ fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
 const VALIDATE_WAIT_HOME_S: u32 = 15;
 const VALIDATE_WAIT_OTHER_S: u32 = 60;
 
+/// Try `i` of `n` on a shard: the first waits `VALIDATE_WAIT_HOME_S` on its catch-up, each later one
+/// `VALIDATE_WAIT_OTHER_S`, and every try but the last says another shard follows (`next=1`), so a shard that is
+/// rehydrating answers it 503 `warming` at once rather than after the wait (`workers/site/src/shard.rs`).
+fn shard_url(url: &str, i: usize, n: usize) -> String {
+    let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+    let next = if i + 1 < n { "&next=1" } else { "" };
+    format!("{url}&wait={wait}{next}")
+}
+
 /// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
 /// another placement site's shard of the network (`shard_order`): tips in the body ahead of the pack. With
 /// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
@@ -1094,9 +1103,9 @@ pub(crate) async fn validate(
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
     let mut last = String::new();
-    for (i, site) in shard_order(repo, pinned).into_iter().enumerate() {
-        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
-        let r = validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await;
+    let sites = shard_order(repo, pinned);
+    for (i, site) in sites.iter().copied().enumerate() {
+        let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &head, detail).await;
         mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422, _)))));
         match r {
             Ok(Ok(r)) => return Ok(r),
@@ -1125,7 +1134,6 @@ pub(crate) async fn shard_read(
     let pinned = None;
     let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().enumerate() {
-        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
         let h = Headers::new();
         h.set("git-protocol", proto)?;
         let mut init = RequestInit::new();
@@ -1133,7 +1141,7 @@ pub(crate) async fn shard_read(
         if let Some(b) = body {
             init.with_body(Some(js_sys::Uint8Array::from(b).into()));
         }
-        let req = Request::new_with_init(&format!("{url}&wait={wait}"), &init)?;
+        let req = Request::new_with_init(&shard_url(url, i, sites.len()), &init)?;
         let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
         mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
         if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
@@ -2114,7 +2122,7 @@ mod tests {
 
     use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
 
-    use super::{gunzip, validate_sites, warm_first};
+    use super::{gunzip, shard_url, validate_sites, warm_first};
 
     fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
         PlacementRecord {
@@ -2138,6 +2146,16 @@ mod tests {
         assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try
+    /// waits, so a call never runs out of shards that would serve it. The home try waits less than the others.
+    #[test]
+    fn every_shard_try_but_the_last_says_another_follows() {
+        assert_eq!(shard_url("u?repo=1", 0, 3), "u?repo=1&wait=15&next=1");
+        assert_eq!(shard_url("u?repo=1", 1, 3), "u?repo=1&wait=60&next=1");
+        assert_eq!(shard_url("u?repo=1", 2, 3), "u?repo=1&wait=60");
+        assert_eq!(shard_url("u?repo=1", 0, 1), "u?repo=1&wait=15");
     }
 
     /// A shard seen cold goes last and the rest keep their order: the home first among the warm ones, and the cold

@@ -1,8 +1,13 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -77,5 +82,61 @@ func putRefs(t *testing.T, url, tip string) {
 	r.Body.Close()
 	if r.StatusCode != 200 {
 		t.Fatalf("PUT /refs: %d", r.StatusCode)
+	}
+}
+
+// A rehydrate's ingests write a multi-pack-index every midxEvery packs, so index-pack's object lookups stop scanning
+// every pack (per-pack ingest grew linearly with the pack count). Every ingested pack but the last few is in it, the
+// repository stays whole, and the repack at the end of the catch-up leaves no index naming a deleted pack.
+func TestIngestWritesAMultiPackIndexEveryMidxEveryPacks(t *testing.T) {
+	s := serve(t)
+	call(t, s, "POST", "/init?net=7")
+	wt := t.TempDir()
+	run(t, wt, "", "init", "-q", "-b", "main")
+	n := 2*midxEvery + 7
+	prev, tip := "", ""
+	for i := 0; i < n; i++ {
+		tip = commit(t, wt, map[string]string{"f": strings.Repeat("y", i+1) + "\n"})
+		var pack []byte
+		if prev == "" {
+			b, err := gitOut(wt, tip+"\n", "pack-objects", "--stdout", "--revs", "-q")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pack = b
+		} else {
+			pack = packOfWt(t, wt, tip, prev)
+		}
+		sum := sha256.Sum256(pack)
+		if code, body := postBody(t, s.URL+"/ingest?net=7&sha256="+hex.EncodeToString(sum[:]), pack); code != 200 {
+			t.Fatalf("ingest %d: %d %s", i, code, body)
+		}
+		prev = tip
+	}
+	midx := filepath.Join(repo("7"), "objects", "pack", "multi-pack-index")
+	b, err := os.ReadFile(midx)
+	if err != nil {
+		t.Fatalf("no multi-pack-index after %d ingests: %v", n, err)
+	}
+	// The header: "MIDX", version, hash version, chunk count, base count, then the pack count.
+	if covered := int(binary.BigEndian.Uint32(b[8:12])); covered != 2*midxEvery {
+		t.Fatalf("the multi-pack-index covers %d packs of %d, want %d", covered, n, 2*midxEvery)
+	}
+	if out := run(t, repo("7"), "", "multi-pack-index", "verify"); strings.Contains(out, "error") {
+		t.Fatalf("verify: %s", out)
+	}
+	putRefs(t, s.URL, tip)
+	repacking.Lock()
+	repacking.Unlock()
+	if out := run(t, repo("7"), "", "fsck", "--strict", "--no-dangling"); out != "" {
+		t.Fatalf("fsck: %s", out)
+	}
+	if _, err := os.Stat(midx); err == nil {
+		if out := run(t, repo("7"), "", "multi-pack-index", "verify"); strings.Contains(out, "error") {
+			t.Fatalf("verify after the repack: %s", out)
+		}
+	}
+	if got := run(t, repo("7"), "", "rev-parse", "refs/heads/main"); got != tip {
+		t.Fatalf("main %s, want %s", got, tip)
 	}
 }
