@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """lm1-memory: planted bugs in this branch's new code (the lookup's overload answer and `suspect` damping, the member's
-heavy-read cap with streamed answers, and the packed-dump cache). Plants one mutant at a time, runs the
+heavy-read cap with streamed answers, and the packed-dump cache; learner-dumps: one dump per state shared by every
+read, learners exempt from HEAVY_READS, and a learner read that waits for a due rebuild). Plants one mutant at a time, runs the
 tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run
 from the worktree root:
 

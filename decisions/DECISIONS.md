@@ -2310,6 +2310,20 @@ Branch `merge-budget` built AM1-WP1's follow-up, "The test-merge budget and B0-3
 
 **Flip.** Test merges that run on more than one shard of a network, such as merges spread over k, which would need one budget across those shards. Or a merge whose wall time misprices its CPU, because the shard runs merges side by side or waits on disk, which would charge container CPU time instead.
 
+### K9: learners serve whole-tier reads from one shared dump, and are priced, 2026-11-12
+
+Branch `learner-dumps` ran journey 9's API reads on `graft-m3c` with 8 learners (`tests/am1/results/learner-dumps.md`; `build/BUILD-PLAN.md`, AM1-WP6).
+
+**Decision.** A packed whole-tier dump is built once per state of a repository's tiers as serialized bytes (`family::dump_bytes`), and every granted read at that state, from any input, answers those bytes (`host::fold_answer`). `HEAVY_READS` no longer holds on a learner; `READS_MAX` does. A learner rebuilds a stale dump at most once per `LEARNER_DUMP_EVERY_MS` (500 ms [guess]), and its read-index read whose rebuild is not due waits for it within `FOLLOWER_WAIT` and is granted again instead of answering `overloaded`. Voters keep `HEAVY_READS` and `DUMP_EVERY_MS`. `GroupLoad` counts a whole-tier read as 50 narrow ones, and `scripts/cost_agents.py` prices the learners `place_learners` adds: 0, 2, and 11 on the largest network at 50, 300, and 2,000 developers, $0, $16, and $237 a month. DESIGN's "Follower read", journey 9, Scale ("Hot group reads, learners"), and Cost say so, and K9 is closed.
+
+**Why.** At journey 9 every REST and GraphQL repository read, `GET /repos/{o}/{r}/issues` and `pullRequests` alike, goes through `api::read` to a whole-tier `{"rows": true, "packed": true}` read. The learners shed them at `HEAVY_READS` and `DUMP_EVERY_MS` while their CPU sat at 9 to 20% and their memory at 56 to 71 MiB, so the caps bound, not the learners. `HEAVY_READS` bounded the copies of a dump in flight, and a dump shared across inputs is one copy; a learner never votes, so its reads delay no AppendEntries reply or confirm.
+
+**Beat.** Serving the list routes from narrow reads, which needs the metadata tables and logins each route renders and is the larger change; it remains the way to cut the edge's 2 s per answer. Placing more learners under the old caps, which each shed at the same rate. Raising `HEAVY_READS` for every member, which brings back the leader memory that F65 fixed.
+
+**Evidence.** `tests/am1/results/learner-dumps.md` [measured]. Same install, repository shape (500 open PRs, 1.06 to 1.08 MB dump), 8 learners, and 300 s B0-29 load. Before: `read:api` 13,305 answered and 38,485 shed (25.7% of answered), `read:ref` 72.7%, agent pushes 761 of 1,251, the leader moved, voters peaked at 264 and 302 MiB, and the feed answered `lagging` 8,543 times. After: `read:api` 45,194 answered and 2,552 shed (94.7%), `read:ref` 99.8%, agent pushes 1,183 of 1,234, no leader change, voters at most 128 MiB, no `lagging`. Learners used 18 to 35% CPU at 61 to 68 MiB, built 88 to 132 dumps each, and served 1,102 to 1,929 reads each after a wait. API read p99 stayed 5.0 s, edge-bound, against learner reads at p99 1.2 to 1.3 s. 12 planted bugs caught (`tests/lm1mem/plant.py`, 41 to 52).
+
+**Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners.
+
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 
 B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on its fail line at simulated day 27.52 (`tests/am1/results/b0-30.md`; `build/BUILD-PLAN.md`, AM1-WP6, B0-30).
