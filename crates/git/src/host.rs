@@ -2,25 +2,19 @@
 //! (`GitCacheShard::validate`, `upload_pack`, `rehydrate`, and catch-up behind the `IngestCursor`). A site script's shard
 //! class holds a `ShardHost` and calls these; the throwaway M1 scripts under `tests/m1/` do the same today.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use graftyard_types::{ChainId, Digest, NetworkId, Region, Timestamp};
 use serde::Deserialize;
 use worker::{Conditional, Container, Fetcher, Headers, Include, Method, Request, RequestInit, Response, State};
 
 use crate::bucket::{Bucket, ObjectInfo, PutNew, StoreError};
-use crate::ingest::{ChainLog, Load, rehydrate_plan, require_complete_entries, tail_start};
+use crate::catchup::{Ingested, Rehydrating, Report, Saved, ShardIo};
+use crate::ingest::ChainLog;
 use crate::key::R2Key;
 use crate::pack::{Marker, PackId, PackIndex};
 use crate::shard::{DiskRepo, IngestCursor, RegionCheck, Renewal, evict_plan, region_check, renewal};
 use crate::store::marker_from_meta;
-use graftyard_types::Index;
-
-/// The most log entries one catch-up step reads, ingests, and saves its cursor past [guess]: at an entry's 1.5 MB cap
-/// 32 entries are at most 48 MB of inline packs, under an isolate's 128 MB with their decoded copies.
-const CATCH_UP_ENTRIES: u64 = 32;
-/// The most marked pack bytes a rehydrate holds before it ingests them [guess].
-const INGEST_BATCH_BYTES: usize = 32 << 20;
 
 fn err(e: impl std::fmt::Display) -> StoreError {
     StoreError(e.to_string())
@@ -185,29 +179,6 @@ pub async fn start_upload(
     jm.insert("upload".to_owned(), u.upload_id().await);
     b.put(journal, Vec::<u8>::new()).custom_metadata(jm).execute().await.map_err(err)?;
     Ok(u)
-}
-
-/// The pack for each load: inline bytes, or a stored pack read from the first bucket whose copy matches its checksum.
-pub async fn fetch_load<B: Bucket>(
-    buckets: &[&B],
-    network: NetworkId,
-    l: &Load,
-) -> Result<(Digest, Vec<u8>), StoreError> {
-    use sha2::{Digest as _, Sha256};
-    match l {
-        Load::Inline { bytes, .. } => Ok((Digest(Sha256::digest(bytes).into()), bytes.clone())),
-        Load::Stored { id, checksum, .. } => {
-            let key = R2Key::Pack { network, id: *id }.to_string();
-            for b in buckets {
-                if let Some(body) = b.get(&key).await?
-                    && Digest(Sha256::digest(&body).into()) == *checksum
-                {
-                    return Ok((*checksum, body));
-                }
-            }
-            Err(StoreError(format!("{key}: no bucket holds a copy matching its checksum")))
-        }
-    }
 }
 
 /// Every marker of a network in one bucket.
@@ -461,10 +432,10 @@ impl ShardHost<'_> {
     /// against the refs the leader just gave, which the container holds once `set_refs` ran. The tips ride in the
     /// body ahead of the pack, because a 10,000-ref push has too many for a URL.
     pub async fn validate(&self, network: NetworkId, pack: Vec<u8>, tips: &[String]) -> Result<PackIndex, StoreError> {
-        self.validate_detail(network, pack, tips, "").await.map(|(ix, _)| ix.expect("a pack has an index"))
+        self.validate_detail(network, pack, tips, "", false).await.map(|(ix, _)| ix.expect("a pack has an index"))
     }
 
-    /// `validate` with `detail`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
+    /// `validate` with `detail` and `derived`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
     /// notes the agent layer needs (`crate::agent::RefDetail`). With an empty pack, only the detail, read from the
     /// repository's own objects (a REST ref write), and no index.
     pub async fn validate_detail(
@@ -473,12 +444,17 @@ impl ShardHost<'_> {
         pack: Vec<u8>,
         tips: &[String],
         detail: &str,
+        derived: bool,
     ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), StoreError> {
         let mut head: Vec<u8> = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
         if !tips.is_empty() {
             head.push(b'\n');
         }
         let mut path = format!("/validate?net={}&tipsn={}", network.0.0, head.len());
+        // The shard's own archive promotion: the container counts it as derived work, outside `NetworkLoad`.
+        if derived {
+            path.push_str("&derived=1");
+        }
         if !detail.is_empty() {
             path.push_str(&format!("&detailn={}", detail.len()));
             head.extend_from_slice(detail.as_bytes());
@@ -536,37 +512,6 @@ impl ShardHost<'_> {
     pub async fn fsck(&self, network: NetworkId) -> Result<serde_json::Value, StoreError> {
         let mut r = self.ok(Method::Post, &format!("/fsck?net={}", network.0.0), None).await?;
         r.json().await.map_err(worker_err)
-    }
-
-    /// Ingests packs in order. A thin pack whose bases arrive later answers 409 and is retried after the others, until
-    /// a full pass makes no progress.
-    pub async fn ingest(&self, network: NetworkId, packs: Vec<(Digest, Vec<u8>)>) -> Result<usize, StoreError> {
-        let mut left = packs;
-        let mut done = 0;
-        while !left.is_empty() {
-            let mut retry = Vec::new();
-            let before = left.len();
-            for (sum, body) in left {
-                let path = format!("/ingest?net={}&sha256={}", network.0.0, sum.hex());
-                let mut r = self.call(Method::Post, &path, Some(body.clone()), &[]).await?;
-                match r.status_code() {
-                    200 => done += 1,
-                    409 => retry.push((sum, body)),
-                    c => {
-                        return Err(StoreError(format!(
-                            "ingest {}: {c} {}",
-                            sum.hex(),
-                            r.text().await.unwrap_or_default()
-                        )));
-                    }
-                }
-            }
-            if retry.len() == before {
-                return Err(StoreError(format!("{} packs have bases no pack provides", retry.len())));
-            }
-            left = retry;
-        }
-        Ok(done)
     }
 
     /// One complete pack of every object the given ingested packs brought: the home shard's half of `Promoted`.
@@ -701,7 +646,7 @@ impl ShardHost<'_> {
             let saved: Option<(String, IngestCursor)> = self.state.storage().get(&key).await.map_err(worker_err)?;
             self.state.storage().delete(&key).await.map_err(worker_err)?;
             // An evicted network's half-done rehydrate starts again from nothing.
-            self.state.storage().delete(&format!("rehydrate:{}", n.0.0)).await.map_err(worker_err)?;
+            self.state.storage().delete(&Self::rehydrating_key(n)).await.map_err(worker_err)?;
             let mut e = self.call(Method::Post, &format!("/evict?net={}", n.0.0), None, &[]).await?;
             match e.status_code() {
                 200 => room.evicted.push(n.0.0),
@@ -717,287 +662,139 @@ impl ShardHost<'_> {
         Ok(room)
     }
 
-    /// `rehydrate`: every stored pack with a marker, minus consumed packs, plus the packs each member chain names
-    /// after its last `Promoted`, read from its leader. Rebuilds the repository from nothing, sets the leader's refs a
-    /// page at a time, and saves the cursor at the index the last page was read at, after catching up to it.
-    pub async fn rehydrate<B: Bucket, L: ChainLog>(
+    /// Catch-up before serving, and `rehydrate` when the disk has no cursor (`crate::catchup`): a page of the log at a
+    /// time, stored packs streamed from a bucket to the container, and every page saved before the next.
+    pub async fn catch_up(
         &self,
         network: NetworkId,
         chains: &[ChainId],
-        buckets: &[&B],
-        log: &L,
-    ) -> Result<(IngestCursor, RehydrateReport), StoreError> {
-        let started = self.up().await?;
-        // A rehydrate cut off (its caller's deadline, an isolate reset) resumes on the same disk after the last tail
-        // piece it ingested, kept under `rehydrate:<net>`: one started from nothing each time never finished a 2.4 GB
-        // tail inside the archive alarm's RUN_FOR (`tests/am1/results/b0-30.md`, "Blocked on", 11).
-        let pkey = format!("rehydrate:{}", network.0.0);
-        let saved: Option<(String, IngestCursor)> = self.state.storage().get(&pkey).await.map_err(worker_err)?;
-        let resumed = saved.filter(|(d, _)| *d == started.health.disk).map(|(_, c)| c);
-        if resumed.is_none() {
-            self.init(network, true).await?;
-        }
-        // Markers from every bucket of the placement: a marker missing in one bucket is in another.
-        let mut marks: BTreeMap<PackId, Marker> = BTreeMap::new();
-        for b in buckets {
-            for (id, m) in markers(*b, network).await? {
-                marks.entry(id).or_insert(m);
-            }
-        }
-        let marks: Vec<(PackId, Marker)> = marks.into_iter().collect();
-        let consumed = log.consumed(network).await?;
-        // The marked packs, then each chain's tail above its last `Promoted` in pieces of CATCH_UP_ENTRIES, each
-        // piece's packs fetched and ingested before the next is read. Building the whole plan first held the tail's
-        // entries and every pack at once: a hot group's tail is up to LOG_MAX_BYTES of inline packs, and a pool shard
-        // rehydrating one ran out of memory on every attempt (`tests/am1/results/b0-30.md`, "Blocked on", 9).
-        // Each chain's last `Promoted`, read once: the marked phase leaves the tail's own stored packs to the tail.
-        let mut last = Vec::with_capacity(chains.len());
-        for chain in chains {
-            last.push((*chain, log.last_promoted(*chain).await?.map(|(_, p)| p)));
-        }
-        let marked = rehydrate_plan(&marks, &consumed, &last, &[]);
-        let mut seen: BTreeSet<PackId> = marked.iter().filter_map(Load::stored_id).collect();
-        let incoming: u64 = marks.iter().map(|(_, m)| m.bytes).sum();
-        let mut room = self.make_room(network, incoming, None).await?;
-        let (mut stored, mut inline, mut bytes, mut ingested) = (0, 0, 0, 0);
-        let mut done = match resumed {
-            Some(c) => c,
-            None => {
-                let mut batch = Vec::new();
-                let mut batch_bytes = 0;
-                for l in &marked {
-                    let p = fetch_load(buckets, network, l).await?;
-                    stored += 1;
-                    bytes += p.1.len();
-                    batch_bytes += p.1.len();
-                    batch.push(p);
-                    if batch_bytes > INGEST_BATCH_BYTES {
-                        ingested += self.ingest(network, std::mem::take(&mut batch)).await?;
-                        batch_bytes = 0;
-                    }
-                }
-                ingested += self.ingest(network, batch).await?;
-                let c = IngestCursor::new(network);
-                self.state.storage().put(&pkey, (&started.health.disk, &c)).await.map_err(worker_err)?;
-                c
-            }
-        };
-        let mut heads = Vec::with_capacity(chains.len());
-        for (chain, last) in &last {
-            let head = log.head(*chain).await?;
-            let mut from = Index(tail_start(last.as_ref()).0.max(done.at(*chain).0 + 1));
-            while from <= head.applied {
-                let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(head.applied.0));
-                let piece = log.entries(*chain, from, to).await?;
-                require_complete_entries(*chain, from, to, &piece)?;
-                let plan: Vec<Load> = rehydrate_plan(&[], &consumed, &[], &piece)
-                    .into_iter()
-                    .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
-                    .collect();
-                drop(piece);
-                let mut packs = Vec::new();
-                for l in &plan {
-                    let p = fetch_load(buckets, network, l).await?;
-                    if l.stored_id().is_some() {
-                        stored += 1
-                    } else {
-                        inline += 1
-                    }
-                    bytes += p.1.len();
-                    packs.push(p);
-                }
-                if !packs.is_empty() {
-                    let r = self.make_room(network, packs.iter().map(|(_, b)| b.len() as u64).sum(), None).await?;
-                    room.evicted.extend(r.evicted);
-                    room.busy.extend(r.busy);
-                }
-                ingested += self.ingest(network, packs).await?;
-                done.advance(*chain, to);
-                self.state.storage().put(&pkey, (&started.health.disk, &done)).await.map_err(worker_err)?;
-                from = Index(to.0 + 1);
-            }
-            heads.push(head.applied);
-        }
-        // The refs, a page at a time. Pages read while the chain moves are each at their own index, so the cursor is
-        // the last page's index, and the entries from the first page's index on are caught up after: their changes
-        // apply again, the same values in the same order, and their packs arrive before the refs that need them.
-        let mut cursor = IngestCursor::new(network);
-        let mut pages = 0;
-        let mut refs = 0;
-        for (i, chain) in chains.iter().enumerate() {
-            // The first page's index bounds what the pages may miss; the last page's is where they end.
-            let (mut after, mut first) = (None, None);
-            let last = loop {
-                let (page, index) = log.refs_page(*chain, after.take()).await?;
-                let done = page.next.is_none() && i + 1 == chains.len();
-                refs += page.refs.len();
-                self.put_refs_page(network, &page.refs, pages == 0, done).await?;
-                pages += 1;
-                first.get_or_insert(index);
-                match page.next {
-                    Some(n) => after = Some(n),
-                    None => break index,
-                }
-            };
-            cursor.advance(*chain, heads[i].min(first.unwrap_or(last)));
-            if last > cursor.at(*chain) {
-                let from = Index(cursor.at(*chain).0 + 1);
-                let es = log.entries(*chain, from, last).await?;
-                require_complete_entries(*chain, from, last, &es)?;
-                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, last);
-                let mut bodies = Vec::new();
-                for l in &plan {
-                    bodies.push(fetch_load(buckets, network, l).await?);
-                }
-                ingested += self.ingest(network, bodies).await?;
-                let changes = crate::ingest::ref_changes(&es, cursor.at(*chain), last)
-                    .ok_or_else(|| StoreError("an entry carries no ref changes (an older member release)".into()))?;
-                self.apply_refs(network, &changes).await?;
-                cursor.advance(*chain, last);
-            }
-        }
-        self.save_cursor(&cursor, &started.health.disk).await?;
-        self.state.storage().delete(&pkey).await.map_err(worker_err)?;
-        Ok((
-            cursor,
-            RehydrateReport {
-                markers: marks.len(),
-                stored,
-                inline,
-                ingested,
-                bytes,
-                refs,
-                pages,
-                disk: started.health.disk,
-                region: started.health.region,
-                location: started.health.location,
-                replaced: started.replaced,
-                room,
-            },
-        ))
+        buckets: &[&R2],
+        log: &impl ChainLog,
+    ) -> Result<Report, StoreError> {
+        let io = Io { host: self, network, buckets };
+        crate::catchup::catch_up(&io, &io, log, network, chains, &|| js_sys::Date::now() as u64).await
     }
 
-    /// Catch-up before serving: for each chain whose leader's applied index is past the cursor, read the missing
-    /// entries, fetch their packs, ingest them, apply the entries' ref changes, and advance the cursor. It never reads
-    /// the whole ref set. A cursor for another disk (the container restarted), below the chain's first log index, or
-    /// an entry from a member release that sends no ref changes, means a full rehydrate.
-    pub async fn catch_up<B: Bucket, L: ChainLog>(
-        &self,
-        network: NetworkId,
-        chains: &[ChainId],
-        buckets: &[&B],
-        log: &L,
-    ) -> Result<CatchUp, StoreError> {
-        let t0 = js_sys::Date::now();
-        let mut ms = Vec::new();
-        let mut lap = |name: &'static str| {
-            ms.push((name, (js_sys::Date::now() - t0) as u64));
-        };
-        let started = self.up().await?;
-        lap("up");
-        let mut cursor = self.cursor(network, &started.health.disk).await?;
-        lap("cursor");
-        // A cursor below a chain's first log index needs entries the leader has archived and truncated.
-        let mut heads = Vec::with_capacity(chains.len());
-        for (chain, head) in chains.iter().zip(crate::ingest::heads(log, chains).await) {
-            let head = head?;
-            if cursor.as_ref().is_some_and(|c| c.at(*chain).0 + 1 < head.first.0) {
-                cursor = None;
-            }
-            heads.push(head);
+    /// Whether the disk holds a cursor for `network`, so a catch-up reads from the log rather than rehydrating.
+    pub async fn warm(&self, network: NetworkId) -> Result<bool, StoreError> {
+        if !self.container()?.running() {
+            return Ok(false);
         }
-        lap("heads");
-        let rehydrate = |ms: Vec<(&'static str, u64)>| async move {
-            let (cursor, r) = self.rehydrate(network, chains, buckets, log).await?;
-            Ok::<_, StoreError>(CatchUp {
-                rehydrated: Some(r),
-                entries: 0,
-                packs: 0,
-                refs: 0,
-                cursor,
-                evicted: Vec::new(),
-                ms,
-            })
-        };
-        let Some(mut cursor) = cursor else { return rehydrate(ms).await };
-        let (mut entries, mut packs, mut refs) = (0, 0, 0);
-        let mut evicted = Vec::new();
-        let mut seen = BTreeSet::new();
-        for (chain, head) in chains.iter().zip(heads) {
-            let Some(range) = cursor.behind(*chain, head.applied) else { continue };
-            // In pieces of CATCH_UP_ENTRIES, each ingested, applied, and saved before the next is read: the whole
-            // range at once held every entry and inline pack behind the cursor, and a shard 4,480 entries behind
-            // (about 1.4 GB of inline packs) took its isolate past memory on every attempt, from the same cursor
-            // (`tests/am1/results/b0-30.md`, "Blocked on", 8).
-            let mut from = *range.start();
-            while from <= *range.end() {
-                let to = Index((from.0 + CATCH_UP_ENTRIES - 1).min(range.end().0));
-                let es = log.entries(*chain, from, to).await?;
-                // A newly elected leader can answer a short page below the old leader's applied index. Applying what
-                // arrived and advancing to `to` would skip packs and refs that no later catch-up would read again.
-                require_complete_entries(*chain, from, to, &es)?;
-                entries += es.len();
-                let Some(changes) = crate::ingest::ref_changes(&es, cursor.at(*chain), to) else {
-                    return rehydrate(ms).await;
-                };
-                let plan = crate::ingest::catch_up_plan(&cursor, *chain, &es, to);
-                drop(es);
-                let mut bodies = Vec::new();
-                for l in plan.iter().filter(|l| l.stored_id().is_none_or(|id| seen.insert(id))) {
-                    bodies.push(fetch_load(buckets, network, l).await?);
-                }
-                drop(plan);
-                if !bodies.is_empty() {
-                    let incoming = bodies.iter().map(|(_, b)| b.len() as u64).sum();
-                    let r = self.make_room(network, incoming, None).await?;
-                    evicted.extend(r.evicted);
-                }
-                packs += self.ingest(network, bodies).await?;
-                refs += changes.len();
-                self.apply_refs(network, &changes).await?;
-                cursor.advance(*chain, to);
-                if to < *range.end() {
-                    self.save_cursor(&cursor, &started.health.disk).await?;
-                }
-                from = Index(to.0 + 1);
-            }
-            lap("ingest");
+        let disk = self.health().await?.disk;
+        Ok(self.cursor(network, &disk).await?.is_some())
+    }
+
+    fn rehydrating_key(network: NetworkId) -> String {
+        format!("rehydrating:{}", network.0.0)
+    }
+
+    /// Ingests one pack's bytes: `Later` when the container answers 409.
+    async fn ingest_body(&self, network: NetworkId, sum: Digest, body: JsBody) -> Result<Option<Ingested>, StoreError> {
+        let path = format!("/ingest?net={}&sha256={}", network.0.0, sum.hex());
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(body.0));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
+        match r.status_code() {
+            200 => Ok(Some(Ingested::Done)),
+            409 => Ok(Some(Ingested::Later)),
+            // A copy whose bytes do not match the checksum: the caller tries the next bucket.
+            422 if r.text().await.unwrap_or_default().starts_with("checksum") => Ok(None),
+            c => Err(StoreError(format!("ingest {}: {c} {}", sum.hex(), r.text().await.unwrap_or_default()))),
         }
-        self.save_cursor(&cursor, &started.health.disk).await?;
-        lap("save_cursor");
-        Ok(CatchUp { rehydrated: None, entries, packs, refs, cursor, evicted, ms })
     }
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct RehydrateReport {
-    pub markers: usize,
-    pub stored: usize,
-    pub inline: usize,
-    pub ingested: usize,
-    pub bytes: usize,
-    /// The refs set, and the pages they were read in.
-    pub refs: usize,
-    pub pages: usize,
-    pub disk: String,
-    pub region: String,
-    pub location: String,
-    pub replaced: u8,
-    pub room: Room,
+/// A request body for the container: bytes, or a stream that never enters the isolate's memory.
+struct JsBody(wasm_bindgen::JsValue);
+
+/// `crate::catchup`'s container, buckets, and storage, over one shard object.
+struct Io<'a, 'h> {
+    host: &'a ShardHost<'h>,
+    network: NetworkId,
+    buckets: &'a [&'a R2],
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct CatchUp {
-    pub rehydrated: Option<RehydrateReport>,
-    pub entries: usize,
-    pub packs: usize,
-    /// The ref changes applied from those entries.
-    pub refs: usize,
-    pub cursor: IngestCursor,
-    /// Networks the LRU evicted to make room for this catch-up's packs.
-    pub evicted: Vec<i64>,
-    /// Each step's end, in ms from the start, for a latency gate to say where a catch-up's time went.
-    pub ms: Vec<(&'static str, u64)>,
+impl ShardIo for Io<'_, '_> {
+    async fn up(&self) -> Result<String, StoreError> {
+        Ok(self.host.up().await?.health.disk)
+    }
+    async fn init(&self, fresh: bool) -> Result<(), StoreError> {
+        self.host.init(self.network, fresh).await
+    }
+    async fn have(&self, sums: &[Digest]) -> Result<BTreeSet<Digest>, StoreError> {
+        #[derive(Deserialize)]
+        struct Have {
+            have: Vec<String>,
+        }
+        let body: String = sums.iter().map(|s| format!("{}\n", s.hex())).collect();
+        let mut r =
+            self.host.ok(Method::Post, &format!("/have?net={}", self.network.0.0), Some(body.into_bytes())).await?;
+        let h: Have = r.json().await.map_err(worker_err)?;
+        Ok(h.have.iter().filter_map(|s| Digest::parse_hex(s)).collect())
+    }
+    async fn ingest(&self, sum: Digest, body: &[u8]) -> Result<Ingested, StoreError> {
+        let b = JsBody(js_sys::Uint8Array::from(body).into());
+        self.host
+            .ingest_body(self.network, sum, b)
+            .await?
+            .ok_or_else(|| StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex())))
+    }
+    /// From each bucket in turn, its object's body streamed into the container's `/ingest`, which checks the
+    /// checksum as it writes: a copy that does not match is refused, and the next bucket's is tried.
+    async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError> {
+        let key = R2Key::Pack { network: self.network, id }.to_string();
+        for b in self.buckets {
+            let Some(o) = b.0.get(&key).execute().await.map_err(err)? else { continue };
+            let Some(body) = o.body() else { continue };
+            let worker::ResponseBody::Stream(s) = body.response_body().map_err(worker_err)? else { continue };
+            if let Some(r) = self.host.ingest_body(self.network, checksum, JsBody(s.into())).await? {
+                return Ok(r);
+            }
+        }
+        Err(StoreError(format!("{key}: no bucket holds a copy matching its checksum")))
+    }
+    async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError> {
+        self.host.put_refs_page(self.network, refs, start, done).await
+    }
+    async fn apply_refs(&self, changes: &[(String, Option<String>)]) -> Result<(), StoreError> {
+        self.host.apply_refs(self.network, changes).await
+    }
+    async fn make_room(&self, incoming: u64) -> Result<Vec<i64>, StoreError> {
+        Ok(self.host.make_room(self.network, incoming, None).await?.evicted)
+    }
+    async fn markers(&self) -> Result<Vec<(PackId, Marker)>, StoreError> {
+        let mut out = Vec::new();
+        for b in self.buckets {
+            out.extend(markers(*b, self.network).await?);
+        }
+        Ok(out)
+    }
+}
+
+impl Saved for Io<'_, '_> {
+    async fn cursor(&self) -> Result<Option<(String, IngestCursor)>, StoreError> {
+        self.host.state.storage().get(&ShardHost::cursor_key(self.network)).await.map_err(worker_err)
+    }
+    async fn put_cursor(&self, disk: &str, c: &IngestCursor) -> Result<(), StoreError> {
+        self.host.save_cursor(c, disk).await
+    }
+    async fn drop_cursor(&self) -> Result<(), StoreError> {
+        self.host.state.storage().delete(&ShardHost::cursor_key(self.network)).await.map(|_| ()).map_err(worker_err)
+    }
+    async fn rehydrating(&self) -> Result<Option<(String, Rehydrating)>, StoreError> {
+        // A value this release cannot read (an older release's) is a rehydrate started from nothing.
+        Ok(self.host.state.storage().get(&ShardHost::rehydrating_key(self.network)).await.ok().flatten())
+    }
+    async fn put_rehydrating(&self, disk: &str, r: &Rehydrating) -> Result<(), StoreError> {
+        self.host.state.storage().put(&ShardHost::rehydrating_key(self.network), (disk, r)).await.map_err(worker_err)
+    }
+    async fn drop_rehydrating(&self) -> Result<(), StoreError> {
+        let s = self.host.state.storage();
+        s.delete(&ShardHost::rehydrating_key(self.network)).await.map_err(worker_err)?;
+        // An older release kept its resume point here.
+        s.delete(&format!("rehydrate:{}", self.network.0.0)).await.map(|_| ()).map_err(worker_err)
+    }
 }
 
 async fn wasm_bindgen_futures_await(p: wasm_bindgen::JsValue) -> Result<(), StoreError> {
