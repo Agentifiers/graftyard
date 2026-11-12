@@ -481,6 +481,12 @@ fn can_write(r: &View<'_>, who: Option<&Principal>) -> bool {
     }
 }
 
+/// Whether `who`'s single-PR read, GraphQL or REST, has its missing test merge computed (`ask_merges`): a writer's or
+/// an App's (CI) does, anyone else's is counted as a list's.
+fn merge_computes(r: &View<'_>, who: Option<&Principal>) -> bool {
+    can_write(r, who) || who.is_some_and(|w| matches!(w.actor, Actor::App { .. }))
+}
+
 async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: &Meta) -> Result<Reply> {
     let method = req.method();
     let url = req.url()?;
@@ -1126,7 +1132,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
         let (v, asks) = graphql::query_asks(&gq, Some(&r));
-        ask_merges(c, &rd.repo, asks, can_write(&r, Some(&who)) || matches!(who.actor, Actor::App { .. }));
+        ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
         return Ok(Reply::json(200, v));
     }
     let p = match graphql::plan(&gq, &r) {
@@ -1301,7 +1307,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         (Method::Get, ["issues"]) => rest::list_issues(&r, query),
         // LF-4's trust resources over REST (F61): each read renders the pinned GHES 3.22 shape from the fold, and a
         // commit from the git cache shard.
-        (Method::Get, ["pulls", n]) => rest::get_pull(&r, n),
+        // A writer's or an App's poll asks the shard for the test merge its `mergeable` lacks, as GraphQL's single-PR
+        // read does (`ask_merges`); anyone else's is counted as a list's. `mergeable` stays null until the merge is recorded.
+        (Method::Get, ["pulls", n]) => {
+            let (reply, asks) = rest::get_pull_asks(&r, n);
+            ask_merges(c, &rd.repo, asks, merge_computes(&r, who.as_ref()));
+            reply
+        }
         (Method::Get, ["issues", n, "comments"]) => rest::list_issue_comments(&r, n, query),
         (Method::Get, ["pulls", n, "reviews"]) => rest::list_reviews(&r, n, query),
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),

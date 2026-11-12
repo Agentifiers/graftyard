@@ -893,7 +893,7 @@ pub struct VariableRecord { pub value: Box<str>, pub updated: Timestamp }
 
 ## Event fan-out
 
-Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers, except `PrSync` and `MergeQueue`, whose leader runs each batch's first attempt in its own isolate and sends only re-sends through Queues ("Shape", "Dominant access patterns", and "Failure modes", `event pipeline`).
+Consumers read chains, never a separate outbox, so an event exists if and only if its change committed. `design/DESIGN.md` delivers events from leader cursors through Queues to consumer Workers, except `PrSync` and `MergeQueue`, whose leader runs each batch's first attempt at once, without a queue hop, and sends only re-sends through Queues ("Shape", "Dominant access patterns", and "Failure modes", `event pipeline`).
 
 ```rust
 pub enum Consumer { Webhooks, ActionsTrigger, RunOwner, PrSync, MergeQueue, Notify, Search, Audit, Counts, Insights }

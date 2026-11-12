@@ -686,6 +686,10 @@ impl Family for Repo {
                 Some(crate::merge_queue::record(host, &body["record"]).await)
             }
             #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("prsyncFirstFor").is_some() => {
+                Some(Ok(crate::prsync::first_for(host, body["prsyncFirstFor"].as_u64().unwrap_or(0))))
+            }
+            #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("prsyncDrop").is_some() => {
                 Some(Ok(crate::prsync::drop_first(host, body["prsyncDrop"].as_u64().unwrap_or(1) as u32)))
             }
