@@ -27,7 +27,7 @@ while (!existsSync(STOP)) {
     } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
   }));
   const shards = await Promise.all([0, 1, 2].map(async (s) => {
-    try { const r = await bedGet(`/_bed/shard_status?repo=${ID}&shard=${s}`); return { site: s, status: r.status, v: r.body.slice(0, 200) }; }
+    try { const r = await bedGet(`/_bed/shard_status?repo=${ID}&shard=${s}`); return { site: s, status: r.status, v: r.body.slice(0, 300) }; }
     catch (e) { return { site: s, error: String(e).slice(0, 80) }; }
   }));
   // Every CATCHUP_EVERY rows, a catch-up on each site's first shard (at most 60 s each, `warming` past it): its report

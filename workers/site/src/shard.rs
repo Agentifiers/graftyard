@@ -382,9 +382,20 @@ impl DurableObject for GitShard {
             let budget = q(&url, "repo")
                 .and_then(|v| v.parse().ok())
                 .and_then(|r| self.budgets.borrow().stats(NetworkId(DbId(r))));
-            return Response::from_json(
-                &json!({ "running": running, "alarm": self.state.storage().get_alarm().await?, "testMerges": budget }),
-            );
+            // A31's instruments: the container's `NetworkLoad` as `fanout` reads it (derived work left out) and the k
+            // this isolate last read from the group, so a run shows what each minute's report was and whether k moved.
+            let net = q(&url, "repo").and_then(|v| v.parse().ok()).map(|r| NetworkId(DbId(r)));
+            let load = match net {
+                Some(_) => host.load().await.ok(),
+                None => None,
+            };
+            return Response::from_json(&json!({
+                "running": running,
+                "alarm": self.state.storage().get_alarm().await?,
+                "testMerges": budget,
+                "load": load,
+                "k": net.map(fanout_k),
+            }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
         if path == "/load" {
