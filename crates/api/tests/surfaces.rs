@@ -950,6 +950,51 @@ fn mergeable_reads_the_test_merge_of_the_current_head_and_base_tip() {
     assert_eq!(ask_pr(&c).0, json!("UNKNOWN"));
 }
 
+/// A29 and A30 on the edge's read: a single-PR read that renders `mergeable` or `mergeStateStatus` with no current test
+/// merge asks for that PR's merge at its (base tip, head); a list that renders it asks for nothing to compute, only a
+/// count; a read that does not select it, or a PR whose current merge is recorded, asks nothing.
+#[test]
+fn a_read_asks_for_the_merge_its_mergeable_lacks_and_a_list_only_counts() {
+    use graftyard_api::graphql::query_asks;
+    use graftyard_git::issues::MergeabilityResult;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let run = |c: &Chain, q: &str| {
+        let r = c.repo(0, &h, &dir);
+        query_asks(&Request::parse(q, None, None).unwrap(), Some(&r)).1
+    };
+    let single = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeable } } }"#;
+    let state = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeStateStatus } } }"#;
+    let title = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { title } } }"#;
+    let list = r#"query { repository(owner: "o", name: "r") { pullRequests(first: 10) { nodes { mergeable } } } }"#;
+    let a = run(&c, single);
+    assert_eq!(a.single.into_iter().collect::<Vec<_>>(), vec![(IssueNumber(2), (oid(1), oid(2)))], "base tip, head");
+    assert!(a.listed.is_empty());
+    assert_eq!(run(&c, state).single.len(), 1, "mergeStateStatus reads the merge too");
+    assert_eq!(run(&c, title), Default::default(), "no field that reads the merge, no ask");
+    let l = run(&c, list);
+    assert!(l.single.is_empty(), "a list never asks for a compute");
+    assert_eq!(l.listed.into_iter().collect::<Vec<_>>(), vec![IssueNumber(2)]);
+    // Outside `query_asks` nothing is recorded, and the next `query_asks` starts empty.
+    let r = c.repo(0, &h, &dir);
+    let _ = graftyard_api::graphql::query(&Request::parse(single, None, None).unwrap(), Some(&r));
+    assert_eq!(run(&c, title), Default::default());
+    // Its current merge recorded: nothing to ask.
+    let ev = graftyard_git::repo::RepoEvent::TestMerged {
+        n: IssueNumber(2),
+        base: oid(1),
+        head: oid(2),
+        result: MergeabilityResult::Clean { merge: oid(9) },
+        pack: None,
+    };
+    c.entry(EntryBody::Events(vec![ev]), TierSet::CORE);
+    assert_eq!(run(&c, single), Default::default());
+    assert_eq!(run(&c, list), Default::default());
+    // The base moves: the recorded pair is stale, and the ask names the new tip.
+    c.push("refs/heads/main", oid(5));
+    assert_eq!(run(&c, single).single.get(&IssueNumber(2)), Some(&(oid(5), oid(2))));
+}
+
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
 /// label the leader holds after the entry, a taken name answers gh's `already_exists`, and an issue opened with the
 /// label is in `GET /repos/o/r/issues?labels=bug&sort=updated` from the next read, newest update first.

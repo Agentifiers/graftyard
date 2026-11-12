@@ -38,7 +38,8 @@
 //	POST /fsck?net=N                 git fsck --strict, refs, and object counts
 //	POST /merge?net=N&base=B&head=H  the test merge of a pull request, in a quarantine: {"conflict": [paths]}, or
 //	                                 {"merge": oid, "pack": base64} once the tree-diff check passed, the pack holding
-//	                                 only the merge's new objects. The repository is not changed
+//	                                 only the merge's new objects. Both answers carry "cpuMs", the CPU time of the
+//	                                 merge's own git processes. The repository is not changed
 //	POST /merge?net=N&base=B&heads=H1,H2..&ns=N1,N2..&method=merge|squash|rebase
 //	                                 GitCacheShard::merge: each head in turn on the previous result, from B, by the
 //	                                 method, each result deterministic and through the tree-diff check, in a
@@ -64,6 +65,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -120,17 +122,41 @@ func jsonOut(w http.ResponseWriter, v any) {
 var ident = []string{"GIT_COMMITTER_NAME=graftyard-shard", "GIT_COMMITTER_EMAIL=shard@graftyard.invalid",
 	"GIT_AUTHOR_NAME=graftyard-shard", "GIT_AUTHOR_EMAIL=shard@graftyard.invalid"}
 
+// cpuMeter sums the CPU time (user plus system) of the git processes one request runs: the test merge's charge
+// against TEST_MERGE_BUDGET, which wall time overstates while other requests share the container's vCPUs.
+type cpuMeter struct{ d time.Duration }
+
+func (m *cpuMeter) add(c *exec.Cmd) {
+	if m != nil && c.ProcessState != nil {
+		m.d += c.ProcessState.UserTime() + c.ProcessState.SystemTime()
+	}
+}
+
 func git(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
+	return gitWithMeter(nil, dir, env, stdin, args...)
+}
+
+func (m *cpuMeter) git(dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
+	return gitWithMeter(m, dir, env, stdin, args...)
+}
+
+func gitWithMeter(m *cpuMeter, dir string, env []string, stdin io.Reader, args ...string) ([]byte, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(append(os.Environ(), ident...), env...)
 	cmd.Stdin = stdin
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	m.add(cmd)
+	if err != nil {
 		return out.Bytes(), fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(errb.String()))
 	}
 	return out.Bytes(), nil
+}
+
+func ms(d time.Duration) float64 {
+	return math.Round(float64(d.Microseconds())/10) / 100
 }
 
 func diskID() string {
@@ -685,7 +711,7 @@ func details(rp string, env []string, us []update) ([]refDetail, error) {
 		}
 		seen := map[string]bool{}
 		for _, b := range bases {
-			m, err := changes(rp, env, b, u.New)
+			m, err := changes(rp, env, b, u.New, nil)
 			if err != nil {
 				return nil, err
 			}
@@ -1205,12 +1231,12 @@ func lsRefsOnly(reply []byte, sessions []string) []byte {
 }
 
 // changes is `git diff-tree -r` from a to b: each changed path and its entry in b ("mode oid", all zeros if deleted).
-func changes(rp string, env []string, a, b string) (map[string]string, error) {
-	out, err := git(rp, env, nil, "diff-tree", "-r", "-z", "--no-renames", "--raw", a, b)
+func changes(rp string, env []string, a, b string, m *cpuMeter) (map[string]string, error) {
+	out, err := m.git(rp, env, nil, "diff-tree", "-r", "-z", "--no-renames", "--raw", a, b)
 	if err != nil {
 		return nil, err
 	}
-	m := map[string]string{}
+	changed := map[string]string{}
 	f := strings.Split(string(out), "\x00")
 	for i := 0; i+1 < len(f); i += 2 {
 		// ":<old mode> <new mode> <old oid> <new oid> <status>", then the path.
@@ -1218,31 +1244,31 @@ func changes(rp string, env []string, a, b string) (map[string]string, error) {
 		if len(h) != 5 {
 			return nil, fmt.Errorf("diff-tree printed %q", f[i])
 		}
-		m[f[i+1]] = h[1] + " " + h[3]
+		changed[f[i+1]] = h[1] + " " + h[3]
 	}
-	return m, nil
+	return changed, nil
 }
 
 // treeDiffCheck is the merge engine's invariant (research/uptime.md, finding 19): what the merge changes against each
 // parent is exactly what the other side changed since the merge base. A path the merge changes against base must be
 // one head changed, with head's entry unless base changed it too, and the same the other way round.
-func treeDiffCheck(rp string, env []string, base, head, merge string) error {
-	mb, err := git(rp, env, nil, "merge-base", base, head)
+func treeDiffCheck(rp string, env []string, base, head, merge string, m *cpuMeter) error {
+	mb, err := m.git(rp, env, nil, "merge-base", base, head)
 	if err != nil {
 		return err
 	}
 	o := strings.TrimSpace(string(mb))
 	for _, side := range [][2]string{{base, head}, {head, base}} {
 		mine, other := side[0], side[1]
-		got, err := changes(rp, env, mine, merge)
+		got, err := changes(rp, env, mine, merge, m)
 		if err != nil {
 			return err
 		}
-		theirs, err := changes(rp, env, o, other)
+		theirs, err := changes(rp, env, o, other, m)
 		if err != nil {
 			return err
 		}
-		ours, err := changes(rp, env, o, mine)
+		ours, err := changes(rp, env, o, mine, m)
 		if err != nil {
 			return err
 		}
@@ -1269,6 +1295,7 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 		handleMergeChain(w, r)
 		return
 	}
+	var m cpuMeter
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
@@ -1290,7 +1317,7 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 	defer os.RemoveAll(q)
 	env := []string{"GIT_OBJECT_DIRECTORY=" + q, "GIT_ALTERNATE_OBJECT_DIRECTORIES=" + filepath.Join(rp, "objects")}
 	for _, c := range []string{base, head} {
-		if _, err := git(rp, env, nil, "cat-file", "-e", c+"^{commit}"); err != nil {
+		if _, err := m.git(rp, env, nil, "cat-file", "-e", c+"^{commit}"); err != nil {
 			fail(w, 409, "commit %s is not here", c)
 			return
 		}
@@ -1302,17 +1329,18 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	out, err := cmd.Output()
+	m.add(cmd)
 	f := strings.Split(strings.TrimRight(string(out), "\x00"), "\x00")
 	if err != nil {
 		if cmd.ProcessState != nil && cmd.ProcessState.ExitCode() == 1 && len(f) > 1 {
-			jsonOut(w, map[string]any{"conflict": f[1:]})
+			jsonOut(w, map[string]any{"conflict": f[1:], "cpuMs": ms(m.d)})
 			return
 		}
 		fail(w, 422, "merge-tree: %v: %s", err, strings.TrimSpace(errb.String()))
 		return
 	}
 	tree := f[0]
-	ct, err := git(rp, env, nil, "log", "-1", "--format=%ct", head)
+	ct, err := m.git(rp, env, nil, "log", "-1", "--format=%ct", head)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -1320,17 +1348,17 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 	date := "@" + strings.TrimSpace(string(ct)) + " +0000"
 	cenv := append(env, "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
 	msg := fmt.Sprintf("Merge %s into %s\n", head, base)
-	mc, err := git(rp, cenv, strings.NewReader(msg), "commit-tree", tree, "-p", base, "-p", head)
+	mc, err := m.git(rp, cenv, strings.NewReader(msg), "commit-tree", tree, "-p", base, "-p", head)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	merge := strings.TrimSpace(string(mc))
-	if err := treeDiffCheck(rp, env, base, head, merge); err != nil {
+	if err := treeDiffCheck(rp, env, base, head, merge, &m); err != nil {
 		fail(w, 422, "tree-diff check: %v", err)
 		return
 	}
-	objs, err := git(rp, env, nil, "rev-list", "--objects", merge, "--not", base, head)
+	objs, err := m.git(rp, env, nil, "rev-list", "--objects", merge, "--not", base, head)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -1341,12 +1369,12 @@ func handleMerge(w http.ResponseWriter, r *http.Request) {
 			ids.WriteString(f[0] + "\n")
 		}
 	}
-	pack, err := git(rp, env, &ids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
+	pack, err := m.git(rp, env, &ids, "pack-objects", "--stdout", "-q", "--delta-base-offset")
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
-	jsonOut(w, map[string]any{"merge": merge, "pack": pack})
+	jsonOut(w, map[string]any{"merge": merge, "pack": pack, "cpuMs": ms(m.d)})
 }
 
 // handleArchive answers `git archive` of one commit: ?net=&commit=&prefix=&format=tar.gz|zip (codeload-archives).
@@ -1595,7 +1623,7 @@ func handleMergeChain(w http.ResponseWriter, r *http.Request) {
 			conflict = map[string]any{"index": i, "paths": paths}
 			break
 		}
-		if err := treeDiffCheck(rp, env, cur, h, c); err != nil {
+		if err := treeDiffCheck(rp, env, cur, h, c, nil); err != nil {
 			fail(w, 422, "tree-diff check of #%s: %v", ns[i], err)
 			return
 		}
