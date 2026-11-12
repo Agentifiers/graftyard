@@ -108,9 +108,11 @@ impl GroupLog<'_> {
 
     /// One `/entries` page: from this site's member of the group when it has committed `from` (committed entries are
     /// the same on every member, and the local one is a call inside the site rather than across regions to the
-    /// leader), else from the leader.
+    /// leader), as a page of up to `ENTRIES_LOCAL_PAGE_BYTES_MAX`; else, or when that read misses the lookup's CALL,
+    /// a standard page from the leader.
     async fn page(&self, from: Index, to: Index) -> std::result::Result<Value, StoreError> {
         let path = format!("/entries?from={}&to={}", from.0, to.0);
+        let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
         let b = Bindings { env: self.env, sites: self.sites };
         let me = Some(self.me);
         let local = graftyard_lookup::known_voters(self.chain)
@@ -119,7 +121,7 @@ impl GroupLog<'_> {
             .chain(self.record.bootstrap_members(self.chain).into_iter().map(|m| (m.site, m.do_name.to_string())))
             .find(|(s, _)| Some(*s) == me);
         if let Some((site, name)) = local
-            && let Some((200, v)) = graftyard_lookup::post(&b, site, &name, &format!("{path}&local=1"), b"{}").await
+            && let Some((200, v)) = graftyard_lookup::post(&b, site, &name, &local_path, b"{}").await
             && v["entries"].as_array().and_then(|a| a.first()).and_then(|e| e["index"].as_u64()) == Some(from.0)
         {
             return Ok(v);

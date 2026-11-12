@@ -28,6 +28,8 @@ SHARD = 'crates/git/src/shard.rs'
 SHARD_T = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_promotion')
 SHARD_W = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_warming')
 EDGE_N = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'every_shard_try')
+SITEHOST = 'workers/site/src/host.rs'
+SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -115,6 +117,11 @@ MUTANTS = [
     ('the edge\'s home try waits as long as the others', EDGE,
      '    let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };\n    let next',
      '    let wait = VALIDATE_WAIT_OTHER_S;\n    let next', EDGE_N),
+    ('a remote /entries read gets the large page too', SITEHOST, '        Some(b) if local =>', '        Some(b) =>',
+     SITE_P),
+    ('a local /entries read is not capped', SITEHOST,
+     'b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize',
+     'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
 ]
 
 

@@ -7,7 +7,8 @@
 //! gigabytes of inline packs above its last `Promoted` (`tests/am1/results/b0-30.md`, "Blocked on", 8 to 12):
 //!
 //! - **Memory.** At most two log pages are held at once: the one being applied and the next, read meanwhile. A page is
-//!   what one `/entries` call answers, at most `ENTRIES_PAGE_BYTES` of entries on a member. Stored packs go from a
+//!   what one `/entries` call answers, at most `ENTRIES_PAGE_BYTES` of entries on a member, or
+//!   `ENTRIES_LOCAL_PAGE_BYTES_MAX` from the shard's own site's member. Stored packs go from a
 //!   bucket to the container without passing through the shard object's memory (`ShardIo::ingest_stored`).
 //! - **The cursor moves only past what was applied.** Each page's packs are ingested and its ref changes applied
 //!   before the cursor moves, and only to the last index the page held, never to the end of the range asked for. A
