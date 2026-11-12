@@ -48,6 +48,13 @@ MUTANTS = [
      '            cursor.advance(chain, last);\n            saved.put_cursor(disk, cursor).await?;\n',
      '            cursor.advance(chain, last);\n            if last == Index(u64::MAX) {\n'
      '                saved.put_cursor(disk, cursor).await?;\n            }\n', CATCHUP),
+    ('a rehydrate loads only the last promotion first, not the earlier ones still in the log', CU,
+     '                if e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {',
+     '                if false && e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {', CATCHUP),
+    ('the promotions load in marker order, not oldest first', CU,
+     '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))',
+     '            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).map(|i| u64::MAX - i.0)))',
+     CATCHUP),
     ('a whole-tier read counts rows only (blocker 5)', HOSTED,
      '                    if budget.rows == 0 || budget.bytes < bytes {',
      '                    if budget.rows == 0 {', SURFACES),

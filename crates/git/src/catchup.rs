@@ -32,6 +32,9 @@ use crate::shard::IngestCursor;
 /// repositories with their sizes.
 pub const ROOM_EVERY: u64 = 256 << 20;
 
+/// A rehydrate reads the entry of each marker still in the log this many at a time, to tell promotions apart.
+const PROBE_AT_ONCE: usize = 16;
+
 /// The container's answer to one ingest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ingested {
@@ -419,11 +422,43 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     let mut evicted = io.make_room(marks.iter().map(|(_, m)| m.bytes).sum()).await?;
     lap(&mut ms, "markers");
     if !state.marked {
-        // Each chain's last promoted pack first: it is complete, and the stored packs below the tail build on its
-        // objects, so none of them answers `Later` and costs a fetch twice.
-        let promoted: BTreeSet<PackId> = last.iter().filter_map(|(_, p)| p.as_ref()?.pack.stored_id()).collect();
+        // Every promoted pack first, oldest first: each is complete, but its objects name objects of the promotions
+        // before it, and the stored packs below the tail build on their objects, so none of them answers `Later` and
+        // costs a fetch twice. Promotion runs ahead of archiving, so a chain's earlier promotions are recorded above
+        // its tail start too (`log_archive::step`), where `rehydrate_plan` leaves every marked pack to the tail, since
+        // a pushed one there may be thin against the tail: each such marker is told apart by its own entry, one read
+        // of one entry, which the tail start keeps in the log.
+        let mut promoted: BTreeSet<PackId> = last.iter().filter_map(|(_, p)| p.as_ref()?.pack.stored_id()).collect();
+        let starts: BTreeMap<ChainId, Index> = last.iter().map(|(c, p)| (*c, tail_start(p.as_ref()))).collect();
+        let probe: Vec<&(PackId, Marker)> = marks
+            .iter()
+            .filter(|(id, m)| {
+                !consumed.contains(id) && !promoted.contains(id) && starts.get(&m.chain).is_some_and(|f| m.index >= *f)
+            })
+            .collect();
+        for chunk in probe.chunks(PROBE_AT_ONCE) {
+            let reads = chunk.iter().map(|(_, m)| log.entries(m.chain, m.index, m.index));
+            for ((id, m), page) in chunk.iter().zip(futures_util::future::join_all(reads).await) {
+                let page = page?;
+                let Some(e) = page.iter().find(|e| e.index == m.index) else {
+                    return Err(StoreError(format!("{}: entry {} of a marker was not answered", m.chain, m.index.0)));
+                };
+                if e.promoted.as_ref().and_then(|p| p.pack.stored_id()) == Some(*id) {
+                    promoted.insert(*id);
+                }
+            }
+        }
+        let at: BTreeMap<PackId, Index> = marks.iter().map(|(id, m)| (*id, m.index)).collect();
         let mut todo = marked;
-        todo.sort_by_key(|l| !l.stored_id().is_some_and(|id| promoted.contains(&id)));
+        for (id, m) in &marks {
+            if promoted.contains(id) && seen.insert(*id) {
+                todo.push(Load::Stored { id: *id, bytes: m.bytes, checksum: m.checksum });
+            }
+        }
+        todo.sort_by_key(|l| {
+            let id = l.stored_id();
+            (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))
+        });
         match ingest_all(io, &todo).await? {
             Ok(n) => r.stored += n,
             Err(n) => return Err(StoreError(format!("{n} marked packs have bases no pack provides"))),

@@ -1077,7 +1077,7 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// A shard rehydrates a network from every stored pack with a marker, minus those a `Compacted` consumed, plus the packs
 /// each member chain's entries name after its last `Promoted`, read a page at a time with the next read meanwhile, so it
 /// holds two pages. It saves its place per page with its disk id, so a cut-off run resumes, never anew (B0-30, 9 to 11).
-/// Pushed packs are thin, so each ingest re-indexes with `--fix-thin` [inference from git]; promotion is self-contained (BF-18; G5).
+/// Pushed packs are thin, so ingest uses `--fix-thin` [inference]. A promotion names the prior one's objects: all load first (hot-shards).
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or
