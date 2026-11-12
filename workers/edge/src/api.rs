@@ -223,12 +223,23 @@ pub(crate) async fn read(
     name: &str,
     viewer: Option<&Principal>,
 ) -> Result<std::result::Result<Read, Reply>> {
+    read_as(c, owner, name, viewer, Rows::All).await
+}
+
+/// `read` with the rows `rows` names: a narrow API read (`Rows::Api`) or both whole tiers.
+async fn read_as(
+    c: &Ctx<'_>,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+    rows: Rows,
+) -> Result<std::result::Result<Read, Reply>> {
     let repo = match resolve(c, owner, name).await? {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
     };
-    read_repo(c, repo, owner, name, viewer, None, Rows::All, Gate::Readers).await
+    read_repo(c, repo, owner, name, viewer, None, rows, Gate::Readers).await
 }
 
 /// `read` for a command that decides on the core tier alone (a lease command, L0-16): served while the metadata
@@ -305,10 +316,11 @@ async fn read_repo(
     gate: Gate,
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
-        Rows::All | Rows::Core => None,
+        Rows::All | Rows::Core | Rows::Api(_) => None,
         Rows::Merge(id, _) => Some(*id),
     };
     let core_only = matches!(rows, Rows::Core);
+    let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
     timing::mark("resolve");
     let read_authz = async {
         match known {
@@ -319,6 +331,16 @@ async fn read_repo(
     let read_rows = async {
         match rows {
             Rows::Merge(_, Some(v)) => v,
+            Rows::Api(route) => {
+                let spec = graftyard_api::narrow::Spec { at: at.clone(), route };
+                match api_rows(c, &repo, &spec).await? {
+                    // A route the member answers whole, or a member that cannot read the spec: both whole tiers.
+                    Ok(v) if v["value"].get("whole").is_some() || v["value"].get("error").is_some() => {
+                        tier_rows(c, &repo, None).await
+                    }
+                    v => Ok(v),
+                }
+            }
             _ => tier_rows(c, &repo, merge).await,
         }
     };
@@ -350,8 +372,8 @@ async fn read_repo(
             _ => return Ok(Err(Reply::not_found())),
         }
     }
-    let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
-    let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, ..HostedDir::default() };
+    let picks = graftyard_api::narrow::Picks::of(rows.picks.clone());
+    let mut dir = HostedDir { home: Some(at.clone()), authz, viewer: None, picks, ..HostedDir::default() };
     dir.viewer = viewer.and_then(|p| match p.actor {
         Actor::User(u) => Some(u.0),
         Actor::App { .. } | Actor::Anonymous => None,
@@ -378,19 +400,51 @@ pub(crate) fn served_meta<'a>(
 }
 
 /// Which tier rows `read_repo` reads: both whole tiers; both, served with an empty metadata view while that tier
-/// loads (`Core`); or a merge's rows (`TierRows::merge_rows`) for the pull request with this database id, with the
-/// leader's answer if the caller already read it.
+/// loads (`Core`); a merge's rows (`TierRows::merge_rows`) for the pull request with this database id, with the
+/// leader's answer if the caller already read it; or only the rows one API read's reply renders
+/// (`graftyard_api::narrow`), else both whole tiers when the member answers that the route needs them.
 enum Rows {
     All,
     Core,
     Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
+    Api(graftyard_api::narrow::Route),
+}
+
+/// A narrow API read (`{"rows": {"api": spec}}`, `graftyard_api::narrow::answer`) on the repository's learners and
+/// followers by read-index, as `tier_rows` reads: only the rows one reply renders.
+async fn api_rows(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    spec: &graftyard_api::narrow::Spec,
+) -> Result<std::result::Result<Value, Reply>> {
+    let chain = ChainId::Repo(repo.id);
+    let b = c.bindings();
+    let q = json!({ "q": { "rows": { "api": spec } } });
+    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+    if let Ok(None) = v {
+        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+    }
+    Ok(match v {
+        Ok(Some(v)) => Ok(v),
+        Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
+        Err(e) => Err(read_failed("the repository's tier rows did not answer; retry", &e)),
+    })
 }
 
 /// The logins of every account `rd`'s tiers name, the viewer's, and the owner's from the request path (F50).
+/// For a narrow read, the member's picks name them, cut as a whole-tier read's were
+/// (`graftyard_api::narrow::Picks::login_accounts`).
 async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, String> {
-    let mut named = graftyard_api::hosted::accounts(&rd.core, &rd.meta);
-    named.extend(rd.dir.viewer);
-    named.remove(&rd.repo.owner);
+    let named = match rd.dir.picks.login_accounts(rd.dir.viewer, rd.repo.owner) {
+        Some(n) => n.into_iter().collect(),
+        None => {
+            let mut named = graftyard_api::hosted::accounts(&rd.core, &rd.meta);
+            named.extend(rd.dir.viewer);
+            named.remove(&rd.repo.owner);
+            named
+        }
+    };
     let mut out = account_logins(c, &named).await;
     out.insert(rd.repo.owner.0.0, rd.at.owner.clone());
     for (id, l) in logins(c) {
@@ -479,6 +533,12 @@ fn can_write(r: &View<'_>, who: Option<&Principal>) -> bool {
         Some(Actor::User(u)) => r.dir.permission(u.0) >= Some(graftyard_identity::RepoPermission::Write),
         _ => false,
     }
+}
+
+/// Whether `who`'s single-PR read, GraphQL or REST, has its missing test merge computed (`ask_merges`): a writer's or
+/// an App's (CI) does, anyone else's is counted as a list's.
+fn merge_computes(r: &View<'_>, who: Option<&Principal>) -> bool {
+    can_write(r, who) || who.is_some_and(|w| matches!(w.actor, Actor::App { .. }))
 }
 
 async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: &Meta) -> Result<Reply> {
@@ -1077,7 +1137,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
     timing::mark("auth_resolve");
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
-    let (owner, name, rd) = match found? {
+    let (owner, name, rd, found) = match found? {
         None => {
             let viewer = match who.actor {
                 Actor::User(u) => crate::ident::login(c, u.0).await.map(|login| graphql::Viewer { id: u.0, login }),
@@ -1088,14 +1148,21 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         Some(Ok((owner, name, repo, a, rows))) => {
             let rows = match merging {
                 Some(id) => Rows::Merge(id, rows),
+                // A query reads only the rows its reply renders (`graftyard_api::narrow`); a mutation plans on both
+                // whole tiers.
+                None if !gq.is_mutation().unwrap_or(true) => Rows::Api(graftyard_api::narrow::Route::Graphql {
+                    query: q.clone(),
+                    variables: vars.clone(),
+                    op: body["operationName"].as_str().map(str::to_owned),
+                }),
                 None => Rows::All,
             };
-            let rd = read_repo(c, repo, &owner, &name, Some(&who), a, rows, Gate::Readers).await?;
-            (owner, name, rd)
+            let rd = read_repo(c, repo.clone(), &owner, &name, Some(&who), a.clone(), rows, Gate::Readers).await?;
+            (owner, name, rd, Some((repo, a)))
         }
         Some(Err(Some(e))) => return Ok(read_failed("the repository lookup failed; retry", &e)),
         Some(Err(None)) => match &target {
-            Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found())),
+            Some(graphql::Target::Name { owner, name }) => (owner.clone(), name.clone(), Err(Reply::not_found()), None),
             _ => {
                 return Ok(Reply::json(
                     200,
@@ -1126,7 +1193,20 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
         let (v, asks) = graphql::query_asks(&gq, Some(&r));
-        ask_merges(c, &rd.repo, asks, can_write(&r, Some(&who)) || matches!(who.actor, Actor::App { .. }));
+        if !rd.dir.picks.missed() {
+            ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
+            return Ok(Reply::json(200, v));
+        }
+        // The render asked for a selection the member did not make (a member of another release): both whole tiers.
+        drop(r);
+        let Some((repo, a)) = found else { return Ok(unavailable("the repository could not be read; retry")) };
+        let rd = match read_repo(c, repo, &owner, &name, Some(&who), a, Rows::All, Gate::Readers).await? {
+            Ok(rd) => rd,
+            Err(r) => return Ok(r),
+        };
+        let r = rd.view(host);
+        let (v, asks) = graphql::query_asks(&gq, Some(&r));
+        ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
         return Ok(Reply::json(200, v));
     }
     let p = match graphql::plan(&gq, &r) {
@@ -1202,7 +1282,7 @@ async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, Au
 
 /// The most `account_shard` groups one request reads for logins [guess]. An account past it renders as `ghost`, as an
 /// account with no row does.
-const LOGIN_SHARDS_MAX: usize = 24;
+const LOGIN_SHARDS_MAX: usize = graftyard_api::narrow::LOGIN_SHARDS_MAX;
 
 /// The logins of `accounts`, from each one's `AccountLogin` row (F50): one read-class `fresh` read per distinct
 /// `account_shard`, all at once. A shard that fails to answer, or whose members predate the row, names none of its
@@ -1255,6 +1335,14 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     }
     timing::mark("auth");
     let method = req.method();
+    let agent_accept = req.headers().get("accept")?;
+    // A `GET` that `graftyard_api::narrow::rest_get` serves reads only the rows its reply renders.
+    if method == Method::Get
+        && graftyard_api::narrow::rest_serves(tail)
+        && let Some(r) = rest_narrow(c, &at, tail, p, query, who.as_ref(), agent_accept.as_deref(), host).await?
+    {
+        return Ok(r);
+    }
     let rd = match at {
         graftyard_wire::RepoPath::Name { owner, name } => read(c, owner, name, who.as_ref()).await?,
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
@@ -1284,7 +1372,6 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     }
     // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the
     // install's `AgentApp` rows for `is_agent`.
-    let agent_accept = req.headers().get("accept")?;
     if graftyard_api::trust::opted_in(agent_accept.as_deref()) {
         rd.dir.install = crate::install_authz(c).await;
     }
@@ -1301,7 +1388,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         (Method::Get, ["issues"]) => rest::list_issues(&r, query),
         // LF-4's trust resources over REST (F61): each read renders the pinned GHES 3.22 shape from the fold, and a
         // commit from the git cache shard.
-        (Method::Get, ["pulls", n]) => rest::get_pull(&r, n),
+        // A writer's or an App's poll asks the shard for the test merge its `mergeable` lacks, as GraphQL's single-PR
+        // read does (`ask_merges`); anyone else's is counted as a list's. `mergeable` stays null until the merge is recorded.
+        (Method::Get, ["pulls", n]) => {
+            let (reply, asks) = rest::get_pull_asks(&r, n);
+            ask_merges(c, &rd.repo, asks, merge_computes(&r, who.as_ref()));
+            reply
+        }
         (Method::Get, ["issues", n, "comments"]) => rest::list_issue_comments(&r, n, query),
         (Method::Get, ["pulls", n, "reviews"]) => rest::list_reviews(&r, n, query),
         (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
@@ -1507,6 +1600,66 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     Ok(graftyard_api::trust::layer(agent_accept.as_deref(), p, &r, reply))
 }
 
+/// A repository `GET` that `graftyard_api::narrow::rest_get` serves, rendered from a narrow read: only the rows its
+/// reply reads, and the member's selections. `None` when the render asked for a selection the member did not make
+/// (a member and an edge of different releases): the caller then reads both whole tiers, as every route did before.
+#[expect(clippy::too_many_arguments, reason = "the request's parts rest_repo already holds")]
+async fn rest_narrow(
+    c: &Ctx<'_>,
+    at: &graftyard_wire::RepoPath<'_>,
+    tail: &[&str],
+    p: &str,
+    query: &str,
+    who: Option<&Principal>,
+    accept: Option<&str>,
+    host: &Host,
+) -> Result<Option<Reply>> {
+    let agent = graftyard_api::trust::opted_in(accept);
+    let route = graftyard_api::narrow::Route::Rest {
+        tail: tail.iter().map(|s| (*s).to_owned()).collect(),
+        query: query.to_owned(),
+        path: p.to_owned(),
+        agent,
+    };
+    let rd = match at {
+        graftyard_wire::RepoPath::Name { owner, name } => read_as(c, owner, name, who, Rows::Api(route)).await?,
+        graftyard_wire::RepoPath::Id(id) => match repo_name(c, *id).await {
+            Some((owner, name, repo, a)) => {
+                read_repo(c, repo, &owner, &name, who, Some(a), Rows::Api(route), Gate::Readers).await?
+            }
+            None => return Ok(Some(Reply::not_found())),
+        },
+    };
+    let mut rd = match rd {
+        Ok(r) => r,
+        Err(r) => return Ok(Some(r)),
+    };
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    if let Some(r) = crate::usertok::reaches(c, &access) {
+        return Ok(Some(r));
+    }
+    if agent {
+        rd.dir.install = crate::install_authz(c).await;
+    }
+    let r = rd.view(host);
+    let reply = match tail {
+        ["commits", reference] => match rest::resolve(&r, reference) {
+            Some(sha) => match commit_object(c, &rd.repo, sha).await {
+                Ok(Some(raw)) => rest::get_commit(&r, sha, &raw),
+                Ok(None) => rest::commit_not_found(reference),
+                Err(e) => unavailable(&format!("the git cache: {e}")),
+            },
+            None => rest::commit_not_found(reference),
+        },
+        _ => match graftyard_api::narrow::rest_get(&r, tail, query, graftyard_types::Index(rd.index)) {
+            Some(reply) => reply,
+            None => return Ok(None),
+        },
+    };
+    let reply = graftyard_api::trust::layer(accept, p, &r, reply);
+    Ok((!rd.dir.picks.missed()).then_some(reply))
+}
+
 /// A command planned over `DurableBlob`s, as it crosses the binding: its blob as the `BlobRef`.
 fn to_wire(op: IssueOp) -> IssueOp<BlobRef> {
     op.map_blob(|d| Ok::<_, ()>(d.blob())).expect("infallible")
@@ -1681,14 +1834,9 @@ async fn commit_object(
 ) -> std::result::Result<Option<Vec<u8>>, String> {
     use graftyard_git::commit_fetch;
     let err = |e: worker::Error| e.to_string();
-    let mut init = RequestInit::new();
-    let h = Headers::new();
-    h.set("git-protocol", "version=2").map_err(err)?;
     let body = commit_fetch::request(sha);
-    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
-    let req = Request::new_with_init(&url, &init).map_err(err)?;
-    let mut r = crate::shard(c, repo).map_err(err)?.fetch_with_request(req).await.map_err(err)?;
+    let mut r = crate::shard_read(c, repo, &url, Method::Post, "version=2", Some(&body)).await.map_err(err)?;
     if r.status_code() != 200 {
         return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
     }

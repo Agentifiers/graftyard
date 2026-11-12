@@ -51,6 +51,10 @@ pub const CURSOR_STRIDE: u64 = 1_000;
 pub const MERGE_BYTES_PER_COMMAND: usize = 900_000;
 /// Entries one leader alarm reads for the dispatcher [guess]; the alarm comes back for the rest.
 pub const SCAN_MAX: u64 = 2_000;
+/// Stored row bytes one leader alarm reads for a dispatcher [guess], however few entries that is. A row's inline packs
+/// decode on every read: a new leader of a hot group with 362 MB of log above a cursor that never moved spent 30 to
+/// 34 s of one alarm's CPU on its two scans, reset, and so did each leader after it (hot-shards, graft-m3c).
+pub const SCAN_BYTES: usize = 16 << 20;
 /// How soon after the leader applies entries its alarm runs the dispatcher [guess]: BF-24's 10 s holds the queue's
 /// delivery, the test merge, and a commit round as well.
 pub const ALARM_MS: i64 = 50;
@@ -225,22 +229,39 @@ impl<T: Ord + Clone> Dispatcher<T> {
     }
 }
 
-/// The leader alarm's read: up to `SCAN_MAX` entries past what `d` has read, from the committed cursor on, each by
-/// `entry`. Stops at an entry `entry` cannot give (`Err` names it), so nothing past a missing entry is read.
+/// The leader alarm's read: up to `SCAN_MAX` entries and `SCAN_BYTES` of stored rows past what `d` has read, from the
+/// committed cursor on, each by `entry` with the bytes it read. Stops at an entry `entry` cannot give (`Err` names it),
+/// so nothing past a missing entry is read. `Ok(true)` when entries up to `applied` are left for the next alarm.
 pub fn scan(
     d: &mut Dispatcher,
     core: &dyn Read,
     repo: RepoId,
     cursor: Index,
     applied: Index,
-    mut entry: impl FnMut(Index) -> Option<LogEntry<RepoEvent>>,
-) -> Result<(), Index> {
-    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(()) };
+    entry: impl FnMut(Index) -> Option<(LogEntry<RepoEvent>, usize)>,
+) -> Result<bool, Index> {
+    scan_with(d, cursor, applied, entry, |e| touched(core, repo, e))
+}
+
+/// `scan`'s loop, for any consumer's dispatcher and what it records of each entry.
+pub fn scan_with<T: Ord + Clone>(
+    d: &mut Dispatcher<T>,
+    cursor: Index,
+    applied: Index,
+    mut entry: impl FnMut(Index) -> Option<(LogEntry<RepoEvent>, usize)>,
+    mut touched: impl FnMut(&LogEntry<RepoEvent>) -> Vec<T>,
+) -> Result<bool, Index> {
+    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(false) };
+    let mut bytes = 0usize;
     for i in from.0 + 1..=to.0.min(from.0 + SCAN_MAX) {
-        let e = entry(Index(i)).ok_or(Index(i))?;
-        d.read(Index(i), touched(core, repo, &e));
+        if bytes >= SCAN_BYTES {
+            return Ok(true);
+        }
+        let (e, n) = entry(Index(i)).ok_or(Index(i))?;
+        bytes += n;
+        d.read(Index(i), touched(&e));
     }
-    Ok(())
+    Ok(d.scanned < applied)
 }
 
 /// REST's `mergeable` (GraphQL `MERGEABLE`, `CONFLICTING`, or `UNKNOWN`): the recorded test merge, only while it is of
@@ -310,14 +331,19 @@ pub struct BudgetStats {
     pub list_computes: u32,
     pub low_ms: f32,
     pub max_ms: f32,
+    /// The most merges at once that had passed the first look at the budget and were catching up, waiting for the
+    /// network's turn, or running: above 1, merges arrived concurrently and the turn put them in line.
+    pub in_flight_max: u32,
 }
 
 /// The test-merge budget of one network on one site: a bucket of vCPU-milliseconds that refills at TEST_MERGE_BUDGET
 /// of the vCPU of the shard that runs the merges, the network's first shard on the leader's site, and holds one second
 /// of it, or one merge's estimate when that is more. Pushes and dispatch may take the bucket below zero by one merge,
 /// so they are never shed while GETs are; a GET runs only on a positive balance that covers its estimate. That bound
-/// holds only if each merge is charged before the next is admitted, which `budgeted` ensures. Memory only, in that
-/// shard object (`Budgets`): a restart starts it full [inference].
+/// holds only if each merge is charged before the next is admitted, which `budgeted` ensures. The bucket is in that
+/// shard object's memory (`Budgets`), and a restart starts it full: the object resets about 90 s after its last
+/// request, by when the bucket had refilled anyway [measured, `tests/am1/results/merge-budget-2.md`]. Its counts
+/// (`BudgetStats`) outlive the reset: the shard stores them and a restarted object goes on from them (`restored`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MergeBudget {
     rate: f32,
@@ -325,6 +351,8 @@ pub struct MergeBudget {
     at: u64,
     /// The last GET compute per PR, for GET_COALESCE_MS.
     got: BTreeMap<IssueNumber, u64>,
+    /// Merges inside `asked` now, for `BudgetStats::in_flight_max`.
+    in_flight: u32,
     stats: BudgetStats,
 }
 
@@ -333,7 +361,15 @@ impl MergeBudget {
     pub fn new(vcpu: f32, now: u64) -> MergeBudget {
         let rate = TEST_MERGE_BUDGET * vcpu * 1000.0;
         let stats = BudgetStats { since: now, vcpu: rate / 1000.0, ..BudgetStats::default() };
-        MergeBudget { rate, ms: rate, at: now, got: BTreeMap::new(), stats }
+        MergeBudget { rate, ms: rate, at: now, got: BTreeMap::new(), in_flight: 0, stats }
+    }
+
+    /// A restarted shard's budget: full at `now`, as `new`, going on from the counts the shard stored, so `since` and
+    /// every count cover the network's merges on this site across resets. `vcpu` is the shard's now.
+    pub fn restored(vcpu: f32, now: u64, stats: BudgetStats) -> MergeBudget {
+        let mut b = MergeBudget::new(vcpu, now);
+        b.stats = BudgetStats { vcpu: b.rate / 1000.0, ..stats };
+        b
     }
 
     fn refill(&mut self, now: u64, est_ms: f32) {
@@ -450,6 +486,13 @@ impl Budgets {
         self.of.get(&net).map(MergeBudget::stats)
     }
 
+    /// Puts back the counts a shard stored for `net` before it restarted (`MergeBudget::restored`), unless this object
+    /// already budgets `net`, whose counts are newer.
+    pub fn restore(&mut self, net: NetworkId, stats: BudgetStats, now: u64) {
+        let vcpu = self.vcpu;
+        self.of.entry(net).or_insert_with(|| MergeBudget::restored(vcpu, now, stats));
+    }
+
     fn turn(&mut self, net: NetworkId) -> crate::merge_cache::CatchUps {
         self.turns.entry(net).or_default().clone()
     }
@@ -497,7 +540,19 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
             b.decide(cause, n, MERGE_EST_MS, now);
             return Ok(None);
         }
+        b.in_flight += 1;
+        b.stats.in_flight_max = b.stats.in_flight_max.max(b.in_flight);
     }
+    /// Leaves `in_flight` however `asked` ends: charged, shed, failed, or dropped.
+    struct InFlight<'a>(&'a RefCell<Budgets>, NetworkId);
+    impl Drop for InFlight<'_> {
+        fn drop(&mut self) {
+            if let Some(b) = self.0.borrow_mut().of.get_mut(&self.1) {
+                b.in_flight = b.in_flight.saturating_sub(1);
+            }
+        }
+    }
+    let _in_flight = InFlight(budgets, net);
     prepare().await?;
     let turn = budgets.borrow_mut().turn(net);
     let _turn = turn.turn().await;

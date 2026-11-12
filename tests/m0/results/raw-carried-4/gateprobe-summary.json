@@ -1,0 +1,138 @@
+{
+ "what": "graft-m4-gateprobe bare-object control, 2026-11-12 10:20-11:20Z; enam leader, weur peer, body runs of x, 50 KB write per round",
+ "byBodyAndMode": {
+  "150000 gate": {
+   "rounds": 257,
+   "bodyOver150ms": 0,
+   "callOver400ms": 1,
+   "syncP50": 21,
+   "syncP99": 25
+  },
+  "150000 nogate": {
+   "rounds": 4608,
+   "bodyOver150ms": 2,
+   "callOver400ms": 7,
+   "syncP50": 24,
+   "syncP99": 36
+  },
+  "150000 nogatekv": {
+   "rounds": 149,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": 1,
+   "syncP99": 33
+  },
+  "150000 nowrite": {
+   "rounds": 4579,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": null,
+   "syncP99": null
+  },
+  "150000 stream": {
+   "rounds": 1944,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": 25,
+   "syncP99": 30
+  },
+  "150000 streamnowait": {
+   "rounds": 2393,
+   "bodyOver150ms": 1,
+   "callOver400ms": 1,
+   "syncP50": 23,
+   "syncP99": 32
+  },
+  "250000 nogate": {
+   "rounds": 1795,
+   "bodyOver150ms": 25,
+   "callOver400ms": 6,
+   "syncP50": 28,
+   "syncP99": 36
+  },
+  "250000 nowrite": {
+   "rounds": 1775,
+   "bodyOver150ms": 3,
+   "callOver400ms": 5,
+   "syncP50": null,
+   "syncP99": null
+  },
+  "250000 stream": {
+   "rounds": 1784,
+   "bodyOver150ms": 3,
+   "callOver400ms": 3,
+   "syncP50": 28,
+   "syncP99": 32
+  },
+  "250000 streamnowait": {
+   "rounds": 1792,
+   "bodyOver150ms": 0,
+   "callOver400ms": 1,
+   "syncP50": 28,
+   "syncP99": 32
+  },
+  "400000 gate": {
+   "rounds": 251,
+   "bodyOver150ms": 0,
+   "callOver400ms": 1,
+   "syncP50": 24,
+   "syncP99": 34
+  },
+  "400000 nogate": {
+   "rounds": 3987,
+   "bodyOver150ms": 53,
+   "callOver400ms": 36,
+   "syncP50": 23,
+   "syncP99": 34
+  },
+  "400000 nogatekv": {
+   "rounds": 148,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": 1,
+   "syncP99": 29
+  },
+  "400000 nowrite": {
+   "rounds": 3952,
+   "bodyOver150ms": 9,
+   "callOver400ms": 9,
+   "syncP50": null,
+   "syncP99": null
+  },
+  "400000 stream": {
+   "rounds": 3707,
+   "bodyOver150ms": 3,
+   "callOver400ms": 2,
+   "syncP50": 23,
+   "syncP99": 34
+  },
+  "400000 streamnowait": {
+   "rounds": 1777,
+   "bodyOver150ms": 5,
+   "callOver400ms": 5,
+   "syncP50": 32,
+   "syncP99": 35
+  },
+  "60000 nogate": {
+   "rounds": 2399,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": 28,
+   "syncP99": 47
+  },
+  "60000 nowrite": {
+   "rounds": 2392,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": null,
+   "syncP99": null
+  },
+  "60000 streamnowait": {
+   "rounds": 2399,
+   "bodyOver150ms": 0,
+   "callOver400ms": 0,
+   "syncP50": 28,
+   "syncP99": 41
+  }
+ }
+}

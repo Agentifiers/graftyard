@@ -811,7 +811,7 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
 /// commit's provenance), and every captured query answers from the rows it does read as from the member's own tiers.
 #[test]
 fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
-    use graftyard_api::hosted::TierRows;
+    use graftyard_api::hosted::{Budget, TierRows};
     use graftyard_fold::{Store, Stored, Val};
     use graftyard_git::tiers::{CORE, METADATA};
     let mut c = seeded();
@@ -819,8 +819,8 @@ fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
     let m = &mut c.members[0];
     m.meta.put("path_set", vec![Val::Blob(b"refs/heads/claude/a".as_slice().into())], row(&[7; 2_000]));
     m.meta.put("provenance", vec![Val::Blob([1; 20].as_slice().into())], row(&[8; 64]));
-    let (core, ok1) = TierRows::dump(&c.members[0].core, &CORE, &mut 100_000);
-    let (meta, ok2) = TierRows::dump(&c.members[0].meta, &METADATA, &mut 100_000);
+    let (core, ok1) = TierRows::dump(&c.members[0].core, &CORE, &mut Budget::rows(100_000));
+    let (meta, ok2) = TierRows::dump(&c.members[0].meta, &METADATA, &mut Budget::rows(100_000));
     assert!(ok1 && ok2);
     let tables: std::collections::BTreeSet<&str> = meta.iter().map(|(t, _, _)| t.as_str()).collect();
     assert!(!tables.contains("path_set") && !tables.contains("provenance"), "{tables:?}");
@@ -843,16 +843,16 @@ fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
 /// `Render`, and the member renders from `&Acked` over its own tiers. The reply equals the in-process render.
 #[test]
 fn a_hosted_mutation_renders_on_the_member_as_in_process() {
-    use graftyard_api::hosted::{HostedDir, Render, TierRows, What, render_ok};
+    use graftyard_api::hosted::{Budget, HostedDir, Render, TierRows, What, render_ok};
     use graftyard_git::tiers::{CORE, METADATA};
     let mut c = seeded();
     let h = host();
     let dir = Dir::new(WRITER);
     let rows = |c: &Chain| {
-        let (mut budget, m) = (100_000, &c.members[0]);
+        let (mut budget, m) = (Budget::rows(100_000), &c.members[0]);
         let (core, ok1) = TierRows::dump(&m.core, &CORE, &mut budget);
         let (meta, ok2) = TierRows::dump(&m.meta, &METADATA, &mut budget);
-        let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2 };
+        let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2, picks: None };
         serde_json::from_value::<TierRows>(serde_json::to_value(&t).unwrap()).unwrap()
     };
     let t = rows(&c);
@@ -865,7 +865,7 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
     assert_eq!(TierRows::from_value(&serde_json::to_value(&t).unwrap()).unwrap(), t);
     let (core, meta) = (TierRows::store(&t.core), TierRows::store(t.meta.as_ref().unwrap()));
     // The rows `Repo` reads are the member's; the written index and the tier's `META` row do not cross.
-    let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut 100_000).0;
+    let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut Budget::rows(100_000)).0;
     assert_eq!(again(&core, &CORE), again(&c.members[0].core, &CORE));
     assert_eq!(again(&meta, &METADATA), again(&c.members[0].meta, &METADATA));
     assert!(!t.core.is_empty() && !t.meta.as_ref().unwrap().is_empty());
@@ -993,6 +993,80 @@ fn a_read_asks_for_the_merge_its_mergeable_lacks_and_a_list_only_counts() {
     // The base moves: the recorded pair is stale, and the ask names the new tip.
     c.push("refs/heads/main", oid(5));
     assert_eq!(run(&c, single).single.get(&IssueNumber(2)), Some(&(oid(5), oid(2))));
+}
+
+/// merge-budget-3 item 1: REST `GET pulls/{n}` asks for the same test merge GraphQL's single-PR read asks for, at the
+/// same (base tip, head), and only when that read would: a PR with its current merge recorded, an issue, an unknown
+/// number, or a PR from another repository asks nothing. Until the merge is recorded the reply is GHES 3.22's
+/// `mergeable` null and `mergeable_state` "unknown"; once it is, `mergeable` is its result and `mergeable_state` the
+/// lower case of GraphQL's `mergeStateStatus` (blocked by an unmet required check), and a base that moves past the
+/// record makes it null again.
+#[test]
+fn a_rest_pull_read_asks_for_the_merge_graphql_asks_for_and_keeps_mergeable_null() {
+    use graftyard_api::graphql::query_asks;
+    use graftyard_api::rest::{get_pull, get_pull_asks};
+    use graftyard_git::issues::MergeabilityResult;
+    let mut c = seeded();
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let gql = |c: &Chain| {
+        let r = c.repo(0, &h, &dir);
+        let q = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeable } } }"#;
+        query_asks(&Request::parse(q, None, None).unwrap(), Some(&r)).1
+    };
+    let rest = |c: &Chain, n: &str| {
+        let r = c.repo(0, &h, &dir);
+        let (reply, asks) = get_pull_asks(&r, n);
+        assert_eq!(reply.value(), get_pull(&r, n).value(), "the same bytes as before");
+        (reply, asks)
+    };
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!(asks, gql(&c), "the merge GraphQL asks for");
+    assert_eq!(asks.single.into_iter().collect::<Vec<_>>(), vec![(IssueNumber(2), (oid(1), oid(2)))], "base tip, head");
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(null), &json!("unknown")));
+    assert_eq!(rest(&c, "1").1, Default::default(), "an issue asks nothing");
+    assert_eq!(rest(&c, "99").1, Default::default());
+    // The base moves: the ask names the new tip.
+    c.push("refs/heads/main", oid(5));
+    assert_eq!(rest(&c, "2").1.single.get(&IssueNumber(2)), Some(&(oid(5), oid(2))));
+    let state = |c: &Chain| {
+        let r = c.repo(0, &h, &dir);
+        let q = r#"query { repository(owner: "o", name: "r") { pullRequest(number: 2) { mergeStateStatus } } }"#;
+        let v = graftyard_api::graphql::query_asks(&Request::parse(q, None, None).unwrap(), Some(&r)).0;
+        v["data"]["repository"]["pullRequest"]["mergeStateStatus"].as_str().unwrap().to_ascii_lowercase()
+    };
+    let merged = |c: &mut Chain, base: u8, result: MergeabilityResult| {
+        let ev = graftyard_git::repo::RepoEvent::TestMerged {
+            n: IssueNumber(2),
+            base: oid(base),
+            head: oid(2),
+            result,
+            pack: None,
+        };
+        c.entry(EntryBody::Events(vec![ev]), TierSet::CORE);
+    };
+    // Its current merge recorded: nothing to ask, and REST answers the result as GraphQL does.
+    merged(&mut c, 5, MergeabilityResult::Clean { merge: oid(9) });
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!(asks, Default::default());
+    assert_eq!(asks, gql(&c));
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(true), &json!("clean")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // The required `ci` re-run, in progress: still mergeable, but blocked, as GraphQL says.
+    c.commit(WRITER, run(30, 2, "ci", None)).unwrap();
+    let reply = rest(&c, "2").0;
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(true), &json!("blocked")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // A conflict at a newer base tip: false and dirty.
+    c.push("refs/heads/main", oid(6));
+    merged(&mut c, 6, MergeabilityResult::Conflict { paths: Default::default() });
+    let reply = rest(&c, "2").0;
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(false), &json!("dirty")));
+    assert_eq!(reply.value()["mergeable_state"], json!(state(&c)));
+    // The base moves past the record: null again, and the ask names the new tip.
+    c.push("refs/heads/main", oid(7));
+    let (reply, asks) = rest(&c, "2");
+    assert_eq!((&reply.value()["mergeable"], &reply.value()["mergeable_state"]), (&json!(null), &json!("unknown")));
+    assert_eq!(asks.single.get(&IssueNumber(2)), Some(&(oid(7), oid(2))));
 }
 
 /// Journey 3 (`design/DESIGN.md`, "Commit and read paths"): `gh label create bug` is a `DefineLabel` whose 201 is the
@@ -1301,6 +1375,56 @@ fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
     assert_eq!(rest(&mut c, "POST", None, json!({ "labels": [] })).status, 422);
     let r = c.repo(0, &h, &dir);
     assert!(plan_issue_labels(&r, "POST", "99", None, &json!(["bug"])).is_err_and(|x| x.status == 404));
+}
+
+/// A tier too large to serve is refused after one byte budget's work, not after `ROWS_MAX` rows: B0-30's 4 GB
+/// metadata tier was scanned to 50,000 rows a read only to answer `complete: false`.
+#[test]
+fn an_oversized_tier_read_stops_at_its_byte_budget() {
+    use graftyard_api::hosted::{Budget, TierRows};
+    use graftyard_fold::store::{Key, Read};
+    use graftyard_fold::{Store, Stored, Val};
+    use graftyard_git::tiers::METADATA;
+    use std::cell::Cell;
+    struct Counted<'a>(&'a MemStore, Cell<usize>);
+    impl Read for Counted<'_> {
+        fn get(&self, table: &str, key: &[Val]) -> Option<Vec<Val>> {
+            Read::get(self.0, table, key)
+        }
+        fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Vec<Val>)> {
+            let rows = Read::scan(self.0, table, from, limit);
+            self.1.set(self.1.get() + rows.len());
+            rows
+        }
+    }
+    let mut c = seeded();
+    let m = &mut c.members[0];
+    for i in 0..3_000u32 {
+        let row = Stored { written: graftyard_types::Index(1), cols: vec![Val::Blob(vec![9; 64 << 10].into())] };
+        m.meta.put("path_set", vec![Val::Int(i64::from(i))], row.clone());
+        m.meta.put("comment", vec![Val::Int((1 << 40) + i64::from(i))], row);
+    }
+    let counted = Counted(&c.members[0].meta, Cell::new(0));
+    let mut budget = Budget::READ;
+    let (rows, complete) = TierRows::dump(&counted, &METADATA, &mut budget);
+    assert!(!complete);
+    let bytes: usize = rows
+        .iter()
+        .map(|(_, _, cols)| {
+            cols.iter()
+                .map(|v| match v {
+                    Val::Blob(b) => b.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        })
+        .sum();
+    assert!(bytes <= Budget::READ.bytes && bytes > Budget::READ.bytes / 2, "{bytes}");
+    // The scan stopped within one batch of the budget, far short of the 3,000 large comments it holds.
+    assert!(counted.1.get() < 1_200, "{} rows scanned", counted.1.get());
+    // A small tier still reads whole under the same budget.
+    let (_, small) = TierRows::dump(&seeded().members[0].meta, &METADATA, &mut Budget::READ.clone());
+    assert!(small);
 }
 
 #[test]

@@ -17,7 +17,7 @@ use graftyard_git::tiers::CommentRow;
 use graftyard_types::{DbId, Timestamp};
 use serde_json::{Value, json};
 
-use crate::view::{Item, Repo, StateFilter};
+use crate::view::{Item, Pick, Repo, StateFilter};
 use crate::wire::{NodeType, Page, Reply, color, iso, scoped, simple_user};
 
 /// A commit ref as the route takes it: a full SHA, a branch name, or a tag name.
@@ -403,10 +403,37 @@ pub fn issue_json(r: &Repo<'_>, it: &Item) -> Value {
 
 /// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
 pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
-    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    get_pull_asks(r, n).0
+}
+
+/// `get_pull`, with the test merge its `mergeable` lacks, as GraphQL's single-PR read asks for it
+/// (`crate::gql::test_merge`): the edge sends it to the shard as a GET's (`MergeCause::Get`) after the reply. Until the
+/// merge is recorded the reply keeps the webhook payload's `mergeable: null` and `mergeable_state: "unknown"`, as GHES
+/// 3.22 answers while its background job computes; once it is, `mergeable` is its result and `mergeable_state` the
+/// lower case of GraphQL's `mergeStateStatus` (`crate::gql::merge_state`). `rebaseable` stays null, since no rebase
+/// is tried [unverified: what GHES 3.22 answers for `rebaseable` beside a computed `mergeable`].
+pub fn get_pull_asks(r: &Repo<'_>, n: &str) -> (Reply, crate::gql::MergeAsks) {
+    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return (Reply::not_found(), Default::default()) };
     match r.item(n) {
-        Some(it) if it.is_pull() => Reply::json(200, crate::webhooks::pull_request(r, &it)),
-        _ => Reply::not_found(),
+        Some(it) if it.is_pull() => {
+            let mut asks = crate::gql::MergeAsks::default();
+            let (got, ask) = crate::gql::test_merge(r, &it);
+            if let Some(pair) = ask {
+                asks.single.insert(n, pair);
+            }
+            let mut v = crate::webhooks::pull_request(r, &it);
+            let open = it.pull.as_ref().filter(|(_, h)| matches!(h.state, graftyard_git::issues::PrState::Open { .. }));
+            if let (Some(ok), Some((_, head))) = (got, open) {
+                let state = match head.state {
+                    graftyard_git::issues::PrState::Open { draft: true } => "draft".to_owned(),
+                    _ => crate::gql::merge_state(r, &it, got).to_ascii_lowercase(),
+                };
+                v["mergeable"] = json!(ok);
+                v["mergeable_state"] = json!(state);
+            }
+            (Reply::json(200, v), asks)
+        }
+        _ => (Reply::not_found(), Default::default()),
     }
 }
 
@@ -988,26 +1015,36 @@ pub fn list_issues(r: &Repo<'_>, query: &str) -> Reply {
         .map(|l| l.split(',').map(|s| s.replace("%20", " ").replace('+', " ").to_lowercase()).collect())
         .unwrap_or_default();
     let has = |it: &Item| {
-        let mine: Vec<String> = r.labels_of(it.n).iter().map(|(_, l)| l.name.0.to_lowercase()).collect();
-        want.iter().all(|w| mine.contains(w))
+        want.is_empty() || {
+            let mine: Vec<String> = r.labels_of(it.n).iter().map(|(_, l)| l.name.0.to_lowercase()).collect();
+            want.iter().all(|w| mine.contains(w))
+        }
     };
-    let mut all: Vec<Item> = Vec::new();
-    for kind in [graftyard_git::issues::IssueKind::Issue, graftyard_git::issues::IssueKind::PullRequest] {
-        all.extend(r.list(kind, state, None, usize::MAX, &has).0);
-    }
-    let asc = param(query, "direction") == Some("asc");
-    match param(query, "sort") {
-        None | Some("created") => all.sort_by_key(|i| (i.row.created, i.n)),
-        Some("updated") => all.sort_by_key(|i| (i.row.updated, i.n)),
-        Some("comments") => all.sort_by_key(|i| (i.row.comments, i.n)),
-        Some(_) => return Reply::error(422, "Validation Failed", ISSUES_DOC),
-    }
-    if !asc {
-        all.reverse();
+    let sort = param(query, "sort");
+    if !matches!(sort, None | Some("created" | "updated" | "comments")) {
+        return Reply::error(422, "Validation Failed", ISSUES_DOC);
     }
     let page = Page::parse(query);
-    let more = all.len() > page.end();
-    let items: Vec<Value> = all.iter().skip(page.skip()).take(page.per_page).map(|it| issue_json(r, it)).collect();
+    // Filter, sort, then page, over every item: a selection (`crate::narrow`).
+    let mut select = || {
+        let mut all: Vec<Item> = Vec::new();
+        for kind in [graftyard_git::issues::IssueKind::Issue, graftyard_git::issues::IssueKind::PullRequest] {
+            all.extend(r.list(kind, state, None, usize::MAX, &has).0);
+        }
+        match sort {
+            Some("updated") => all.sort_by_key(|i| (i.row.updated, i.n)),
+            Some("comments") => all.sort_by_key(|i| (i.row.comments, i.n)),
+            _ => all.sort_by_key(|i| (i.row.created, i.n)),
+        }
+        if param(query, "direction") != Some("asc") {
+            all.reverse();
+        }
+        let more = all.len() > page.end();
+        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|i| i.n), all.len(), more)
+    };
+    let pick = r.dir.pick(&format!("issues?{query}"), &mut select);
+    let more = pick.more;
+    let items: Vec<Value> = pick.numbers().into_iter().filter_map(|n| r.item(n)).map(|it| issue_json(r, &it)).collect();
     let keep: Vec<(&str, &str)> = query
         .split('&')
         .filter_map(|kv| kv.split_once('='))

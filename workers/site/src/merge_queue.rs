@@ -128,8 +128,10 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         // A new leadership: every base with a queue is due now, so no timer is lost with the old leader.
         || Lead { leadership, timers: bases.into_iter().map(|b| (b, now)).collect(), ..Lead::default() },
     );
-    if let Err(e) = scan(h, &mut lead.d, repo, cursor, applied) {
-        note(h, format!("mergequeue scan: {e}"));
+    match scan(h, &mut lead.d, repo, cursor, applied) {
+        Ok(true) => h.arm_in(crate::prsync::LEADER_ALARM_MS),
+        Ok(false) => {}
+        Err(e) => note(h, format!("mergequeue scan: {e}")),
     }
     if h.fold_lost() {
         LEADS.with(|m| m.borrow_mut().insert(key, lead));
@@ -227,14 +229,14 @@ fn wakes(v: &Value) -> Vec<(RefName, u64)> {
     serde_json::from_value(v["wake"].clone()).unwrap_or_default()
 }
 
-fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher<RefName>, repo: RepoId, cursor: Index, applied: Index) -> Result<()> {
+fn scan(h: &Rc<Host<Repo>>, d: &mut Dispatcher<RefName>, repo: RepoId, cursor: Index, applied: Index) -> Result<bool> {
     let core = h.core.borrow();
     let c = core.as_ref().ok_or_else(|| crate::host::err("not joined"))?;
     let fold = &c.m.group_fold().fold;
     let sql = h.state.storage().sql();
     let from = cursor.max(Index(fold.first_index().0.saturating_sub(1)));
     git::queue_consumer::scan(d, &fold.core, repo, from, applied, |i| {
-        c.m.entry_at(i).cloned().or_else(|| crate::host::stored_entry::<Repo>(&sql, i))
+        c.m.entry_at(i).map(|e| (e.clone(), 0)).or_else(|| crate::host::stored_entry_sized::<Repo>(&sql, i))
     })
     .map_err(|i| crate::host::err(format!("entry {} is in neither the member nor the stored log", i.0)))
 }

@@ -30,6 +30,36 @@ use graftyard_wire::Body;
 /// The most rows one read returns [guess]. A repository with more is refused: a paged read would mix indexes, and
 /// `Repo` reads one index.
 pub const ROWS_MAX: usize = 50_000;
+/// The most row bytes one read builds before it stops as incomplete [guess, four times the 1.6 MB dumps of 500
+/// agents]. Counting rows alone, a 4 GB metadata tier of 1,800-byte comments was scanned to `ROWS_MAX`, about 90 MB,
+/// only to be refused, at about 302 s of CPU a read on its leader (`tests/am1/results/b0-30.md`, "Blocked on", 5).
+pub const ROWS_BYTES_MAX: usize = 8 << 20;
+
+/// What a `TierRows::dump` may still take, shared by both tiers' dumps of one read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Budget {
+    pub rows: usize,
+    pub bytes: usize,
+}
+
+impl Budget {
+    /// `ROWS_MAX` rows and `ROWS_BYTES_MAX` bytes: one hosted read's.
+    pub const READ: Budget = Budget { rows: ROWS_MAX, bytes: ROWS_BYTES_MAX };
+
+    /// `rows` rows, with no byte limit.
+    pub fn rows(rows: usize) -> Budget {
+        Budget { rows, bytes: usize::MAX }
+    }
+}
+
+fn val_bytes(v: &Val) -> usize {
+    match v {
+        Val::Null => 1,
+        Val::Int(_) => 8,
+        Val::Text(t) => t.len(),
+        Val::Blob(b) => b.len(),
+    }
+}
 
 /// Both tiers of a repository at `index`, as the member's `{"q": {"rows": true}}` read answers. `meta` is `None` while
 /// the member's metadata tier is still loading.
@@ -40,6 +70,10 @@ pub struct TierRows {
     pub meta: Option<Vec<(String, Key, Vec<Val>)>>,
     /// False when the tiers hold more than `ROWS_MAX` rows; the rows are then cut short and must not be served.
     pub complete: bool,
+    /// A narrow API read's selections (`crate::narrow`), which the rows alone cannot answer: present only on the
+    /// answer to `{"rows": {"api": ..}}`, so every other answer's bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picks: Option<Vec<(String, crate::view::Pick)>>,
 }
 
 /// Metadata tables no `Repo` view, directory, or planner reads, which `TierRows::dump` leaves out: each agent ref's
@@ -48,24 +82,26 @@ pub struct TierRows {
 pub const UNSERVED: &[&str] = &["path_set", "provenance"];
 
 impl TierRows {
-    /// Every row of `schema`'s tables in `r` but `UNSERVED`'s, at most `budget` in all. `complete` is false when more
-    /// remain.
-    pub fn dump(r: &dyn Read, schema: &Schema, budget: &mut usize) -> (Vec<(String, Key, Vec<Val>)>, bool) {
+    /// Every row of `schema`'s tables in `r` but `UNSERVED`'s, within `budget`'s rows and bytes in all. `complete` is
+    /// false when more remain, and the scan stops there: a tier too large to serve costs one budget's work to find out.
+    pub fn dump(r: &dyn Read, schema: &Schema, budget: &mut Budget) -> (Vec<(String, Key, Vec<Val>)>, bool) {
         let mut out = Vec::new();
         for def in schema.tables.iter().filter(|d| !UNSERVED.contains(&d.name)) {
             let mut from: Key = Vec::new();
             loop {
-                let want = (*budget).min(1_000) + 1;
+                let want = budget.rows.min(1_000) + 1;
                 let batch = r.scan(def.name, &from, want);
                 let full = batch.len() == want;
                 for (k, cols) in batch {
                     if !from.is_empty() && k == from {
                         continue;
                     }
-                    if *budget == 0 {
+                    let bytes: usize = k.iter().chain(&cols).map(val_bytes).sum();
+                    if budget.rows == 0 || budget.bytes < bytes {
                         return (out, false);
                     }
-                    *budget -= 1;
+                    budget.rows -= 1;
+                    budget.bytes -= bytes;
                     from = k.clone();
                     out.push((def.name.to_owned(), k, cols));
                 }
@@ -100,7 +136,7 @@ impl TierRows {
                 }
             }
         }
-        TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true }
+        TierRows { index: 0, core: c, meta: meta.map(|_| m), complete: true, picks: None }
     }
 
     /// The core rows `graftyard_identity::authorize_read` reads through `graftyard_git::issue_ops::Access`: `settings`
@@ -211,6 +247,10 @@ pub struct HostedDir {
     /// agent media type, and it never crosses the binding, so a `Render` is the same bytes with or without it.
     #[serde(skip)]
     pub install: Option<AuthzFold>,
+    /// The selections of a narrow read's member (`crate::narrow::Picks`); none on a whole-tier read. Never crosses the
+    /// binding: a write's leader renders over its own whole tiers.
+    #[serde(skip)]
+    pub picks: crate::narrow::Picks,
 }
 
 mod authz_hex {
@@ -274,6 +314,9 @@ impl Directory for HostedDir {
     }
     fn agent_app(&self, app: graftyard_identity::AppId) -> bool {
         self.install.as_ref().is_some_and(|a| a.agent_app(app).is_some())
+    }
+    fn pick(&self, key: &str, select: &mut dyn FnMut() -> crate::view::Pick) -> crate::view::Pick {
+        self.picks.get(key, select)
     }
 }
 
