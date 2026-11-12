@@ -341,9 +341,13 @@ pub fn site_modes(env: &Env) -> SiteModes {
 
 /// B0-07's stand-in for `SiteHealth` (`design/DESIGN.md`, Shape, `SiteHealth`): this isolate's member-to-member calls
 /// to each voter site, and how many failed or missed CALL_DEADLINE, flushed about once a second to the `Registry`
-/// object `health` on this member's own site, which keeps them per second (`/health`).
+/// object `health` on this member's own site, which keeps them per second (`/health`), while a site fault is set.
 pub fn site_health(env: &Env, target: u8, ok: bool) {
     let now = crate::now_ms();
+    // Counted only while a site fault plan is set, so other runs on a test install pay no health writes.
+    if !SITE_FAULT.with(|c| c.borrow().as_ref().is_some_and(|c| c.plan.site.is_some() && now < c.plan.until)) {
+        return;
+    }
     let flush = HEALTH.with(|h| {
         let mut h = h.borrow_mut();
         let c = h.0.entry(target).or_insert((0, 0));
