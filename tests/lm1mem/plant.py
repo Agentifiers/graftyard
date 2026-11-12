@@ -210,6 +210,13 @@ MUTANTS = [
     ('round 7: a follower sends a REST merge read to the leader', 'workers/site/src/family.rs',
      '        Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,',
      '        Some(r) if r.get("merge").is_some() => meta_loaded,', ['cargo', '-p', 'graftyard-site', '--lib', 'a_follower_serves']),
+    ('round 7: a merge waits for any catch-up in flight before it tries (2 s merge tails)', 'crates/git/src/merge_cache.rs',
+     '    up().await?;\n    if let Some(a) = merge().await? {\n        return Ok(a);\n    }\n    in_flight().await;',
+     '    up().await?;\n    in_flight().await;\n    if let Some(a) = merge().await? {\n        return Ok(a);\n    }',
+     ['cargo', '-p', 'graftyard-git', '--lib', 'a_merge_waits']),
+    ('round 7: a merge that misses catches up at once, racing the catch-up in flight', 'crates/git/src/merge_cache.rs',
+     '        return Ok(a);\n    }\n    in_flight().await;', '        return Ok(a);\n    }',
+     ['cargo', '-p', 'graftyard-git', '--lib', 'a_merge_waits']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

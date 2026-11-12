@@ -180,9 +180,12 @@ pub fn chain_of(ask: &CacheAsk) -> (ObjectId, Vec<(IssueNumber, ObjectId)>, Merg
 /// 300 to 600 ms of every merge once leadership moved (`tests/m2/results/m2-wp6.md`, "Merge latency"). `up` starts
 /// the container first (`ShardHost::up`): the catch-up used to, so without it a merge on a stopped container failed
 /// "has not been started" and no catch-up followed, which stalled the `MergeQueue` consumer until another route
-/// started the container (same file, BF-21). `in_flight` waits for the catch-up a new leadership starts on its own
-/// site's shard (`workers/site/src/prsync.rs`, `warm`): the first merge after an election used to race it, find a
-/// commit missing, and catch up a second time, 250 to 700 ms on 38 of 105 weur samples (same file, bm2-latency).
+/// started the container (same file, BF-21). A merge that finds a commit missing waits for the catch-up in flight
+/// (`in_flight`), such as the one a new leadership starts on its own site's shard (`workers/site/src/prsync.rs`,
+/// `warm`), and merges again before it catches up itself: racing it cost a second catch-up, 250 to 700 ms on 38 of
+/// 105 weur samples (same file, bm2-latency). It waits only after a miss: under journey 9's pushes some validate's
+/// catch-up is nearly always running, and a merge that waited first waited 64 to 2,151 ms for commits it already had
+/// (LM-1 round 7, 500 agents).
 pub async fn merge_then_catch_up<U, Fu, W, Fw, M, Fm, C, Fc>(
     up: U,
     in_flight: W,
@@ -200,6 +203,9 @@ where
     Fc: std::future::Future<Output = Result<(), StoreError>>,
 {
     up().await?;
+    if let Some(a) = merge().await? {
+        return Ok(a);
+    }
     in_flight().await;
     if let Some(a) = merge().await? {
         return Ok(a);
@@ -433,9 +439,9 @@ mod tests {
         assert!(still_missing.is_err());
     }
 
-    /// A merge that arrives while the new leadership's catch-up runs on the shard waits for it, then merges with no
-    /// catch-up of its own: the running catch-up brings the commits. Racing it, the merge finds a commit missing and
-    /// catches up a second time.
+    /// A merge that arrives while the new leadership's catch-up runs on the shard and misses a commit waits for it,
+    /// then merges with no catch-up of its own: the running catch-up brings the commits. Racing it, the merge catches
+    /// up a second time. A merge whose commits are already here answers without waiting for the catch-up at all.
     #[test]
     fn a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it() {
         use futures_util::task::LocalSpawnExt;
@@ -491,8 +497,22 @@ mod tests {
             let r = out.borrow_mut().take();
             (r, merges.get(), catchups.get())
         };
-        assert_eq!(run(true), (Some(Ok(answer())), 1, 0), "waits, then merges once with no catch-up");
-        assert_eq!(run(false), (Some(Ok(answer())), 2, 1), "racing it: a second catch-up");
+        assert_eq!(run(true), (Some(Ok(answer())), 2, 0), "misses, waits, then merges with no catch-up of its own");
+        assert_eq!(run(false), (Some(Ok(answer())), 3, 1), "racing it: a second catch-up");
+        // The commits are already here while some other catch-up runs (a validate's, under journey 9's pushes): the
+        // merge answers at once, before that catch-up ends, and never waits for it (LM-1 round 7).
+        use futures_util::FutureExt;
+        let gate = CatchUps::default();
+        let running = gate.start();
+        let r = merge_then_catch_up(
+            || async { Ok(()) },
+            || gate.idle(),
+            || async { Ok(Some(answer())) },
+            || async { Ok(()) },
+        )
+        .now_or_never();
+        assert_eq!(r, Some(Ok(answer())), "merged in one poll while the catch-up still runs");
+        drop(running);
         // No catch-up running: the merge does not wait.
         let idle = CatchUps::default().idle();
         assert_eq!(futures_executor::block_on(idle), ());

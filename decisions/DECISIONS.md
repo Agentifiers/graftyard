@@ -2521,3 +2521,15 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 **Evidence.** `a_merge_plans_from_its_rows_as_from_both_tiers` (`crates/api/tests/surfaces.rs`) and `a_follower_serves_only_the_designs_reads` (`workers/site/src/fanout.rs`); plants 69 to 71 in `tests/lm1mem/plant.py`.
 
 **Flip.** A REST merge reply that renders rows beyond these, which would need them added to `merge_rows`.
+
+#### LM-1 round 7: a merge waits for a catch-up in flight only after it misses a commit
+
+**Decision.** `merge_then_catch_up` merges first, waits for a catch-up in flight only when the container answers that a commit is missing, merges again, and catches up itself only if that misses too. It amends the BM-2 rule that the first merge plan awaits the catch-ups in flight ("BM-2 latency: repack the shards…", and `bm2-repack`): the wait was meant for a new leadership's `warm` catch-up, which the merge still waits for when it lacks a commit.
+
+**Why.** Under journey 9 a validate's catch-up runs on the shard nearly all the time, so every merge waited for one first. At 500 agents (`repo:131278`, 180 s, after the REST merge read only its rows) the shard's merge waited 64 to 2,151 ms of its 175 to 2,750 ms, for commits it already held (no merge caught up), and REST merge p99 was 6.2 s against B0-29's 2 s [measured, `tests/am1/results/lm1-memory.md`, round 7, the `mergeSteps` shard timings].
+
+**Beat.** Keeping the wait and making catch-ups shorter, which leaves every merge behind whatever catch-up is running.
+
+**Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
+
+**Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
