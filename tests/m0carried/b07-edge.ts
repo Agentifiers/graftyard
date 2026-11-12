@@ -5,7 +5,7 @@
 // `graft-ops` drain yet.
 //
 // Routes (bearer token), every body JSON:
-//   POST /create {chains}                 create each register group (Tri, home site 0)
+//   POST /create {chains, home}           create each register group (Tri, home site `home`, default 0)
 //   POST /lead {chains, to}               transfer each group's leadership to site `to`
 //   POST /status {chains}                 every member's /status of each group
 //   POST /bench {chains, seconds, workers, rate, observer}
@@ -55,13 +55,13 @@ export default {
     const url = new URL(req.url);
     const body: Record<string, any> = req.method === "POST" ? await req.json() : {};
     const colo = (req.cf as { colo?: string } | undefined)?.colo ?? "edge";
-    const edge = (chain: string) => new Edge(env as any, chain, 1, 0x4c4158);
+    const edge = (chain: string, home = 0) => new Edge(env as any, chain, 1, 0x4c4158, home);
     const json = (v: unknown) => Response.json(v);
     try {
       switch (url.pathname) {
         case "/create":
           return json(await pool(body.chains as string[], 6, async (c) => {
-            const r: any = await edge(c).create();
+            const r: any = await edge(c, body.home ?? 0).create();
             return { chain: c, ok: !!r.warm?.ok, verdict: r.verdict, ms: r.leaderMs };
           }));
         case "/lead":
@@ -81,7 +81,7 @@ export default {
           const pairs = (body.chains as string[]).flatMap((c) => sites.map((s) => [c, s] as const));
           const rs = await pool(pairs, 6, async ([c, s]) => [c, s, await edge(c).call(s, "/status", undefined, 3_000)] as const);
           const out: Record<string, (number | string | null)[][]> = {};
-          for (const [c, s, r] of rs) (out[c] ??= []).push(r ? [s, r.role, r.term, r.leader] : [s, null]);
+          for (const [c, s, r] of rs) (out[c] ??= []).push(r ? [s, r.role, r.term, r.leader, r.ledTerm] : [s, null]);
           return json({ at: Date.now(), groups: out });
         }
         case "/bench": {

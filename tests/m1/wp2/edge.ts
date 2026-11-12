@@ -37,8 +37,8 @@ const configCache = new Map<string, { index: number; voters: Voter[] }>();
 const leaderCache = new Map<string, number>();
 const termSeen = new Map<string, number>();
 
-function record(gen: number) {
-  return { name: "Tri", sites: [0, 1, 2], home: 0, generation: gen, moving_from: null, at: 1 };
+function record(gen: number, home = 0) {
+  return { name: "Tri", sites: [0, 1, 2], home, generation: gen, moving_from: null, at: 1 };
 }
 
 /** The bootstrap names from the record: `{chain}#{generation}#f{slot}`. */
@@ -77,7 +77,8 @@ function coloId(colo: string): number {
 export class Edge {
   /** B0-07 (`tests/m0carried/b07-edge.ts`): told of every member call's site and whether it answered in time. */
   onCall?: (site: number, ok: boolean) => void;
-  constructor(private env: Env, readonly chain: string, private gen: number, private colo: number) {}
+  /** `home`: the record's home site (B0-07 makes groups whose home is site 2). */
+  constructor(private env: Env, readonly chain: string, private gen: number, private colo: number, private home = 0) {}
 
   stubFor(site: number): DurableObjectStub {
     return this.stub(site);
@@ -141,7 +142,7 @@ export class Edge {
    *  `kill` rides only on sends until a leader admitted the command or a send failed, so a fault fires once. */
   async write(op: Exclude<Op, { kind: "get" }>, rid: string, tr: Trace, kill?: { mode: string; down_ms?: number }): Promise<Result & { sends: number }> {
     const end = Date.now() + OP_DEADLINE;
-    let target = leaderCache.get(this.chain) ?? record(this.gen).home;
+    let target = leaderCache.get(this.chain) ?? this.home;
     let sends = 0, tries = 0;
     const cmd = op;
     while (Date.now() < end) {
@@ -189,7 +190,7 @@ export class Edge {
   /** One `fresh` read through the leader. */
   async read(key: string, tr: Trace): Promise<Result & { sends: number }> {
     const end = Date.now() + OP_DEADLINE;
-    let target = leaderCache.get(this.chain) ?? record(this.gen).home;
+    let target = leaderCache.get(this.chain) ?? this.home;
     let sends = 0, tries = 0;
     while (Date.now() < end) {
       sends++;
@@ -221,7 +222,7 @@ export class Edge {
   /** Joins the three bootstrap members, then makes the creating call on the record's home, which proposes the
    *  bootstrap entry and campaigns for term 2 once a quorum stored it. */
   async create(): Promise<unknown> {
-    const rec = record(this.gen);
+    const rec = record(this.gen, this.home);
     const joins = await Promise.all(rec.sites.map(async (site, slot) => {
       const me = { site, kind: "full", slot, generation: this.gen, do_name: `${this.chain}#${this.gen}#f${slot}` };
       const res = await this.stub(site).fetch("https://member/join", { method: "POST", body: JSON.stringify({ chain: this.chain, me, record: rec }) });

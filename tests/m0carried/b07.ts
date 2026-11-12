@@ -3,7 +3,7 @@
 // did, with the same prototype thresholds: C is drained once both other observers' `SiteHealth` show at least 10% of
 // at least 30 calls to C missed over 30 s [guess, M0-WP4], instead of DRAIN_BURN's 10 x for 5 min.
 //
-//   node tests/m0carried/b07.ts setup --run R [--groups 200] [--on-c 80]
+//   node tests/m0carried/b07.ts setup --run R [--groups 200] [--on-c 80]   (groups whose home is C)
 //   node tests/m0carried/b07.ts day --run R [--no-deploy]
 //
 // The day: load at 100 writes/s over every group from the orb through `graft-m3c-b07-edge` (each invocation counts
@@ -55,20 +55,44 @@ const groupsPath = `${RAW}b07-${run}.groups.json`;
 async function setup() {
   const n = Number(opt.groups), base = Number(opt.base ?? 7_000_000 + Math.floor(Math.random() * 900) * 1_000);
   const chains = Array.from({ length: n }, (_, i) => `repo:${base + i}`);
+  // Leaders spread as M0's were: `--on-c` groups whose record's home is C, a sixth of the rest home B, the others A.
+  // A group's leader returns to its home once it recovers, so home decides where load leaves it led.
+  const nc = Number(opt["on-c"]), nb = Math.floor((n - nc) / 6);
+  const homeOf = (i: number) => (i < nc ? 2 : i < nc + nb ? 1 : 0);
   const made: any[] = [];
-  for (const c of chunks(chains, 12)) made.push(...await edge<any[]>("/create", { chains: c }, 300_000));
+  for (const h of [2, 1, 0]) {
+    const mine = chains.filter((_, i) => homeOf(i) === h);
+    for (const c of chunks(mine, 12)) made.push(...(await edge<any[]>("/create", { chains: c, home: h }, 300_000)).map((m) => ({ ...m, home: h })));
+  }
   const ok = made.filter((m) => m.ok).map((m) => m.chain);
-  log("created", { asked: n, ok: ok.length, failed: made.filter((m) => !m.ok).slice(0, 5) });
-  const onC = ok.slice(0, Number(opt["on-c"]));
-  for (const c of chunks(onC, 12)) await edge("/lead", { chains: c, to: 2 }, 300_000);
+  log("created", { asked: n, ok: ok.length, byHome: count(made.filter((m) => m.ok).map((m) => m.home)), failed: made.filter((m) => !m.ok).slice(0, 5) });
+  const onC = made.filter((m) => m.ok && m.home === 2).map((m) => m.chain);
   writeFileSync(groupsPath, JSON.stringify({ chains: ok, onC }));
-  const st = await status(ok, [0, 1, 2]);
+  await lead(ok, onC);
+}
+
+/** Moves `onC`'s leadership to C, retrying until it leads there, and reports where every group is led. */
+async function lead(all: string[], onC: string[]) {
+  for (let i = 0; i < 4; i++) {
+    const st = await status(onC, [0, 1, 2]);
+    const left = onC.filter((g) => leaderOf(st.groups[g] ?? []) !== 2);
+    if (!left.length) break;
+    for (const c of chunks(left, 12)) await edge("/lead", { chains: c, to: 2 }, 300_000);
+    await sleep(5_000);
+  }
+  const st = await status(all, [0, 1, 2]);
   log("led", { byLeader: count(Object.values(st.groups).map(leaderOf)) });
 }
 
+/** The site leading a group: a member answering `leader`, or else, as M0's runner counted it, the member holding
+ *  `led_term` for the highest term any answering member reports (an idle leader whose lease lapsed resumes it on its
+ *  next request). */
 function leaderOf(ms: any[]): number | null {
-  const l = ms.find((m) => m[1] === "leader" && m[0] !== undefined);
-  return l ? l[0] : null;
+  const l = ms.find((m) => m[1] === "leader");
+  if (l) return l[0];
+  const top = Math.max(...ms.filter((m) => m[1]).map((m) => m[2]));
+  const r = ms.find((m) => m[1] && m[4] === top);
+  return r ? r[0] : null;
 }
 function count(xs: (number | null)[]) {
   const o: Record<string, number> = {};
@@ -76,7 +100,14 @@ function count(xs: (number | null)[]) {
   return o;
 }
 async function status(chains: string[], sites: number[]): Promise<{ at: number; groups: Record<string, any[]> }> {
-  const parts = await Promise.all(chunks(chains, 8).map((c) => edge<any>("/status", { chains: c, sites }, 30_000).catch(() => ({ at: Date.now(), groups: {} }))));
+  // One invocation runs 6 member calls at once, so 4 chains of 3 members each answers in about two rounds.
+  const parts: { at: number; groups: Record<string, any[]> }[] = [];
+  const queue = chunks(chains, 4);
+  await Promise.all(Array.from({ length: 10 }, async () => {
+    for (let c = queue.shift(); c; c = queue.shift()) {
+      parts.push(await edge<any>("/status", { chains: c, sites }, 60_000).catch((e) => { log("status failed", { error: String(e).slice(0, 160) }); return { at: Date.now(), groups: {} }; }));
+    }
+  }));
   return { at: Math.max(...parts.map((p) => p.at)), groups: Object.assign({}, ...parts.map((p) => p.groups)) };
 }
 
@@ -85,7 +116,7 @@ function wrangler(args: string[]): string {
 }
 
 async function day() {
-  const { chains } = JSON.parse(readFileSync(groupsPath, "utf8")) as { chains: string[] };
+  const { chains, onC: toC } = JSON.parse(readFileSync(groupsPath, "utf8")) as { chains: string[]; onC: string[] };
   await edge("/fault", { off: true });
   await edge("/modes", { drained: [], limited: [] });
   const ops: any[] = [];
@@ -99,6 +130,9 @@ async function day() {
     }
   }));
   await sleep(20_000);
+  // Under load, every group whose home is C should be led there; a site day before this one reset every member.
+  await lead(chains, toC);
+  await sleep(10_000);
   log("drain B");
   await edge("/modes", { drained: [1], limited: [] });
   await sleep(15_000);
@@ -204,4 +238,10 @@ function report(chains: string[], onC: string[], moved: Map<string, number>, td:
 
 if (positionals[0] === "setup") await setup();
 else if (positionals[0] === "day") await day();
+else if (positionals[0] === "probe") {
+  const { chains } = JSON.parse(readFileSync(groupsPath, "utf8"));
+  const st = await status(chains, [0, 1, 2]);
+  const roles = count(Object.values(st.groups).flat().map((m: any) => m[1]));
+  console.log(JSON.stringify({ n: Object.keys(st.groups).length, roles, byLeader: count(Object.values(st.groups).map(leaderOf)), sample: Object.entries(st.groups).slice(0, 2) }));
+}
 else throw new Error("setup | day");

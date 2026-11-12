@@ -8,7 +8,7 @@ Rerun on `main` at `9a6d955` and branch `m0-carried`, on the `graft-m3c` test in
 | --- | --- | --- | --- |
 | B0-01 | Commit p99 on `Tri`, leader enam, 1 KB, 100 commands/s: pass at most 600 ms, fail over 1 s | 6 of 6 one-minute runs at p99 244 to 377 ms, 6,000 commands each, 0 failed | **Pass** |
 | B0-02 | At least 300 commands/s at commit p99 at most 600 ms, one entry in flight; fail under 100/s | At 330 offered, 308/s carried in 8 runs: 6 at p99 286 to 509 ms, 2 between the lines (656 and 1,000 ms). 0 failed commands | **Pass** (6 of 8 runs; see below) |
-| B0-07 | See its section | See its section | See its section |
+| B0-07 | Gray site C during B's site day at 10%, with automatic drain: every group led on C moves within 20 s of the drain (active groups; idle ones from their next request); fail on two sites drained at once or any group on C slower | 3 days: C flagged by A and B 3.6 to 3.7 s after the fault, B undrained under the 1% lead limit, C drained; 80 of 80, 76 of 76, and 79 of 79 groups moved, p50 4.9 to 5.5 s, max 12.7 to 17.2 s, 0 failed writes; never two sites drained | **Pass** on the member path, with test-faults stand-ins for `graft-ops` and `SiteHealth` (the hosted code has no drain yet) |
 | LF-12 | Commit p99 ≤ 600 ms placed, ≤ 1 s before; zero `overloaded` AppendEntries replies; ≤ 1,000 held per member, the rest 429 with `Retry-After`; zero polls on the leader; zero on followers after placement | `am1-fix` lf1-6: 474 ms placed, 710 ms before; 0 failed AppendEntries calls of any kind in 165 samples | **Pass**, already recorded; the Milestone 0 status table was stale |
 | B0-29 | Not run here | LM-1's rerun (thread T-01a1c694-6112-72b4-83ca-dc9337a9646e) owns it | Unchanged |
 
@@ -96,4 +96,74 @@ The gate is one run, as B0-29's is.
 
 ## B0-07
 
-See "B0-07 on the hosted code" below once run.
+**The hosted code has no drain.** `graft-ops` mints installation tokens and nothing else; nothing calls
+`Member::set_drained`; there is no `Release` group, `SiteMode`, or `SiteHealth` object (they are M5-WP1 and M5-WP4).
+So neither `graft-m3c` nor `graft-m2b` can run the row's automatic drain, and the Secrets Store gap on `graft-m3c` is
+moot. Milestone 0 ran B0-07 on a stand-in too (`m0-wp4.md`, `run/site-day.ts` in place of `graft-ops`). This rerun
+builds the same shape behind `test-faults`, so product builds are unchanged (commit `812a45e`):
+
+- **Site modes.** Each site's `faults` registry holds `{drained, limited}` (`/site_modes`). Every member reads it at most
+  once a second and, on each tick, steps `Member::set_drained` with the sites that may not lead its group: drained
+  sites, and limited sites except for 1% of chains by an FNV-1a hash (`SiteModes::may_not_lead`). The leader's own
+  hand-off is then the real code: `set_drained`, `transfer`, `TimeoutNow`, pre-vote, and the lease rules.
+- **`SiteHealth`.** Each site's `health` registry (`/health`) sums, per observer and target site, every member call and
+  every call the test edge makes (counted into site 0 or 1 alternately, as edges on A and B would), flushed each second.
+  Counting runs only while a site fault plan is set.
+- **The gray fault.** `SiteFault.hang_ms`: a hit call to or from C hangs 3 s, then fails, so a caller sees a
+  `CALL_DEADLINE` miss, as M0's runs 11 to 16 did (50% of calls, 3 s).
+- **The runner** (`tests/m0carried/b07.ts day`, with `b07-edge.ts` as `graft-m3c-b07-edge`) stands in for `graft-ops`:
+  100 writes/s over 200 groups from the orb; drain B; `wrangler versions upload` of `graft-m3c-site-b` and deploy at
+  10% (`--durable-objects-code-update-mode immediate`); the gray fault on C; once both A and B show at least 10% of at
+  least 30 calls to C missed over 30 s (M0's prototype thresholds, not `DRAIN_BURN`), undrain B under the 1% lead limit
+  and drain C. Every group led on C at the drain is then polled each second until a member on A or B leads it. The day
+  stops at 10%, as `graft-ops` would when a drain preempts it, and B goes back to its old version at 100%.
+
+200 groups: 80 with record home C (site 2), 20 home B, 100 home A (repo:7700000 to 199). Groups created with home A
+and moved to C went back to A under load (the transfer back to `home`), so the groups for C are made with home C. A
+group's leader is the member answering `leader` or, for an idle group whose lease lapsed, the member holding `led_term`
+for the highest term, as M0's runner counted it.
+
+Site versions (`m0-carried` at `d86855f`, `test-faults`, site day 02:05 to 02:13Z on 2026-11-12): a `74dfbef2`,
+b `7866b0b2` (r3's upload, at 100% from 02:45Z), c `e0156642`. No other thread ran on `graft-m3c` from 02:13Z to 02:57Z.
+
+| Run | At (UTC) | Led on C at drain | Detect (ms after the fault) | Moved | Move p50 / p90 / max (s) | Over 20 s | Writes | Failed | Write p99 / max (ms) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| r4 | 02:43 | 80 | 3,666 | 80 | 5.2 / 7.7 / 16.4 | 0 | 10,354 | 0 | 2,734 / 18,746 |
+| r5 | 02:47 | 76 | 3,646 | 76 | 5.5 / 11.5 / 12.7 | 0 | 11,453 | 0 | 2,405 / 21,629 |
+| r6 | 02:53 | 79 | 3,592 | 79 | 4.9 / 8.8 / 17.2 | 0 | 11,682 | 0 | 2,423 / 18,167 |
+
+Raw: `raw-carried/b07-r{4,5,6}.events.jsonl` and `.json` (per group: move time, idle time before the drain).
+
+- **Verdict: Pass**, 235 of 235 groups within 20 s of the drain, against the gate as written and the 50 s form alike.
+  Every group was active (the load writes to all 200; the longest idle time before a drain was 13.1 s), so the 50 s
+  form's idle clause was not exercised. B was drained, then undrained, before C was drained, so two sites were never
+  drained at once. Every write succeeded; the write tail (p99 2.4 to 2.7 s, max 21.6 s) is the 3 s hang on calls to
+  C before the edge's hedge, not the gate.
+- **Against Milestone 0.** M0's final runs 11 to 16 moved 179 of 182 within 20 s, with one active group at 20.2 s
+  (`-404`, run 13) never explained. Here the max is 17.2 s. The drain path is not the prototype's: the stand-in steps the drained set into
+  the core on the member's tick rather than on a request or an alarm, and the transfer is M1-WP3's (`suspect` with
+  `about`, the promise to the target, `TransferRefused`). `-404` stays unexplained for the prototype; its member logs
+  were never readable. A scratch simulator run during this work (not kept) found that a transfer can end with no
+  leader when the target's campaign meets half-hung calls, and that the group then waits for the next `suspect`
+  report; with reports every second, every group moved by 15.2 s. That is a hypothesis for `-404`, unverified on the
+  prototype.
+- **What this does not cover.** `graft-ops`'s own drain (`Intent`, the drain key, `DRAIN_BURN` over 5 min, the drain
+  guard) and `SiteHealth` as Durable Objects. Detection here took 3.6 s because the stand-in flushes counts each second
+  and uses M0's 10%-over-30 s rule; the design's `DRAIN_BURN` takes minutes. M5-WP4 builds the real drain and should
+  run B0-07 again on it.
+- **Earlier attempts** r1 to r3 (repo:7398000 and up, repo:7700000 and up) never reached the drain. r1 and r2 created
+  C's groups with home A, and they went back to A under load. r3's lead check counted idle groups as leaderless, and
+  the run was stopped before the fault. None is counted.
+
+## Checks and contradictions
+
+Full checks on the final tree: `cargo fmt --check`, workspace clippy with `-D warnings`, wasm32 clippy for
+`workers/site`, `workers/edge`, and `workers/ops` with and without `test-faults`, `cargo test --workspace` (694
+passed, 0 failed), `go test ./...` in `containers/git/server`, and the three `scripts/check_*.py`: all pass, except
+that `graftyard-ops` has no `test-faults` feature, so its `--features test-faults` clippy cannot run (cargo refuses
+the feature); its plain wasm32 clippy passes. No `crates/raft/src` change was made, so no sweep or Porcupine rerun
+was needed.
+
+- The hosted code has no automatic drain, so B0-07's "with automatic drain on" ran on stand-ins (above).
+- LF-12's Milestone 0 status row was stale against its AM1 status line (above).
+
