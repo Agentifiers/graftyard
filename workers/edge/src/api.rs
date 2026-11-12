@@ -74,48 +74,132 @@ fn frame(i: &Incoming<'_>, r: Reply, s: Surface, m: &Meta) -> Result<Response> {
 }
 
 /// Test installs: each phase of one request and its time in ms, sent back as `server-timing`, so a latency gate can
-/// say where the time went. A worker isolate runs one request's future at a time per `serve` call chain, and `serve`
-/// clears the list first.
-#[cfg(feature = "test-faults")]
+/// say where the time went. An isolate runs many requests' futures at once, so `scoped` gives each request its own
+/// phases: it swaps that request's state into the thread-locals for each poll of its future and out again after.
+/// Without it, concurrent requests wrote one shared list, and a loaded merge's header held other requests' phases
+/// (LM-1 round 7: a 3 s merge read `commit;dur=21`).
+#[cfg(any(feature = "test-faults", test))]
+#[cfg_attr(not(feature = "test-faults"), allow(dead_code, reason = "only its test uses it without test-faults"))]
 mod timing {
     use std::cell::RefCell;
-    thread_local! { static PHASES: RefCell<(f64, Vec<(&'static str, f64)>)> = RefCell::default(); }
-    pub fn start() {
-        PHASES.with(|p| *p.borrow_mut() = (js_sys::Date::now(), Vec::new()));
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    /// One request's timing: its phases (the last mark's time, then each phase), hedge trace, and the shard's note.
+    #[derive(Default)]
+    pub struct State {
+        phases: (f64, Vec<(&'static str, f64)>),
+        trace: Vec<serde_json::Value>,
+        note: String,
+    }
+    thread_local! { static NOW: RefCell<State> = RefCell::default(); }
+
+    #[cfg(target_arch = "wasm32")]
+    fn now() -> f64 {
+        js_sys::Date::now()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn now() -> f64 {
+        0.0
+    }
+
+    /// `fut` with its own `State`, swapped in for each poll; the state comes back with the output.
+    pub async fn scoped<F: Future>(fut: F) -> (F::Output, State) {
+        struct Scoped<F> {
+            fut: Pin<Box<F>>,
+            state: Option<State>,
+        }
+        impl<F: Future> Future for Scoped<F> {
+            type Output = (F::Output, State);
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                let mine = self.state.take().expect("polled after it finished");
+                let outer = NOW.with(|n| std::mem::replace(&mut *n.borrow_mut(), mine));
+                let r = self.fut.as_mut().poll(cx);
+                let mine = NOW.with(|n| std::mem::replace(&mut *n.borrow_mut(), outer));
+                match r {
+                    Poll::Ready(v) => Poll::Ready((v, mine)),
+                    Poll::Pending => {
+                        self.state = Some(mine);
+                        Poll::Pending
+                    }
+                }
+            }
+        }
+        let state = State { phases: (now(), Vec::new()), ..State::default() };
+        Scoped { fut: Box::pin(fut), state: Some(state) }.await
     }
     /// Closes the phase that ends now.
     pub fn mark(name: &'static str) {
-        PHASES.with(|p| {
-            let mut p = p.borrow_mut();
-            let now = js_sys::Date::now();
+        NOW.with(|n| {
+            let p = &mut n.borrow_mut().phases;
+            let now = now();
             let last = p.0;
             p.1.push((name, now - last));
             p.0 = now;
         });
     }
-    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
     /// The commit's hedge steps, sent back as `x-graft-trace`.
     pub fn trace(t: Vec<serde_json::Value>) {
-        TRACE.with(|x| *x.borrow_mut() = t);
+        NOW.with(|n| n.borrow_mut().trace = t);
     }
-    pub fn header() -> String {
-        PHASES.with(|p| p.borrow().1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", "))
-    }
-    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
     /// The shard's own timing of its merge plan, sent back as `x-graft-shard-timing`.
     pub fn note(t: String) {
-        NOTE.with(|n| *n.borrow_mut() = t);
+        NOW.with(|n| n.borrow_mut().note = t);
     }
-    pub fn take_note() -> String {
-        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    impl State {
+        pub fn header(&self) -> String {
+            self.phases.1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
+        }
+        pub fn trace(&self) -> String {
+            serde_json::Value::from(self.trace.clone()).to_string()
+        }
+        pub fn note(&self) -> &str {
+            &self.note
+        }
     }
-    pub fn take_trace() -> String {
-        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
+
+    #[cfg(test)]
+    mod tests {
+        /// Two requests polled in turn each get only their own phases, as two merges in one isolate are.
+        #[test]
+        fn concurrent_requests_keep_their_own_phases() {
+            use futures_util::FutureExt;
+            // Pending on its first poll, ready on the next.
+            fn yield_once() -> impl std::future::Future<Output = ()> {
+                let mut first = true;
+                std::future::poll_fn(move |cx| {
+                    if std::mem::take(&mut first) {
+                        cx.waker().wake_by_ref();
+                        return std::task::Poll::Pending;
+                    }
+                    std::task::Poll::Ready(())
+                })
+            }
+            let mut a = Box::pin(super::scoped(async move {
+                super::mark("a1");
+                yield_once().await;
+                super::mark("a2");
+                super::note("shard a".into());
+            }));
+            let mut b = Box::pin(super::scoped(async move {
+                super::mark("b1");
+                yield_once().await;
+                super::mark("b2");
+            }));
+            assert!((&mut a).now_or_never().is_none());
+            assert!((&mut b).now_or_never().is_none());
+            let ((), sb) = (&mut b).now_or_never().expect("b done");
+            let ((), sa) = (&mut a).now_or_never().expect("a done");
+            let names = |s: &super::State| s.phases.1.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+            assert_eq!(names(&sa), ["a1", "a2"]);
+            assert_eq!(names(&sb), ["b1", "b2"]);
+            assert_eq!((sa.note(), sb.note()), ("shard a", ""));
+        }
     }
 }
-#[cfg(not(feature = "test-faults"))]
+#[cfg(not(any(feature = "test-faults", test)))]
 mod timing {
-    pub fn start() {}
     pub fn mark(_: &'static str) {}
     pub fn trace(_: Vec<serde_json::Value>) {}
 }
@@ -160,16 +244,19 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     // The colo this edge ran in, so a latency gate can show where the client entered (BM-2's home-site clause).
     #[cfg(feature = "test-faults")]
     let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
-    timing::start();
-    let r = match route(c, req, host, e, &m).await {
+    #[cfg(feature = "test-faults")]
+    let (r, t) = timing::scoped(route(c, req, host, e, &m)).await;
+    #[cfg(not(feature = "test-faults"))]
+    let r = route(c, req, host, e, &m).await;
+    let r = match r {
         Ok(r) => r,
         Err(err) => unavailable(&format!("Service Unavailable: {err}")),
     };
     #[cfg(feature = "test-faults")]
     let r = r
-        .with("server-timing", timing::header())
-        .with("x-graft-trace", timing::take_trace())
-        .with("x-graft-shard-timing", timing::take_note())
+        .with("server-timing", t.header())
+        .with("x-graft-trace", t.trace())
+        .with("x-graft-shard-timing", t.note().to_owned())
         .with("x-graft-colo", colo);
     frame(&i, r, s, &m)
 }
