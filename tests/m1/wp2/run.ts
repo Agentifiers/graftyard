@@ -266,11 +266,16 @@ async function bench(): Promise<void> {
   }
   const wallS = (Date.now() - t0) / 1000;
   const stats = await edge<{ site: number; r: any }[]>("/stats", { chain });
+  if (process.env.BENCH_RAW) writeFileSync(`${RAW}${opt.run}.stats.json`, JSON.stringify(stats));
   const status = await edge<{ site: number; r: any }[]>(`/status?chain=${chain}`);
   const leader = stats.find((s) => s.r?.role === true)!;
+  // The leader's measured round trips to each follower (`Rtt`): B0-02's commit tail follows the near one.
+  const rtt = await edge<{ body: string }>(`/raw?chain=${chain}&site=${leader.site}&path=/rtt`)
+    .then((r) => Object.fromEntries(JSON.parse(r.body).map(([, x]: any) => [x.peer, x.median_ms])))
+    .catch(() => null);
   const lat: number[] = leader.r.commitMs, round: number[] = leader.r.roundMs;
   const s = {
-    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site,
+    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site, rtt,
     commands: done, failed, throughputPerS: Math.round(done / wallS), entries: leader.r.entries,
     commandsPerEntry: Math.round((leader.r.commands / leader.r.entries) * 10) / 10,
     commitMs: { p50: pct(lat, 0.5), p99: pct(lat, 0.99), max: pct(lat, 1), n: lat.length },

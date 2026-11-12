@@ -321,7 +321,11 @@ pub const LOG_WINDOW: u64 = 1_000; pub const LOG_BYTES: usize = 8_000_000;  // `
 /// 10 s window, so 6 leaves a margin of two [measured, `tests/m0/results/m0-wp4.md`, "F35"]. A store with fewer than 6
 /// slow confirmations a window never moves its leader. A `STEP_DOWN` transfer targets a follower outside
 /// RESET_QUARANTINE of its own `stepped_down_at`, which every AppendEntries reply carries. On a confirm trip the
-/// leader's own calls to the target must fail under `commit_errors`, and no probe runs. On a commit-error trip the
+/// leader's own calls to the target must not fail over `commit_errors` with `commit_fail_min` failed, as the commit-error
+/// rule counts a failing link, and no probe runs. On the rate alone a stalled leader held with `to: None` and kept its
+/// stall [measured, `tests/m0/results/carried-2.md`, r330-9]; with no drain, boots, or earlier step-down in that group,
+/// the rate filter is the only rule that empties the candidates, and one or two missed calls in a window of about 21
+/// pass 5% [inference]. With the count, two missed calls to each follower transfer [measured, simulator]. On a commit-error trip the
 /// leader's calls fail over `commit_errors` to every follower by definition, so the target qualifies instead on the
 /// other follower's calls to it: that follower runs a `linkErrors` probe of the target, which must read under
 /// `commit_errors`, and a probe that cannot run disqualifies it. Among those it takes the one with the fewest failed

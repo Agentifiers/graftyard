@@ -2310,6 +2310,34 @@ Branch `merge-budget` built AM1-WP1's follow-up, "The test-merge budget and B0-3
 
 **Flip.** Test merges that run on more than one shard of a network, such as merges spread over k, which would need one budget across those shards. Or a merge whose wall time misprices its CPU, because the shard runs merges side by side or waits on disk, which would charge container CPU time instead.
 
+### `m0-carried-2`: B0-02's tail, 2026-11-12
+
+Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/carried-2.md`).
+
+#### A confirm trip disqualifies a target only on a failing link
+
+**Decision.** On a confirm trip a `STEP_DOWN` target is disqualified by the leader's calls to it only when they fail over `commit_errors` with at least `commit_fail_min` failed, the same test the commit-error rule uses for a failing link.
+
+**Why.** B0-02's r330-9 tripped the confirm rule on a leader storage stall and held with `to: None`, so the stall stayed on the leader to the end of the run. With no drain, boots, or earlier step-down, the rate filter was the only rule that could empty the candidates, and one or two missed calls in a window of about 21 calls pass 5%. F37 added `commit_fail_min` to the trip for that reason, and the target filter had not followed. A simulator case reproduces the hold on two failed calls to each follower and passes on the fix.
+
+**Beat.** Dropping the target filter on a confirm trip, which could move a stalled leader onto a site its calls really fail to. Removing the confirm rule at B0-02's load, which leaves a stalled leader holding the round for the stall's length (diag-7, r330-9) while B0-06 measured the rule moving such leaders in 2.3 to 5.6 s.
+
+**Evidence.** `tests/m0/results/carried-2.md`, "The `STEP_DOWN` hold" [measured hosted for the hold; the cause is inference, the fix measured in the simulator], and `crates/raft/tests/leadership.rs`, `a_confirm_trip_ignores_fewer_than_commit_fail_min_failures_to_a_target`. The long sweep and Porcupine: see that file's "Checks".
+
+**Flip.** A confirm trip that transfers onto a follower whose link then fails, where the rate alone would have held.
+
+#### Entry batching gets no command or byte cap
+
+**Decision.** An entry stays capped only by `ENTRY_MAX` and `AGENT_INLINE_ENTRY`. B0-02's large entries are not capped.
+
+**Why.** An entry carries what queued during the previous round, so its size follows the round, and the round follows the near follower's round trip: over 19 hosted runs without a leader stall, commit p99 correlates 0.88 with the near `Rtt`, every run at 100 ms or less passed, and the 656 ms run's group had 109 ms. A cap above the queue never binds, and one below it leaves commands for later rounds, so each waits more rounds.
+
+**Beat.** A per-entry command or byte cap, as the operator asked to check.
+
+**Evidence.** `tests/m0/results/carried-2.md`, "What sets the tail" [measured rounds and RTTs; the fixed-point argument is inference].
+
+**Flip.** A run where a capped entry lowers commit p99 at the same near RTT and rate.
+
 ### B0-30 fails at `CHILD_GROUP_AT`, and the substitution is withdrawn, 2026-11-11
 
 B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on its fail line at simulated day 27.52 (`tests/am1/results/b0-30.md`; `build/BUILD-PLAN.md`, AM1-WP6, B0-30).
