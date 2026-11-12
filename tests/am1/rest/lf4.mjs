@@ -131,15 +131,22 @@ for (const c of HIDDEN) {
 // Check runs on the commits tip by App m3-ci, under its own installation token: REST `POST check-runs`.
 const ci = await ghs({});
 if (ci.status !== 201) throw new Error(`m3-ci token: ${ci.status}`);
+// All 16 at once (lf4-rest-3): `decide` gives each its id from the repository's `IdBlock` cursor, so concurrent creates
+// get distinct ids from the chain's leased block (the 16 high bits above the offset agree), and none is refused.
 const runIds = [];
-for (const c of HIDDEN) {
-  const r = await api("POST", `/api/v3/repos/${R}/check-runs`, ci.body.token, { name: `lf4-${c.toString(16)}`, head_sha: tip,
-    conclusion: "success", output: { title: `lf4 ${c.toString(16)}`, summary: text(c) } });
-  const ok = r.status === 201 && r.body?.output?.summary === text(c) && r.body?.status === "completed" && r.body?.head_sha === tip;
+const runReplies = await Promise.all(HIDDEN.map((c) => api("POST", `/api/v3/repos/${R}/check-runs`, ci.body.token, {
+  name: `lf4-${c.toString(16)}`, head_sha: tip, conclusion: "success", output: { title: `lf4 ${c.toString(16)}`, summary: text(c) } })));
+HIDDEN.forEach((c, i) => {
+  const r = runReplies[i];
+  const ok = r.status === 201 && r.body?.output?.summary === text(c) && r.body?.status === "completed" && r.body?.head_sha === tip
+    && r.body?.check_suite?.id === r.body?.id;
   if (ok) runIds.push([c, r.body.id]);
   wrote("check run", ok || `${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
   (created["check run"] ??= []).push(r.status);
-}
+});
+const ids = runIds.map(([, id]) => id);
+const blocks = new Set(ids.map((id) => Math.floor(id / 65536)));
+row(OUT, { step: "check-run ids", ids, distinct: new Set(ids).size, blocks: [...blocks] });
 // The controls on the two writes: a check run under a user's PAT is GHES's 403, and a review comment on an issue 404.
 const userRun = await api("POST", `/api/v3/repos/${R}/check-runs`, admin, { name: "pat", head_sha: tip });
 const onIssue = await api("POST", `/api/v3/repos/${R}/pulls/${issues[0]?.[1] ?? 1}/comments`, untrusted,
@@ -208,7 +215,8 @@ await control("check run", `/api/v3/repos/${R}/check-runs/${runIds[0]?.[1]}`);
 for (const [c, id] of releases) { const o = await get(`/api/v3/repos/${R}/releases/${id}`); check("release", c, o, o?.body, false); }
 await control("release", `/api/v3/repos/${R}/releases/${releases[0]?.[1]}`);
 
-const v = { tag, ranges: HIDDEN.length, writes, controls, checkRunList: { total: runList?.total_count ?? null, viewsOk: listed } };
+const v = { tag, ranges: HIDDEN.length, writes, controls, checkRunList: { total: runList?.total_count ?? null, viewsOk: listed },
+  checkRunIds: { created: ids.length, distinct: new Set(ids).size, blocks: blocks.size } };
 for (const [k, xs] of Object.entries(results)) v[k] = { checked: xs.length, pass: xs.filter((x) => x.ok).length, fails: xs.filter((x) => !x.ok) };
 row(OUT, v);
 log(JSON.stringify(v).slice(0, 4000));
