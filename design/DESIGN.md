@@ -1140,7 +1140,10 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// HOT_POOL`. The policy has no `max_instances`, so this check, over a fixed set of shard names, is each site's start
 /// cap. At start the object reads `CLOUDFLARE_REGION` inside the container and replaces a container outside its site's
 /// container regions, at most three times, then alarms. A warm shard holds a 6 h inactivity timeout, the API's maximum,
-/// renewed by its alarm hourly until 24 h after its last request. Each site-script version's image map holds its
+/// renewed by its alarm hourly until 24 h after its last request. The timeout belongs to the object instance that set
+/// it, so an instance that starts while its container runs sets it again before any event: without that, a `/status`
+/// that woke an evicted shard object left its container to stop about a minute later, on a new disk the next time
+/// [measured, `tests/am1/results/hot-shards.md`]. Each site-script version's image map holds its
 /// release's git image as `git` and the previous release's as `git_prev`. A new version restarts no running container
 /// [measured, `tests/m0/results/container-survival.json`], so a shard changes image only when its site's `ContainerDay`
 /// step covers it, and returns to `git_prev` on that day's committed `Rollback { target: Containers(site) }`. Per site,
