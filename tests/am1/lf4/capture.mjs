@@ -48,9 +48,10 @@ const writes = [
 for (const [name, tok, path, oapi, body] of writes) {
   const r = await api("POST", `${R}${path}`, tok, body);
   // GHES 3.22's description lists only 201 for `POST check-runs` and no 404 for review comments, so the two refusals
-  // are kept beside the replies (`.refusal.json`), not checked by validate.py (F56's kind of known mismatch).
-  const ext = r.status === 201 ? "rest.json" : "refusal.json";
-  writeFileSync(`${opt.out}/hosted-${name}.${ext}`, JSON.stringify({ method: "POST", path: oapi, status: r.status, body: r.body }));
+  // go to `<out>-refusals/`, which validate.py does not read (it takes every other `.json` there as GraphQL).
+  const dir = r.status === 201 ? opt.out : `${opt.out}-refusals`;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/hosted-${name}.rest.json`, JSON.stringify({ method: "POST", path: oapi, status: r.status, body: r.body }));
   out.push(`${name} ${r.status}`);
 }
 for (const [name, path, oapi] of cases) {
