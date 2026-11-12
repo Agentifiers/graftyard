@@ -40,27 +40,56 @@ pub async fn authz_of(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Opti
 /// read of its `jti_shard`, so the next write and the next read both see a `DELETE` that returned 204; every write's
 /// leader re-reads the row at `decide`. A token that fails any check is no caller, which the routes answer with 401.
 pub async fn stateless(c: &Ctx<'_>, text: &str) -> Result<Option<Principal>> {
-    if stateless::parse(text).is_err() {
-        return Ok(None);
-    }
-    let keys: TokensFold = match dep_fold(c, ChainId::Tokens(TokenShard(0))).await.map_err(Error::RustError)? {
-        Some(f) => f,
-        None => return Ok(None),
+    let Ok(unverified) = stateless::parse(text) else { return Ok(None) };
+    let (read_class, at) = (c.read_class.get(), now());
+    // The verifying keys and the `jti`'s revocation row are read at once: the `jti` is in the claims before the
+    // signature is checked, and a token whose signature fails is refused whatever the row says. A read-class request
+    // may use either answer up to `READ_CACHE` old (`crate::rcache`), and only an answer that lets the token through
+    // is kept.
+    let jti = unverified.jti();
+    let keys = crate::rcache::through(
+        &crate::rcache::KEYS,
+        (),
+        at,
+        read_class,
+        dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))),
+    );
+    let read_jti = async {
+        // Most `jti` shards hold no group until a token there is revoked. One is created on first use, as every
+        // sharded system chain is, so the leader of the caller's next write can read it as a dependency; until then
+        // it holds no revocation.
+        let chain = ChainId::Tokens(graftyard_identity::jti_shard(&jti));
+        let record = c.system_record(chain).await?;
+        let b = c.bindings();
+        let q = json!({ "q": { "jti": jti.0.to_string() } }).to_string();
+        Ok::<_, String>(Some(match graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await? {
+            Some((v, _, _)) => v.pointer("/value/jti").and_then(Value::as_u64).is_some_and(|exp| exp > now().0),
+            None => {
+                graftyard_lookup::create(&b, chain, &record, &json!({})).await?;
+                false
+            }
+        }))
     };
-    let Ok(claims) = stateless::verify(text, &keys, now()) else { return Ok(None) };
-    // Most `jti` shards hold no group until a token there is revoked. One is created on first use, as every
-    // sharded system chain is, so the leader of the caller's next write can read it as a dependency; until then it
-    // holds no revocation.
-    let chain = ChainId::Tokens(graftyard_identity::jti_shard(&claims.jti));
-    let record = c.system_record(chain).await.map_err(Error::RustError)?;
-    let b = c.bindings();
-    let q = json!({ "q": { "jti": claims.jti.0.to_string() } }).to_string();
-    match graftyard_lookup::call_opt(&b, chain, &record, "/read", q.as_bytes()).await.map_err(Error::RustError)? {
-        Some((v, _, _)) if v.pointer("/value/jti").and_then(Value::as_u64).is_some_and(|exp| exp > now().0) => {
-            return Ok(None);
+    let revoked = crate::rcache::through(&crate::rcache::JTIS, jti.0.0, at, read_class, read_jti);
+    let (keys, revoked) = futures_util::future::join(keys, revoked).await;
+    let Some(keys) = keys.map_err(Error::RustError)? else { return Ok(None) };
+    let claims = match stateless::verify(text, &keys, now()) {
+        Ok(claims) => claims,
+        // Refused on keys up to `READ_CACHE` old: read them again, so a key added since (a rotation) verifies at once.
+        Err(_) if read_class => {
+            let Some(keys) =
+                dep_fold::<TokensFold>(c, ChainId::Tokens(TokenShard(0))).await.map_err(Error::RustError)?
+            else {
+                return Ok(None);
+            };
+            crate::rcache::put(&crate::rcache::KEYS, (), now(), keys.clone());
+            let Ok(claims) = stateless::verify(text, &keys, now()) else { return Ok(None) };
+            claims
         }
-        Some(_) => {}
-        None => graftyard_lookup::create(&b, chain, &record, &json!({})).await.map_err(Error::RustError)?,
+        Err(_) => return Ok(None),
+    };
+    if revoked.map_err(Error::RustError)? != Some(false) {
+        return Ok(None);
     }
     Ok(Some(Principal::installation(&claims)))
 }
