@@ -41,7 +41,7 @@ Round 5 on `graft-m2b` (B0-29, repo 131255, 19:46 to 19:56Z, read-only telemetry
 
 ## The change
 
-Commits on `learner-dumps`: 6204808 (the change and its plants), 4ec1bf0 (a named cache type for clippy, and the run scripts in `tests/ld/`), then the design, cost, and results commit.
+Commits on `learner-dumps`: 6204808 (the change and its plants), 4ec1bf0 (a named cache type for clippy, and the run scripts in `tests/ld/`), then 8429cd6 (design, cost, decisions, and these results).
 
 - `workers/site/src/family.rs`: `dump_bytes` builds the packed dump once per `DumpKey` (the tiers' own meta rows) as `Rc<[u8]>` and caches it per repository; `Repo::read_json` and the new `Family::read_bytes` both answer from it. `dump_every(me)` is `LEARNER_DUMP_EVERY_MS` (500 ms [guess]) on a learner's address and `DUMP_EVERY_MS` (1 s) on a voter's; `dump_wait` takes it.
 - `workers/site/src/host.rs`: a granted read's answer is `fold_answer`: `Shed` when a stale dump's rebuild is not due, else the shared bytes, else `read_json` serialized. Before, each input that granted reads serialized its own copy of the dump (`shared_answer` shares only within one input).
