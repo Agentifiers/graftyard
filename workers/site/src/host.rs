@@ -572,6 +572,10 @@ pub struct Host<F: Family> {
     /// (`/sever`). Set and lifted in this object at once, with no plan cache in between.
     #[cfg(feature = "test-faults")]
     pub severed_until: Cell<u64>,
+    /// Test installs, B0-02's A/B (`tests/m0/results/carried-5.md`): member calls send their body as one array, as
+    /// before `m0-carried-4`, instead of a stream (`/stats?body=array`). A reset object streams again.
+    #[cfg(feature = "test-faults")]
+    pub array_body: Cell<bool>,
     /// Test installs, B0-18's depth model: the hop of the newest request this object received, as its sender's
     /// `x-graft-hop` header said, or 2 for a request from a Worker (the edge, the tools edge). The runtime charges
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
@@ -1153,6 +1157,8 @@ impl<F: Family> Host<F> {
             abandon: RefCell::new(BTreeSet::new()),
             #[cfg(feature = "test-faults")]
             severed_until: Cell::new(0),
+            #[cfg(feature = "test-faults")]
+            array_body: Cell::new(false),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
             #[cfg(feature = "test-faults")]
@@ -2129,19 +2135,28 @@ impl<F: Family> Host<F> {
         // The body leaves through a fixed-length stream, not as one array: a SQLite write that starts while an
         // array body is still in flight stalled that body 100 to 1,000 ms in about 1% of calls, and a streamed body
         // did not stall more than a call with no write at all (`tests/m0/results/carried-4.md`, B0-02's leader stall).
-        let stream = worker::worker_sys::FixedLengthStream::new(body.len() as u32)
-            .map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
-        let writer = stream.writable().get_writer().map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
         let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(stream.readable().into()));
         let chunk = js_sys::Uint8Array::from(body.as_slice());
         drop(body);
-        // A write or close refused (the call failed and its body was dropped) surfaces as the fetch's own error.
-        let (wrote, closed) = (writer.write_with_chunk(&chunk), writer.close());
-        spawn_local(async move {
-            let _ = wasm_bindgen_futures::JsFuture::from(wrote).await;
-            let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
-        });
+        #[cfg(feature = "test-faults")]
+        let array = self.array_body.get();
+        #[cfg(not(feature = "test-faults"))]
+        let array = false;
+        if array {
+            init.with_method(Method::Post).with_body(Some(chunk.into()));
+        } else {
+            let stream = worker::worker_sys::FixedLengthStream::new(chunk.length())
+                .map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
+            let writer =
+                stream.writable().get_writer().map_err(|x| PeerErr::new(CallFail::Request, format!("{x:?}")))?;
+            init.with_method(Method::Post).with_body(Some(stream.readable().into()));
+            // A write or close refused (the call failed and its body was dropped) surfaces as the fetch's own error.
+            let (wrote, closed) = (writer.write_with_chunk(&chunk), writer.close());
+            spawn_local(async move {
+                let _ = wasm_bindgen_futures::JsFuture::from(wrote).await;
+                let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
+            });
+        }
         #[cfg(feature = "test-faults")]
         {
             let h = Headers::new();
