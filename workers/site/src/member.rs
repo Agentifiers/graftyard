@@ -728,7 +728,7 @@ impl<F: Family> Routes<F> {
             }
             Err(e) => (Err(e), "error".into()),
         };
-        self.host.write_later((
+        let _ = self.host.state.storage().sql().exec(
             "INSERT INTO arrival (rid, at, role, fault, answer) VALUES (?, ?, ?, ?, ?)",
             vec![
                 rid.into(),
@@ -737,7 +737,7 @@ impl<F: Family> Routes<F> {
                 receipt.map(Receipt::name).map_or(SqlStorageValue::Null, Into::into),
                 answer.into(),
             ],
-        ));
+        );
         match receipt {
             Some(Receipt::Delay) => {
                 crate::faults::count("receipt_delay");
@@ -755,7 +755,6 @@ impl<F: Family> Routes<F> {
     /// BF-14's arrivals since `since` (epoch ms), at most 20,000.
     #[cfg(feature = "test-faults")]
     fn arrivals(&self, since: u64) -> Result<Response> {
-        self.host.flush_queued()?;
         let rows = host::rows(
             &self.host.state.storage().sql(),
             "SELECT rid, at, role, fault, answer FROM arrival WHERE at >= ? ORDER BY seq LIMIT 20000",
