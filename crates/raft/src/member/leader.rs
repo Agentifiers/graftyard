@@ -1363,11 +1363,7 @@ impl<C: Command> Member<C> {
             self.advance_commit();
             self.after_ack();
             self.classify_refusals();
-            // Behind, or a read still waits that arrived after this round left, so only a newer round grants it.
-            let sent_at = res.sent_at;
-            if self.lead.as_ref().is_some_and(|l| {
-                l.next.get(&from).is_some_and(|n| *n <= self.last()) || l.reads.iter().any(|r| r.1 > sent_at)
-            }) {
+            if self.lead.as_ref().is_some_and(|l| l.next.get(&from).is_some_and(|n| *n <= self.last())) {
                 self.send_append(from, false);
             }
         } else if let Some(refusal) = res.refused {
@@ -1648,17 +1644,8 @@ impl<C: Command> Member<C> {
             && lead.transfer.is_none()
             && now < Timestamp(lead.lease_end.0.saturating_sub(DRIFT.as_millis() as u64));
         lead.reads.push((id, now, !lease));
-        // One round in flight to each follower serves every read that arrived before it left; a read that arrives
-        // while one is out waits for its answer, which sends the next (`on_append_res`), or for CALL_DEADLINE, past
-        // which the call is lost. A forced round per read sent one AppendEntries per read to each follower each time
-        // an idle group's lease lapsed, so one stalled follower missed dozens of deadlines at once and `STEP_DOWN`
-        // moved a healthy leader (LM-1, `tests/am1/results/lm1-memory.md`).
         if !lease {
-            for p in self.targets() {
-                let lost =
-                    self.lead.as_ref().and_then(|l| l.sent.get(&p)).is_some_and(|s| now >= after(s.1, CALL_DEADLINE));
-                self.send_append(p, lost);
-            }
+            self.broadcast(true);
         }
         self.check_reads();
         Ok(id)

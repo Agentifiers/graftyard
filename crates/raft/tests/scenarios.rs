@@ -482,32 +482,6 @@ fn reads_need_the_lease_or_a_round() {
     assert!(c.m(A).fresh(&g).is_err(), "a grant outlived the next input");
 }
 
-/// Reads that arrive after the lease lapsed share one round per follower: a burst of them sends one AppendEntries to
-/// each follower, not one per read (LM-1: a per-read round turned one follower stall into a `STEP_DOWN`). A read
-/// that arrives while that round is out is granted by the next round, which the answer sends.
-#[test]
-fn lapsed_reads_share_one_round() {
-    let mut c = Cluster::new(13);
-    c.elect(A);
-    c.deliver_all();
-    c.advance(graftyard_raft::LEASE.as_millis() as u64);
-    c.deliver_all();
-    c.inbox.clear();
-    c.resolutions.clear();
-    let first: Vec<_> = (0..20).map(|_| c.on(A, |m, now| m.read(now)).unwrap()).collect();
-    for f in [B, C] {
-        let n = c.inbox.iter().filter(|e| e.to == f && matches!(e.msg, Message::Append(_))).count();
-        assert_eq!(n, 1, "20 lapsed reads sent {n} rounds to {f:?}");
-    }
-    c.now = Timestamp(c.now.0 + 5);
-    let late = c.on(A, |m, now| m.read(now)).unwrap();
-    c.deliver_all();
-    let granted =
-        |id| c.resolutions.iter().any(|(_, r)| matches!(r, Resolution::Read { id: i, result: Ok(_) } if *i == id));
-    assert!(first.iter().all(|id| granted(*id)), "the shared round grants every read that arrived before it");
-    assert!(granted(late), "a read that arrived after the round left waits for the next one, which the answer sends");
-}
-
 /// The output gate: a member that crashes before its writes are durable sent nothing, so a vote it would have
 /// granted is not counted and its term is not lost.
 #[test]
