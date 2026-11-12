@@ -61,11 +61,15 @@ pub fn db_bytes(h: &Host<Repo>) -> f64 {
 fn size(h: &Rc<Host<Repo>>) -> Result<Value> {
     let sql = h.state.storage().sql();
     let one = |q: &str| -> Result<i64> { rows(&sql, q, vec![])?.first().map_or(Ok(0), |r| int(&r[0])) };
-    let (role, applied, commit) = {
+    let (role, applied, commit, promoted) = {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or_else(|| err("not joined"))?;
-        (format!("{:?}", c.m.role()), c.m.state().applied.0, c.m.state().commit.0)
+        let promoted = c.m.group_fold().fold.promoted().map_or(0, |p| p.to.0);
+        (format!("{:?}", c.m.role()), c.m.state().applied.0, c.m.state().commit.0, promoted)
     };
+    let above = rows(&sql, "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?", vec![i(promoted)])?
+        .first()
+        .map_or(Ok(0), |r| int(&r[0]))?;
     Ok(json!({
         "dbBytes": db_bytes(h),
         "role": role,
@@ -78,6 +82,9 @@ fn size(h: &Rc<Host<Repo>>) -> Result<Value> {
         "requestBytes": one("SELECT COALESCE(SUM(length(events)), 0) FROM request")?,
         "archiveRanges": one("SELECT COUNT(*) FROM archive_keys")?,
         "archivedTo": one("SELECT COALESCE(MAX(to_idx), 0) FROM archive_keys")?,
+        // hot-shards: the log above the last `Promoted`, what a rehydrate's tail reads.
+        "promotedTo": promoted,
+        "unpromotedBytes": above,
         "sqliteFull": h.stats.borrow().sqlite_full,
         "archiveSteps": h.stats.borrow().archive_steps,
         "truncatedTo": h.stats.borrow().truncated_to,

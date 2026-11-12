@@ -833,7 +833,7 @@ fn bf22_non_required_checks_live_in_metadata_and_prune_on_every_member() {
 /// commit's provenance), and every captured query answers from the rows it does read as from the member's own tiers.
 #[test]
 fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
-    use graftyard_api::hosted::TierRows;
+    use graftyard_api::hosted::{Budget, TierRows};
     use graftyard_fold::{Store, Stored, Val};
     use graftyard_git::tiers::{CORE, METADATA};
     let mut c = seeded();
@@ -841,8 +841,8 @@ fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
     let m = &mut c.members[0];
     m.meta.put("path_set", vec![Val::Blob(b"refs/heads/claude/a".as_slice().into())], row(&[7; 2_000]));
     m.meta.put("provenance", vec![Val::Blob([1; 20].as_slice().into())], row(&[8; 64]));
-    let (core, ok1) = TierRows::dump(&c.members[0].core, &CORE, &mut 100_000);
-    let (meta, ok2) = TierRows::dump(&c.members[0].meta, &METADATA, &mut 100_000);
+    let (core, ok1) = TierRows::dump(&c.members[0].core, &CORE, &mut Budget::rows(100_000));
+    let (meta, ok2) = TierRows::dump(&c.members[0].meta, &METADATA, &mut Budget::rows(100_000));
     assert!(ok1 && ok2);
     let tables: std::collections::BTreeSet<&str> = meta.iter().map(|(t, _, _)| t.as_str()).collect();
     assert!(!tables.contains("path_set") && !tables.contains("provenance"), "{tables:?}");
@@ -865,13 +865,13 @@ fn the_tier_read_leaves_out_path_sets_and_provenance_only() {
 /// `Render`, and the member renders from `&Acked` over its own tiers. The reply equals the in-process render.
 #[test]
 fn a_hosted_mutation_renders_on_the_member_as_in_process() {
-    use graftyard_api::hosted::{HostedDir, Render, TierRows, What, render_ok};
+    use graftyard_api::hosted::{Budget, HostedDir, Render, TierRows, What, render_ok};
     use graftyard_git::tiers::{CORE, METADATA};
     let mut c = seeded();
     let h = host();
     let dir = Dir::new(WRITER);
     let rows = |c: &Chain| {
-        let (mut budget, m) = (100_000, &c.members[0]);
+        let (mut budget, m) = (Budget::rows(100_000), &c.members[0]);
         let (core, ok1) = TierRows::dump(&m.core, &CORE, &mut budget);
         let (meta, ok2) = TierRows::dump(&m.meta, &METADATA, &mut budget);
         let t = TierRows { index: 1, core, meta: Some(meta), complete: ok1 && ok2 };
@@ -887,7 +887,7 @@ fn a_hosted_mutation_renders_on_the_member_as_in_process() {
     assert_eq!(TierRows::from_value(&serde_json::to_value(&t).unwrap()).unwrap(), t);
     let (core, meta) = (TierRows::store(&t.core), TierRows::store(t.meta.as_ref().unwrap()));
     // The rows `Repo` reads are the member's; the written index and the tier's `META` row do not cross.
-    let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut 100_000).0;
+    let again = |s: &MemStore, schema| TierRows::dump(s, schema, &mut Budget::rows(100_000)).0;
     assert_eq!(again(&core, &CORE), again(&c.members[0].core, &CORE));
     assert_eq!(again(&meta, &METADATA), again(&c.members[0].meta, &METADATA));
     assert!(!t.core.is_empty() && !t.meta.as_ref().unwrap().is_empty());
@@ -1323,6 +1323,56 @@ fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
     assert_eq!(rest(&mut c, "POST", None, json!({ "labels": [] })).status, 422);
     let r = c.repo(0, &h, &dir);
     assert!(plan_issue_labels(&r, "POST", "99", None, &json!(["bug"])).is_err_and(|x| x.status == 404));
+}
+
+/// A tier too large to serve is refused after one byte budget's work, not after `ROWS_MAX` rows: B0-30's 4 GB
+/// metadata tier was scanned to 50,000 rows a read only to answer `complete: false`.
+#[test]
+fn an_oversized_tier_read_stops_at_its_byte_budget() {
+    use graftyard_api::hosted::{Budget, TierRows};
+    use graftyard_fold::store::{Key, Read};
+    use graftyard_fold::{Store, Stored, Val};
+    use graftyard_git::tiers::METADATA;
+    use std::cell::Cell;
+    struct Counted<'a>(&'a MemStore, Cell<usize>);
+    impl Read for Counted<'_> {
+        fn get(&self, table: &str, key: &[Val]) -> Option<Vec<Val>> {
+            Read::get(self.0, table, key)
+        }
+        fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Vec<Val>)> {
+            let rows = Read::scan(self.0, table, from, limit);
+            self.1.set(self.1.get() + rows.len());
+            rows
+        }
+    }
+    let mut c = seeded();
+    let m = &mut c.members[0];
+    for i in 0..3_000u32 {
+        let row = Stored { written: graftyard_types::Index(1), cols: vec![Val::Blob(vec![9; 64 << 10].into())] };
+        m.meta.put("path_set", vec![Val::Int(i64::from(i))], row.clone());
+        m.meta.put("comment", vec![Val::Int((1 << 40) + i64::from(i))], row);
+    }
+    let counted = Counted(&c.members[0].meta, Cell::new(0));
+    let mut budget = Budget::READ;
+    let (rows, complete) = TierRows::dump(&counted, &METADATA, &mut budget);
+    assert!(!complete);
+    let bytes: usize = rows
+        .iter()
+        .map(|(_, _, cols)| {
+            cols.iter()
+                .map(|v| match v {
+                    Val::Blob(b) => b.len(),
+                    _ => 0,
+                })
+                .sum::<usize>()
+        })
+        .sum();
+    assert!(bytes <= Budget::READ.bytes && bytes > Budget::READ.bytes / 2, "{bytes}");
+    // The scan stopped within one batch of the budget, far short of the 3,000 large comments it holds.
+    assert!(counted.1.get() < 1_200, "{} rows scanned", counted.1.get());
+    // A small tier still reads whole under the same budget.
+    let (_, small) = TierRows::dump(&seeded().members[0].meta, &METADATA, &mut Budget::READ.clone());
+    assert!(small);
 }
 
 #[test]

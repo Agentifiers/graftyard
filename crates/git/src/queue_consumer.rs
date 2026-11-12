@@ -383,23 +383,18 @@ pub fn on_refused(cmd: &MergeCmd, n: IssueNumber, err: &MergeError) -> Option<Me
 
 // ---- the host's half: the cursor, the read, and the git cache ----
 
-/// The leader alarm's read for `MergeQueue`, as `crate::prsync::scan` is `PrSync`'s: up to `SCAN_MAX` entries past what
-/// `d` has read, each by `entry`, recording the bases it touched.
+/// The leader alarm's read for `MergeQueue`, as `crate::prsync::scan` is `PrSync`'s: up to `SCAN_MAX` entries and
+/// `SCAN_BYTES` of stored rows past what `d` has read, each by `entry`, recording the bases it touched. `Ok(true)` when
+/// entries are left for the next alarm.
 pub fn scan(
     d: &mut crate::prsync::Dispatcher<RefName>,
     core: &dyn Read,
     repo: graftyard_types::RepoId,
     cursor: graftyard_types::Index,
     applied: graftyard_types::Index,
-    mut entry: impl FnMut(graftyard_types::Index) -> Option<LogEntry<RepoEvent>>,
-) -> Result<(), graftyard_types::Index> {
-    use graftyard_types::Index;
-    let Some((from, to)) = d.to_read(cursor, applied) else { return Ok(()) };
-    for i in from.0 + 1..=to.0.min(from.0 + crate::prsync::SCAN_MAX) {
-        let e = entry(Index(i)).ok_or(Index(i))?;
-        d.read(Index(i), touched(core, repo, &e));
-    }
-    Ok(())
+    entry: impl FnMut(graftyard_types::Index) -> Option<(LogEntry<RepoEvent>, usize)>,
+) -> Result<bool, graftyard_types::Index> {
+    crate::prsync::scan_with(d, cursor, applied, entry, |e| touched(core, repo, e))
 }
 
 /// The leader's answer to the consumer's read (`{"q": {"mergequeue": base}}`): the committed `MergeQueue` cursor and

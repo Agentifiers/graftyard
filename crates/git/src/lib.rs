@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod blob;
 pub mod bucket;
+pub mod catchup;
 pub mod clone;
 pub mod commit_fetch;
 pub mod feed;

@@ -186,6 +186,18 @@ pub mod b64 {
         s
     }
 
+    /// Each byte's value in `A`, or 0xff. A stored log row holds its inline packs in this encoding, so every read of
+    /// a row decodes them: a search of `A` per character took a hot group's leader over its CPU limit (hot-shards).
+    const VALUE: [u8; 256] = {
+        let mut t = [0xffu8; 256];
+        let mut i = 0;
+        while i < 64 {
+            t[A[i] as usize] = i as u8;
+            i += 1;
+        }
+        t
+    };
+
     pub fn decode(s: &str) -> Option<Vec<u8>> {
         let s = s.as_bytes();
         if !s.len().is_multiple_of(4) {
@@ -199,7 +211,7 @@ pub mod b64 {
             }
             let mut n = 0u32;
             for (i, b) in c.iter().enumerate() {
-                let v = if i >= 4 - pad { 0 } else { A.iter().position(|a| a == b)? as u32 };
+                let v = if i >= 4 - pad { 0 } else { Some(VALUE[*b as usize]).filter(|v| *v != 0xff)? as u32 };
                 n = (n << 6) | v;
             }
             let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
@@ -253,6 +265,12 @@ mod tests {
         assert_eq!(b64::encode(b"fo"), "Zm8=");
         assert!(b64::decode("Zm8").is_none());
         assert!(b64::decode("Z===").is_none());
+        // Every byte outside the alphabet is refused, in any position but the padding.
+        for b in 0..=255u8 {
+            let s = format!("Zm{}v", b as char);
+            let ok = b.is_ascii_alphanumeric() || b == b'+' || b == b'/';
+            assert_eq!(b64::decode(&s).is_some(), ok && s.len() == 4, "{b}");
+        }
     }
 
     #[test]
