@@ -217,6 +217,15 @@ MUTANTS = [
     ('round 7: a merge that misses catches up at once, racing the catch-up in flight', 'crates/git/src/merge_cache.rs',
      '        return Ok(a);\n    }\n    in_flight().await;', '        return Ok(a);\n    }',
      ['cargo', '-p', 'graftyard-git', '--lib', 'a_merge_waits']),
+    ('round 8: each lapsed read forces its own round (one follower stall becomes many failed calls)',
+     'crates/raft/src/member/leader.rs', '                self.send_append(p, lost);', '                self.send_append(p, true);',
+     ['cargo', '-p', 'graftyard-raft', '--test', 'scenarios', 'lapsed_reads', 'reads_need']),
+    ('round 8: a read that arrived after the shared round left is not sent a round on its answer',
+     'crates/raft/src/member/leader.rs', ' || l.reads.iter().any(|r| r.1 > sent_at)', '',
+     ['cargo', '-p', 'graftyard-raft', '--test', 'scenarios', 'lapsed_reads', 'reads_need']),
+    ('round 8: a lost call is never replaced for a read, so it waits for the tick',
+     'crates/raft/src/member/leader.rs', '                self.send_append(p, lost);', '                self.send_append(p, false);',
+     ['cargo', '-p', 'graftyard-raft', '--test', 'scenarios', 'lapsed_reads', 'reads_need']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

@@ -843,11 +843,11 @@ pub enum WorkspaceMode { Fork, InRepo }
 
 // ---- The read path ----
 /// A fold that includes every entry acknowledged before `arrived`. Only the leader builds one, once its term's `Noop`
-/// is applied: from its fold while `now < lease_end - DRIFT`, else after one read-index round to one follower, which
-/// also renews the lease. Read-index answers wait for the same `Noop`. Every `Fresh` read touches SQLite after its
-/// lease check, and serves isolate-held fold state only under a key read there (F65's dump), so a replaced instance
-/// cannot answer. A follower batches read-index requests to the leader every 10 ms and answers once applied. A learner
-/// does the same with one call in flight, at most one per 50 ms, resent once after HEDGE (500 ms [guess]) (Scale).
+/// is applied: from its fold while `now < lease_end - DRIFT`, else after a round sent after it arrived, which renews
+/// the lease; reads share one call per follower [measured, LM-1]. Read-index answers wait for that `Noop`. Each `Fresh`
+/// read touches SQLite after its lease check, and serves isolate-held fold state only under a key read there (F65's
+/// dump), so a replaced instance cannot answer. A follower batches read-index calls every 10 ms and answers once
+/// applied; a learner keeps one in flight, at most one per 50 ms, resent once after HEDGE (500 ms [guess]) (Scale).
 pub async fn fresh(&self, arrived: Instant) -> Result<Fresh<'_>, NotLeader>;
 /// Stale mode starts only by a customer-signed `StaleMode` flag, committed in the `Release` group or, when it cannot
 /// commit, verified uncommitted (Release group, `STALE_MAX`), never automatically. It serves reads and fetches at
