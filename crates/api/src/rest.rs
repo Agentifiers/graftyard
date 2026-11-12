@@ -724,11 +724,11 @@ pub(crate) fn conclusion(c: CheckConclusion) -> &'static str {
     }
 }
 
-/// `POST /repos/{owner}/{repo}/check-runs`'s command. The edge supplies the App and mints the run and suite id.
+/// `POST /repos/{owner}/{repo}/check-runs`'s command. The edge supplies the App; `decide` gives the run and its suite
+/// their id from the repository's `IdBlock` cursor (`IssueOp::CreateCheck`), so the ids here are placeholders.
 pub fn plan_create_check_run(
     body: &Value,
     app: graftyard_identity::AppId,
-    id: i64,
     now: Timestamp,
 ) -> Result<graftyard_git::issue_ops::IssueOp, Reply> {
     const DOC: &str = "rest/checks/runs#create-a-check-run";
@@ -848,9 +848,9 @@ pub fn plan_create_check_run(
         }
         Some(_) => return Err(invalid()),
     };
-    Ok(graftyard_git::issue_ops::IssueOp::RecordCheck(CheckRunUpdate {
-        run: CheckRunId(DbId(id)),
-        suite: CheckSuiteId(DbId(id)),
+    Ok(graftyard_git::issue_ops::IssueOp::CreateCheck(CheckRunUpdate {
+        run: CheckRunId(DbId(0)),
+        suite: CheckSuiteId(DbId(0)),
         app,
         head_sha,
         name: name.into(),
@@ -865,8 +865,18 @@ pub fn plan_create_check_run(
     }))
 }
 
-/// The 201 of a committed check-run create, rendered from its row after the entry applied.
-pub fn check_run_created(after: &Repo<'_>, id: i64) -> Reply {
+/// The 201 of a committed check-run create, rendered from its row after the entry applied: the id `decide` assigned,
+/// from the `&Acked`. `minted` is the id an `lf4-rest-2` edge minted and sent in `What::CheckRunCreated`, read only
+/// when the ack carries no id, as a `RecordCheck` it sent acks.
+pub fn check_run_created(
+    acked: &graftyard_raft::Acked<graftyard_git::issue_ops::IssueOut>,
+    after: &Repo<'_>,
+    minted: i64,
+) -> Reply {
+    let id = match acked.out {
+        graftyard_git::issue_ops::IssueOut::Id(id) => id.0,
+        _ => minted,
+    };
     match after.check_run(CheckRunId(DbId(id))) {
         Some(t) => Reply::json(201, check_run_json(after, &t.rec, t.at)),
         None => Reply::error(500, "Internal Server Error", "rest"),

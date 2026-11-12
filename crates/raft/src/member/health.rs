@@ -237,15 +237,21 @@ impl<C: Command> Member<C> {
         }
         let Some(why) = self.tripped() else { return };
         let counts = self.call_counts();
-        let rate = |s: SiteId| counts.iter().find(|c| c.0 == s).map_or(0.0, |c| Self::rate(c.1, c.2));
+        // A link fails when its calls fail over `commit_errors` with at least `commit_fail_min` failed, as the
+        // commit-error rule counts it: one or two misses in a quiet window pass 5% on noise alone (F37).
+        let failing = |s: SiteId| {
+            counts.iter().find(|c| c.0 == s).is_some_and(|c| {
+                Self::rate(c.1, c.2) > STEP_DOWN.commit_errors && c.2 >= u32::from(STEP_DOWN.commit_fail_min)
+            })
+        };
         let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
-        // A follower that may lead, outside RESET_QUARANTINE; on a confirm trip also one whose calls from this leader
-        // fail under `commit_errors`.
+        // A follower that may lead, outside RESET_QUARANTINE; on a confirm trip also one whose link from this leader
+        // is not failing.
         let candidates: Vec<SiteId> = self
             .peers()
             .into_iter()
             .filter(|s| self.may_lead_target(*s) && !self.quarantined(*s))
-            .filter(|s| errors_trip || rate(*s) <= STEP_DOWN.commit_errors)
+            .filter(|s| errors_trip || !failing(*s))
             .collect();
         if candidates.is_empty() {
             self.hold(why);

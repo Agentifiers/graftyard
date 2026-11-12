@@ -78,14 +78,26 @@ enum Gate {
 /// `index` is a read-index read, `servable` whether a follower serves its query (`Family::follower_serves`), `reads`
 /// and `heavies` the reads and whole-tier reads in flight. The caps hold on every member that serves the read, the
 /// leader or a follower by read-index; a plain read on a follower is not shed, because it answers `NotLeader`.
-fn gate(index: bool, leading: bool, servable: bool, heavy: bool, reads: u32, heavies: u32) -> Gate {
+/// `me`, the member's address: HEAVY_READS does not hold on a learner, only READS_MAX. It bounded the copies of a dump in flight, and a
+/// learner's reads at one state share one copy (`family::dump_bytes`), while a learner never votes, so its reads
+/// delay no AppendEntries reply or confirm of the group's. At HEAVY_READS, learners shed 58 to 72% of journey 9's
+/// whole-tier reads at 10% CPU and 65 MB (`tests/am1/results/learner-dumps.md`).
+fn gate(index: bool, leading: bool, me: SiteId, servable: bool, heavy: bool, reads: u32, heavies: u32) -> Gate {
+    let learner = graftyard_types::learner_slot(me).is_some();
     if index && !leading && !servable {
         return Gate::NotLeader;
     }
-    if reads >= READS_MAX || (heavy && (leading || index) && heavies >= HEAVY_READS) {
+    if reads >= READS_MAX || (heavy && (leading || index) && !learner && heavies >= HEAVY_READS) {
         return Gate::Shed;
     }
     Gate::Serve
+}
+
+/// Whether a granted whole-tier read whose dump rebuild is due in `ms` waits for it and is granted again, rather than
+/// shed: only a learner's read-index read, and only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline.
+/// A voter's is shed, so the edge's next member or a 503 answers it at once.
+fn waits_for_rebuild(learner: bool, index: bool, now: u64, ms: u64, until: u64) -> bool {
+    learner && index && now + ms < until
 }
 
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
@@ -1038,13 +1050,18 @@ impl<F: Family> Routes<F> {
         // A read-index read goes to a follower only for the queries `Family::follower_serves` names; the caps hold on
         // it too (`gate`).
         let heavy = heavy_read(&q);
-        let (leading, servable, nl) = match self.host.core.borrow().as_ref() {
-            Some(c) => {
-                (c.m.role() == Role::Leader, F::follower_serves(&c.m.group_fold().fold, &q), Some(c.m.not_leader()))
-            }
-            None => (false, false, None),
+        let (leading, me, servable, nl) = match self.host.core.borrow().as_ref() {
+            Some(c) => (
+                c.m.role() == Role::Leader,
+                c.m.me(),
+                F::follower_serves(&c.m.group_fold().fold, &q),
+                Some(c.m.not_leader()),
+            ),
+            None => (false, SiteId(0), false, None),
         };
-        match gate(index, leading, servable, heavy, self.host.reads_in_flight.get(), self.host.heavy_reads.get()) {
+        let learner = graftyard_types::learner_slot(me).is_some();
+        let (reads, heavies) = (self.host.reads_in_flight.get(), self.host.heavy_reads.get());
+        match gate(index, leading, me, servable, heavy, reads, heavies) {
             Gate::Serve => {}
             Gate::NotLeader => {
                 self.host.stats.borrow_mut().follower_refused += 1;
@@ -1060,31 +1077,43 @@ impl<F: Family> Routes<F> {
             self.host.stats.borrow_mut().follower_reads += 1;
         }
         let held = (InFlight::new(&self.host.reads_in_flight), heavy.then(|| InFlight::new(&self.host.heavy_reads)));
-        let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
-        let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q));
-        self.host.dispatch(out, None);
-        let rx = match (r, rx) {
-            (Ok(_), Some(rx)) => rx,
-            (Err(nl), _) => return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
-            (Ok(_), None) => unreachable!("a started read has a waiter"),
-        };
-        self.host.served();
         let (wait, late) = read_wait(index);
-        match within(wait, rx).await {
-            // A stale dump whose rebuild is not yet due (`family::dump_wait`).
-            Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
-                self.host.stats.borrow_mut().shed_reads += 1;
-                self.reply(graftyard_lookup::overloaded_reply(ms))
-            }
-            Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held),
-            Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
-            Some(Err(_)) => Response::error("member reset", 503),
-            None => {
-                if index {
-                    self.host.stats.borrow_mut().follower_late += 1;
+        let until = now_ms() + wait.as_millis() as u64;
+        loop {
+            let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+            let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
+            self.host.dispatch(out, None);
+            let rx = match (r, rx) {
+                (Ok(_), Some(rx)) => rx,
+                (Err(nl), _) => {
+                    return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }
-                self.reply(late)
-            }
+                (Ok(_), None) => unreachable!("a started read has a waiter"),
+            };
+            self.host.served();
+            let left = Duration::from_millis(until.saturating_sub(now_ms()));
+            return match within(left, rx).await {
+                // A stale dump whose rebuild is not yet due (`family::dump_wait`). A learner's read waits for the
+                // rebuild and is granted again, so it answers the state at its new grant; a voter's is shed.
+                Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
+                    if waits_for_rebuild(learner, index, now_ms(), ms, until) {
+                        self.host.stats.borrow_mut().waited_reads += 1;
+                        worker::Delay::from(Duration::from_millis(ms)).await;
+                        continue;
+                    }
+                    self.host.stats.borrow_mut().shed_reads += 1;
+                    self.reply(graftyard_lookup::overloaded_reply(ms))
+                }
+                Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held),
+                Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
+                Some(Err(_)) => Response::error("member reset", 503),
+                None => {
+                    if index {
+                        self.host.stats.borrow_mut().follower_late += 1;
+                    }
+                    self.reply(late)
+                }
+            };
         }
     }
 
@@ -1220,6 +1249,9 @@ impl<F: Family> Routes<F> {
         v["depFails"] = json!(s.dep_fails);
         v["queueMs"] = json!(s.queue_ms);
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
+        // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
+        v["waitedReads"] = json!(s.waited_reads);
+        v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
             s.commit_ms.clear();
             s.round_ms.clear();
@@ -1967,6 +1999,10 @@ mod tests {
 
     use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, read_wait, site_field};
 
+    /// A voter's address and a learner's, for `gate`.
+    const V: SiteId = SiteId(1);
+    const L: SiteId = SiteId(graftyard_types::LEARNER_ADDR + 3);
+
     /// Every read counts against READS_MAX, on any member; whole-tier reads on a leader also count against the lower
     /// HEAVY_READS; and the counts come back down when a read is answered or dropped, so a burst of timed-out callers
     /// does not leave the member shedding for good.
@@ -1978,20 +2014,20 @@ mod tests {
             assert!(!heavy_read(&narrow), "{narrow}");
         }
         // (index, leading, servable, heavy, reads, heavies)
-        assert_eq!(gate(false, true, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
-        assert_eq!(gate(false, true, false, true, HEAVY_READS, HEAVY_READS), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS), Gate::Shed);
         assert_eq!(
-            gate(false, false, true, true, HEAVY_READS, HEAVY_READS),
+            gate(false, false, V, true, true, HEAVY_READS, HEAVY_READS),
             Gate::Serve,
             "a plain follower read answers NotLeader"
         );
-        assert_eq!(gate(false, true, false, false, HEAVY_READS * 4, HEAVY_READS * 4), Gate::Serve);
-        assert_eq!(gate(false, true, false, false, READS_MAX - 1, 0), Gate::Serve);
-        assert_eq!(gate(false, true, false, false, READS_MAX, 0), Gate::Shed, "a narrow read past READS_MAX");
-        assert_eq!(gate(false, false, false, false, READS_MAX, 0), Gate::Shed, "on a follower too");
+        assert_eq!(gate(false, true, V, false, false, HEAVY_READS * 4, HEAVY_READS * 4), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX - 1, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX, 0), Gate::Shed, "a narrow read past READS_MAX");
+        assert_eq!(gate(false, false, V, false, false, READS_MAX, 0), Gate::Shed, "on a follower too");
         let n = std::rc::Rc::new(std::cell::Cell::new(0));
         let held: Vec<_> = (0..READS_MAX).map(|_| InFlight::new(&n)).collect();
-        assert_eq!(gate(false, true, false, false, n.get(), 0), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, false, n.get(), 0), Gate::Shed);
         drop(held);
         assert_eq!(n.get(), 0);
     }
@@ -2002,18 +2038,41 @@ mod tests {
     /// leader's index answers `overloaded`, never a value and never a 5xx the edge would report with `suspect`.
     #[test]
     fn a_follower_serves_only_its_reads_under_the_caps_and_never_stale() {
-        assert_eq!(gate(true, false, true, true, 0, 0), Gate::Serve);
-        assert_eq!(gate(true, false, false, false, 0, 0), Gate::NotLeader);
-        assert_eq!(gate(true, false, false, true, READS_MAX, HEAVY_READS), Gate::NotLeader);
-        assert_eq!(gate(true, false, true, true, 0, HEAVY_READS), Gate::Shed, "HEAVY_READS on a follower");
-        assert_eq!(gate(true, false, true, false, READS_MAX, 0), Gate::Shed, "READS_MAX on a follower");
-        assert_eq!(gate(true, true, false, false, 0, 0), Gate::Serve, "a leader serves every read-index read");
+        assert_eq!(gate(true, false, V, true, true, 0, 0), Gate::Serve);
+        assert_eq!(gate(true, false, V, false, false, 0, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, false, true, READS_MAX, HEAVY_READS), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "HEAVY_READS on a follower");
+        assert_eq!(gate(true, false, V, true, false, READS_MAX, 0), Gate::Shed, "READS_MAX on a follower");
+        assert_eq!(gate(true, true, V, false, false, 0, 0), Gate::Serve, "a leader serves every read-index read");
         let (wait, late) = read_wait(true);
         assert_eq!(wait, super::FOLLOWER_WAIT);
         assert!(late.get("overloaded").is_some() && late.get("value").is_none(), "{late}");
         let (wait, late) = read_wait(false);
         assert!(wait > super::FOLLOWER_WAIT);
         assert_eq!(late, json!({ "busy": true }));
+    }
+
+    /// A learner serves whole-tier reads past HEAVY_READS, because its reads at one state share one dump and it never
+    /// votes; READS_MAX still holds on it, and a follower and the leader keep HEAVY_READS. A learner asked for a read
+    /// it may not serve still names the leader. Only a learner's read-index read waits for a dump rebuild, and only if
+    /// the rebuild comes before its deadline.
+    #[test]
+    fn a_learner_serves_whole_tier_reads_past_the_heavy_cap_and_waits_for_a_due_rebuild() {
+        use super::waits_for_rebuild;
+        // (index, leading, me, servable, heavy, reads, heavies): V a voter's address, L a learner's
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a learner past HEAVY_READS");
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS * 8), Gate::Serve);
+        assert_eq!(gate(true, false, L, true, true, READS_MAX, 0), Gate::Shed, "READS_MAX on a learner");
+        assert_eq!(gate(true, false, L, true, false, READS_MAX, 0), Gate::Shed);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "a follower keeps HEAVY_READS");
+        assert_eq!(gate(false, true, V, false, true, 0, HEAVY_READS), Gate::Shed, "the leader keeps HEAVY_READS");
+        assert_eq!(gate(true, false, L, false, true, 0, 0), Gate::NotLeader, "a learner's leader-only read");
+        assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a plain read answers NotLeader");
+        // (learner, index, now, ms until the rebuild, deadline)
+        assert!(waits_for_rebuild(true, true, 1_000, 499, 1_500));
+        assert!(!waits_for_rebuild(true, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
+        assert!(!waits_for_rebuild(false, true, 1_000, 10, 1_500), "a follower sheds");
+        assert!(!waits_for_rebuild(true, false, 1_000, 10, 1_500), "a plain read never waits");
     }
 
     /// An answer's body keeps its read counted until its last piece is taken, so answers still streaming to a far

@@ -140,7 +140,13 @@ pub trait Family: 'static {
     /// What a `fresh` read answers for query `q`.
     fn read_json(fold: &Self::Fold, q: &Value) -> Value;
     /// For a granted whole-tier read `q` at `now`: the ms until its dump may be rebuilt (`dump_wait`), or `None`.
-    fn heavy_wait(_fold: &Self::Fold, _q: &Value, _now: u64) -> Option<u64> {
+    /// `every` is the member's rebuild spacing (`dump_every`).
+    fn heavy_wait(_fold: &Self::Fold, _q: &Value, _now: u64, _every: u64) -> Option<u64> {
+        None
+    }
+    /// What a `fresh` read answers for `q` as serialized JSON bytes shared across reads, when the family keeps them
+    /// (a repository's packed dump, `dump_bytes`); else `None` and the host serializes `read_json`.
+    fn read_bytes(_fold: &Self::Fold, _q: &Value) -> Option<std::rc::Rc<[u8]>> {
         None
     }
     /// Whether a follower serves read `q` by read-index (`design/DESIGN.md`, "Follower read"); else it names the leader.
@@ -267,13 +273,70 @@ const DUMPS_MAX: usize = 8;
 /// The state of both tiers a packed dump was built at: each tier's `applied` and row-hash `sum`, and whether the
 /// metadata tier was loaded, which decides whether the dump holds its rows.
 type DumpKey = (u64, [u8; 32], bool, u64, [u8; 32]);
+/// A cached dump's key and its answer bytes (`DUMPS`).
+type Dump = (DumpKey, std::rc::Rc<[u8]>);
 
 thread_local! {
-    /// The last packed whole-tier dump per repository (`Repo::read_json`), by `DumpKey`. A dump took up to 7.8 s of
-    /// CPU on a 500-PR repository, and 200 API reads/s mostly read the same tiers at the same index
-    /// (`tests/am1/results/lm1-memory.md`).
-    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, (DumpKey, Value)>> =
+    /// The last packed whole-tier dump per repository (`dump_bytes`), by `DumpKey`, as the answer's serialized bytes,
+    /// which every read at that state shares, whichever input granted it. A dump took up to 7.8 s of CPU on a 500-PR
+    /// repository, and 200 API reads/s mostly read the same tiers at the same index (`tests/am1/results/
+    /// lm1-memory.md`); a copy per input that granted reads was what `HEAVY_READS` bounded.
+    static DUMPS: std::cell::RefCell<std::collections::HashMap<RepoId, Dump>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Packed dumps this isolate built (`/stats` `dumpBuilds`).
+    static BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Packed dumps this isolate has built.
+pub fn dump_builds() -> u64 {
+    BUILDS.with(std::cell::Cell::get)
+}
+
+/// The answer to a packed whole-tier read of `fold` (`{"rows": true, "packed": true}`), as serialized JSON bytes: the
+/// cached ones when the tiers stand where they were built, else built now and cached. The key is read from the tiers'
+/// own meta rows after the read's grant, so a hit answers exactly what a rebuild would. `None` for any other query.
+pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
+    use graftyard_api::hosted::{Budget, TierRows};
+    if !q.get("rows").is_some_and(Value::is_boolean) || q.get("packed").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let key = dump_key(fold);
+    if let Some(repo) = fold.repo
+        && let Some(b) = DUMPS.with(|d| d.borrow().get(&repo).filter(|(at, _)| *at == key).map(|(_, b)| b.clone()))
+    {
+        return Some(b);
+    }
+    let mut budget = Budget::READ;
+    let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
+    let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
+    let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
+    let index = graftyard_fold::meta(&*fold.core).applied.0;
+    let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
+    // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
+    let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows.packed()).unwrap_or_else(|_| b"null".to_vec()).into();
+    BUILDS.with(|b| b.set(b.get() + 1));
+    if let Some(repo) = fold.repo {
+        DUMPS.with(|d| {
+            let mut d = d.borrow_mut();
+            if d.len() >= DUMPS_MAX && !d.contains_key(&repo) {
+                d.clear();
+            }
+            d.insert(repo, (key, bytes.clone()));
+        });
+    }
+    Some(bytes)
+}
+
+/// How often a learner rebuilds its packed dump at most [guess]: a learner never votes, so a rebuild delays no
+/// AppendEntries reply or confirm of the group's, only its own reads and applies; a rebuild of B0-29's 1.08 MB dump
+/// took 80 to 100 ms of a learner's CPU, so this keeps rebuilds under about 20% of it. A granted read whose rebuild
+/// is not due waits for it (`crate::member`), it is not shed (`tests/am1/results/learner-dumps.md`).
+pub const LEARNER_DUMP_EVERY_MS: u64 = 500;
+
+/// The rebuild spacing of the member at address `me`: DUMP_EVERY_MS on a voter, whose rebuilds run on the thread
+/// that answers its AppendEntries and confirms, LEARNER_DUMP_EVERY_MS on a learner.
+pub fn dump_every(me: graftyard_types::SiteId) -> u64 {
+    if graftyard_types::learner_slot(me).is_some() { LEARNER_DUMP_EVERY_MS } else { DUMP_EVERY_MS }
 }
 
 fn dump_key(fold: &git::repo::RepoFold) -> DumpKey {
@@ -295,8 +358,9 @@ thread_local! {
 
 /// For a packed whole-tier read of `fold` at `now`: `None` to serve it now, because the cached dump is at the tiers'
 /// state or a rebuild is due (which is recorded); else the ms until one is. Either way the read itself still takes the
-/// lease and reads the tiers' meta rows after it, so what it answers is fresh; this only spaces the rebuilds.
-pub fn dump_wait(fold: &git::repo::RepoFold, now: u64) -> Option<u64> {
+/// lease and reads the tiers' meta rows after it, so what it answers is fresh; this only spaces the rebuilds, by
+/// `every` ms (`dump_every`).
+pub fn dump_wait(fold: &git::repo::RepoFold, now: u64, every: u64) -> Option<u64> {
     let repo = fold.repo?;
     let key = dump_key(fold);
     if DUMPS.with(|d| d.borrow().get(&repo).is_some_and(|(k, _)| *k == key)) {
@@ -305,7 +369,7 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64) -> Option<u64> {
     REBUILT.with(|r| {
         let mut r = r.borrow_mut();
         match r.get(&repo) {
-            Some(at) if now < at + DUMP_EVERY_MS => Some(at + DUMP_EVERY_MS - now),
+            Some(at) if now < at + every => Some(at + every - now),
             _ => {
                 if r.len() >= 64 {
                     r.clear();
@@ -351,7 +415,7 @@ impl Family for Repo {
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
     /// `InitRepo` and `DeleteRepo`). 32.15 is `RepoEvent::Fanout`, which only a leader of this release records itself;
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
-    /// `GRAFTYARD_AUDIT` is set.
+    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -369,6 +433,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_LEASES,
             git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
+            git::issue_ops::call::REPO_FORMAT_CHECKS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -766,8 +831,11 @@ impl Family for Repo {
     fn follower_serves(fold: &git::repo::RepoFold, q: &Value) -> bool {
         follower_query(q, fold.meta.loaded())
     }
-    fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u64> {
-        (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now)).flatten()
+    fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64, every: u64) -> Option<u64> {
+        (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now, every)).flatten()
+    }
+    fn read_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
+        dump_bytes(fold, q)
     }
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
@@ -801,38 +869,18 @@ impl Family for Repo {
             return serde_json::to_value(graftyard_api::hosted::TierRows { index, core, meta: None, complete: true })
                 .unwrap_or(Value::Null);
         }
+        // The packed dump, as `read_bytes` shares it (`dump_bytes`).
+        if let Some(b) = dump_bytes(fold, q) {
+            return serde_json::from_slice(&b).unwrap_or(Value::Null);
+        }
         if q.get("rows").is_some() {
             use graftyard_api::hosted::{Budget, TierRows};
-            let packed = q.get("packed").and_then(Value::as_bool) == Some(true);
-            // The packed dump is built once per state of both tiers and served from the isolate after that
-            // (`DUMPS`): the key is read from the tiers' own meta rows after the read's lease check, so a hit
-            // answers exactly what a rebuild would.
-            let key = packed.then(|| dump_key(fold));
-            if let (Some(k), Some(repo)) = (&key, fold.repo)
-                && let Some(v) = DUMPS.with(|d| d.borrow().get(&repo).filter(|(at, _)| at == k).map(|(_, v)| v.clone()))
-            {
-                return v;
-            }
             let mut budget = Budget::READ;
             let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
             let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
             let index = graftyard_fold::meta(&*fold.core).applied.0;
             let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete };
-            // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
-            if packed {
-                let v = rows.packed();
-                if let (Some(k), Some(repo)) = (key, fold.repo) {
-                    DUMPS.with(|d| {
-                        let mut d = d.borrow_mut();
-                        if d.len() >= DUMPS_MAX && !d.contains_key(&repo) {
-                            d.clear();
-                        }
-                        d.insert(repo, (k, v.clone()));
-                    });
-                }
-                return v;
-            }
             return serde_json::to_value(rows).unwrap_or(Value::Null);
         }
         if q.get("ranges").is_some() {

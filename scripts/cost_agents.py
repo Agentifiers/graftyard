@@ -155,6 +155,18 @@ META_DISK = 1.16           # SQLite bytes on disk per row byte of the metadata t
 SMALL_ROW_DISK = 1.4       # the same for small agent rows (PR, check, provenance, task): 1.27 GB of rows took about
                            # 1.8 GB [measured, tests/m0/results/m0-wp9.md, B0-30]
 
+# ---- learners for the hot group (K9, tests/am1/results/learner-dumps.md) ----
+API_TIER_READS_S = 200     # journey 9's API reads a second at 500 agents, each a whole-tier dump (B0-29's `read:api`)
+LEARNER_TIER_READS = 20    # whole-tier reads a second one learner serves at journey 9's 1 MB dump: on graft-m3c 8 learners
+                           # served 150/s, about 19 each, with 5.3% shed, at 18 to 35% CPU and 61 to 68 MiB, at learner
+                           # read p99 1.2 to 1.3 s [measured, tests/am1/results/learner-dumps.md], so `GroupLoad` counts
+                           # one as LEARNER_READS / 20 = 50 narrow reads
+LEARNER_HOURS = 9          # hours a day the hot group's reads keep its learners active: the 8-hour working day plus the
+                           # hour, as the hot pool; a learner with no reads is evicted and bills no duration [guess]
+LEARNER_ROWS_PER_ENTRY = 1 + cf.FOLD_ROWS   # a learner applies every entry: its log row and the fold rows
+LEARNER_AT, LEARNER_READS = 500, 1000   # `graftyard_types::placement`
+A1_ENTRIES_S = 10          # entries a second on the A1 group at peak (about 10 entries/s, AGENT-LAYER's Scale)
+
 # ---- admission and rate limits (AG-ACT-11, AG-ACT-16) ----
 GATE_CMDS = 300            # base Milestone 0 group-commit gate, commands/s
 AGENT_SHARE, AGENT_FLOOR = 0.5, 0.2
@@ -283,6 +295,30 @@ def predict_k(agents, vcpu, pushes_per_task=PUSHES):
 	return min(FANOUT_MAX, max(1, math.ceil(demand / (PREDICT_CPU * vcpu))))
 
 
+def learner_cost(tier):
+	"""Learners on the tier's largest network: enough to serve its whole-tier API reads at LEARNER_TIER_READS each,
+	scaled by its peak agents against A1's 500, up to MAX_LEARNERS 16. Each holds both tiers in SQLite (the base's
+	4 GB tier, the log at LOG_MAX_BYTES, and 30 days of agent rows), applies every entry, and is active while it serves
+	reads, so it bills storage, duration at 128 MB, applied rows, and its appends and reads as DO requests."""
+	scale = hot_network(tier)["agents"] / 500
+	reads = API_TIER_READS_S * scale
+	# `GroupLoad` counts a whole-tier read as LEARNER_READS / LEARNER_TIER_READS narrow ones, and the group's other
+	# reads (CI ref reads, the rest of A1's) once; `place_learners` adds ceil(load / LEARNER_READS) above LEARNER_AT.
+	load = reads * LEARNER_READS / LEARNER_TIER_READS + (33 + 89) * scale
+	n = 0 if load < LEARNER_AT else min(16, math.ceil(load / LEARNER_READS))
+	member_gb = BASE_META_GB * META_DISK + LOG_MAX_GB + 1.65
+	active_s = LEARNER_HOURS * 3600 * DAYS
+	storage = n * member_gb * price("cf.do.sqlite.storage")
+	duration = n * active_s * cf.DO_GB / 1e6 * price("cf.do.duration")
+	# Entries a month on the hot group: its agent pushes at A1's entries per push (10 entries/s for 500 pushes/120 s).
+	entries = hot_storage(tier)["pushes"] * A1_ENTRIES_S / (500 / PUSH_EVERY_S)
+	rows = n * entries * LEARNER_ROWS_PER_ENTRY / 1e6 * price("cf.do.sqlite.rows_written")
+	# One append per entry per learner, and the whole-tier reads they take from the voters while active.
+	reqs = (n * entries + (reads * active_s if n else 0.0)) / 1e6 * price("cf.do.requests")
+	return dict(n=n, reads=reads, load=load, gb=member_gb, storage=storage, duration=duration, rows=rows, reqs=reqs,
+		cost=storage + duration + rows + reqs)
+
+
 def hot_storage(tier):
 	"""Monthly inline bytes on the hot group, what LOG_MAX_BYTES archives, and the stored `.idx` count."""
 	devs = TIERS[tier]["devs"]
@@ -333,6 +369,11 @@ def lines(tier):
 		+ sessions * MCP_AUTH_REQS / 1e6 * price("cf.workers.requests")
 		+ auth_rows / 1e6 * price("cf.do.sqlite.rows_written"))
 
+	# K9: learners on the largest network's group. Each holds both tiers in SQLite, applies every entry, and is active
+	# while it serves reads, so it bills storage, duration (128 MB per active object), applied rows, and its share of
+	# the group's reads and appends as DO requests. Scaled by the tier's peak agents against A1's 500.
+	lc = learner_cost(tier)
+	out["Learners on the largest network's group (storage, duration, applied rows, requests; K9)"] = lc["cost"]
 	out["Folds: PathSet and provenance rows"] = (agent_pushes * FOLD_ROWS_PER_PUSH * MEMBERS / 1e6
 		* price("cf.do.sqlite.rows_written"))
 	# Each working agent keeps one feed poll held on a member. Priced as the base prices DO wall time, per request with
@@ -551,6 +592,14 @@ def main():
 		h = hot_network(t)
 		print(f"| {TIERS[t]['devs']:,} devs | {h['agents']:,.1f} | {h['load']:.2f} | {h['instance']} | {h['k']} "
 			f"| {h['extra']} | ${h['cost']:,.0f} |")
+	print()
+	print("| Learners on the largest network | Whole-tier API reads/s | `GroupLoad` | Learners | GB each | Storage | Duration "
+		"| Applied rows | Requests | Per month |")
+	print("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+	for t in tiers:
+		c = learner_cost(t)
+		print(f"| {TIERS[t]['devs']:,} devs | {c['reads']:.0f} | {c['load']:,.0f} | {c['n']} | {c['gb']:.1f} | ${c['storage']:,.0f} "
+			f"| ${c['duration']:,.0f} | ${c['rows']:,.0f} | ${c['reqs']:,.0f} | ${c['cost']:,.0f} |")
 	print()
 	print(f"| Not in the totals: Graftyard-run agent compute (agents account) | {head} |")
 	print(f"| --- | {sep} |")

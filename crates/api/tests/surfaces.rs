@@ -1667,16 +1667,37 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
         "details_url": "https://ci.example/7", "external_id": "e7",
         "output": { "title": "t", "summary": "s\u{200b}", "annotations": [
             { "path": "a.rs", "start_line": 1, "end_line": 2, "annotation_level": "warning", "message": "m" } ] } });
-    let op = plan_create_check_run(&body, AppId(DbId(5)), 7_000_001, now).unwrap();
-    c.commit(WRITER, op).unwrap();
+    // Two creates in one entry, then one in the next: `decide` hands each its own id from the metadata tier's cursor,
+    // whatever id the plan carried, and the run's suite takes the same id.
+    let op = plan_create_check_run(&body, AppId(DbId(5)), now).unwrap();
+    let mut other = op.clone();
+    let IssueOp::CreateCheck(u) = &mut other else { panic!("a create") };
+    u.name = "lint3".into();
+    let outs = c.commit_all(vec![(WRITER, op.clone()), (WRITER, other)]);
+    let ids: Vec<DbId> = outs
+        .iter()
+        .map(|o| match o {
+            Ok(IssueOut::Id(id)) => *id,
+            o => panic!("{o:?}"),
+        })
+        .collect();
+    let Ok(IssueOut::Id(third)) = c.commit(WRITER, op.clone()) else { panic!("a third create") };
+    assert!(ids[0] != ids[1] && third != ids[0] && third != ids[1], "distinct ids: {ids:?} and {third:?}");
+    let block = |id: DbId| (id.cell(), id.block());
+    assert!(ids.iter().chain([&third]).all(|id| block(*id) == (0, 1) && id.0 > 0), "from the leased block: {ids:?}");
+    let run_id = ids[0];
     let r = c.repo(0, &h, &dir);
-    let run = check_run_created(&r, 7_000_001);
+    let run = check_run_created(&ack(IssueOut::Id(run_id)), &r, 0);
     let v = run.value();
     assert_eq!(run.status, 201);
     assert_eq!(
+        (&v["check_suite"]["id"], &check_run_created(&ack(IssueOut::Id(ids[1])), &r, 0).value()["name"]),
+        (&json!(run_id.0), &json!("lint3"))
+    );
+    assert_eq!(
         (&v["id"], &v["name"], &v["status"], &v["conclusion"], &v["started_at"], &v["completed_at"]),
         (
-            &json!(7_000_001),
+            &json!(run_id.0),
             &json!("lint2"),
             &json!("in_progress"),
             &Value::Null,
@@ -1686,23 +1707,22 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     );
     assert_eq!((&v["output"]["annotations_count"], &v["external_id"]), (&json!(1), &json!("e7")));
     keep_rest_as("check-run-created", "POST", "/repos/{owner}/{repo}/check-runs", &run);
-    assert_eq!(get_check_run(&r, "7000001").value()["id"], json!(7_000_001));
+    assert_eq!(get_check_run(&r, &run_id.0.to_string()).value()["id"], json!(run_id.0));
     drop(r);
 
     // A conclusion completes the run at `now`, as GitHub does.
     let op = plan_create_check_run(
         &json!({ "name": "done", "head_sha": sha, "conclusion": "success" }),
         AppId(DbId(5)),
-        7_000_002,
         now,
     )
     .unwrap();
-    let IssueOp::RecordCheck(u) = &op else { panic!() };
+    let IssueOp::CreateCheck(u) = &op else { panic!() };
     assert_eq!(
         (u.status, u.conclusion, u.completed, u.started),
         (CheckStatus::Completed, Some(CheckConclusion::Success), Some(now), Some(now))
     );
-    let bad = |b: Value| plan_create_check_run(&b, AppId(DbId(5)), 1, now).err().map(|r| r.status);
+    let bad = |b: Value| plan_create_check_run(&b, AppId(DbId(5)), now).err().map(|r| r.status);
     let base = || json!({ "name": "n", "head_sha": sha });
     let mut b = base();
     b["status"] = json!("completed");
@@ -1723,18 +1743,14 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     b["output"] = json!({ "title": "t", "summary": "s", "annotations": vec![one; 51] });
     assert_eq!(bad(b), Some(422), "more than 50 annotations");
 
-    // The edge's id is unused only once: version 1 under it again, on another commit, is refused and renders 422.
-    let mut again =
-        plan_create_check_run(&json!({ "name": "lint2", "head_sha": oid(1).hex() }), AppId(DbId(5)), 7_000_001, now)
-            .unwrap();
-    let e = c.commit(WRITER, again.clone()).unwrap_err();
-    assert_eq!(e, IssueErr::Exists);
-    assert_eq!(write_refused(&e, "rest/checks/runs#create-a-check-run").status, 422);
-    let IssueOp::RecordCheck(u) = &mut again else { panic!() };
-    (u.head_sha, u.version, u.status, u.conclusion) =
-        (oid(2), 2, CheckStatus::Completed, Some(CheckConclusion::Success));
-    c.commit(WRITER, again).unwrap();
-    assert_eq!(get_check_run(&c.repo(0, &h, &dir), "7000001").value()["status"], json!("completed"));
+    // A repository with no ids left refuses a create until the lease loop records a block: 503, never a minted id.
+    assert_eq!(write_refused(&IssueErr::NeedIdBlock, "rest/checks/runs#create-a-check-run").status, 503);
+    // A later update of a created run, as `RecordCheck` version 2 under the id the create returned, replaces it.
+    let IssueOp::CreateCheck(mut u) = op else { panic!() };
+    (u.run, u.suite, u.version) =
+        (graftyard_git::issues::CheckRunId(run_id), graftyard_git::issues::CheckSuiteId(run_id), 2);
+    c.commit(WRITER, IssueOp::RecordCheck(u)).unwrap();
+    assert_eq!(get_check_run(&c.repo(0, &h, &dir), &run_id.0.to_string()).value()["status"], json!("completed"));
 
     // The member's render, through the `What` each route sends, equals the in-process one.
     let hosted = HostedDir { home: Some(dir.home()), viewer: Some(AccountId(DbId(READER))), ..Default::default() };
@@ -1743,8 +1759,10 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
         serde_json::from_value(serde_json::to_value(&r).unwrap()).unwrap()
     };
     let m = &c.members[0];
-    let wire = render_ok(&render(What::CheckRunCreated { id: 7_000_002 }), &ack(IssueOut::Done), &m.core, &m.meta);
-    assert_eq!(wire.status, 500, "7000002 was planned, never committed");
+    let wire = render_ok(&render(What::CheckRunCreated { id: 0 }), &ack(IssueOut::Id(ids[1])), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body.as_ref().map(|b| &b["id"])), (201, Some(&json!(ids[1].0))), "the acked id");
+    let wire = render_ok(&render(What::CheckRunCreated { id: 0 }), &ack(IssueOut::Done), &m.core, &m.meta);
+    assert_eq!(wire.status, 500, "no id acked and none minted");
     let wire = render_ok(&render(What::ReviewCommentCreated { n: 2 }), &ack(first), &m.core, &m.meta);
     assert_eq!((wire.status, wire.body.as_ref().map(|b| &b["id"])), (201, Some(&json!(parent))));
     let e = render_err(&render(What::ReviewCommentCreated { n: 2 }), &IssueErr::NotPull);
