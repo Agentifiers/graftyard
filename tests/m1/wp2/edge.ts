@@ -74,7 +74,9 @@ function coloId(colo: string): number {
   return n;
 }
 
-class Edge {
+export class Edge {
+  /** B0-07 (`tests/m0carried/b07-edge.ts`): told of every member call's site and whether it answered in time. */
+  onCall?: (site: number, ok: boolean) => void;
   constructor(private env: Env, readonly chain: string, private gen: number, private colo: number) {}
 
   stubFor(site: number): DurableObjectStub {
@@ -94,11 +96,13 @@ class Edge {
     try {
       const init: RequestInit = body === undefined ? { signal: ctl.signal } : { method: "POST", body: JSON.stringify(body), signal: ctl.signal };
       const res = await this.stub(site).fetch(`https://member${path}`, init);
-      if (res.status !== 200) { await res.body?.cancel(); return null; }
+      if (res.status !== 200) { await res.body?.cancel(); this.onCall?.(site, false); return null; }
       const v = await res.json<any>();
+      this.onCall?.(site, true);
       learnMeta(this.chain, v.meta ?? null);
       return v;
     } catch {
+      this.onCall?.(site, false);
       return null;
     } finally {
       clearTimeout(timer);
@@ -238,7 +242,7 @@ class Edge {
 }
 
 /** A `RequestId`: a ULID, 48 bits of milliseconds then 80 random bits, as 26 Crockford base-32 characters. */
-function rid(): string {
+export function rid(): string {
   const A = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
   let v = BigInt(Date.now()) & 0xffff_ffff_ffffn;
   for (const b of crypto.getRandomValues(new Uint8Array(10))) v = (v << 8n) | BigInt(b);
