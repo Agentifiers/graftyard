@@ -1,0 +1,10 @@
+2026-11-12T05:08:29.491Z m3org/ld-after = 65547
+2026-11-12T05:08:29Z ld-after = 65547 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6554":153}
+2026-11-12T05:21:32.708Z repo:65547 leader 0: learners [{"addr":192,"doName":"repo:65547#2#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65547#2#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65547#2#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65547#2#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65547#2#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65547#2#l5","join":200,"sit config 823
+2026-11-12T05:21:41.145Z repo:65547 leader 0: k 1 at 823
+{"status":200,"ms":805,"bytes":1061772,"index":823}
+2026-11-12T05:21:42Z b0-29 start
+2026-11-12T05:31:40Z b0-29 done 0
+2026-11-12T05:31:44Z torn down 65547
+DONE

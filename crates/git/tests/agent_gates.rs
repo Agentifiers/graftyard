@@ -763,3 +763,140 @@ fn an_agent_may_not_edit_webhooks() {
     assert_eq!(agent_rule(&w.commit(issue(app(CLAUDE), IssueOp::DeleteHook { id }))), Some(AgentRule::Rules));
     assert!(graftyard_git::hooks::hook(&*w.fold().core, id).is_some(), "the agent deleted nothing");
 }
+
+// ---- REST check runs ----
+
+/// `RecordCheck`: an installation token records a check run only as its own App, and a first version must name a run
+/// id no row holds yet, on any head SHA.
+#[test]
+fn a_check_run_is_recorded_only_as_its_own_app_and_under_an_unused_id() {
+    let mut w = World::new();
+    w.set("refs/heads/main", oid(20));
+    let check = |a: AppId, run: i64, sha: u32, version: u64| -> IssueOp<graftyard_git::blob::BlobRef> {
+        IssueOp::RecordCheck(CheckRunUpdate {
+            run: CheckRunId(DbId(run)),
+            suite: CheckSuiteId(DbId(run)),
+            app: a,
+            head_sha: oid(sha),
+            name: "ci".into(),
+            version,
+            status: CheckStatus::InProgress,
+            conclusion: None,
+            started: None,
+            completed: None,
+            external_id: None,
+            details_url: None,
+            output: None,
+        })
+    };
+    let refusal = |o: Result<RepoOut, RepoErr>| match o {
+        Err(RepoErr::Issue { err, .. }) => Some(err),
+        Ok(_) => None,
+        Err(e) => panic!("{e:?}"),
+    };
+    assert_eq!(
+        refusal(w.commit(issue(app(PLAIN), check(CLAUDE, 900, 20, 1)))),
+        Some(IssueErr::Invalid("a check run's app is its actor")),
+        "an App may not record a run as another App"
+    );
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 1)))), None, "its own App");
+    assert_eq!(
+        refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 21, 1)))),
+        Some(IssueErr::Exists),
+        "a first version under a taken id, even on another commit"
+    );
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 2)))), None, "an update of the same run");
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 900, 20, 1)))), None, "a late re-delivery of version 1");
+    let mut renamed = check(PLAIN, 900, 20, 1);
+    if let IssueOp::RecordCheck(c) = &mut renamed {
+        c.name = "lint".into();
+    }
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), renamed))), Some(IssueErr::Exists), "another run's id, same commit");
+    assert_eq!(refusal(w.commit(issue(app(PLAIN), check(PLAIN, 901, 21, 1)))), None, "a new id");
+    // A user's command names its App, as before.
+    assert_eq!(refusal(w.commit(issue(user(OWNER), check(CLAUDE, 902, 20, 1)))), None, "a user records any App's run");
+}
+
+/// `POST /repos/{o}/{r}/check-runs` (lf4-rest-3): `CreateCheck` takes its run id, and its suite's, from the repository's
+/// `IdBlock` cursor in `decide`, on real members. Two creates in one entry get distinct ids, the next entry's create a
+/// third, each run's row holds its id, and a re-sent request answers the id its first decide assigned.
+#[test]
+fn check_run_creates_take_distinct_ids_from_the_block_in_decide() {
+    let mut w = World::new();
+    let create = |name: &str| -> IssueOp<graftyard_git::blob::BlobRef> {
+        IssueOp::CreateCheck(CheckRunUpdate {
+            // Whatever the edge sends here is ignored.
+            run: CheckRunId(DbId(77)),
+            suite: CheckSuiteId(DbId(77)),
+            app: PLAIN,
+            head_sha: oid(20),
+            name: name.into(),
+            version: 1,
+            status: CheckStatus::InProgress,
+            conclusion: None,
+            started: None,
+            completed: None,
+            external_id: None,
+            details_url: None,
+            output: None,
+        })
+    };
+    let id = |o: &RepoOutcome| match o {
+        Ok(RepoOut::Issue(c)) => match c.out {
+            IssueOut::Id(id) => id,
+            ref o => panic!("{o:?}"),
+        },
+        o => panic!("{o:?}"),
+    };
+    let both = w.commit_all(vec![issue(app(PLAIN), create("a")), issue(app(PLAIN), create("b"))]);
+    let (a, b) = (id(&both[0]), id(&both[1]));
+    let c = id(&w.commit(issue(app(PLAIN), create("c"))));
+    assert!(a != b && c != a && c != b, "distinct: {a:?} {b:?} {c:?}");
+    let block = graftyard_types::IdBlock::whole(0, 3).unwrap();
+    assert!([a, b, c].iter().all(|i| block.index_of(*i).is_some()), "from the leased block: {a:?} {b:?} {c:?}");
+    let f = w.fold();
+    for (i, name) in [(a, "a"), (b, "b"), (c, "c")] {
+        let rows = tiers::get_rec::<tiers::Timed<CheckRunUpdate>>(
+            &*f.meta,
+            "check_run",
+            &[tiers::sha_key(&oid(20)), tiers::int(i.0)],
+        )
+        .unwrap_or_else(|| panic!("run {name} under {i:?}"));
+        assert_eq!((&*rows.rec.name, rows.rec.run, rows.rec.suite), (name, CheckRunId(i), CheckSuiteId(i)));
+    }
+    // Under another App's name the create is still refused, and a user may not create one.
+    let mut other = create("d");
+    if let IssueOp::CreateCheck(u) = &mut other {
+        u.app = CLAUDE;
+    }
+    assert!(matches!(
+        w.commit(issue(app(PLAIN), other)),
+        Err(RepoErr::Issue { err: IssueErr::Invalid("a check run's app is its actor"), .. })
+    ));
+    // The same request re-sent answers its first id and commits nothing new.
+    let rid = w.rid();
+    let l = w.repo.leader();
+    let now = w.now;
+    let cmd = RepoCmd::Issue(Box::new(IssueCall::new(create("e"), app(PLAIN), rid, serde_json::Value::Null)));
+    // It crosses the binding as format 32.18, which a member that reads only up to 32.17 refuses.
+    let v = serde_json::to_value(&cmd).unwrap();
+    assert_eq!(v["issue"]["format"], serde_json::json!([0x20, 18]));
+    assert_eq!(serde_json::from_value::<RepoCmd>(v).unwrap(), cmd);
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        let from = w.repo.resolutions.len();
+        let t = w.repo.on(l, now, |m, t| m.commit(t, rid, cmd.clone())).expect("admitted").ticket;
+        w.settle();
+        answers.extend(w.repo.resolutions[from..].iter().filter_map(|r| match r {
+            Resolution::Ticket { ticket, result: Ok(a) } if *ticket == t => Some(a.out.clone()),
+            _ => None,
+        }));
+    }
+    let [RepoOut::Issue(x), RepoOut::Issue(y)] = &answers[..] else { panic!("{answers:?}") };
+    assert!(matches!(x.out, IssueOut::Id(_)) && x.out == y.out, "the duplicate answers the first id: {answers:?}");
+    let f = w.fold();
+    let named_e = graftyard_fold::Read::prefix(&*f.meta, "check_run", &[]).into_iter().filter(|(k, _)| {
+        tiers::get_rec::<tiers::Timed<CheckRunUpdate>>(&*f.meta, "check_run", k).is_some_and(|t| &*t.rec.name == "e")
+    });
+    assert_eq!(named_e.count(), 1, "applied once");
+}

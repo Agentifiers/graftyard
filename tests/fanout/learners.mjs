@@ -2,7 +2,7 @@
 // (`place_learners` from a `GroupLoad`). A new learner names no leader, and refuses reads as `notLeader`, until an
 // append reaches it, so rows.sh runs this before k.mjs, whose commit is that append.
 //   node tests/fanout/learners.mjs repo:ID enam:1500[,weur:600]
-// LOAD is the group's read rate per region, journey 9's reads weighted by 6 (design/DESIGN.md, Scale, learners).
+// LOAD is the group's read rate per region, journey 9's whole-tier reads weighted by 50 (design/DESIGN.md, Scale, learners).
 // Environment as tests/am1/hosted/lib.mjs. No token reaches argv or a log.
 import { leaderOf, log, member } from "../am1/hosted/lib.mjs";
 

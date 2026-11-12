@@ -39,6 +39,10 @@ pub const REPO_FORMAT_APP_CALLS: Format = Format { family: 0x20, version: 9 };
 pub const REPO_FORMAT_INVITATIONS: Format = Format { family: 0x20, version: 11 };
 /// `InitRepo` and `DeleteRepo` (`rest:repos`' create and delete) and their events `Created` and `Deleted`.
 pub use crate::repo::REPO_FORMAT_REPOS;
+/// `IssueOp::CreateCheck` (`POST /repos/{o}/{r}/check-runs`), whose run id `decide` takes from the metadata tier's
+/// cursor and whose `CheckRun` moves that cursor: a release that reads only up to 32.17 would apply the entry without
+/// moving it and could hand the same id out again. Always under an App's claims.
+pub const REPO_FORMAT_CHECKS: Format = Format { family: 0x20, version: 18 };
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IssueCall {
@@ -75,6 +79,9 @@ impl IssueCall {
         // as 32.9 does.
         if self.op.is_hook() {
             return crate::hooks::REPO_FORMAT_HOOKS;
+        }
+        if matches!(self.op, IssueOp::CreateCheck(_)) {
+            return REPO_FORMAT_CHECKS;
         }
         if self.op.is_lease() || self.leases {
             return crate::repo::REPO_FORMAT_LEASES;
@@ -195,6 +202,7 @@ impl<'de> Deserialize<'de> for IssueCall {
             REPO_FORMAT_REPOS,
             crate::repo::REPO_FORMAT_LEASES,
             crate::hooks::REPO_FORMAT_HOOKS,
+            REPO_FORMAT_CHECKS,
         ];
         if !reads.iter().any(|r| f == serde_json::json!([r.family, r.version])) {
             return Err(serde::de::Error::custom(format!("issue command format {f} is not one this release reads")));
@@ -206,11 +214,13 @@ impl<'de> Deserialize<'de> for IssueCall {
         let (app, agent) = (fmt(REPO_FORMAT_APP_CALLS), fmt(crate::repo::REPO_FORMAT_AGENT));
         // 32.16 carries an App's claims, or none for a user, as 32.8 does.
         let hooks = fmt(crate::hooks::REPO_FORMAT_HOOKS);
+        // 32.18 always carries an App's claims.
+        let checks = fmt(REPO_FORMAT_CHECKS);
         let w: Wire = serde_json::from_value(v).map_err(serde::de::Error::custom)?;
         if !tasks && (w.agent_session.is_some() || w.claims.as_ref().is_some_and(|c| c.task.is_some())) {
             return Err(serde::de::Error::custom("a task claim or a session rides only in format 32.12"));
         }
-        let actor = match (app || agent || tasks || hooks, w.claims) {
+        let actor = match (app || agent || tasks || hooks || checks, w.claims) {
             (true, Some(c)) => Principal::installation(&c),
             (false, Some(_)) | (true, None) if !agent && !tasks && !hooks => {
                 return Err(serde::de::Error::custom(
@@ -310,6 +320,8 @@ impl IssueCall {
             IssueOp::AcquireLease(l) => IssueOp::AcquireLease(l.clone()),
             IssueOp::RenewLease { id, ttl_seconds } => IssueOp::RenewLease { id: *id, ttl_seconds: *ttl_seconds },
             IssueOp::ReleaseLease { id } => IssueOp::ReleaseLease { id: *id },
+            // A check-run create's replay answers the run id its first decide assigned.
+            IssueOp::CreateCheck(c) => IssueOp::CreateCheck(c.clone()),
             _ => IssueOp::Close { n: crate::issues::IssueNumber(0) },
         };
         let out = IssueCmd { op, actor: self.actor.clone(), request: self.request }.replay(events);

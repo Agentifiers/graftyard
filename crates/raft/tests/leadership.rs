@@ -585,6 +585,39 @@ fn six_slow_confirms_trip_and_five_do_not() {
     }
 }
 
+/// A confirm trip disqualifies a target only on a link that fails `commit_fail_min` times or more, as the commit-error
+/// rule counts one: one or two missed calls in a quiet window pass 5% on noise alone (F37). In B0-02's r330-9 a leader
+/// storage stall tripped `Confirm { p99_ms: 1042, slow: 6, of: 21 }` and held with `to: None`, and the stall stayed on
+/// the leader for the rest of the run (`tests/m0/results/carried-2.md`). Two failed calls to each follower now
+/// transfer, and three to B move the leader to C.
+#[test]
+fn a_confirm_trip_ignores_fewer_than_commit_fail_min_failures_to_a_target() {
+    for (to_b, to_c, target) in [(2u32, 2u32, B), (3, 2, C)] {
+        let mut c = Cluster::new(53);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 1_000, true, &mut id, |_| false);
+        let (mut nb, mut nc) = (0, 0);
+        drive(&mut c, 500, true, &mut id, |e| {
+            if !request(e) || e.from != A {
+                return false;
+            }
+            let (n, max) = if e.to == B { (&mut nb, to_b) } else { (&mut nc, to_c) };
+            *n += 1;
+            *n <= max
+        });
+        for _ in 0..6 {
+            c.slow_confirm(A, 700);
+            c.deliver_all();
+        }
+        drive(&mut c, 1_000, true, &mut id, |_| false);
+        let sd = step_downs(&c);
+        let (_, why, to) = sd.first().cloned().expect("STEP_DOWN tripped");
+        assert!(matches!(why, StepDownWhy::Confirm { .. }), "{to_b}/{to_c}: {sd:?}");
+        assert_eq!(to, Some(target), "{to_b} failed calls to B, {to_c} to C: {sd:?}");
+    }
+}
+
 /// The own-stall exclusion: calls whose deadline elapsed while the leader's own storage confirm was outstanding count
 /// toward neither `commit_errors` nor `commit_fail_min`. In LF-12 one 3.5 s confirm made every failed call to the
 /// near follower in the window, and the commit-error rule moved a healthy group.

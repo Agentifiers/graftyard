@@ -82,6 +82,20 @@ pub fn shared_answer(
     (b, false)
 }
 
+/// A granted read's answer from the group's fold at `now`, for a member that spaces dump rebuilds by `every`
+/// (`family::dump_every`): `Shed` when a stale dump's rebuild is not due (checked here, where the dump would be
+/// built, so one granted batch rebuilds at most once per `every`); else the family's shared bytes (`read_bytes`, one
+/// copy for every read at this state, from any input); else `read_json` serialized.
+pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, now: u64, every: u64) -> ReadBody {
+    if let Some(ms) = F::heavy_wait(fold, q, now, every) {
+        return ReadBody::Shed(ms);
+    }
+    if let Some(b) = F::read_bytes(fold, q) {
+        return ReadBody::Json(b);
+    }
+    ReadBody::Json(serde_json::to_vec(&F::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into())
+}
+
 const TICK: Duration = Duration::from_millis(100);
 const ACTIVE_FOR_MS: u64 = 3_000;
 const DRAIN_CHECK_MS: i64 = 2_000;
@@ -158,6 +172,8 @@ pub struct Stats {
     pub shed_reads: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
+    /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
+    pub waited_reads: u32,
     /// Read-index reads this member served as a follower, refused to the leader (`Family::follower_serves`), and
     /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
     pub follower_reads: u32,
@@ -532,6 +548,10 @@ pub struct Host<F: Family> {
     /// every outgoing call to the newest incoming request, so a call leaves at this hop plus one.
     #[cfg(feature = "test-faults")]
     pub hop: Cell<u64>,
+    /// B0-07: the sites this member last told the core may not lead (`crate::faults::SiteModes`), so `tick` steps
+    /// `set_drained` only when they change.
+    #[cfg(feature = "test-faults")]
+    drained: RefCell<Option<(String, BTreeSet<u8>)>>,
 }
 
 pub fn err(m: impl Into<String>) -> Error {
@@ -1100,6 +1120,8 @@ impl<F: Family> Host<F> {
             severed_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
+            #[cfg(feature = "test-faults")]
+            drained: RefCell::new(None),
         });
         #[cfg(feature = "test-faults")]
         for q in crate::faults::SCHEMA {
@@ -1621,6 +1643,7 @@ impl<F: Family> Host<F> {
             let now = now_ms();
             // The answers this input built, by query: valid only at this input's grants (`shared_answer`).
             let mut built: HashMap<String, ReadBody> = HashMap::new();
+            let every = crate::family::dump_every(core.m.me());
             for r in out.resolutions {
                 match r {
                     Resolution::Ticket { ticket, result } => {
@@ -1688,12 +1711,8 @@ impl<F: Family> Host<F> {
                                             }),
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
-                                        } else if let Some(ms) = F::heavy_wait(f.fold(), &q, now) {
-                                            // Checked here, where the dump would be built, so one granted batch
-                                            // rebuilds at most once per DUMP_EVERY_MS (`family::dump_wait`).
-                                            return ReadBody::Shed(ms);
                                         } else {
-                                            F::read_json(f.fold(), &q)
+                                            return fold_answer::<F>(f.fold(), &q, now, every);
                                         };
                                         ReadBody::Json(
                                             serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()).into(),
@@ -1857,8 +1876,16 @@ impl<F: Family> Host<F> {
             let drop_reply = matches!(e.msg, raft::Message::Append(_));
             drop(e);
             #[cfg(feature = "test-faults")]
-            if crate::faults::site_down(&h.env).await {
+            if let Some(hang) = crate::faults::site_fault(&h.env).await {
                 crate::faults::count(&format!("site_fault:out>{}", to.0));
+                // A hang past CALL_DEADLINE is a missed deadline, as a blackholed call is (B0-07's gray site).
+                if hang >= raft::CALL_DEADLINE.as_millis() as u64 {
+                    Delay::from(raft::CALL_DEADLINE).await;
+                    h.ended(&call, End::Failed(PeerErr::new(CallFail::Deadline, "site fault: hung")));
+                    h.stats.borrow_mut().failed_calls += 1;
+                    return h.call_failed(on_miss);
+                }
+                Delay::from(Duration::from_millis(hang)).await;
                 h.ended(&call, End::Failed(PeerErr::new(CallFail::Injected, "site fault")));
                 return h.call_failed(on_error);
             }
@@ -1938,6 +1965,11 @@ impl<F: Family> Host<F> {
     fn ended(&self, c: &Call, end: End) {
         let now = now_ms();
         let ms = now.saturating_sub(c.at) as u32;
+        // B0-07's `SiteHealth` stand-in: each call to a voter's site, once, at its first outcome.
+        #[cfg(feature = "test-faults")]
+        if c.to < graftyard_types::LEARNER_ADDR && matches!(end, End::Ok | End::Failed(_)) {
+            crate::faults::site_health(&self.env, c.to, matches!(end, End::Ok));
+        }
         let mut s = self.stats.borrow_mut();
         let appended = c.append.is_some() && c.entries > 0;
         if appended && matches!(end, End::Ok) {
@@ -2320,8 +2352,34 @@ impl<F: Family> Host<F> {
         });
     }
 
+    /// B0-07: the site modes' stand-in, read on every tick (every TICK while active, and from the leader's drain-check
+    /// alarm), stepped into the core when the sites that may not lead this group change.
+    #[cfg(feature = "test-faults")]
+    fn apply_site_modes(self: &Rc<Self>) -> Result<()> {
+        // Keyed by the core's boot, so a core rebuilt in this object gets the set again.
+        let Some((chain, boot)) =
+            self.core.borrow().as_ref().map(|c| (c.join.chain.to_string(), c.m.boot().to_string()))
+        else {
+            return Ok(());
+        };
+        let set = crate::faults::site_modes(&self.env).may_not_lead(&chain);
+        let key = (boot, set.clone());
+        if self.drained.borrow().as_ref() == Some(&key) {
+            return Ok(());
+        }
+        *self.drained.borrow_mut() = Some(key);
+        let until = self.active_until.get();
+        let r = self.step(|m, t| m.set_drained(t, set.into_iter().map(SiteId)));
+        self.active_until.set(until);
+        let ((), out) = r?;
+        self.dispatch(out, None);
+        Ok(())
+    }
+
     /// One `tick`, which does not count as activity, so the ticker winds down when inputs stop.
     fn tick_once(self: &Rc<Self>) -> Result<()> {
+        #[cfg(feature = "test-faults")]
+        self.apply_site_modes()?;
         let until = self.active_until.get();
         let r = self.step(|m, t| m.tick(t));
         self.active_until.set(until);

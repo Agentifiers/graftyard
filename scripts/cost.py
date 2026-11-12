@@ -26,7 +26,7 @@ Variants:
 	           git cache shards on one site, a runner account, no vault and no spare sites.
 	artifacts  the rejected alternative: git in Cloudflare Artifacts, one Durable Object per chain for metadata.
 
-Learners for hot groups (more than 500 reads a second) are priced at zero: no group in TIERS reaches that rate [guess].
+Learners are priced in scripts/cost_agents.py: the largest network's REST and GraphQL reads are whole-tier dumps (K9).
 """
 
 import math

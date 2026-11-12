@@ -300,6 +300,11 @@ pub enum IssueOp<B = DurableBlob> {
     DeleteHook {
         id: crate::hooks::HookId,
     },
+    // ---- format 32.18 (`call::REPO_FORMAT_CHECKS`) ----
+    /// `POST /repos/{o}/{r}/check-runs`: a new run, version 1, by an App's installation token. `decide` gives it its
+    /// run id, and the same id as its suite's, from the metadata tier's `IdBlock` cursor, so whatever ids `run` and
+    /// `suite` carry here are ignored.
+    CreateCheck(CheckRunUpdate),
 }
 
 impl<B> IssueOp<B> {
@@ -361,6 +366,7 @@ impl<B> IssueOp<B> {
             O::ReleaseLease { id } => O::ReleaseLease { id },
             O::PutHook { id, record } => O::PutHook { id, record },
             O::DeleteHook { id } => O::DeleteHook { id },
+            O::CreateCheck(c) => O::CreateCheck(c),
         })
     }
 
@@ -455,7 +461,7 @@ impl IssueCmd {
             IssueOp::Change { change: IssueChange::State { .. } | IssueChange::Draft(_), .. } => both,
             IssueOp::Review { .. } | IssueOp::Dismiss { .. } => both,
             IssueOp::SetRule { .. } => TierSet::CORE,
-            IssueOp::RecordCheck(_) | IssueOp::RecordStatus(_) => both,
+            IssueOp::RecordCheck(_) | IssueOp::CreateCheck(_) | IssueOp::RecordStatus(_) => both,
             // A release may create its tag in Core.
             IssueOp::PutRelease { .. } => both,
             // A new review thread, a resolution, or a deletion may change the core unresolved count.
@@ -923,8 +929,38 @@ impl IssueCmd {
                 }
                 Ok((one(RepoEvent::Deleted { retain_until: *retain_until, actor: me }), IssueOut::Done))
             }
-            IssueOp::RecordCheck(run) => {
+            IssueOp::RecordCheck(_) | IssueOp::CreateCheck(_) => {
                 need(RepoPermission::Write)?;
+                // A create's run takes the metadata tier's next id, whose `CheckRun` write moves the cursor past it, so
+                // the next create in the same entry or a later one takes the following id.
+                let created;
+                let (run, out) = match &self.op {
+                    IssueOp::CreateCheck(c) => {
+                        let id = v.next_id(Tier::Metadata)?;
+                        let run = crate::issues::CheckRunId(id);
+                        created =
+                            CheckRunUpdate { run, suite: crate::issues::CheckSuiteId(id), version: 1, ..c.clone() };
+                        (&created, IssueOut::Id(id))
+                    }
+                    IssueOp::RecordCheck(run) => (run, IssueOut::Done),
+                    _ => unreachable!("a check command"),
+                };
+                if let Actor::App { app, .. } = self.actor.actor
+                    && run.app != app
+                {
+                    return Err(IssueErr::Invalid("a check run's app is its actor"));
+                }
+                // A first version may not take another run's id: one on another head SHA, or of another App or name.
+                // A late re-delivery of the same run's first version passes, and its apply drops it by version.
+                let other = |k: &Vec<Val>| {
+                    matches!(k.get(1), Some(Val::Int(id)) if *id == run.run.0.0)
+                        && get_rec::<crate::tiers::Timed<CheckRunUpdate>>(v.meta(), "check_run", k).is_some_and(|t| {
+                            (t.rec.head_sha, t.rec.app, &t.rec.name) != (run.head_sha, run.app, &run.name)
+                        })
+                };
+                if run.version == 1 && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {
+                    return Err(IssueErr::Exists);
+                }
                 let mut evs = one(RepoEvent::CheckRun(run.clone()));
                 if required(v, run.head_sha, &run.name, Some(run.app)) {
                     let done = run.status == CheckStatus::Completed;
@@ -936,7 +972,7 @@ impl IssueCmd {
                         conclusion: if done { run.conclusion } else { None },
                     });
                 }
-                Ok((evs, IssueOut::Done))
+                Ok((evs, out))
             }
             IssueOp::RecordStatus(st) => {
                 need(RepoPermission::Write)?;
@@ -1327,7 +1363,7 @@ impl IssueCmd {
             | IssueOp::SetAgentPolicy(_)
             | IssueOp::InitRepo(_)
             | IssueOp::DeleteRepo { .. } => smallvec![w("administration")],
-            IssueOp::RecordCheck(_) => smallvec![w("checks")],
+            IssueOp::RecordCheck(_) | IssueOp::CreateCheck(_) => smallvec![w("checks")],
             IssueOp::PutRelease { .. }
             | IssueOp::DeleteRelease { .. }
             | IssueOp::PutAsset { .. }
@@ -1366,6 +1402,7 @@ impl IssueCmd {
                 RepoEvent::ReleaseAsset { id, asset: Some(_), .. } => return IssueOut::Id(id.0),
                 RepoEvent::LfsLock(LfsLockEvent::Created { id, .. }) => return IssueOut::Id(id.0),
                 RepoEvent::Status(st) => return IssueOut::Id(st.id.0),
+                RepoEvent::CheckRun(c) if matches!(self.op, IssueOp::CreateCheck(_)) => return IssueOut::Id(c.run.0),
                 RepoEvent::TaskCreated(t) => return IssueOut::Task(t.session.clone()),
                 RepoEvent::TaskUpdated { session, state, .. } => return crate::task::replay(&self.op, session, *state),
                 RepoEvent::LeaseAcquire { lease, .. } if self.op.is_lease() => return IssueOut::Lease(lease.id),
@@ -1403,7 +1440,9 @@ fn agent_refusal<B>(op: &IssueOp<B>, v: &RepoView<'_>) -> Option<crate::agent::A
             Some(AgentRefusal::of(AgentRule::Release))
         }
         IssueOp::RecordStatus(st) if st.context.starts_with("graftyard/") => Some(graftyard(&st.context)),
-        IssueOp::RecordCheck(c) if c.name.starts_with("graftyard/") => Some(graftyard(&c.name)),
+        IssueOp::RecordCheck(c) | IssueOp::CreateCheck(c) if c.name.starts_with("graftyard/") => {
+            Some(graftyard(&c.name))
+        }
         IssueOp::ApplyLabels { add, .. } => {
             let allowed = crate::tiers::agent_policy(v.core()).labels;
             add.iter().find_map(|l| {
