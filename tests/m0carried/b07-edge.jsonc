@@ -1,0 +1,17 @@
+{
+  // B0-07's test edge on graft-m3c (b07-edge.ts). A separate script: deploying it creates no site version.
+  "name": "graft-m3c-b07-edge",
+  "main": "b07-edge.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [
+    { "name": "MEMBER_0", "class_name": "Member", "script_name": "graft-m3c-site-a" },
+    { "name": "MEMBER_1", "class_name": "Member", "script_name": "graft-m3c-site-b" },
+    { "name": "MEMBER_2", "class_name": "Member", "script_name": "graft-m3c-site-c" },
+    { "name": "REGISTRY_0", "class_name": "Registry", "script_name": "graft-m3c-site-a" },
+    { "name": "REGISTRY_1", "class_name": "Registry", "script_name": "graft-m3c-site-b" },
+    { "name": "REGISTRY_2", "class_name": "Registry", "script_name": "graft-m3c-site-c" }
+  ] },
+  "observability": { "enabled": true }
+}
