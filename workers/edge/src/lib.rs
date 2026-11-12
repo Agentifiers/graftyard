@@ -1525,10 +1525,11 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
                 graftyard_lookup::create(&c.bindings(), chain, &r, &json!({})).await.map_err(Error::RustError)?;
                 r
             }
-            // A repository chain, read only (BF-30's `{"settings": true}`), under its `RepoOwner`'s record, or with
-            // `"record_of": owner` under that owner's; `"cold": true` drops the isolate's cached configs first, so the
-            // read finds the group from the record alone, as a new edge isolate would.
-            ChainId::Repo(id) if b.get("read").is_some() => {
+            // A repository chain under its `RepoOwner`'s record, or with `"record_of": owner` under that owner's: a
+            // read (BF-30's `{"settings": true}`) or a command (LF-4's review comments and check runs, which no REST or
+            // GraphQL route writes); `"cold": true` drops the isolate's cached configs first, so the call finds the
+            // group from the record alone, as a new edge isolate would.
+            ChainId::Repo(id) => {
                 if b["cold"].as_bool() == Some(true) {
                     graftyard_lookup::forget_all();
                 }

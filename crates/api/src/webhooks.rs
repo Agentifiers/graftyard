@@ -14,7 +14,7 @@
 //! calls one.
 
 use graftyard_git::hooks::{Guid, HookId, HookRecord, HookRow, Subject, Webhook};
-use graftyard_git::issues::{CheckConclusion, CheckStatus, PrState};
+use graftyard_git::issues::PrState;
 use graftyard_git::refs::{ObjectId, RefName};
 use graftyard_git::sequencer::{Attempt, HookDelivery, Outcome};
 use graftyard_identity::sealed::{HookSecret, signature_256};
@@ -158,19 +158,7 @@ pub fn payload(r: &Repo<'_>, w: &Webhook, hook: Option<(HookId, &HookRow)>, at: 
         Subject::Comment { n, id, actor } => {
             let it = r.item(*n)?;
             let row = r.comments_of(*n).into_iter().find(|(c, _)| c == id)?.1;
-            let (api, web) = (r.host.api(), r.host.web());
-            let (o, name) = (&r.at.owner, &r.at.name);
-            let kind = if it.is_pull() { "pull" } else { "issues" };
-            let comment = json!({
-                "url": format!("{api}/repos/{o}/{name}/issues/comments/{}", id.0.0),
-                "html_url": format!("{web}/{o}/{name}/{kind}/{}#issuecomment-{}", n.0, id.0.0),
-                "issue_url": format!("{api}/repos/{o}/{name}/issues/{}", n.0),
-                "id": id.0.0, "node_id": scoped(NodeType::IssueComment, r, id.0.0),
-                "user": simple_user(r.host, r.dir, row.author), "created_at": iso(row.created),
-                "updated_at": iso(row.updated), "author_association": crate::wire::association(r, row.author),
-                "performed_via_github_app": null, "body": &*row.body, "reactions": reactions(&format!(
-                    "{api}/repos/{o}/{name}/issues/comments/{}/reactions", id.0.0)),
-            });
+            let comment = crate::rest::issue_comment_json(r, &it, *id, &row);
             envelope(r, *actor, with_action(obj(json!({ "issue": issue(r, &it), "comment": comment }))))
         }
         Subject::Status(s) => {
@@ -214,31 +202,7 @@ pub fn payload(r: &Repo<'_>, w: &Webhook, hook: Option<(HookId, &HookRow)>, at: 
             envelope(r, Some(s.creator), m)
         }
         Subject::CheckRun(c) => {
-            let (api, web) = (r.host.api(), r.host.web());
-            let (o, name) = (&r.at.owner, &r.at.name);
-            let id = c.run.0.0;
-            let check_run = json!({
-                "id": id, "node_id": scoped(NodeType::CheckRun, r, id), "head_sha": c.head_sha.hex(), "name": &*c.name,
-                "url": format!("{api}/repos/{o}/{name}/check-runs/{id}"),
-                "html_url": format!("{web}/{o}/{name}/runs/{id}"),
-                "details_url": c.details_url.as_ref().map(|u| &*u.0), "external_id": c.external_id.as_deref().unwrap_or(""),
-                "status": check_status(c.status), "conclusion": c.conclusion.map(conclusion),
-                "started_at": c.started.map(iso), "completed_at": c.completed.map(iso),
-                "check_suite": {
-                    "id": c.suite.0.0, "node_id": scoped(NodeType::CheckRun, r, c.suite.0.0),
-                    "head_sha": c.head_sha.hex(), "url": format!("{api}/repos/{o}/{name}/check-suites/{}", c.suite.0.0),
-                    "status": check_status(c.status), "conclusion": c.conclusion.map(conclusion),
-                    "before": null, "after": c.head_sha.hex(), "head_branch": null, "pull_requests": [], "app": null,
-                    "created_at": iso(at), "updated_at": iso(at),
-                },
-                "output": {
-                    "title": c.output.as_ref().map(|x| &*x.title), "summary": c.output.as_ref().map(|x| &*x.summary),
-                    "text": c.output.as_ref().and_then(|x| x.text.as_deref()),
-                    "annotations_count": c.output.as_ref().map_or(0, |x| x.annotations.len()),
-                    "annotations_url": format!("{api}/repos/{o}/{name}/check-runs/{id}/annotations"),
-                },
-                "app": null, "pull_requests": [],
-            });
+            let check_run = crate::rest::check_run_json(r, c, at);
             envelope(r, None, with_action(obj(json!({ "check_run": check_run }))))
         }
         Subject::MergeGroup { base, head_ref, head, base_sha, reason } => {
@@ -321,7 +285,7 @@ fn issue(r: &Repo<'_>, it: &Item) -> Value {
 }
 
 /// The webhook `pull_request` object (`pull-request` with the webhook's additions).
-fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
+pub(crate) fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
     let (api, web) = (r.host.api(), r.host.web());
     let (o, n) = (&r.at.owner, &r.at.name);
     let num = it.n.0;
@@ -380,30 +344,6 @@ fn pull_request(r: &Repo<'_>, it: &Item) -> Value {
     });
     v.as_object_mut().expect("object").extend(obj(rest));
     v
-}
-
-fn check_status(s: CheckStatus) -> &'static str {
-    match s {
-        CheckStatus::Queued => "queued",
-        CheckStatus::InProgress => "in_progress",
-        CheckStatus::Completed => "completed",
-        CheckStatus::Waiting | CheckStatus::Requested | CheckStatus::Pending => "pending",
-    }
-}
-
-/// REST's and the webhook's lower-case conclusion.
-fn conclusion(c: CheckConclusion) -> &'static str {
-    match c {
-        CheckConclusion::ActionRequired => "action_required",
-        CheckConclusion::Cancelled => "cancelled",
-        CheckConclusion::Failure => "failure",
-        CheckConclusion::Neutral => "neutral",
-        CheckConclusion::Success => "success",
-        CheckConclusion::Skipped => "skipped",
-        CheckConclusion::Stale => "stale",
-        CheckConclusion::TimedOut => "timed_out",
-        CheckConclusion::StartupFailure => "startup_failure",
-    }
 }
 
 // ---- the delivery request ----
