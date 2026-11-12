@@ -296,7 +296,7 @@ pub fn dump_builds() -> u64 {
 /// cached ones when the tiers stand where they were built, else built now and cached. The key is read from the tiers'
 /// own meta rows after the read's grant, so a hit answers exactly what a rebuild would. `None` for any other query.
 pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
-    use graftyard_api::hosted::{ROWS_MAX, TierRows};
+    use graftyard_api::hosted::{Budget, TierRows};
     if !q.get("rows").is_some_and(Value::is_boolean) || q.get("packed").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -306,7 +306,7 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     {
         return Some(b);
     }
-    let mut budget = ROWS_MAX;
+    let mut budget = Budget::READ;
     let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
     let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
     let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
@@ -1013,8 +1013,8 @@ impl Family for Repo {
             return serde_json::from_slice(&b).unwrap_or(Value::Null);
         }
         if q.get("rows").is_some() {
-            use graftyard_api::hosted::{ROWS_MAX, TierRows};
-            let mut budget = ROWS_MAX;
+            use graftyard_api::hosted::{Budget, TierRows};
+            let mut budget = Budget::READ;
             let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
             let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
             let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
