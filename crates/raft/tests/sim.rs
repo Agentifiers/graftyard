@@ -7,10 +7,29 @@
 mod common;
 
 use common::history::{self, HOp, HOut, Row, Verdict};
-use common::sim::{Faults, Sim};
+use common::sim::{Edge, Faults, Sim};
 
 const SEEDS: u64 = 60;
 const STEPS: u64 = 8_000;
+
+/// The liveness bound T (F67, `tests/m0/results/f67.md`): while the same two or more voters stay up, linked, and free
+/// of gray faults, and a client request waits, some request completes within T. A transfer onto a bad site holds
+/// commits for one LEASE, the waivers of RESET_QUARANTINE and the drain bar take 2 x ELECTION_AFTER, and a campaign
+/// and a round finish it: 9 + 20 + 1 s.
+const LIVE_BOUND_MS: u64 = 30_000;
+
+/// The F67 mixes: half-hung sites (answers lost), host transfers to a named target, drains, quick resets, and the
+/// hosted edge (`Edge`): follower reads that shed with no report, damped `suspect`, and on half the seeds reads only.
+fn live_faults(seed: u64) -> (Faults, Edge) {
+    let base = Faults { max_delay_ms: 150, gray: 3, half_hung: true, transfer: 3, ..Faults::NONE };
+    let faults = match seed % 4 {
+        0 => base,
+        1 => Faults { drain: 1, ..base },
+        2 => Faults { crash: 2, down_max_ms: 200, ..base },
+        _ => Faults { drain: 1, crash: 2, down_max_ms: 500, drop: 20, partition: 1, crash_mid: 1, ..base },
+    };
+    (faults, Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: seed % 8 >= 4 })
+}
 
 fn env(name: &str, default: u64) -> u64 {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
@@ -52,9 +71,16 @@ struct Totals {
     early_asks: u64,
     deps_entries: u64,
     rereads: u64,
+    /// The liveness monitor's longest stretch (F67): ms, seed, and when it began.
+    stuck: (u64, u64, u64),
 }
 
 fn sweep(seeds: std::ops::Range<u64>, steps: u64, faults: Faults) -> Totals {
+    sweep_with(seeds, steps, |_| (faults, Edge::default()))
+}
+
+fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Faults, Edge)) -> Totals {
+    let faults = mix(seeds.start).0;
     let mut t = Totals {
         seeds: 0,
         steps: 0,
@@ -91,14 +117,32 @@ fn sweep(seeds: std::ops::Range<u64>, steps: u64, faults: Faults) -> Totals {
         early_asks: 0,
         deps_entries: 0,
         rereads: 0,
+        stuck: (0, 0, 0),
     };
     // The gray half of the long sweep writes next to the HARSH half's file, as `<path>.gray`.
-    let suffix = if faults.gray > 0 { ".gray" } else { "" };
+    let suffix = if faults.half_hung {
+        ".live"
+    } else if faults.gray > 0 {
+        ".gray"
+    } else {
+        ""
+    };
     let out = std::env::var("RAFT_HISTORY").ok().map(|p| format!("{p}{suffix}"));
     let mut file = String::new();
     for seed in seeds {
+        let (faults, edge) = mix(seed);
         let mut sim = Sim::new(seed, faults, 4, 3);
+        sim.edge = edge;
         sim.run(steps);
+        let (stuck, at) = sim.longest_leaderless();
+        if stuck > t.stuck.0 {
+            t.stuck = (stuck, seed, at.0);
+        }
+        assert!(
+            stuck <= LIVE_BOUND_MS,
+            "seed {seed}: from {} ms a healthy quorum had requests waiting and none completed for {stuck} ms",
+            at.0
+        );
         sim.settle(4_000);
         assert_eq!(history::check(&sim.history), Verdict::Ok, "seed {seed}: history is not linearizable");
         if out.is_some() {
@@ -189,6 +233,10 @@ fn sweep(seeds: std::ops::Range<u64>, steps: u64, faults: Faults) -> Totals {
         t.early_asks,
         t.rereads
     );
+    eprintln!(
+        "longest stretch with a healthy quorum, requests waiting, and none completing (ms, seed, from): {:?}",
+        t.stuck
+    );
     t
 }
 
@@ -227,14 +275,42 @@ fn gray_network_keeps_every_invariant() {
     assert!(t.step_downs > 5, "only {} STEP_DOWN transfers", t.step_downs);
 }
 
+/// F67: half-hung sites, transfers, drains, quick resets, and the hosted edge's follower reads and damped reports,
+/// with every invariant, linearizability, and the liveness bound. The core before F67's fixes left seed 7180
+/// leaderless with requests waiting for 32.6 s.
+#[test]
+fn live_network_elects_within_the_bound() {
+    let t = sweep_with(7_160..7_160 + SEEDS / 2, STEPS, live_faults);
+    assert!(t.reads > SEEDS * 20, "only {} reads", t.reads);
+    assert!(t.gray > SEEDS / 4, "only {} gray faults", t.gray);
+}
+
+/// F67: a member refused as `Suspected` that stopped campaigning for 2 x SUSPECT's window outlasted the voter's bar
+/// and left this seed's group leaderless with requests waiting for 31.6 s; it must keep campaigning by pre-vote.
+#[test]
+fn a_member_refused_as_suspected_keeps_campaigning() {
+    sweep(10_395..10_396, 10_000, Faults::GRAY);
+}
+
+/// F67: a follower whose read-index call failed forgot its half-hung leader, so reports about it stopped counting and
+/// its promise to it kept renewing (seed 7337: 47.8 s); and that leader's appends counted as a leader seen, so the
+/// 2 x ELECTION_AFTER waiver never freed two healthy voters that quarantined each other (seed 11089: 32.9 s).
+#[test]
+fn a_half_hung_leader_cannot_hold_its_followers() {
+    for seed in [7_337, 11_089] {
+        sweep_with(seed..seed + 1, 8_000, live_faults);
+    }
+}
+
 #[test]
 #[ignore = "long sweep: RAFT_SEEDS, RAFT_STEPS"]
 fn long_sweep() {
     let seeds = env("RAFT_SEEDS", 1_000);
     let steps = env("RAFT_STEPS", 10_000);
     sweep(10_000..10_000 + seeds, steps, Faults::HARSH);
-    // The same seeds count again under gray faults.
+    // The same seeds count again under gray faults, then under F67's live mixes, whose histories go to `path.live`.
     sweep(10_000..10_000 + seeds, steps, Faults::GRAY);
+    sweep_with(10_000..10_000 + seeds, steps, live_faults);
 }
 
 fn row(client: usize, call: u64, ret: u64, op: HOp, out: Option<HOut>) -> Row {

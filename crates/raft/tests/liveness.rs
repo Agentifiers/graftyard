@@ -8,7 +8,7 @@
 
 mod common;
 
-use common::sim::{FaultKind, Faults, Sim, SiteFault};
+use common::sim::{Edge, FaultKind, Faults, SITES, Sim, SiteFault};
 use graftyard_raft::Role;
 use graftyard_types::{SiteId, Timestamp};
 
@@ -192,6 +192,33 @@ fn a_healthy_group_keeps_its_leader() {
             sim.alarms
         );
         assert_eq!(sim.stats.step_downs + sim.stats.holds, 0, "seed {seed}: STEP_DOWN tripped with no fault");
+    }
+}
+
+/// F67: a group read only by read-index through its followers (an owner's `Authz` under API load) whose leader's site
+/// goes half-hung: its AppendEntries arrive and every answer is lost. Followers shed the reads with no `suspect`
+/// report, and the leader's appends keep renewing their promises. Before check quorum and the read-index failure rule
+/// some seeds never elected for the whole minute (`tests/m0/results/f67.md`, paths 1 and 2).
+#[test]
+fn a_read_only_group_elects_off_a_half_hung_leader() {
+    for seed in 0..SEEDS {
+        let mut sim = Sim::new(seed, Faults::WAN, 8, 3);
+        sim.edge = Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: false };
+        sim.run(1_500);
+        let sick = leader_now(&sim).expect("leader after warm-up");
+        sim.edge.reads_only = true;
+        let start = sim.now;
+        let until = Timestamp(start.0 + FAULT_MS);
+        sim.site_faults.push(SiteFault { site: sick, from: start, until, kind: FaultKind::HalfHung(1000) });
+        while sim.now < until {
+            sim.step(true);
+        }
+        let others: Vec<SiteId> = SITES.iter().copied().filter(|s| *s != sick).collect();
+        let led = sim.terms.iter().find(|t| t.2 >= start && t.1 != sick).map(|t| t.2.0 - start.0);
+        // The property's T (`tests/sim.rs`, LIVE_BOUND_MS): check quorum takes ELECTION_AFTER, the followers'
+        // promises another ELECTION_AFTER at most, then a campaign. The 20 s gray target is for faults the leader sees.
+        assert!(led.is_some_and(|ms| ms <= 30_000), "seed {seed}: no leader off the half-hung site ({led:?} ms)");
+        assert!(sim.serving(&others).is_some(), "seed {seed}: no member off the half-hung site serves");
     }
 }
 

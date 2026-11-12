@@ -391,38 +391,38 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
                         pub merged: Option<(ObjectId, Timestamp, AccountId)> }
 
 // ---- Leadership ----
-/// Raft leadership transfer. The leader stops appending and serving `fresh`, brings `to` to its last index, and sends
-/// `TimeoutNow`. `to` must be undrained and hold the leader's last index. Before `TimeoutNow`, the leader waits up to
-/// 2 x CALL_DEADLINE for the other follower to accept an AppendEntries that carries the `transfer_id`, and it retries the
-/// target's catch-up and `TimeoutNow` until the LEASE runs out rather than after COMMIT_RETRIES; without the wait, a
-/// follower that had not seen the transfer refused the target's vote as promised, and the group had no leader for 40 s
-/// in Milestone 0 [measured, `tests/m0/results/m0-wp4.md`, B0-07]. While it runs, every AppendEntries carries
-/// `transfer: Some((to, transfer_id))`, acks to those rounds extend no lease, and a voter disregards its promise to the
-/// old leader only for a transfer vote that names the `transfer_id` of the last AppendEntries it accepted [inference
-/// from Raft section 3.10]. A granted transfer vote also promises the target; without that, a report to the old leader
-/// let it win the other follower back and depose the target [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 1].
-/// A transfer is abandoned when it has not completed within one LEASE, or at once when the target answers
-/// `TransferRefused` (drained, `no_lead_until`, or quarantined): the leader sends `transfer: None` and serves `fresh`
-/// again only after one full round. A leader transfers when its site is drained, when STEP_DOWN trips, when a follower
-/// on an older release refuses its uncommitted entry, and when its group's `home` has recovered (5 calls to it in a
-/// `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, the leader not tripped) and holds every committed entry,
-/// retrying 60 s after a failed try [guess, both numbers, `tests/m1/results/m1-wp3.md`].
+/// Raft leadership transfer. The leader stops appending and serving `fresh`, brings an undrained `to` to its last
+/// index, and sends `TimeoutNow`. Before `TimeoutNow`, the leader waits up to 2 x CALL_DEADLINE for the other follower
+/// to accept an AppendEntries that carries the `transfer_id`, and retries the target's catch-up and `TimeoutNow` until
+/// the LEASE ends, not COMMIT_RETRIES; without the wait, a follower that had not seen the transfer refused the target's
+/// vote as promised, and a group had no leader for 40 s [measured, `tests/m0/results/m0-wp4.md`, B0-07]. While it runs,
+/// every AppendEntries carries `transfer: Some((to, transfer_id))`, acks to those rounds extend no lease, and a voter
+/// disregards its promise to the old leader only for a transfer vote that names the `transfer_id` of the last
+/// AppendEntries it accepted [inference from Raft section 3.10]. A granted transfer vote also promises the target; else
+/// a report to the old leader let it win the other follower back [measured, simulator, `tests/m1/results/m1-wp3.md`,
+/// bug 1]. It lasts the campaign's 3 s, or a target that could not win held both voters leaderless (F67). A transfer is
+/// abandoned after one LEASE, or at once when the target answers `TransferRefused`: the leader sends `transfer: None`
+/// and serves `fresh` again after one full round. A leader transfers when its site is drained, when STEP_DOWN trips,
+/// when a follower on an older release refuses its uncommitted entry, and when its group's `home` has recovered (5
+/// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, the leader not tripped) and holds every
+/// committed entry, retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`].
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
 /// member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
-/// promised in this term; else late reports on a transfer's old leader withheld promises from the new one [measured,
-/// simulator, `tests/m1/results/m1-wp3.md`, bug 2]. A follower that gets reports from two colos within 10 s stops
-/// granting promises to a leader that is still renewing, and restores them after 2 x the SUSPECT window or on a higher
-/// term. For the same 2 x SUSPECT window, which a higher term does not end, its pre-vote refuses that leader as a
-/// candidate, so the gray leader cannot win back the next election (M0-WP2 measured a 24 s move without it). A follower
-/// whose promise has lapsed campaigns on one report, or when its own read-index call to the leader fails. Campaigns are
-/// request-driven through this call, never alarm-driven; only a leader's drain check runs from an alarm, and it starts
-/// no campaign (`SiteMode`). Only `home` gets `/campaign`, and pre-vote denies a higher site id with an equal log, so a
-/// far, highest-id site rarely leads; `home` then leads by transfer, as intended [inference, wire-fix]. A promise bars
-/// votes for a rival of the leader it was given to, not for that leader, and an edge whose call is answered `NotLeader`
-/// with no leader named also reports to that member, so a deposed leader holding the newest log can win the next term
-/// while its followers' promises run. M0 measured idle groups stalled about 11 s without it (M0-WP4).
+/// promised in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from the
+/// new one [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2]. Reports from two colos within 10 s stop its
+/// promises to a leader still renewing, until 2 x the SUSPECT window or a higher term. For the same window, which a
+/// higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back (M0-WP2: a 24 s move
+/// without it). A follower whose promise has lapsed campaigns on one report, or once its read-index batch is unanswered
+/// for 3 s, when it also names no leader; a withheld leader's appends do not count as one seen. Campaigns are
+/// request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and two voters up
+/// and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`], because a leader whose entry,
+/// read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`; pre-vote
+/// denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not refused as
+/// suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to, not for that
+/// leader, and an edge answered `NotLeader` naming no leader also reports to that member, so a deposed leader holding
+/// the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -585,13 +585,13 @@ pub enum QueueAction { Enqueue { n: IssueNumber, head: Oid }, Dequeue { n: Issue
 pub struct QueueMerge { pub plans: Vec<(IssueNumber, MergePlan)>, pub entry: MergeQueueEntry }
 /// The `MergeQueue` consumer (SHARED, "Event fan-out") reads the base chain's `Queue`, `Refs`, `RequiredCheck`,
 /// `PrClosed`, `Merged`, and `Rule` events and, like `PrSync`, runs each batch's first attempt in the leader's isolate.
-/// Per base, under `MergeQueueSettings`: it builds once `min_merge` PRs wait or `min_wait_minutes` passes (a per-base
-/// timer) and fewer than `max_build` are built, asking `GitCacheShard::merge` for each next entry on the previous
-/// `group_tip` and submitting `Build` with the pack inline, at most 900 KB [inference], or `Eject { Conflict }`. It
-/// ejects on a head push or a close, and the first built entry not yet passing on a failed required conclusion on its
-/// queue ref or none within `check_timeout_minutes`. It lands the oldest built entries, at most `max_merge`, that pass,
-/// by `QueueMerge`, and a refusal ejects the named PR. A base move no `QueueMerge` made rebuilds from the new tip. A
-/// redelivery costs at most a refusal.
+/// Per base, under `MergeQueueSettings`: it builds once `min_merge` PRs wait or `min_wait_minutes` passes (per base)
+/// and fewer than `max_build` are built, asking `GitCacheShard::merge` for each next entry on the last `group_tip` and
+/// submitting `Build` with the pack inline (at most 900 KB [inference]) or `Eject { Conflict }`. It ejects on a head
+/// push or a close, and the first built entry not yet passing on a failed required conclusion on its queue ref or none
+/// within `check_timeout_minutes`. It lands the oldest passing built entries, at most `max_merge`, by `QueueMerge`; a
+/// refusal ejects the named PR. A base move not by `QueueMerge` rebuilds from the new tip; a redelivery costs at most a
+/// refusal.
 
 // ---- Agent load and agent safety (journey 9; the layer is design/AGENT-LAYER.md) ----
 /// Leader admission inside group commit. Lanes in every entry are Human and MergeQueue, then Agent up to AGENT_FLOOR of

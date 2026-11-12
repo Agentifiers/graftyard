@@ -402,9 +402,11 @@ fn a_group_whose_every_member_flapped_elects_on_the_first_requests() {
         c.deliver_all();
         assert!(SITES.iter().all(|s| c.m(*s).role() != Role::Leader), "a leader with no request");
     }
-    // A request's lookup: every voter answers NotLeader naming none, so each gets a `suspect` report, every 500 ms.
+    // Requests' lookups: every voter answers NotLeader naming none, so each gets a `suspect` report, every 100 ms.
+    // Every member is flapping, so none denies a rival as `Contending` (F67); the losers' random backoff, not a
+    // lockstep 500 ms cadence that outlasts it and splits every vote, picks the winner.
     let begun = c.now.0;
-    for _ in 0..40 {
+    for _ in 0..200 {
         let term = SITES.iter().map(|s| c.m(*s).term()).max().unwrap();
         for s in SITES {
             c.on(s, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
@@ -418,10 +420,33 @@ fn a_group_whose_every_member_flapped_elects_on_the_first_requests() {
             assert!(c.now.0 - start >= 30_000);
             return;
         }
-        c.advance(500);
+        c.advance(100);
         c.deliver_all();
     }
     panic!("no leader 20 s after the first report");
+}
+
+/// A quarantined member campaigning does not contend: B, flapping, refuses no rival, so C wins at once with B's vote.
+/// Before F67's fix B denied C as `Contending` while every voter refused B, and with A down nothing led until the
+/// waiver after 2 x ELECTION_AFTER (`tests/m0/results/f67.md`, path 4).
+#[test]
+fn a_quarantined_campaigner_does_not_contend() {
+    let mut c = Cluster::new(12);
+    c.elect(A);
+    for _ in 0..2 {
+        c.on(B, |m, now| m.tick(now));
+        c.crash(B);
+        c.advance(100);
+        c.restart(B);
+        c.deliver_all();
+    }
+    c.crash(A);
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 10);
+    c.inbox.clear();
+    c.on(B, |m, now| m.campaign(now));
+    c.on(C, |m, now| m.campaign(now));
+    c.deliver_all();
+    assert_eq!(c.m(C).role(), Role::Leader, "the flapping member blocked the only candidate that may lead");
 }
 
 /// Reads: within the lease from the fold, after it lapses only via a round, never on a minority leader.

@@ -663,12 +663,20 @@ impl<F: Family> Routes<F> {
             }
             (Method::Post, "/probe_vote") => self.ready_or(|| async { self.probe_vote() }).await,
             // LF-13: `{"for_ms": MS}` severs this member for MS ms (`Host::severed_until`); 0 lifts it. Answers
-            // this member's clock, so a driver times the lift on the clock the feed's `stoppedAt` uses.
+            // this member's clock, so a driver times the lift on the clock the feed's `stoppedAt` uses. F67: with
+            // `"half": true` the member is half-hung instead (`Host::half_hung_until`).
             (Method::Post, "/sever") => {
-                let ms = req.json::<Value>().await?["for_ms"].as_u64().unwrap_or(0);
+                let body = req.json::<Value>().await?;
+                let ms = body["for_ms"].as_u64().unwrap_or(0);
                 let now = now_ms();
-                self.host.severed_until.set(if ms == 0 { 0 } else { now + ms });
-                Response::from_json(&json!({ "now": now, "until": self.host.severed_until.get() }))
+                let until = if ms == 0 { 0 } else { now + ms };
+                let cell = if body["half"].as_bool() == Some(true) {
+                    &self.host.half_hung_until
+                } else {
+                    &self.host.severed_until
+                };
+                cell.set(until);
+                Response::from_json(&json!({ "now": now, "until": cell.get() }))
             }
             // B0-18's depth gauge: how many nested object calls are left from this member's ambient context. After
             // `afterMs`, a task (charged, as every send is, to the newest incoming request) starts a chain of calls
