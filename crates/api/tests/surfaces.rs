@@ -13,7 +13,10 @@ use graftyard_api::graphql::{
     Plan, Planned, PlannedMerge, Target, merge_command, merge_request, plan, query, refused, refused_merge, render,
     render_merge, route,
 };
-use graftyard_api::rest::list_commit_statuses;
+use graftyard_api::rest::{
+    commit_not_found, get_check_run, get_commit, get_pull, list_check_runs_for_ref, list_commit_statuses,
+    list_issue_comments, list_review_comments, list_reviews,
+};
 use graftyard_api::view::Repo;
 use graftyard_api::wire::Page;
 use graftyard_api::wire::{Host, NodeId, NodeType};
@@ -21,9 +24,9 @@ use graftyard_fold::store::META;
 use graftyard_fold::{MemStore, fold_digest, meta};
 use graftyard_git::issue_ops::{IssueErr, IssueOp, IssueOut};
 use graftyard_git::issues::{
-    AppId, CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget, IssueNumber,
-    LabelName, MergeMethod, Protection, RepoSettings, RequiredChecks, StatusId, StatusState, StatusUpdate, Url,
-    Visibility,
+    AppId, CheckConclusion, CheckOutput, CheckRunId, CheckRunUpdate, CheckStatus, CheckSuiteId, CommentTarget,
+    DiffSide, IssueNumber, LabelName, LineAnchor, MergeMethod, Protection, RepoSettings, RequiredChecks, ReviewState,
+    StatusId, StatusState, StatusUpdate, Url, Visibility,
 };
 use graftyard_raft::{EntryBody, TierSet};
 use graftyard_types::{AccountId, DbId, Tier, Timestamp};
@@ -1253,4 +1256,263 @@ fn ready_for_review_and_issue_labels_commit_and_render_as_ghes_does() {
     assert_eq!(rest(&mut c, "POST", None, json!({ "labels": [] })).status, 422);
     let r = c.repo(0, &h, &dir);
     assert!(plan_issue_labels(&r, "POST", "99", None, &json!(["bug"])).is_err_and(|x| x.status == 404));
+}
+
+#[test]
+fn rest_reads_of_the_trust_resources_render_ghes_shapes() {
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.push("refs/heads/f", oid(2));
+    c.push("refs/heads/other", oid(3));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    c.commit(
+        READER,
+        IssueOp::OpenIssue {
+            title: "an issue".into(),
+            body: "issue body".into(),
+            labels: SmallVec::new(),
+            assignees: SmallVec::new(),
+        },
+    )
+    .unwrap();
+    let open_pr = |branch: &str, title: &str, head_sha| IssueOp::OpenPr {
+        head: graftyard_git::issues::HeadSpec { repo: REPO, branch: name(branch) },
+        base: name("refs/heads/main"),
+        title: title.into(),
+        body: "pull body".into(),
+        draft: false,
+        head_sha,
+        base_sha: oid(1),
+    };
+    c.commit(WRITER, open_pr("refs/heads/f", "a pull request", oid(2))).unwrap();
+    let id = |out: IssueOut| match out {
+        IssueOut::Id(id) => id.0,
+        other => panic!("{other:?}"),
+    };
+    let first = id(c
+        .commit(
+            READER,
+            IssueOp::Comment {
+                on: CommentTarget::Issue(IssueNumber(1)),
+                body: "first issue comment".into(),
+                reply_to: None,
+            },
+        )
+        .unwrap());
+    let second = id(c
+        .commit(
+            OWNER,
+            IssueOp::Comment {
+                on: CommentTarget::Issue(IssueNumber(1)),
+                body: "second issue comment".into(),
+                reply_to: None,
+            },
+        )
+        .unwrap());
+    let review = id(c
+        .commit(
+            OWNER,
+            IssueOp::Review {
+                n: IssueNumber(2),
+                state: ReviewState::Commented,
+                commit: oid(2),
+                body: "review body".into(),
+            },
+        )
+        .unwrap());
+    let review_op = |state, body: &str| IssueOp::Review { n: IssueNumber(2), state, commit: oid(2), body: body.into() };
+    c.commit(READER, review_op(ReviewState::Pending, "pending draft")).unwrap();
+    let approval = id(c.commit(OWNER, review_op(ReviewState::Approved, "approved then dismissed")).unwrap());
+    c.commit(
+        OWNER,
+        IssueOp::Dismiss { review: graftyard_git::issues::ReviewId(DbId(approval)), message: "stale".into() },
+    )
+    .unwrap();
+    let at = |line| LineAnchor {
+        commit: oid(2),
+        path: "src/lib.rs".into(),
+        line,
+        start_line: (line == 8).then_some(7),
+        side: if line == 8 { DiffSide::Right } else { DiffSide::Left },
+    };
+    let comment = id(c
+        .commit(
+            READER,
+            IssueOp::Comment {
+                on: CommentTarget::Review { n: IssueNumber(2), review: None, at: at(8) },
+                body: "first review comment".into(),
+                reply_to: None,
+            },
+        )
+        .unwrap());
+    c.now = Timestamp(c.now.0 + 1_000);
+    let reply = id(c
+        .commit(
+            OWNER,
+            IssueOp::Comment {
+                on: CommentTarget::Review { n: IssueNumber(2), review: None, at: at(12) },
+                body: "reply review comment".into(),
+                reply_to: Some(graftyard_git::issues::CommentId(DbId(comment))),
+            },
+        )
+        .unwrap());
+    c.commit(WRITER, open_pr("refs/heads/other", "another pull request", oid(3))).unwrap();
+    let elsewhere = id(c
+        .commit(
+            READER,
+            IssueOp::Comment {
+                on: CommentTarget::Review {
+                    n: IssueNumber(3),
+                    review: None,
+                    at: LineAnchor {
+                        commit: oid(3),
+                        path: "elsewhere.rs".into(),
+                        line: 1,
+                        start_line: None,
+                        side: DiffSide::Right,
+                    },
+                },
+                body: "other pull request comment".into(),
+                reply_to: None,
+            },
+        )
+        .unwrap());
+    c.commit(WRITER, run(40, 20, "build", Some(CheckConclusion::Success))).unwrap();
+    let mut detailed = run(41, 20, "test", Some(CheckConclusion::Failure));
+    let IssueOp::RecordCheck(update) = &mut detailed else { unreachable!() };
+    update.output = Some(CheckOutput {
+        title: "test output".into(),
+        summary: "one failure".into(),
+        text: Some("details".into()),
+        annotations: vec![],
+    });
+    c.commit(WRITER, detailed).unwrap();
+    c.commit(WRITER, run(42, 21, "other", Some(CheckConclusion::Success))).unwrap();
+
+    let (h, dir) = (host(), Dir::new(WRITER));
+    let r = c.repo(0, &h, &dir);
+    let pull = get_pull(&r, "2");
+    assert_eq!((pull.status, &pull.value()["number"]), (200, &json!(2)));
+    keep_rest("trust-pull", "/repos/{owner}/{repo}/pulls/{pull_number}", &pull);
+    assert_eq!(get_pull(&r, "99").status, 404);
+    assert_eq!(get_pull(&r, "not-a-number").status, 404);
+    assert_eq!(get_pull(&r, "1").status, 404, "an issue is not a pull request");
+    assert_eq!(list_reviews(&r, "1", "").status, 404);
+    assert_eq!(list_review_comments(&r, "1", "").status, 404);
+
+    let comments = list_issue_comments(&r, "1", "");
+    let got: Vec<(i64, &str)> = comments
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["id"].as_i64().unwrap(), c["body"].as_str().unwrap()))
+        .collect();
+    assert_eq!(got, [(first, "first issue comment"), (second, "second issue comment")]);
+    keep_rest("trust-issue-comments", "/repos/{owner}/{repo}/issues/{issue_number}/comments", &comments);
+    assert_eq!(list_issue_comments(&r, "99", "").status, 404);
+
+    // A pending review is the reviewer's own draft and not listed; a dismissed approval reads DISMISSED.
+    let reviews = list_reviews(&r, "2", "");
+    let got: Vec<(i64, &str, &str)> = reviews
+        .value()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| (v["id"].as_i64().unwrap(), v["body"].as_str().unwrap(), v["state"].as_str().unwrap()))
+        .collect();
+    assert_eq!(got, [(review, "review body", "COMMENTED"), (approval, "approved then dismissed", "DISMISSED")]);
+    keep_rest("trust-reviews", "/repos/{owner}/{repo}/pulls/{pull_number}/reviews", &reviews);
+
+    let review_comments = list_review_comments(&r, "2", "");
+    let objects = review_comments.value().as_array().unwrap();
+    let got: Vec<(i64, &str)> =
+        objects.iter().map(|c| (c["id"].as_i64().unwrap(), c["body"].as_str().unwrap())).collect();
+    // Oldest first, though the reply's Metadata id is lower than its thread's Core id.
+    assert!(reply < comment, "the ids no longer test the order");
+    assert_eq!(got, [(comment, "first review comment"), (reply, "reply review comment")]);
+    let first_object = objects.iter().find(|c| c["id"] == comment).unwrap();
+    let reply_object = objects.iter().find(|c| c["id"] == reply).unwrap();
+    assert_eq!(reply_object["in_reply_to_id"], comment);
+    assert!(first_object.get("in_reply_to_id").is_none());
+    assert!(!objects.iter().any(|c| c["id"] == elsewhere), "another pull request's comment leaked in");
+    assert_eq!(first_object["start_line"], 7);
+    assert_eq!(first_object["start_side"], "RIGHT");
+    assert!(reply_object["start_line"].is_null() && reply_object["start_side"].is_null());
+    keep_rest("trust-review-comments", "/repos/{owner}/{repo}/pulls/{pull_number}/comments", &review_comments);
+
+    let checks = list_check_runs_for_ref(&r, &oid(20).hex(), "");
+    assert_eq!(checks.value()["total_count"], 2);
+    let runs = checks.value()["check_runs"].as_array().unwrap();
+    let ids: Vec<i64> = runs.iter().map(|run| run["id"].as_i64().unwrap()).collect();
+    assert_eq!(ids, [41, 40], "runs are newest id first and the other sha's run is absent");
+    assert_eq!(runs[0]["output"]["title"], "test output");
+    keep_rest("trust-check-runs", "/repos/{owner}/{repo}/commits/{ref}/check-runs", &checks);
+    let one = get_check_run(&r, "41");
+    assert_eq!(
+        (one.status, &one.value()["id"], &one.value()["output"]["summary"]),
+        (200, &json!(41), &json!("one failure"))
+    );
+    keep_rest("trust-check-run", "/repos/{owner}/{repo}/check-runs/{check_run_id}", &one);
+    assert_eq!(get_check_run(&r, "999999").status, 404);
+    let missing = list_check_runs_for_ref(&r, "does-not-exist", "");
+    assert_eq!(missing.status, 422);
+    assert_eq!(missing.value()["message"], "No commit found for SHA: does-not-exist");
+    assert_eq!(commit_not_found("does-not-exist").value()["message"], "No commit found for SHA: does-not-exist");
+
+    let tree = oid(30);
+    let parents = [oid(31), oid(32)];
+    let raw = format!(
+        "tree {}\nparent {}\nparent {}\nauthor A. U. Thor <author@example.com> 1700000000 +0530\ncommitter Committer <committer@example.com> 1700000060 -0700\ngpgsig -----BEGIN SIGNATURE-----\n signature continuation\n -----END SIGNATURE-----\n\ncommit subject\n\ncommit body\n",
+        tree.hex(),
+        parents[0].hex(),
+        parents[1].hex(),
+    );
+    let commit = get_commit(&r, oid(29), raw.as_bytes());
+    assert_eq!(commit.status, 200);
+    assert_eq!(commit.value()["commit"]["message"], "commit subject\n\ncommit body");
+    assert_eq!(commit.value()["commit"]["author"]["name"], "A. U. Thor");
+    assert_eq!(commit.value()["commit"]["author"]["email"], "author@example.com");
+    assert_eq!(commit.value()["commit"]["author"]["date"], "2023-11-14T22:13:20Z");
+    assert_eq!(commit.value()["commit"]["tree"]["sha"], tree.hex());
+    let got: Vec<&str> =
+        commit.value()["parents"].as_array().unwrap().iter().map(|p| p["sha"].as_str().unwrap()).collect();
+    assert_eq!(got, [parents[0].hex(), parents[1].hex()]);
+    keep_rest("trust-commit", "/repos/{owner}/{repo}/commits/{ref}", &commit);
+
+    // Under the agent media type each route's objects get the view of the text and the author it renders: a
+    // reader's comment is untrusted and the owner's trusted, so a renderer that dropped `user` would show.
+    let agent = Some(graftyard_api::trust::AGENT_MEDIA_TYPE);
+    let views = |path: &str, reply: &graftyard_api::wire::Reply| -> Vec<(Value, Value)> {
+        let on = graftyard_api::trust::layer(agent, path, &r, reply.clone());
+        let v = on.value().clone();
+        let objs = match &v {
+            Value::Array(xs) => xs.clone(),
+            Value::Object(m) if m.contains_key("check_runs") => m["check_runs"].as_array().unwrap().clone(),
+            o => vec![o.clone()],
+        };
+        objs.iter()
+            .map(|o| (o["graftyard_trust"]["visible"].clone(), o["graftyard_trust"]["author"]["trusted"].clone()))
+            .collect()
+    };
+    let t = |s: &str, trusted: bool| (json!(s), json!(trusted));
+    assert_eq!(views("/repos/o/r/pulls/2", &pull), [t("pull body", true)]);
+    assert_eq!(
+        views("/repos/o/r/issues/1/comments", &comments),
+        [t("first issue comment", false), t("second issue comment", true)]
+    );
+    assert_eq!(
+        views("/repos/o/r/pulls/2/reviews", &reviews),
+        [t("review body", true), t("approved then dismissed", true)]
+    );
+    assert_eq!(
+        views("/repos/o/r/pulls/2/comments", &review_comments),
+        [t("first review comment", false), t("reply review comment", true)]
+    );
+    assert_eq!(
+        views(&format!("/repos/o/r/commits/{}/check-runs", oid(20).hex()), &checks)[0],
+        t("test output\n\none failure\n\ndetails", false)
+    );
+    assert_eq!(views("/repos/o/r/check-runs/41", &one), [t("test output\n\none failure\n\ndetails", false)]);
+    assert_eq!(views("/repos/o/r/commits/x", &commit), [t("commit subject\n\ncommit body", false)]);
 }

@@ -1254,6 +1254,22 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             rest::list_commit_statuses(&r, reference, graftyard_wire::Page::parse(query))
         }
         (Method::Get, ["issues"]) => rest::list_issues(&r, query),
+        // LF-4's trust resources over REST (F61): each read renders the pinned GHES 3.22 shape from the fold, and a
+        // commit from the git cache shard.
+        (Method::Get, ["pulls", n]) => rest::get_pull(&r, n),
+        (Method::Get, ["issues", n, "comments"]) => rest::list_issue_comments(&r, n, query),
+        (Method::Get, ["pulls", n, "reviews"]) => rest::list_reviews(&r, n, query),
+        (Method::Get, ["pulls", n, "comments"]) => rest::list_review_comments(&r, n, query),
+        (Method::Get, ["commits", reference, "check-runs"]) => rest::list_check_runs_for_ref(&r, reference, query),
+        (Method::Get, ["check-runs", id]) => rest::get_check_run(&r, id),
+        (Method::Get, ["commits", reference]) => match rest::resolve(&r, reference) {
+            Some(sha) => match commit_object(c, &rd.repo, sha).await {
+                Ok(Some(raw)) => rest::get_commit(&r, sha, &raw),
+                Ok(None) => rest::commit_not_found(reference),
+                Err(e) => unavailable(&format!("the git cache: {e}")),
+            },
+            None => rest::commit_not_found(reference),
+        },
         (Method::Post, ["labels"]) => {
             let who = match need(&who) {
                 Ok(w) => w,
@@ -1576,6 +1592,35 @@ impl Archiver for ShardArchiver<'_> {
             return Err(format!("git cache archive: {} {}", r.status_code(), r.text().await.unwrap_or_default()));
         }
         r.bytes().await.map_err(|e| e.to_string())
+    }
+}
+
+/// Commit `sha`'s raw object, fetched alone from the network's git cache shard over protocol v2
+/// (`graftyard_git::commit_fetch`); `None` when the shard does not hold it.
+async fn commit_object(
+    c: &Ctx<'_>,
+    repo: &Repo,
+    sha: graftyard_git::refs::ObjectId,
+) -> std::result::Result<Option<Vec<u8>>, String> {
+    use graftyard_git::commit_fetch;
+    let err = |e: worker::Error| e.to_string();
+    let mut init = RequestInit::new();
+    let h = Headers::new();
+    h.set("git-protocol", "version=2").map_err(err)?;
+    let body = commit_fetch::request(sha);
+    init.with_method(Method::Post).with_headers(h).with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+    let url = format!("https://shard/upload-pack?repo={}", repo.id.0.0);
+    let req = Request::new_with_init(&url, &init).map_err(err)?;
+    let mut r = crate::shard(c, repo).map_err(err)?.fetch_with_request(req).await.map_err(err)?;
+    if r.status_code() != 200 {
+        return Err(format!("{} {}", r.status_code(), r.text().await.unwrap_or_default()));
+    }
+    let bytes = r.bytes().await.map_err(err)?;
+    match commit_fetch::commit_of(&bytes, sha) {
+        Ok(raw) => Ok(Some(raw)),
+        // upload-pack refuses a want it does not hold ("not our ref").
+        Err(e) if e.contains("not our ref") || e.contains("no pack") => Ok(None),
+        Err(e) => Err(e),
     }
 }
 

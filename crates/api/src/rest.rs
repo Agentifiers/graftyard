@@ -8,14 +8,19 @@
 //! `gh api repos/o/r/issues?sort=updated` calls, and `POST /repos/{owner}/{repo}/labels`, which `gh label create`
 //! calls before `gh issue create -l bug`.
 
+use graftyard_git::issues::{
+    CheckConclusion, CheckRunId, CheckRunUpdate, CheckStatus, CommentId, DiffSide, IssueNumber, ReviewState,
+};
 use graftyard_git::refs::{ObjectId, RefName};
+use graftyard_git::tiers::CommentRow;
+use graftyard_types::{DbId, Timestamp};
 use serde_json::{Value, json};
 
 use crate::view::{Item, Repo, StateFilter};
 use crate::wire::{NodeType, Page, Reply, color, iso, scoped, simple_user};
 
 /// A commit ref as the route takes it: a full SHA, a branch name, or a tag name.
-fn resolve(r: &Repo<'_>, reference: &str) -> Option<ObjectId> {
+pub fn resolve(r: &Repo<'_>, reference: &str) -> Option<ObjectId> {
     if let Some(o) = ObjectId::parse_hex(reference.as_bytes()) {
         return Some(o);
     }
@@ -393,6 +398,314 @@ pub fn issue_json(r: &Repo<'_>, it: &Item) -> Value {
         });
     }
     v
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{pull_number}`.
+pub fn get_pull(r: &Repo<'_>, n: &str) -> Reply {
+    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    match r.item(n) {
+        Some(it) if it.is_pull() => Reply::json(200, crate::webhooks::pull_request(r, &it)),
+        _ => Reply::not_found(),
+    }
+}
+
+/// The pinned `issue-comment` schema's object.
+pub fn issue_comment_json(r: &Repo<'_>, n: &Item, id: CommentId, row: &CommentRow) -> Value {
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let kind = if n.is_pull() { "pull" } else { "issues" };
+    json!({
+        "url": format!("{api}/repos/{o}/{name}/issues/comments/{}", id.0.0),
+        "html_url": format!("{web}/{o}/{name}/{kind}/{}#issuecomment-{}", n.n.0, id.0.0),
+        "issue_url": format!("{api}/repos/{o}/{name}/issues/{}", n.n.0),
+        "id": id.0.0, "node_id": scoped(NodeType::IssueComment, r, id.0.0),
+        "user": simple_user(r.host, r.dir, row.author), "created_at": iso(row.created),
+        "updated_at": iso(row.updated), "author_association": crate::wire::association(r, row.author),
+        "performed_via_github_app": null, "body": &*row.body, "reactions": reactions(&format!(
+            "{api}/repos/{o}/{name}/issues/comments/{}/reactions", id.0.0)),
+    })
+}
+
+fn reactions(url: &str) -> Value {
+    json!({ "url": url, "total_count": 0, "+1": 0, "-1": 0, "laugh": 0, "confused": 0, "heart": 0, "hooray": 0,
+        "eyes": 0, "rocket": 0 })
+}
+
+fn paged_values(r: &Repo<'_>, path: &str, query: &str, all: Vec<Value>) -> Reply {
+    let page = Page::parse(query);
+    let more = all.len() > page.end();
+    let items: Vec<Value> = all.into_iter().skip(page.skip()).take(page.per_page).collect();
+    let link = graftyard_wire::link(&r.host.api(), r.at.id.0.0, path, &[], page, more, None);
+    let reply = Reply::json(200, Value::Array(items));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/issues/{issue_number}/comments`, oldest first.
+pub fn list_issue_comments(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(n) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    let Some(it) = r.item(n) else { return Reply::not_found() };
+    let all = r.comments_of(n).into_iter().map(|(id, row)| issue_comment_json(r, &it, id, &row)).collect();
+    paged_values(r, &format!("/issues/{}/comments", n.0), query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews`, in review id order.
+pub fn list_reviews(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(num) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    if r.item(num).is_none_or(|it| !it.is_pull()) {
+        return Reply::not_found();
+    }
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let mut rows = r.reviews_of(num);
+    rows.retain(|(_, row)| row.state != ReviewState::Pending);
+    rows.sort_by_key(|(id, _)| id.0);
+    let all = rows
+        .into_iter()
+        .map(|(id, row)| {
+            let state = if row.dismissed.is_some() {
+                "DISMISSED"
+            } else {
+                match row.state {
+                    ReviewState::Approved => "APPROVED",
+                    ReviewState::ChangesRequested => "CHANGES_REQUESTED",
+                    ReviewState::Commented | ReviewState::Pending => "COMMENTED",
+                }
+            };
+            let html = format!("{web}/{o}/{name}/pull/{}#pullrequestreview-{}", num.0, id.0);
+            let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
+            json!({
+                "id": id.0, "node_id": scoped(NodeType::PullRequestReview, r, id.0),
+                "user": simple_user(r.host, r.dir, row.reviewer), "body": &*row.body, "state": state,
+                "html_url": html, "pull_request_url": pull,
+                "_links": { "html": { "href": html }, "pull_request": { "href": pull } },
+                "submitted_at": iso(row.at), "commit_id": row.commit.hex(),
+                "author_association": crate::wire::association(r, row.reviewer),
+            })
+        })
+        .collect();
+    paged_values(r, &format!("/pulls/{}/reviews", num.0), query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/pulls/{pull_number}/comments`, oldest first.
+pub fn list_review_comments(r: &Repo<'_>, n: &str, query: &str) -> Reply {
+    let Some(num) = n.parse::<u32>().ok().map(IssueNumber) else { return Reply::not_found() };
+    if r.item(num).is_none_or(|it| !it.is_pull()) {
+        return Reply::not_found();
+    }
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let all = r
+        .review_comments_of(num)
+        .into_iter()
+        .filter_map(|(id, row)| {
+            let graftyard_git::issues::CommentTarget::Review { review, at, .. } = &row.on else {
+                return None;
+            };
+            let url = format!("{api}/repos/{o}/{name}/pulls/comments/{}", id.0.0);
+            let html = format!("{web}/{o}/{name}/pull/{}#discussion_r{}", num.0, id.0.0);
+            let pull = format!("{api}/repos/{o}/{name}/pulls/{}", num.0);
+            let side = match at.side {
+                DiffSide::Left => "LEFT",
+                DiffSide::Right => "RIGHT",
+            };
+            let mut v = json!({
+                "url": url, "id": id.0.0, "node_id": scoped(NodeType::IssueComment, r, id.0.0),
+                "pull_request_review_id": review.map(|id| id.0.0),
+                "diff_hunk": "", "path": &*at.path,
+                "commit_id": at.commit.hex(), "original_commit_id": at.commit.hex(),
+                "user": simple_user(r.host, r.dir, row.author), "body": &*row.body,
+                "created_at": iso(row.created), "updated_at": iso(row.updated),
+                "html_url": html, "pull_request_url": pull,
+                "author_association": crate::wire::association(r, row.author),
+                "_links": {
+                    "self": { "href": url }, "html": { "href": html }, "pull_request": { "href": pull },
+                },
+                "line": at.line, "original_line": at.line,
+                "start_line": at.start_line, "original_start_line": at.start_line,
+                "side": side, "start_side": at.start_line.map(|_| side), "subject_type": "line",
+            });
+            if let Some(reply) = row.reply_to {
+                v["in_reply_to_id"] = json!(reply.0.0);
+            }
+            Some(v)
+        })
+        .collect();
+    paged_values(r, &format!("/pulls/{}/comments", num.0), query, all)
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`.
+pub fn list_check_runs_for_ref(r: &Repo<'_>, reference: &str, query: &str) -> Reply {
+    let Some(sha) = resolve(r, reference) else {
+        return Reply::error(
+            422,
+            &format!("No commit found for SHA: {reference}"),
+            "rest/checks/runs#list-check-runs-for-a-git-reference",
+        );
+    };
+    let mut rows = r.check_runs(&sha);
+    rows.sort_by_key(|t| std::cmp::Reverse(t.rec.run));
+    let total_count = rows.len();
+    let page = Page::parse(query);
+    let more = total_count > page.end();
+    let check_runs: Vec<Value> =
+        rows.iter().skip(page.skip()).take(page.per_page).map(|t| check_run_json(r, &t.rec, t.at)).collect();
+    let link = graftyard_wire::link(
+        &r.host.api(),
+        r.at.id.0.0,
+        &format!("/commits/{}/check-runs", sha.hex()),
+        &[],
+        page,
+        more,
+        None,
+    );
+    let reply = Reply::json(200, json!({ "total_count": total_count, "check_runs": check_runs }));
+    match link {
+        Some(l) => reply.with("link", l),
+        None => reply,
+    }
+}
+
+/// `GET /repos/{owner}/{repo}/check-runs/{check_run_id}`.
+pub fn get_check_run(r: &Repo<'_>, id: &str) -> Reply {
+    let Some(id) = id.parse::<i64>().ok() else { return Reply::not_found() };
+    match r.check_run(CheckRunId(DbId(id))) {
+        Some(t) => Reply::json(200, check_run_json(r, &t.rec, t.at)),
+        None => Reply::not_found(),
+    }
+}
+
+/// The pinned `check-run` schema's object, shared with its webhook.
+pub fn check_run_json(r: &Repo<'_>, c: &CheckRunUpdate, at: Timestamp) -> Value {
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let id = c.run.0.0;
+    json!({
+        "id": id, "node_id": scoped(NodeType::CheckRun, r, id), "head_sha": c.head_sha.hex(), "name": &*c.name,
+        "url": format!("{api}/repos/{o}/{name}/check-runs/{id}"),
+        "html_url": format!("{web}/{o}/{name}/runs/{id}"),
+        "details_url": c.details_url.as_ref().map(|u| &*u.0), "external_id": c.external_id.as_deref().unwrap_or(""),
+        "status": check_status(c.status), "conclusion": c.conclusion.map(conclusion),
+        "started_at": c.started.map(iso), "completed_at": c.completed.map(iso),
+        "check_suite": {
+            "id": c.suite.0.0, "node_id": scoped(NodeType::CheckRun, r, c.suite.0.0),
+            "head_sha": c.head_sha.hex(), "url": format!("{api}/repos/{o}/{name}/check-suites/{}", c.suite.0.0),
+            "status": check_status(c.status), "conclusion": c.conclusion.map(conclusion),
+            "before": null, "after": c.head_sha.hex(), "head_branch": null, "pull_requests": [], "app": null,
+            "created_at": iso(at), "updated_at": iso(at),
+        },
+        "output": {
+            "title": c.output.as_ref().map(|x| &*x.title), "summary": c.output.as_ref().map(|x| &*x.summary),
+            "text": c.output.as_ref().and_then(|x| x.text.as_deref()),
+            "annotations_count": c.output.as_ref().map_or(0, |x| x.annotations.len()),
+            "annotations_url": format!("{api}/repos/{o}/{name}/check-runs/{id}/annotations"),
+        },
+        "app": null, "pull_requests": [],
+    })
+}
+
+pub(crate) fn check_status(s: CheckStatus) -> &'static str {
+    match s {
+        CheckStatus::Queued => "queued",
+        CheckStatus::InProgress => "in_progress",
+        CheckStatus::Completed => "completed",
+        CheckStatus::Waiting | CheckStatus::Requested | CheckStatus::Pending => "pending",
+    }
+}
+
+/// REST's and the webhook's lower-case conclusion.
+pub(crate) fn conclusion(c: CheckConclusion) -> &'static str {
+    match c {
+        CheckConclusion::ActionRequired => "action_required",
+        CheckConclusion::Cancelled => "cancelled",
+        CheckConclusion::Failure => "failure",
+        CheckConclusion::Neutral => "neutral",
+        CheckConclusion::Success => "success",
+        CheckConclusion::Skipped => "skipped",
+        CheckConclusion::Stale => "stale",
+        CheckConclusion::TimedOut => "timed_out",
+        CheckConclusion::StartupFailure => "startup_failure",
+    }
+}
+
+fn raw_commit_user(raw: &[u8]) -> Option<Value> {
+    let close = raw.iter().rposition(|b| *b == b'>')?;
+    let open = raw[..close].iter().rposition(|b| *b == b'<')?;
+    let mut fields = raw[close + 1..].split(|b| b.is_ascii_whitespace()).filter(|f| !f.is_empty());
+    let epoch = std::str::from_utf8(fields.next()?).ok()?.parse::<u64>().ok()?;
+    fields.next()?;
+    let name = raw[..open].strip_suffix(b" ").unwrap_or(&raw[..open]);
+    Some(json!({
+        "name": String::from_utf8_lossy(name),
+        "email": String::from_utf8_lossy(&raw[open + 1..close]),
+        "date": iso(Timestamp(epoch * 1000)),
+    }))
+}
+
+/// `GET /repos/{owner}/{repo}/commits/{ref}` from the raw commit object.
+pub fn get_commit(r: &Repo<'_>, sha: ObjectId, raw: &[u8]) -> Reply {
+    let internal = || Reply::error(500, "Internal Server Error", "rest");
+    let Some(split) = raw.windows(2).position(|w| w == b"\n\n") else { return internal() };
+    let (headers, message) = (&raw[..split], &raw[split + 2..]);
+    let mut tree = None;
+    let mut parents = Vec::new();
+    let mut author = None;
+    let mut committer = None;
+    for line in headers.split(|b| *b == b'\n') {
+        if let Some(hex) = line.strip_prefix(b"tree ") {
+            tree = ObjectId::parse_hex(hex);
+        } else if let Some(hex) = line.strip_prefix(b"parent ") {
+            let Some(parent) = ObjectId::parse_hex(hex) else { return internal() };
+            parents.push(parent);
+        } else if let Some(user) = line.strip_prefix(b"author ") {
+            author = raw_commit_user(user);
+        } else if let Some(user) = line.strip_prefix(b"committer ") {
+            committer = raw_commit_user(user);
+        }
+    }
+    let (Some(tree), Some(author), Some(committer)) = (tree, author, committer) else { return internal() };
+    let message = String::from_utf8_lossy(message.strip_suffix(b"\n").unwrap_or(message));
+    let (api, web) = (r.host.api(), r.host.web());
+    let (o, name) = (&r.at.owner, &r.at.name);
+    let sha = sha.hex();
+    let url = format!("{api}/repos/{o}/{name}/commits/{sha}");
+    let parents: Vec<Value> = parents
+        .into_iter()
+        .map(|parent| {
+            let sha = parent.hex();
+            json!({
+                "sha": sha,
+                "url": format!("{api}/repos/{o}/{name}/commits/{sha}"),
+                "html_url": format!("{web}/{o}/{name}/commit/{sha}"),
+            })
+        })
+        .collect();
+    Reply::json(
+        200,
+        json!({
+            "sha": sha, "url": url, "html_url": format!("{web}/{o}/{name}/commit/{sha}"),
+            "comments_url": format!("{url}/comments"),
+            "node_id": graftyard_git::pack::b64::encode(
+                format!("06:Commit{}:{sha}", r.at.id.0.0).as_bytes()),
+            "commit": {
+                "url": format!("{api}/repos/{o}/{name}/git/commits/{sha}"),
+                "author": author, "committer": committer, "message": message, "comment_count": 0,
+                "tree": {
+                    "sha": tree.hex(), "url": format!("{api}/repos/{o}/{name}/git/trees/{}", tree.hex()),
+                },
+                "verification": {
+                    "verified": false, "reason": "unsigned", "payload": null, "signature": null, "verified_at": null,
+                },
+            },
+            "author": null, "committer": null, "parents": parents,
+        }),
+    )
+}
+
+pub fn commit_not_found(reference: &str) -> Reply {
+    Reply::error(422, &format!("No commit found for SHA: {reference}"), "rest/commits/commits#get-a-commit")
 }
 
 /// `GET /repos/{owner}/{repo}/issues`: issues and pull requests in `state` (default open), with every one of the

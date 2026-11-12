@@ -10,6 +10,7 @@ pub mod agent;
 pub mod blob;
 pub mod bucket;
 pub mod clone;
+pub mod commit_fetch;
 pub mod feed;
 pub mod group;
 pub mod hooks;
