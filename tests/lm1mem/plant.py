@@ -186,6 +186,12 @@ MUTANTS = [
      '\t// A repack holds no network lock (startRepack), so evict also refuses while one runs.\n\tif !repacking.TryLock() {\n',
      '\t// A repack holds no network lock (startRepack), so evict also refuses while one runs.\n\tif !repacking.TryLock() && false {\n',
      ['go', 'TestRepackHoldsNoNetworkLock']),
+    ('round 7: every v2 request reads the tags (ls-refs reads the leader again)', 'crates/git/src/clone.rs',
+     '        CloneKey::of(network, req, Digest([0; 32])).is_some_and(|k| k.tags.is_some())',
+     '        let _ = (network, req);\n        true', ['cargo', '-p', 'graftyard-git', '--lib', 'only_a_cacheable']),
+    ('round 7: a cacheable fetch without include-tag reads the tags', 'crates/git/src/clone.rs',
+     '        CloneKey::of(network, req, Digest([0; 32])).is_some_and(|k| k.tags.is_some())',
+     '        CloneKey::of(network, req, Digest([0; 32])).is_some()', ['cargo', '-p', 'graftyard-git', '--lib', 'only_a_cacheable']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

@@ -1218,13 +1218,16 @@ async fn upload_pack(c: &Ctx<'_>, req: &mut Request, repo: &Repo, ctx: &Context)
     let cache_ok = true;
     let key = if cache_ok && wants_v2(Some(&proto)) {
         match parse_v2(&body) {
-            Ok(v) => {
+            // The tags are read only for a key that holds them (`CloneKey::needs_tags`): an ls-refs read them from the
+            // leader and threw them away.
+            Ok(v) if CloneKey::needs_tags(NetworkId(repo.id.0), &v) => {
                 let tags = match read_refs(c, repo, b"refs/tags/").await {
                     Ok(Ok((_, refs))) => tags_digest(refs.iter().map(|(n, o)| (n.as_str(), o.as_str()))),
                     _ => return text(c.rid, 503, "the repository's group has no leader; retry\n"),
                 };
                 CloneKey::of(NetworkId(repo.id.0), &v, tags)
             }
+            Ok(v) => CloneKey::of(NetworkId(repo.id.0), &v, graftyard_types::Digest([0; 32])),
             Err(_) => None,
         }
     } else {
