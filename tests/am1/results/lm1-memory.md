@@ -919,3 +919,69 @@ B0-32 $4.00, B0-31 $5.24, L0-12 $7.09, B0-34 $8.47, B0-35 $10.48 (the stop). Rou
 Teardown: each row's network, then networks 131217 to 131265 with `--pools`, which stopped 9 more instances. They
 were the seven pool shards on site a, 131260, and 131228, which an earlier round had left running. Afterwards,
 `ghosts.py` 21:52 to 21:56Z showed no running instance.
+
+## 13. Round 6: the git cache's memory and files, and dep reads overlapping the round
+
+### Baseline (`rows-m11`, sites `7583378f`, edge `afb025ac`, 2026-11-11 23:30Z to 2026-11-12 01:11Z)
+
+| Row (repo) | Gate line | Measured | Verdict |
+|---|---|---|---|
+| B0-29 (131261) | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale`, leader < 600 req/s, zero feed polls on the leader | Mid-run commit p50 582, p99 944 ms; split p99 queue 713, round 327, deps 380 ms. 2,328 of 2,500 agent pushes ok. `merge:only` 16 × 200, 15 × 503. The leader's wasm instance was rebuilt 70 ms after the late raw `/stats` read (23:44:19.7Z), then `StepDown CommitErrors` moved it to site 1 and back | **Fail** (commit p99, merges) |
+| B0-32 (131262) | Every push acked within 5 s or `ng … admission full`, zero leader changes, zero `suspect` | Burst: 87 ok, 411 `unpacker error`. The first shard took 512 validates at 23:52:08Z; all failed "Promise will never complete", with the shard isolate's `exceededMemory`. Commit p99 1,024 ms; leader held at term 2 | **Fail** (refusal shape) |
+| B0-31 (131263) | Commit p99 ≤ 1 s (buckets up); placement failing: Human/MergeQueue p99 ≤ 3 s, 0 refused, agent > `INLINE_MAX_HOT` refused in `ng` | Commit p50 480, p99 818 ms. 1,713 of 2,500 agent pushes `unpacker error`: the first shard logged 725 `exceededMemory` at 00:04Z. The placement-failing half was not driven | **Fail** (half not run; agent pushes refused in the wrong shape) |
+| B0-34 (131264) | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s | k 1 throughout. 480 or more agent pushes refused "too many open files" in the container. Clone TTFB p99 120,031 ms. Human push p99 122 s. Commit p99 1,042 ms | **Fail** |
+| L0-12 (131265) | No Exclusive overlap > 500 ms, member clock offsets < 500 ms, feed p99 ≤ 3 s outside kills, … | 141 probe pairs, 0 overlapping (max −3,765 ms). Clock offsets as measured from the orb were up to 4,346 ms; the orb's own clock ran about 4 s behind Cloudflare's (`date` against `cloudflare.com`'s `Date`), so that number is not the members' spread. Feed p99 11,427 ms over the whole run, with kills not excluded by the driver. 694 agent pushes 503 "every member asked shed the read". Leader site 1, term 13; 22 `StepDown`s, all `CommitErrors` | **Fail** (feed; clock line not measured as written) |
+
+### Causes found
+
+- **The git cache shard buffered every push body in its Durable Object** [verified from logs and code]. `/validate`
+  read the whole body (`req.bytes()`), copied it with `to_vec`, prepended the tips, and built a `Uint8Array` for the
+  container: four copies per validate. A burst of 512 × 256 KiB, or 1 MiB packs at 4 a second, put the first shard's
+  isolate over 128 MB. This, not the group, failed B0-31 and B0-32.
+- **The container ran every validate at once** [verified]. Each opens a spool file, a quarantine, pipes, and an
+  `index-pack` process, so 500 in flight hit EMFILE (B0-34).
+- **A raw `/stats` read rebuilt a loaded leader's wasm instance** [inference: the rebuild followed the read by 70 ms in
+  B0-29 and twice before; no `exceededMemory` was logged]. It serialized megabytes of samples and traces.
+- **Dep reads add a serial step to every entry** [measured]. One entry is in flight, so a command waits the round in
+  flight, then its entry's dep reads (p50 118 ms under load against 28 ms idle on the same dep leaders, callee wall
+  11 ms), then its own round. A simulation of the measured split gave about 800 ms p99 with the reads overlapped and
+  the 600 ms gate only with near-free reads, so B0-29 needs both the overlap and less leader-side delay.
+
+### What changed (`d8571e88`, merged with `origin/main` as `2bcb4360`)
+
+- The shard streams `/validate`'s body to the container or pool shard unread, and picks the fan-out shard from the
+  pack trailer the edge puts in the URL.
+- The container runs at most min(16, max(4, 2 × vCPU)) validates: humans first, agents wait 2 s, at most 8 per slot
+  queued, then 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. It
+  raises `RLIMIT_NOFILE` at start.
+- Dep reads overlap the entry in flight (`crates/raft/src/member/leader.rs`): the next batch is cut once the entry in
+  flight is a mean dep read from its mean round's end; `decide` runs only after that entry applies, with exactly the
+  chains `deps()` names then, reading any missing.
+- `/stats?summary=1` answers percentiles only; `depsMs.spawn` times the isolate's queueing before a dep read starts.
+- `a1.mjs`: summaries only; L0-12's clock line from the spread between members in each sampling round and feed p99
+  outside a 15 s window after each kill push; B0-31's second half with placement failing through the bed-token header
+  `x-graft-place-fail`.
+- Design: DESIGN, "The write path", journey 1, Scale "Entries per group", and "Git cache shards (derived)"; DECISIONS,
+  "Dependency reads overlap the entry in flight" and "LM-1 round 6: shards stream push bodies and cap validates".
+
+### Raft checks (dep-read pipelining)
+
+- Long sweep, 2,000 seeds × 10,000 steps: exit 0 in 489 s. Harsh: 154,668 operations, 17,788 entries decided on
+  reads, 6,287 early asks, 534 re-reads. Gray: 2,030,333 operations, 292,936 entries on reads, 216,744 early asks,
+  13,221 re-reads.
+- Porcupine: `hist.jsonl` 151,346 operations Ok; `hist.jsonl.gray` 2,030,319 operations Ok.
+- Plants: decide when the reads arrive; stale extra deps; no re-read when chains change; dep ids reset per leadership;
+  a post-cut command joining the early batch; a transfer keeping its reads; two entries in flight. Each was caught by
+  `crates/raft/tests/deps.rs` or the simulator's checks.
+
+### Other checks
+
+On `d8571e88`: fmt, workspace clippy, wasm32 clippy for site and edge with and without `test-faults` and for ops,
+`cargo test --workspace` (75 suites), `check_design`, `check_names`, `go test`. `tests/lm1mem/plant.py` 41 to 47
+caught (4 Rust, 3 Go).
+
+### F67 lead (leaderless after a transfer under hung calls)
+
+L0-12's 22 `StepDown`s were all `CommitErrors`; 7 held with `to: None` (a 01:08:06; b 01:09:19 to 01:09:52, five in a
+row; c 01:06:26, 01:06:46, 01:07:46Z). A hold keeps the leader (`health.rs`, `hold`), so it alone leaves no group
+leaderless. Campaigns are not logged, so a transfer that ended leaderless is neither shown nor ruled out here.
