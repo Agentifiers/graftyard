@@ -344,7 +344,8 @@ pub enum What {
     ReviewCommentCreated {
         n: u32,
     },
-    /// POST /repos/{o}/{r}/check-runs: the run's id, minted by the edge.
+    /// POST /repos/{o}/{r}/check-runs. The 201 renders the id `decide` assigned, from the `&Acked`; `id` is the id an
+    /// `lf4-rest-2` edge minted for its `RecordCheck`, which acks none, and 0 from a later edge.
     CheckRunCreated {
         id: i64,
     },
@@ -463,7 +464,7 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::IssueLabels { n, empty } => WireReply::of(&crate::rest::issue_labels_ok(&r, *n, *empty)),
         What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
         What::ReviewCommentCreated { n } => WireReply::of(&crate::rest::review_comment_created(acked, &r, *n)),
-        What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(&r, *id)),
+        What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(acked, &r, *id)),
     }
 }
 

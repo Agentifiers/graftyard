@@ -415,7 +415,7 @@ impl Family for Repo {
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
     /// `InitRepo` and `DeleteRepo`). 32.15 is `RepoEvent::Fanout`, which only a leader of this release records itself;
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
-    /// `GRAFTYARD_AUDIT` is set.
+    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -433,6 +433,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_LEASES,
             git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
+            git::issue_ops::call::REPO_FORMAT_CHECKS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member

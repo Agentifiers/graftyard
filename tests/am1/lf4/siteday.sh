@@ -8,7 +8,8 @@ export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.c
 export BED_TOKEN_FILE=$HOME/.graft-m3c/bed.token
 cd /home/user/workspace/repo
 IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:172216ad0cbdf8779b0c20a698a0b5040a3de4295581408698ea3b157a8df3e9
-FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3
+# lf4-rest-3 adds 32.18 (`IssueOp::CreateCheck`), which only a site day from lf4-rest-3 or later reads.
+FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
 L=tests/am1/raw/lf4/$1
 mkdir -p tests/am1/raw/lf4
 # A supervised service restarts a script that exits; a finished day must not deploy again.
