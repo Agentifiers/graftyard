@@ -510,28 +510,14 @@ impl Ring {
         self.first = Some(Index(to.0 + 1));
     }
 
-    /// Entries a member applied while it could not feed them (its owner's `Authz` was not read yet), once it can: a
-    /// ring that never served starts after the last of them with its live leases, as `skip` does for an install, so a
-    /// cursor from before gets 410; a ring that already serves feeds each, so none a cursor could ask for is skipped.
-    /// Fed one by one, each entry rebuilt the live-lease set from SQL in one synchronous turn: each of L0-12's 8
-    /// learners spent 15 to 46 s of CPU on its first poll with about 1,070 entries and 500 leases waiting, and the
-    /// voters sharing their isolates answered "Requests queued for too long" (LM-1 round 7).
-    pub fn backfill(
-        &mut self,
-        repo: RepoId,
-        owner: &dyn AuthzRead,
-        core: &dyn Read,
-        meta: &dyn Read,
-        pending: Vec<(Index, Timestamp, Vec<RepoEvent>)>,
-    ) {
+    /// The member's first poll read its owner's `Authz`, with the member applied through `to`: a ring that never
+    /// served starts there with its live leases, as `skip` does for an install, so a cursor from before gets 410. A
+    /// ring that already serves is left as it is. Before that poll the member keeps no entry for the ring (LM-1 round
+    /// 7): feeding a backlog cost each of L0-12's 8 learners 15 to 46 s of CPU on its first poll, and keeping one held
+    /// a clone of every applied entry's events, inline packs included, on voters that are never polled.
+    pub fn start(&mut self, repo: RepoId, owner: &dyn AuthzRead, core: &dyn Read, (to, at): (Index, Timestamp)) {
         if self.first.is_none() {
-            if let Some((i, at, _)) = pending.last() {
-                self.skip(repo, owner, core, (*i, *at));
-            }
-            return;
-        }
-        for (i, at, evs) in pending {
-            self.feed(repo, owner, core, meta, (i, at, &evs));
+            self.skip(repo, owner, core, (to, at));
         }
     }
 

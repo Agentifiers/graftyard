@@ -2498,15 +2498,14 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 
 **Flip.** Agents that act on an overlap within 3 s, where a 1 s batch costs them conflicts.
 
-#### LM-1 round 7: a member's ring starts at its first poll, not fed the entries it applied before
+#### LM-1 round 7: a member's ring starts at its first poll, and nothing is kept for it before
 
-**Decision.** A member whose ring never served starts it, at the first poll that reads the owner's `Authz`, after its last applied entry with the leases live there (`Ring::backfill`, as `Ring::skip` does for an install), so a cursor from before gets 410. A ring that already serves feeds every waiting entry. `lease::rows` decodes the rows its scan returns instead of reading each again.
+**Decision.** A member keeps no entry for its activity-feed ring until a poll reads the owner's `Authz`. That poll starts a ring that never served at the member's applied entry with the leases live there (`Ring::start`, as `Ring::skip` does for an install), so a cursor from before gets 410; a ring that already serves is left as it is. `lease::rows` decodes the rows its scan returns instead of reading each again.
 
-**Why.** Fed one by one, each waiting entry rebuilt the live-lease set from SQL in one synchronous turn. On L0-12 (`repo:131273`, 08:00:38Z on 2026-11-12) each of the 8 learners spent 15 to 46 s of CPU on its first poll, with about 1,070 entries and 500 leases waiting; the voters sharing their isolates then answered "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39 [measured, `tests/am1/results/lm1-memory.md`, round 7].
+**Why.** Two costs of the old waiting list, both measured. Fed one by one at the first poll, each waiting entry rebuilt the live-lease set from SQL in one synchronous turn: on L0-12 (`repo:131273`, 08:00:38Z on 2026-11-12) each of the 8 learners spent 15 to 46 s of CPU on its first poll, with about 1,070 entries and 500 leases waiting, and the voters sharing their isolates then answered "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39. And the list held a clone of every applied entry's events, inline packs included, up to FEED_RING's 10,000 entries, on every member no poll reached: the leader and the followers. At 500 agents (`repo:131276`, 180 s) the leader's wasm memory grew from 2 to 67 MB and a follower's from 2 to 40 MB, in step with the 4.2 agent pushes a second of 90 KB [measured, `tests/am1/results/lm1-memory.md`, round 7].
 
-**Beat.** Feeding the backlog in slices with an await between them, which keeps the cost and only spreads it. Keeping the live set updated from events alone, which is the follow-up if the per-entry cost on a serving ring binds.
+**Beat.** Feeding the backlog in slices with an await between them, which keeps both costs and only spreads the CPU. Bounding the list by bytes, which still holds packs on members that never serve.
 
-**Evidence.** `a_backfill_starts_a_new_ring_at_the_last_waiting_entry_and_feeds_a_serving_one` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
+**Evidence.** `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
 
 **Flip.** A client that must see the events of entries applied before a member's first poll, which needs that member to have read the owner's `Authz` at join.
-
