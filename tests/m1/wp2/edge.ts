@@ -221,7 +221,7 @@ export class Edge {
 
   /** Joins the three bootstrap members, then makes the creating call on the record's home, which proposes the
    *  bootstrap entry and campaigns for term 2 once a quorum stored it. */
-  async create(): Promise<unknown> {
+  async create(nearMs?: number): Promise<unknown> {
     const rec = record(this.gen, this.home);
     const joins = await Promise.all(rec.sites.map(async (site, slot) => {
       const me = { site, kind: "full", slot, generation: this.gen, do_name: `${this.chain}#${this.gen}#f${slot}` };
@@ -238,8 +238,8 @@ export class Edge {
       await sleep(200);
     }
     // The near check, as `graftyard_lookup::create` runs it: the leader re-places a voter until the home has one
-    // within `NEAR_RTT`, or answers every try's round trips.
-    const placed = await this.call(rec.home, "/place", {}, 300_000);
+    // within `NEAR_RTT`, or keeps the nearest try. `nearMs` bounds every region at that instead (test installs).
+    const placed = await this.call(rec.home, "/place", nearMs === undefined ? {} : { near_ms: nearMs }, 300_000);
     if (!placed || placed.error) return { joins, verdict, leaderMs: Date.now() - t0, placed, warm: { ok: false }, trace: tr };
     await this.learnVoters();
     const w = await this.write({ kind: "put", key: "warm", value: "1" }, rid(), tr);
@@ -384,7 +384,7 @@ export default {
     const json = (v: unknown, status = 200) => Response.json(v, { status });
     try {
       switch (url.pathname) {
-        case "/create": return json(await e.create());
+        case "/create": return json(await e.create(body.nearMs));
         case "/op": {
           const tr: Trace = [];
           const r = body.op.kind === "get" ? await e.read(body.op.key, tr) : await e.write(body.op, body.rid ?? rid(), tr, body.kill);

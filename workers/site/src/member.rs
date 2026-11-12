@@ -557,7 +557,18 @@ impl<F: Family> Routes<F> {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.replace(body)).await
             }
-            (Method::Post, "/place") => self.ready_or(|| self.place()).await,
+            (Method::Post, "/place") => {
+                // Test installs: `{"near_ms": MS}` bounds every region at MS, so a hosted run can make every try miss.
+                #[cfg(feature = "test-faults")]
+                let near = req.json::<Value>().await.ok().and_then(|b| b["near_ms"].as_u64()).map(|ms| {
+                    [graftyard_types::Region::Enam, graftyard_types::Region::Weur, graftyard_types::Region::Apac]
+                        .map(|r| (r, ms as u16))
+                        .to_vec()
+                });
+                #[cfg(not(feature = "test-faults"))]
+                let near = None;
+                self.ready_or(|| self.place(near)).await
+            }
             (Method::Post, "/move") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.move_step(body)).await
@@ -1266,6 +1277,7 @@ impl<F: Family> Routes<F> {
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
         v["raftIn"] = json!(s.raft_in);
+        v["placedOverNear"] = json!(s.placed_over_near);
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
             s.commit_ms.clear();
@@ -1456,7 +1468,7 @@ impl<F: Family> Routes<F> {
             }
             (true, Some(t)) if now.saturating_sub(t) >= DAY_MS => {
                 sql.exec("DELETE FROM me WHERE k = 'near_over'", None)?;
-                let r = self.place_inner().await?;
+                let r = self.place_inner(graftyard_types::NEAR_RTT).await?;
                 console_log!("daily near check re-placed: {r:?}");
             }
             (true, Some(_)) => {}
@@ -1657,7 +1669,7 @@ impl<F: Family> Routes<F> {
         let fail_first = body.get("fail_first").and_then(Value::as_bool).unwrap_or(false);
         #[cfg(not(feature = "test-faults"))]
         let fail_first = false;
-        match self.replace_on(to, &[], 3, fail_first).await? {
+        match self.replace_on(to, &[], 3, fail_first, None).await? {
             Ok(v) | Err(v) => self.reply(v),
         }
     }
@@ -1666,13 +1678,17 @@ impl<F: Family> Routes<F> {
     /// successive generations, each joined and checked by `Placement::new` with the near bound `near`, up to `tries`;
     /// the first that passes goes in by `Normal`. `Err` when none passed: the config goes back to `Normal` with the
     /// old member, so a group that could not be placed keeps serving where it was, and the answer lists every try with
-    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared.
+    /// its round trips. A refused member never joins the group; with `test-faults` it is also cleared. With
+    /// `keep_below` (the near round trip of the member being replaced, from `/place`), a try refused only by the near
+    /// bound is a candidate: when none passed, the nearest goes in if it is nearer than `keep_below`, and otherwise the
+    /// old member stays with an `Ok` answer, so the bound alone never fails a create.
     async fn replace_on(
         &self,
         to: SiteId,
         near: &[(graftyard_types::Region, u16)],
         tries: usize,
         fail_first: bool,
+        keep_below: Option<u16>,
     ) -> Result<std::result::Result<Value, Value>> {
         let (chain, record, me, cfg, c_owner, c_genesis) = {
             let core = self.host.core.borrow();
@@ -1705,6 +1721,9 @@ impl<F: Family> Routes<F> {
         let others: Vec<MemberRef> = p.voters().iter().filter(|m| m.site != to).cloned().collect();
         let mut generation = p.next_generation();
         let mut tried = Vec::new();
+        // Tries that passed every check but the near bound, kept until the loop ends: with `keep_below`, the nearest
+        // goes in when none passed (`graftyard_types::nearest_try`).
+        let mut over: Vec<(MemberRef, graftyard_types::Placement, u16, Option<Rtt>)> = Vec::new();
         let placed = loop {
             let new = MemberRef::new(chain, to, old.kind, old.slot, generation);
             let join = Join {
@@ -1736,8 +1755,18 @@ impl<F: Family> Routes<F> {
             let r = if fail_first && tried.is_empty() {
                 Err("injected: latency check failed".to_owned())
             } else if status == 200 {
-                graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), p.home(), &checks)
-                    .map_err(|e| e.to_string())
+                match graftyard_types::Placement::new(voters.clone(), arrayvec::ArrayVec::new(), p.home(), &checks) {
+                    Err(e @ graftyard_types::PlacementError::NoNearFollower { ms, .. }) if keep_below.is_some() => {
+                        let unbounded = graftyard_types::PlacementChecks { near: &[], ..checks };
+                        if let Ok(np) =
+                            graftyard_types::Placement::new(voters, arrayvec::ArrayVec::new(), p.home(), &unbounded)
+                        {
+                            over.push((new.clone(), np, ms, fresh.first().map(|f| f.1)));
+                        }
+                        Err(e.to_string())
+                    }
+                    r => r.map_err(|e| e.to_string()),
+                }
             } else {
                 Err(format!("join answered {status}: {rows}"))
             };
@@ -1748,45 +1777,79 @@ impl<F: Family> Routes<F> {
                     for (_, r) in &fresh {
                         self.store_rtt(r.peer, r.median_ms, r.at.0)?;
                     }
-                    break Some(np);
+                    break Some((np, None));
                 }
                 Err(_) => {
+                    // A refused try is cleared at once, unless it is kept as a candidate for the nearest.
                     #[cfg(feature = "test-faults")]
-                    let _ = self.post_member(&new, "/retire", &json!({})).await;
+                    if !over.last().is_some_and(|o| o.0 == new) {
+                        let _ = self.post_member(&new, "/retire", &json!({})).await;
+                    }
                     if tried.len() >= tries {
-                        break None;
+                        // No try met the bound: the nearest goes in if it beats the member it replaces, so a create
+                        // never fails on the bound alone (`design/DESIGN.md`, "Placement is checked by latency").
+                        let pick = keep_below.and_then(|c| {
+                            graftyard_types::nearest_try(c, &over.iter().map(|o| o.2).collect::<Vec<_>>())
+                        });
+                        let best = pick.map(|i| over.swap_remove(i));
+                        #[cfg(feature = "test-faults")]
+                        for (m, ..) in &over {
+                            let _ = self.post_member(m, "/retire", &json!({})).await;
+                        }
+                        if let Some((_, _, _, Some(r))) = &best {
+                            self.store_rtt(r.peer, r.median_ms, r.at.0)?;
+                        }
+                        break best.map(|(_, np, ms, _)| (np, Some(ms)));
                     }
                     generation += 1;
                 }
             }
         };
-        let Some(np) = placed else {
+        let Some((np, near_ms)) = placed else {
             // The old member comes back: it kept its log, and the leader backs its next index up from its answers.
             let back = self.change(raft::GroupConfig::Normal(p.clone())).await;
+            if keep_below.is_some() {
+                // The bound is a goal: the member already placed stays, nearer than every try.
+                self.host.stats.borrow_mut().placed_over_near += 1;
+                let kept = json!({ "kept": old.do_name, "tried": tried, "restored": back.as_ref().err() });
+                console_log!("placement of {chain}: no try nearer than the current member: {kept}");
+                return Ok(match back {
+                    Ok(_) => Ok(kept),
+                    Err(e) => Err(json!({ "error": format!("restore: {e}"), "tried": tried })),
+                });
+            }
             let e = json!({ "error": "no placement passed", "tried": tried, "restored": back.as_ref().err() });
             console_error!("placement of {chain} failed: {e}");
             return Ok(Err(e));
         };
+        if let Some(ms) = near_ms {
+            self.host.stats.borrow_mut().placed_over_near += 1;
+            console_log!("placement of {chain}: no try within NEAR_RTT; kept the nearest, {ms} ms");
+        }
         let index = match self.change(raft::GroupConfig::Normal(Box::new(np))).await {
             Ok(i) => i,
             Err(e) => return Ok(Err(json!({ "error": format!("normal: {e}"), "tried": tried }))),
         };
-        Ok(Ok(json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 })))
+        let mut v = json!({ "old": old.do_name, "tried": tried, "configIndex": index, "ms": now_ms() - t0 });
+        if let Some(ms) = near_ms {
+            v["nearOver"] = json!(ms);
+        }
+        Ok(Ok(v))
     }
 
     /// The near check on the leader (`design/DESIGN.md`, Shape, `Placement` and `NEAR_RTT`): reads the home's round
     /// trips to the other voters (this member's own when it is the home) and, when the home's nearest voter is over
     /// `NEAR_RTT` for the home's region, re-places that voter with new generations through `replace_on`, up to
-    /// `PLACE_TRIES`. `{"placed": false}` when the group already passes; `{"error", "tried"}` with each try's round
-    /// trips when none passed. `graftyard_lookup::create` calls it once a new group leads, and the daily recheck when
+    /// `PLACE_TRIES`. `{"placed": false}` when the group already passes; when no try passed, the nearest try
+    /// (`nearOver`), or `{"kept"}` with the member it started with when that was nearer, with each try's round trips. `graftyard_lookup::create` calls it once a new group leads, and the daily recheck when
     /// a home was over the bound twice a day apart.
-    async fn place(&self) -> Result<Response> {
-        match self.place_inner().await? {
+    async fn place(&self, near: Option<Vec<(graftyard_types::Region, u16)>>) -> Result<Response> {
+        match self.place_inner(near.as_deref().unwrap_or(graftyard_types::NEAR_RTT)).await? {
             Ok(v) | Err(v) => self.reply(v),
         }
     }
 
-    async fn place_inner(&self) -> Result<std::result::Result<Value, Value>> {
+    async fn place_inner(&self, near: &[(graftyard_types::Region, u16)]) -> Result<std::result::Result<Value, Value>> {
         let (me, cfg) = {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
@@ -1806,19 +1869,13 @@ impl<F: Family> Routes<F> {
             let h = p.voters().iter().find(|m| m.site == home).ok_or_else(|| err("no member on the home"))?;
             site.member(&self.host.env, home, &h.do_name)?.fetch_with_str("https://member/rtt").await?.json().await?
         };
-        let checks = graftyard_types::PlacementChecks {
-            sites: &site.sites,
-            separate_accounts: false,
-            rtt: &rtt,
-            near: graftyard_types::NEAR_RTT,
-        };
+        let checks = graftyard_types::PlacementChecks { sites: &site.sites, separate_accounts: false, rtt: &rtt, near };
         match checks.check_near(p.voters(), home) {
             Ok(()) => Ok(Ok(
                 json!({ "placed": false, "rtt": rtt.iter().map(|(_, r)| (r.peer.0, r.median_ms)).collect::<Vec<_>>() }),
             )),
             Err(graftyard_types::PlacementError::NoNearFollower { nearest, ms, bound_ms, .. }) => {
-                let mut r =
-                    self.replace_on(nearest, graftyard_types::NEAR_RTT, graftyard_types::PLACE_TRIES, false).await?;
+                let mut r = self.replace_on(nearest, near, graftyard_types::PLACE_TRIES, false, Some(ms)).await?;
                 let over = json!({ "site": nearest.0, "ms": ms, "boundMs": bound_ms });
                 match &mut r {
                     Ok(v) | Err(v) => v["over"] = over,

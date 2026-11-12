@@ -2324,13 +2324,25 @@ Branch `learner-dumps` ran journey 9's API reads on `graft-m3c` with 8 learners 
 
 **Flip.** A learner whose memory or CPU binds before `READS_MAX`, such as on a dump past about 5 MB, which would bring back a cap on learners. Or API routes served from narrow reads, which would drop the 50 times weight and most learners.
 
+### `m0-carried-4`: a member call streams its request body, 2026-11-12
+
+**Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
+
+**Why.** B0-02's last miss on `m0-carried-3` was a 337 ms pause of the leader's AppendEntries to a healthy near follower. A bare-object control with no Raft code, on the same account and hints, sends a body and starts a SQLite write one macrotask later, as the member does. With bodies of 250 to 400 KB the body's arrival at the callee took over 150 ms (up to 1,079 ms) in 78 of 5,782 calls (1.3%). With no write it did in 12 of 5,727 (0.2%), and through a `FixedLengthStream` in 6 of 5,491 (0.1%) with the write after the stream closed and 5 of 3,569 (0.14%) with it one macrotask after the send, as the member does. Calls over 400 ms were 42, 14, 5 and 6 [measured, `tests/m0/results/carried-4.md`]. workerd checks the output gate once, when the fetch starts, and pumps the body with no gate check after that, so an array body is not held by the gate; what stalls it is the platform's, below the API [inference, workerd `22a428de`, `api/http.c++` `fetchImpl`].
+
+**Beat.** Moving the log and state writes to KV with `allowUnconfirmed` and an explicit `sync()`, which also stalled nothing in the control but rewrites the storage layer. Holding the write until the body has left, which the platform gives no signal for. Accepting the stall as F35.
+
+**Evidence.** `tests/m0/results/carried-4.md`; `tests/m0carried/gateprobe/probe.ts` [measured].
+
+**Flip.** Hosted B0-02 runs whose stall windows still line up with a write during a body, which would argue for the KV path. Or a platform change that ends the stall for array bodies.
+
 ### `m0-carried-3`: F68 closed by a near round-trip bound at placement, 2026-11-12
 
 The operator chose F68's option (a), with (b) investigated, and rejected reading B0-02 per placement (`tests/m0/results/carried-3.md`).
 
 #### A group's home must have a voter within `NEAR_RTT`
 
-**Decision.** `Placement::new` refuses a voter set whose home's nearest other voter measured over `NEAR_RTT` for the home's region: 100 ms for an enam or weur home and 198 ms for an apac home, with no bound for other regions (`PlacementError::NoNearFollower`, appended last). A new group's leader runs `/place` once it leads: if the home is over the bound, it re-places that nearer follower with new generations through the replacement path (`Degraded`, then `Normal`), up to `PLACE_TRIES` (8), and at the cap restores the old member and fails the create with every try's round trips. The daily latency check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower the same way. A move's swap and `graftyard placement set` check without the bound.
+**Decision.** `Placement::new` refuses a voter set whose home's nearest other voter measured over `NEAR_RTT` for the home's region: 100 ms for an enam or weur home and 198 ms for an apac home, with no bound for other regions (`PlacementError::NoNearFollower`, appended last). A new group's leader runs `/place` once it leads: if the home is over the bound, it re-places that nearer follower with new generations through the replacement path (`Degraded`, then `Normal`), up to `PLACE_TRIES` (8). At the cap it keeps the try with the lowest near round trip, or the member it started with when no try was nearer, and the create succeeds: the bound is a goal, not a gate (`m0-carried-4`, below). The daily latency check on the home's leader applies the same bound, and a home over it on two checks a day apart re-places its nearer follower the same way. A move's swap and `graftyard placement set` check without the bound.
 
 **Why.** B0-02's commit p99 follows the leader's round trip to its nearer follower: 0.93 correlation over 35 runs, every run at 100 ms or less passed, and 3 of 10 over 110 ms did [measured, `tests/m0/results/carried-2.md`]. Durable Object hints place a member in a region, not a city, so a new group's near RTT varied 75 to 144 ms with the same hints. 100 ms is B0-12's median enam to weur pair and 198 ms its median enam to apac pair, the same quantile [measured, `tests/m0/results/b0-12.json`]. The B0-02 rerun on groups created this way passed 15 of 16 runs, at 249 to 540 ms. Every near follower was at 75 to 100 ms, and 5 groups were re-placed in 1 to 4 tries. The one miss, 614 ms, was a single stall on the leader about 20 s in, with the near follower at 97 ms (`tests/m0/results/carried-3.md`).
 
@@ -2338,7 +2350,9 @@ The operator chose F68's option (a), with (b) investigated, and rejected reading
 
 **Evidence.** `tests/m0/results/carried-3.md`; `crates/types/src/placement.rs`, `new_refuses_a_home_with_no_voter_within_near_rtt`.
 
-**Flip.** Misses that track the near RTT inside the bound, rather than one-off leader stalls, which would argue for a lower bound (90 ms costs about 1.6 times the tries). Or creates that fail at `PLACE_TRIES` often enough to matter, more than about 1 in 100.
+**Flip.** Misses that track the near RTT inside the bound, rather than one-off leader stalls, which would argue for a lower bound (90 ms costs about 1.6 times the tries). Creates no longer fail on the bound; groups kept over it (`placedOverNear`) on more than about 1 in 100 creates of an install would argue for a bound relative to that install's pair.
+
+**Amended by `m0-carried-4`, 2026-11-12: a create never fails on the near bound alone.** On `graft-m2b`, `repo:131277` (home enam) re-placed its weur follower 8 times at 114, 110, 108, 110, 110, 110, 111 and 111 ms, the last check read 123 ms, and the create failed; a create a minute later passed. That install's enam to weur pair sits over 100 ms, so failing would refuse creates in production. Now, after `PLACE_TRIES`, the leader keeps the nearest try (`graftyard_types::nearest_try`), or the member it started with when it was nearer than every try, stores that try's round trip in its `Rtt` rows, counts the group in the member's `placedOverNear` (`/stats`), and logs it; the daily check keeps trying on the same path and keeps a new member only if it is nearer. A bound relative to each install's measured baseline (its minimum for the pair plus a margin) was considered and not built: with the nearest kept, it would only save tries on an install like `graft-m2b`, where each create now spends all 8 (about 30 to 40 s), and it needs a per-install baseline that no component keeps yet. Evidence: `crates/types/src/placement.rs`, `nearest_try_keeps_the_best_when_every_try_is_over_the_bound`; `tests/m0/results/carried-4.md`.
 
 #### The per-KB append cost is the request body's transfer
 
