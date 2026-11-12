@@ -1108,3 +1108,62 @@ stalls or holds: a follower replies at once, and the 100 ms ticker each input st
 [inference from code, `workers/site/src/host.rs`; workerd's actor timers hold the request's drain]. So those walls do
 not show why identity leaders' calls miss `CALL_DEADLINE`. `tests/fanout/idstats.mjs` now saves each identity
 member's `/stats` peer calls after every smoke (each failed call's kind, size and time on the leader's side).
+
+### Round 8c: smokes m18, and the cause of the identity step-downs
+
+Site day m18 from `a8d10cee` (main 68166fe merged: the self `SITE` binding for PrSync), image `57ceedbb`, sites
+`abddb96c`, `2b49bafb`, `3f304093`, edge `fa6fa5ec`. Both smokes held their repository leader at term 2 with 0 feed
+polls on it.
+
+| Smoke | Commit p50/p99 | Queue p99 | Confirm p99 | merge:only p99 | Agent pushes | read:api p99 |
+|---|---|---|---|---|---|---|
+| s250 (131285) | 427/2,625 ms | 2,340 ms | 86 ms | 6.6 s | 343 of 343 ok | 6.4 s |
+| s500 (131286) | 427/950 ms | 697 ms | 146 ms | 6.9 s | 743 of 747 ok (3 × 503 `release: not leader`) | 20.2 s |
+
+`STEP_DOWN` alarms 19:13 to 19:29Z: `release` f0 (7 of 3, twice), `names:708` f0 → f1 → f2 twice, `names:369`,
+`names:152` (14 of 279 calls failed).
+
+**Cause** [measured, `idstats` and Workers Logs; the rule it trips is in code]:
+
+- The failed calls are the leader's AppendEntries to one follower: empty or one entry of about 112 bytes. They fail in
+  bursts at one instant: `tokens:2490` at 19:17:01Z had 31 and 17 deadline misses. Each one is answered late, 1.0 to
+  2.4 s after it left.
+- On that follower (`tokens:2490` f1) every `/raft` and `/read` that started from 19:17:00.22 to 01.82 ended together
+  at 19:17:02.16 with 0 to 2 ms CPU: one stall of the object's input queue of about 1.9 s. Why the object stalled is
+  not shown.
+- One stall became dozens of failed calls because a read that arrives after the lease lapsed forced a new round to
+  every follower (`start_read` → `broadcast(true)`), one per read. An idle identity group's lease lapses between
+  bursts, so the next burst of reads sends one AppendEntries per read to the stalled follower, each with its own
+  `CALL_DEADLINE`, and `record_call` counts each round. Three in 10 s trip `STEP_DOWN`.
+
+**Two fixes tried and withdrawn** (raft changes, both with tests and plants that caught their mutants):
+
+- `fa30bff9`, reverted in `67e71612`: a lapsed read sends a round only to a follower with no call out, or one whose
+  call is past `CALL_DEADLINE`, and an answer sends the next round for reads that arrived after it left. On the tree
+  merged with f67-liveness, the harsh sweep (`sim::harsh_network_keeps_every_invariant`, 60 seeds) acked 752 writes
+  against main's 1,259 (the test needs 1,200), and the long sweep stopped at seed 10909: 30,277 ms with a healthy
+  quorum, requests waiting and none completing, over the 30 s bound. A same-machine A/B of the harsh sweep on main
+  d7ee927 alone passed. The per-read forced rounds also stand in for retransmission after dropped calls.
+- Not committed: count a deadline miss to a follower only if it was sent at least `CALL_DEADLINE` after the last miss
+  counted to it (`health.rs`, `record_call`). `liveness::leaders_leave_a_site_whose_calls_fail` then failed: 3 of 12
+  seeds changed leader 3 times (the limit is 2), and the harsh sweep still acked only 1,088. Thinning the count at a
+  site failing 30% of calls delays the move off it.
+
+Both cost liveness under the simulator's faults, which f67-liveness has just tightened, so neither ships in LM-1. The
+identity step-downs stay open. Next: the site day on the merged tree (narrow reads cut the leader reads the edge
+sends, f67-liveness changes leadership), then smokes, to measure whether the step-downs still cost the rows.
+
+**Merges**: main f10ea4b (merge-budget-4) as `8f54b3b0`, keeping `/stats?summary` beside main's test-faults
+`body=array|stream` switch; main d7ee927 (f67-liveness, a `crates/raft` change) as `77629bc7`. The f67 test
+`a_group_whose_every_member_flapped_elects_on_the_first_requests` sent `suspect` to all three flapping members in
+lockstep every 500 ms. Once f67 stopped flapping members denying rivals as `Contending`, all three split every vote,
+because the 500 ms cadence outlasts the losers' 100 to 400 ms backoff. Reports every 100 ms elect a leader in 700 ms;
+the test now uses that cadence and keeps its 1 s bound. It fails the same way with or without `fa30bff9`.
+
+**The merged tree fails raft's checks** [measured, simulator, `77629bc7`/`67e71612`]: with main d7ee927 (f67-liveness)
+merged into this branch, `sim::harsh_network_keeps_every_invariant` acks 1,102 writes (needs 1,200) and
+`liveness::leaders_leave_a_site_whose_calls_fail` gives 3 leader changes on seeds 7, 9 and 11 (limit 2). Main alone and
+this branch before the merge (`720bdb36`: 1,212 acked) pass both. Seed 107 traced: S1 leads at term 3 after a
+transfer and holds the only copy of entry 160 (this branch's dep reads let the leader append while an entry is in
+flight). From 43.6 s S2 campaigns, both other voters refuse S1's pre-votes as `Suspected` for 2 x SUSPECT, and S1 refuses
+theirs as `LogBehind`, so no member can win until 60.4 s. Sent to f67-liveness. Not deployed.
