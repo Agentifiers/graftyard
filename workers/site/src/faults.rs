@@ -41,6 +41,9 @@ pub const SCHEMA: &[&str] = &[
     // BF-14: every `/commit` that reached this member, with its role then and what it answered.
     "CREATE TABLE IF NOT EXISTS arrival (seq INTEGER PRIMARY KEY AUTOINCREMENT, rid TEXT NOT NULL, at INTEGER NOT NULL, role TEXT NOT NULL, fault TEXT, answer TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS arrival_at ON arrival (at)",
+    // BF-20's snapshot hold and one-shot force (`crate::snap`, `held` and `take_force`).
+    "CREATE TABLE IF NOT EXISTS snap_hold (one INTEGER PRIMARY KEY)",
+    "CREATE TABLE IF NOT EXISTS snap_force (tier INTEGER PRIMARY KEY)",
 ];
 
 /// BF-14's receipt faults, set per command by the edge's first send: the leader's reply leaves only after

@@ -449,10 +449,11 @@ fn begin(
     Ok(true)
 }
 
-/// Test installs set `snap_hold` so the writer starts and steps no snapshot: BF-20's no-snapshot baseline.
+/// Test installs set `snap_hold` so the writer starts and steps no snapshot: BF-20's no-snapshot baseline. Its table,
+/// and `snap_force`'s, are made once at start (`crate::faults::SCHEMA`): a `CREATE TABLE IF NOT EXISTS` is a write to
+/// the output gate even when the table exists, and this runs on every leader alarm (`tests/m0/results/carried-6.md`).
 #[cfg(feature = "test-faults")]
 fn held(sql: &SqlStorage) -> Result<bool> {
-    sql.exec("CREATE TABLE IF NOT EXISTS snap_hold (one INTEGER PRIMARY KEY)", None)?;
     Ok(!rows(sql, "SELECT one FROM snap_hold", vec![])?.is_empty())
 }
 
@@ -464,7 +465,6 @@ fn held(_: &SqlStorage) -> Result<bool> {
 /// Test installs set a one-shot `snap_force` row to start a snapshot now, whatever the cadence (BF-20).
 #[cfg(feature = "test-faults")]
 fn take_force(sql: &SqlStorage, t: Tier) -> Result<bool> {
-    sql.exec("CREATE TABLE IF NOT EXISTS snap_force (tier INTEGER PRIMARY KEY)", None)?;
     let n = rows(sql, "SELECT tier FROM snap_force WHERE tier = ?", vec![i(tier_int(t))])?.len();
     if n > 0 {
         sql.exec("DELETE FROM snap_force WHERE tier = ?", vec![i(tier_int(t))])?;
@@ -697,7 +697,6 @@ pub fn bench_seed(h: &Rc<Host<Repo>>, body: &Value) -> Result<Value> {
         _ => {}
     }
     if let Some(t) = body.get("force").and_then(Value::as_u64) {
-        sql.exec("CREATE TABLE IF NOT EXISTS snap_force (tier INTEGER PRIMARY KEY)", None)?;
         sql.exec("INSERT OR REPLACE INTO snap_force (tier) VALUES (?)", vec![i(t)])?;
         h.arm_in(BUSY_MS);
         return Ok(json!({ "forced": t }));
