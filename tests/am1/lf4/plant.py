@@ -14,6 +14,11 @@ VIEW = 'crates/api/src/view.rs'
 CF = 'crates/git/src/commit_fetch.rs'
 SURF = ['-p', 'graftyard-api', '--test', 'surfaces', 'rest_reads']
 FETCH = ['-p', 'graftyard-git', '--lib', 'commit_fetch']
+ISSUE_OPS = 'crates/git/src/issue_ops.rs'
+TIME = 'crates/wire/src/time.rs'
+WRITES = ['-p', 'graftyard-api', '--test', 'surfaces', 'rest_writes']
+GATES = ['-p', 'graftyard-git', '--test', 'agent_gates', 'a_check_run_is_recorded']
+TIMES = ['-p', 'graftyard-wire', '--lib', 'time']
 
 MUTANTS = [
     ('an issue answers as a pull request', REST,
@@ -53,6 +58,30 @@ MUTANTS = [
      '    while more {', '    while more && false {', FETCH),
     ('fetch: the request asks for the history', CF,
      '"deepen 1", "filter tree:0", "done"] {', '"done"] {', FETCH),
+    # lf4-rest-2: the two writes.
+    ('a reply keeps the line the body names, not its parent\'s', REST,
+     '            Some((id, at))\n        }) else {',
+     '            Some((id, LineAnchor { line: body.get("line").and_then(Value::as_u64).unwrap_or(1) as u32, ..at }))\n        }) else {',
+     WRITES),
+    ('a review comment\'s side defaults to LEFT', REST,
+     '        None => DiffSide::Right,', '        None => DiffSide::Left,', WRITES),
+    ('a start_line at or past line accepted', REST,
+     '.filter(|start| *start < line)', '.filter(|start| *start <= line + 10)', WRITES),
+    ('a conclusion leaves the status as sent', REST,
+     '    if conclusion.is_some() {\n        status = CheckStatus::Completed;', '    if false {\n        status = CheckStatus::Completed;', WRITES),
+    ('completed_at not defaulted for a completed run', REST,
+     '        None if status == CheckStatus::Completed => Some(now),', '        None if false => Some(now),', WRITES),
+    ('a not-pull refusal answers 422', REST,
+     '        E::NotFound | E::NotPull => Reply::not_found(),', '        E::NotFound => Reply::not_found(),', WRITES),
+    ('a first version may take another run\'s id', ISSUE_OPS,
+     'if run.version == 1 && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {',
+     'if false && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {', WRITES),
+    ('a first version refused on any taken id, a re-delivery too', ISSUE_OPS,
+     '(t.rec.head_sha, t.rec.app, &t.rec.name) != (run.head_sha, run.app, &run.name)', 't.rec.version > 0', GATES),
+    ('an App records a run as another App', ISSUE_OPS,
+     '                    && run.app != app\n', '                    && run.app != app && false\n', GATES),
+    ('an offset read with the wrong sign', TIME,
+     "if *sign == b'+' { seconds } else { -seconds }", "if *sign == b'+' { -seconds } else { seconds }", TIMES),
 ]
 
 

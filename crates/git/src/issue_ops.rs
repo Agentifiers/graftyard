@@ -925,6 +925,23 @@ impl IssueCmd {
             }
             IssueOp::RecordCheck(run) => {
                 need(RepoPermission::Write)?;
+                if let Actor::App { app, .. } = self.actor.actor
+                    && run.app != app
+                {
+                    return Err(IssueErr::Invalid("a check run's app is its actor"));
+                }
+                // The edge mints a REST create's id, so a first version may not take another run's id: one on another
+                // head SHA, or of another App or name. A late re-delivery of the same run's first version passes, and
+                // its apply drops it by version.
+                let other = |k: &Vec<Val>| {
+                    matches!(k.get(1), Some(Val::Int(id)) if *id == run.run.0.0)
+                        && get_rec::<crate::tiers::Timed<CheckRunUpdate>>(v.meta(), "check_run", k).is_some_and(|t| {
+                            (t.rec.head_sha, t.rec.app, &t.rec.name) != (run.head_sha, run.app, &run.name)
+                        })
+                };
+                if run.version == 1 && v.meta().prefix("check_run", &[]).iter().any(|(k, _)| other(k)) {
+                    return Err(IssueErr::Exists);
+                }
                 let mut evs = one(RepoEvent::CheckRun(run.clone()));
                 if required(v, run.head_sha, &run.name, Some(run.app)) {
                     let done = run.status == CheckStatus::Completed;

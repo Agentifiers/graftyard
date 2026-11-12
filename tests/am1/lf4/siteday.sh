@@ -11,6 +11,8 @@ IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:17
 FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3
 L=tests/am1/raw/lf4/$1
 mkdir -p tests/am1/raw/lf4
+# A supervised service restarts a script that exits; a finished day must not deploy again.
+grep -q '^DONE' "$L" 2>/dev/null && exec sleep infinity
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
   if [ "${2:-}" != edge-only ]; then
     node workers/site/deploy.mjs $HOME/.graft-m3c/sites.json --test-faults --anchor $HOME/.graft-m3c/install.toml --image "$IMG"

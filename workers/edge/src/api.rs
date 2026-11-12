@@ -37,7 +37,7 @@ use graftyard_git::refs::Atomicity;
 use graftyard_git::repo::Push;
 use graftyard_git::{Copies, ObjectMeta};
 use graftyard_identity::{Actor, AuthzFold, Principal};
-use graftyard_types::{ChainId, NetworkId, SiteId};
+use graftyard_types::{ChainId, NetworkId, SiteId, Timestamp};
 use graftyard_wire::{Body, Endpoint, Host, Incoming, Meta, RateLimits, Reply, Surface};
 use serde_json::{Value, json};
 use worker::*;
@@ -1277,6 +1277,39 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
             };
             match rest::plan_create_label(&body(req.bytes().await?)) {
                 Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::LabelCreated).await?,
+                Err(x) => x,
+            }
+        }
+        (Method::Post, ["pulls", n, "comments"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            match rest::plan_create_review_comment(&r, n, &body(req.bytes().await?)) {
+                Ok(op) => {
+                    commit_issue(c, &rd, &who, to_wire(op), What::ReviewCommentCreated { n: n.parse().unwrap_or(0) })
+                        .await?
+                }
+                Err(x) => x,
+            }
+        }
+        (Method::Post, ["check-runs"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let Actor::App { app, .. } = who.actor else {
+                return Ok(Reply::error(
+                    403,
+                    "You must authenticate via a GitHub App.",
+                    "rest/checks/runs#create-a-check-run",
+                ));
+            };
+            let now = js_sys::Date::now() as u64;
+            // The edge's millisecond clock shifted by 10 bits, with the request id's low 10 bits; under 2^53 until 2249.
+            let id = ((now << 10) | (c.rid.0.0 as u64 & 0x3ff)) as i64;
+            match rest::plan_create_check_run(&body(req.bytes().await?), app, id, Timestamp(now)) {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), What::CheckRunCreated { id }).await?,
                 Err(x) => x,
             }
         }
