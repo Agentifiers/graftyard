@@ -382,6 +382,15 @@ pub struct DepsWanted {
     pub chains: SmallVec<[ChainId; 3]>,
 }
 
+/// The entry at `index` was decided on the reads of these `DepsWanted` ids. A batch's reads may start while the
+/// previous entry is in flight, and an id block or recorded entry may go first, so only this names the entry a read
+/// decided. Hosts may ignore it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DepsUsed {
+    pub ids: SmallVec<[u64; 2]>,
+    pub index: Index,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Alarm {
     /// A follower on the same or a newer release refused an entry, or any follower refused a committed one. The
@@ -550,6 +559,7 @@ pub struct Out<C: Command> {
     pub messages: Vec<Envelope<Ev<C>>>,
     pub resolutions: Vec<Resolution<C>>,
     pub deps: Vec<DepsWanted>,
+    pub deps_used: Vec<DepsUsed>,
     pub alarms: Vec<Alarm>,
     /// Per entry this input decided, the admitted requests whose command `decide` refused. Each refusal's ticket
     /// resolves `Refused` only if that entry commits; if it is lost, the re-sent command is decided again.
@@ -570,6 +580,7 @@ impl<C: Command> Default for Out<C> {
             messages: Vec::new(),
             resolutions: Vec::new(),
             deps: Vec::new(),
+            deps_used: Vec::new(),
             alarms: Vec::new(),
             refused: Vec::new(),
             self_ack: None,
@@ -698,6 +709,9 @@ pub struct Member<C: Command> {
     remote: install::RemoteReads,
     /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
     admit_capacity: Option<f32>,
+    /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
+    /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
+    next_deps: u64,
 }
 
 impl<C: Command> Member<C> {
@@ -815,6 +829,8 @@ impl<C: Command> Member<C> {
             install: None,
             remote: install::RemoteReads::default(),
             admit_capacity: None,
+            // The top bit clear leaves 2^63 ids before a wrap.
+            next_deps: boot >> 1,
         })
     }
 

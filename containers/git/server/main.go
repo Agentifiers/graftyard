@@ -7,7 +7,8 @@
 //	                                 so the object can tell a new disk (an emptied container) from the one its
 //	                                 IngestCursor describes; region is CLOUDFLARE_REGION, for the start-time check
 //	POST /init?net=N[&fresh=1]       git init --bare --ref-format=reftable; fresh deletes the repository first
-//	POST /validate?net=N[&tips=a,b]  body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
+//	POST /validate?net=N[&tips=a,b][&class=agent]
+//	                                 body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
 //	     [&tipsn=K]                  quarantine with the repository as alternate, then every tip must be connected
 //	                                 against the repository's refs. With tipsn, the body's first K bytes are the tips,
 //	                                 one per line, and the pack follows (a 10,000-ref push has too many for a URL).
@@ -20,7 +21,10 @@
 //	                                 per update with a new tip, its new commits (raw, newest first), the paths it
 //	                                 changes against its merge base with HEAD and against the old tip, whether it is a
 //	                                 fast-forward, and refs/notes/ai's changed entries. With an empty pack, only
-//	                                 "detail", read from the repository's own objects (a REST ref write)
+//	                                 "detail", read from the repository's own objects (a REST ref write).
+//	                                 At most min(16, max(4, 2*NumCPU)) validates run at once; humans (the default) wait without
+//	                                 a deadline and queued humans go before agents (FIFO within each lane). Agents wait
+//	                                 up to 2s, with at most 8*slots queued, or get 429 and Retry-After whole seconds
 //	POST /ingest?net=N&sha256=H      body: a committed pack. A pack /validate kept aside under H moves in without a
 //	                                 second index-pack; otherwise verifies H while writing, then index-pack --strict
 //	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet,
@@ -58,12 +62,15 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -71,6 +78,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -356,17 +364,165 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"created": true})
 }
 
+const agentQueuePerSlot = 8
+
+var (
+	validateSlots        = min(16, max(4, 2*runtime.NumCPU()))
+	agentValidateWait    = 2 * time.Second
+	validateAdmission    = newValidateGate(validateSlots)
+	errValidateQueueFull = errors.New("validate queue full")
+)
+
+// validateWaiter is granted by closing ready. granted and started are protected by validateGate.mu so a waiter whose
+// deadline races with a grant can tell whether it owns a slot.
+type validateWaiter struct {
+	ready   chan struct{}
+	granted bool
+	started time.Time
+}
+
+// validateGate admits the index-pack work in two FIFO lanes. A released slot always goes to the oldest human waiter,
+// if there is one, before the oldest agent waiter.
+type validateGate struct {
+	mu      sync.Mutex
+	slots   int
+	running int
+	humans  []*validateWaiter
+	agents  []*validateWaiter
+	average float64
+}
+
+func newValidateGate(slots int) *validateGate {
+	return &validateGate{slots: slots, average: 0.5}
+}
+
+// acquire returns a release function for a granted slot. Agents use wait as their deadline; humans have no deadline.
+// A refusal includes a positive Retry-After value. Context cancellation is not a queue-full refusal.
+func (g *validateGate) acquire(ctx context.Context, agent bool, wait time.Duration) (func(), int, error) {
+	g.mu.Lock()
+	if g.running < g.slots {
+		g.running++
+		started := time.Now()
+		g.mu.Unlock()
+		return func() { g.release(started) }, 0, nil
+	}
+	if agent && len(g.agents) >= agentQueuePerSlot*g.slots {
+		retry := g.retryAfterLocked()
+		g.mu.Unlock()
+		return nil, retry, errValidateQueueFull
+	}
+	w := &validateWaiter{ready: make(chan struct{})}
+	if agent {
+		g.agents = append(g.agents, w)
+	} else {
+		g.humans = append(g.humans, w)
+	}
+	g.mu.Unlock()
+
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if agent {
+		timer = time.NewTimer(wait)
+		deadline = timer.C
+	}
+	finish := func(err error) (func(), int, error) {
+		if timer != nil {
+			timer.Stop()
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if w.granted {
+			// The grant won the race with the deadline or cancellation. Use it; the returned release will
+			// put it back even if the caller's context has since ended.
+			return func() { g.release(w.started) }, 0, nil
+		}
+		if agent {
+			for i, queued := range g.agents {
+				if queued == w {
+					g.agents = append(g.agents[:i], g.agents[i+1:]...)
+					break
+				}
+			}
+			if err != errValidateQueueFull {
+				return nil, 0, err
+			}
+			return nil, g.retryAfterLocked(), errValidateQueueFull
+		}
+		for i, queued := range g.humans {
+			if queued == w {
+				g.humans = append(g.humans[:i], g.humans[i+1:]...)
+				break
+			}
+		}
+		return nil, 0, err
+	}
+
+	select {
+	case <-w.ready:
+		if timer != nil {
+			timer.Stop()
+		}
+		return func() { g.release(w.started) }, 0, nil
+	case <-ctx.Done():
+		return finish(ctx.Err())
+	case <-deadline:
+		return finish(errValidateQueueFull)
+	}
+}
+
+func (g *validateGate) release(started time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.average += 0.1 * (time.Since(started).Seconds() - g.average)
+	g.running--
+	w := (*validateWaiter)(nil)
+	if len(g.humans) > 0 {
+		w = g.humans[0]
+		g.humans = g.humans[1:]
+	} else if len(g.agents) > 0 {
+		w = g.agents[0]
+		g.agents = g.agents[1:]
+	} else {
+		return
+	}
+	w.granted = true
+	w.started = time.Now()
+	// The released slot was transferred directly to this waiter.
+	g.running++
+	close(w.ready)
+}
+
+// retryAfterLocked estimates the wait for one more agent, including the queued agents already ahead of it.
+func (g *validateGate) retryAfterLocked() int {
+	n := int(math.Ceil(float64(len(g.agents)+1) / float64(g.slots) * g.average))
+	return min(60, max(1, n))
+}
+
 func handleValidate(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
 	}
+	query := r.URL.Query()
+	agent := query.Get("class") == "agent"
+	validating.Add(1) // waiting for admission or running: the queue
+	defer validating.Add(-1)
+	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentValidateWait)
+	if err != nil {
+		if err == errValidateQueueFull {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			fail(w, http.StatusTooManyRequests, "validate queue full; retry after %d s", retryAfter)
+		}
+		return
+	}
+	defer release()
+
 	var tips []string
-	if t := r.URL.Query().Get("tips"); t != "" {
+	if t := query.Get("tips"); t != "" {
 		tips = strings.Split(t, ",")
 	}
 	body := io.Reader(r.Body)
-	if k := r.URL.Query().Get("tipsn"); k != "" {
+	if k := query.Get("tipsn"); k != "" {
 		var n int64
 		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
 			fail(w, 400, "bad tipsn")
@@ -381,7 +537,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
 	var updates []update
-	if k := r.URL.Query().Get("detailn"); k != "" {
+	if k := query.Get("detailn"); k != "" {
 		var n int64
 		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
 			fail(w, 400, "bad detailn")
@@ -409,8 +565,6 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
 	// `aside` (finishValidate).
-	validating.Add(1) // waiting or running: the queue
-	defer validating.Add(-1)
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
@@ -1393,7 +1547,25 @@ func handleFsck(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, res)
 }
 
+func raiseOpenFileLimit() {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		fmt.Fprintf(os.Stderr, "get RLIMIT_NOFILE: %v\n", err)
+		return
+	}
+	raised := syscall.Rlimit{Cur: 1 << 20, Max: 1 << 20}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &raised); err == nil {
+		return
+	}
+	// An unprivileged process cannot raise Max; it can still raise Cur to the limit it already has.
+	raised = syscall.Rlimit{Cur: limit.Max, Max: limit.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &raised); err != nil {
+		fmt.Fprintf(os.Stderr, "raise RLIMIT_NOFILE: %v\n", err)
+	}
+}
+
 func main() {
+	raiseOpenFileLimit()
 	go sampleCPU()
 	if err := http.ListenAndServe(":8080", mux()); err != nil {
 		fmt.Fprintln(os.Stderr, err)

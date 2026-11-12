@@ -258,6 +258,14 @@ pub struct Room {
     pub busy: Vec<i64>,
 }
 
+/// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
+/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`.
+#[derive(Debug)]
+pub enum Validated {
+    Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
+    Busy { retry_after_s: u32 },
+}
+
 #[derive(Debug, Deserialize)]
 struct ValidateOut {
     #[serde(default)]
@@ -457,42 +465,43 @@ impl ShardHost<'_> {
         Ok(r)
     }
 
-    /// `GitCacheShard::validate`: `index-pack --strict --fix-thin` into a quarantine and connectivity of `tips`
-    /// against the refs the leader just gave, which the container holds once `set_refs` ran. The tips ride in the
-    /// body ahead of the pack, because a 10,000-ref push has too many for a URL.
-    pub async fn validate(&self, network: NetworkId, pack: Vec<u8>, tips: &[String]) -> Result<PackIndex, StoreError> {
-        self.validate_detail(network, pack, tips, "").await.map(|(ix, _)| ix.expect("a pack has an index"))
-    }
-
-    /// `validate` with `detail`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
-    /// notes the agent layer needs (`crate::agent::RefDetail`). With an empty pack, only the detail, read from the
-    /// repository's own objects (a REST ref write), and no index.
-    pub async fn validate_detail(
+    /// `GitCacheShard::validate`: `index-pack --strict --fix-thin` into a quarantine and connectivity of the tips
+    /// against the refs the leader just gave, which the container holds once `set_refs` ran. `body` is the caller's
+    /// body as it came, streamed to the container and never held here: its first `tipsn` bytes are the tips, one per
+    /// line, then `detailn` bytes of `"<new> <old> <ref>"` lines (`crate::agent::RefDetail`), then the pack. Buffered,
+    /// a burst of 512 pushes of 256 KiB, or 1 MiB packs at 4 a second, put the shard's isolate over its 128 MB (LM-1
+    /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
+    /// `Validated::Busy`; a human's waits.
+    pub async fn validate(
         &self,
         network: NetworkId,
-        pack: Vec<u8>,
-        tips: &[String],
-        detail: &str,
-    ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), StoreError> {
-        let mut head: Vec<u8> = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
-        if !tips.is_empty() {
-            head.push(b'\n');
+        tipsn: usize,
+        detailn: usize,
+        agent: bool,
+        body: Option<wasm_bindgen::JsValue>,
+    ) -> Result<Validated, StoreError> {
+        let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        if detailn > 0 {
+            path.push_str(&format!("&detailn={detailn}"));
         }
-        let mut path = format!("/validate?net={}&tipsn={}", network.0.0, head.len());
-        if !detail.is_empty() {
-            path.push_str(&format!("&detailn={}", detail.len()));
-            head.extend_from_slice(detail.as_bytes());
+        if agent {
+            path.push_str("&class=agent");
         }
-        let empty = pack.is_empty();
-        head.extend_from_slice(&pack);
-        let mut r = self.call(Method::Post, &path, Some(head), &[]).await?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(body);
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
+        if r.status_code() == 429 {
+            let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
+            return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
+        }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
             return Err(StoreError(format!("validate: {} {t}", r.status_code())));
         }
         let v: ValidateOut = r.json().await.map_err(worker_err)?;
-        if empty {
-            return Ok((None, v.detail));
+        if v.checksum.is_empty() {
+            return Ok(Validated::Done(None, v.detail));
         }
         let ix = PackIndex {
             checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
@@ -500,7 +509,7 @@ impl ShardHost<'_> {
             objects: v.objects,
             trailer: v.trailer.into(),
         };
-        Ok((Some(ix), v.detail))
+        Ok(Validated::Done(Some(ix), v.detail))
     }
 
     pub async fn init(&self, network: NetworkId, fresh: bool) -> Result<(), StoreError> {

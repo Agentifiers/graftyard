@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use graftyard_raft::{Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::ChainId;
+use graftyard_types::{AccountId, ChainId, DbId};
 use smallvec::{SmallVec, smallvec};
 
 pub const KV_FORMAT: Format = Format { family: 1, version: 1 };
@@ -13,6 +13,11 @@ pub const KV_FORMAT: Format = Format { family: 1, version: 1 };
 pub const ID_KEY: &str = "_id_block";
 /// The register the simulator's host appends to with `Member::record`. Clients never use it.
 pub const REC_KEY: &str = "_recorded";
+/// The register that names the owner whose `Authz` chain a `KvCmd::PutDep` depends on, as `RepoSettings` names a
+/// repository's: a `Put` to it moves the dependency by entry.
+pub const OWNER_KEY: &str = "_owner";
+/// A dependency fold holding this key refuses every `PutDep` decided on it: a revoked credential.
+pub const REVOKED_KEY: &str = "revoked";
 /// A format no member of these tests reads.
 pub const FUTURE_FORMAT: Format = Format { family: 1, version: 2 };
 
@@ -82,6 +87,21 @@ impl KvScratch<'_> {
     pub fn get(&self, k: &str) -> Option<&String> {
         self.over.get(k).or_else(|| self.base.0.get(k))
     }
+
+    /// The fold at `applied`, without the earlier commands of the entry.
+    pub fn base(&self) -> &Kv {
+        self.base
+    }
+}
+
+/// The chain a `PutDep` depends on, read from the fold at `applied`: the owner `OWNER_KEY` names, else one of three
+/// owners by the count of the simulator host's records, so recorded entries move it too.
+pub fn owner_chain(fold: &Kv) -> ChainId {
+    let n = match fold.0.get(OWNER_KEY) {
+        Some(v) => v.parse().unwrap_or(0),
+        None => fold.0.get(REC_KEY).map_or(0, |v| v.matches(',').count() as i64 % 3),
+    };
+    ChainId::Authz(AccountId(DbId(n)))
 }
 
 fn apply_to(get: Option<&String>, ev: &KvEvent) -> String {
@@ -163,6 +183,12 @@ pub enum KvCmd {
     },
     /// A command in a format no member reads.
     Future,
+    /// A put that depends on one other chain, named by the fold (`owner_chain`): `decide` takes exactly that chain's
+    /// fold, refusing `NoDep` for any other set and `Revoked` when the fold holds `REVOKED_KEY`.
+    PutDep {
+        key: String,
+        value: String,
+    },
     /// A write as admission sees it: a push is a compare-and-set of `key` from `expect` (refused `Stale` otherwise),
     /// any other write a put. `pack` bytes ride inline.
     Write {
@@ -178,6 +204,9 @@ pub enum KvCmd {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KvErr {
     Stale,
+    /// `decide` was not given exactly the dependency `deps()` names on the fold at `applied`.
+    NoDep,
+    Revoked,
 }
 
 impl Record for KvCmd {
@@ -214,6 +243,11 @@ impl Record for KvCmd {
                 e.u8(u8::from(*push));
                 e.bytes(&vec![0; *pack]);
             }
+            KvCmd::PutDep { key, value } => {
+                e.u8(6);
+                e.str(key);
+                e.str(value);
+            }
         }
     }
 }
@@ -230,11 +264,23 @@ impl Command for KvCmd {
     fn tiers(&self) -> TierSet {
         TierSet::CORE
     }
-    fn deps(&self, _fold: &Kv) -> SmallVec<[ChainId; 3]> {
-        SmallVec::new()
-    }
-    fn decide(&self, fold: &KvScratch<'_>, _deps: &[(ChainId, Kv)]) -> Result<(SmallVec<[Ev<Self>; 4]>, bool), KvErr> {
+    fn deps(&self, fold: &Kv) -> SmallVec<[ChainId; 3]> {
         match self {
+            KvCmd::PutDep { .. } => smallvec![owner_chain(fold)],
+            _ => SmallVec::new(),
+        }
+    }
+    fn decide(&self, fold: &KvScratch<'_>, deps: &[(ChainId, Kv)]) -> Result<(SmallVec<[Ev<Self>; 4]>, bool), KvErr> {
+        match self {
+            KvCmd::PutDep { key, value } => match deps {
+                [(c, d)] if *c == owner_chain(fold.base()) => {
+                    if d.0.contains_key(REVOKED_KEY) {
+                        return Err(KvErr::Revoked);
+                    }
+                    Ok((smallvec![KvEvent::Set { key: key.clone(), value: value.clone(), expect: None }], true))
+                }
+                _ => Err(KvErr::NoDep),
+            },
             KvCmd::Put { key, value } => {
                 Ok((smallvec![KvEvent::Set { key: key.clone(), value: value.clone(), expect: None }], true))
             }

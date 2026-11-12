@@ -241,13 +241,20 @@ impl DurableObject for GitShard {
         match path.as_str() {
             "/validate" => {
                 fresh().await.map_err(se)?;
-                let body = req.bytes().await?;
+                // The body is never read here: it streams to the container or to the pool shard (LM-1 round 6, where
+                // buffered bodies put the shard's isolate over 128 MB). Its first `tipsn` bytes are the tips, then
+                // `detailn` bytes of detail lines, then the pack.
+                let num = |k: &str| q(&url, k).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0);
+                let (tipsn, detailn, agent) =
+                    (num("tipsn"), num("detailn"), q(&url, "class").as_deref() == Some("agent"));
+                let body = || req.inner().body().map(wasm_bindgen::JsValue::from);
                 // `fanout`: the network's first shard forwards a push to the one of the k that rendezvous on its id
                 // picks (`graftyard_git::push_validator`), which catches up before it validates. The push id is the
-                // pack's trailer, its own SHA-1, the same on every re-send. A pool shard never forwards (`via`), and
-                // one that cannot answer leaves the push to the first shard. The first shard is index 0 of a
-                // one-shard `count` here: each network has its own first-shard object, so only the pool indices,
-                // `1..1 + HOT_POOL`, are shared between networks.
+                // pack's trailer, its own SHA-1, the same on every re-send, which the caller names (`trailer`). A pool
+                // shard never forwards (`via`). One that cannot answer leaves the push to the first shard: the body
+                // is gone with the forward, so the caller sends it again with `via` (`x-graft-fanout-failed`). The
+                // first shard is index 0 of a one-shard `count` here: each network has its own first-shard object, so
+                // only the pool indices, `1..1 + HOT_POOL`, are shared between networks.
                 let k = fanout_k(net);
                 // Once a minute, on its own validates, the first shard reports its k shards' combined load to the
                 // group's leader, which steps k (`crate::fanout`). A network with no pushes reports nothing.
@@ -283,8 +290,12 @@ impl DurableObject for GitShard {
                         }
                     });
                 }
-                if k > 1 && q(&url, "via").is_none() && body.len() >= 20 {
-                    let pick = graftyard_git::push_validator(net, site.id, 1, k, &body[body.len() - 20..]);
+                let trailer = q(&url, "trailer").and_then(|t| graftyard_git::refs::ObjectId::parse_hex(t.as_bytes()));
+                if k > 1
+                    && q(&url, "via").is_none()
+                    && let Some(trailer) = trailer
+                {
+                    let pick = graftyard_git::push_validator(net, site.id, 1, k, &trailer.0);
                     if pick.shard != 0 {
                         let name = graftyard_git::object_name(net, pick, 1);
                         let rec = serde_json::to_string(&log.record)?;
@@ -294,38 +305,38 @@ impl DurableObject for GitShard {
                             fwd.query_pairs_mut().append_pair("record", &rec);
                         }
                         let mut init = RequestInit::new();
-                        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&body[..]).into()));
+                        init.with_method(Method::Post).with_body(body());
                         let r = match crate::fanout::stub(&self.env, &site.sites, site.id, &name) {
                             Ok(s) => s.fetch_with_request(Request::new_with_init(fwd.as_str(), &init)?).await,
                             Err(e) => Err(e),
                         };
                         match r {
-                            Ok(r) if r.status_code() == 200 || r.status_code() == 422 => return Ok(r),
+                            Ok(r) if matches!(r.status_code(), 200 | 422 | 429) => return Ok(r),
                             Ok(mut r) => console_error!(
-                                "fanout: {name} answered {} {}; validating on the first shard",
+                                "fanout: {name} answered {} {}; the caller validates on the first shard",
                                 r.status_code(),
                                 r.text().await.unwrap_or_default().chars().take(200).collect::<String>()
                             ),
-                            Err(e) => console_error!("fanout: {name}: {e}; validating on the first shard"),
+                            Err(e) => console_error!("fanout: {name}: {e}; the caller validates on the first shard"),
                         }
+                        let h = Headers::new();
+                        h.set("x-graft-fanout-failed", "1")?;
+                        return Ok(
+                            Response::error("the pool shard did not answer; send again with via", 503)?.with_headers(h)
+                        );
                     }
                 }
-                let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
-                let tips: Vec<String> =
-                    String::from_utf8_lossy(&body[..n.min(body.len())]).split_whitespace().map(str::to_owned).collect();
-                let rest = &body[n.min(body.len())..];
-                // `detailn` (AM1's agent pushes and REST ref writes): the next bytes are the updates the git cache
-                // reports detail for. A default push sends none, and its reply is the `PackIndex` alone, as before.
-                let d: usize = q(&url, "detailn").and_then(|v| v.parse().ok()).unwrap_or(0);
-                if d == 0 {
-                    return match host.validate(net, rest.to_vec(), &tips).await {
-                        Ok(ix) => Response::from_json(&ix),
-                        Err(e) => Response::error(e.0, 422),
-                    };
-                }
-                let detail = String::from_utf8_lossy(&rest[..d.min(rest.len())]).into_owned();
-                match host.validate_detail(net, rest[d.min(rest.len())..].to_vec(), &tips, &detail).await {
-                    Ok((ix, detail)) => Response::from_json(&serde_json::json!({ "index": ix, "detail": detail })),
+                match host.validate(net, tipsn, detailn, agent, body()).await {
+                    Ok(graftyard_git::host::Validated::Done(Some(ix), _)) if detailn == 0 => Response::from_json(&ix),
+                    Ok(graftyard_git::host::Validated::Done(ix, detail)) => {
+                        Response::from_json(&json!({ "index": ix, "detail": detail }))
+                    }
+                    Ok(graftyard_git::host::Validated::Busy { retry_after_s }) => {
+                        let h = Headers::new();
+                        h.set("retry-after", &retry_after_s.to_string())?;
+                        Ok(Response::error(format!("validate queue full; retry after {retry_after_s} s"), 429)?
+                            .with_headers(h))
+                    }
                     Err(e) => Response::error(e.0, 422),
                 }
             }

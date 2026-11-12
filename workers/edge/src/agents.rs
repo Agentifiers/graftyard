@@ -419,7 +419,7 @@ pub(crate) async fn write_ref(
     };
     let agent = push_context(c, &rd.repo, &push).await;
     let lines = graftyard_git::agent::detail_lines(&push.updates, true);
-    let detail = match crate::validate(c, &rd.repo, &[], &[], &lines).await {
+    let detail = match crate::validate(c, &rd.repo, &[], &[], &lines, false).await {
         Ok((_, d)) => d,
         Err(_) => return Ok(Reply::error(422, "Object does not exist", doc)),
     };

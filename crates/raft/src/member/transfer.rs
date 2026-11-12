@@ -83,6 +83,7 @@ impl<C: Command> Member<C> {
         });
         // The followers disregard their promises for the target's transfer vote, so no lease holds from now.
         lead.reset_lease(self.now);
+        self.drop_held_deps();
         self.broadcast_all();
         Ok(id)
     }

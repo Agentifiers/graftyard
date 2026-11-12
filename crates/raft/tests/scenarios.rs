@@ -368,6 +368,62 @@ fn flapping_member_is_quarantined() {
     assert_eq!(c.m(B).role(), Role::Leader);
 }
 
+/// LM-1 round 6's "leaderless" groups: every member of a group reset twice inside RESET_QUARANTINE, and a lost
+/// campaign moved the term past the old leader's `led_term`, so no member resumes. Campaigns are request-driven, so
+/// the group stays leaderless while idle; the first requests' `suspect` reports elect a leader once the restored
+/// promises lapse (ELECTION_AFTER after the last append), though every candidate is flapping.
+#[test]
+fn a_group_whose_every_member_flapped_elects_on_the_first_requests() {
+    let mut c = Cluster::new(72);
+    c.elect(A);
+    c.sync(A);
+    for _ in 0..2 {
+        for s in SITES {
+            c.crash(s);
+        }
+        c.advance(100);
+        for s in SITES {
+            c.restart(s);
+        }
+        c.deliver_all();
+    }
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    // B wins its pre-vote and its votes are granted, then it resets before it hears them: the term moved on.
+    c.deliver(|e| !matches!(&e.msg, Message::VoteRes(r) if !r.pre));
+    c.crash(B);
+    c.inbox.clear();
+    c.advance(100);
+    c.restart(B);
+    assert!(SITES.iter().all(|s| c.m(*s).state().led_term.is_none() && c.m(*s).role() == Role::Follower));
+    let start = c.now.0;
+    for _ in 0..60 {
+        c.advance(500);
+        c.deliver_all();
+        assert!(SITES.iter().all(|s| c.m(*s).role() != Role::Leader), "a leader with no request");
+    }
+    // A request's lookup: every voter answers NotLeader naming none, so each gets a `suspect` report, every 500 ms.
+    let begun = c.now.0;
+    for _ in 0..40 {
+        let term = SITES.iter().map(|s| c.m(*s).term()).max().unwrap();
+        for s in SITES {
+            c.on(s, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
+        }
+        c.deliver_all();
+        if let Some(l) = SITES.iter().copied().find(|s| c.m(*s).role() == Role::Leader) {
+            assert!(c.now.0 - begun <= 1_000, "elected {} ms after the first report", c.now.0 - begun);
+            let t = admit(&mut c, l, 9, put("k", "v"));
+            c.deliver_all();
+            assert_eq!(c.m(l).outcome(t).unwrap().map(|a| a.out), Ok(true));
+            assert!(c.now.0 - start >= 30_000);
+            return;
+        }
+        c.advance(500);
+        c.deliver_all();
+    }
+    panic!("no leader 20 s after the first report");
+}
+
 /// Reads: within the lease from the fold, after it lapses only via a round, never on a minority leader.
 #[test]
 fn reads_need_the_lease_or_a_round() {

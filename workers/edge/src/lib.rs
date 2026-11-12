@@ -353,6 +353,22 @@ mod gate_tests {
     }
 }
 
+/// The `Retry-After` of an agent push refused while placement fails [guess]: R2's outages ran tens of minutes, so a
+/// retry sooner only adds load.
+const OUTAGE_RETRY_S: u32 = 60;
+
+/// Whether this request sees placement failing. Only test installs can (`Ctx::place_fail`); a production edge has
+/// no bucket probe yet, so it learns of an outage only from a failed `place_teed`.
+fn placement_failing(c: &Ctx<'_>) -> bool {
+    #[cfg(feature = "test-faults")]
+    return c.place_fail;
+    #[cfg(not(feature = "test-faults"))]
+    {
+        let _ = c;
+        false
+    }
+}
+
 /// The admission a command by `who` carries to its leader (`graftyard_git::agent::admit_class`), or `None` for Human,
 /// which `Member::commit` takes as before. A user token with no App and no `X-Graftyard-Agent-Session` is Human
 /// without reading anything more, so a default request's reads and bodies do not change. The leader's `decide` classes
@@ -373,6 +389,7 @@ pub(crate) async fn admission(
     let read = install.as_ref().map(|a| a as &dyn graftyard_identity::AuthzRead);
     let class = graftyard_git::agent::admit_class(who, read, app, provenance, c.agent_session);
     graftyard_git::group::AdmitWire::of(class, who, push, inline)
+        .map(|a| graftyard_git::group::AdmitWire { placement_ok: !placement_failing(c), ..a })
 }
 
 /// The install's `Authz(Genesis.account)` fold, read as a `dep` through `fresh`: its `AgentApp` rows. `None` when it
@@ -766,6 +783,11 @@ struct Ctx<'a> {
     /// network, a second shard behind its own `IngestCursor`.
     #[cfg(feature = "test-faults")]
     shard: Option<SiteId>,
+    /// B0-31's placement-failing half: `x-graft-place-fail` with the bed token makes this request see placement
+    /// failing, as a red bucket probe would (`design/DESIGN.md`, Failure modes, pack buckets): no pack is placed, and
+    /// the leader is told `placement_ok: false`.
+    #[cfg(feature = "test-faults")]
+    place_fail: bool,
     /// `authenticate`'s token's App, when it is a user-to-server token.
     token_app: std::cell::Cell<Option<graftyard_identity::AppId>>,
     /// `authenticate`'s token's optional fields: a `github_pat_`'s scope, which REST reads check (`usertok::reaches`).
@@ -882,6 +904,19 @@ async fn receive_pack(
         }
         // Inline only when the pack fits INLINE_MAX and the push with it stays under COMMAND_MAX.
         let inline = pack.len() <= INLINE_MAX && alone + pack.len() + 16 < COMMAND_MAX;
+        // While placement fails a pack that cannot go inline cannot be placed: an agent's is refused at once in the
+        // admission shape (B0-31's placement-failing half), any other's is a 503 (Failure modes, R2 outage).
+        if placement_failing(c) && !inline {
+            let agentish = matches!(
+                admission(c, &push.actor, &[], true, 0).await,
+                Some(a) if a.class == graftyard_git::group::ClassWire::Agent
+            );
+            return if agentish {
+                refuse(Refusal::agent_full(OUTAGE_RETRY_S))
+            } else {
+                text(c.rid, 503, "pack store: placement is failing; retry\n")
+            };
+        }
         let tips: Vec<String> = push.updates.iter().filter_map(|u| u.new.map(|o| o.hex())).collect();
         let raw = buckets(c.env, c.sites)?;
         // The three site buckets of the network's placement.
@@ -898,9 +933,9 @@ async fn receive_pack(
         };
         let detail_out = std::cell::RefCell::new(Vec::new());
         let validate = async {
-            let (ix, d) = validate(c, repo, pack, &tips, &detail).await?;
+            let (ix, d) = validate(c, repo, pack, &tips, &detail, agent.is_some()).await?;
             *detail_out.borrow_mut() = d;
-            ix.ok_or_else(|| "validate gave no index".to_owned())
+            ix.ok_or_else(|| ShardRefusal::Invalid("validate gave no index".to_owned()))
         };
         match store.place_teed(stage, validate).await {
             Ok((d, ix)) => {
@@ -908,7 +943,7 @@ async fn receive_pack(
                 index = Some(ix);
                 got = detail_out.into_inner();
             }
-            Err(TeeError::Invalid(e)) => return refuse(Refusal::unpack_failed(&e)),
+            Err(TeeError::Invalid(e)) => return refuse(shard_refusal(&e)),
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
     }
@@ -953,6 +988,9 @@ async fn receive_pack(
     }
     let mut reply = commit(c, repo, &body, first.as_ref(), None).await?;
     // `AdmitError::Stage`: the leader asks for the inline pack as a stored one, sent again under the same request id.
+    if let (Err(CallErrorWire::Stage(_)), true) = (&reply, placement_failing(c)) {
+        return refuse(Refusal::agent_full(OUTAGE_RETRY_S));
+    }
     if let (Err(CallErrorWire::Stage(_)), Some(ix), Some(mut a)) = (&reply, index, admit) {
         let raw = buckets(c.env, c.sites)?;
         let refs: Vec<(SiteId, &R2)> =
@@ -1003,34 +1041,89 @@ async fn receive_pack(
     }
 }
 
+/// Why `validate` gave no index: the git cache refused the pack, or (an agent's push only) its slots stayed full for
+/// the agent's wait, which the push answers `ng <ref> agent admission full, retry after <n>s` (B0-32's shape).
+#[derive(Debug)]
+pub(crate) enum ShardRefusal {
+    Invalid(String),
+    Busy(u32),
+}
+
+impl std::fmt::Display for ShardRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ShardRefusal::Invalid(e) => f.write_str(e),
+            ShardRefusal::Busy(s) => write!(f, "the git cache is busy; retry after {s}s"),
+        }
+    }
+}
+
+/// A validate's URL on the network's first shard: the body's `tipsn` and `detailn` lengths, `class=agent` for an
+/// agent's push, and the pack's trailer (its last 20 bytes), from which the shard picks the fan-out shard.
+fn validate_url(repo: RepoId, tipsn: usize, detailn: usize, agent: bool, pack: &[u8]) -> String {
+    let mut url = format!("https://shard/validate?repo={}&tipsn={tipsn}", repo.0.0);
+    if detailn > 0 {
+        url.push_str(&format!("&detailn={detailn}"));
+    }
+    if agent {
+        url.push_str("&class=agent");
+    }
+    if let Some(t) = pack.len().checked_sub(20).and_then(|at| <[u8; 20]>::try_from(&pack[at..]).ok()) {
+        url.push_str(&format!("&trailer={}", graftyard_git::refs::ObjectId(t).hex()));
+    }
+    url
+}
+
+/// The push's refusal when `validate` gave no index: B0-32's `ng <ref> agent admission full, retry after <n>s` when
+/// the git cache was busy, else `unpacker error` with the cache's reason.
+fn shard_refusal(e: &ShardRefusal) -> Refusal {
+    match e {
+        ShardRefusal::Busy(s) => Refusal::agent_full(*s),
+        ShardRefusal::Invalid(why) => Refusal::unpack_failed(why),
+    }
+}
+
 /// `GitCacheShard::validate` on the network's home shard: tips in the body ahead of the pack. With `detail` (the
 /// `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also answers each
 /// update's new commits and changed paths; with an empty pack it answers only those, and no index. Without `detail`
-/// the call is the one a default push has always made.
+/// the call is the one a default push has always made. The pack's trailer rides in the URL, so the shard picks the
+/// fan-out shard without reading the body, which it streams on (LM-1 round 6). An `agent` validate waits at most 2 s
+/// for one of the container's slots, then is `ShardRefusal::Busy`.
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
     pack: &[u8],
     tips: &[String],
     detail: &str,
-) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), String> {
+    agent: bool,
+) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), ShardRefusal> {
+    let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
+    if !tips.is_empty() || detail.is_empty() {
+        head.push(b'\n');
+    }
+    let url = validate_url(repo.id, head.len(), detail.len(), agent, pack);
+    head.extend_from_slice(detail.as_bytes());
+    head.extend_from_slice(pack);
+    let send = |url: String| {
+        let head = &head;
+        async move {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head.as_slice()).into()));
+            shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await
+        }
+    };
     let run = async {
-        let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
-        if !tips.is_empty() || detail.is_empty() {
-            head.push(b'\n');
+        let mut r = send(url.clone()).await?;
+        // A pool shard that did not answer: the first shard validates it itself.
+        if r.status_code() == 503 && r.headers().get("x-graft-fanout-failed")?.is_some() {
+            r = send(format!("{url}&via=0")).await?;
         }
-        let n = head.len();
-        let mut url = format!("https://shard/validate?repo={}&tipsn={n}", repo.id.0.0);
-        if !detail.is_empty() {
-            url.push_str(&format!("&detailn={}", detail.len()));
-            head.extend_from_slice(detail.as_bytes());
+        if r.status_code() == 429 {
+            let s = r.headers().get("retry-after")?.and_then(|v| v.trim().parse().ok()).unwrap_or(1);
+            return Ok(Err(ShardRefusal::Busy(s)));
         }
-        head.extend_from_slice(pack);
-        let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(head.as_slice()).into()));
-        let mut r = shard(c, repo)?.fetch_with_request(Request::new_with_init(&url, &init)?).await?;
         if r.status_code() != 200 {
-            return Ok(Err(r.text().await.unwrap_or_default()));
+            return Ok(Err(ShardRefusal::Invalid(r.text().await.unwrap_or_default())));
         }
         if detail.is_empty() {
             return Ok::<_, Error>(Ok((Some(r.json::<PackIndex>().await?), Vec::new())));
@@ -1046,7 +1139,7 @@ pub(crate) async fn validate(
     };
     match run.await {
         Ok(r) => r,
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(ShardRefusal::Invalid(e.to_string())),
     }
 }
 
@@ -1080,7 +1173,7 @@ pub(crate) async fn push_init(
     ensure_group(c, repo).await?;
     // A default push's validate: no agent detail, so the shard answers only the pack's index.
     let check = async {
-        let (ix, _) = validate(c, repo, &init.pack, &tips, "").await?;
+        let (ix, _) = validate(c, repo, &init.pack, &tips, "", false).await.map_err(|e| e.to_string())?;
         ix.ok_or_else(|| "validate gave no index".to_owned())
     };
     let (d, _) = store.place_teed(stage, check).await.map_err(|e| e.to_string())?;
@@ -1878,6 +1971,9 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
             (Some(n), Some(t), Ok(s)) if t == s.to_string() => n.parse().ok().map(SiteId),
             _ => None,
         },
+        #[cfg(feature = "test-faults")]
+        place_fail: req.headers().has("x-graft-place-fail")?
+            && matches!((req.headers().get("x-bed-token")?, env.secret("BED_TOKEN")), (Some(t), Ok(s)) if t == s.to_string()),
     };
     if path == release::ENTRIES_PATH {
         return release::entries(&c, &mut req).await;
@@ -1998,7 +2094,29 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
 mod tests {
     use std::io::Write;
 
-    use super::gunzip;
+    use super::{ShardRefusal, gunzip, shard_refusal, validate_url};
+    use graftyard_types::{DbId, RepoId};
+
+    /// The shard picks the fan-out shard from the URL's trailer without reading the body, so the trailer must be
+    /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first.
+    #[test]
+    fn a_validate_url_names_the_packs_trailer_and_its_class() {
+        let mut pack = vec![0xaa; 40];
+        pack[20..].copy_from_slice(&[0x01; 20]);
+        let u = validate_url(RepoId(DbId(7)), 41, 0, true, &pack);
+        assert_eq!(u, format!("https://shard/validate?repo=7&tipsn=41&class=agent&trailer={}", "01".repeat(20)));
+        assert_eq!(validate_url(RepoId(DbId(7)), 1, 9, false, &[]), "https://shard/validate?repo=7&tipsn=1&detailn=9");
+    }
+
+    /// A busy git cache refuses an agent's push in B0-32's allowed shape, `agent admission full`, never as an
+    /// unpacker error; a pack the cache rejected stays an unpacker error.
+    #[test]
+    fn a_busy_git_cache_refuses_in_the_admission_shape() {
+        let busy = shard_refusal(&ShardRefusal::Busy(3));
+        assert_eq!((busy.unpack.as_str(), busy.reason.as_str()), ("ok", "agent admission full, retry after 3s"));
+        let bad = shard_refusal(&ShardRefusal::Invalid("connectivity".into()));
+        assert_eq!(bad.reason, "unpacker error");
+    }
 
     fn gzip(b: &[u8]) -> Vec<u8> {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());

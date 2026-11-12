@@ -215,6 +215,30 @@ impl Stats {
         self.test_merge_asks += v["asked"].as_u64().unwrap_or(0) as u32;
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
     }
+
+    /// `/stats?reset=1`: drops the samples and counts a row reads back, and restarts the inbound clock.
+    pub fn reset(&mut self) {
+        self.commit_ms.clear();
+        self.round_ms.clear();
+        self.apply_ms.clear();
+        self.apply_steps.clear();
+        self.confirm_ms.clear();
+        self.append_ms.clear();
+        self.deps_ms.clear();
+        self.dep_fails.clear();
+        self.queue_ms.clear();
+        self.entries = 0;
+        self.commands = 0;
+        self.failed_calls = 0;
+        self.test_merge_asks = 0;
+        self.test_merge_shed = 0;
+        self.peers.clear();
+        self.calls.clear();
+        self.trace.clear();
+        self.hops.clear();
+        self.inbound.clear();
+        self.inbound_since = now_ms();
+    }
 }
 
 /// The kinds in `Stats::trace`. `peer` is the other member's address; `index` is the read index (0 for none), the
@@ -473,6 +497,9 @@ pub struct Core<F: Family> {
     /// Dependency reads to hold back, for BF-15's queued commands: until then.
     #[cfg(feature = "test-faults")]
     pub hold_deps_until: u64,
+    /// Each dependency read's per-chain record by its id, until `DepsUsed` names the entry that used it (`deps_log`).
+    #[cfg(feature = "test-faults")]
+    pub dep_reads: HashMap<u64, Vec<Value>>,
 }
 
 /// A storage confirm begun: its id, its start when the leader times it, and the input's `SelfAck`.
@@ -1201,6 +1228,8 @@ impl<F: Family> Host<F> {
             no_marker: std::collections::HashSet::new(),
             #[cfg(feature = "test-faults")]
             hold_deps_until: 0,
+            #[cfg(feature = "test-faults")]
+            dep_reads: HashMap::new(),
         });
         self.stats.borrow_mut().restores += 1;
         F::restored(self);
@@ -1612,6 +1641,7 @@ impl<F: Family> Host<F> {
         let mut need_block = false;
         let mut marks = Vec::new();
         let deps = out.deps;
+        let deps_used = out.deps_used;
         let catchup = out.catchup;
         let installs = out.install;
         let mut lost = None;
@@ -1763,6 +1793,22 @@ impl<F: Family> Host<F> {
         for want in deps {
             self.read_deps(want);
         }
+        #[cfg(feature = "test-faults")]
+        for used in deps_used {
+            let reads: Vec<Value> = match self.core.try_borrow_mut() {
+                Ok(mut c) => c
+                    .as_mut()
+                    .map(|c| used.ids.iter().flat_map(|id| c.dep_reads.remove(id).unwrap_or_default()).collect())
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let _ = self.state.storage().sql().exec(
+                "INSERT INTO deps_log (idx, at, reads) VALUES (?, ?, ?)",
+                vec![i(used.index.0), i(now_ms()), json!(reads).to_string().into()],
+            );
+        }
+        #[cfg(not(feature = "test-faults"))]
+        let _ = deps_used;
         for w in installs {
             F::install_wanted(self, w);
         }
@@ -2136,7 +2182,17 @@ impl<F: Family> Host<F> {
     /// (`CredentialRefusal::NotRead`). BF-15 may hold the read back (`hold_deps_until`) so commands queue behind it.
     fn read_deps(self: &Rc<Self>, want: raft::DepsWanted) {
         let h = self.clone();
+        let emitted = now_ms();
         spawn_local(async move {
+            // `depsMs.spawn`: from the release that emitted the `DepsWanted` to this task's start, the isolate's own
+            // queueing ahead of the reads (round 6: dep reads took 118 ms p50 under load against 28 ms idle).
+            {
+                let mut s = h.stats.borrow_mut();
+                let v = s.deps_ms.entry("spawn".to_owned()).or_default();
+                if v.len() < SAMPLES_MAX {
+                    v.push(now_ms().saturating_sub(emitted) as u32);
+                }
+            }
             #[cfg(feature = "test-faults")]
             {
                 let hold = h.core.borrow().as_ref().map_or(0, |c| c.hold_deps_until);
@@ -2207,14 +2263,13 @@ impl<F: Family> Host<F> {
                     }
                 }
             }
-            // The entry these reads decide is appended next, at the log's end + 1.
+            // The entry these reads decide is logged once `DepsUsed` names it: with reads overlapping the entry in
+            // flight, an id block or record may be appended first, and a re-read may join a read for one entry.
             #[cfg(feature = "test-faults")]
+            if let Ok(mut c) = h.core.try_borrow_mut()
+                && let Some(c) = c.as_mut()
             {
-                let next = h.core.borrow().as_ref().map_or(0, |c| c.m.last_index().0 + 1);
-                let _ = h.state.storage().sql().exec(
-                    "INSERT INTO deps_log (idx, at, reads) VALUES (?, ?, ?)",
-                    vec![i(next), i(now_ms()), json!(reads).to_string().into()],
-                );
+                c.dep_reads.insert(want.id, reads.clone());
             }
             let _ = &reads;
             let _ = h.input(|m, t| m.deps_read(t, want.id, deps));

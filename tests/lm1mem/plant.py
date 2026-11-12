@@ -23,6 +23,10 @@ EDGE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_failed_read']
 EDGE_GATE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_shed_authz']
 FOLD = ['cargo', '-p', 'graftyard-fold', '--test', 'install', 'a_learner_behind']
 
+GO = 'containers/git/server/main.go'
+EDGE_T = ['cargo', '-p', 'graftyard-edge', '--lib', 'tests::a_']
+SITE_SUM = ['cargo', '-p', 'graftyard-site', '--lib', 'a_summary_ranks']
+
 MUTANTS = [
     ('lookup: an overloaded answer is taken as a missed member (suspect feeds the storm)', LK,
      '        return Answer::Overloaded(o.get("retryAfterMs").and_then(Value::as_u64).unwrap_or(250));',
@@ -116,6 +120,23 @@ MUTANTS = [
      '.filter(|(at, _)| at == k)', '.filter(|(at, _)| at == k || true)', SITE),
     ('cache: the key is a constant', FAM, '    (c.applied.0, c.sum, fold.meta.loaded(), m.applied.0, m.sum)',
      '    let _ = (c, m);\n    (0, [0; 32], false, 0, [0; 32])', SITE),
+    ('round 6: the trailer is the pack\'s first 20 bytes, so the shard picks another fan-out shard', EDGE_LIB,
+     '.checked_sub(20).and_then(|at| <[u8; 20]>::try_from(&pack[at..]).ok())',
+     '.checked_sub(20).and_then(|_| <[u8; 20]>::try_from(&pack[..20]).ok())', EDGE_T),
+    ('round 6: a busy git cache refuses an agent push as an unpacker error', EDGE_LIB,
+     '        ShardRefusal::Busy(s) => Refusal::agent_full(*s),',
+     '        ShardRefusal::Busy(s) => Refusal::unpack_failed(&s.to_string()),', EDGE_T),
+    ('round 6: an agent validate is not marked, so the container never sheds it', EDGE_LIB,
+     '    if agent {\n        url.push_str("&class=agent");', '    if agent && false {\n        url.push_str("&class=agent");', EDGE_T),
+    ('round 6: the summary ranks samples in arrival order', MEM, '    s.sort_unstable();\n    let at', '    let at', SITE_SUM),
+    ('round 6: one FIFO lane, an agent queued first goes before a human', GO,
+     '\tif len(g.humans) > 0 {\n\t\tw = g.humans[0]\n\t\tg.humans = g.humans[1:]\n\t} else if len(g.agents) > 0 {',
+     '\tif len(g.agents) > 0 {\n\t\tw = g.agents[0]\n\t\tg.agents = g.agents[1:]\n\t} else if len(g.humans) > 0 {\n\t\tw = g.humans[0]\n\t\tg.humans = g.humans[1:]\n\t} else if false {',
+     ['go', 'TestGate']),
+    ('round 6: a waiter granted as its deadline fires drops the slot (leak)', GO,
+     '\t\tif w.granted {\n', '\t\tif w.granted && false {\n', ['go', 'TestGate']),
+    ('round 6: no refusal at once past 8 per slot', GO, '\tif agent && len(g.agents) >= agentQueuePerSlot*g.slots {',
+     '\tif agent && len(g.agents) >= 1<<30 {', ['go', 'TestGate']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

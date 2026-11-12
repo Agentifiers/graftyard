@@ -2128,6 +2128,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
+
+Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
+
+**Decision.** The shard streams `/validate`'s body to the container (or to the pool shard) unread; the edge names the pack's trailer in the URL so the shard picks the fan-out shard without the body. The container runs at most min(16, max(4, 2 x vCPU)) validates; a human's waits for a slot, ahead of every agent's, and an agent's waits at most 2 s, with at most 8 per slot queued, then gets 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. The container raises `RLIMIT_NOFILE` at start.
+
+**Why.** B0-32's burst (512 validates of 256 KiB at 23:52:08Z) all failed on the first shard with "Promise will never complete" and its isolate's `exceededMemory`; B0-31's 1 MiB packs put the first shard over its 128 MB 725 times in one minute (1,713 of 2,500 agent pushes `unpacker error`); B0-34's container refused 480 agent pushes with "too many open files". A streamed body is held by the runtime, not the isolate's heap, and a slot cap bounds the files and processes one container opens.
+
+**Beat.** A per-network in-flight cap in the Durable Object alone: it bounds memory but not the container's files when k shards share a pool container. Refusing agent pushes at the edge on a guessed rate: the container knows its own queue.
+
+**Evidence.** `containers/git/server/gate_test.go` (human first, no slot leak on a deadline race, refusal at once past 8 per slot, a refused request reads no body); `a_validate_url_names_the_packs_trailer_and_its_class` and `a_busy_git_cache_refuses_in_the_admission_shape` in `workers/edge`; `tests/lm1mem/plant.py` round 6 plants.
+
+**Flip.** A hosted row where agents are refused `admission full` while the container's `/load` shows idle slots, or one where 16 validates at once exceed a `standard-2` container's memory.
+
 ### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
 
 Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
@@ -2323,6 +2337,18 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 **Evidence.** `tests/am1/results/b0-30.md` [measured]: site 0 read 8,591,708,160 B at 23:09:41Z on 2026-11-11 against 8,589,934,592 B; `SQLITE_FULL` 0 throughout; the final verify read 81 of 81 sampled archived ranges from both buckets and resolved 10 of 10 `RestoredTo` lookups; SQLite grew 0.0585 GB a simulated day while archiving kept up, projecting about 8.21 GB at day 30 [inference, linear], and 0.184 GB a day during the stall; from about 17:13Z `fanout` at k = 6 forwarded the archive promotion's validate to cold pool shards, and site a's promotion validate median went from 0.17 s at 16Z to 7,551 s at 21Z. Cost $64.90.
 
 **Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
+
+### Dependency reads overlap the entry in flight, 2026-11-12
+
+**Decision.** The leader may freeze the next entry's command set while one entry is in flight, once that entry has been in flight its mean round less one mean dependency read, and ask for the batch's dependency reads then (`crates/raft/src/member/leader.rs`, `cut_early`). The batch is decided only after the entry in flight committed and applied, on that fold, with exactly the chains `deps()` names on it: a chain the applied entry newly names is read then, and a read chain it no longer names is dropped (`decide_held`). A command admitted after the read was asked waits for the entry after. Dependency ids are unique per member, not per leadership, a transfer drops the held reads, and id blocks and recorded entries still go first. `Out::deps_used` names the entry each read decided, for the host's `deps_log`. DESIGN's write path now says a revocation or suspension "binds every command whose entry's read arrived after it" instead of "every command decided after it".
+
+**Why.** B0-29 needs leader commit p99 at most 600 ms at 500 agents, and the last hosted split had commit p99 930 to 1,163 ms with `queueMs` p99 599 to 872, `depsMs` 239 to 432, and `roundMs` 304 to 356 (leader `/stats`). With the read started only after the entry in flight committed, a command waited one round, its entry's read, and its own round. Overlapping the read with the round in flight takes min(round, read) off that path while keeping one entry in flight and `decide` on the fold plus the entry's earlier commands and the reads made once for it through `fresh`.
+
+**Beat.** Caching dependency folds across entries, which the write path's "read once per entry through `fresh`" forbids and which would break BF-2, BF-15, and BF-27. Cutting the next batch as soon as the entry in flight is appended, which holds out every command admitted during the round and gives back the wait it saves [inference]. Deciding the batch when its reads arrive, on the fold before the entry in flight applied, which breaks "one entry in flight" (the planted bug fails four of the new tests).
+
+**Evidence.** `crates/raft/tests/deps.rs`: seven tests, each failing on one planted bug (deciding when the reads arrive, passing stale extra reads, no re-read for a changed chain, ids reset per leadership, a post-cut command joining the early batch, a transfer keeping its reads, two entries in flight). The simulator now sends half its puts with a dependency the host answers 0 to 400 ms late, checks one entry in flight per leader and that every command an entry decided on reads was admitted before those reads were asked, and the 2,000-seed sweep and Porcupine pass on its histories [measured, simulator]. The latency gain on Cloudflare is unmeasured: the hosted B0-29 rerun decides it.
+
+**Flip.** A hosted B0-29 rerun where commit p99 does not fall by about min(round, read) p99, or where two reads in flight per group drive the `Authz` leader's dep read p99 up by more than it saves, which would return to reading after commit; or a revocation that must bind commands admitted before it within less than one round, which the narrowed wording no longer promises.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 

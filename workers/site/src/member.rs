@@ -88,6 +88,15 @@ fn gate(index: bool, leading: bool, servable: bool, heavy: bool, reads: u32, hea
     Gate::Serve
 }
 
+/// `/stats?summary=1`'s form of a sample array: its count and nearest-rank p50, p99, and max, in the samples' order of
+/// size, not arrival.
+fn percentiles(xs: &[u32]) -> Value {
+    let mut s = xs.to_vec();
+    s.sort_unstable();
+    let at = |p: f64| s.get(((p * s.len() as f64) as usize).min(s.len().saturating_sub(1))).copied();
+    json!({ "n": s.len(), "p50": at(0.5), "p99": at(0.99), "max": s.last() })
+}
+
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
 /// FOLLOWER_WAIT and answers `overloaded`, which the edge takes to the next member without `suspect`; a leader's read
 /// waits three call deadlines and answers `busy`.
@@ -551,7 +560,8 @@ impl<F: Family> Routes<F> {
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX))?;
                 self.reply(json!({ "entries": e }))
             }
-            (Method::Get, "/stats") => self.stats(crate::registry::query(&url, "reset").is_ok()),
+            (Method::Get, "/stats") => self
+                .stats(crate::registry::query(&url, "reset").is_ok(), crate::registry::query(&url, "summary").is_ok()),
             (Method::Post, p) if F::route_paths().contains(&p) => {
                 let body: Value = req.json().await?;
                 let path = p.to_owned();
@@ -1158,8 +1168,36 @@ impl<F: Family> Routes<F> {
         Response::from_json(&rows)
     }
 
-    fn stats(&self, reset: bool) -> Result<Response> {
+    fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
+        // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
+        // `/stats` serialized megabytes, and its wasm instance was rebuilt right after (LM-1 round 6, B0-29).
+        if summary {
+            let deps: serde_json::Map<String, Value> =
+                s.deps_ms.iter().map(|(k, xs)| (k.clone(), percentiles(xs))).collect();
+            let v = json!({
+                "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
+                "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
+                "summary": true,
+                "commitMs": percentiles(&s.commit_ms),
+                "queueMs": percentiles(&s.queue_ms),
+                "roundMs": percentiles(&s.round_ms),
+                "confirmMs": percentiles(&s.confirm_ms),
+                "depsMs": deps,
+                "depFails": s.dep_fails,
+                "entries": s.entries,
+                "commands": s.commands,
+                "inbound": s.inbound,
+                "inboundMs": now_ms().saturating_sub(s.inbound_since),
+                "failedCalls": s.failed_calls,
+                "shedReads": s.shed_reads,
+                "testMerges": { "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed },
+            });
+            if reset {
+                s.reset();
+            }
+            return Response::from_json(&v);
+        }
         let mut v = json!({
             "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
             "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
@@ -1211,27 +1249,7 @@ impl<F: Family> Routes<F> {
         v["queueMs"] = json!(s.queue_ms);
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         if reset {
-            s.commit_ms.clear();
-            s.round_ms.clear();
-            s.apply_ms.clear();
-            s.apply_steps.clear();
-            s.confirm_ms.clear();
-            s.append_ms.clear();
-            s.deps_ms.clear();
-            s.dep_fails.clear();
-            s.queue_ms.clear();
-            s.entries = 0;
-            s.commands = 0;
-            s.failed_calls = 0;
-            s.test_merge_asks = 0;
-            s.test_merge_shed = 0;
-            s.peers.clear();
-            s.calls.clear();
-            s.trace.clear();
-            s.hops.clear();
-            s.apply_ms.clear();
-            s.inbound.clear();
-            s.inbound_since = now_ms();
+            s.reset();
         }
         Response::from_json(&v)
     }
@@ -1955,7 +1973,16 @@ mod tests {
     use graftyard_types::SiteId;
     use serde_json::json;
 
-    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, read_wait, site_field};
+    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+
+    /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
+    /// row judged from `?summary=1` matches one judged from the raw arrays; samples arrive out of order.
+    #[test]
+    fn a_summary_ranks_the_sorted_samples() {
+        let xs: Vec<u32> = (1..=200).rev().collect();
+        assert_eq!(percentiles(&xs), json!({ "n": 200, "p50": 101, "p99": 199, "max": 200 }));
+        assert_eq!(percentiles(&[]), json!({ "n": 0, "p50": null, "p99": null, "max": null }));
+    }
 
     /// Every read counts against READS_MAX, on any member; whole-tier reads on a leader also count against the lower
     /// HEAVY_READS; and the counts come back down when a read is answered or dropped, so a burst of timed-out callers
