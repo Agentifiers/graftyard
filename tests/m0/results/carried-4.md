@@ -133,4 +133,110 @@ check, test installs take `{"near_ms": MS}` on `/place` (one bound for every reg
 
 ## B0-02 on the change
 
-Pending the `graft-m3c` site day.
+Site day on `graft-m3c` at 15:45Z from `m0c4-deploy` `40d6ef8` (`origin/hot-shards` `fcc604f`, which holds `main`,
+merged with `m0-carried-4` `2e4cd9f`: streamed member-call bodies and the placement change), `test-faults`,
+hot-shards' image `sha256:7e0c4772…`; sites a/b/c `5181b35b`/`56885938`/`51f8c317`, test edge `graft-m3c-wp2-edge`
+`d3d3fb9c`. Same load as `carried-3.md`: `tests/m1/wp2/run.ts bench`, 1 KB commands, one new `Tri` group per run
+led from site 0 (enam), placed through `/place`. Raw rows in `raw-carried-4/` (`pass1-*` for this pass).
+
+### The placement check, hosted
+
+`m0c4-near40`: a create with `near_ms` 40, which no enam to weur pair meets. All 8 tries missed (93, 96, 108, 95, 110,
+104, 99, 112 ms). The create succeeded with the 93 ms try (`nearOver: 93`), the leader's `Rtt` row read 93, `/stats`
+counted `placedOverNear: 1`, and a 10 s bench on it carried 93/s at p99 393 ms. **Pass.**
+
+### Pass 1: 16 runs
+
+| Run | Carried /s | Near RTT | Commit p99 | Round p50 | Commands / entry | Leader confirm p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| r300-1 | 280 | 103 | 716 | 157 | 54.1 | 132 |
+| r300-2 | 280 | 108 | **494** | 167 | 51.1 | 54 |
+| r300-3 | 279 | 99 | 738 | 157 | 50.8 | 300 |
+| r300-4 | 280 | 101 | **514** | 165 | 51.4 | 92 |
+| r300-5 | 280 | 97 | **385** | 145 | 43.9 | 81 |
+| r300-6 | 280 | 109 | **574** | 180 | 56.3 | 100 |
+| r300-7 | 280 | 103 | **588** | 180 | 57.1 | 133 |
+| r300-8 | 280 | 99 | **342** | 141 | 42.7 | 64 |
+| r330-1 | 307 | 100 | **481** | 155 | 52.7 | 43 |
+| r330-2 | 307 | 76 | **426** | 118 | 39.4 | 87 |
+| r330-3 | 307 | 89 | **469** | 150 | 51.4 | 79 |
+| r330-4 | 308 | 83 | **462** | 146 | 49 | 90 |
+| r330-5 | 308 | 84 | 679 | 128 | 43.6 | 141 |
+| r330-6 | 307 | 100 | 614 | 178 | 61.5 | 155 |
+| r330-7 | 307 | 86 | **583** | 142 | 48.4 | 103 |
+| r330-8 | 307 | 100 | 692 | 168 | 61.9 | 300 |
+
+**11 of 16 pass (6 of 8 at 300, 5 of 8 at 330); 5 between, at 614 to 738 ms; 0 failed commands.** Worse than
+`carried-3.md`'s 15 of 16, on the same placements (near RTT 76 to 109 ms against 75 to 100).
+
+**What moved is the leader's own storage confirm.** Its p99 was 27 to 79 ms in all 16 `carried-3` runs (08:22 to
+08:43Z) and 43 to 300 ms here. Over 34 runs (`carried-3`'s 16, pass 1's 16, and pass 2's 2), commit p99 correlates
+0.91 with the leader's confirm p99 and 0.38 with the near RTT. A slow confirm holds the round directly, because the
+leader commits nothing above its own durable index (Shape, the write path): r300-3's trace (`tests/m0carried/stall.py`)
+has leader confirms of 300, 328, 360 and two of 400 ms, against a p50 of 35. The AppendEntries sends are issued in the
+same turn as the flush, not after its confirm, so the send is not what waits. The body stall this branch fixes is gone: a near
+follower's body over 150 ms came 0 to 2 times per run, at 46 to 63 KB, except r300-1 (below).
+
+**Not our write path.** A subagent diffed the `carried-3` deploy tree (`d85ae26` merged with `e206fb0`) against
+`40d6ef8`: `family.rs`, `tier.rs`, `crates/raft`, and the repo fold are byte-identical, `SqlStore`, `persist`,
+`commit_tx`, and `flush` are unchanged, and no added line in `workers` or `crates` writes storage. Per command the
+leader wrote the same: about 1,090 bytes per event and 2.1 statements per command in both passes. The confirm also
+barely depends on the transaction's size (correlation 0.21 between statements and confirm). The ticker never lagged
+20 ms. The bare-object control's `sync()` stayed at p50 21 to 32 ms and p99 25 to 47 ms over 29,390 writing rounds
+(10:20 to 11:20Z, `gateprobe-summary.json`), and p50 36 to 46 ms (max 67 to 108) at 16:50Z, while the members' confirms ran at p90 44 to 377 ms. Confirms
+near 300 ms (295 to 305) came 5 times in pass 1 and never in `carried-3`. So the confirm rose on the platform between
+08:43Z and 15:51Z, for these members and not the bare object [inference: the two differ in write shape, a member's
+transaction carrying 80 to 400 statements against the control's one]; f33a516's stream, the one runtime change near
+the write, cannot be ruled out by this data: every pass below runs it, and no same-window A/B without it was run.
+
+**r300-1 is a follower stall, not the leader's.** 30 s in, the near follower's own confirm took 8.7 s (its others:
+30 to 133 ms), it answered nothing for 8 s, the leader's calls to it missed 6 deadlines, and the leader caught it up
+with entries of 0.3 to 1.5 MB (`failedCalls: 6` in the bench row). The far follower carried the quorum meanwhile at its
+300 ms rounds (append p50 321 ms), which is what pushed the tail over 600 ms [inference from the trace].
+
+### Pass 2: a regression, reverted
+
+Pass 1's trace showed BF-14's `arrival` row, one bare `sql.exec` per `/commit` reply on test installs, as the one
+write in a round outside the member's transaction. `42c846c` moved it into the member's queue. Site day 16:25Z
+(`ed263cf1`.../`3a2cc321`, after the code change): r300-1 at **1,000 ms** and r330-1 at **1,608 ms**, leader confirm
+p99 524 and 607 ms, entries of 73 and 100 commands. The subagent's reading of workerd's source explains it in part:
+SQLite writes until the next event-loop turn share one implicit platform commit, and `transactionSync` is only a
+savepoint inside it, so the bare `exec` ran in the same commit as the entry, while the queued rows were flushed by the
+next input's synchronous `flush`, a separate commit mid-round. Why that made every confirm about 5 times slower is not
+shown [inference]. `42c846c` is reverted (`eeb4bea`); the row stays a bare `exec`.
+
+### Pass 3: back on pass 1's code
+
+Site day 16:39Z from `73380fd` (pass 1's code), four runs: r300-1 **387**, r330-1 **506**, r330-2 **431**, and r300-2
+at 664 ms between. In r300-2 the leader on site 0 stepped down 30 s in (`StepDown { Confirm { p99_ms: 749, slow: 6,
+of: 27 } }`): its confirms ran 103 to 744 ms from the run's first second, `STEP_DOWN` moved the lead to site 1, and the
+run carried 212/s. The new leader's confirm p99 was 399 ms. The other three runs' confirms were 35 to 89 ms.
+
+## Verdict
+
+**B0-02: between pass and fail, not passed.** 11 of 16 on pass 1, and 3 of 4 on pass 3, against the gate's 8 of 8 at
+300 and 8 of 8 at 330. The leader stall `carried-3.md` traced to a stalled AppendEntries body is fixed: no run here
+missed by a body stall on the near follower. Every miss here follows a slow storage confirm on a leader (or, in r300-1,
+on the near follower), at write volume the same as `carried-3`, and a bare object on the same account did not see it.
+The confirm is the platform's (F35's class) [inference], and on a slow-confirm afternoon the best placement on this
+install does not meet 600 ms on every run: commit p99 is about round p50 plus the leader's confirm tail.
+
+The design already answers a sustained slow confirm with `STEP_DOWN` (r300-2 above). What it does not answer is a
+confirm tail of 150 to 400 ms that stays under `STEP_DOWN`'s trip: commit then waits for the leader's own durable
+index on every round. Raft allows the commit to count the leader's copy only once durable, and this design must keep
+that rule, because a reset leader resumes its term with no election (Shape, the write path; `advance_commit`). So no
+code change in this branch can take the leader's confirm off the commit path, and the operator's call is needed:
+measure again in a quieter window, accept B0-02 as between on slow-confirm days (F35), or change the commit rule
+(counting a leader's copy before its confirm needs a different answer to the reset-leader case, and is a design change
+under `crates/raft/src`).
+
+## Checks and cost
+
+Full checks on `2e4cd9f` (fmt, workspace clippy, wasm32 clippy for site, edge, and ops, with `test-faults` for site and
+edge, `cargo test --workspace` 710 passed and 0 failed, `go test ./...` in `containers/git/server`, and the three
+`scripts/check_*.py`): all pass. `42c846c` and its revert passed wasm32 clippy both ways. `crates/raft/src` is unchanged,
+so the long sweep and Porcupine were not rerun. New test: `nearest_try_keeps_the_best_when_every_try_is_over_the_bound`.
+
+graft-m3c usage (`INSTALL=graft-m3c python3 tests/fanout/m2bcost.py`): $5.42 for 15:40 to 17:13Z (three site days and
+23 bench runs), $1.03 for 09:00 to 11:30Z, which includes other threads' use. The bare-object control is on the same
+account and is in those figures.
