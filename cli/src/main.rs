@@ -8,6 +8,7 @@ mod cf;
 mod config;
 mod genesis;
 mod placement;
+mod release;
 mod sites;
 
 use std::path::{Path, PathBuf};
@@ -68,14 +69,17 @@ enum Cmd {
         #[arg(long)]
         offline_keys: bool,
     },
-    /// Signs a genesis offline with the customer's private key. Needs no network and no install.toml.
+    /// Signs a genesis or any other `Release` entry offline. Needs no network and no install.toml.
     Sign {
         input: PathBuf,
         #[arg(long)]
         out: PathBuf,
-        /// The customer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
+        /// The signer's Ed25519 private key: a 64-hex-character seed or a PEM PRIVATE KEY.
         #[arg(long)]
         key: PathBuf,
+        /// Rebind the entry to this digest first (the `prev` a 409 named), dropping its earlier signatures.
+        #[arg(long)]
+        prev: Option<String>,
     },
     Admin {
         #[command(subcommand)]
@@ -86,11 +90,38 @@ enum Cmd {
         #[command(subcommand)]
         cmd: MintKeyCmd,
     },
+    /// Builds, posts, and reads `Release` entries.
+    Release {
+        #[command(subcommand)]
+        cmd: ReleaseCmd,
+    },
     /// Sends the signed genesis to the edge, which writes it to the empty Release group.
     Install {
         #[arg(long)]
         genesis: PathBuf,
         /// The edge's base URL (default: https://<zone>).
+        #[arg(long)]
+        edge: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReleaseCmd {
+    /// Builds one unsigned entry from a JSON spec (`cli/src/release.rs`).
+    Entry {
+        spec: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+        /// The digest of the group's last signed entry (a 409 names it).
+        #[arg(long)]
+        prev: Option<String>,
+        /// For a `Keys` spec: the latest committed signed genesis or `Keys` entry.
+        #[arg(long)]
+        keys: Option<PathBuf>,
+    },
+    /// Posts one signed entry and prints the answer.
+    Post {
+        input: PathBuf,
         #[arg(long)]
         edge: Option<String>,
     },
@@ -286,7 +317,11 @@ fn run(cli: Cli) -> Res<()> {
                 },
             )
         }
-        Cmd::Sign { input, out, key } => genesis::sign(&input, &out, &key),
+        Cmd::Sign { input, out, key, prev } => genesis::sign(&input, &out, &key, prev.as_deref()),
+        Cmd::Release { cmd: ReleaseCmd::Entry { spec, out, prev, keys } } => {
+            release::entry(config, &spec, &out, prev.as_deref(), keys.as_deref())
+        }
+        Cmd::Release { cmd: ReleaseCmd::Post { input, edge } } => release::post(config, &input, edge.as_deref()),
         Cmd::Install { genesis, edge } => genesis::install(config, &genesis, edge.as_deref()),
         Cmd::Admin { cmd: AdminCmd::Bootstrap { account, link_out, out } } => {
             admin::bootstrap(account, &link_out, &out)

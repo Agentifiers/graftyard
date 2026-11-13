@@ -15,9 +15,9 @@
 use std::cell::RefCell;
 
 use graftyard_lookup::Bindings;
-use graftyard_raft::{self as raft, Command, Enc, Ev, Fold, Format, Record, Scratch, TierSet};
+use graftyard_raft::{self as raft, Command, Enc, EntryBody, Ev, Fold, Format, LogEntry, Record, Scratch, TierSet};
 use graftyard_release::{Anchor, ReleaseFold, accept_genesis};
-use graftyard_types::{ChainId, Digest, PlacementRecord, SystemChain};
+use graftyard_types::{ChainId, Digest, PlacementRecord, SystemChain, Timestamp};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use smallvec::{SmallVec, smallvec};
@@ -28,8 +28,11 @@ use crate::host::{blob, hex, rows, unhex};
 use crate::member::Join;
 
 /// The `Release` group's command and event format. `crates/raft` uses family 0, the register 1, identity 0x10 to
-/// 0x13, and the repository 0x20.
+/// 0x13, and the repository 0x20. Version 1 is genesis, the only entry Milestone 1 built.
 pub const RELEASE_FORMAT: Format = Format { family: 0x30, version: 1 };
+/// Every entry after genesis (M5-WP1). A member on a release that reads only version 1 answers `Unsupported` for it,
+/// rather than refusing it as `NotGenesis`, so the two-release rule holds across the site day that ships it.
+pub const RELEASE_FORMAT_2: Format = Format { family: 0x30, version: 2 };
 
 thread_local! {
     static ANCHOR: RefCell<Option<Option<Anchor>>> = const { RefCell::new(None) };
@@ -84,7 +87,8 @@ pub async fn record_for(env: &Env, chain: ChainId) -> Result<PlacementRecord, St
 pub struct ReleaseState {
     pub fold: ReleaseFold,
     pub anchor: Option<Anchor>,
-    /// Every accepted entry's bytes, in order: what the `release_entry` table stores.
+    /// Every accepted entry's bytes, in order: what the `release_entry` table stores. The entry times `apply` reads
+    /// are in the fold itself (a drain's `since`), from `release_at`.
     pub entries: Vec<Box<[u8]>>,
 }
 
@@ -104,9 +108,12 @@ impl Accepted {
     }
 }
 
+/// The fold an entry decides or verifies on, with that entry's time: the leader's `at` when it decides, the entry's
+/// own when a follower verifies, so both judge `not_after` and `ZERO_ACKS` at the same instant.
 pub struct ReleaseScratch<'a> {
     base: &'a ReleaseState,
     over: Option<ReleaseFold>,
+    at: Timestamp,
 }
 
 impl ReleaseScratch<'_> {
@@ -124,12 +131,19 @@ impl Scratch for ReleaseScratch<'_> {
     type Event = Accepted;
     fn apply(&mut self, ev: &Accepted) {
         let mut f = self.fold().clone();
-        f.apply(&ev.release());
+        f.apply(&ev.release(), self.at);
         self.over = Some(f);
     }
     fn check(&self, ev: &Accepted) -> Result<(), Box<str>> {
         let anchor = self.base.anchor.ok_or_else(|| no_anchor().to_string())?;
-        self.fold().check(&anchor, &ev.release()).map_err(|e| e.to_string().into())
+        self.fold().check(&anchor, self.at, &ev.release()).map_err(|e| e.to_string().into())
+    }
+}
+
+impl ReleaseState {
+    fn apply_at(&mut self, ev: &Accepted, at: Timestamp) {
+        self.fold.apply(&ev.release(), at);
+        self.entries.push(ev.0.clone().into_boxed_slice());
     }
 }
 
@@ -137,11 +151,21 @@ impl Fold for ReleaseState {
     type Event = Accepted;
     type Scratch<'a> = ReleaseScratch<'a>;
     fn scratch(&self) -> ReleaseScratch<'_> {
-        ReleaseScratch { base: self, over: None }
+        ReleaseScratch { base: self, over: None, at: Timestamp(0) }
     }
+    fn scratch_at(&self, at: Timestamp, _tiers: TierSet) -> ReleaseScratch<'_> {
+        ReleaseScratch { base: self, over: None, at }
+    }
+    /// Only through `apply_entry`, which has the entry's time.
     fn apply(&mut self, ev: &Accepted) {
-        self.fold.apply(&ev.release());
-        self.entries.push(ev.0.clone().into_boxed_slice());
+        self.apply_at(ev, Timestamp(0));
+    }
+    fn apply_entry(&mut self, e: &LogEntry<Accepted>) {
+        if let EntryBody::Events(evs) = &e.body {
+            for ev in evs {
+                self.apply_at(ev, e.at);
+            }
+        }
     }
 }
 
@@ -175,7 +199,10 @@ impl Command for Submit {
     type Err = graftyard_release::Refusal;
 
     fn format(&self) -> Format {
-        RELEASE_FORMAT
+        match graftyard_release::SignedEntry::decode(&self.0).map(|e| e.body) {
+            Ok(graftyard_release::ReleaseEntry::Genesis(_)) | Err(_) => RELEASE_FORMAT,
+            Ok(_) => RELEASE_FORMAT_2,
+        }
     }
     fn tiers(&self) -> TierSet {
         TierSet::CORE
@@ -190,7 +217,7 @@ impl Command for Submit {
         _deps: &[(ChainId, ())],
     ) -> Result<(SmallVec<[Ev<Self>; 4]>, Digest), graftyard_release::Refusal> {
         let anchor = s.base.anchor.ok_or_else(no_anchor)?;
-        let a = s.fold().decide(&anchor, &self.0)?;
+        let a = s.fold().decide(&anchor, s.at, &self.0)?;
         Ok((smallvec![Accepted(a.bytes.to_vec())], a.digest()))
     }
     fn replay(&self, events: &[Accepted]) -> Digest {
@@ -208,7 +235,7 @@ impl Family for Release {
     type C = Submit;
 
     fn reads() -> Vec<Format> {
-        vec![RELEASE_FORMAT]
+        vec![RELEASE_FORMAT, RELEASE_FORMAT_2]
     }
     fn new_fold(_sql: &SqlStorage, _join: &Join) -> ReleaseState {
         ReleaseState { fold: ReleaseFold::default(), anchor: cached_anchor(), entries: Vec::new() }
@@ -221,37 +248,76 @@ impl Family for Release {
                         "INSERT OR REPLACE INTO release_entry (idx, k, bytes) VALUES (?, ?, ?)",
                         vec![crate::host::i(e.index.0), crate::host::i(k as u64), ev.0.clone().into()],
                     ));
+                    stmts.push((
+                        "INSERT OR REPLACE INTO release_at (idx, at) VALUES (?, ?)",
+                        vec![crate::host::i(e.index.0), crate::host::i(e.at.0)],
+                    ));
                 }
             }
         }
     }
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<ReleaseState> {
         let mut f = Self::new_fold(sql, join);
-        for r in rows(sql, "SELECT bytes FROM release_entry ORDER BY idx, k", vec![])? {
-            f.apply(&Accepted(blob(&r[0])?.to_vec()));
+        // A row written before `release_at` existed is the genesis, whose apply reads no time, so 0 restores the
+        // same fold the log replays.
+        let q = "SELECT e.bytes, COALESCE(a.at, 0) FROM release_entry e LEFT JOIN release_at a ON a.idx = e.idx \
+                 ORDER BY e.idx, e.k";
+        for r in rows(sql, q, vec![])? {
+            f.apply_at(&Accepted(blob(&r[0])?.to_vec()), Timestamp(crate::host::int(&r[1])? as u64));
         }
         Ok(f)
     }
     fn out_json(_fold: &Self::Fold, a: &raft::Acked<Digest>) -> Value {
         json!({ "digest": a.out.hex() })
     }
-    /// 409 with the held digest for a genesis into an installed group, 422 for the rest
-    /// (`tests/m1/results/m1-cli.md`, "What the edge's release endpoint must accept").
+    /// 409 with the current digest for a stale `prev`, a second genesis included; 422 for every other refusal
+    /// (`design/DESIGN.md`, Shape, the release endpoint).
     fn err_json(e: &graftyard_release::Refusal) -> Value {
-        let mut v = json!({ "err": e.variant(), "message": e.to_string(), "status": 422 });
-        if let graftyard_release::Refusal::AlreadyInstalled(d) = e {
-            v["status"] = json!(409);
+        let mut v = json!({ "err": e.variant(), "message": e.to_string(), "status": e.status() });
+        if let Some(d) = e.current() {
             v["prev"] = json!(d.hex());
         }
         v
     }
-    /// `{"genesis": true}`: the accepted genesis's bytes, hex, and its digest.
-    fn read_json(fold: &ReleaseState, _q: &Value) -> Value {
-        json!({
+    /// The view: the genesis's bytes, the last digest, the `Keys` generation, the current intent and its state, site
+    /// modes, pointers, and enabled formats. `{"after": n}` adds up to 100 entries from position `n` (0 is the
+    /// genesis), hex.
+    fn read_json(fold: &ReleaseState, q: &Value) -> Value {
+        let f = &fold.fold;
+        let mut v = json!({
             "genesis": fold.entries.first().map(|b| hex(b)),
-            "last": fold.fold.last.map(|d| d.hex()),
+            "last": f.last.map(|d| d.hex()),
             "entries": fold.entries.len(),
-        })
+            "keys": f.keys.as_ref().map(|k| json!({
+                "generation": k.generation,
+                "customer": k.customer.hex(),
+                "vendor": k.vendor.map(|x| x.hex()),
+                "release": k.release.hex(),
+                "drain": k.drain.hex(),
+                "executor": k.executor.hex(),
+                "agents_executor": k.agents_executor.map(|x| x.hex()),
+                "ring": k.ring.iter().map(|(s, x)| json!([s.0, x.hex()])).collect::<Vec<_>>(),
+            })),
+            "current": f.current.as_ref().map(|c| json!({
+                "intent": c.intent.id.0.to_string(),
+                "kind": c.intent.intent.kind(),
+                "state": format!("{:?}", c.state),
+                "next": c.next,
+            })),
+            "drained": f.drained.iter().map(|(s, d)| json!({ "site": s, "drain_key": d.by_drain_key, "since": d.since.0 })).collect::<Vec<_>>(),
+            "uploads": f.uploads.keys().map(|r| hex(r)).collect::<Vec<_>>(),
+            "enabled": f.enabled.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
+            "pointers": {
+                "edge": f.pointers.edge.map(|v| v.to_string()),
+                "ops": f.pointers.ops.map(|v| v.to_string()),
+                "mcp": f.pointers.mcp.map(|v| v.to_string()),
+                "controller": f.pointers.controller.map(|v| v.to_string()),
+            },
+        });
+        if let Some(after) = q.get("after").and_then(Value::as_u64) {
+            v["page"] = fold.entries.iter().skip(after as usize).take(100).map(|b| hex(b)).collect();
+        }
+        v
     }
     fn fold_bytes(_fold: &ReleaseState) -> Vec<u8> {
         Vec::new()
@@ -265,3 +331,7 @@ impl Family for Release {
 }
 
 pub const RELEASE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS release_entry (idx INTEGER NOT NULL, k INTEGER NOT NULL, bytes BLOB NOT NULL, PRIMARY KEY (idx, k))";
+/// Each `release_entry` row's entry time, which `apply` reads (a drain's `since`). A table of its own, so a member
+/// stored before it existed needs no migration: its rows are the genesis alone.
+pub const RELEASE_AT_SCHEMA: &str =
+    "CREATE TABLE IF NOT EXISTS release_at (idx INTEGER PRIMARY KEY, at INTEGER NOT NULL)";
