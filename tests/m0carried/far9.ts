@@ -7,7 +7,7 @@
 //
 //   EDGE_URL=... node tests/m0carried/far9.ts --run m0c9-far1 [--rate 300] [--seconds 120] [--stop-at 60]
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
 const { values: opt } = parseArgs({ options: {
@@ -16,6 +16,7 @@ const { values: opt } = parseArgs({ options: {
 } });
 if (!opt.run) throw new Error("usage: node tests/m0carried/far9.ts --run NAME");
 const ROOT = new URL("../m1/wp2/", import.meta.url).pathname;
+mkdirSync(`${ROOT}raw`, { recursive: true });
 const URL_ = process.env.EDGE_URL!;
 const TOKEN = readFileSync(`${ROOT}../../m0/.m0-token`, "utf8").trim();
 const HOME = 1, NEAR = 0;
