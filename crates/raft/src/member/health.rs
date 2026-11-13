@@ -81,13 +81,6 @@ pub(super) struct Prober {
     failed: u8,
 }
 
-impl LeaderHealth {
-    /// A call to `s` failed in the window: the leader keeps one call out to it (`PIPELINE`).
-    pub(super) fn failed_to(&self, s: SiteId) -> bool {
-        self.calls.iter().any(|c| c.1 == s && !c.2)
-    }
-}
-
 impl<C: Command> Member<C> {
     // ---- inputs ----
 
@@ -237,7 +230,7 @@ impl<C: Command> Member<C> {
     /// This leader's calls to `s` in the window fail as the commit-error rule counts a failing link (over
     /// `commit_errors`, at least `commit_fail_min`), but over every call: `call_counts` leaves out the misses before `s`
     /// first answered and the repeats within one stall, which on a half-hung follower are most of them (F67 rule 13).
-    fn link_lossy(&self, s: SiteId) -> bool {
+    pub(super) fn link_lossy(&self, s: SiteId) -> bool {
         let Some(lead) = &self.lead else { return false };
         let mine = lead.health.links.iter().filter(|c| c.1 == s);
         let (n, failed) = mine.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));

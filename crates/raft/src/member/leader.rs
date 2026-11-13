@@ -28,11 +28,15 @@ use super::{
 
 /// Entries per AppendEntries when a follower is behind.
 const CATCHUP_MAX: usize = 64;
-/// Encoded bytes per AppendEntries beyond its first entry. With the count cap alone, 64 entries of up to ENTRY_MAX
-/// each could go in one call (up to 96 MB), which no member answers within CALL_DEADLINE, so a follower behind on a
-/// repository with inline packs would be sent the same call on every retry (`tests/m1/results/m1-wp8.md`, t-256).
-/// One entry always goes, so an entry up to ENTRY_MAX still replicates.
-pub const APPEND_BYTES_MAX: usize = 1_500_000;
+/// Encoded bytes per AppendEntries, catch-up or pipelined; one entry always goes, so an entry up to ENTRY_MAX still
+/// replicates. A call to the far voter must answer within CALL_DEADLINE: at 1.5 MB, a far voter behind on calls of
+/// 319 to 717 KB missed on every call, and B0-02's leader stepped down off its site (r330-6,
+/// `tests/m0/results/carried-8.md`). Far calls on `Tri` took p99 810 to 869 ms at 100 to 125 KB, and
+/// missed first at 150 KB; at 75 to 100 KB, p99 768 to 845 ms [measured, m0-carried-6 to -8], which leaves about 150 ms
+/// of margin. A pipelined call shares the link with up to PIPELINE - 1 others, and calls of at most 125 KB with 500 to
+/// 550 KB ahead of them still answered at p99 644 ms.
+/// With 64 entries of up to ENTRY_MAX alone, 9 MB calls missed every time (`tests/m1/results/m1-wp8.md`, t-256).
+pub const APPEND_BYTES_MAX: usize = 100_000;
 
 /// How many of `entries` one AppendEntries carries: at most CATCHUP_MAX, and past the first, only while their encoded
 /// size stays within APPEND_BYTES_MAX.
@@ -52,9 +56,11 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 /// earlier ones are still out, carrying only the entries after them, so a far voter whose call for entry k is still
 /// running gets k+1 at once: with one call per voter, B0-02's far follower got each entry one whole call late, and in
 /// four failing runs the near follower went quiet for 0.6 to 1.6 s while the far one, which then made the quorum,
-/// waited on calls of 43 to 301 KB (`tests/m0/results/carried-8.md`). Only a voter with no failed call in the
-/// `STEP_DOWN` window is pipelined: a half-hung leader whose few answered calls each let several more out renewed its
-/// followers' promises and held a live-sweep group 50 s (seed 11497).
+/// waited on calls of 43 to 301 KB (`tests/m0/results/carried-8.md`). A voter whose link is lossy (F67 rule 13: over
+/// `commit_errors` of every call in the `STEP_DOWN` window failed, at least `commit_fail_min`) gets one call at a time:
+/// a half-hung leader whose few answered calls each let several more out renewed its followers' promises and held a
+/// live-sweep group 50 s (seed 11497). One miss does not stop it: a far voter that missed once and lost its pipeline
+/// for the window caught up one backlog call at a time, and each missed again (r330-6).
 pub const PIPELINE: usize = 4;
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
@@ -1272,13 +1278,14 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose calls have not failed in the
-    /// window is sent only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
+    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
+    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
         let voter = quorum::is_voter(self.log_config(), peer);
+        let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());
         let after = if !force && lead.sent.contains_key(&peer) {
@@ -1286,7 +1293,7 @@ impl<C: Command> Member<C> {
             match pipe.last() {
                 Some(&(_, through))
                     if voter
-                        && !lead.health.failed_to(peer)
+                        && !lossy
                         && pipe.len() < PIPELINE
                         && through < last
                         && through >= base

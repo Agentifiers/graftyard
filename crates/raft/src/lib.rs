@@ -105,13 +105,15 @@ pub const COMMAND_MAX: usize = 1_200_000;
 /// The largest `Events` entry: "Every command that arrives during a round goes into the next entry, up to 1.5 MB".
 pub const ENTRY_MAX: usize = 1_500_000;
 /// Where the leader stops filling an `Events` entry: past its first command, a command joins only while the entry
-/// stays within this many encoded bytes, so a backlog splits into several entries of this size, one round each.
-/// ENTRY_MAX still bounds one command alone. A Durable Object member's storage confirm grows with the entry: over 48
-/// one-minute B0-02 runs, confirm p99 was 95 to 132 ms for 20 to 80 KB entries, 168 ms at 80 to 100 KB, and 300 ms
-/// at 100 to 130 KB (`tests/m0/results/carried-6.md`). And a member call's body crosses a step just past 64 KiB: 0 to
-/// 2% of bodies up to 66 KiB took 60 ms or more to arrive, against 10 to 40% at 68 to 83 KiB, about one more round
-/// trip (`tests/m0/results/carried-7.md`) [measured]. So an entry stays under 64 KiB with its envelope.
-pub const ENTRY_SOFT: usize = 60_000;
+/// stays within this many encoded bytes, not counting Agent inline packs (`AGENT_INLINE_ENTRY` bounds those). A cut
+/// takes the whole queue up to here, so the bound binds only on a backlog: at light load an entry carries what arrived
+/// during one round, and B0-02's at 300 commands/s were 33 to 50 commands. A Durable Object member's storage confirm
+/// grows with the entry: confirm p99 was 95 to 132 ms for 20 to 80 KB entries, 168 ms at 80 to 100 KB, and 300 ms at
+/// 100 to 130 KB (`tests/m0/results/carried-6.md`). At 60 KB, one entry a round held a backlog to 322 to 331
+/// commands/s at B0-02's near round of 169 to 174 ms, and two gate runs at 330 offered queued past 600 ms. Entries of
+/// 90 to 110 KB carried about 92 commands in a near round of p50 234 ms, 393 commands/s, a utilization of 0.78 at 308
+/// committed (`tests/m0/results/carried-8.md`) [measured].
+pub const ENTRY_SOFT: usize = 100_000;
 /// A boot more than this long after the member last saved its state is an idle eviction, not a reset
 /// (`MemberState.boots`).
 pub const BOOT_IDLE: Duration = Duration::from_secs(5);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""m0-carried-8: planted bugs in the AppendEntries pipeline (`PIPELINE`), and the
-loop-lag step-down (`LOOP_LAG`), `tests/m0/results/carried-8.md`. Plants one mutant at a time, runs the raft tests
-in release, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the
+"""m0-carried-8: planted bugs in the AppendEntries pipeline (`PIPELINE`), the catch-up byte bound
+(`APPEND_BYTES_MAX`), the entry cap (`ENTRY_SOFT`), and the loop-lag step-down (`LOOP_LAG`),
+`tests/m0/results/carried-8.md`. Plants one mutant at a time, runs the raft tests in release, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE. Run from the
 repository root:
 
     python3 tests/m0carried/plant8.py          # every mutant
@@ -22,8 +22,14 @@ MUTANTS = [
     ('no pipeline (PIPELINE = 1)', LEADER, 'pub const PIPELINE: usize = 4;', 'pub const PIPELINE: usize = 1;'),
     ('the bound off by one', LEADER, '&& pipe.len() < PIPELINE', '&& pipe.len() <= PIPELINE'),
     ('no bound at all', LEADER, '&& pipe.len() < PIPELINE', '&& pipe.len() < usize::MAX'),
-    ('pipelining to a voter with a failed call in the window', LEADER,
-     '                        && !lead.health.failed_to(peer)\n', ''),
+    ('pipelining to a voter on a lossy link', LEADER, '                        && !lossy\n', ''),
+    ('pipelining stops on any failed call in the window', HEALTH,
+     'failed >= u32::from(STEP_DOWN.commit_fail_min) && Self::rate(n, failed) > STEP_DOWN.commit_errors',
+     'failed >= 1'),
+    ('catch-up calls of 1.5 MB', LEADER, 'pub const APPEND_BYTES_MAX: usize = 100_000;',
+     'pub const APPEND_BYTES_MAX: usize = 1_500_000;'),
+    ('the entry cap back at 60 KB', LIB, 'pub const ENTRY_SOFT: usize = 100_000;', 'pub const ENTRY_SOFT: usize = 60_000;'),
+    ('no entry cap (ENTRY_MAX)', LIB, 'pub const ENTRY_SOFT: usize = 100_000;', 'pub const ENTRY_SOFT: usize = 1_500_000;'),
     ('a pipelined call starts at next, not after the calls out', LEADER,
      '                    Some(through)\n', '                    Some(Index(next.0 - 1))\n'),
     ('a pipelined call starts one past the calls out', LEADER,
