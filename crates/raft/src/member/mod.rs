@@ -680,6 +680,11 @@ pub struct Member<C: Command> {
     drained: BTreeSet<SiteId>,
     /// A voter refused this member's pre-vote as `Suspected`: until then it denies no rival as `Contending`.
     stand_aside_until: Timestamp,
+    /// The leader this member forgot because its read-index call to it failed (F67): reports about it still count.
+    /// A leader it never heard from (a transfer target it voted for) is not one: reports about it do not count.
+    forgot: Option<SiteId>,
+    /// A voter refused this member's pre-vote as `Suspected`: it starts no other campaign until then, half the bar.
+    retry_pre_at: Timestamp,
     /// The highest index of this member's log that it knows is durable on its own storage: the stored log at
     /// `restore`, then raised only by `self_ack`. A leader counts itself toward a commit only up to here.
     own_durable: Index,
@@ -809,6 +814,8 @@ impl<C: Command> Member<C> {
             refuser_release: BTreeMap::new(),
             drained: BTreeSet::new(),
             stand_aside_until: Timestamp(0),
+            forgot: None,
+            retry_pre_at: Timestamp(0),
             own_durable,
             own_durable_at: Timestamp(0),
             epoch: 0,
