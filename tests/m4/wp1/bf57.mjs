@@ -10,7 +10,7 @@
 //   with Cloudflare's clock and this script stamps 201s with its own, so the offset between them (`skew`, the
 //   receiver's clock minus this one, measured as the median of 9 round trips to the receiver before and after the
 //   load) is taken off every arrival; the orb's clock ran 1.82 s behind Cloudflare's on 2026-11-13;
-// - the slow hook's deliveries in chain order (its sequence numbers strictly increase);
+// - every hook's deliveries in chain order, placed by their GUIDs (each GUID derives from its entry's index and slot);
 // - the Webhooks cursor lag, from the commit of the first entry a cursor commit passes to that cursor's own commit,
 //   which each repository leader logs ("webhooks cursor <repo> read <i> lag <ms>ms"), read from Workers Logs over the
 //   three site scripts (the tools edge reads no repository chain on a product install).
@@ -19,6 +19,7 @@
 // commits at 10 events/s; latency is measured from the write's 201.
 //
 //   source tests/am1/lf13/env-m4a.sh; node tests/m4/wp1/bf57.mjs <out.jsonl> [seconds=60]
+import { createHash } from "node:crypto";
 import { api, log, row, sleep, tokens } from "../../am1/hosted/lib.mjs";
 
 const SINK = process.env.HOOKSINK ?? "https://graft-m4-hooksink.<workers-subdomain>.workers.dev";
@@ -27,6 +28,10 @@ if (!out) throw new Error("usage: bf57.mjs <out.jsonl> [seconds]");
 const T = tokens.admin;
 const REPOS = [["j4", 20], ["bf57b", 20], ["bf57c", 10]];
 const RATE = 10;
+// Each description ends with this run's tag, and only arrivals carrying it count: run 16 reused run 15's hooks while
+// run 15's deliveries still drained, and their "j4 140" read as this run's sequence numbers.
+const RUN = Date.now().toString(36);
+const mine = (x) => typeof x.after === "string" && x.after.endsWith(` ${RUN}`);
 
 async function ensureRepo(name) {
   const r = await api("GET", `/api/v3/repos/m3org/${name}`, T);
@@ -81,6 +86,14 @@ async function sinkDump() {
 }
 log(`slow hook ${slowHook}`);
 await sleep(process.env.KEEP_HOOKS ? 2_000 : 30_000); // let the pings drain
+// Start only once the slow hook has had no arrival for 30 s, so no earlier run's queue is still draining.
+for (let last = -1; ; ) {
+  const n = (await sinkDump()).filter((x) => Number(x.hook) === slowHook).length;
+  if (n === last) break;
+  if (last >= 0) log(`slow hook still draining (${n} arrivals)`);
+  last = n;
+  await sleep(30_000);
+}
 await fetch(`${SINK}/clear`);
 
 /** The receiver's clock minus this one: for each round trip, its arrival stamp minus the midpoint of the request. */
@@ -115,13 +128,13 @@ while (Date.now() < end) {
     let res;
     for (let i = 0; i < 30; i++) {
       res = await api("POST", `/api/v3/repos/m3org/${r.name}/statuses/${"b".repeat(40)}`, T,
-        { state: "success", context: "bf57", description: `${r.name} ${seq}` });
+        { state: "success", context: "bf57", description: `${r.name} ${seq} ${RUN}` });
       if (res.status !== 503) break;
       shed++;
       await sleep(1000 * Number(res.headers?.["retry-after"] ?? 1));
     }
     const at = Date.now();
-    sent.set(`${r.name} ${seq}`, { at, status: res.status });
+    sent.set(`${r.name} ${seq} ${RUN}`, { at, status: res.status });
     row(out, { kind: "sent", repo: r.name, seq, at, status: res.status, ms: res.ms });
   })();
   inflight.add(p);
@@ -135,7 +148,7 @@ log(`sent ${sent.size} statuses, ${ok.length} committed, by ${(Math.max(...ok.ma
 const slowWant = [...sent.keys()].filter((key) => key.startsWith("j4 ")).length;
 for (let i = 0; i < 400; i++) {
   const d = await sinkDump();
-  const n = d.filter((x) => x.event === "status" && Number(x.hook) === slowHook).length;
+  const n = d.filter((x) => mine(x) && x.event === "status" && Number(x.hook) === slowHook).length;
   if (n >= slowWant) break;
   if (i % 6 === 0) log(`slow hook ${n} of ${slowWant}`);
   await sleep(10_000);
@@ -143,7 +156,7 @@ for (let i = 0; i < 400; i++) {
 const skewAfter = await skew("after");
 const SKEW = Math.round((skewBefore + skewAfter) / 2);
 log(`clock skew after: ${skewAfter} ms; taken off arrivals: ${SKEW} ms`);
-const dump = (await sinkDump()).filter((x) => !String(x.after).startsWith("skew ")).map((x) => ({ ...x, at: x.at - SKEW }));
+const dump = (await sinkDump()).filter(mine).map((x) => ({ ...x, at: x.at - SKEW }));
 for (const x of dump) row(out, { kind: "arrival", ...x });
 // Cursor lag from the leaders' log lines, through the Workers observability API.
 const lags = [];
@@ -159,7 +172,8 @@ for (const script of ["graft-m4a-site-a", "graft-m4a-site-b", "graft-m4a-site-c"
       const m = e.$metadata?.message?.match(/^webhooks cursor (\d+) read (\d+) lag (\d+)ms$/);
       if (!m) continue;
       const repo = repos.find((x) => x.id === Number(m[1]))?.name;
-      if (repo) lags.push({ repo, at: e.timestamp - t0, read: Number(m[2]), lag: Number(m[3]) });
+      // A commit whose first entry was committed before the load began passes an earlier run's backlog.
+      if (repo && Number(m[3]) <= e.timestamp - t0) lags.push({ repo, at: e.timestamp - t0, read: Number(m[2]), lag: Number(m[3]) });
     }
   }
 }
@@ -185,17 +199,36 @@ healthy.sort((a, b) => a - b);
 const p = (q) => healthy[Math.min(healthy.length - 1, Math.floor(q * healthy.length))];
 const want = repos.reduce((n, r) => n + r.hooks.length * seqs.get(r.name), 0) - slowWant;
 log(`healthy first attempts ${healthy.length} of ${want}: p50 ${p(0.5)} ms, p99 ${p(0.99)} ms, max ${healthy.at(-1)} ms`);
-// The slow hook's order.
-const slow = dump.filter((x) => x.event === "status" && Number(x.hook) === slowHook).map((x) => Number(x.after.split(" ")[1]));
-const firstSeen = [...new Set(slow)];
-const inOrder = firstSeen.every((v, i) => i === 0 || v > firstSeen[i - 1]);
-log(`slow hook: ${firstSeen.length} of ${slowWant} delivered, in order: ${inOrder}, attempts ${slow.length}`);
-// Every hook's order.
-let bad = 0;
-for (const r of repos) for (const h of r.hooks) {
-  const s = dump.filter((x) => x.event === "status" && Number(x.hook) === h).map((x) => Number(x.after.split(" ")[1]));
-  const f = [...new Set(s)];
-  if (!f.every((v, i) => i === 0 || v > f[i - 1])) bad++;
+// Chain order. Concurrent writes and re-sent sheds commit out of sequence-number order, so each arrival's place in
+// its chain comes from its GUID: `delivery_guid` (crates/git/src/hooks.rs) over (generation 1, chain, index, slot,
+// hook), searched over the chain's indexes. Per hook, first arrivals must come in (index, slot) order.
+function guidOf(chain, index, slot, hook) {
+  const h = createHash("sha256").update("graftyard/hook-delivery/1\0");
+  const u = (n, v) => { const b = Buffer.alloc(n); n === 2 ? b.writeUInt16BE(v) : b.writeBigInt64BE(BigInt(v)); return b; };
+  h.update(u(8, 1)).update(chain).update(Buffer.from([0])).update(u(8, index)).update(u(2, slot)).update(u(8, hook));
+  const d = h.digest().subarray(0, 16);
+  d[6] = (d[6] & 0x0f) | 0x80;
+  d[8] = (d[8] & 0x3f) | 0x80;
+  const x = d.toString("hex");
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20)}`;
 }
-log(`hooks out of order: ${bad}`);
-row(out, { kind: "summary", skew: SKEW, shed, committed: ok.length, lag1: lagMax(0, half), lag2: lagMax(half, end - t0), healthy: healthy.length, want, p50: p(0.5), p99: p(0.99), max: healthy.at(-1), slow: firstSeen.length, slowWant, inOrder, bad });
+const maxIndex = Number(process.env.MAX_INDEX ?? 40_000);
+let bad = 0;
+let unplaced = 0;
+let slowOrder = null;
+for (const r of repos) for (const h of r.hooks) {
+  const first = new Map();
+  for (const x of dump.filter((x) => x.event === "status" && Number(x.hook) === h)) if (!first.has(x.guid)) first.set(x.guid, x.at);
+  const placed = [];
+  for (let i = 1; i <= maxIndex && placed.length < first.size; i++) for (let s = 0; s < 4; s++) {
+    const g = guidOf(`repo:${r.id}`, i, s, h);
+    if (first.has(g)) placed.push([i, s, first.get(g)]);
+  }
+  unplaced += first.size - placed.length;
+  const ordered = placed.every((v, j) => j === 0 || v[2] > placed[j - 1][2]);
+  if (!ordered) bad++;
+  if (h === slowHook) slowOrder = { delivered: first.size, ordered };
+}
+log(`slow hook: ${slowOrder.delivered} of ${slowWant} delivered, in chain order: ${slowOrder.ordered}`);
+log(`hooks out of chain order: ${bad}; arrivals not placed in their chain: ${unplaced}`);
+row(out, { kind: "summary", skew: SKEW, shed, committed: ok.length, lag1: lagMax(0, half), lag2: lagMax(half, end - t0), healthy: healthy.length, want, p50: p(0.5), p99: p(0.99), max: healthy.at(-1), slow: slowOrder.delivered, slowWant, inOrder: slowOrder.ordered, bad, unplaced });

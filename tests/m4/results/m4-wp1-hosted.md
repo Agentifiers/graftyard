@@ -4,7 +4,7 @@ This file records M4-WP1's hosted half on `graft-m4a`, a product build with `sta
 
 Branch `m4-actions`. Every site day is in `install-m4a.md`'s site-day log. The raw data is in `tests/m4/results/raw/`: `bf57-runN.jsonl` holds the driver's rows, and `bf57-runN-sink.json` holds the receiver's log where it was kept. The driver is `tests/m4/wp1/bf57.mjs`.
 
-Status: **in progress.** BF-57 does not pass yet: chain order and cursor lag pass, but healthy first-attempt p99 is 2.1 to 3.2 s against 2 s. BF-58, `Audit`, and the DECISIONS and BUILD-PLAN entries are not written yet.
+Status: **in progress.** **BF-57 passes** (run 16, site day 18). BF-58 and the hosted `Audit` stream are not done yet.
 
 ## BF-57: one hook timing out at 10 s beside 49 healthy hooks, 10 events/s
 
@@ -22,14 +22,14 @@ The load is 600 commit statuses in 60 s, round robin over the three repositories
 Measures:
 
 - **Healthy first-attempt latency.** The time from the status's 201 to the hook's first arrival at the receiver, with the receiver's clock skew taken off. The skew is the median of 9 round trips before and 9 after the load: 1.8 to 2.3 s, with the receiver ahead.
-- **Order.** Per hook, from the sequence numbers. For the slow hook, chain order is checked by matching each arrival's `X-GitHub-Delivery` against `delivery_guid` over the chain's indexes.
+- **Order.** Per hook, chain order, by matching each arrival's `X-GitHub-Delivery` against `delivery_guid` over the chain's indexes (runs before 16 compared sequence numbers, and the GUID check for the slow hook only).
 - **Cursor lag.** Each repository leader logs `webhooks cursor <repo> read <i> lag <ms>ms` on each cursor commit. The lag runs from the first entry that commit passes to the commit itself, read from Workers Logs.
 
 The 201 is an upper bound on the entry's commit, so the latency includes the edge's reply leg.
 
 ### Runs
 
-Each fix below was found from Workers Logs in the run before it.
+Each fix below was found from Workers Logs in the run before it. Runs 13 and 14's drivers lost their connection to the receiver while the slow hook drained, so their raw files hold the sent rows only; their latency and order come from the receiver's log, read afterwards (`bf57-run13-sink.json` for run 13).
 
 | Run | Site day | Healthy p99 | Healthy delivered | Slow hook | Cursor lag | Finding and fix |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -45,6 +45,19 @@ Each fix below was found from Workers Logs in the run before it.
 | 10 | 12 | 2.54 s | 9,800 of 9,800 | in order | p50 about 1.7 s; one 137 s | After the load stopped, bf57b's leader armed its alarm 2 s out, and no alarm ran after it. Five entries (bf57b 180, 20 deliveries) waited 137 s for an unrelated read to wake the member. Fixed in [`05cf164`](https://github.com/Agentifiers/graftyard/commit/05cf164): the alarm invocation sets the alarm it armed again, and awaits it, before it returns. Each 11.7 KB payload was also written 20 times per bf57b entry. Fixed in [`652ade3`](https://github.com/Agentifiers/graftyard/commit/652ade3): one body per entry and slot. |
 | 11 | 13 | 2.45 s | 9,800 of 9,800 | in order | p50 about 1.7 s | Batching every 50 ms still left a write pending almost always. An attempt took 223 ms at p50 with a write pending, against 6 ms with none. Fixed in [`223d41c`](https://github.com/Agentifiers/graftyard/commit/223d41c): reports written once a second. |
 | 12 | 14 | 3.18 s | 9,819 of 9,819 (601 statuses) | in order | p50 about 1.7 s | Reports written once a second made it worse, not better: 625 deliveries over 2 s against 291 in run 11. Attempt time still grows with concurrency (28 ms p50 under 10 in flight, 234 ms at 40 or more). Batching is not the lever; see below. |
+| 13 | 15 | 9.4 s | 9,800 of 9,800 | in order | n/a | Attempts left the store for stateless invocations of the site script over its own `SITE` binding ([`13bbd8f0`](https://github.com/Agentifiers/graftyard/commit/13bbd8f0)). A probe found the POST takes about 205 ms at p50 from such an invocation, which runs beside the store, against 7 ms from a separate Durable Object. Replaced in [`c0f7cfd4`](https://github.com/Agentifiers/graftyard/commit/c0f7cfd4): one lane object per hook (`hooklane:<hook>`, the same class, keeping nothing) makes the POST. |
+| 14 | 16 | 2.10 s | 9,800 of 9,800 | in order | n/a | All 124 deliveries over 2 s waited behind their own hook's earlier entries, one lane call per attempt. Fixed in [`0c44e818`](https://github.com/Agentifiers/graftyard/commit/0c44e818): one lane call sends its queue's run, the head and up to 8 queued deliveries, in order, stopping at the first non-2xx or after 2 s. |
+| 15 | 17 | n/a | n/a | n/a | n/a | Aborted: lane objects still running day 16's code could not decode the run batch. Fixed in [`82f26e3d`](https://github.com/Agentifiers/graftyard/commit/82f26e3d): the lane's name and route carry its wire version (`LANE_WIRE`), and a lane that answers anything but 200 counts as a failed attempt. |
+| 16 | 18 | **1.07 s** (max 1.78 s) | 9,800 of 9,800 | 200 of 200, in chain order | **max 4.82 s**, second half 3.29 s | **Pass.** See "Run 16" below. |
+
+### Run 16
+
+Site day 18 (`m4a-deploy` `8e39480b`, sites `dedb3861` / `673eba60` / `105bb420`), 2026-11-13 22:30Z, raw data `raw/bf57-run16.jsonl`.
+
+- **Healthy first attempts.** 9,800 of 9,800, p50 326 ms, **p99 1,066 ms**, max 1,780 ms, none over 2 s. Clock skew taken off: 2,710 ms. 600 statuses committed in 70 s, with 687 sheds re-sent.
+- **Chain order.** Each arrival's (index, slot) comes from its GUID: every one of the 10,000 status arrivals matches `delivery_guid` (generation 1, its repository's chain, an index up to 16,000, a slot up to 7, its hook). Per hook, first arrivals in (index, slot) order: **0 inversions on all 50 hooks**, including the slow hook's 200 of 200. No GUID arrived twice.
+- **Cursor lag.** 168 cursor commits were logged. **The largest is 4,818 ms** (j4 at +17.8 s), and the largest in the second half is 3,288 ms, so it does not grow with the slow hook. Two commits at +5 s (bf57b and bf57c, lag 1,338 s and 1,334 s) passed entries committed by run 15 before this run began. They measure that earlier backlog, not this load, so the driver now leaves out a commit whose lag is longer than the time since the load began.
+- **What the driver printed.** It printed "slow hook in order: false" and "hooks out of order: 50". Both are wrong for two reasons. First, it compared sequence numbers, which follow send order: concurrent writes and re-sent sheds commit in either order. Second, run 15's slow-hook queue was still draining when run 16 began on the same hooks (`KEEP_HOOKS=1`). Its 40 deliveries (indexes 4,728 to 4,754, against run 16's from 4,796) carried descriptions such as "j4 140", which read as run 16's. The receiver's full log afterwards held 240 slow-hook arrivals, 240 GUIDs. The driver now tags each run's descriptions and counts only its own arrivals, waits until the slow hook has been quiet for 30 s before it starts, and checks chain order by GUID for every hook.
 
 ### What bounds healthy latency now
 
@@ -53,7 +66,7 @@ The figures below are from runs 8 to 12 on site a. Healthy p99 across runs 8 to 
 - **Where the time goes.** The time from attempt start to receiver arrival is 470 to 540 ms at p50. With no load, an attempt takes 6 ms at p50 and 20 ms at most (the 44 pings). The rest is queueing inside the one `HookSequencer` object.
 - **Concurrency.** Up to 49 attempts are in flight at once. An attempt's time grows with how many others are running: in run 11, 23 ms at p50 with fewer than 10 running, and 266 ms with 40 or more.
 - **Which deliveries miss 2 s.** Every healthy delivery over 2 s arrived while its queue was still busy with earlier entries, 289 of 291 in run 11. The time between two attempts of one hook is about 110 to 220 ms at p50, and the edge commits statuses in bursts behind its own sheds. So a hook that receives 5 or 6 entries within one second finishes the last of them past 2 s.
-- **Next lever [inference].** Every attempt's POST runs inside the owner's one `HookSequencer` object, which serves up to 49 of them at once beside every `/record` and alarm. Batching its writes (runs 10 to 12) did not shorten attempts. DESIGN's Shape (`HookSequencer`) has stateless delivery Workers run the attempts. The next change is to send each attempt's request to a stateless invocation of the site script, as `prsync::in_band` does, and keep only the bookkeeping in the object.
+- **The lever [measured, runs 13 to 16].** Every attempt's POST ran inside the owner's one `HookSequencer` object, beside every `/record` and alarm, and batching its writes (runs 10 to 12) did not shorten attempts. Runs 13 to 16 moved the POST out: first to stateless site invocations (run 13, slower, because they run beside the store), then to per-hook lane objects (runs 14 to 16). DESIGN's Shape (`HookSequencer`) and `decisions/DECISIONS.md` ("M4-WP1's hosted half: webhook attempts run in per-hook lanes") record the result.
 - **Edge sheds.** The edge sheds 40 to 55% of status writes with 503, because the members shed the pre-write read with `overloaded`. The client re-sends after `Retry-After`, so commits arrive in bursts. A status write takes 1.8 to 2.5 s at p50 to its 201.
 
 ### Order and cursor

@@ -30,6 +30,10 @@ const HOOKS = 5;
 // The slow hook's delay: `1` is the receiver's 11 s; a number is milliseconds. 3 s keeps a backlog at 2/s over three
 // repositories (one status in three reaches it) that drains within the driver's wait.
 const SLOW = process.env.SLOW_MS ?? "1";
+// Each description ends with this run's tag, and only arrivals carrying it count, so a previous run's deliveries still
+// draining to the same hooks are not read as this run's.
+const RUN = Date.now().toString(36);
+const mine = (x) => typeof x.after === "string" && x.after.endsWith(` ${RUN}`);
 
 async function ensureRepo(name) {
   const r = await api("GET", `/api/v3/repos/m3org/${name}`, T);
@@ -83,7 +87,7 @@ let k = 0;
 const inflight = new Set();
 const marks = {};
 while (Date.now() < end) {
-  for (const m of ["down", "up"]) {
+  for (const m of ["down", "dead", "up"]) {
     if (!marks[m] && existsSync(`/tmp/bf58.${m}`)) {
       marks[m] = Number(readFileSync(`/tmp/bf58.${m}`, "utf8").trim()) || Date.now();
       log(`mark ${m} at +${(marks[m] - t0) / 1000} s`);
@@ -95,9 +99,9 @@ while (Date.now() < end) {
   k++;
   const p = (async () => {
     const res = await api("POST", `/api/v3/repos/m3org/${r.name}/statuses/${"d".repeat(40)}`, T,
-      { state: "success", context: "bf58", description: `${r.name} ${seq}` });
+      { state: "success", context: "bf58", description: `${r.name} ${seq} ${RUN}` });
     const at = Date.now();
-    if (res.status === 201) sent.set(`${r.name} ${seq}`, at);
+    if (res.status === 201) sent.set(`${r.name} ${seq} ${RUN}`, at);
     row(out, { kind: "sent", repo: r.name, seq, at, status: res.status, ms: res.ms });
   })();
   inflight.add(p);
@@ -111,7 +115,7 @@ const want = new Set();
 for (const r of repos) for (const key of sent.keys()) if (key.startsWith(`${r.name} `)) for (const h of r.hooks) want.add(`${h}|${key}`);
 let dump = [];
 for (let i = 0; i < 360; i++) {
-  dump = (await sinkDump()).filter((x) => x.event === "status");
+  dump = (await sinkDump()).filter((x) => x.event === "status" && mine(x));
   const got = new Set(dump.map((x) => `${x.hook}|${x.after}`));
   const missing = [...want].filter((w) => !got.has(w));
   if (missing.length === 0) break;
@@ -130,14 +134,17 @@ const twoGuids = [...got.entries()].filter(([, g]) => g.size > 1);
 const counts = new Map();
 for (const x of dump) counts.set(`${x.hook}|${x.after}`, (counts.get(`${x.hook}|${x.after}`) ?? 0) + 1);
 const dups = [...counts.values()].filter((n) => n > 1).length;
-const afterDown = marks.down ? dump.filter((x) => x.at > marks.down) : [];
+// The outage counts from `dead`, when Workers Logs first showed site a's `HookSequencer` on the down version (a
+// running object keeps its old version for minutes after a deploy), else from the deploy.
+const killed = marks.dead ?? marks.down;
+const afterDown = killed ? dump.filter((x) => x.at > killed) : [];
 const afterUp = marks.up ? dump.filter((x) => x.at > marks.up) : [];
 const firstDuring = afterDown.find((x) => !marks.up || x.at < marks.up);
 const firstAfter = afterUp[0];
 const redelivered = afterUp.find((x) => (counts.get(`${x.hook}|${x.after}`) ?? 0) > 1);
 log(`pairs ${want.size}: delivered ${want.size - missing.length}, missing ${missing.length}, under two GUIDs ${twoGuids.length}, delivered more than once ${dups}`);
-log(`first delivery during the outage: ${firstDuring ? (firstDuring.at - marks.down) / 1000 + " s after down" : "none"}`);
+log(`first delivery during the outage: ${firstDuring ? (firstDuring.at - killed) / 1000 + " s after the kill" : "none"}`);
 log(`first delivery after the restore: ${firstAfter ? (firstAfter.at - marks.up) / 1000 + " s after up" : "none"}; first redelivery ${redelivered ? (redelivered.at - marks.up) / 1000 + " s after up" : "none"}`);
 row(out, { kind: "summary", pairs: want.size, missing: missing.length, twoGuids: twoGuids.length, dups, marks,
-  firstDuring: firstDuring ? firstDuring.at - marks.down : null, firstAfter: firstAfter ? firstAfter.at - marks.up : null,
+  firstDuring: firstDuring ? firstDuring.at - killed : null, firstAfter: firstAfter ? firstAfter.at - marks.up : null,
   firstRedelivery: redelivered ? redelivered.at - marks.up : null, missingSample: missing.slice(0, 10) });
