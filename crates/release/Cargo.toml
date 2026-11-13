@@ -10,9 +10,8 @@ publish.workspace = true
 ed25519-dalek = { version = "2.2", default-features = false }
 graftyard-types.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 
-[dev-dependencies]
-serde_json.workspace = true

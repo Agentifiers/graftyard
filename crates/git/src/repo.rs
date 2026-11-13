@@ -367,6 +367,9 @@ pub enum RepoEvent {
     },
     /// Core. The `Webhooks` consumer's `HookCursor` on this chain, written only by `HookCursorCmd`.
     HookCursor(crate::hooks::HookCursor),
+    // M4-WP2, format 32.19 (`crate::watch::REPO_FORMAT_WATCH`): tag 42.
+    /// Metadata. The `Counts` consumer's watcher rows (`crate::watch`), each newer than the row it replaces.
+    Watchers(Vec<crate::watch::WatcherUpdate>),
 }
 
 impl RepoEvent {
@@ -1732,6 +1735,8 @@ impl Record for RepoEvent {
             // M4-WP1, 32.16: tags 40 and 41.
             RepoEvent::Hook { id, record, actor, created } => return tagged(out, 40, &(id, record, actor, created)),
             RepoEvent::HookCursor(c) => return tagged(out, 41, c),
+            // M4-WP2, 32.19: tag 42.
+            RepoEvent::Watchers(u) => return tagged(out, 42, u),
         };
         e.u8(0);
         e.u128(push.0.0);
@@ -1906,6 +1911,10 @@ pub enum RepoCmd {
     HookCursor(crate::hooks::HookCursorCmd),
     /// A create's or a delete's finisher step (`crate::lifecycle`), `{"lifecycle": ..}`, format 32.17 (F59).
     Lifecycle(crate::lifecycle::Lifecycle),
+    /// The `Counts` consumer's watcher rows (`crate::watch`), `{"counts": ..}`, format 32.19.
+    Counts(crate::watch::CountsCmd),
+    /// `Notify`'s or `Search`'s cursor (`crate::watch`), `{"consumerCursor": ..}`, format 32.19.
+    ConsumerCursor(crate::watch::ConsumerCursorCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1917,6 +1926,7 @@ pub enum RepoOut {
     Transfer(crate::transfer::TransferOut),
     HookCursor(crate::hooks::HookCursorOut),
     Lifecycle(crate::lifecycle::LifecycleOut),
+    Counts(crate::watch::CountsOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -1938,7 +1948,8 @@ impl crate::smart::PushOutOf for RepoOut {
             | RepoOut::Merge(_)
             | RepoOut::Transfer(_)
             | RepoOut::HookCursor(_)
-            | RepoOut::Lifecycle(_) => None,
+            | RepoOut::Lifecycle(_)
+            | RepoOut::Counts(_) => None,
         }
     }
 }
@@ -1954,6 +1965,8 @@ impl Serialize for RepoCmd {
             Transfer(&'a crate::transfer::TransferSettings),
             HookCursor(&'a crate::hooks::HookCursorCmd),
             Lifecycle(&'a crate::lifecycle::Lifecycle),
+            Counts(&'a crate::watch::CountsCmd),
+            ConsumerCursor(&'a crate::watch::ConsumerCursorCmd),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -1963,6 +1976,8 @@ impl Serialize for RepoCmd {
             RepoCmd::Transfer(c) => Tagged::Transfer(c).serialize(s),
             RepoCmd::HookCursor(c) => Tagged::HookCursor(c).serialize(s),
             RepoCmd::Lifecycle(c) => Tagged::Lifecycle(c).serialize(s),
+            RepoCmd::Counts(c) => Tagged::Counts(c).serialize(s),
+            RepoCmd::ConsumerCursor(c) => Tagged::ConsumerCursor(c).serialize(s),
         }
     }
 }
@@ -1987,6 +2002,10 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(RepoCmd::HookCursor).map_err(D::Error::custom)
         } else if let Some(c) = one("lifecycle") {
             serde_json::from_value(c).map(RepoCmd::Lifecycle).map_err(D::Error::custom)
+        } else if let Some(c) = one("counts") {
+            serde_json::from_value(c).map(RepoCmd::Counts).map_err(D::Error::custom)
+        } else if let Some(c) = one("consumerCursor") {
+            serde_json::from_value(c).map(RepoCmd::ConsumerCursor).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -2003,6 +2022,8 @@ impl Record for RepoCmd {
             RepoCmd::Transfer(c) => c.encode(out),
             RepoCmd::HookCursor(c) => c.encode(out),
             RepoCmd::Lifecycle(c) => c.encode(out),
+            RepoCmd::Counts(c) => c.encode(out),
+            RepoCmd::ConsumerCursor(c) => c.encode(out),
         }
     }
 }
@@ -2022,6 +2043,7 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => c.format(),
             RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
             RepoCmd::Lifecycle(c) => c.format(),
+            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => crate::watch::REPO_FORMAT_WATCH,
         }
     }
     fn tiers(&self) -> TierSet {
@@ -2033,6 +2055,8 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => c.tiers(),
             RepoCmd::HookCursor(c) => c.tiers(),
             RepoCmd::Lifecycle(c) => c.tiers(),
+            RepoCmd::Counts(c) => c.tiers(),
+            RepoCmd::ConsumerCursor(_) => TierSet::CORE,
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -2044,6 +2068,7 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => c.deps(),
             RepoCmd::HookCursor(_) => SmallVec::new(),
             RepoCmd::Lifecycle(c) => c.deps(fold),
+            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => SmallVec::new(),
         }
     }
     fn decide(
@@ -2076,6 +2101,14 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => {
                 c.decide(s, deps).map(|(e, o)| (e, RepoOut::Lifecycle(o))).map_err(RepoErr::Lifecycle)
             }
+            RepoCmd::Counts(c) => {
+                let (e, o) = c.decide(s);
+                Ok((e, RepoOut::Counts(o)))
+            }
+            RepoCmd::ConsumerCursor(c) => {
+                let (e, o) = c.decide(s);
+                Ok((e, RepoOut::Counts(o)))
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2089,6 +2122,8 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => RepoOut::Transfer(c.replay(events)),
             RepoCmd::HookCursor(c) => RepoOut::HookCursor(c.replay(events)),
             RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
+            RepoCmd::Counts(c) => RepoOut::Counts(c.replay(events)),
+            RepoCmd::ConsumerCursor(c) => RepoOut::Counts(c.replay(events)),
         }
     }
 }

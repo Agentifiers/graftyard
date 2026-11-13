@@ -382,6 +382,15 @@ pub struct DepsWanted {
     pub chains: SmallVec<[ChainId; 3]>,
 }
 
+/// The entry at `index` was decided on the reads of these `DepsWanted` ids. A batch's reads may start while the
+/// previous entry is in flight, and an id block or recorded entry may go first, so only this names the entry a read
+/// decided. Hosts may ignore it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DepsUsed {
+    pub ids: SmallVec<[u64; 2]>,
+    pub index: Index,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Alarm {
     /// A follower on the same or a newer release refused an entry, or any follower refused a committed one. The
@@ -550,6 +559,7 @@ pub struct Out<C: Command> {
     pub messages: Vec<Envelope<Ev<C>>>,
     pub resolutions: Vec<Resolution<C>>,
     pub deps: Vec<DepsWanted>,
+    pub deps_used: Vec<DepsUsed>,
     pub alarms: Vec<Alarm>,
     /// Per entry this input decided, the admitted requests whose command `decide` refused. Each refusal's ticket
     /// resolves `Refused` only if that entry commits; if it is lost, the re-sent command is decided again.
@@ -570,6 +580,7 @@ impl<C: Command> Default for Out<C> {
             messages: Vec::new(),
             resolutions: Vec::new(),
             deps: Vec::new(),
+            deps_used: Vec::new(),
             alarms: Vec::new(),
             refused: Vec::new(),
             self_ack: None,
@@ -667,6 +678,11 @@ pub struct Member<C: Command> {
     withhold_until: Timestamp,
     /// Leaders two colos reported, and until when pre-vote refuses them. A higher term does not end it.
     suspected: BTreeMap<SiteId, Timestamp>,
+    /// Leaders in `suspected` whose bar every report set while they ran a transfer (`on_suspect`). Accepting another
+    /// leader's append ends it: the hand-off completed, so the reports measured it, not a gray leader. Kept, two leaders
+    /// in turn, each reported during its own hand-off, refused each other as `Suspected` while a half-hung third won
+    /// and lost again, and nobody led for 31.3 s (F67 rule 11, live seed 11121).
+    handing_off: BTreeSet<SiteId>,
     /// The host's storage confirms: begin, and end once confirmed. Kept 30 s after they end.
     confirms: BTreeMap<ConfirmId, (Timestamp, Option<Timestamp>)>,
     next_confirm: u64,
@@ -703,6 +719,11 @@ pub struct Member<C: Command> {
     remote: install::RemoteReads,
     /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
     admit_capacity: Option<f32>,
+    /// Where `cut` stops filling an entry past its first command (`set_entry_soft`).
+    entry_soft: usize,
+    /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
+    /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
+    next_deps: u64,
 }
 
 impl<C: Command> Member<C> {
@@ -805,6 +826,7 @@ impl<C: Command> Member<C> {
             reports: BTreeMap::new(),
             withhold_until: Timestamp(0),
             suspected: BTreeMap::new(),
+            handing_off: BTreeSet::new(),
             confirms: BTreeMap::new(),
             next_confirm: 0,
             probing: None,
@@ -820,8 +842,11 @@ impl<C: Command> Member<C> {
             own_appended: None,
             early_from: Index(0),
             install: None,
-            remote: install::RemoteReads::default(),
+            remote: install::RemoteReads::starting_at(boot),
             admit_capacity: None,
+            entry_soft: crate::ENTRY_SOFT,
+            // The top bit clear leaves 2^63 ids before a wrap.
+            next_deps: boot >> 1,
         })
     }
 

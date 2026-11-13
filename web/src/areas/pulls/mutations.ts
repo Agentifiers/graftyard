@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { api, ApiError, type Schemas } from "@/api/client";
-import { pullQuery, requestedReviewersQuery, threadsQuery, viewedQuery } from "./queries";
+import { pullQuery, threadsQuery, viewedQuery } from "./queries";
 import { ui, type DraftComment, type MergeMethod, type ThreadState } from "./ui-api";
 
 // Every write on the pull request pages. None retries (the query client's default), each
@@ -253,8 +253,6 @@ export function useHeadBranch(p: Pull) {
   );
 }
 
-type Reviewers = Schemas["pull-request-review-request"];
-
 export function useReviewRequest(p: Pull) {
   return usePullWrite(
     p,
@@ -279,19 +277,25 @@ export function useReviewRequest(p: Pull) {
           );
     },
     {
+      // The sidebar reads requested reviewers from the pull itself.
       apply: (qc, v) =>
-        optimistic<Reviewers>(qc, requestedReviewersQuery(p).queryKey, (r) => ({
-          users: v.user
-            ? v.add
-              ? [...r.users, v.user]
-              : r.users.filter((u) => u.login !== v.user!.login)
-            : r.users,
-          teams: v.team
-            ? v.add
-              ? [...r.teams, v.team]
-              : r.teams.filter((t) => t.slug !== v.team!.slug)
-            : r.teams,
-        })),
+        optimistic<PullRecord>(qc, pullQuery(p).queryKey, (pr) => {
+          const users = pr.requested_reviewers ?? [];
+          const teams = pr.requested_teams ?? [];
+          return {
+            ...pr,
+            requested_reviewers: v.user
+              ? v.add
+                ? [...users, v.user]
+                : users.filter((u) => u.login !== v.user!.login)
+              : users,
+            requested_teams: v.team
+              ? v.add
+                ? [...teams, v.team]
+                : teams.filter((t) => t.slug !== v.team!.slug)
+              : teams,
+          };
+        }),
     },
   );
 }

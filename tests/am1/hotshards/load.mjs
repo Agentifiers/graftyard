@@ -11,7 +11,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { EDGE, log, member, row, sleep, tokens } from "../hosted/lib.mjs";
+import { EDGE, log, member, row, sleep, tokens, voterNames } from "../hosted/lib.mjs";
 
 const R = process.env.HOT_REPO;
 const CHAIN = process.env.HOT_CHAIN;
@@ -29,7 +29,11 @@ if (!R || !CHAIN) throw new Error("HOT_REPO and HOT_CHAIN");
 const size = () => {
   // 400 KB at 1.6/s is 0.64 MB/s of log, under the 0.8 MB/s B0-30 carried (tests/am1/results/b0-30.md, "Blocked on",
   // 7); 900 KB packs at that rate reset the leader's isolate.
-  if (MODE === "seed") return Number(process.env.SEED_PACK ?? 400_000);
+  // SEED_PACK=lo-hi: sizes drawn evenly from the range, to build a tail of a given pack count and size.
+  if (MODE === "seed") {
+    const [lo, hi] = String(process.env.SEED_PACK ?? 400_000).split("-").map(Number);
+    return hi ? lo + Math.floor(Math.random() * (hi - lo)) : lo;
+  }
   return Math.random() < 0.05 ? 1 << 20 : 10_000 + Math.floor(Math.random() * 60_000);
 };
 
@@ -122,7 +126,8 @@ async function push(k) {
 // During the seed, each member's archive cap is raised (test-faults `archiveCap`, per isolate) so promote-ahead
 // (log above the last Promoted past max/32) and archiving hold off until the backlog is built; `MODE=uncap` clears it.
 async function cap(max) {
-  return Promise.all([0, 1, 2].map((s) => member(CHAIN, s, "/bench_seed", { archiveCap: max ? { max, range: 2 << 20 } : {} }, 25_000)
+  const names = await voterNames(CHAIN).catch(() => ({}));
+  return Promise.all([0, 1, 2].map((s) => member(CHAIN, s, "/bench_seed", { archiveCap: max ? { max, range: 2 << 20 } : {} }, 25_000, names[s])
     .then((r) => r.v?.archiveCap ?? r.v).catch((e) => String(e).slice(0, 60))));
 }
 if (MODE === "uncap") {
@@ -132,8 +137,9 @@ if (MODE === "uncap") {
 
 async function unpromoted() {
   const out = [];
+  const names = await voterNames(CHAIN).catch(() => ({}));
   for (const s of [0, 1, 2]) {
-    try { out.push((await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v?.unpromotedBytes ?? 0); }
+    try { out.push((await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000, names[s])).v?.unpromotedBytes ?? 0); }
     catch { out.push(0); }
   }
   return Math.min(...out);
@@ -173,6 +179,8 @@ while (!stop) {
     if (u >= SEED_BYTES) stop = true;
   }
   if (MODE !== "seed" && now - t0 >= SECONDS * 1000) stop = true;
+  // SEED_N: a seed also stops after this many pushes, to build a tail of a given pack count.
+  if (MODE === "seed" && k >= Number(process.env.SEED_N ?? Infinity)) stop = true;
   await sleep(100);
 }
 while (inflight) await sleep(500);

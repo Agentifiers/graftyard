@@ -77,8 +77,8 @@ pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 /// minute it validates (stale past `LOAD_STALE`), and the leader commits one k for both warm sites from the larger load
 /// as `RepoEvent::Fanout` (32.15), with no API call or cron, so the second warm site holds k shards when the first is
 /// lost; it raises its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time
-/// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step up takes
-/// an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`.
+/// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step takes
+/// idle warm pool shards (`HOT_POOL`) both warm sites' ledgers granted. `fanout` is pure; the leader keeps `Fanout`.
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k, less derived work (A31) */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
@@ -355,8 +355,8 @@ pub struct InsightVerdict { pub refname: RefName, pub head: Oid, pub pr: Option<
 /// then waits FEED_BATCH; one with no `paths` returns on any event and batches for FEED_BATCH_ALL. Polls need `contents:
 /// read`, take at most FEED_POLLS per token and client IP at once, and count toward LEARNER_AT's read rate; the serving
 /// member counts FEED_POLLS over its held polls, across isolates [measured, M0-WP13, L0-15]. `Expired` comes at the first
-/// entry with `at >= expires`; clients time it from `expires`. An install's input restarts the ring at its base with its
-/// live leases (`9d59283`). A cursor older than the ring gets 410 with the oldest; the client reloads leases and tasks.
+/// entry with `at >= expires`; clients time it from `expires`. An install or a first poll (fed, a backlog cost 46 s, LM-1)
+/// restarts the ring with its live leases (`9d59283`). An older cursor gets 410; the client reloads leases and tasks.
 pub enum ActivityEvent { Lease { lease: Lease, intent: TrustView /* replaces lease.intent */, change: LeaseChange },
                          Task { task: SessionId, state: TaskApiState },
                          AgentPush { refname: RefName, head: Oid, paths: SmallVec<[Box<str>; 8]> },

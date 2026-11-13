@@ -47,6 +47,19 @@ impl Bindings<'_> {
     pub fn registry(&self, site: SiteId, do_name: &str) -> Result<Stub> {
         self.stub("REGISTRY", site, do_name)
     }
+
+    /// An object of `class` on `site` by name, made under DO jurisdiction `jurisdiction` (`"eu"`, `"us"`) when one is
+    /// given, as a `SearchShard` is (`design/DESIGN.md`, Shape, "Identity"). `worker` 0.8 has no `jurisdiction()`, so
+    /// the namespace's own JavaScript method is called. A jurisdiction object takes no location hint: the
+    /// jurisdiction decides where it runs.
+    pub fn object(&self, class: &str, site: SiteId, do_name: &str, jurisdiction: Option<&str>) -> Result<Stub> {
+        let Some(j) = jurisdiction else { return self.stub(class, site, do_name) };
+        let ns = self.env.durable_object(&format!("{class}_{}", site.0))?;
+        let raw: &wasm_bindgen::JsValue = ns.as_ref();
+        let f: js_sys::Function = js_sys::Reflect::get(raw, &"jurisdiction".into())?.into();
+        let sub: ObjectNamespace = wasm_bindgen::JsCast::unchecked_into(f.call1(raw, &j.into())?);
+        sub.get_by_name(do_name)
+    }
 }
 
 pub fn now_ms() -> u64 {
@@ -668,6 +681,26 @@ pub fn known_voters(chain: ChainId) -> Vec<Target> {
         .into_iter()
         .map(|(site, do_name)| Target { site, do_name })
         .collect()
+}
+
+/// Learns `chain`'s config from its members' `/status` when this isolate knows no voters, keeping the highest index
+/// any answers. A caller that picks a site's member by name, as a git cache shard's local `/entries` read does,
+/// otherwise has only the record's bootstrap names, and a voter replaced since is another object: the shard's read
+/// reached site b's retired first voter, which answered no entries, and every page of a rehydrate's tail went to the
+/// leader instead (`tests/am1/results/rehydrate-batch.md`, "Resume, hosted").
+pub async fn learn_voters(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord) {
+    if !known_voters(chain).is_empty() {
+        return;
+    }
+    let asks = record.bootstrap_members(chain).into_iter().map(|m| async move {
+        let mut r = b.member(m.site, m.do_name.as_ref()).ok()?.fetch_with_str("https://member/status").await.ok()?;
+        within(CALL, r.json::<Value>()).await?.ok()
+    });
+    for st in futures_util::future::join_all(asks).await.into_iter().flatten() {
+        if let Some(config) = st.get("config").filter(|c| !c.is_null()) {
+            learn(chain, &json!({ "config": config }));
+        }
+    }
 }
 
 /// A `suspect` report about `about` to every other known voter (to every voter, `about` included, when `all`), in

@@ -90,6 +90,15 @@ impl<C: Command> Member<C> {
                 if self.reports.len() >= colos {
                     let until = after(self.now, window * 2);
                     self.withhold_until = self.withhold_until.max(until);
+                    // A bar first set while the leader ran a transfer, which serves nothing until it ends, is a
+                    // hand-off's (`handing_off`): it lifts once another leader is heard. Any report outside a transfer
+                    // makes it a gray leader's bar again.
+                    let fresh = self.suspected.get(&l).is_none_or(|u| self.now >= *u);
+                    if self.state.transfer.is_none() {
+                        self.handing_off.remove(&l);
+                    } else if fresh {
+                        self.handing_off.insert(l);
+                    }
                     let s = self.suspected.entry(l).or_insert(until);
                     *s = (*s).max(until);
                 }

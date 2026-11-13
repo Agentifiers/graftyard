@@ -1,5 +1,6 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api, unwrap, type Schemas } from "@/api/client";
+import { graphql } from "@/api/graphql";
 import { ui } from "./ui-api";
 
 // One factory per page region. Keys are the REST path segments, so a /_t/ui read sits
@@ -57,8 +58,8 @@ export const pullFilesQuery = (p: Pull) =>
     queryKey: ["repos", p.owner, p.repo, "pulls", p.number, "files"],
     queryFn: ({ signal }) =>
       unwrap(
-        api.GET("/repos/{owner}/{repo}/pulls/{pull_number}/files", {
-          params: { path: pullPath(p), query: { per_page: 100 } },
+        ui.GET("/repos/{owner}/{repo}/pulls/{pull_number}/files", {
+          params: { path: pullPath(p) },
           signal,
         }),
       ),
@@ -69,8 +70,8 @@ export const pullCommitsQuery = (p: Pull) =>
     queryKey: ["repos", p.owner, p.repo, "pulls", p.number, "commits"],
     queryFn: ({ signal }) =>
       unwrap(
-        api.GET("/repos/{owner}/{repo}/pulls/{pull_number}/commits", {
-          params: { path: pullPath(p), query: { per_page: 100 } },
+        ui.GET("/repos/{owner}/{repo}/pulls/{pull_number}/commits", {
+          params: { path: pullPath(p) },
           signal,
         }),
       ),
@@ -107,18 +108,6 @@ export const pendingCommentsQuery = (p: Pull & { reviewId: number }) =>
       unwrap(
         api.GET("/repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments", {
           params: { path: { ...pullPath(p), review_id: p.reviewId }, query: { per_page: 100 } },
-          signal,
-        }),
-      ),
-  });
-
-export const requestedReviewersQuery = (p: Pull) =>
-  queryOptions({
-    queryKey: ["repos", p.owner, p.repo, "pulls", p.number, "requested_reviewers"],
-    queryFn: ({ signal }) =>
-      unwrap(
-        api.GET("/repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers", {
-          params: { path: pullPath(p) },
           signal,
         }),
       ),
@@ -213,16 +202,30 @@ export const annotationsQuery = ({ owner, repo, runId }: Repo & { runId: number 
       ),
   });
 
-export const combinedStatusQuery = ({ owner, repo, ref }: Repo & { ref: string }) =>
+// The statuses on a commit, newest first; the Checks tab derives the combined state.
+// (GET /commits/{ref}/status is not served by the edge.)
+export const commitStatusesQuery = ({ owner, repo, ref }: Repo & { ref: string }) =>
   queryOptions({
-    queryKey: ["repos", owner, repo, "commits", ref, "status"],
+    queryKey: ["repos", owner, repo, "commits", ref, "statuses"],
     queryFn: ({ signal }) =>
       unwrap(
-        api.GET("/repos/{owner}/{repo}/commits/{ref}/status", {
-          params: { path: { owner, repo, ref } },
+        api.GET("/repos/{owner}/{repo}/commits/{ref}/statuses", {
+          params: { path: { owner, repo, ref }, query: { per_page: 100 } },
           signal,
         }),
       ),
+  });
+
+// GraphQL's mergeable, as a persisted document. GHES computes the test merge in the
+// background, so the merge box polls while it is UNKNOWN.
+export const pullMergeStateQuery = (p: Pull) =>
+  queryOptions({
+    queryKey: ["graphql", "PullMergeState", p.owner, p.repo, p.number],
+    queryFn: ({ signal }) =>
+      graphql("PullMergeState", { owner: p.owner, name: p.repo, number: p.number }, signal).then(
+        (d) => d.repository?.pullRequest ?? null,
+      ),
+    refetchInterval: (q) => (q.state.data?.mergeable === "UNKNOWN" ? 3000 : false),
   });
 
 export const compareQuery = ({ owner, repo, base, head }: Repo & { base: string; head: string }) =>

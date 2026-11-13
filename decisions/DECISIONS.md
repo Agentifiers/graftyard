@@ -689,7 +689,7 @@ A fresh read-only agent, WalkRest, walked Milestone 4, Milestone 7, AM4, and the
 
 **Evidence.** `history/review/walk-rest-interrogate.md` WK-X10. `history/review/walk-rest-reports.md`, WriterX2. `design/DESIGN.md`, Shape, "Identity" (`SearchShard`).
 
-**Flip.** None stated. FTS5 inside Durable Object SQLite is not yet confirmed (`decisions/OPEN-QUESTIONS.md`, C15).
+**Flip.** None stated. FTS5 inside Durable Object SQLite, under the `eu` jurisdiction too, was confirmed on 2026-11-13 (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`).
 
 ### Rate limits count in one `RateCounter` per key, with a stated error bound
 
@@ -2144,6 +2144,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
+
+Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
+
+**Decision.** The shard streams `/validate`'s body to the container (or to the pool shard) unread; the edge names the pack's trailer in the URL so the shard picks the fan-out shard without the body. The container runs at most min(16, max(4, 2 x vCPU)) validates; a human's waits for a slot, ahead of every agent's, and an agent's waits at most 2 s, with at most 8 per slot queued, then gets 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. The container raises `RLIMIT_NOFILE` at start.
+
+**Why.** B0-32's burst (512 validates of 256 KiB at 23:52:08Z) all failed on the first shard with "Promise will never complete" and its isolate's `exceededMemory`; B0-31's 1 MiB packs put the first shard over its 128 MB 725 times in one minute (1,713 of 2,500 agent pushes `unpacker error`); B0-34's container refused 480 agent pushes with "too many open files". A streamed body is held by the runtime, not the isolate's heap, and a slot cap bounds the files and processes one container opens.
+
+**Beat.** A per-network in-flight cap in the Durable Object alone: it bounds memory but not the container's files when k shards share a pool container. Refusing agent pushes at the edge on a guessed rate: the container knows its own queue.
+
+**Evidence.** `containers/git/server/gate_test.go` (human first, no slot leak on a deadline race, refusal at once past 8 per slot, a refused request reads no body); `a_validate_url_names_the_packs_trailer_and_its_class` and `a_busy_git_cache_refuses_in_the_admission_shape` in `workers/edge`; `tests/lm1mem/plant.py` round 6 plants.
+
+**Flip.** A hosted row where agents are refused `admission full` while the container's `/load` shows idle slots, or one where 16 validates at once exceed a `standard-2` container's memory.
+
 ### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
 
 Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
@@ -2188,6 +2202,39 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 
 **Status, 2026-11-11: F65 narrowed, not answered.** On `d9ee594` the 500-agent smoke held every member under 80 MB with 1,237 of 1,242 pushes ok, but B0-29's apac leader reached 262 MB, and about 600 cheap reads completed in one millisecond after a stall and then `exceededMemory`; the rows fail on leader step-downs from `Confirm` and `CommitErrors` (`build/BUILD-PLAN.md`, AM1-WP6, "After the read cap"). Next hypothesis [unverified]: one quorum round grants every waiting read and the host builds all their answers before sending any. The round now running caps every leader read in flight and streams the granted answers. The `Fresh` rule in `design/DESIGN.md`, "Commit and read paths", is reworded to admit the dump cache, whose key is read after the lease check.
 
+### C15 answered, and M4-WP2's pure half, 2026-11-13
+
+A hosted probe confirmed FTS5 in Durable Object SQLite under `eu` and with no jurisdiction (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`). M4-WP2's pure half then passed BF-5, BF-67, and BF-68 in memory (`tests/m4/results/m4-wp2.md`).
+
+#### M4-WP2's pure half: formats, tags, and three design points
+
+**Decision.** M4-WP2 takes repository format 32.19 (`REPO_FORMAT_WATCH`) and Identity format 0x14.3, the next free ones on main (32.17 is `REPO_FORMAT_LIFECYCLE`, and 32.18 is `REPO_FORMAT_CHECKS`). Wire tags, appended: `RepoEvent` 42 `Watchers`; `IdentityEvent` 6 `Record` and 7 `CountsCursor`; `IdentityOp` 8 `SetRecord` and 9 `CountsCursor`. New enums: `UserRecord`, `WatcherUpdate`, `inbox::Reason`, and `search::Domain`. Three design points. DESIGN, Shape, "Identity", states the first two, and `crates/identity/src/identity.rs` states the third:
+- A watcher row is the account's whole state for its key at `src`, never a delta.
+- `Counts` keeps a `CountsCursor` on each account's `Identity` chain, and `Notify` and `Search` commit SHARED's `ConsumerCursor` on the repository chain after their work.
+- `ThreadId { repo, number }` with REST id `repo << 24 | number`.
+
+**Why.**
+- A row that carries the full state at a fold index is idempotent and order-free under Queues' at-least-once delivery. The consumer needs no per-record bookkeeping, and an older batch is refused by comparing one index.
+- A consumer that reads one chain and writes others moves its cursor on the chain it reads, after the work, as SHARED's "Other consumers" rule already says.
+- GHES's thread id is an opaque string, so packing (repository, number) lets the edge route `/notifications/threads/{id}` with no lookup table [inference].
+
+**Beat.**
+- Sending each `UserRecord` as a delta, which a reordered redelivery would apply out of order.
+- A thread-id table in the Inbox, which a rebuilt Inbox would have to reproduce identically.
+- A shared cursor format, which would give `Counts` a cursor on chains it never writes.
+
+**Evidence.** `tests/m4/results/m4-wp2.md` [measured, in memory]:
+- BF-5: star and notice both visible after 1,400 ms.
+- BF-67: the rebuilds kept read and done state and every `sources` event; 10,000 stars were listed live and after a refold with an equal metadata digest; a redelivery applied 0.
+- BF-68: EU documents only in `eu` shards; 7 of 13 hits with `incomplete_results` while a shard was killed; 14 of 14 after the generation-2 rebuild.
+- 30 of 30 plants caught. 8 REST replies valid against GHES 3.22.
+- `crates/git/tests/wire_tags.golden`: 24 lines added, none removed.
+
+**Flip.**
+- For the tags: none, once released.
+- For the thread id: a repository id past 2^39 or an issue number past 2^24, which the packing cannot hold.
+- For the watcher rows: a hosted `Counts` lagging past BF-5's 10 s because each batch carries whole state.
+
 ### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
 
 `fanout` removed the git shard's per-network validate lock and built `fanout`; its hosted 500-agent reruns on `graft-m2b` then failed on the edge read gate. `04487ca` caches the gate's installation-token decisions, and LM-1's load rows are being rerun. M4-WP1's pure half passed BF-57 and BF-58 in memory (`tests/am1/results/fanout.md`; `tests/m4/results/m4-wp1.md`; `build/BUILD-PLAN.md`, AM1-WP1, AM1-WP6, and M4-WP1).
@@ -2199,6 +2246,8 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 **Why.** The lock, not git CPU, held one network to about 2 pushes/s, so raising k alone would have paid for pool shards to work around a serialization the container did not need. A validate's writes are private to its quarantine, so sharing the lock costs no correctness, and the race tests and `git fsck --strict` show none. With the lock gone, one `standard-2` shard validates about 9 times journey 9's offered rate, which keeps k = 1 consistent with the cost model. Picking by the pack's trailer gives every re-send the same shard.
 
 **Beat.** Raising k to spread validates across pool shards with the lock kept, which buys shards for queueing rather than CPU and would move the $0 line. A per-ref lock, which still serializes pushes to one ref's neighbours and adds lock bookkeeping that the quarantine already makes unnecessary. Picking only among caught-up shards, which needs every first shard to track each pool shard's cursor.
+
+**Amended 2026-11-12 (LM-1 round 7).** The shared lock is taken only after the request body is read, and the geometric repack takes no network lock (it keeps every object of the packs it rolls, and git re-reads a pack it lost), with evict and a fresh init waiting on the repack instead. Held across a streamed body or a repack, the lock let one waiting writer queue every later reader of the network behind it: hosted, the home shard's ls-refs walls rose from 2.7 to 12 s in a minute at 0.65 vCPU. The flip is unchanged.
 
 **Evidence.** `tests/am1/results/fanout.md` [measured]. Container bench (`tests/fanout/bench.py`, 30 KB thin packs): about 16 validates/s for one network before, at any concurrency; after, 38.7/s on 1 vCPU at 4 in flight, 39.0/s at 8, and 58.2/s on 4 vCPUs at 8; the writer path (validate, ingest, `POST /refs`) stays at 13.0/s before and after. Hosted before, about 2.7/s, bounded by each validate's own catch-up, which `CatchUps::fresh` now shares. Hosted on `graft-m2b`: 100 agents at k = 1 pushed 142 of 142 with commit p99 885 ms (933 ms before); 500 agents with k forced to 4 sent validates to pool shards at p50 456 ms (first shard p50 1.1 s), against a p90 of 17.7 s before, but pushed no more, because the read gate failed first. In-band stepping was not shown: 27 of 29 `/fanout` reports in B0-34 hit a follower that answered an error, and k stayed 1; `105c228` makes a follower answer `notLeader` but is not deployed. Race tests `TestConcurrentValidatesOfOneNetwork` and `TestFinishValidateOfTheSamePackAtOnce` under `-race`; 22 of 22 plants caught.
 
@@ -2354,6 +2403,36 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Flip.** A route whose selection the recorder cannot see, which would answer different bytes from the whole-tier reply. A member whose narrow builds at journey 9 cost more CPU than a shared dump did, which would bring back the dump on learners for that route. Or a GraphQL client that sends `filterBy` or login qualifiers at journey 9's rate, which still read the whole tiers.
 
+### `m0-carried-7`: sends stay as built, and an entry stops at `ENTRY_SOFT`, 2026-11-13
+
+#### The far follower's held sends get no host change
+
+**Decision.** The host keeps its send order. It does not issue a turn's sends before that turn's writes (option b), and it does not pipeline a second entry to the far follower (b'). This closes C20's send half.
+
+**Why.** All 58 far-follower sends that `m0-carried-6` found held past an earlier entry's confirm were issued in turns that only handled an `AppendRes` and wrote nothing, so moving that turn's writes after its sends changes none of them. The near follower makes the quorum, so the far hold moved commit in no measured run, and pipelining would add Raft risk for no gate gain (operator, 2026-11-13).
+
+**Beat.** (b), sends before writes in every turn, which `m0-carried-6` proposed before the turns were counted. (b'), a second entry in flight to the far follower.
+
+**Evidence.** `tests/m0/results/carried-7.md`, "Held sends" [measured, `tests/m0carried/held.py` over the `carried-6` gate traces].
+
+**Flip.** A run where the far follower makes the quorum and its held sends set commit p99.
+
+#### An entry stops at `ENTRY_SOFT` bytes past its first command
+
+**Decision.** The leader fills an `Events` entry only while it stays within `ENTRY_SOFT` (60,000 encoded bytes) past its first command; `ENTRY_MAX` (1.5 MB) still bounds one command alone, and admission's capacity counts entries of `ENTRY_SOFT`. This reverses "Entry batching gets no command or byte cap" (`m0-carried-2`).
+
+**Why.** A Durable Object member's storage confirm grows with the entry. Over 48 one-minute B0-02 runs, confirm p99 was 95 to 132 ms for entries of 20 to 80 KB, 168 ms at 80 to 100 KB, 300 ms at 100 to 130 KB and 315 ms at 130 to 200 KB. With the leader's loop behind, 5 to 15% of confirms under 80 KB took 150 ms or more, against 26 to 65% above. The two `m0-carried-6` gate runs that failed had 210 entries of about 86 commands each, against 350 to 558 entries in passing runs, per-request CPU p999 of 112 and 117 ms against 16 to 39 ms, and 26 and 35 `/commit` turns of 80 ms or more against 1 to 4. They did the same work as passing runs: the same commands, and no reads, catch-ups or dumps. The operator approved about 80 KB from that table. At 80 KB the same-window A/B passed 7 of 8 capped and 7 of 8 uncapped, and the capped failure ran its entries pinned at 81 KB. Over those 31 runs a follower's AppendEntries body stepped just past 64 KiB: 0 to 2% of bodies up to 66 KiB took 60 ms or more to arrive, against 10 to 40% at 68 to 83 KiB, while the bare-object control with no write saw none at 80 KB. So the cap keeps an entry and its envelope under 64 KiB.
+
+**Beat.** No cap, which `m0-carried-2` chose from the near round trip alone. A command-count cap, which does not bound bytes. 80 KB, which sits on the body step. A loop-lag step-down (C20's other half), held until the cap's A/B.
+
+**Evidence.** `tests/m0/results/carried-6.md` (confirm by entry size); `tests/m0/results/carried-7.md` (the A/B and gate) [measured]. `a_backlog_splits_into_entries_within_entry_soft_in_order` in `crates/raft/tests/scenarios.rs` fails without the cap.
+
+**Flip.** A hosted A/B at the same rate where capped entries do not lower commit p99 or the count of heavy `/commit` turns, or confirm p99 that stops growing with entry size.
+
+**Measured, 2026-11-13 (`m0-carried-7`).** The cap removes big-entry heavy turns: a 20 s smoke at 330 offered ran 85 commands per entry uncapped (CPU p999 98 ms, 11 `/commit` turns of 80 ms or more, commit p99 1,000 ms) against 42 capped (14 ms, 0, 276 ms). It does not pass B0-02: over two same-window A/Bs, 60 KB passed 4 of 8, 80 KB 7 of 8 and 5 of 8, and no cap 7 of 8. The failures were a lagging leader loop under the cap and near-follower calls held about 1 s while the leader was idle (`tests/m0/results/carried-7.md`). The cap stays, because it bounds the turn's CPU and stays under the body step; whether it is worth its rounds is the flip above, which the A/Bs neither met nor ruled out.
+
+**Amended, 2026-11-13 (`m0-entry-soft-packs`): the cap counts no Agent inline pack bytes.** The flip was met on journey 9. On `graft-m2b` (500 agents, standard-4, 8 learners, 180 s, one deploy), 60 KB put B0-29's commit p99 at 1,718 ms, against 702 ms with entries filled to `ENTRY_MAX`. Commands waited for an entry at p99 1,583 ms against 507 ms, while the round fell from 202 to 151 ms and the leader ran at about 9% CPU [measured, `tests/am1/results/lm1-memory.md`, round 9]. Agent packs of 10 to 70 KB go inline, so one push filled an entry, and admission's capacity shrank with the cap. Agent inline bytes already have their own per-entry bound, `AGENT_INLINE_ENTRY` (128 KiB), so the cap now counts an entry's other bytes, and the entry's full bytes stay within `ENTRY_MAX`. Human, MergeQueue and Bot packs still count, because no other rule bounds them. Admission's capacity estimate uses the same bytes. B0-02 has no packs, so its entries are unchanged. In the simulator on journey 9's mix, commit p99 was 365 ms capped against 245 ms at `ENTRY_MAX` before the change, and 245 ms against 245 ms after it (`entry_soft_does_not_slow_journey_9`, `crates/raft/tests/admission.rs`) [measured, simulator]. An entry can now reach about 60 KB plus 128 KiB, so it can cross the 64 KiB body step again. The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) passed with longest stretches of 16.0, 24.0 and 29.8 s, and Porcupine read Ok on all three histories, 6,000 segments each; plants 9 of 9 (`tests/m0carried/plant.py`). Pending: the hosted A/B on journey 9 decides this amendment, LM-1's m21 rows capped against `ENTRY_MAX` on this code.
+
 ### `narrow-reads-2`: API reads start with their identity and name reads at once, cached per isolate for `READ_CACHE`, 2026-11-12
 
 Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
@@ -2369,6 +2448,34 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 **Evidence.** `workers/edge/src/rcache.rs` tests (TTL from the read's start, writes never read the cache, an older answer never wins, only passing answers are kept, a revoked row is never kept); `tests/nr2/plant.py` catches 12 of 12; `tests/nr2/stale.mjs` on the new edge: a new repository and a re-added member serve at once, a removed member stops within 1.8 to 2.3 s, a revoked PAT within 77 ms (its write at once), a revoked `ghs_` within 90 ms. Hosted B0-29 on `graft-m3c`, 500 agents, 8 learners [measured, `tests/am1/results/narrow-reads-2.md`]: `read:api` 99.8% served at p50/p99 1,515/4,865 ms before, 99.9% at 655/3,152 ms after on a run with no leader change (a first after run with a leader change mid-load: 96.8% at 749/3,303 ms). The sampled stages put `auth`, `resolve`, `authz`, and `logins` at 0 ms at p50 and the tier read at 611/2,589 ms (REST) and 629/2,163 ms (GraphQL). The gate is not met: the learners' answers set the p99 now.
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
+
+### F67 rules 12 and 13: an emptied read-index batch leaves flight, and no hand-off onto a link that loses answers, 2026-11-13
+
+Branch `f67-r12` (`tests/m0/results/f67.md`, "Rules 12 and 13").
+
+**Decision.** (12) A follower drops a read-index batch from flight once every read in it failed past CAMPAIGN_DEADLINE, so the next batch goes out (`check_remote`). (13) A `/transfer` or drain hand-off refuses a target whose link from the leader is lossy while another follower's is not, and a running one of those is abandoned once its target's link turns so. Lossy is the commit-error rule's measure (over `commit_errors`, at least `commit_fail_min` failed) over every commit-path call in the `STEP_DOWN` window, including the misses `call_counts` leaves out. `STEP_DOWN` keeps its own target choice and probes, and the move `home` its HOME_CALLS rule.
+
+**Why.** m0-carried-8 found main `a7d28e5` failing `a_read_only_group_elects_off_a_half_hung_leader` on seeds 21, 31, and 92 of 0 to 119: the emptied batch stayed in flight to the half-hung leader, later reads failed as queued, which forgets no leader, and no follower campaigned for the minute [measured, simulator]. Rule 12 alone pushed live seeds 10,273 (31.8 s), 11,401 (30.0 s), and 12,761 (31.6 s) past 30 s: each is a hand-off onto a half-hung follower whose losses the leader had counted but under `commit_fail_min`, after which the target led with its answers lost or the leader served nothing for the transfer's LEASE. The hand-off already refuses a `Suspected` target (rule 10); a lossy link is the leader's own evidence of the same fault.
+
+**Beat.** Rule 12 without 13 (three seeds past 30 s). A clean-link rule (at most `commit_errors` failed, any calls): it refused drain targets on single noise misses, and left 10,576 and 10,768 past 30 s. Guarding the move `home` too: with crashes and partitions it refused 279 of 328 home moves the HOME_CALLS rule had cleared, which would delay B0-31's re-home. Refusing with no fallback when every link is lossy: that is usually the leader's own fault, which handing off cures.
+
+**Evidence.** `leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` and `a_leader_hands_off_to_no_follower_whose_answers_it_loses` (with its control); `liveness.rs` `a_read_only_group_elects_off_a_half_hung_leader` now also runs seeds 21, 31, and 92. Each fails without its rule. With no faults but transfers and drains, 500 seeds made 14,786 transfers and rule 13 refused none; with 2% drops it refused 256 of 14,919 [measured, simulator]. Live seeds 10,000 to 13,999: none over 30 s, worst 26.2 s (12,361). Long sweep: HARSH 16,027 ms, gray 26,832 ms, live (4,000 seeds) 26,237 ms; Porcupine Ok on all three histories.
+
+**Flip.** A live seed past 30 s in the 4,000-seed window, or a healthy group whose `/transfer` or drain hand-off rule 13 refuses for longer than one `STEP_DOWN` window.
+
+### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
+
+Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Decision.** (10) A leader hands off, by `STEP_DOWN`, `home`, or a drained hand-off, to no member it refuses in pre-vote as `Suspected` (`may_lead_target`). (11) A `Suspected` bar whose every report arrived while the follower held that leader's transfer id ends once the follower accepts another leader's append; a report outside a transfer keeps it a full bar. The long sweep's live half runs at least 4,000 seeds from 10,000 (`sim.rs`, `LIVE_SEEDS_MIN`), whatever `RAFT_SEEDS` says.
+
+**Why.** Main passed the 30 s bound on live seeds 10,000 to 11,999, the window the long sweep ran, and failed it on 12,048 (33.0 s) and 12,073 (37.4 s); m0-carried-8 found four more in 12,000 to 15,999 (30.1 to 34.6 s) [measured, simulator]. In 12,073 a drained leader handed leadership back to a half-hung member it already refused as suspected, so the gray leader came back each time until check quorum moved it. With that fixed, 11,121 showed the other side: reports sent during each leader's own hand-off barred both healthy voters from each other for 31.3 s. The 2,000-seed window had hidden both, and the bound is absolute (operator: "gates pass as written").
+
+**Beat.** A relative gate, "no worse than main" (operator: refused). Setting no bar at all during a transfer, which left a half-hung leader free to win back. Dropping an emptied read-index batch from flight, which on main pushed 10,273, 11,401, and 12,761 past 30 s; it helps only narrow-reads-3's deferred reads, and stays there pending the agreed version with m0-carried-8.
+
+**Evidence.** `crates/raft/tests/leadership.rs` `a_leader_hands_off_to_no_member_it_suspects` and `a_hand_offs_suspect_bar_ends_when_another_leader_is_heard` (with its control); `sim.rs` `a_leader_hands_off_to_no_member_it_suspects_live` (seeds 12,048 and 12,073). Each fails without its fix. Live seeds 10,000 to 15,999 with both fixes: none over 30 s, worst 29.3 s (14,945). Long sweep (`RAFT_SEEDS=2000`, live half 4,000 seeds): HARSH 16,027 ms (11,895), gray 26,832 ms (10,676), live 27,601 ms (13,161); Porcupine Ok on all three histories (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Flip.** A live seed past 30 s in the 4,000-seed window again, or a gray leader that keeps clearing its bar by handing off, which would need the hand-off bar to count reports by target instead.
 
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
@@ -2439,6 +2546,8 @@ Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/
 **Evidence.** `tests/m0/results/carried-2.md`, "What sets the tail" [measured rounds and RTTs; the fixed-point argument is inference].
 
 **Flip.** A run where a capped entry lowers commit p99 at the same near RTT and rate.
+
+**Reversed, 2026-11-13 (`m0-carried-7`).** Entry size also sets the storage confirm, which this entry did not measure, and two `m0-carried-6` gate runs failed on 210 entries of about 86 commands. See "An entry stops at `ENTRY_SOFT` bytes past its first command".
 
 ### `merge-budget-2`: the budget holds under concurrency, GETs compute, and list fields are counted, 2026-11-12
 
@@ -2562,6 +2671,18 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 
 **Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
 
+### Dependency reads overlap the entry in flight, 2026-11-12
+
+**Decision.** The leader may freeze the next entry's command set while one entry is in flight, once that entry has been in flight its mean round less one mean dependency read, and ask for the batch's dependency reads then (`crates/raft/src/member/leader.rs`, `cut_early`). The batch is decided only after the entry in flight committed and applied, on that fold, with exactly the chains `deps()` names on it: a chain the applied entry newly names is read then, and a read chain it no longer names is dropped (`decide_held`). A command admitted after the read was asked waits for the entry after. Dependency ids are unique per member, not per leadership, a transfer drops the held reads, and id blocks and recorded entries still go first. `Out::deps_used` names the entry each read decided, for the host's `deps_log`. DESIGN's write path now says a revocation or suspension "binds every command whose entry's read arrived after it" instead of "every command decided after it".
+
+**Why.** B0-29 needs leader commit p99 at most 600 ms at 500 agents, and the last hosted split had commit p99 930 to 1,163 ms with `queueMs` p99 599 to 872, `depsMs` 239 to 432, and `roundMs` 304 to 356 (leader `/stats`). With the read started only after the entry in flight committed, a command waited one round, its entry's read, and its own round. Overlapping the read with the round in flight takes min(round, read) off that path while keeping one entry in flight and `decide` on the fold plus the entry's earlier commands and the reads made once for it through `fresh`.
+
+**Beat.** Caching dependency folds across entries, which the write path's "read once per entry through `fresh`" forbids and which would break BF-2, BF-15, and BF-27. Cutting the next batch as soon as the entry in flight is appended, which holds out every command admitted during the round and gives back the wait it saves [inference]. Deciding the batch when its reads arrive, on the fold before the entry in flight applied, which breaks "one entry in flight" (the planted bug fails four of the new tests).
+
+**Evidence.** `crates/raft/tests/deps.rs`: seven tests, each failing on one planted bug (deciding when the reads arrive, passing stale extra reads, no re-read for a changed chain, ids reset per leadership, a post-cut command joining the early batch, a transfer keeping its reads, two entries in flight). The simulator now sends half its puts with a dependency the host answers 0 to 400 ms late, checks one entry in flight per leader and that every command an entry decided on reads was admitted before those reads were asked, and the 2,000-seed sweep and Porcupine pass on its histories [measured, simulator]. The latency gain on Cloudflare is unmeasured: the hosted B0-29 rerun decides it.
+
+**Flip.** A hosted B0-29 rerun where commit p99 does not fall by about min(round, read) p99, or where two reads in flight per group drive the `Authz` leader's dep read p99 up by more than it saves, which would return to reading after commit; or a revocation that must bind commands admitted before it within less than one round, which the narrowed wording no longer promises.
+
 ### A metadata split runs in band on the parent leader, keeps every commit on the parent, and reads the child narrowly (2026-11-12)
 
 This supersedes "A metadata split commits on the parent, and the parent keeps the feed" where the two differ. Branch `b030-split` builds it for B0-30's rerun (`build/BUILD-PLAN.md`, M7-WP4).
@@ -2587,6 +2708,54 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/am1/results/hot-shards.md`: in-memory tests in `crates/git/tests/catchup.rs`, `crates/api/tests/surfaces.rs` (`an_oversized_tier_read_stops_at_its_byte_budget`), and `containers/git/server/load_test.go`, with the planted bugs of `tests/am1/hotshards/plant.py`; the hosted run on `graft-m3c` there.
 
 **Flip.** A Workers runtime that lets a Durable Object run past its last request without `waitUntil` or an alarm, which would let the catch-up stay in its caller; or a hosted run where two pages of `ENTRIES_PAGE_BYTES` with a pack in flight still pass the isolate's 128 MB.
+
+### A push no git cache shard could check is retryable, and a hot network's shards are kept caught up (2026-11-13)
+
+**Decision.** A shard answers a failed `/validate` 422 only for its container's own 4xx (the pack's answer, the same on every shard), and 503 for a broken catch-up, a stopped container or a lost call (`graftyard_git::validate_status`). The edge answers a push no shard checked 503 `Retry-After: 2` before any byte of a git result. A leader catches up every Full site's first shard of its network at once and every `KEEP_WARM_MS` (15 s) while it applies entries. The archive's promotion runs in a stateless invocation of the site script, not in the leader member. Repacks search no deltas and write a commit-graph.
+
+**Why.** At `hot-shards-2`'s home-shard kill, 23 pushes in flight were refused `unpacker error`, which git reports as a failed push and a client does not retry. At `hot-shards-3`'s, the same pushes got 503, but each waited 137 s, because the other sites' shards were caught up only by pushes and sat 1,100 and 1,900 entries behind. A leader member that drove the promotion's shard calls charged each to its newest request, one the shard's own `/entries` reads had made, and failed "Subrequest depth" (merge-budget-4's trace `8c049c94`). B0-29's push p99 climbed within each run because validate's `--not --all` walks read every ref's tip from the packs, and a repack's delta search held the network's lock for seconds.
+
+**Beat.** Retrying inside the edge on 5xx, which would hold a push past its 180 s on a shard that is rehydrating. Keeping only the leader's own site warm, the old rule, cheaper by two catch-up calls each 15 s. A once-a-day full repack to drop pack count, which does not remove the per-tip read. A pool shard check on every forward rather than a 30 s skip, which pays a call a push.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md`: A31's run (k stayed 1 through three cold rehydrates), j9g on standard-4 (push p99 4.70 s, 16 in-flight 503s, fsck clean on three shards, 0 depth errors), and the local B0-29-like runs (CPU 19.5 to 25.3 CPU-s/min down to 12.9 to 16.3; validate p99 up to 1,948 ms down to under 140 ms). Plants 38 to 46.
+
+**Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
+
+### A shard's repack searches deltas, waits for no lock but fsck waits for it, and a busy member serves 1 MB local pages (2026-11-13)
+
+**Decision.** `runRepack` runs `git repack -d --geometric=2` with git's default delta window, and the split commit-graph after it stays. `/fsck` waits for a running repack, as evict does. A member's local `/entries` page is at most `ENTRIES_BUSY_PAGE_BYTES` (1 MB) while `ENTRIES_BUSY_READS` (1) or more other reads are in flight, and up to `ENTRIES_LOCAL_PAGE_BYTES_MAX` (4 MB) on an idle member.
+
+**Why.** `--window=0` was added while a repack held the network's lock, and its 1 to 5 s delta search queued every validate. LM-1 round 7 took the repack out of the lock, so the search no longer delays anything, and a local B0-29-like A/B on the merged container showed the same CPU and validate p99 either way. Meanwhile `--window=0` kept every pushed version of a file whole: shards held 2.07 times the pushed bytes of real history and 13 times journey 9's. With the repack out of the lock, it could delete the packs it rolled up under a running fsck, and site c's fsck answered `ok: false` just after a rehydrate's repack. A 4 MB page built beside a busy member's other reads put site b's member near its 128 MB, and it trapped in F47's shape.
+
+**Beat.** Keeping `--window=0` with a nightly full repack, which still grows disk between nights and costs a second repack path. Taking the network's write lock for fsck, which would block every validate and fetch for the fsck's seconds. A page cap from the member's wasm memory, which only grows and so would cap every page after the first spike.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md` ("`--window=0` disk growth", "Site b's trap", the j9w fsck) and `tests/am1/results/hot-shards-4.md`. `TestRefsRepacksPastRepackAt` (deltas across packs), `TestRepackHoldsNoNetworkLock` (fsck waits, then answers ok), `only_a_local_entries_read_gets_a_larger_page`, and plants 56 to 58.
+
+**Flip.** A hosted run where the default-window repack's CPU, which is derived and outside `NetworkLoad`, starves validates on a standard-4; a member trap at a 1 MB page under load; or 1 MB pages that make a busy shard's catch-up fall behind journey 9's push rate.
+
+### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
+
+**Decision.** A catch-up's and a rehydrate's inline packs go to the shard's container in one `POST /ingest-batch` per run of up to `INGEST_BATCH_BYTES` (4 MB, `crates/git/src/catchup.rs`), one answer per pack, `done` or `later`. The container concatenates the run's packs not already ingested into one pack and indexes it with one `index-pack --strict --fix-thin`. Each pack's objects are recorded under its own SHA-256 for `/promote`, found by their offsets in the joined pack. When the joined pack fails, the run is split in halves down to one pack, which is ingested as `/ingest` ingests it, so two packs that carry the same object (which `--strict` refuses in one pack) and a pack whose base is missing each end up on their own. A stored pack still streams alone from its bucket. A container whose image has no `/ingest-batch` (404) gets one `/ingest` a pack.
+
+**Why.** After the multi-pack-index, a 2.05 GB cold rehydrate still took 20 to 22 min hosted, its tail 66 to 72 ms a pack against about 10 ms of `index-pack` locally (`tests/am1/results/hot-shards-2.md`). The difference is one shard-object-to-container call per pack plus `index-pack`'s per-run setup. One `index-pack` per batch removes both for small packs: locally, on one CPU, 9,000 packs of 20 KB took 4.9 s in 4 MB batches, from 94.3 s one call a pack.
+
+**Beat.** A dedupe pass that rewrites a pack without its duplicate objects, which would need a pack parser in the container and changes the bytes a pack's SHA-256 names. One call carrying many packs but one `index-pack` each, which saves the round trip but not `index-pack`'s setup. Larger `/entries` pages, which raise the shard's held memory.
+
+**Evidence.** `tests/am1/results/rehydrate-batch.md`: `containers/git/server/batch_test.go`, `crates/git/tests/catchup.rs` (`a_rehydrate_ingests_runs_of_inline_packs_a_call_at_a_time`), the planted bugs in `tests/am1/hotshards/plant.py`, the local benchmark `tests/am1/hotshards/bench/batchserve.py`, and the hosted cold rehydrates on `graft-m3f`.
+
+**Flip.** A hosted run where the split path dominates (many batches that fail whole), or where one batch's body pushes the shard object past its memory.
+
+### The edge serves the web app: `/_t/ui`, an unsigned session cookie behind a header, and the inlined first route (2026-11-13)
+
+**Decision.** The edge carries the web build as a Workers static-assets binding and serves `/assets/*` immutable and the HTML shell to a browser's `GET` of any page path nothing else claims, with the first route's reads rendered in process and inlined as `__graft_seed`. The private API lives under `/_t/ui/` behind the same authentication and read gate as the repository API; git-derived routes ask the git cache shard's `/ui/*` routes, and fold-derived ones (events, threads, merge requirements) render from the rows `mergeStateStatus` reads. Web sign-in checks a PBKDF2-HMAC-SHA256 hash on the `Identity` fold, commits `SignIn { method: Password }`, and sets `__Host-gy_session=<account>.<session>`, which counts only on a request that also sends `x-graftyard-web: 1` and only while the fold lists the session and `sessions_not_before` allows it. GraphQL from the app goes as persisted documents by hash (`web/src/api/persisted.json`, embedded in the edge) (`design/SHARED.md`, "Frontend and native app", "How the edge serves it").
+
+**Why.** `/_t` is reserved, the shell answers only `text/html` `GET`s of paths no GHES route owns, the cookie needs a header no GHES client sends, and a persisted request is one with no `query`, so no GHES 3.22 reply changes. An unsigned cookie whose 80 random bits name a session the fold must hold needs no new secret, and so no rotation row or site-day-only secret change. Rendering the seed with the same renderers as the routes keeps the inlined data identical to what a refetch returns.
+
+**Beat.** A signed (HMAC) cookie with a new edge secret, which adds a key to rotate for no gain while the fold is read anyway. Serving the pages' reads through new `/api/v3` routes, which would be GHES paths with no oracle for their private shapes. A second `ASSETS` Worker, which would add a failure domain.
+
+**Evidence.** `crates/identity/src/password.rs` (RFC 7914 vectors), `workers/edge/src/ui.rs` and its tests, `crates/api/src/ui.rs`; BF-38's run against `graft-m4a` (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** A session read on every cookie request that measurably raises read latency (then cache it for `READ_CACHE`, as tokens are); a GHES client that sends `x-graftyard-web`; or a shell whose seed reads push first paint past a second round trip.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
@@ -2623,3 +2792,221 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/m0/results/m0-wp12.md`, L0-12 feed.
 
 **Flip.** Agents that act on an overlap within 3 s, where a 1 s batch costs them conflicts.
+
+#### LM-1 round 7: a member's ring starts at its first poll, and nothing is kept for it before
+
+**Decision.** A member keeps no entry for its activity-feed ring until a poll reads the owner's `Authz`. That poll starts a ring that never served at the member's applied entry with the leases live there (`Ring::start`, as `Ring::skip` does for an install), so a cursor from before gets 410; a ring that already serves is left as it is. `lease::rows` decodes the rows its scan returns instead of reading each again.
+
+**Why.** Two costs of the old waiting list, both measured. Fed one by one at the first poll, each waiting entry rebuilt the live-lease set from SQL in one synchronous turn: on L0-12 (`repo:131273`, 08:00:38Z on 2026-11-12) each of the 8 learners spent 15 to 46 s of CPU on its first poll, with about 1,070 entries and 500 leases waiting, and the voters sharing their isolates then answered "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39. And the list held a clone of every applied entry's events, inline packs included, up to FEED_RING's 10,000 entries, on every member no poll reached: the leader and the followers. At 500 agents (`repo:131276`, 180 s) the leader's wasm memory grew from 2 to 67 MB and a follower's from 2 to 40 MB, in step with the 4.2 agent pushes a second of 90 KB [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Feeding the backlog in slices with an await between them, which keeps both costs and only spreads the CPU. Bounding the list by bytes, which still holds packs on members that never serve.
+
+**Evidence.** `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
+
+**Flip.** A client that must see the events of entries applied before a member's first poll, which needs that member to have read the owner's `Authz` at join.
+
+#### LM-1 round 7: a REST merge reads only its rows, as `mergePullRequest` does
+
+**Decision.** `PUT /pulls/{n}/merge` reads the rows its plan needs by pull request number (`{"rows": {"mergeN": n}}`, `TierRows::merge_rows` with `MergeOf::Number`): the access rows, the pull request's `issue`, `pull`, and `pull_head`, and its base's `ref`. A follower or learner serves it by read-index once its metadata tier is loaded, as it serves `mergePullRequest`'s `{"merge": id}`. A member built before `mergeN` answers it with both whole tiers.
+
+**Why.** BM-2 cut 4 narrowed only the GraphQL merge; the REST route kept reading both whole tiers. At journey 9 that is about a 1 MB packed dump parsed at the edge on every merge, and at 500 agents (`repo:131276`, 180 s) REST merges took 1.2 to 4.4 s at the edge (p99 4.4 s, against B0-29's 2 s), while the shard's merge plan took 68 to 1,232 ms [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Leaving the REST route on the whole tiers until `narrow-reads` serves every route narrowly, which keeps B0-29's merge line failing until then.
+
+**Evidence.** `a_merge_plans_from_its_rows_as_from_both_tiers` (`crates/api/tests/surfaces.rs`) and `a_follower_serves_only_the_designs_reads` (`workers/site/src/fanout.rs`); plants 69 to 71 in `tests/lm1mem/plant.py`.
+
+**Flip.** A REST merge reply that renders rows beyond these, which would need them added to `merge_rows`.
+
+#### LM-1 round 7: a merge waits for a catch-up in flight only after it misses a commit
+
+**Decision.** `merge_then_catch_up` merges first, waits for a catch-up in flight only when the container answers that a commit is missing, merges again, and catches up itself only if that misses too. It amends the BM-2 rule that the first merge plan awaits the catch-ups in flight ("BM-2 latency: repack the shards…", and `bm2-repack`): the wait was meant for a new leadership's `warm` catch-up, which the merge still waits for when it lacks a commit.
+
+**Why.** Under journey 9 a validate's catch-up runs on the shard nearly all the time, so every merge waited for one first. At 500 agents (`repo:131278`, 180 s, after the REST merge read only its rows) the shard's merge waited 64 to 2,151 ms of its 175 to 2,750 ms, for commits it already held (no merge caught up), and REST merge p99 was 6.2 s against B0-29's 2 s [measured, `tests/am1/results/lm1-memory.md`, round 7, the `mergeSteps` shard timings].
+
+**Beat.** Keeping the wait and making catch-ups shorter, which leaves every merge behind whatever catch-up is running.
+
+**Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
+
+**Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
+
+### `merge-p99`: a merge's rows wait for no dump rebuild, and a REST write resolves its name beside its token, 2026-11-13
+
+Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line (`merge:only` p99 at most 2 s at 500 agents).
+
+#### A merge's rows read is never spaced as a dump rebuild
+
+**Decision.** `Repo::heavy_wait` spaces only a whole-tier dump (`{"rows": true, "packed": true}`) by `DUMP_EVERY_MS` or `LEARNER_DUMP_EVERY_MS`. A merge's rows (`{"rows": {"merge": id}}`, `{"rows": {"mergeN": n}}`), which the edge also sends with `packed`, are answered at once from `read_json` and take no rebuild slot.
+
+**Why.** The check keyed on `packed` alone, so a merge's few rows waited for, or were shed behind, a dump rebuild it never made, and each one let through claimed the slot the next whole-tier read needed. In LM-1's m19 smokes on `graft-m2b` the REST merge's tier read was its largest stage, p90 955 ms (250 agents) and 1,030 ms (500), max 2.2 and 1.4 s, and 1,715 ms p90 and 2.8 s max on the m19 B0-29 row [measured, `mergeSteps`], while the dep-free stages (`auth`, `merge_plan`, `commit`) stayed near 50, 150 to 400, and 500 to 700 ms. The spacing is the cause by the code path; no member log isolates it [inference].
+
+**Beat.** A shorter `LEARNER_DUMP_EVERY_MS`, which spends learner CPU on dumps to shorten a wait merges should never have had.
+
+**Evidence.** `a_merge_rows_read_never_waits_for_a_dump_rebuild` (`workers/site/src/fanout.rs`) fails on the old check; plants in `tests/lm1mem/plant.py`.
+
+**Flip.** A merge rows answer large enough that rebuilding it per read costs a member what a dump did.
+
+#### A REST write reads its token and `o/r` at once
+
+**Decision.** `rest_repo` resolves the repository name beside `authenticate` for every method, as it did for `GET` only. A write still reads both fresh (`read_class` stays false).
+
+**Why.** A write resolved after its token, outside every timed stage: 135 to 705 ms of each m19 REST merge was untimed (`total` less `auth`, the longer of `tier` and `authz`, `merge_plan`, and `commit`) [measured]. Running it beside the token takes that serial step off every REST write [inference until the hosted split shows the gap gone].
+
+**Beat.** Keeping the order for writes, which buys nothing: neither read needs the other's answer.
+
+**Evidence.** The edge's per-request `server-timing` (`resolve` is now a stage of every REST request) and `a1.mjs`'s `mergeSplit`.
+
+**Flip.** A write path that must authenticate before it may learn whether a repository exists, which `resolve` does not reveal to the caller.
+
+#### Test timing headers are per request
+
+**Decision.** A test install's `x-graft-trace` and `x-graft-shard-timing` live in the request's `Timing`, not in isolate-wide thread-locals.
+
+**Why.** 54 of 58 merges in the m19 smokes and 68 of 70 on the m19 B0-29 row carried no shard timing [measured], so the shard's share of a merge was not measured. Concurrent requests in one isolate taking each other's notes fits: any request's reply cleared the isolate's note [inference from code].
+
+**Beat.** Nothing; LM-1 round 7 moved `server-timing` into the request for the same reason (`236eca5b`).
+
+**Evidence.** The hosted `mergeSplit` carries `shard:*` stages for each merge.
+
+**Flip.** A note that must outlive its request, such as a shard timing reported after the reply, which would need its own channel.
+
+#### A merge's rows are read on the leader
+
+**Decision.** `tier_rows` sends a merge's rows (`MergeOf`) to the repository's leader by `call_opt`; whole-tier reads keep `read_spread`. It amends "F65 follow-up" and "LM-1 round 7: a REST merge reads only its rows", which sent merge rows to followers and learners.
+
+**Why.** With the rebuild spacing gone, the merge's tier read still ran p50 224 to 300 ms and p99 1.0 to 1.4 s on `graft-m3f` at 500 agents [measured, `tests/am1/results/merge-p99.md`]: a learner or follower answers only after a read-index round to the leader, from as far as apac, and after it has applied that index. The leader answers from its lease in its own turn. The F65 move was for 200 API reads a second; merges are 10 a minute, and the merge's commit goes to the same leader right after.
+
+**Beat.** Keeping merge rows on learners and placing one near the leader, which still waits for a read-index round and costs a learner.
+
+**Evidence.** The hosted `mergeSplit` `tier` stage before and after.
+
+**Flip.** Merges at a rate whose reads show in the leader's `/read` share, or a leader shedding them (`READS_MAX`), which would move them back to followers.
+
+#### A REST merge reads ahead on its cached repository
+
+**Decision.** `PUT pulls/{n}/merge` takes its isolate's cached login, `Placement`, and `Authz` (`resolve_cached`, entries at most `READ_CACHE` old), and while its own fresh `resolve` runs, reads its merge rows and the owner's `Authz` fresh for that repository. It keeps them only if the resolve answers the same repository, owner, and placement record (`kept_ahead`), and reads again otherwise. Every read it keeps is a fresh one started after the request arrived; only which repository to read is a guess.
+
+**Why.** After the two fixes above, the write's fresh `resolve` was the merge's longest serial stage, p50 381 to 452 ms and p99 861 to 884 ms on `graft-m3f`, and the tier and `Authz` reads waited for it [measured, `tests/am1/results/merge-p99.md`]. Run beside it, the two smokes' merges would have run p99 1.6 and 2.0 s [inference from the same stages].
+
+**Beat.** Reading a write's `o/r` from the cache outright, which lets a renamed or moved repository take another's merge for up to `READ_CACHE`, against SHARED's write path that reads identity fresh.
+
+**Evidence.** `a_write_keeps_its_ahead_reads_only_for_the_repository_it_resolved` (`workers/edge/src/api.rs`); plants in `tests/lm1mem/plant.py`; the hosted `mergeSplit`'s `tier_ahead` and `authz_ahead` stages.
+
+**Flip.** Guesses that miss often enough that the wasted reads show on the leader, or a repository renamed so often that merges pay the second read.
+
+#### A REST merge reads the owner's `Authz` on its leader
+
+**Decision.** For `PUT pulls/{n}/merge` (`api::rest_merge`, `Ctx::leader_reads`), the owner's `Authz` reads, both the fresh name lookup in `resolve` and the fold read ahead or in `read_repo`, go to the `Authz` group's leader by `call_opt`. Every other request keeps `read_spread`. It amends "F65 follow-up: the edge reads an owner's `Authz` by read-index" for this one route, as "A merge's rows are read on the leader" amends F65.
+
+**Why.** With the rows on the repository's leader and read ahead, a REST merge's longest serial stages were `resolve` (p50 398 to 531 ms, p99 784 to 1,033 ms) and `authz_ahead` (p50 451 to 489 ms), both `Authz` reads by read-index through far members, while the rows read on a leader took 30 to 47 ms. The 600 s B0-29 row on `graft-m3f` missed at p99 2,517 ms [measured, `tests/am1/results/merge-p99.md`]. The 123/s that overloaded the `Authz` leader were API reads; merges add about 20 reads a minute [inference].
+
+**Beat.** Caching the `Authz` fold for writes, which SHARED's write path rules out (the fold names who may merge), and a learner near the edge, which still waits a read-index round.
+
+**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`. On the 600 s B0-29 row at 500 agents on `graft-m3f`, `resolve` went from p50 530 / p99 1,033 ms to 118 / 306 ms and `authz_ahead` from p50 463 to 50 ms, and `merge:only` p99 from 2,517 to 1,571 ms, with no leader change [measured, `tests/am1/results/merge-p99.md`].
+
+**Flip.** An `Authz` leader whose `/read` share or `READS_MAX` sheds show merge reads, or merges at a rate near the API reads that moved off it.
+
+### The per-owner pool budget is a lease ledger in each site's first pool shard, 2026-11-13
+
+**Decision.** Each site's first pool shard keeps a `PoolLedger` in its SQLite: per network, the pool slots it holds, its owner, and its last renewal. Before a network's leader commits a `Fanout` step, it asks both warm sites' ledgers at once (`/pool/grant {network, owner, want}`). Each ledger runs `pool_grants` over its live leases, with the asker last. The leader commits a step up to 1 plus the fewer either granted, a step down only as `fanout` asks, and keeps k when either ledger does not answer within 3 s [guess]. A lease lapses unless renewed within LOAD_STALE, by the leader's asks while k is above 1 or by the first shard's once-a-minute `/pool/renew`. While the ledger holds a lease, its object's alarm runs it every 45 s (`LEDGER_BEAT`), which drops lapsed leases and marks the time. A gap of more than 90 s (`LEDGER_GAP`) [guess] since the ledger last ran means its object was down, and that gap counts against no lease. `shards_for` takes the network's granted slots, so each pool shard serves one network.
+
+**Why.** `pool_grants` ran only in tests. `shards_for` gave every network the same first k - 1 pool shards by rendezvous, and the leader's `Fanout` commit raised k with no grant, so B0-34's "hostile owner held to its per-owner pool budget" and "the monorepo's k reduced by another owner" would have measured missing code. A per-owner budget means nothing while two networks share their pool shards. The operator's default design fixed the ledger's place, the grant before the commit, the lease, and the outage rule. The code differs from that default in three places:
+- The leader asks for the k it holds, not only for a step, so a hot network's lease stays alive.
+- A grant short of the held k (a ledger that lost a race, or a newly warm site whose pool is taken) never steps k down. Otherwise a ledger, not `fanout`, would take a network's shards away.
+- A ledger's own outage is not counted against leases. Otherwise a ledger outage longer than LOAD_STALE would expire every lease on its return. As first built, the ledger read any 90 s with no call as an outage, and with sparse callers every call came after such a gap. Each call shifted every lease forward, so none ever lapsed. In LM-1's m21 (`lm1-memory` round 10), two m3org networks forced to k 4 and torn down without a release held 3 slots each on every site from 11:36Z to 13:11Z. That was the owner's whole share, so every later row's network was granted k 1. Since 2026-11-13 (branch `pool-lease-expiry`), the ledger's object beats every `LEDGER_BEAT` while it holds a lease, so a gap past `LEDGER_GAP` means the object did not run, and a lease nobody renews lapses LOAD_STALE after its last renewal however rarely the ledger is called.
+
+**Beat.**
+- Grants inside the leader's `Fanout` command's `decide`, which would read the site's pool through `fresh` as a cross-group dependency and make every network's step wait on a shared group.
+- A pool group or object of its own: a new failure domain for the same state.
+- Rendezvous pool slots with an owner check only on k: the shards stay shared, so one owner's grant still loads another's shards.
+
+**Evidence.** `crates/git/tests/agent_load.rs`: `b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share` now runs the leader's path (`LoadReports`, `pool_ask`, two `PoolLedger`s, `granted_k`) and checks distinct slots and each owner's share on each site every minute; `a_hostile_owner_with_three_hot_networks_is_held_to_its_share`, `another_owners_step_up_never_reduces_a_networks_held_shards`, `an_unrenewed_lease_expires_and_frees_its_shards`, `a_lease_nobody_renews_lapses_however_rarely_the_ledger_is_called` (fails without the heartbeat), `an_unreachable_ledger_keeps_k`; plants in `tests/am1/pool/plant.py`; the two-owner hosted smoke in `tests/am1/results/pool-grants.md`.
+
+**Flip.** A plan model with per-owner shares, which replaces `owner_share`. Also flips on a hosted run where a ledger round trip delays a step past `fanout`'s up window, or where a ledger's SQLite write rate on one pool shard shows in its validate latency.
+
+### M5-WP1: the `Release` group's rules, as built (2026-11-13)
+
+#### `decide`'s clock is the entry's own time
+
+**Decision.** `ReleaseFold::decide(anchor, at, bytes)` takes `at`, the time the leader stamped on the entry, and a follower's `check` takes the same stamp from the entry it verifies (the member's `release_at` table). `not_after` and a drain's 24 hours are judged against it, so the rules use no clock and the CLI, the member, and the tests run one function.
+
+**Why.** "`decide` is pure" (`design/DESIGN.md`, Shape, the `Command` trait). A wall clock read in `decide` would let a follower refuse an entry its leader accepted.
+
+**Beat.** Reading `Date.now()` in the member, which makes `decide` impure. Carrying the time in the signed body, which the signer controls.
+
+**Evidence.** `an_intent_past_not_after_is_refused` and `the_executor_key_replaces_only_a_lost_site_and_pins_nothing` (`crates/release/src/tests`); plants 2 and 11 in `tests/m5/plant.py`.
+
+**Flip.** A rule that needs time the leader cannot stamp, such as a deadline that must hold while no entry commits.
+
+#### `SignedIntent` carries no signature of its own
+
+**Decision.** `SignedIntent` drops `release_sig`, `key`, and `sig`. The entry's signature is the intent's, and the release's signature is on its `ReleaseUploaded` record, which an intent names by id.
+
+**Why.** A signed entry already carries its signers and binds the install and `prev`. A second signature inside the body signs fewer bytes and adds a check that can disagree with the first.
+
+**Beat.** Keeping the three fields and checking both, which doubles the signer rules.
+
+**Evidence.** `each_kind_takes_only_its_signers`; `design/DESIGN.md`, Shape, `SignedIntent`.
+
+**Flip.** An intent that must be relayed without its entry, such as one carried to a second install.
+
+#### Entries after genesis are format 0x30.2
+
+**Decision.** A `Release` member writes the genesis as 0x30.1 and every later entry as 0x30.2, and reads both. Tags 0 (`Genesis`) and 1 (`Keys`) are unchanged; tags 2 to 23 are new, in the design's order (`crates/release/src/tests/entry_tags.golden`).
+
+**Why.** A member built before M5-WP1 decodes only the genesis. A new format makes its refusal "unreadable format", not a wrong decode, and the existing installs' genesis bytes still re-sign byte for byte.
+
+**Beat.** Reusing 0x30.1 for the new tags, which an older member would misread as malformed.
+
+**Evidence.** `the_codec_round_trips_every_entry_kind`; graft-m4a's `genesis.unsigned`, signed again by this branch's `graftyard sign`, is byte-identical to its committed `genesis.signed` (digest `b40c10ed84bd…`).
+
+**Flip.** None expected: the wire format is append-only.
+
+#### An `EdgeRoll` undo pin names R or the release the edge runs
+
+**Decision.** An `EdgeRoll { release: R }`'s pre-signed undos may pin only R or the release the edge currently runs, and an `EdgeRoll` whose versions drop a version an undo of the current intent names is refused `DropsUndoVersion`.
+
+**Why.** The design says the roll may not drop an undo's version (`design/DESIGN.md`, Shape, "Release group") but not which versions an undo may name. Only these two are deployed during the roll, so a pin to any other release would point at a version no deployment holds.
+
+**Beat.** Accepting any uploaded release as the pin, which lets an undo name a version the roll already removed.
+
+**Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
+
+**Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
+
+### M4-WP2's hosted half, as built (2026-11-13)
+
+#### M4-WP2's consumers run in band on the leader alarm
+
+**Decision.** `Notify` and `Search` run on each repository leader's alarm, and `Counts` on each `Identity` leader's, as `Webhooks` does (`workers/site/src/activity.rs`). Each reads its committed cursor, does one batch (at most 100 entries [guess]), and commits its cursor through its own member under a request id derived from the chain, the consumer, and the batch's end. A target that does not answer keeps the cursor, and the alarm comes back in 2 s. Nothing goes through Queues. Every consumer runs only where the site variable `GRAFTYARD_ACTIVITY` is `1`.
+
+**Why.** BF-5 bounds a star and a notice at 10 s. `PrSync`'s queue path delivered at p50 2.0 s and p90 5.1 s with outliers near 37 s, which is why its first attempt moved in band (`PrSync`'s first attempt runs in band, above). These consumers' work is a few Durable Object writes and no git cache merge, so the leader's isolate holds none of it for long. The cursor already gives at-least-once delivery, and each target is idempotent: `Inbox::apply` ignores an entry at or below `sources`, a document write replaces the document, and `CountsCmd::decide` keeps only newer `src`.
+
+**Beat.** A Queue message per batch, as SHARED's "Event fan-out" names: it adds the measured queue delay to every star and notice and buys nothing the cursor does not already give.
+
+**Evidence.** `tests/m4/results/m4-wp2.md`, "Hosted" [measured once BF-5 runs hosted]; the in-band precedent `tests/m2/results/m2-wp5.md`, "2026-11-05".
+
+**Flip.** A hosted run where the consumers' batches hold a leader's alarm long enough to slow its commits, measured, or a queue delivery bound under 2 s at p99.
+
+#### A jurisdiction domain with no site of its jurisdiction binds its shards on its regions
+
+**Decision.** `SearchShard::site` takes the domain's admitted sites as before. When the install has no site of an `Eu` or `Us` domain's jurisdiction at all, it binds that domain's shards on the sites of its regions (`weur` and `eeur` for `Eu`, `enam` and `wnam` for `Us`). The object is still created under the jurisdiction, through the namespace's `jurisdiction()` (`graftyard_lookup::Bindings::object`; `worker` 0.8 has none, so the JavaScript method is called).
+
+**Why.** The jurisdiction, not the binding's script, decides where a Durable Object runs and stores (`tests/m4/c15`: an `eu` object ran in WAW from a script deployed with no placement). `graftyard sites add` refuses once an install has a genesis, so `graft-m4a` can gain no `eu` site, and BF-68's pass line is about the documents' shards only. Where the org's repository chains sit is Milestone 5's EU sites, outside BF-68 (operator, 2026-11-13, relayed by the M4-WP2 lead).
+
+**Beat.** Deferring BF-68 to a new install with an `eu` site, which costs a site set and a genesis for a claim the shards alone carry.
+
+**Evidence.** `crates/api/tests/activity_gates.rs`, `eu_shards_bind_on_eu_regions_when_no_site_is_eu_and_names_round_trip`; hosted, each EU shard's `/stats` reports `jurisdiction: "eu"` and its colo (`tests/m4/results/m4-wp2.md`, "Hosted").
+
+**Flip.** A hosted EU shard that reports no `eu` jurisdiction or a colo outside the EU.
+
+#### A shard's generation is a map on every site's `Registry`, and a lost shard is rebuilt by the consumer that meets it
+
+**Decision.** The newest generation of each (domain, shard) lives in the `search_map` table of every site's `Registry` object `search_map`, and only moves forward. A `Search` write that finds its shard lost (`GRAFTYARD_SEARCH_LOST`, a site day's variable, or the operator's `/lose`) rebuilds the shard under the next generation from every repository of the domain and shard that the `MemberRegistry` rows list, read on each leader (`/activity {"docs": true}`). The new object answers 503 to queries until its `/built`, then the map moves, and the consumer's cursor, held meanwhile, resumes. The edge leaves a 503 or late shard out with `incomplete_results`.
+
+**Why.** DESIGN names a generation per rebuild but no place to keep it. The `Registry` objects already exist on every site, and a map read by every query must survive the loss of any one site.
+
+**Beat.** A chain of its own for the map, which a derived store does not need: a lost map row only makes the next rebuild reuse a generation's name, which the map's forward-only write refuses.
+
+**Evidence.** `workers/site/src/search.rs`, `workers/site/src/activity.rs`, `workers/site/src/registry.rs`.
+
+**Flip.** A hosted rebuild that misses a repository the registry rows list, or a query that reads a stale generation after `/built`.

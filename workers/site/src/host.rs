@@ -117,13 +117,21 @@ pub const ENTRIES_PAGE_BYTES: usize = 600_000;
 /// 600 KB page held one entry, and a rehydrate's tail ran at one member read per pack, about 120 ms each
 /// (`tests/am1/results/hot-shards-2.md`). The shard holds two pages at once, so this bounds its memory too.
 pub const ENTRIES_LOCAL_PAGE_BYTES_MAX: usize = 4_000_000;
+/// The most a local page may hold while the member is serving other reads (`ENTRIES_BUSY_READS` or more in flight):
+/// a 4 MB page built beside them took site b's member near its 128 MB, and it trapped "memory access out of bounds"
+/// 3 s after a home-shard kill, F47's shape (`tests/am1/results/hot-shards-3.md`, "Site b's trap") [guess for 1 MB].
+pub const ENTRIES_BUSY_PAGE_BYTES: usize = 1_000_000;
+/// Reads in flight (`Host::reads_in_flight`) at which a local page drops to `ENTRIES_BUSY_PAGE_BYTES` [guess]: an idle
+/// member, such as one under a rehydrate with no pushes, serves the 4 MB page.
+pub const ENTRIES_BUSY_READS: u32 = 1;
 
 /// The page an `/entries` read gets: a local read (the site's own git cache shard) the `bytes` it asks for, within
-/// `ENTRIES_PAGE_BYTES..=ENTRIES_LOCAL_PAGE_BYTES_MAX`; a remote one, which crosses regions under the lookup's CALL,
-/// always `ENTRIES_PAGE_BYTES`.
-pub fn entries_page_bytes(local: bool, asked: Option<u64>) -> usize {
+/// `ENTRIES_PAGE_BYTES..=ENTRIES_LOCAL_PAGE_BYTES_MAX`, or at most `ENTRIES_BUSY_PAGE_BYTES` while `reads` other reads
+/// are in flight; a remote one, which crosses regions under the lookup's CALL, always `ENTRIES_PAGE_BYTES`.
+pub fn entries_page_bytes(local: bool, asked: Option<u64>, reads: u32) -> usize {
+    let max = if reads >= ENTRIES_BUSY_READS { ENTRIES_BUSY_PAGE_BYTES } else { ENTRIES_LOCAL_PAGE_BYTES_MAX };
     match asked {
-        Some(b) if local => b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize,
+        Some(b) if local => b.clamp(ENTRIES_PAGE_BYTES as u64, max as u64) as usize,
         _ => ENTRIES_PAGE_BYTES,
     }
 }
@@ -133,6 +141,7 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS log (idx INTEGER PRIMARY KEY, term INTEGER NOT NULL, digest BLOB NOT NULL, row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS reg (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
     crate::release::RELEASE_SCHEMA,
+    crate::release::RELEASE_AT_SCHEMA,
     "CREATE TABLE IF NOT EXISTS fold (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS id_block (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS group_config (id INTEGER PRIMARY KEY CHECK (id = 1), idx INTEGER NOT NULL, row BLOB NOT NULL)",
@@ -185,6 +194,8 @@ pub struct Stats {
     pub queue_ms: Vec<u32>,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Local `/entries` pages capped at `ENTRIES_BUSY_PAGE_BYTES` because other reads were in flight.
+    pub busy_pages: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
     /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
@@ -263,6 +274,31 @@ impl Stats {
         }
         self.test_merge_asks += v["asked"].as_u64().unwrap_or(0) as u32;
         self.test_merge_shed += v["shed"].as_u64().unwrap_or(0) as u32;
+    }
+
+    /// `/stats?reset=1`: drops the samples and counts a row reads back, and restarts the inbound clock.
+    pub fn reset(&mut self) {
+        self.commit_ms.clear();
+        self.round_ms.clear();
+        self.apply_ms.clear();
+        self.apply_steps.clear();
+        self.confirm_ms.clear();
+        self.append_ms.clear();
+        self.raft_in.clear();
+        self.deps_ms.clear();
+        self.dep_fails.clear();
+        self.queue_ms.clear();
+        self.entries = 0;
+        self.commands = 0;
+        self.failed_calls = 0;
+        self.test_merge_asks = 0;
+        self.test_merge_shed = 0;
+        self.peers.clear();
+        self.calls.clear();
+        self.trace.clear();
+        self.hops.clear();
+        self.inbound.clear();
+        self.inbound_since = now_ms();
     }
 }
 
@@ -516,7 +552,7 @@ pub struct Core<F: Family> {
     waiters: HashMap<Ticket, Vec<oneshot::Sender<Outcome<F>>>>,
     /// The request id, admission time, and command of each ticket this boot admitted, for kills, latency, and the
     /// id-block lease loop's re-send.
-    admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
+    pub admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>,
     reads: HashMap<ReadId, (Value, oneshot::Sender<ReadResult>)>,
     #[cfg(feature = "test-faults")]
     pub kills: HashMap<RequestId, (Kill, u64)>,
@@ -533,6 +569,9 @@ pub struct Core<F: Family> {
     /// Dependency reads to hold back, for BF-15's queued commands: until then.
     #[cfg(feature = "test-faults")]
     pub hold_deps_until: u64,
+    /// Each dependency read's per-chain record by its id, until `DepsUsed` names the entry that used it (`deps_log`).
+    #[cfg(feature = "test-faults")]
+    pub dep_reads: HashMap<u64, Vec<Value>>,
 }
 
 /// A storage confirm begun: its id, its start when the leader times it, and the input's `SelfAck`.
@@ -596,6 +635,11 @@ pub struct Host<F: Family> {
     /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
     #[cfg(feature = "test-faults")]
     pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
+    /// Test installs, B0-02's cap A/B (`tests/m0/results/carried-7.md`): where the leader stops filling an entry
+    /// (`/stats?entry=max` for ENTRY_MAX, `entry=soft` for ENTRY_SOFT, `entry=<bytes>`). A reset object caps at
+    /// ENTRY_SOFT again.
+    #[cfg(feature = "test-faults")]
+    pub entry_soft: Cell<usize>,
     /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the
     /// follower ran it, so its appends still renew the followers' promises while it commits nothing: the
     /// simulator's `HalfHung` on one member (`/sever` with `half`).
@@ -1187,6 +1231,8 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             arrivals_mem: RefCell::new(None),
             #[cfg(feature = "test-faults")]
+            entry_soft: Cell::new(raft::ENTRY_SOFT),
+            #[cfg(feature = "test-faults")]
             half_hung_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
@@ -1282,6 +1328,8 @@ impl<F: Family> Host<F> {
         let (applied, stmts) = (store.applied, store.stmts);
         self.queue.borrow_mut().extend(stmts);
         self.flush().map_err(err)?;
+        #[cfg(feature = "test-faults")]
+        m.set_entry_soft(self.entry_soft.get());
         *self.core.borrow_mut() = Some(Core {
             m,
             join,
@@ -1298,6 +1346,8 @@ impl<F: Family> Host<F> {
             no_marker: std::collections::HashSet::new(),
             #[cfg(feature = "test-faults")]
             hold_deps_until: 0,
+            #[cfg(feature = "test-faults")]
+            dep_reads: HashMap::new(),
         });
         self.stats.borrow_mut().restores += 1;
         F::restored(self);
@@ -1717,6 +1767,7 @@ impl<F: Family> Host<F> {
         let mut need_block = false;
         let mut marks = Vec::new();
         let deps = out.deps;
+        let deps_used = out.deps_used;
         let catchup = out.catchup;
         let installs = out.install;
         let mut lost = None;
@@ -1865,6 +1916,22 @@ impl<F: Family> Host<F> {
         for want in deps {
             self.read_deps(want);
         }
+        #[cfg(feature = "test-faults")]
+        for used in deps_used {
+            let reads: Vec<Value> = match self.core.try_borrow_mut() {
+                Ok(mut c) => c
+                    .as_mut()
+                    .map(|c| used.ids.iter().flat_map(|id| c.dep_reads.remove(id).unwrap_or_default()).collect())
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            };
+            let _ = self.state.storage().sql().exec(
+                "INSERT INTO deps_log (idx, at, reads) VALUES (?, ?, ?)",
+                vec![i(used.index.0), i(now_ms()), json!(reads).to_string().into()],
+            );
+        }
+        #[cfg(not(feature = "test-faults"))]
+        let _ = deps_used;
         for w in installs {
             F::install_wanted(self, w);
         }
@@ -2285,7 +2352,17 @@ impl<F: Family> Host<F> {
     /// (`CredentialRefusal::NotRead`). BF-15 may hold the read back (`hold_deps_until`) so commands queue behind it.
     fn read_deps(self: &Rc<Self>, want: raft::DepsWanted) {
         let h = self.clone();
+        let emitted = now_ms();
         spawn_local(async move {
+            // `depsMs.spawn`: from the release that emitted the `DepsWanted` to this task's start, the isolate's own
+            // queueing ahead of the reads (round 6: dep reads took 118 ms p50 under load against 28 ms idle).
+            {
+                let mut s = h.stats.borrow_mut();
+                let v = s.deps_ms.entry("spawn".to_owned()).or_default();
+                if v.len() < SAMPLES_MAX {
+                    v.push(now_ms().saturating_sub(emitted) as u32);
+                }
+            }
             #[cfg(feature = "test-faults")]
             {
                 let hold = h.core.borrow().as_ref().map_or(0, |c| c.hold_deps_until);
@@ -2356,14 +2433,13 @@ impl<F: Family> Host<F> {
                     }
                 }
             }
-            // The entry these reads decide is appended next, at the log's end + 1.
+            // The entry these reads decide is logged once `DepsUsed` names it: with reads overlapping the entry in
+            // flight, an id block or record may be appended first, and a re-read may join a read for one entry.
             #[cfg(feature = "test-faults")]
+            if let Ok(mut c) = h.core.try_borrow_mut()
+                && let Some(c) = c.as_mut()
             {
-                let next = h.core.borrow().as_ref().map_or(0, |c| c.m.last_index().0 + 1);
-                let _ = h.state.storage().sql().exec(
-                    "INSERT INTO deps_log (idx, at, reads) VALUES (?, ?, ?)",
-                    vec![i(next), i(now_ms()), json!(reads).to_string().into()],
-                );
+                c.dep_reads.insert(want.id, reads.clone());
             }
             let _ = &reads;
             let _ = h.input(|m, t| m.deps_read(t, want.id, deps));
@@ -2959,15 +3035,20 @@ mod tests {
     }
 
     /// The site's own shard gets the larger page it asks for, never past the local cap or under the standard page; a
-    /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL.
+    /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL. While the
+    /// member serves other reads the local page is at most 1 MB, and an idle member serves the full 4 MB.
     #[test]
     fn only_a_local_entries_read_gets_a_larger_page() {
-        use super::{ENTRIES_LOCAL_PAGE_BYTES_MAX as MAX, ENTRIES_PAGE_BYTES as STD, entries_page_bytes};
-        assert_eq!(entries_page_bytes(true, Some(2_000_000)), 2_000_000);
-        assert_eq!(entries_page_bytes(true, Some(u64::MAX)), MAX);
-        assert_eq!(entries_page_bytes(true, Some(1)), STD);
-        assert_eq!(entries_page_bytes(true, None), STD);
-        assert_eq!(entries_page_bytes(false, Some(2_000_000)), STD);
+        use super::entries_page_bytes as page;
+        use super::{ENTRIES_BUSY_PAGE_BYTES as BUSY, ENTRIES_LOCAL_PAGE_BYTES_MAX as MAX, ENTRIES_PAGE_BYTES as STD};
+        assert_eq!(page(true, Some(2_000_000), 0), 2_000_000);
+        assert_eq!(page(true, Some(u64::MAX), 0), MAX);
+        assert_eq!(page(true, Some(1), 0), STD);
+        assert_eq!(page(true, None, 0), STD);
+        assert_eq!(page(false, Some(2_000_000), 0), STD);
+        assert_eq!(page(true, Some(u64::MAX), 1), BUSY, "one read in flight already caps the page");
+        assert_eq!(page(true, Some(800_000), 5), 800_000, "a page under the busy cap is not raised");
+        assert_eq!(page(false, Some(u64::MAX), 5), STD);
     }
 
     use std::cell::Cell;

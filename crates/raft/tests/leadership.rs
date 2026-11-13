@@ -656,6 +656,43 @@ fn deadline_misses_during_the_leaders_own_stall_are_excused() {
     assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
 }
 
+/// One stall of a follower counts once per CALL_DEADLINE, however many rounds it missed (LM-1: a 1.9 s stall missed
+/// 17 to 31 per-read rounds at once and moved healthy identity leaders). Misses sent a deadline or more apart still
+/// count, so a follower that keeps failing still trips the rule.
+#[test]
+fn one_follower_stall_counts_once_per_deadline() {
+    let run = |reads: u32, gap_ms: u64| {
+        let mut c = Cluster::new(56);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        // An idle leader's lease lapses, so each read starts a round to each follower; every one misses its deadline.
+        c.advance(graftyard_raft::LEASE.as_millis() as u64);
+        c.deliver_all();
+        c.inbox.clear();
+        let mut misses = Vec::new();
+        for _ in 0..reads {
+            c.now = Timestamp(c.now.0 + gap_ms);
+            let _ = c.on(A, |m, now| m.read(now));
+            misses.extend(c.inbox.drain(..).filter(|e| e.from == A && request(e)));
+        }
+        c.now = Timestamp(c.now.0 + 1_000);
+        for e in misses {
+            let f = e.failure(true).unwrap();
+            c.on(A, |m, now| m.call_failed(now, f));
+        }
+        // A commit-error trip first has the other follower probe each target.
+        drive(&mut c, 2_000, false, &mut id, |_| false);
+        step_downs(&c)
+    };
+    // One stall: 30 rounds sent within 300 ms count as one miss per follower, under `commit_fail_min`.
+    let stall = run(30, 10);
+    assert!(stall.iter().all(|s| !matches!(s.1, StepDownWhy::CommitErrors { .. })), "{stall:?}");
+    // The control: 5 misses a deadline apart are 5 failures per follower and trip the rule.
+    let failing = run(5, graftyard_raft::CALL_DEADLINE.as_millis() as u64);
+    assert!(failing.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{failing:?}");
+}
+
 /// A new leader counts a follower's failed calls only once that follower answered it in its term: a killed leader
 /// still resetting is not a sign of the new leader's sickness (7 of 60 groups changed again without this).
 #[test]
@@ -1223,5 +1260,191 @@ fn one_request_elects_an_idle_group_whose_leader_restarted() {
         }
         c.run(4_000, 100, |_| true);
         assert!(c.leader().is_some(), "to {to:?} write {write}: no leader {} ms after one request", c.now.0 - t0.0);
+    }
+}
+
+/// A follower that restarted numbers its read-index batches from the start again, and an answer the leader sent its
+/// previous boot (held for the learner's next call, or late on the network) carries the same batch number. Taken as
+/// the new batch's answer it would grant a read below the commit index of a write acknowledged before that read
+/// arrived: a stale read. Found by the live sweep with reads answered later (`tests/am1/results/narrow-reads-3.md`).
+#[test]
+fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
+    let mut c = Cluster::new(72);
+    c.elect(A);
+    c.sync(A);
+    // B asks, and A's answer is held back.
+    c.resolutions.clear();
+    c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    for e in std::mem::take(&mut c.inbox).into_iter().filter(|e| matches!(e.msg, Message::ReadIndex { .. })) {
+        let graftyard_raft::Envelope { from, to, msg } = e;
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    let held: Vec<_> = c.inbox.drain(..).filter(|e| matches!(e.msg, Message::ReadIndexRes { .. })).collect();
+    assert_eq!(held.len(), 1, "A answered at once, inside its lease");
+    // B restarts, and A's next append reaches it, so B names A again. Then a write commits through A and C while B
+    // hears nothing, so B has not applied it.
+    c.restart(B);
+    c.inbox.clear();
+    c.sync(A);
+    assert_eq!(c.m(B).leader(), Some(A), "A's append reached B");
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7_200)), put("k", "new"))).expect("admitted");
+    c.deliver(|e| e.to != B && e.from != B);
+    assert_eq!(c.value(A, "k").as_deref(), Some("new"));
+    let acked = c.m(A).state().commit;
+    assert!(c.m(B).group_fold().applied() < acked, "B has not applied the write");
+    // B's new boot reads; the old boot's answer arrives first.
+    c.resolutions.clear();
+    let id = c.on(B, |m, now| m.read_index(now)).expect("B names A again");
+    c.inbox.retain(|e| e.to != A);
+    for e in held {
+        let graftyard_raft::Envelope { from, to, msg } = e;
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    let stale = c.resolutions.iter().any(|(s, r)| {
+        *s == B && matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.index() < acked)
+    });
+    assert!(!stale, "B granted its new read below the write A acknowledged before it");
+}
+
+/// A member this one refuses in pre-vote as `Suspected` is no transfer target either. B led, two colos reported it,
+/// so C suspects it; C then leads, and its site is drained. Before the fix C handed leadership straight back to B, the
+/// gray leader its own pre-vote refuses, and on a half-hung B that hand-off repeated until check quorum moved B each
+/// time: 37.4 s leaderless with two healthy voters (F67 rule 10, live seed 12073 on main 0f7bf06).
+#[test]
+fn a_leader_hands_off_to_no_member_it_suspects() {
+    let mut c = Cluster::new(77);
+    let mut id = 0;
+    c.elect(B);
+    c.sync(B);
+    let term = c.m(C).term();
+    for colo in [1, 2] {
+        c.on(C, |m, now| m.suspect(now, Colo(colo), B, term));
+    }
+    c.crash(B);
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 100, 100, |_| true);
+    c.elect(C);
+    c.sync(C);
+    c.restart(B);
+    c.run(1_000, 100, |_| true);
+    assert_eq!(c.leader(), Some(C));
+    assert!(matches!(c.on(C, |m, now| m.transfer(now, B)), Err(TransferError::Target(t)) if t == B));
+    // C's site is drained: it hands off to A, the one target it does not suspect.
+    for s in SITES {
+        c.on(s, |m, now| m.set_drained(now, [C]));
+    }
+    drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(A));
+}
+
+/// A bar that `suspect` reports set while the leader ran a transfer is the hand-off's, not a gray leader's: once this
+/// member accepts another leader's append, it no longer refuses the old leader as `Suspected`. The same reports sent
+/// before the transfer began are a gray leader's, and that bar holds for its whole window. Kept, two leaders in turn,
+/// each reported during its own hand-off, refused each other as `Suspected` and nobody led for 31.3 s (F67 rule 11,
+/// live seed 11121).
+#[test]
+fn a_hand_offs_suspect_bar_ends_when_another_leader_is_heard() {
+    for during_transfer in [true, false] {
+        let mut c = Cluster::new(78);
+        c.elect(A);
+        c.sync(A);
+        let term = c.m(C).term();
+        let report = |c: &mut Cluster| {
+            for colo in [1, 2] {
+                c.on(C, |m, now| m.suspect(now, Colo(colo), A, term));
+            }
+        };
+        if !during_transfer {
+            report(&mut c);
+        }
+        // A hands off to B; C accepts a round carrying the transfer before B's campaign.
+        c.on(A, |m, now| m.transfer(now, B)).expect("started");
+        c.deliver(|e| !matches!(e.msg, Message::TimeoutNow { .. }));
+        assert!(c.m(C).state().transfer.is_some());
+        if during_transfer {
+            report(&mut c);
+        }
+        c.run(3_000, 100, |_| true);
+        assert_eq!(c.leader(), Some(B), "the hand-off completed");
+        c.sync(B);
+        assert_eq!(c.m(C).leader(), Some(B));
+        // A and B go down, so C's promise lapses and only the bar can refuse A.
+        let last = (c.m(B).log().len() as u64, c.m(B).log().last().unwrap().term);
+        c.crash(A);
+        c.crash(B);
+        c.advance(ms(graftyard_raft::ELECTION_AFTER) + 100);
+        let next = Term(c.m(C).term().0 + 1);
+        c.inbox.clear();
+        c.on(C, |m, now| m.step(now, A, Message::Vote(vote(next, A, true, last, None))));
+        let deny = vote_res(&c, C, A).and_then(|r| r.deny);
+        if during_transfer {
+            assert_ne!(deny, Some(Deny::Suspected), "a hand-off's bar outlived the hand-off");
+        } else {
+            assert_eq!(deny, Some(Deny::Suspected), "a gray leader's bar ended early");
+        }
+    }
+}
+
+/// A `/transfer` or drain hand-off goes only to a follower whose AppendEntries this leader saw answered, with at most
+/// `commit_errors` of its calls to it failed, in the window. A half-hung target answers some calls; handed leadership,
+/// it won the transfer vote and led with its answers lost, or the leader served nothing for the transfer's LEASE
+/// (F67 rule 13, live seeds 10273, 11401, and 12761 once rule 12 dropped emptied read-index batches). The control is
+/// the same target with every call answered.
+#[test]
+fn a_leader_hands_off_to_no_follower_whose_answers_it_loses() {
+    for half_hung in [true, false] {
+        let mut c = Cluster::new(79);
+        let mut id = 0;
+        c.elect(A);
+        c.sync(A);
+        // One AppendEntries to B in three loses its answer: under the commit-error rule's `commit_fail_min` in a
+        // quiet window, so no STEP_DOWN, but not a link to hand leadership over.
+        let mut n = 0;
+        drive(&mut c, 4_000, true, &mut id, |e| {
+            let to_b = e.to == B && matches!(e.msg, Message::Append(_));
+            n += u32::from(to_b);
+            half_hung && to_b && n % 3 == 0
+        });
+        assert_eq!(c.leader(), Some(A));
+        let r = c.on(A, |m, now| m.transfer(now, B));
+        if half_hung {
+            assert!(matches!(r, Err(TransferError::Target(t)) if t == B), "{r:?}");
+            // A's site is drained: it hands off to C, the follower it hears in full, not to B.
+            for s in SITES {
+                c.on(s, |m, now| m.set_drained(now, [A]));
+            }
+            drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+            assert_eq!(c.leader(), Some(C));
+        } else {
+            assert!(r.is_ok(), "{r:?}");
+        }
+    }
+}
+
+/// A leader whose read-index answers to B are lost, while its appends still arrive (a half-hung leader for reads).
+/// B's first unanswered batch is a failed call: B forgets A and fails the read naming no leader. A's next append
+/// teaches B the leader again, and a later read's unanswered batch must count as a failed call too. Before the fix the
+/// emptied batch stayed in flight and was resent forever, the later read failed as queued behind it, naming A, and B
+/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 12, liveness seeds 21,
+/// 31, and 92 on main a7d28e5).
+#[test]
+fn every_unanswered_read_index_batch_is_a_failed_call() {
+    let mut c = Cluster::new(76);
+    c.elect(A);
+    c.sync(A);
+    let lost = |e: &Envelope<KvEvent>| !(e.to == B && matches!(e.msg, Message::ReadIndexRes { .. }));
+    let failed_naming = |c: &Cluster, id| {
+        c.resolutions.iter().find_map(|(s, r)| match r {
+            Resolution::Read { id: i, result: Err(nl) } if *s == B && *i == id => Some(nl.leader),
+            _ => None,
+        })
+    };
+    for round in 0..2 {
+        // A write makes A append, which teaches B its leader again after the first round forgot it.
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(round + 1)), put("k", "v"))).expect("A leads");
+        c.run(1_000, 100, lost);
+        assert_eq!(c.m(B).leader(), Some(A), "round {round}: B follows A");
+        let id = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+        c.run(4_000, 100, lost);
+        assert_eq!(failed_naming(&c, id), Some(None), "round {round}: the read failed naming no leader");
     }
 }

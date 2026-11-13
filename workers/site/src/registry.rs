@@ -89,6 +89,36 @@ impl DurableObject for Registry {
                 let g = rows.first().map_or(i64::from(c.generation), |r| r.generation);
                 Response::from_json(&serde_json::json!({ "generation": g }))
             }
+            // `crate::search`'s generation map, in the object `search_map`: the newest generation of each (domain,
+            // shard). A lower generation than the stored one changes nothing, so the map only moves forward.
+            (Method::Get, "/search_map") | (Method::Put, "/search_map") => {
+                sql.exec(
+                    "CREATE TABLE IF NOT EXISTS search_map (k TEXT PRIMARY KEY, generation INTEGER NOT NULL)",
+                    None,
+                )?;
+                if req.method() == Method::Put {
+                    #[derive(Deserialize)]
+                    struct Put {
+                        key: String,
+                        generation: i64,
+                    }
+                    let p: Put = req.json().await?;
+                    sql.exec(
+                        "INSERT INTO search_map (k, generation) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET \
+                         generation = excluded.generation WHERE excluded.generation > search_map.generation",
+                        vec![p.key.into(), p.generation.into()],
+                    )?;
+                }
+                #[derive(Deserialize)]
+                struct G {
+                    k: String,
+                    generation: i64,
+                }
+                let rows: Vec<G> = sql.exec("SELECT k, generation FROM search_map", None)?.to_array()?;
+                let m: std::collections::BTreeMap<String, i64> =
+                    rows.into_iter().map(|g| (g.k, g.generation)).collect();
+                Response::from_json(&m)
+            }
             (Method::Get, "/rows") => {
                 let site = SiteId(query(&url, "site")?.parse().map_err(|_| Error::RustError("site".into()))?);
                 let rows: Vec<Row> = sql.exec("SELECT row FROM registry ORDER BY chain", None)?.to_array()?;

@@ -8,7 +8,8 @@
 //!
 //! - **Memory.** At most two log pages are held at once: the one being applied and the next, read meanwhile. A page is
 //!   what one `/entries` call answers, at most `ENTRIES_PAGE_BYTES` of entries on a member, or
-//!   `ENTRIES_LOCAL_PAGE_BYTES_MAX` from the shard's own site's member. Stored packs go from a
+//!   `ENTRIES_LOCAL_PAGE_BYTES_MAX` from the shard's own site's member. Inline packs go to the container in calls of
+//!   at most `INGEST_BATCH_BYTES`, each one more copy of part of the page being applied. Stored packs go from a
 //!   bucket to the container without passing through the shard object's memory (`ShardIo::ingest_stored`).
 //! - **The cursor moves only past what was applied.** Each page's packs are ingested and its ref changes applied
 //!   before the cursor moves, and only to the last index the page held, never to the end of the range asked for. A
@@ -36,6 +37,13 @@ pub const ROOM_EVERY: u64 = 256 << 20;
 /// A rehydrate reads the entry of each marker still in the log this many at a time, to tell promotions apart.
 const PROBE_AT_ONCE: usize = 16;
 
+/// The most inline pack bytes one `ShardIo::ingest` call carries; a single larger pack goes alone. One call per pack
+/// cost a hot tail 66 to 72 ms a pack, against about 10 ms of `index-pack` (`tests/am1/results/hot-shards-2.md`). One
+/// local `/entries` page (`ENTRIES_LOCAL_PAGE_BYTES_MAX` on the site) holds about eight of hot-a's 500 KB packs, so a
+/// call carries up to a page. Its body is one more copy of up to this many bytes, outside the wasm heap, beside the two
+/// pages a catch-up holds.
+pub const INGEST_BATCH_BYTES: usize = 4_000_000;
+
 /// The container's answer to one ingest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ingested {
@@ -52,7 +60,8 @@ pub trait ShardIo {
     async fn init(&self, fresh: bool) -> Result<(), StoreError>;
     /// Of these pack checksums, the ones the repository already ingested.
     async fn have(&self, sums: &[Digest]) -> Result<BTreeSet<Digest>, StoreError>;
-    async fn ingest(&self, sum: Digest, body: &[u8]) -> Result<Ingested, StoreError>;
+    /// Inline packs, each with the SHA-256 of its bytes, ingested in order in one call: one answer per pack.
+    async fn ingest(&self, packs: &[(Digest, &[u8])]) -> Result<Vec<Ingested>, StoreError>;
     /// A stored pack, from the first bucket whose copy matches `checksum`, straight to the container.
     async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError>;
     async fn put_refs_page(&self, refs: &[(String, String)], start: bool, done: bool) -> Result<(), StoreError>;
@@ -101,6 +110,8 @@ pub struct Rehydrated {
     pub pages: usize,
     /// Continued a run cut off on this disk, rather than starting from an empty repository.
     pub resumed: bool,
+    /// Calls to the container that ingested packs (`INGEST_BATCH_BYTES`).
+    pub calls: usize,
 }
 
 /// What a catch-up did.
@@ -145,26 +156,49 @@ fn inline_bytes(page: &[LogPacks]) -> usize {
 }
 
 /// Ingests `loads` in order; a pack answered `Later` is tried again after the others, until a pass makes no progress.
-/// `Ok(n)` with the packs ingested, or `Err(Unresolved)` naming how many never resolved.
-async fn ingest_all<I: ShardIo>(io: &I, loads: &[Load]) -> Result<Result<usize, usize>, StoreError> {
+/// Runs of inline packs go in one call each, up to `INGEST_BATCH_BYTES`; a stored pack goes alone, from its bucket.
+/// `Ok(n)` with the packs ingested, or `Err(Unresolved)` naming how many never resolved. `calls` counts the calls.
+async fn ingest_all<I: ShardIo>(io: &I, loads: &[Load], calls: &mut usize) -> Result<Result<usize, usize>, StoreError> {
     // The packs a call cut off part way through this list already ingested are not sent again: a page's inline packs
     // are up to `ENTRIES_PAGE_BYTES`, and a caller whose deadline falls inside every page would otherwise never pass it.
     let sums: Vec<Digest> = loads.iter().map(load_sum).collect();
     let held = if loads.len() > 1 { io.have(&sums).await? } else { BTreeSet::new() };
-    let mut left: Vec<&Load> = loads.iter().filter(|l| !held.contains(&load_sum(l))).collect();
+    let mut left: Vec<(Digest, &Load)> = sums.into_iter().zip(loads).filter(|(s, _)| !held.contains(s)).collect();
     let mut done = held.len();
     while !left.is_empty() {
         let before = left.len();
         let mut retry = Vec::new();
-        for l in left {
-            let r = match l {
-                Load::Inline { bytes, .. } => io.ingest(Digest(Sha256::digest(bytes).into()), bytes).await?,
-                Load::Stored { id, checksum, .. } => io.ingest_stored(*id, *checksum).await?,
+        let mut i = 0;
+        while i < left.len() {
+            let (_, l) = left[i];
+            let (run, answers) = match l {
+                Load::Stored { id, checksum, .. } => (1, vec![io.ingest_stored(*id, *checksum).await?]),
+                Load::Inline { .. } => {
+                    let mut batch: Vec<(Digest, &[u8])> = Vec::new();
+                    let mut bytes = 0;
+                    for (s, l) in &left[i..] {
+                        let Load::Inline { bytes: b, .. } = l else { break };
+                        if !batch.is_empty() && bytes + b.len() > INGEST_BATCH_BYTES {
+                            break;
+                        }
+                        bytes += b.len();
+                        batch.push((*s, b.as_slice()));
+                    }
+                    let a = io.ingest(&batch).await?;
+                    if a.len() != batch.len() {
+                        return Err(StoreError(format!("{} answers for {} packs", a.len(), batch.len())));
+                    }
+                    (batch.len(), a)
+                }
             };
-            match r {
-                Ingested::Done => done += 1,
-                Ingested::Later => retry.push(l),
+            *calls += 1;
+            for (k, a) in answers.into_iter().enumerate() {
+                match a {
+                    Ingested::Done => done += 1,
+                    Ingested::Later => retry.push(left[i + k]),
+                }
             }
+            i += run;
         }
         if retry.len() == before {
             return Ok(Err(retry.len()));
@@ -200,6 +234,7 @@ struct Tally {
     bytes: usize,
     refs: usize,
     held_max: usize,
+    calls: usize,
     room: u64,
     evicted: Vec<i64>,
 }
@@ -286,7 +321,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
                 .filter(|l| l.stored_id().is_none_or(|id| seen.insert(id)))
                 .collect();
             drop(page);
-            match ingest_all(io, &plan).await? {
+            match ingest_all(io, &plan, &mut t.calls).await? {
                 Ok(n) => t.packs += n,
                 Err(n) => return Err(Stop::Unresolved(unresolved(chain, n, from, last))),
             }
@@ -310,7 +345,7 @@ async fn apply_page<I: ShardIo, S: Saved>(
                     Load::Stored { .. } => t.packs += 1,
                 }
             }
-            if let Err(n) = ingest_all(io, &plan).await? {
+            if let Err(n) = ingest_all(io, &plan, &mut t.calls).await? {
                 return Err(Stop::Unresolved(unresolved(chain, n, from, last)));
             }
             state.tail.advance(chain, last);
@@ -351,6 +386,9 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     let Some(mut cursor) = cursor else {
         return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
     };
+    // A rehydrate cut off in its last catch-up left its place: this catch-up finishes that one. A place for another
+    // disk is a container that is gone, and goes too.
+    let finishing = saved.rehydrating().await?.is_some();
     let mut t = Tally::default();
     let mut seen = BTreeSet::new();
     for (chain, head) in chains.iter().zip(hs) {
@@ -359,16 +397,22 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), &mut mode, &mut t).await {
             Ok(()) => {}
             Err(Stop::Err(e)) => return Err(e),
+            // Either way the next rehydrate starts from nothing, so a place left by an earlier one goes too.
             Err(Stop::NoRefs) => {
                 saved.drop_cursor().await?;
+                saved.drop_rehydrating().await?;
                 return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
             }
             Err(Stop::Unresolved(e)) => {
                 saved.drop_cursor().await?;
+                saved.drop_rehydrating().await?;
                 return Err(StoreError(format!("{}; the cursor is dropped, so the next call rehydrates", e.0)));
             }
         }
         lap(&mut ms, "ingest");
+    }
+    if finishing {
+        saved.drop_rehydrating().await?;
     }
     Ok(Report {
         rehydrated: None,
@@ -478,7 +522,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             let id = l.stored_id();
             (!id.is_some_and(|id| promoted.contains(&id)), id.and_then(|id| at.get(&id).copied()))
         });
-        match ingest_all(io, &todo).await? {
+        match ingest_all(io, &todo, &mut r.calls).await? {
             Ok(n) => r.stored += n,
             Err(n) => return Err(StoreError(format!("{n} marked packs have bases no pack provides"))),
         }
@@ -504,6 +548,7 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
     r.bytes = t.bytes;
     r.entries = t.entries;
     r.stored += t.packs;
+    r.calls += t.calls;
     lap(&mut ms, "tail");
     // The refs, a page at a time. Pages read while the chain moves are each at their own index, so the cursor starts
     // at the first page's index, and the entries from there on are caught up after: their changes apply again, the
@@ -528,7 +573,6 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         ends.push(end);
     }
     saved.put_cursor(&disk, &cursor).await?;
-    saved.drop_rehydrating().await?;
     lap(&mut ms, "refs");
     let mut c = Tally::default();
     for (chain, end) in chains.iter().zip(ends) {
@@ -545,6 +589,12 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             }
         }
     }
+    // The place is dropped only now: until the catch-up from the first ref page reached the head, the disk could not
+    // serve it, and a shard still marked rehydrating sends a caller with another shard next on at once. Dropped with
+    // the cursor, 338 entries of j9h's took 38 s, and each push the home took waited out its 15 s
+    // (`tests/am1/results/hot-shards-3.md`, "The 05:12 stall"). A run cut off before here leaves the place, which the
+    // next catch-up from the cursor drops once it reaches the head.
+    saved.drop_rehydrating().await?;
     evicted.extend(t.evicted);
     evicted.extend(c.evicted);
     lap(&mut ms, "catch_up");

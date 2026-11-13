@@ -1,4 +1,4 @@
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SmilePlusIcon } from "@hugeicons/core-free-icons";
 import { api, type Schemas } from "@/api/client";
@@ -33,8 +33,9 @@ function queryFor(s: ReactionSubject) {
   return s.kind === "issue" ? issueReactionsQuery(s) : commentReactionsQuery(s);
 }
 
-// The reaction row under a post, in its own region so a failing reactions read only
-// hides the row. A negative comment id is an optimistic comment with nothing to react to.
+// The reaction row under a post. Like the pull request's tab counts, a failing reactions
+// read shows nothing rather than an error on every post. A negative comment id is an
+// optimistic comment with nothing to react to.
 export function Reactions(s: ReactionSubject) {
   if (s.kind === "comment" && s.id < 0) return null;
   return (
@@ -48,7 +49,8 @@ function ReactionBar(s: ReactionSubject) {
   const queryClient = useQueryClient();
   const { data: viewer } = useSuspenseQuery(userQuery());
   const q = queryFor(s);
-  const { data } = useSuspenseQuery(q);
+  const reactions = useQuery(q);
+  const data = reactions.data ?? [];
   const mine = (c: Content) => data.find((r) => r.content === c && r.user?.login === viewer.login);
 
   const toggle = useMutation({
@@ -108,6 +110,9 @@ function ReactionBar(s: ReactionSubject) {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: q.queryKey }),
   });
+
+  if (reactions.isError && !reactions.data) return null;
+  if (!reactions.data) return <div className="h-7" />;
 
   const counts = REACTIONS.map((r) => ({
     ...r,

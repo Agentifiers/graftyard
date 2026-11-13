@@ -16,6 +16,6 @@ echo "image $IMG" > tests/fanout/raw/siteday$T.status
 [ -n "$IMG" ] || { echo "no image" >> tests/fanout/raw/siteday$T.status; exec sleep infinity; }
 bash tests/am1/runs/siteday.sh fanout$T-siteday.log "$IMG"
 echo "siteday $(grep -E '^exit' tests/am1/raw/runs/fanout$T-siteday.log)" >> tests/fanout/raw/siteday$T.status
-OPS=graft-m2b-ops bash tests/am1/runs/deploy-edge.sh fanout$T-edge.log 32.8,32.12,32.14,18.3 >> tests/fanout/raw/siteday$T.status
+OPS=graft-m2b-ops bash tests/am1/runs/deploy-edge.sh fanout$T-edge.log 32.8,32.12,32.14,32.18,18.3 >> tests/fanout/raw/siteday$T.status
 echo DONE >> tests/fanout/raw/siteday$T.status
 exec sleep infinity

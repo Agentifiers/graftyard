@@ -1,0 +1,2 @@
+2026-11-13T16:54:37.327Z live: {"listed":10005,"distinct":10005,"missing":0,"missingSample":[],"ghosts":0,"named":10005,"count":10005,"pageMsMax":6160}
+2026-11-13T16:54:38.429Z refold started: {"isolateMemMb":11.403264,"last":{"at":1794586576501,"error":"Error: database table is locked: SQLITE_LOCKED"},"meta":{"configIndex":4,"leader":0,"term":2},"running":{"archives":0,"batchMaxMs":0,"batc

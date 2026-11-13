@@ -3,6 +3,7 @@ import { QueryErrorResetBoundary } from "@tanstack/react-query";
 import { ErrorBoundary } from "react-error-boundary";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, Refresh01Icon } from "@hugeicons/core-free-icons";
+import { ApiError } from "@/api/client";
 import { Alert, AlertDescription, AlertTitle } from "@/components/reui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,12 +17,15 @@ export function Region({
   rows = 3,
   fallback,
   onRetry,
+  hideNotFound,
 }: {
   name: string;
   children: ReactNode;
   rows?: number;
   fallback?: ReactNode;
   onRetry?: () => unknown;
+  // A widget whose route the server does not serve (a 404) renders nothing.
+  hideNotFound?: boolean;
 }) {
   return (
     <QueryErrorResetBoundary>
@@ -31,19 +35,21 @@ export function Region({
             reset();
             onRetry?.();
           }}
-          fallbackRender={({ error, resetErrorBoundary }) => (
-            <Alert variant="destructive" data-region-error={name}>
-              <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} />
-              <AlertTitle className="line-clamp-none">Could not load {name}</AlertTitle>
-              <AlertDescription>
-                {error instanceof Error ? error.message : String(error)}
-                <Button size="sm" variant="outline" className="mt-1" onClick={resetErrorBoundary}>
-                  <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} data-icon="inline-start" />
-                  Try again
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
+          fallbackRender={({ error, resetErrorBoundary }) =>
+            hideNotFound && error instanceof ApiError && error.status === 404 ? null : (
+              <Alert variant="destructive" data-region-error={name}>
+                <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} />
+                <AlertTitle className="line-clamp-none">Could not load {name}</AlertTitle>
+                <AlertDescription>
+                  {error instanceof Error ? error.message : String(error)}
+                  <Button size="sm" variant="outline" className="mt-1" onClick={resetErrorBoundary}>
+                    <HugeiconsIcon icon={Refresh01Icon} strokeWidth={2} data-icon="inline-start" />
+                    Try again
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            )
+          }
         >
           <Suspense fallback={fallback === undefined ? <RegionSkeleton rows={rows} /> : fallback}>
             {children}

@@ -1,0 +1,10 @@
+{
+  // C15 probe (decisions/OPEN-QUESTIONS.md). Throwaway; delete with `wrangler delete --name graft-c15-fts`.
+  "name": "graft-c15-fts",
+  "main": "probe.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": { "bindings": [{ "name": "FTS", "class_name": "Fts" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Fts"] }]
+}

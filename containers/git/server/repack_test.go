@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,7 +26,9 @@ func TestRefsRepacksPastRepackAt(t *testing.T) {
 	prev := ""
 	tip := ""
 	for i := 0; i < repackAt+10; i++ {
-		tip = commit(t, wt, map[string]string{"f": strings.Repeat("x", i+1) + "\n"})
+		// 4 KB of the same text with one line changed per commit, as source files change: git deltas each version
+		// against the others only when a repack searches deltas across the packs.
+		tip = commit(t, wt, map[string]string{"f": fmt.Sprintf("version %d\n", i) + strings.Repeat("the same line of source text\n", 140)})
 		spec := tip + "\n"
 		if prev != "" {
 			spec += "^" + prev + "\n"
@@ -69,6 +72,19 @@ func TestRefsRepacksPastRepackAt(t *testing.T) {
 	}
 	if got := run(t, repo("7"), "", "rev-parse", "refs/heads/main"); got != tip {
 		t.Fatalf("main %s, want %s", got, tip)
+	}
+	// Each push's pack held one version of f whole, so only a delta search across the packs stores the versions as
+	// deltas of each other; a repack that skips it (--window=0) keeps every one whole and the disk grows with pushes.
+	if n := deltas(t, repo("7")); n < repackAt/2 {
+		t.Fatalf("%d objects stored as deltas after the repack; it searched none", n)
+	}
+	// The repack leaves a commit-graph that holds the tip, so validate's `--not --all` walks read refs from it, not
+	// from the packs; it verifies against the repository.
+	if out := run(t, repo("7"), "", "commit-graph", "verify", "--no-progress"); strings.Contains(out, "error") {
+		t.Fatalf("commit-graph verify: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(repo("7"), "objects", "info", "commit-graphs", "commit-graph-chain")); err != nil {
+		t.Fatalf("no commit-graph after the repack: %v", err)
 	}
 }
 
@@ -139,4 +155,20 @@ func TestIngestWritesAMultiPackIndexEveryMidxEveryPacks(t *testing.T) {
 	if got := run(t, repo("7"), "", "rev-parse", "refs/heads/main"); got != tip {
 		t.Fatalf("main %s, want %s", got, tip)
 	}
+}
+
+// deltas counts the objects the repository's packs store as deltas.
+func deltas(t *testing.T, rp string) int {
+	t.Helper()
+	packs, _ := filepath.Glob(filepath.Join(rp, "objects", "pack", "pack-*.idx"))
+	n := 0
+	for _, p := range packs {
+		for _, l := range strings.Split(run(t, rp, "", "verify-pack", "-v", p), "\n") {
+			// A delta's line has seven fields: sha type size size-in-pack offset depth base.
+			if f := strings.Fields(l); len(f) == 7 {
+				n++
+			}
+		}
+	}
+	return n
 }

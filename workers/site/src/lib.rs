@@ -10,6 +10,7 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
+mod activity;
 mod archive;
 mod audit;
 #[cfg(feature = "test-faults")]
@@ -23,6 +24,7 @@ mod feed;
 mod fold_audit;
 mod hookseq;
 mod host;
+mod inbox;
 mod load;
 mod lookup;
 mod member;
@@ -32,14 +34,17 @@ mod prsync;
 mod register;
 mod registry;
 mod release;
+mod search;
 mod shard;
 mod snap;
 mod sweep;
 mod tier;
 
 pub use hookseq::HookSequencer;
+pub use inbox::Inbox;
 pub use member::Member;
 pub use registry::Registry;
+pub use search::SearchShard;
 pub use shard::GitShard;
 
 /// The site this script is and the install's site table, from the script's own version. The system chains' records
@@ -110,7 +115,8 @@ impl SiteEnv {
 }
 
 /// No public route: `workers_dev` and preview URLs are off, so only this script's own `SITE` binding reaches the handler,
-/// with a `PrSync` first attempt (`prsync::in_band`). Anything else is refused.
+/// with a `PrSync` first attempt (`prsync::in_band`) or an archive promotion (`archive::in_band`). Anything else is
+/// refused.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     if site_down(&env) {
@@ -118,6 +124,9 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     if req.method() == Method::Post && req.path() == prsync::FIRST_PATH {
         return prsync::first_handled(req, env, &ctx).await;
+    }
+    if req.method() == Method::Post && req.path() == archive::PROMOTE_PATH {
+        return archive::promote_handled(req, env, &ctx).await;
     }
     Response::error("not found", 404)
 }
