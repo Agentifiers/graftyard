@@ -81,7 +81,8 @@ export function planFor(row, { agents, seconds, apiReads, refReads }) {
   const base = { row, seconds, ...journey9(agents ?? 500), ...(apiReads !== undefined ? { apiReads } : {}), ...(refReads !== undefined ? { refReads } : {}) };
   switch (row) {
     case "b0-29": return base;
-    case "b0-31": return { ...base, packFixed: 1 << 20 };
+    // Buckets up for the first half, then placement failing (`x-graft-place-fail`) for the second.
+    case "b0-31": return { ...base, packFixed: 1 << 20, placeFailAt: seconds / 2 };
     case "b0-32": return { ...base, burst: { at: Math.min(60, seconds / 3), pushes: 500, bytes: 256 << 10, merges: 5 } };
     case "b0-33": return { ...journey9(agents ?? 5000), row, seconds, fastUser: 100, pollers: 0, apiReads: 0 };
     case "b0-34": return { ...base, clones: 1 };
@@ -151,6 +152,32 @@ export function budgetWindow(before, after, seconds) {
     listAsked: sum("listAsked"), listComputes: sum("listComputes"), cpuToWall: sum("wallMs") ? +(sum("spentMs") / sum("wallMs")).toFixed(3) : null };
 }
 
+// ---- L0-12's lease overlap ----
+
+/** Probe pairs: each pair hands one Exclusive lease (`a1p/<pair>/**`, PROBE_TTL_S, never renewed) back and forth. */
+export const PROBE_PAIRS = 20;
+export const PROBE_TTL_S = 60;
+/** How often the prober asks while the holder's lease is near its end. */
+export const PROBE_EVERY_MS = 200;
+const CROCKFORD = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/** The ms a lease id (a ULID, `graftyard_git::lease::next_id`) was minted at: the granting leader's entry `at`. */
+export function ulidMs(id) {
+  let t = 0;
+  for (const c of String(id).slice(0, 10).toUpperCase()) {
+    const v = CROCKFORD.indexOf(c);
+    if (v < 0) return null;
+    t = t * 32 + v;
+  }
+  return t;
+}
+/** How long two holders held the same Exclusive scope: the earlier lease's end (its grant `at` plus its TTL, as
+ *  `IssueOp::AcquireLease` writes `expires`) less the later grant's `at`, both stamped by the leaders that granted
+ *  them. Positive is an overlap; zero or less is none. */
+export function overlapMs(heldId, ttlS, grantedId) {
+  const a = ulidMs(heldId), b = ulidMs(grantedId);
+  return a === null || b === null ? null : a + ttlS * 1000 - b;
+}
+
 // ---- packs: one blob, its tree, and a commit, as git writes them ----
 
 const sha1 = (b) => createHash("sha1").update(b).digest();
@@ -213,7 +240,12 @@ export function pushResult(text) {
   const band1 = raw.filter((l) => l[0] === "\x01").map((l) => l.slice(1)).join("");
   const lines = raw.some((l) => l[0] === "\x01") ? pktLines(band1) : raw.filter((l) => l[0] !== "\x02" && l[0] !== "\x03");
   const ng = lines.map((l) => l.match(/^ng (\S+) ([^\n]*)/)).find(Boolean);
-  if (ng) return ng[2].includes("admission full") ? "full" : /stale|fetch first|non-fast-forward/.test(ng[2]) ? "stale" : "refused";
+  // Any other refusal keeps its reason, ids and numbers masked, so a row says why (B0-31's 1,484 were unexplained).
+  const mask = (x) => x.replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 80).trim();
+  // `unpacker error` names its cause on the `unpack <why>` line (`Refusal::unpack_failed`).
+  const unpack = lines.map((l) => l.match(/^unpack (?!ok\n)([^\n]*)/)).find(Boolean);
+  if (ng) return ng[2].includes("admission full") ? "full" : /stale|fetch first|non-fast-forward/.test(ng[2]) ? "stale"
+    : `refused ${mask(ng[2])}${unpack ? `: ${mask(unpack[1])}` : ""}`;
   return lines.some((l) => l.startsWith("ok refs/")) ? "ok" : "error";
 }
 
@@ -232,6 +264,8 @@ if (opt.selftest) {
     // A length ending in a hex letter: `002cok refs/...` (am1-runs' and fanout's B0-35 setup read these as errors).
     const hex = pushResult(s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr10\n"));
     const n = pushResult(s("unpack ok\n", "ng refs/heads/x agent admission full, retry after 2s\n"));
+    const why = pushResult(s("unpack ok\n", "ng refs/heads/x pack 1048576 bytes over INLINE_MAX_HOT 2\n"));
+    const unp = pushResult(s("unpack validate: shard 503 after 30000 ms\n", "ng refs/heads/x unpacker error\n"));
     const band = pushResult(s("\x02remote: hi\n", `\x01${s("unpack ok\n", "ok refs/heads/claude/a1-mwa4unw0-pr123\n")}`));
     // B0-35's window: a delta on a shard that kept its budget, the whole count on one that restarted, none on a site
     // whose shard never merged.
@@ -254,8 +288,15 @@ if (opt.selftest) {
       // A shard object that restarted after the load keeps the run's last sample; one still up reads now.
       && latestBudget([bs(9, 0, 0, 0), null, bs(1, 700, 7, 0)], [bs(1, 600, 6, 0), null, bs(1, 600, 6, 0)])
         .map((b) => b?.computed ?? null).join() === "6,,7";
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win) process.exit(1);
+    // Lease ids: 01ARYZ6S41 is 1469918176385 ms (`graftyard_types::Ulid::new` encodes it so); a grant 300 ms before
+    // the held lease's end is a 300 ms overlap, and one 1 ms after it is none.
+    const held = "01ARYZ6S41TSV4RRFFQ69G5FAV";
+    const enc = (ms) => { let o = ""; for (let k = 0; k < 10; k++) { o = CROCKFORD[ms % 32] + o; ms = Math.floor(ms / 32); } return `${o}0000000000000000`; };
+    const lease = ulidMs(held) === 1469918176385 && overlapMs(held, 60, enc(1469918176385 + 59_700)) === 300
+      && overlapMs(held, 60, enc(1469918176385 + 60_001)) === -1;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease
+      || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
 }
@@ -287,7 +328,7 @@ if (opt.dry) {
 // ---- the live run ----
 
 if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID are required for a live run");
-const { api, bedGet, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
+const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -302,6 +343,8 @@ const lat = {};
 const codes = {};
 const note = (k, ms, code) => { (lat[k] ??= []).push(ms); const c = (codes[k] ??= {}); c[code] = (c[code] ?? 0) + 1; };
 const pct = (xs, p) => { const s = [...(xs ?? [])].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null; };
+const mergeSteps = [];
+const humanInFlight = {};
 
 // Tokens: m3-ci installation tokens, refreshed every 40 min; the admin's PAT for humans and merges.
 let app = null;
@@ -319,10 +362,15 @@ if (!opt["as-admin"]) {
 await refreshApp();
 const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toString("base64")}` });
 
+// B0-31's placement-failing half: from `placeFailAt` s into the load, every push and merge carries the bed token's
+// `x-graft-place-fail`, so the edge sees placement failing as a red bucket probe would.
+const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + plan.placeFailAt * 1000;
+const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
+const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
 async function git(path, tok, body, headers = {}) {
   const t = Date.now();
   try {
-    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...headers }, signal: AbortSignal.timeout(120_000) });
+    const r = await fetch(`${EDGE}/${R}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(120_000) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
   } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t }; }
 }
@@ -367,25 +415,30 @@ async function seedRequesters(n) {
   }
   return out;
 }
+// L0-12's overlap probe: pairs of tasks that hand one Exclusive lease back and forth across the run (`probeLeases`).
+const probers = plan.leases ? Array.from({ length: 2 * PROBE_PAIRS }, (_, k) => ({ i: plan.agents + k, task: null })) : [];
 if (plan.leases || plan.side.taskEdit) {
-  const extra = plan.leases ? await seedRequesters(Math.max(0, Math.ceil(plan.agents / 100) - 3)) : [];
+  const want = plan.leases ? plan.agents + probers.length : Math.min(plan.agents, 100);
+  const extra = plan.leases ? await seedRequesters(Math.max(0, Math.ceil(want / 100) - 3)) : [];
   const requesters = [null, "m3-member", "m3-admin", ...extra];
-  const want = plan.leases ? plan.agents : Math.min(plan.agents, 100);
-  for (const a of agents.slice(0, want)) {
+  for (const a of [...agents, ...probers].slice(0, want)) {
     const requester = requesters[Math.floor(a.i / 100)];
     if (requester === undefined) break;
     const r = await api("POST", `${V1}/tasks`, app, { kind: "external", session: `a1-${RUN}-${a.i}`, summary: "a1", ...(requester ? { requester } : {}) });
     if (r.status === 201) a.task = r.body.id;
   }
-  writeRow(OUT, { step: "tasks", made: agents.filter((a) => a.task).length, want });
-  log(`tasks ${agents.filter((a) => a.task).length}/${want}`);
+  const made = [...agents, ...probers].filter((a) => a.task).length;
+  writeRow(OUT, { step: "tasks", made, want });
+  log(`tasks ${made}/${want}`);
 }
 if (plan.leases) {
+  // L0-12: a lease per agent, Exclusive on its own paths (one per task, a literal first segment), so the run holds
+  // 500 Exclusive leases across the leader kills.
   for (const a of agents.filter((x) => x.task)) {
-    const r = await api("POST", `${V1}/leases`, app, { paths: [`a1/${a.group}/${a.i}/**`], mode: "shared", ttl_seconds: 600 }, { "x-graftyard-agent-session": a.task });
+    const r = await api("POST", `${V1}/leases`, app, { paths: [`a1/${a.group}/${a.i}/**`], mode: "exclusive", ttl_seconds: 600 }, { "x-graftyard-agent-session": a.task });
     if (r.status === 201) a.lease = r.body?.lease?.id;
   }
-  writeRow(OUT, { step: "leases", held: agents.filter((a) => a.lease).length });
+  writeRow(OUT, { step: "leases", held: agents.filter((a) => a.lease).length, mode: "exclusive" });
 }
 // Issue and PR targets for comments and labels, and B0-35's open PRs.
 const issue = await api("POST", "/api/graphql", admin, { query: `query { repository(owner: "m3org", name: "${opt.repo}") { id issues(first: 1) { nodes { id number } } } }` });
@@ -446,7 +499,8 @@ function every(kind, perS, f, cap = 400) {
       if ((inflight[kind] ?? 0) < cap) {
         inflight[kind] = (inflight[kind] ?? 0) + 1;
         const s = Date.now();
-        f().then((code) => note(kind, Date.now() - s, code)).catch((e) => note(kind, Date.now() - s, `error ${String(e).slice(0, 30)}`))
+        const k = half(kind);
+        f().then((code) => note(k, Date.now() - s, code)).catch((e) => note(k, Date.now() - s, `error ${String(e).slice(0, 30)}`))
           .finally(() => { inflight[kind]--; });
       } else note(kind, 0, "skipped: cap");
       await sleep(-Math.log(1 - Math.random()) * 1000 / perS);
@@ -471,7 +525,8 @@ const jobs = [
       const kill = plan.killEvery && ++pushN % Math.max(1, Math.round(plan.killEvery * plan.agents / plan.pushEvery)) === 0;
       const [res, ms, nu] = await push(app, a.ref, a.tip, `a1/${a.group}/${a.i}/f.txt`, randomBytes(size()), kill ? { "x-graft-kill": "after_quorum" } : {});
       a.tip = nu;
-      note(kill ? "push:killed" : "push:agent", ms, res);
+      if (kill) kills.push(s);
+      note(half(kill ? "push:killed" : "push:agent"), ms, res);
       await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
     }
   })()),
@@ -505,7 +560,19 @@ const jobs = [
     const a = pick(agents.filter((x) => x.lease));
     return a ? st(await api("POST", `${V1}/leases/${a.lease}/renew`, app, { ttl_seconds: 600 }, { "x-graftyard-agent-session": a.task })) : "no lease";
   }),
-  every("push:human", plan.human / 2, async () => { const k = Math.floor(Math.random() * 20); const ref = `refs/heads/a1h-${RUN}-${k}`; const [res] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000)); return res; }, 5),
+  // Humans share 20 refs, so two pushes to one ref can race and the later one is `Stale`, as git's own lease is. B0-29's
+  // gate is zero `Stale` on distinct refs: a `stale` whose ref had another human push in flight is `stale:race`.
+  every("push:human", plan.human / 2, async () => {
+    const k = Math.floor(Math.random() * 20);
+    const ref = `refs/heads/a1h-${RUN}-${k}`;
+    humanInFlight[k] = (humanInFlight[k] ?? 0) + 1;
+    let raced = humanInFlight[k] > 1;
+    try {
+      const [res] = await push(admin, ref, await tip(ref), `a1h/${k}.txt`, randomBytes(20_000));
+      raced ||= humanInFlight[k] > 1;
+      return res === "stale" && raced ? "stale:race" : res;
+    } finally { humanInFlight[k]--; }
+  }, 5),
   every("side:human", plan.human / 2 + plan.bot, async () => {
     const r = await api("POST", "/api/graphql", admin, { query: "mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", variables: { i: { subjectId: target.id, body: "a1 human" } } });
     return r.body?.data?.addComment ? "ok" : `gql ${r.status}`;
@@ -518,7 +585,9 @@ const jobs = [
     if (!pr) return "no pr";
     const s = Date.now();
     const m = await api("PUT", `/api/v3/repos/${R}/pulls/${pr.number}/merge`, admin, { merge_method: "merge" });
-    note("merge:only", Date.now() - s, st(m));
+    note(half("merge:only"), Date.now() - s, m.status === 200 ? "200" : `${m.status} ${String(m.body?.message ?? "").replace(/\d+/g, "N").slice(0, 70)}`);
+    // Where the merge's time went: the edge's phases (`server-timing`) and the shard's own (`x-graft-shard-timing`).
+    mergeSteps.push({ ms: Date.now() - s, status: m.status, timing: m.headers["server-timing"] ?? null, shard: m.headers["x-graft-shard-timing"] ?? null });
     if (m.status === 200) main = (await tip("refs/heads/main")) ?? main;
     return st(m);
   }, 3),
@@ -562,6 +631,72 @@ if (plan.burst) jobs.push((async () => {
   })));
   writeRow(OUT, { step: "burst", pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}) });
 })());
+// L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
+// from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is
+// one sample: `overlapMs` of the two leases' leader-stamped grants. Then the roles swap. Pair starts are spread over
+// the TTL, so samples fall on both sides of the leader kills.
+const overlaps = []; // [overlap ms, asks, status counts]
+if (plan.leases) for (let k = 0; k < PROBE_PAIRS; k++) {
+  const pair = [probers[2 * k], probers[2 * k + 1]];
+  if (!pair[0]?.task || !pair[1]?.task) continue;
+  jobs.push((async () => {
+    const scope = { paths: [`a1p/${RUN}/${k}/**`], mode: "exclusive", ttl_seconds: PROBE_TTL_S };
+    const ask = (p) => api("POST", `${V1}/leases`, app, scope, { "x-graftyard-agent-session": p.task });
+    await sleep(Math.max(0, t0 - Date.now()) + (k * PROBE_TTL_S * 1000) / PROBE_PAIRS);
+    let held = null;
+    for (let t = 0; t < 20 && !held && Date.now() < end; t++) {
+      const r = await ask(pair[0]);
+      if (r.status === 201) held = r.body?.lease?.id; else await sleep(1000);
+    }
+    let h = 0;
+    while (held && Date.now() < end) {
+      await sleep(Math.max(0, ulidMs(held) + PROBE_TTL_S * 1000 - 2000 - Date.now()));
+      const codes = {};
+      let got = null;
+      for (let n = 0; !got && Date.now() < end; n++) {
+        const s = Date.now();
+        const r = await ask(pair[1 - h]);
+        codes[r.status] = (codes[r.status] ?? 0) + 1;
+        if (r.status === 201) got = r.body?.lease?.id;
+        else await sleep(Math.max(0, PROBE_EVERY_MS - (Date.now() - s)));
+      }
+      if (!got) break;
+      overlaps.push([overlapMs(held, PROBE_TTL_S, got), Object.values(codes).reduce((a, b) => a + b, 0), codes]);
+      held = got;
+      h = 1 - h;
+    }
+  })());
+}
+// Member clock offsets against the orb, from `/status` `now` at each response's midpoint: each sample's bound is its
+// offset plus half the round trip (L0-12's measured-offset line).
+const clockSamples = [];
+let clockRound = 0;
+// L0-12's line is the members' offsets from each other, not from this orb (whose clock ran about 4 s behind
+// Cloudflare's in round 6): per round of three samples, the widest spread of offsets, each widened by half its RTT.
+const clockSpread = (xs) => {
+  const by = new Map();
+  for (const c of xs) by.set(c.round, [...(by.get(c.round) ?? []), c]);
+  const spreads = [...by.values()].filter((r) => r.length > 1).map((r) => {
+    const half = (c) => c.bound - Math.abs(c.offset);
+    return Math.max(...r.map((c) => c.offset + half(c))) - Math.min(...r.map((c) => c.offset - half(c)));
+  });
+  return spreads.length ? Math.round(Math.max(...spreads)) : null;
+};
+if (plan.leases) jobs.push((async () => {
+  await sleep(Math.max(0, t0 - Date.now()));
+  while (Date.now() < end) {
+    clockRound++;
+    await Promise.all([0, 1, 2].map(async (site) => {
+      const s = Date.now();
+      try {
+        const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
+        const e = Date.now();
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, bound: Math.abs(v.now - (s + e) / 2) + (e - s) / 2 });
+      } catch { /* a member mid-kill */ }
+    }));
+    await sleep(15_000);
+  }
+})());
 if (opt["kill-shard-at"]) jobs.push((async () => {
   await sleep(Math.max(0, t0 + Number(opt["kill-shard-at"]) * 1000 - Date.now()));
   const { bedGet } = await import("../hosted/lib.mjs");
@@ -571,7 +706,11 @@ if (opt["kill-shard-at"]) jobs.push((async () => {
 })());
 
 // The feed: pollers straight to followers and learners, as the edge sends them, each watching one agent group.
-const seen = []; // [poller, ref, ms after its push's ack]
+const seen = []; // [poller, ref, ms after its push's ack, seen at]
+// L0-12 judges feed p99 outside leader kills: each kill push's send time; an event seen within KILL_WINDOW_MS after one
+// is inside a kill (an election, ELECTION_AFTER plus a campaign, about 10 s [inference]).
+const kills = [];
+const KILL_WINDOW_MS = 15_000;
 if (plan.pollers) {
   const cfg = (await statuses(CHAIN)).find((s) => s.config)?.config?.config?.normal;
   const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
@@ -594,7 +733,7 @@ if (plan.pollers) {
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
-            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head)]);
+            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now()]);
           }
           if (v.admit && v.admit !== "hold") await sleep(1000);
         } catch (e) { note("feed", Date.now() - s, "error"); await sleep(1000); }
@@ -625,6 +764,15 @@ if (opt["first-for"]) for (const s of [0, 1, 2]) {
   log(`site ${s} prsyncFirstFor ${JSON.stringify(v)}`);
 }
 log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).toISOString()}, leader site ${leader}`);
+// The leader's `/stats` 20 s before the end too: B0-29's end-of-row read raised and the isolate reset (round 5), and the
+// commit split is in memory only. The row uses the end read when it has samples, else this one.
+let lateStats = null;
+// Only with `?summary=1` (percentiles, no raw arrays): the raw read of a loaded leader reset its wasm instance and
+// moved the leader (B0-29, 131261, 23:44:20Z), so the late read runs only on a release that answers summaries.
+if (leader !== undefined) jobs.push((async () => {
+  await sleep(Math.max(0, end - 20_000 - Date.now()));
+  lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
+})());
 if (plan.openPrs) jobs.push((async () => {
   while (Date.now() < end) {
     await sleep(15_000);
@@ -637,23 +785,42 @@ if (opt["first-for"]) for (const s of [0, 1, 2]) await member(CHAIN, s, "/bench_
 const budgetAfter = plan.openPrs ? latestBudget((await sleep(15_000), await budgets()), budgetSeen) : null;
 const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
-const lstats = (leader !== undefined ? (await member(CHAIN, leader, "/stats", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
+// Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).
+const endStats = (leader !== undefined ? (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
+const lstats = endStats.commitMs?.n ? endStats : (lateStats ?? endStats);
+const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
+// A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
+const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
 const sum = Object.fromEntries(Object.entries(lat).map(([k, xs]) => [k, { n: xs.length, perS: +(xs.length / seconds).toFixed(2), p50: pct(xs, 0.5), p99: pct(xs, 0.99), codes: codes[k] }]));
 const feedLat = seen.map((x) => x[2]);
 const v = {
   row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
-  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null },
-  leader: { before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
-    commitMs: { n: lstats.commitMs?.length, p50: pct(lstats.commitMs, 0.5), p99: pct(lstats.commitMs, 0.99) },
+  feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
+    ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
+      return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}) },
+  leader: { statsFrom, before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
+    commitMs: ps(lstats.commitMs),
     // Round 5's commit split: admission to append (`queueMs`, which holds the entry's dep reads), the dep reads by
     // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
     split: Object.fromEntries([["queue", lstats.queueMs], ["round", lstats.roundMs], ["confirm", lstats.confirmMs],
       ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
-      .map(([k, xs]) => [k, { n: xs?.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }])),
+      .map(([k, xs]) => [k, ps(xs)])),
     depFails: lstats.depFails,
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
+  ...(mergeSteps.length ? { mergeSteps } : {}),
+  ...(plan.leases ? { leases: {
+    overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
+      maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),
+      asksP50: pct(overlaps.map(([, n]) => n), 0.5) },
+    // A grant is decided on its leader's own `at`, so the stamps alone never show two leaders' clock skew: the bound
+    // on a real overlap adds the widest spread of member clocks seen (each offset widened by half its round trip).
+    overlapBoundMs: overlaps.length && clockSamples.length ? Math.round(Math.max(...overlaps.map(([o]) => o))
+      + Math.max(...clockSamples.map((c) => c.offset + (c.bound - Math.abs(c.offset)))) - Math.min(...clockSamples.map((c) => c.offset - (c.bound - Math.abs(c.offset))))) : null,
+    clock: { samples: clockSamples.length, memberSpreadMs: clockSpread(clockSamples), maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null,
+      maxBoundMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => c.bound))) : null },
+  } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},
     firstFor: opt["first-for"] ? Number(opt["first-for"]) : null } } : {}),

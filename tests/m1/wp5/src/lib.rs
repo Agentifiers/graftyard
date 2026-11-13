@@ -354,9 +354,14 @@ impl DurableObject for GitShard {
                 let tips: Vec<String> = q(&url, "tips")
                     .map(|t| t.split(',').filter(|s| !s.is_empty()).map(str::to_owned).collect())
                     .unwrap_or_default();
-                let body = req.bytes().await?;
-                match host.validate(NET, body, &tips).await {
-                    Ok(ix) => Response::from_json(&ix),
+                let mut head = tips.join("\n").into_bytes();
+                head.push(b'\n');
+                let tipsn = head.len();
+                head.extend_from_slice(&req.bytes().await?);
+                let body = Some(js_sys::Uint8Array::from(head.as_slice()).into());
+                match host.validate(NET, tipsn, 0, false, false, body).await {
+                    Ok(graftyard_git::host::Validated::Done(Some(ix), _)) => Response::from_json(&ix),
+                    Ok(_) => Response::error("validate gave no index", 422),
                     Err(e) => Response::error(e.0, 422),
                 }
             }
