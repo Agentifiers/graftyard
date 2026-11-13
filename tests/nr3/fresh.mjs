@@ -21,21 +21,29 @@ const issue = (await gql("mutation($i: CreateIssueInput!) { createIssue(input: $
   { i: { repositoryId: repoId, title: "nr3 fresh 0" } })).body?.data?.createIssue?.issue;
 if (!issue) throw new Error("could not create the probe issue");
 
+// a1.mjs comments on the repository's first issue too, so the probe's issue may share it: each round reads the
+// issue's comment count first, then checks the newest page of comments (where the new one lands) and that the count
+// moved past the one read before the write.
+const countOf = async () => (await gql("query($r: String!, $n: Int!) { repository(owner: \"m3org\", name: $r) { issue(number: $n) { comments { totalCount } } } }", { r: REPO, n: issue.number }));
 let stale = 0, ok = 0, failed = 0;
 for (let k = 1; k <= ROUNDS; k++) {
   const body = `nr3 fresh ${k} ${Date.now()}`;
+  const before = (await countOf()).body?.data?.repository?.issue?.comments?.totalCount;
   const w = await gql("mutation($i: AddCommentInput!) { addComment(input: $i) { subject { id } } }", { i: { subjectId: issue.id, body } });
-  if (w.status !== 200 || !w.body?.data?.addComment) { failed++; console.log(JSON.stringify({ k, write: w.status })); continue; }
+  if (before === undefined || w.status !== 200 || !w.body?.data?.addComment) { failed++; console.log(JSON.stringify({ k, write: w.status })); continue; }
+  const page = Math.ceil((before + 1) / 100);
   const [rest, g] = await Promise.all([
-    api("GET", `/api/v3/repos/${ORG}/${REPO}/issues/${issue.number}/comments?per_page=100&page=${Math.ceil(k / 100)}`, tokens.admin),
-    gql("query($r: String!, $n: Int!) { repository(owner: \"m3org\", name: $r) { issue(number: $n) { comments { totalCount } } } }", { r: REPO, n: issue.number }),
+    api("GET", `/api/v3/repos/${ORG}/${REPO}/issues/${issue.number}/comments?per_page=100&page=${page}`, tokens.admin),
+    countOf(),
   ]);
   const restHas = Array.isArray(rest.body) && rest.body.some((c) => c.body === body);
   const count = g.body?.data?.repository?.issue?.comments?.totalCount;
-  // A read that did not answer 200 carries no claim; one that answered must include the acknowledged comment.
-  const bad = (rest.status === 200 && !restHas) || (g.status === 200 && count !== undefined && count < k);
+  // A read that did not answer 200 carries no claim; one that answered must include the acknowledged comment. The REST
+  // page is the one the comment lands on unless other comments pushed it to the next page meanwhile.
+  const pushedOn = Array.isArray(rest.body) && rest.body.length === 100;
+  const bad = (rest.status === 200 && !restHas && !pushedOn) || (g.status === 200 && count !== undefined && count <= before);
   if (bad) stale++; else if (rest.status === 200 && g.status === 200) ok++; else failed++;
-  console.log(JSON.stringify({ k, rest: rest.status, restHas, graphql: g.status, count: count ?? null, ms: [rest.ms, g.ms], stale: bad }));
+  console.log(JSON.stringify({ k, before, rest: rest.status, restHas, pushedOn, graphql: g.status, count: count ?? null, ms: [rest.ms, g.ms], stale: bad }));
   await sleep(250);
 }
 console.log(JSON.stringify({ summary: true, rounds: ROUNDS, ok, stale, failed, issue: issue.number }));
