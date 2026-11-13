@@ -51,6 +51,9 @@ type Leadership = (u64, u64);
 thread_local! {
     /// Per member object of this isolate: the leadership its dispatcher belongs to, and the dispatcher.
     static DISPATCHERS: RefCell<HashMap<String, (Leadership, Dispatcher)>> = RefCell::default();
+    /// Per member object of this isolate: when its leadership last caught up its network's shards, and the applied
+    /// index then (`graftyard_git::keep_warm_due`).
+    static WARMED: RefCell<HashMap<String, (Leadership, u64, Index)>> = RefCell::default();
     /// Test installs: first attempts to drop, per member object, as if each was lost with its isolate.
     #[cfg(feature = "test-faults")]
     static DROP_FIRST: RefCell<HashMap<String, u32>> = RefCell::default();
@@ -120,6 +123,10 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
         if h.state.storage().get::<u64>(PARK_KEY).await.ok().flatten() == Some(cursor.0) {
             d.park(cursor);
         }
+    }
+    let last = WARMED.with(|m| m.borrow().get(&key).filter(|(t, _, _)| *t == term).map(|(_, at, i)| (*at, *i)));
+    if git::keep_warm_due(last, now_ms(), applied) {
+        WARMED.with(|m| m.borrow_mut().insert(key.clone(), (term, now_ms(), applied)));
         warm(h, repo, &record);
     }
     let was_parked = d.parked(cursor);
@@ -264,45 +271,56 @@ pub async fn replay(h: &Rc<Host<Repo>>) -> Result<Value> {
     Ok(json!({ "replayed": was }))
 }
 
-/// A new leadership catches up this site's shard of the network at once, if it runs. Merges and test merges run on the leader's
-/// site's shard (`merge`), and one that last served under another leader is behind every push validated and merged
-/// elsewhere since, so without this the first merge after an election caught up first: 270 to 540 ms of every merge on
-/// a freshly elected leader, in 91 of 91 and 29 of 29 samples (`tests/m2/results/m2-wp6.md`, BM-2). Best effort: a
-/// failed catch-up leaves the merge's own catch-up to run. The call carries `warm`, so a stopped shard answers without
-/// starting its container (`graftyard_git::serve`): a group with no clients re-elects after its members idle out, and
-/// each warm started its network's shard, which then billed for a day (`tests/am1/results/idle-shards.md`).
+/// A leadership catches up every Full site's first shard of the network, if it runs: at once, then every
+/// `KEEP_WARM_MS` while the group applies entries (`graftyard_git::keep_warm_due`). Merges and test merges run on the
+/// leader's site's shard (`merge`), and one that last served under another leader is behind every push validated and
+/// merged elsewhere since, so without this the first merge after an election caught up first: 270 to 540 ms of every
+/// merge on a freshly elected leader, in 91 of 91 and 29 of 29 samples (`tests/m2/results/m2-wp6.md`, BM-2). The other
+/// sites' shards are where pushes go when the home's is killed, and caught up only by those pushes they were 1,100 and
+/// 1,900 entries behind, so every push in flight at j9g's kill waited out both and answered 503
+/// (`tests/am1/results/hot-shards-3.md`). Best effort: a failed catch-up leaves the call's own to run. The call carries
+/// `warm`, so a stopped shard answers without starting its container (`graftyard_git::serve`): a group with no clients
+/// re-elects after its members idle out, and each warm started its network's shard, which then billed for a day
+/// (`tests/am1/results/idle-shards.md`). Each call is one background task, not a loop: the home shard's catch-up
+/// reads this member back, but a repeat comes only after entries applied, so writes, each a new shallow request here,
+/// came in between and reset the depth its next call is charged to (`tests/m3/results/m3-wp5.md`, point 6).
 fn warm(h: &Rc<Host<Repo>>, repo: RepoId, record: &graftyard_types::PlacementRecord) {
-    let env = h.env.clone();
     let Ok(rec) = serde_json::to_string(record) else { return };
-    spawn_local(async move {
-        let t0 = now_ms();
-        let r = async {
-            let site = SiteEnv::read(&env).map_err(|e| e.to_string())?;
-            let me = site.id;
-            let region = site.sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-            let stub = env
-                .durable_object(&format!("SHARD_{}", me.0))
-                .and_then(|ns| {
-                    ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", me.0, repo.0.0), region.hint())
-                })
-                .map_err(|e| e.to_string())?;
-            let url =
-                format!("https://shard/catchup?warm=1&repo={}&record={}", repo.0.0, js_sys::encode_uri_component(&rec));
-            let mut init = RequestInit::new();
-            init.with_method(Method::Post);
-            let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
-            let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
-            match r.status_code() {
-                200 => Ok(()),
-                s => Err(format!("{s} {}", r.text().await.unwrap_or_default())),
+    for at in git::promote_sites(record, record.home) {
+        let env = h.env.clone();
+        let rec = rec.clone();
+        spawn_local(async move {
+            let t0 = now_ms();
+            let r = async {
+                let site = SiteEnv::read(&env).map_err(|e| e.to_string())?;
+                let region = site.sites.get(at).ok_or("a site is not in GRAFTYARD_SITES")?.region;
+                let stub = env
+                    .durable_object(&format!("SHARD_{}", at.0))
+                    .and_then(|ns| {
+                        ns.get_by_name_with_location_hint(&format!("git#{}#net:{}", at.0, repo.0.0), region.hint())
+                    })
+                    .map_err(|e| e.to_string())?;
+                let url = format!(
+                    "https://shard/catchup?warm=1&repo={}&record={}",
+                    repo.0.0,
+                    js_sys::encode_uri_component(&rec)
+                );
+                let mut init = RequestInit::new();
+                init.with_method(Method::Post);
+                let req = Request::new_with_init(&url, &init).map_err(|e| e.to_string())?;
+                let mut r = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
+                match r.status_code() {
+                    200 => Ok(()),
+                    s => Err(format!("{s} {}", r.text().await.unwrap_or_default())),
+                }
+            };
+            match crate::host::within(FIRST_FOR, r).await {
+                Some(Ok(())) => console_log!("shard warm {} site {} {}ms", repo.0.0, at.0, now_ms() - t0),
+                Some(Err(e)) => console_error!("shard warm {} site {}: {e}", repo.0.0, at.0),
+                None => console_error!("shard warm {} site {}: no answer in {} s", repo.0.0, at.0, FIRST_FOR.as_secs()),
             }
-        };
-        match crate::host::within(FIRST_FOR, r).await {
-            Some(Ok(())) => console_log!("shard warm {} {}ms", repo.0.0, now_ms() - t0),
-            Some(Err(e)) => console_error!("shard warm {}: {e}", repo.0.0),
-            None => console_error!("shard warm {}: no answer in {} s", repo.0.0, FIRST_FOR.as_secs()),
-        }
-    });
+        });
+    }
 }
 
 /// The re-send path: one message on this site's queue.

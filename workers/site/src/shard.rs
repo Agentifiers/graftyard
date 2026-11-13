@@ -41,6 +41,8 @@ thread_local! {
     /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), and when
     /// this isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`).
     static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, (u8, u64)>> = Default::default();
+    /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
+    static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
 }
 
 /// The k `net`'s group committed, as this isolate last read it; 1 before any read.
@@ -289,7 +291,8 @@ impl Jobs {
     }
 
     /// Waits for a catch-up that started after this call arrived, at most `wait` when given: `Err` with the reply to
-    /// send, 503 `warming` past the wait, 422 when the catch-up failed.
+    /// send, 503 `warming` past the wait, and 503 when the catch-up failed too: a failed catch-up is this shard's, not
+    /// the pack's, so the caller tries another site's shard (`graftyard_git::validate_status`).
     async fn wait(&self, wait: Option<std::time::Duration>) -> std::result::Result<(), Result<Response>> {
         let (tx, rx) = futures_channel::oneshot::channel();
         RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
@@ -314,7 +317,7 @@ impl Jobs {
             },
             None => next.await,
         };
-        r.map_err(|e| Response::error(e, 422))
+        r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
     /// Ends once no catch-up of the network runs here.
@@ -588,8 +591,9 @@ impl DurableObject for GitShard {
                     && let Some(trailer) = trailer
                 {
                     let pick = graftyard_git::push_validator(net, site.id, 1, k, &trailer.0);
-                    if pick.shard != 0 {
-                        let name = graftyard_git::object_name(net, pick, 1);
+                    let name = graftyard_git::object_name(net, pick, 1);
+                    let cold_at = POOL_COLD.with(|m| m.borrow().get(&name).copied());
+                    if pick.shard != 0 && graftyard_git::pool_forward(cold_at, now_ms()) {
                         let rec = serde_json::to_string(&log.record)?;
                         let mut fwd = url.clone();
                         fwd.query_pairs_mut().append_pair("via", "0").append_pair("pool", "1");
@@ -603,7 +607,18 @@ impl DurableObject for GitShard {
                             Err(e) => Err(e),
                         };
                         match r {
-                            Ok(r) if matches!(r.status_code(), 200 | 422 | 429) => return Ok(r),
+                            Ok(r) if matches!(r.status_code(), 200 | 422 | 429) => {
+                                POOL_COLD.with(|m| m.borrow_mut().remove(&name));
+                                return Ok(r);
+                            }
+                            // A pool shard still catching up gets no pushes for a while (`graftyard_git::pool_forward`);
+                            // this one goes back to the caller to send again with `via`, as any failed forward does.
+                            Ok(r) if r.status_code() == 503 => {
+                                POOL_COLD.with(|m| m.borrow_mut().insert(name.clone(), now_ms()));
+                                console_log!(
+                                    "fanout: {name} is warming; pushes validate on the first shard for a while"
+                                );
+                            }
                             Ok(mut r) => console_error!(
                                 "fanout: {name} answered {} {}; the caller validates on the first shard",
                                 r.status_code(),
@@ -618,6 +633,8 @@ impl DurableObject for GitShard {
                         );
                     }
                 }
+                // Only the container's own 4xx (a 429 is `Busy`) is the pack's answer; a call to it that broke (a kill
+                // mid-push) is this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
                 match host.validate(net, tipsn, detailn, agent, derived, body()).await {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _)) if detailn == 0 => Response::from_json(&ix),
                     Ok(graftyard_git::host::Validated::Done(ix, detail)) => {
@@ -629,7 +646,7 @@ impl DurableObject for GitShard {
                         Ok(Response::error(format!("validate queue full; retry after {retry_after_s} s"), 429)?
                             .with_headers(h))
                     }
-                    Err(e) => Response::error(e.0, 422),
+                    Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }
             }
             "/info-refs" | "/upload-pack" => {

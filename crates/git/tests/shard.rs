@@ -260,6 +260,20 @@ fn a_promotion_tries_its_own_site_then_the_other_full_sites() {
     assert!(!promote_moves_on(422));
 }
 
+/// A shard answers a failed validate 422 only for the container's own 4xx, the pack's or the request's answer, the
+/// same on every shard. A container 5xx or no answer at all (its catch-up failed, a kill broke the call) is 503, which
+/// the edge and the archive move past to the next site's shard rather than refusing the push.
+#[test]
+fn a_shard_answers_422_only_for_the_containers_own_refusal() {
+    assert_eq!(validate_status(Some(422)), 422);
+    assert_eq!(validate_status(Some(409)), 422);
+    assert_eq!(validate_status(Some(400)), 422);
+    assert_eq!(validate_status(Some(500)), 503);
+    assert_eq!(validate_status(Some(503)), 503);
+    assert_eq!(validate_status(None), 503);
+    assert!(promote_moves_on(validate_status(None)) && !promote_moves_on(validate_status(Some(422))));
+}
+
 /// A shard answers `warming` at once only when the caller has another shard to try and a rehydrate runs here, or when
 /// it is a cold pool shard asked to validate a forwarded push. A caller's last try waits even on a rehydrating shard,
 /// and a shard that is only catching up (no rehydrate) lets every caller wait.
@@ -270,4 +284,26 @@ fn a_shard_answers_warming_at_once_only_to_a_caller_with_somewhere_else_to_go() 
     assert!(!warming_now(true, false, false), "a catch-up, not a rehydrate, is short");
     assert!(warming_now(false, false, true) && warming_now(true, false, true));
     assert!(!warming_now(false, false, false));
+}
+
+/// A pool shard that answered `warming` gets no push for `POOL_COLD_SKIP_MS`, then is tried again, so a carried-over
+/// k does not make every push wait on a cold pool shard and a pool shard that warmed takes pushes again.
+#[test]
+fn a_pool_shard_that_answered_warming_gets_no_push_until_the_skip_passes() {
+    assert!(pool_forward(None, 0));
+    assert!(!pool_forward(Some(1_000), 1_000));
+    assert!(!pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS - 1));
+    assert!(pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS));
+}
+
+/// A leadership catches its network's shards up at once, then again only after `KEEP_WARM_MS` and only when it applied
+/// entries since, so the shards a push falls back to stay a few seconds behind, and an idle group wakes nothing.
+#[test]
+fn a_leader_keeps_the_shards_warm_only_while_it_applies_entries() {
+    use graftyard_types::Index;
+    assert!(keep_warm_due(None, 0, Index(0)), "a new leadership catches up at once");
+    let last = Some((1_000, Index(50)));
+    assert!(!keep_warm_due(last, 1_000 + KEEP_WARM_MS - 1, Index(60)), "not before KEEP_WARM_MS");
+    assert!(keep_warm_due(last, 1_000 + KEEP_WARM_MS, Index(51)), "due once it passed, with an entry applied");
+    assert!(!keep_warm_due(last, 1_000 + 10 * KEEP_WARM_MS, Index(50)), "an idle group wakes no shard");
 }

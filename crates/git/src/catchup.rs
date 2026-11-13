@@ -386,6 +386,9 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
     let Some(mut cursor) = cursor else {
         return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
     };
+    // A rehydrate cut off in its last catch-up left its place: this catch-up finishes that one. A place for another
+    // disk is a container that is gone, and goes too.
+    let finishing = saved.rehydrating().await?.is_some();
     let mut t = Tally::default();
     let mut seen = BTreeSet::new();
     for (chain, head) in chains.iter().zip(hs) {
@@ -394,16 +397,22 @@ pub async fn catch_up<I: ShardIo, S: Saved, L: ChainLog>(
         match follow(io, saved, log, &disk, *chain, *range.start(), *range.end(), &mut mode, &mut t).await {
             Ok(()) => {}
             Err(Stop::Err(e)) => return Err(e),
+            // Either way the next rehydrate starts from nothing, so a place left by an earlier one goes too.
             Err(Stop::NoRefs) => {
                 saved.drop_cursor().await?;
+                saved.drop_rehydrating().await?;
                 return rehydrate(io, saved, log, network, chains, disk, ms, t0, now).await;
             }
             Err(Stop::Unresolved(e)) => {
                 saved.drop_cursor().await?;
+                saved.drop_rehydrating().await?;
                 return Err(StoreError(format!("{}; the cursor is dropped, so the next call rehydrates", e.0)));
             }
         }
         lap(&mut ms, "ingest");
+    }
+    if finishing {
+        saved.drop_rehydrating().await?;
     }
     Ok(Report {
         rehydrated: None,
@@ -564,7 +573,6 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
         ends.push(end);
     }
     saved.put_cursor(&disk, &cursor).await?;
-    saved.drop_rehydrating().await?;
     lap(&mut ms, "refs");
     let mut c = Tally::default();
     for (chain, end) in chains.iter().zip(ends) {
@@ -581,6 +589,12 @@ async fn rehydrate<I: ShardIo, S: Saved, L: ChainLog>(
             }
         }
     }
+    // The place is dropped only now: until the catch-up from the first ref page reached the head, the disk could not
+    // serve it, and a shard still marked rehydrating sends a caller with another shard next on at once. Dropped with
+    // the cursor, 338 entries of j9h's took 38 s, and each push the home took waited out its 15 s
+    // (`tests/am1/results/hot-shards-3.md`, "The 05:12 stall"). A run cut off before here leaves the place, which the
+    // next catch-up from the cursor drops once it reaches the head.
+    saved.drop_rehydrating().await?;
     evicted.extend(t.evicted);
     evicted.extend(c.evicted);
     lap(&mut ms, "catch_up");
