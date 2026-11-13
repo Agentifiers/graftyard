@@ -437,7 +437,8 @@ impl ShardHost<'_> {
     /// a burst of 512 pushes of 256 KiB, or 1 MiB packs at 4 a second, put the shard's isolate over its 128 MB (LM-1
     /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
-    /// counts as derived work, outside `NetworkLoad`.
+    /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
     pub async fn validate(
         &self,
         network: NetworkId,
@@ -446,7 +447,8 @@ impl ShardHost<'_> {
         agent: bool,
         derived: bool,
         body: Option<wasm_bindgen::JsValue>,
-    ) -> Result<Validated, StoreError> {
+    ) -> Result<Validated, (Option<u16>, StoreError)> {
+        let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
@@ -459,22 +461,23 @@ impl ShardHost<'_> {
         }
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(body);
-        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
-        let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
+        let req =
+            Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err).map_err(none)?;
+        let mut r = self.port().map_err(none)?.fetch_request(req).await.map_err(worker_err).map_err(none)?;
         if r.status_code() == 429 {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
         }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
-            return Err(StoreError(format!("validate: {} {t}", r.status_code())));
+            return Err((Some(r.status_code()), StoreError(format!("validate: {} {t}", r.status_code()))));
         }
-        let v: ValidateOut = r.json().await.map_err(worker_err)?;
+        let v: ValidateOut = r.json().await.map_err(worker_err).map_err(none)?;
         if v.checksum.is_empty() {
             return Ok(Validated::Done(None, v.detail));
         }
         let ix = PackIndex {
-            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
+            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| none(StoreError("checksum".into())))?,
             bytes: v.bytes,
             objects: v.objects,
             trailer: v.trailer.into(),
@@ -691,16 +694,11 @@ impl ShardHost<'_> {
     }
 
     /// Whether a rehydrate of `network` is under way or was cut off on this shard: its saved place is kept from its
-    /// start to its end (`crate::catchup::Rehydrating`). One storage read; the container is not asked.
-    /// A place saved on the disk the cursor is saved for is a run that finished but was cut off before it dropped the
-    /// place, so it does not count.
+    /// start until its last catch-up reaches the head, or until the catch-up that finishes a cut-off one does
+    /// (`crate::catchup`). One storage read; the container is not asked.
     pub async fn rehydrating(&self, network: NetworkId) -> bool {
         type Saved = (String, serde_json::Value);
-        let s = self.state.storage();
-        let Some((disk, _)) = s.get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten() else {
-            return false;
-        };
-        s.get::<Saved>(&Self::cursor_key(network)).await.ok().flatten().is_none_or(|(d, _)| d != disk)
+        self.state.storage().get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten().is_some()
     }
 
     fn rehydrating_key(network: NetworkId) -> String {
@@ -752,12 +750,51 @@ impl ShardIo for Io<'_, '_> {
         let h: Have = r.json().await.map_err(worker_err)?;
         Ok(h.have.iter().filter_map(|s| Digest::parse_hex(s)).collect())
     }
-    async fn ingest(&self, sum: Digest, body: &[u8]) -> Result<Ingested, StoreError> {
-        let b = JsBody(js_sys::Uint8Array::from(body).into());
-        self.host
-            .ingest_body(self.network, sum, b)
-            .await?
-            .ok_or_else(|| StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex())))
+    /// One `/ingest-batch` call: per pack a `<sha256> <bytes>` line and its bytes, written straight into one JS array,
+    /// so the isolate holds no second copy of the batch in its own memory.
+    async fn ingest(&self, packs: &[(Digest, &[u8])]) -> Result<Vec<Ingested>, StoreError> {
+        #[derive(Deserialize)]
+        struct Out {
+            results: Vec<String>,
+        }
+        let heads: Vec<String> = packs.iter().map(|(s, b)| format!("{} {}\n", s.hex(), b.len())).collect();
+        let total: usize = packs.iter().zip(&heads).map(|((_, b), h)| h.len() + b.len()).sum();
+        let body = js_sys::Uint8Array::new_with_length(total as u32);
+        let mut at = 0u32;
+        for ((_, b), h) in packs.iter().zip(&heads) {
+            for part in [h.as_bytes(), b] {
+                body.subarray(at, at + part.len() as u32).copy_from(part);
+                at += part.len() as u32;
+            }
+        }
+        let path = format!("/ingest-batch?net={}", self.network.0.0);
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(body.into()));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        let mut r = self.host.port()?.fetch_request(req).await.map_err(worker_err)?;
+        // A container on the previous release's image (`git_prev`) has no `/ingest-batch`: one `/ingest` a pack.
+        if r.status_code() == 404 {
+            let mut out = Vec::with_capacity(packs.len());
+            for (sum, b) in packs {
+                let b = JsBody(js_sys::Uint8Array::from(*b).into());
+                out.push(self.host.ingest_body(self.network, *sum, b).await?.ok_or_else(|| {
+                    StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex()))
+                })?);
+            }
+            return Ok(out);
+        }
+        if r.status_code() != 200 {
+            return Err(StoreError(format!("{path}: {} {}", r.status_code(), r.text().await.unwrap_or_default())));
+        }
+        let o: Out = r.json().await.map_err(worker_err)?;
+        o.results
+            .iter()
+            .map(|a| match a.as_str() {
+                "done" => Ok(Ingested::Done),
+                "later" => Ok(Ingested::Later),
+                a => Err(StoreError(format!("{path}: answered {a:?}"))),
+            })
+            .collect()
     }
     /// From each bucket in turn, its object's body streamed into the container's `/ingest`, which checks the
     /// checksum as it writes: a copy that does not match is refused, and the next bucket's is tried.

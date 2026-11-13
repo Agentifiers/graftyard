@@ -446,6 +446,45 @@ pub fn promote_moves_on(status: u16) -> bool {
     status != 422
 }
 
+/// The status a shard answers a `/validate` (or `/promote`) that did not succeed. `container` is what the container
+/// answered the call itself, `None` when the shard never got an answer from it: its catch-up failed, the container
+/// was not running, or the call to it broke. Only the container's own 4xx is the pack's or the request's answer (a
+/// pack `index-pack` refuses, a tip it does not connect, a malformed body), the same on every shard, which ends a
+/// caller's tries and refuses the push, as 422. A 5xx or no answer is this shard's state, answered 503 so the
+/// caller tries the next site's shard: at a home-shard kill, 23 pushes in flight were refused `unpacker error`
+/// because a broken catch-up and a lost container call both answered 422 (`tests/am1/results/hot-shards-2.md`).
+pub fn validate_status(container: Option<u16>) -> u16 {
+    match container {
+        Some(s) if (400..500).contains(&s) => 422,
+        _ => 503,
+    }
+}
+
+/// How often a leading member catches up every Full site's first shard of its network while it applies entries
+/// [guess]. A shard that serves nothing falls behind by every push the home validated: at j9g's home-shard kill, site b's
+/// was 1,100 entries behind and site c's 1,900, so each push's fallback catch-up outlasted the edge's waits (15 s, then
+/// 60 s), and the 16 pushes in flight answered 503 after 137 s (`tests/am1/results/hot-shards-3.md`). 15 s of journey
+/// 9's pushes is about 60 entries, a catch-up of a second or two.
+pub const KEEP_WARM_MS: u64 = 15_000;
+
+/// Whether a leading member catches up its network's shards now: the first time this leadership asks (`last` is
+/// `None`), or `KEEP_WARM_MS` after the last time if it applied entries since. A group that applies nothing wakes no
+/// shard: a `warm` call never starts a stopped one either (`serve`).
+pub fn keep_warm_due(last: Option<(u64, Index)>, now: u64, applied: Index) -> bool {
+    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))
+}
+
+/// How long the network's first shard sends no push to a pool shard that answered `warming` [guess]: a pool shard
+/// that holds no cursor starts a rehydrate, which takes minutes on a hot group, and under a carried-over k every push
+/// meanwhile paid a call to it before the first shard validated it itself (`tests/am1/results/hot-shards-3.md`).
+pub const POOL_COLD_SKIP_MS: u64 = 30_000;
+
+/// Whether the network's first shard forwards a push to the pool shard `push_validator` picked: not while one that
+/// answered `warming` at `cold_at` is inside `POOL_COLD_SKIP_MS` of it, so pushes validate on the first shard at once.
+pub fn pool_forward(cold_at: Option<u64>, now: u64) -> bool {
+    cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))
+}
+
 /// Whether a shard answers a call 503 `warming` at once rather than waiting out the call's `wait` on its catch-up.
 /// `follows`: the caller has another site's shard to try after this one (`next=1`; never on its last try, which
 /// waits, so a call never runs out of shards that would serve it). `rehydrating`: a rehydrate of the network is under

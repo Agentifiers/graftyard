@@ -193,6 +193,22 @@ export function overlapMs(heldId, ttlS, grantedId) {
 const sha1 = (b) => createHash("sha1").update(b).digest();
 const obj = (type, body) => sha1(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body]));
 const TYPE = { commit: 1, tree: 2, blob: 3 };
+/** merge:only's time by stage (`merge-p99`): each `server-timing` and `x-graft-shard-timing` stage's n, p50, p99
+ * and max over the merges that carried it, and `gap`, what `total` leaves after `auth`, the longer of `tier` and
+ * `authz` (they run at once), `merge_plan`, and `commit`: an untimed stage. Nearest rank, as the run's other p99s. */
+export function mergeSplit(steps) {
+  const by = {};
+  const add = (k, v) => (by[k] ??= []).push(v);
+  for (const m of steps) {
+    const d = Object.fromEntries([...(m.timing ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)].map((x) => [x[1], Number(x[2])]));
+    for (const [k, v] of Object.entries(d)) add(k, v);
+    for (const x of (m.shard ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)) add(`shard:${x[1]}`, Number(x[2]));
+    if (d.total !== undefined) add("gap", d.total - (d.auth ?? 0) - Math.max(d.tier ?? 0, d.authz ?? 0) - (d.merge_plan ?? 0) - (d.commit ?? 0));
+  }
+  const at = (xs, q) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+  return Object.fromEntries(Object.entries(by).map(([k, xs]) => [k, { n: xs.length, p50: at(xs, 0.5), p99: at(xs, 0.99), max: Math.max(...xs) }]));
+}
+
 function entryHeader(type, size) {
   const out = [];
   let b = (TYPE[type] << 4) | (size & 15);
@@ -315,8 +331,15 @@ if (opt.selftest) {
     const clock = JSON.stringify(idle) === JSON.stringify({ upperMs: 240, lowerMs: 0, rounds: 1, kept: 4, rejected: 1 })
       && JSON.stringify(apac) === JSON.stringify({ upperMs: 380, lowerMs: 0, rounds: 2, kept: 4, rejected: 1 })
       && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, clock }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !clock
+    // merge:only's split: `tier` and `authz` overlap, so the gap counts the longer; a merge with no shard timing
+    // adds no shard stage.
+    const sp = mergeSplit([
+      { timing: "resolve;dur=0, auth;dur=50, authz;dur=200, tier;dur=900, merge_plan;dur=150, plan;dur=0, commit;dur=500, total;dur=1900", shard: "merge;dur=80, waited;dur=0, catchup;dur=0" },
+      { timing: "auth;dur=40, authz;dur=600, tier;dur=100, merge_plan;dur=100, commit;dur=400, total;dur=1140", shard: "" },
+    ]);
+    const split = sp.gap.n === 2 && sp.gap.max === 300 && sp.tier.max === 900 && sp["shard:merge"].n === 1 && sp.total.p99 === 1900;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split, clock }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split || !clock
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -904,7 +927,7 @@ const v = {
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
   ...(b034 ? { b034: { kTimeline, kMax: Object.fromEntries([...new Set(kTimeline.map((x) => x[1]))].map((c) => [c, Math.max(0, ...kTimeline.filter((x) => x[1] === c).map((x) => x[2] ?? 0))])),
     secondAt: b034.secondAt, hostileAt: b034.hostileAt, killAt: opt["kill-shard-at"] ? Number(opt["kill-shard-at"]) : null } } : {}),
-  ...(mergeSteps.length ? { mergeSteps } : {}),
+  ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
       maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),

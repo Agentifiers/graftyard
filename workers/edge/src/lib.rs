@@ -141,7 +141,7 @@ fn buckets(env: &Env, sites: &SiteTable) -> Result<Vec<(SiteId, R2)>> {
 }
 
 /// A repository the edge serves: its id, its owner, and the owner's placement record.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Repo {
     id: RepoId,
     owner: AccountId,
@@ -178,7 +178,7 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
     // 240 reads/s on the `Authz` leader at 500 agents once the permission reads had moved (`design/DESIGN.md`,
     // "Follower read").
     let q = json!({ "q": { "repo": name.as_str() } });
-    let v = match graftyard_lookup::read_spread(&b, authz, &record, &q).await {
+    let v = match authz_get(c, &b, authz, &record, &q).await {
         Ok(Some((v, _, _))) => v,
         // An owner whose `Authz` chain was never created holds no repository.
         Ok(None) => return Ok(Ok(None)),
@@ -189,6 +189,19 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
         owner: account,
         record,
     })))
+}
+
+/// `resolve` from this isolate's `rcache` entries alone, whatever the request's class, or `None` when one is missing
+/// or past `READ_CACHE`: a write's guess, which it reads ahead on and keeps only if its own fresh `resolve` names the
+/// same repository and record (`api::rest_repo`).
+fn resolve_cached(owner: &str, repo: &str) -> Option<Repo> {
+    let name = RepoName::parse(repo).ok()?;
+    let at = now();
+    let account = rcache::get(&rcache::LOGINS, &Login::parse(owner).ok()?.key(), at, true)?;
+    let record = rcache::get(&rcache::PLACEMENTS, &account, at, true)?;
+    let fold = rcache::get(&rcache::AUTHZ, &account, at, true)?;
+    let (id, _) = graftyard_identity::AuthzRead::resolve(&fold, &name.key())?;
+    Some(Repo { id, owner: account, record })
 }
 
 /// Whether the caller may read `repo`, before the edge serves any of its bytes (`graftyard_identity::authorize_read`
@@ -445,14 +458,30 @@ pub(crate) async fn authz_read_as(
 ) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
     let read = async {
         let q = json!({ "q": { "dep": true } });
-        let Some((v, _, _)) = graftyard_lookup::read_spread(&c.bindings(), ChainId::Authz(owner), record, &q).await?
-        else {
+        let Some((v, _, _)) = authz_get(c, &c.bindings(), ChainId::Authz(owner), record, &q).await? else {
             return Ok(None);
         };
         let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
         graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
     };
     rcache::through(&rcache::AUTHZ, owner, now(), cached, read).await
+}
+
+/// One read of an owner's `Authz` group: on its leader for a REST merge (`Ctx::leader_reads`), else by read-index on
+/// its learners and followers. Through them a merge's reads ran p50 451 to 489 ms at 500 agents, against 30 to 47 ms
+/// for its rows on the repository's leader (`merge-p99`).
+async fn authz_get(
+    c: &Ctx<'_>,
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    q: &serde_json::Value,
+) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
+    if c.leader_reads.get() {
+        graftyard_lookup::call_opt(b, chain, record, "/read", q.to_string().as_bytes()).await
+    } else {
+        graftyard_lookup::read_spread(b, chain, record, q).await
+    }
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -515,6 +544,17 @@ fn unauthorized(rid: RequestId, body: &str) -> Result<Response> {
     h.set("www-authenticate", "Basic realm=\"GitHub\"")?;
     h.set("content-type", "text/plain; charset=utf-8")?;
     Ok(Response::ok(body)?.with_status(401).with_headers(h))
+}
+
+/// A push no git cache shard could check: 503 with `Retry-After: 2`, before any byte of a git result, so git prints
+/// the HTTP error and the push can be sent again. Its pack may already be in the buckets; the sweeper deletes it.
+fn shard_unavailable(rid: RequestId, why: &str) -> Result<Response> {
+    let h = headers(rid)?;
+    h.set("retry-after", "2")?;
+    h.set("content-type", "text/plain; charset=utf-8")?;
+    Ok(Response::ok(format!("git cache: no shard could check the pack ({why}); retry\n"))?
+        .with_status(503)
+        .with_headers(h))
 }
 
 /// `Unsupported` (`design/DESIGN.md`, Shape, the write path): 503 with `Retry-After`, a retryable error, never a
@@ -836,6 +876,9 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
+    /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
+    leader_reads: std::cell::Cell<bool>,
     /// This request's stages, for `server-timing` and the sampled log (`api::Timing`).
     timing: api::Timing,
 }
@@ -987,7 +1030,12 @@ async fn receive_pack(
                 index = Some(ix);
                 got = detail_out.into_inner();
             }
-            Err(TeeError::Invalid(e)) => return refuse(shard_refusal(&e)),
+            Err(TeeError::Invalid(e)) => match shard_refusal(&e) {
+                Some(r) => return refuse(r),
+                // No shard could check the pack: a retryable error before any byte of a git result, so the client
+                // sends the push again rather than reading a refusal (`unsupported` answers the same way).
+                None => return shard_unavailable(c.rid, &e.to_string()),
+            },
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
     }
@@ -1085,18 +1133,21 @@ async fn receive_pack(
     }
 }
 
-/// Why `validate` gave no index: the git cache refused the pack, or (an agent's push only) its slots stayed full for
-/// the agent's wait, which the push answers `ng <ref> agent admission full, retry after <n>s` (B0-32's shape).
-#[derive(Debug)]
+/// Why `validate` gave no index: the git cache refused the pack, (an agent's push only) its slots stayed full for
+/// the agent's wait, which the push answers `ng <ref> agent admission full, retry after <n>s` (B0-32's shape), or no
+/// shard could answer, which the push answers 503 `Retry-After` (`shard_unavailable`).
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) enum ShardRefusal {
     Invalid(String),
     Busy(u32),
+    /// No shard could check the pack (each failed without a 422 or 429): not a refusal, but a 503 the client retries.
+    Unavailable(String),
 }
 
 impl std::fmt::Display for ShardRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ShardRefusal::Invalid(e) => f.write_str(e),
+            ShardRefusal::Invalid(e) | ShardRefusal::Unavailable(e) => f.write_str(e),
             ShardRefusal::Busy(s) => write!(f, "the git cache is busy; retry after {s}s"),
         }
     }
@@ -1119,11 +1170,13 @@ fn validate_url(repo: RepoId, tipsn: usize, detailn: usize, agent: bool, pack: &
 }
 
 /// The push's refusal when `validate` gave no index: B0-32's `ng <ref> agent admission full, retry after <n>s` when
-/// the git cache was busy, else `unpacker error` with the cache's reason.
-fn shard_refusal(e: &ShardRefusal) -> Refusal {
+/// the git cache was busy, `unpacker error` with the cache's reason when a shard refused the pack, and none when no
+/// shard could check it, which the push answers 503 instead (`shard_unavailable`).
+fn shard_refusal(e: &ShardRefusal) -> Option<Refusal> {
     match e {
-        ShardRefusal::Busy(s) => Refusal::agent_full(*s),
-        ShardRefusal::Invalid(why) => Refusal::unpack_failed(why),
+        ShardRefusal::Busy(s) => Some(Refusal::agent_full(*s)),
+        ShardRefusal::Invalid(why) => Some(Refusal::unpack_failed(why)),
+        ShardRefusal::Unavailable(_) => None,
     }
 }
 
@@ -1204,7 +1257,9 @@ fn shard_url(url: &str, i: usize, n: usize) -> String {
 /// shard picks the fan-out shard without reading the body, which it streams on (LM-1 round 6). A 422 is the pack's
 /// answer and a 429 the container's full slots (an `agent` validate waits at most 2 s for one, then is
 /// `ShardRefusal::Busy`); either ends the tries. A 503 `warming`, another status, or a failed call moves to the next
-/// site.
+/// site. When every site's shard failed that way, the error is `Unavailable`, which a push answers 503 `Retry-After`
+/// so git and the client retry it, not `unpacker error`: 23 pushes in flight at a home-shard kill were refused that
+/// way (`tests/am1/results/hot-shards-2.md`).
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -1224,20 +1279,38 @@ pub(crate) async fn validate(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let mut last = String::new();
+    let mut tries = Vec::new();
     let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().copied().enumerate() {
         let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &head, detail).await;
-        mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422 | 429, _)))));
+        let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
+        mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
         match r {
-            Ok(Ok(r)) => return Ok(r),
-            Ok(Err((422, e))) => return Err(ShardRefusal::Invalid(e)),
-            Ok(Err((429, s))) => return Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
-            Ok(Err((status, e))) => last = format!("site {}'s shard answered {status}: {e}", site.0),
-            Err(e) => last = format!("site {}'s shard: {e}", site.0),
+            Ok(r) => return Ok(r),
+            // The pack's own answer, the same on every shard: no other site is tried.
+            Err((422, e)) => {
+                tries.push((site, 422, e));
+                break;
+            }
+            Err((429, s)) => return Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
+            Err((status, e)) => tries.push((site, status, e)),
         }
     }
-    Err(ShardRefusal::Invalid(last))
+    Err(validate_failed(tries))
+}
+
+/// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
+/// answered 200 or 429: `Invalid` with the 422's body when a shard answered the pack 422, else `Unavailable` naming
+/// the last.
+fn validate_failed(tries: Vec<(SiteId, u16, String)>) -> ShardRefusal {
+    if let Some((_, _, e)) = tries.iter().find(|(_, s, _)| *s == 422) {
+        return ShardRefusal::Invalid(e.clone());
+    }
+    let last = tries.last().map(|(site, status, e)| match status {
+        0 => format!("site {}'s shard: {e}", site.0),
+        s => format!("site {}'s shard answered {s}: {e}", site.0),
+    });
+    ShardRefusal::Unavailable(last.unwrap_or_else(|| "no shard to try".into()))
 }
 
 /// A read on the network's shards (`upload-pack`, `info-refs`) in `shard_order`: the first with
@@ -2130,6 +2203,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
@@ -2265,7 +2339,9 @@ mod tests {
 
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
-    use super::{ShardRefusal, gunzip, shard_refusal, shard_url, validate_sites, validate_url, warm_first};
+    use super::{
+        ShardRefusal, gunzip, shard_refusal, shard_url, validate_failed, validate_sites, validate_url, warm_first,
+    };
     /// The shard picks the fan-out shard from the URL's trailer without reading the body, so the trailer must be
     /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first.
     #[test]
@@ -2281,10 +2357,12 @@ mod tests {
     /// unpacker error; a pack the cache rejected stays an unpacker error.
     #[test]
     fn a_busy_git_cache_refuses_in_the_admission_shape() {
-        let busy = shard_refusal(&ShardRefusal::Busy(3));
+        let busy = shard_refusal(&ShardRefusal::Busy(3)).unwrap();
         assert_eq!((busy.unpack.as_str(), busy.reason.as_str()), ("ok", "agent admission full, retry after 3s"));
-        let bad = shard_refusal(&ShardRefusal::Invalid("connectivity".into()));
+        let bad = shard_refusal(&ShardRefusal::Invalid("connectivity".into())).unwrap();
         assert_eq!(bad.reason, "unpacker error");
+        // No shard could check it: no refusal at all, so the push is answered 503 and sent again.
+        assert!(shard_refusal(&ShardRefusal::Unavailable("site 2's shard answered 503: warming".into())).is_none());
     }
 
     fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
@@ -2309,6 +2387,29 @@ mod tests {
         assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// Only a shard's 422 is the pack's answer and refuses the push. Every shard warming, broken, or unreachable is
+    /// `Unavailable`, which a push answers 503 so it is sent again: at a home-shard kill the in-flight pushes' shard
+    /// answers were 5xx and failed calls, and each was refused `unpacker error`.
+    #[test]
+    fn only_a_shards_422_refuses_a_push_and_shards_that_all_fail_are_unavailable() {
+        let t = |s: u8, st: u16, e: &str| (SiteId(s), st, e.to_owned());
+        assert_eq!(
+            validate_failed(vec![t(0, 422, "index-pack: bad")]),
+            ShardRefusal::Invalid("index-pack: bad".into())
+        );
+        // A 422 after earlier sites failed is still the pack's answer.
+        assert_eq!(
+            validate_failed(vec![t(0, 503, "warming"), t(1, 0, "reset"), t(2, 422, "connectivity")]),
+            ShardRefusal::Invalid("connectivity".into())
+        );
+        let u =
+            validate_failed(vec![t(0, 0, "The container has not been started"), t(1, 503, "warming"), t(2, 500, "x")]);
+        assert_eq!(u, ShardRefusal::Unavailable("site 2's shard answered 500: x".into()));
+        let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
+        assert_eq!(u, ShardRefusal::Unavailable("site 1's shard: Network connection lost".into()));
+        assert!(matches!(validate_failed(vec![]), ShardRefusal::Unavailable(_)));
     }
 
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try

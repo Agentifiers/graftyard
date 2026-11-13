@@ -378,7 +378,7 @@ impl DurableObject for GitShard {
                 match host.validate(net, n, 0, false, false, body).await {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _)) => Response::from_json(&ix),
                     Ok(_) => Response::error("validate gave no index", 422),
-                    Err(e) => Response::error(e.0, 422),
+                    Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }
             }
             "/info-refs" | "/upload-pack" => {
