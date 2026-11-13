@@ -13,6 +13,7 @@ A shared install for Milestone 4. The M4 web thread ([thread](https://ampcode.co
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-13 03:33Z | 03:34Z | build (`install-m3ef`) | site day 1 (product, `standard-4`), then the product edge with `--ops` | `bbe9dfae` / `20c39df1` / `48417c20`, edge `9fb34188` | done |
 | 2026-11-13 08:42Z | 08:54Z | M4 Actions | site day 2 (product, `standard-4`): `m4-actions` `aa1ac0d` (the `HookSequencer` class, migration v3, `HOOKSEQ_n` and `OPS` bindings, repository 32.16 read) merged with `m4-web` `8c57a4f` (`/ui/*` routes), image `sha256:099a022c…`, `--vars` site-vars.json, `--ops graft-m4a-ops`, `--var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev`. Every member resets once per site; no site is down for longer than its own deploy. Also `graft-m4a-ops` `ba230a3d` (`/unwrap`, `SECRETS_WRAP_KEY_A` = Secrets Store `graft-m4a-secrets-wrap-key-a` `91947aef…`) | `61050b5d` / `7ffa44fc` / `a7b298a5`, edge unchanged | done 08:56Z |
+| 2026-11-13 09:01Z | 09:01Z | M4 web | edge day 2 (product): built from `m4-actions` `aa1ac0d` (contains `m4-web` `8c57a4f`; `hooks.rs` sequencer routes), `deploy-edge.mjs` from `aa1ac0d` (adds `HOOKSEQ_n` → `HookSequencer`), `--anchor`, `--ops graft-m4a-ops`, `FORMATS_ENABLED` plus 32.16. Checked: `GET /repos/m3org/j4`, `/hooks`, and `/user` answer 200 | sites unchanged, edge `06a0aa62` | done |
 
 ## Resources
 
@@ -80,7 +81,7 @@ A new site format reaches the edge only after a site day, and then through the w
 The `OPS` binding and `FORMATS_ENABLED` are kept only if every deploy passes them again. Leave out `--test-faults`, because the product build goes to `/tmp/edge-prod-graft-m4a-edge`:
 
 ```
-FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
+FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16
 node tests/m1/integ/deploy-edge.mjs ~/.graft-m4a/sites.json graft-m4a-edge \
   --anchor ~/.graft-m4a/install.toml --ops graft-m4a-ops --var FORMATS_ENABLED=$FORMATS
 ```
