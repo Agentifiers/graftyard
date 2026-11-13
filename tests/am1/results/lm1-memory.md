@@ -1300,3 +1300,26 @@ Design contradiction, quoted: B0-31 is "the same replay with the leader on apac"
 "a leader … whose group's `home` has recovered and caught up, transfers" back to `home`
 (`crates/raft/src/member/health.rs`, `maybe_hand_off`, from DESIGN "Leadership"). On a group homed on enam, the
 apac leader the row asks for lasts about 10 s.
+
+**B0-33** (131292, 5,000 agents, 300 s, 252 agent-class commands/s offered, standard-2 shards, 03:14:11 to
+03:19:11Z) [measured]: **fail**.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Human and merge-queue commit p99 at most 1 s | leader commit p99 3,915 ms (p50 1,366; queue p99 3,490, round 1,347, deps 3,028); human pushes 11 of 155 ok; merge:only p99 167.5 s, 4 merges | fail |
+| At least 140 agent commands/s admitted (fail under 100) | 50.8/s answered ok (15,242 of 49,205 agent-class requests); agent pushes 2,427 of 12,527 ok | fail |
+| The user token admitted as `Agent` | fast user 259 × 200, 271 × 503 | fail (503 is not the 429 shape) |
+| Every refusal in the `ng` or 429 `retry-after` shape | 2,762 `admission full` (`ng`); 3,057 × 503 "access rows did not answer … shed the read: overloaded" or "not leader"; 650 `warming`, 300 "ranges read answered null", 60 "not leader" as `unpacker error`; 33 × 500; 3,231 client timeouts | fail |
+| Zero leader changes | term 2 → 16; leader served from site a, then b and c from 03:15, a again from 03:18 | fail |
+| Zero `suspect` | 919 `/suspect` on the final leader | fail |
+
+- **Leader moves** [measured, Workers Logs]: `STEP_DOWN` on `repo:131292#1#f0` at 03:14:57 by the confirm rule
+  (p99 1,449 ms, 6 of 29 slow) to site 1, then 6 more by `CommitErrors` with `to: None` (holds) at 03:17:17 to
+  03:20:06 on all three sites, and elections between.
+- **Longest leaderless stretch with requests waiting**: 21.1 s, from 03:14:29.7Z, with no `/commit` served on any
+  member (`tests/fanout/raw/tools/leadgaps.py`, a member's `/commit` of 20 ms or more counted as leader work). Next
+  longest 12.0 s at 03:15:29.9Z, then 7.6 s. All under F67's 30 s bound; the first sits at the load's first minute.
+- **Where it breaks**: at 5,000 agents the leader's commit queue builds to seconds in the first minute (queue p99 3.5
+  s), its storage confirms go over 500 ms 6 times in 29, and the confirm rule moves it; after that, followers and the
+  edge shed the access-row reads as overloaded. Which of leader CPU, the identity groups, or the shards limits it
+  first is not traced. The CPU correlation for this row is not computed: the leader moved 15 times.
