@@ -670,6 +670,26 @@ pub fn known_voters(chain: ChainId) -> Vec<Target> {
         .collect()
 }
 
+/// Learns `chain`'s config from its members' `/status` when this isolate knows no voters, keeping the highest index
+/// any answers. A caller that picks a site's member by name, as a git cache shard's local `/entries` read does,
+/// otherwise has only the record's bootstrap names, and a voter replaced since is another object: the shard's read
+/// reached site b's retired first voter, which answered no entries, and every page of a rehydrate's tail went to the
+/// leader instead (`tests/am1/results/rehydrate-batch.md`, "Resume, hosted").
+pub async fn learn_voters(b: &Bindings<'_>, chain: ChainId, record: &PlacementRecord) {
+    if !known_voters(chain).is_empty() {
+        return;
+    }
+    let asks = record.bootstrap_members(chain).into_iter().map(|m| async move {
+        let mut r = b.member(m.site, m.do_name.as_ref()).ok()?.fetch_with_str("https://member/status").await.ok()?;
+        within(CALL, r.json::<Value>()).await?.ok()
+    });
+    for st in futures_util::future::join_all(asks).await.into_iter().flatten() {
+        if let Some(config) = st.get("config").filter(|c| !c.is_null()) {
+            learn(chain, &json!({ "config": config }));
+        }
+    }
+}
+
 /// A `suspect` report about `about` to every other known voter (to every voter, `about` included, when `all`), in
 /// parallel; returns the voter that answered it leads, if one did. The report carries no command. `all` is for a
 /// member that answered `NotLeader` naming no leader: campaigns are request-driven, so a group whose leader died

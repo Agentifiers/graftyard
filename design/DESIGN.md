@@ -641,8 +641,8 @@ pub const LOG_MAX_BYTES: u64 = 2 << 30;                          // [guess]
 /// minute it validates (stale past `LOAD_STALE`), and the leader commits one k for both warm sites from the larger load
 /// as `RepoEvent::Fanout` (32.15), with no API call or cron, so the second warm site holds k shards when the first is
 /// lost; it raises its own k for the predictor (AGENT-LAYER, "Overlaps and prediction"). So a site kill kept clone time
-/// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step up takes
-/// an idle warm pool shard (`HOT_POOL`). `fanout` is pure; the leader keeps `Fanout`.
+/// to first byte p99 at 0.71 to 1.10 s and human push p99 at 0.84 to 1.50 s [measured, M0-WP9, B0-34]. A step takes
+/// idle warm pool shards (`HOT_POOL`) both warm sites' ledgers granted. `fanout` is pure; the leader keeps `Fanout`.
 pub struct NetworkLoad { pub cpu_p99: f32 /* most loaded of the site's k, less derived work (A31) */, pub queue_depth: u32 }
 pub fn fanout(loads: [&NetworkLoad; 2], k: u8, now: Timestamp, f: &mut Fanout) -> u8;   // at most FANOUT_MAX
 pub const FANOUT_MAX: u8 = 8;  // up 3 min > 0.75 (or to ceil(k x cpu / 0.75)), down 1 h < 0.4 [guess]
@@ -1147,24 +1147,24 @@ pub struct CloneKey { pub network: NetworkId, pub wants: Digest, pub depth: Opti
 /// image only when its site's `ContainerDay` step covers it, and returns to `git_prev` on that day's committed
 /// `Rollback { target: Containers(site) }`. Per site, `count + HOT_POOL` lets any two sites carry every network warm.
 pub struct GitCacheShard { pub site: SiteId, pub shard: u16 }
-pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8>;
+pub fn shards_for(network: NetworkId, site: SiteId, count: u16, pool: &[u16]) -> ArrayVec<GitCacheShard, 8>;
 pub const SHARDS: [u16; 3] = [2, 5, 25];   // at 50, 300, 2,000 developers: `cost.py` from a [guess] working set
 /// Per site, the expected hot networks [guess 1] times FANOUT_MAX - 1, counted in the site's start cap, so it uses the
-/// tier's instance size: `standard-2` at 50 developers, `standard-3` at 300, and `standard-4` at 2,000. `pool_grants`
-/// holds each owner to its share, keeping a network's shards before it grants more, so another owner's step up never
-/// takes them. With no plan field, an owner's share is HOT_POOL - 1, so no owner holds the whole pool [guess, B0-34's
-/// monorepo share]. Idle pool shards keep the site's hot networks warm, LRU by `NetworkLoad`, holding the parts up to
-/// the tip, so a step up in k needs no rehydrate and serves within `fanout`'s up window. Cold, with `fanout`'s 3 min up
-/// and a 7.3 GB rehydrate, a saturating step waited about 290 s from saturation to k = 2 serving, with clone time to
-/// first byte p99 at 5 to 10 s meanwhile [measured, `tests/m0/results/m0-wp9.md`, B0-34, third pass, `b0-34-r8`]. A
-/// pool warm only for networks hot in the last hour runs during working hours, and `cost.py` prices it so [inference].
+/// tier's instance size: `standard-2` at 50 developers, `standard-3` at 300, and `standard-4` at 2,000. A `Fanout`
+/// step up takes 1 plus the fewer pool shards both warm sites' `PoolLedger`s (first pool shard's SQLite) granted, each
+/// by `pool_grants`, holding each owner to its share and keeping held shards, so another owner never takes them; a
+/// ledger silent 3 s [guess] keeps k. `shards_for` serves each network its own leased slots, never shared (by
+/// rendezvous all shared the same k - 1). Unrenewed past LOAD_STALE, a lease lapses. No API call, no `decide` read.
+/// With no plan field, an owner's share is HOT_POOL - 1 [guess, B0-34's monorepo share]. Idle pool shards keep hot
+/// networks warm, holding the parts up to the tip, so a step needs no rehydrate; cold, a step waited about 290 s to
+/// serve [measured, `tests/m0/results/m0-wp9.md`, B0-34, `b0-34-r8`]. `cost.py` prices the pool in working hours.
 pub const HOT_POOL: u16 = 7;
 /// Per (shard, network), in the shard's SQLite, derived: the index through which it applied each member chain's `Refs`,
 /// `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's last index,
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
-/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
-/// gets `warming`; a rehydrating shard says so at once to a caller with another shard next. Pushes, fetches and the
+/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the object instance, which reads its member by
+/// the committed config: a caller waits its `wait`, then `warming`; a rehydrating shard says so to a caller with another next. Pushes, fetches and the
 /// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
@@ -1600,7 +1600,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | pack buckets | bad-deploy | Bad packs from one site's release | `index-pack --strict` before placement; GC deletes only objects outside the fold refs and `ref_log` for 14 days, at a fixed rate |
 | pack buckets | bad-config | Writes to one site's bucket fail | A readiness probe writes and reads a canary object per bucket. Placement fails over to the other two. A misplaced bucket outside a jurisdiction is recreated under a new name as a site day; inside one the hint is ignored (R16) |
 | pack buckets | noisy-tenant | One network's prefix | Push bytes and concurrency caps per account and network |
-| git caches | instance | One shard's networks and in-flight streams | Clients retry. A new instance rehydrates from R2, at most 118 s for a 5 GB network in Milestone 0 [measured], with prebuilt indexes; real pushed packs are thin and re-index on ingest, which that run did not time (G5). Clone-cache hits never touch a container. A new leadership's warm catch-up of its site's shard (BM-2) reaches only a running container and is not a request, so a group with no clients, which re-elects after its members idle out, starts and keeps no shard; a rehydrate loads the marked packs a chain's tail names with the tail, in index order, because a stored pack thin against an earlier inline pack failed every rehydrate loaded first [measured, `tests/am1/results/idle-shards.md`] |
+| git caches | instance | One shard's networks and in-flight streams; on the site's first pool shard, also its pool ledger | Clients retry. While the ledger's object restarts, leaders that ask it keep k, and the ledger's SQLite keeps its leases, with the time it answered nothing counted against none. A new instance rehydrates from R2, at most 118 s for a 5 GB network in Milestone 0 [measured], with prebuilt indexes; real pushed packs are thin and re-index on ingest, which that run did not time (G5). Clone-cache hits never touch a container. A new leadership's warm catch-up of its site's shard (BM-2) reaches only a running container and is not a request, so a group with no clients, which re-elects after its members idle out, starts and keeps no shard; a rehydrate loads the marked packs a chain's tail names with the tail, in index order, because a stored pack thin against an earlier inline pack failed every rehydrate loaded first [measured, `tests/am1/results/idle-shards.md`] |
 | git caches | data-center | Shards on that host set | As instance. Each network is warm on two sites, and `fanout` sizes a hot network's k on both from the larger site's `NetworkLoad`, so the other warm site already holds k shards. A newly warm shard serves only after `rehydrate`: in B0-34 six shards copying 8.76 GB from one bucket took 166 to 207 s, and while the surviving site held k = 1, miss time to first byte was 19 to 20 s at p99 [measured, `tests/m0/results/m0-wp9.md`, B0-34] |
 | git caches | region | That site's shards | The other warm site serves. Each site's start cap lets any two sites carry every network |
 | git caches | region | A hot network's k shards and clone-cache entries on one warm site | The other warm site holds its own k shards, sized from the larger of the two sites' `NetworkLoad`, and a copy of every hot-network clone-cache entry, so it carries the network alone, 67% of 4 vCPU in journey 9. Without that sizing the surviving site held k = 1 in B0-34, new shards took 166 to 207 s to rehydrate, and miss time to first byte was 19 to 20 s at p99 meanwhile, while clone-cache hits stayed at 0.34 to 0.37 s [measured, `tests/m0/results/m0-wp9.md`, B0-34] |
@@ -1609,7 +1609,7 @@ Components are `chain groups` (voters and learners of every group), `pack bucket
 | git caches | bad-deploy | One site's git image | A new image reaches shards only on that site's `ContainerDay`, never with member code, because a new version restarts no running container [measured]. A conformance clone, fetch, and push gate each step, and a breach commits the pre-signed `Rollback { target: Containers(site) }`, which returns shards to `git_prev` with no API call |
 | git caches | bad-config | Shard count or start cap too low on one site, or a start check that lets a container run outside its site's regions | The other warm site absorbs. Working set and shard count are measured; a change is a site day; alarm at 70% of account vCPU |
 | git caches | noisy-tenant | One giant network's repack or clone storm | Per-network CPU caps, the clone cache, one repack per shard at a time. Each site starts at most its cap of shard containers, enforced in the shard object rather than by the platform, and hosted runners run in a separate account, so Actions cannot take git cache vCPU |
-| git caches | noisy-tenant | An agent fleet's git CPU on one network (journey 9), or one owner's several hot networks | `fanout` up to 8 shards per warm site from a hot pool budgeted per owner, `AdmitClass` in each shard's queue so agent work sheds first, `TEST_MERGE_BUDGET`, and the agent layer's conflict predictor capped at 50% of the second site's shard vCPU and paused while that site leads |
+| git caches | noisy-tenant | An agent fleet's git CPU on one network (journey 9), or one owner's several hot networks | `fanout` up to 8 shards per warm site from a hot pool budgeted per owner by each site's pool ledger, which grants every network distinct pool shards and keeps what a network holds before it grants another owner more, `AdmitClass` in each shard's queue so agent work sheds first, `TEST_MERGE_BUDGET`, and the agent layer's conflict predictor capped at 50% of the second site's shard vCPU and paused while that site leads |
 | front door | instance | Requests on one isolate; for SSH, the sessions on one SSH front container, by either ingress | Anycast and clients retry. An SSH front's object restarts its container, and the Tunnel sends new sessions to the other replicas at once, whether they came through Spectrum or `cloudflared access ssh`: 13 kills cost one in-flight session [measured, `tests/m0/results/m0-wp7.md`] |
 | front door | data-center | That colo's traffic, including the Tunnel edge connections of the SSH replica held there | Cloudflare routes to the next colo. Each cloudflared replica holds 3 or 4 edge connections in its own region's colos, so the Tunnel keeps reaching it [measured, `tests/m0/results/m0-wp7.md`] |
 | front door | region | Members and SSH fronts of one site | The edge calls the other members through their bindings, and `suspect` moves leaders. Leader hints in isolate memory update on `NotLeader`. The Tunnel routes SSH sessions to the replicas on the other two sites, for both ingresses |
