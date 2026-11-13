@@ -109,3 +109,41 @@ Full checks (`tests/am1/runs/checks.sh`, log `tests/am1/raw/pool/checks.log`): `
 ## Cost
 
 $0.38 in total for `graft-m3c`'s own usage from 07:56Z (the image build) to the end of r4, by `tests/fanout/m2bcost.py` with `INSTALL=graft-m3c`. That includes $0.28 of containers: the first shards of the smoke's pushes, and one pool shard. Every shard was torn down after each run.
+
+## Lease expiry fix (`pool-lease-expiry`, 2026-11-13)
+
+**Bug** (LM-1's m21, `lm1-memory` round 10). Two m3org networks were forced to k 4 and torn down without releasing. Their leases held 3 slots each on every site from 11:36Z to 13:11Z, which was m3org's whole share, so every later row's network was granted k 1. The ledger ran only when called, and with sparse callers every call came more than `LEDGER_GAP` after the one before. `settle` read each such gap as an outage and shifted every lease forward, so no lease ever lapsed.
+
+**Fix.** While the ledger holds a lease, the ledger object's alarm runs `PoolLedger::beat` every `LEDGER_BEAT` (45 s, half of `LEDGER_GAP`). The beat drops what has lapsed and marks `seen`.
+- A gap past `LEDGER_GAP` now means the object did not run, and only that gap is credited to leases. A real outage still expires nothing on its return.
+- The beat re-arms itself after each alarm, `/pool` call, request `touch`, and `/teardown`, because the container renewal and catch-ups share the object's one alarm and the earlier alarm is kept.
+- A test-faults `/pool/down` also skips the beat, as a down object would.
+- The test edge gains `/_bed/pool?site=` to read a ledger as stored.
+
+**Kept test.** `a_lease_nobody_renews_lapses_however_rarely_the_ledger_is_called`:
+- m21's shape: two leases are never renewed, and one ask comes every 20 minutes. The first ask after `LOAD_STALE` gets the owner's whole share.
+- With no calls at all, the beats drop the lease between `LOAD_STALE` and `LOAD_STALE` + one beat after its last renewal, then stop arming.
+- An hour of missed beats expires nothing.
+
+The test fails with the beat made a no-op, which is the code before this fix. `an_unrenewed_lease_expires_and_frees_its_shards` still passes, outage case included.
+
+**Plants**: 17 of 17 caught (`tests/am1/raw/pool/plants2.log`). The 4 new plants:
+- The beat does nothing.
+- The beat marks `seen` but drops nothing.
+- No beat is armed.
+- `LEDGER_BEAT` past `LEDGER_GAP`.
+
+**Hosted check** (`tests/am1/pool/expiry.mjs`, `tests/am1/raw/pool/smoke-e1.log`). Deployed on `graft-m3c`:
+- Sites a/b/c `8399807e`/`92d7411d`/`d4da9406` from `d546cc1`, with test-faults and `standard-4`.
+- Edge `fe34113c` from `9c955e7`.
+- Image `sha256:f6d2ef40…`, hot-shards-4's, whose `containers/git` is main's.
+
+Run:
+- One m3org network asked k 4 at 14:01:39Z and was granted slots `[5,2,6]` on both warm sites (0 and 2). Nothing called either ledger after that.
+- Read every 30 s: `seen` moved 1, 46, 91, 136 s on site 0 and 0, 45, 90, 135 s on site 2, the beats, while the lease was held.
+- The lease was gone at the 180 s beat on both sites, which is `LOAD_STALE` after the ask. The beats then stopped.
+
+The verdict had no fails. The cost was $0.03, so this branch's hosted total is $0.41 of the $15 cap. The one shard the check started was torn down.
+
+**Checks** on `d546cc1`: fmt, workspace clippy, wasm32 clippy (site and edge, with and without test-faults, and ops), `cargo test --workspace`, the design checks and Go tests all pass. `check_links.py` again flagged only the run's own `.worktrees/target-rows` build output, and passes once that is removed. The test edge change in `9c955e7` passes clippy with test-faults.
+

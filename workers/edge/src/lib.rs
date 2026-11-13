@@ -1937,6 +1937,18 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             "trace": trace.into_inner(),
         }));
     }
+    // A site's pool ledger as stored (`GET /pool` on `git#<site>#pool:1`, `graftyard_git::PoolLedger`). The read
+    // runs nothing on the ledger, so a lease missing from it was dropped by a call or by the ledger's own heartbeat.
+    if path == "/_bed/pool" {
+        let site = qp("site").and_then(|v| v.parse::<u8>().ok()).map(SiteId).ok_or("site")?;
+        let region = c.sites.get(site).ok_or("unknown site")?.region;
+        return c
+            .env
+            .durable_object(&format!("SHARD_{}", site.0))?
+            .get_by_name_with_location_hint(&format!("git#{}#pool:1", site.0), region.hint())?
+            .fetch_with_str("https://shard/pool")
+            .await;
+    }
     // A hot-pool shard, `git#<site>#pool:<n>`, belongs to no one network, so `?site=S&pool=N` names it directly; it
     // is torn down like a network's shard (`tests/fanout/teardown.py --pools`).
     if path == "/_bed/kill_pool" {

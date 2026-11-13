@@ -280,6 +280,62 @@ fn an_unrenewed_lease_expires_and_frees_its_shards() {
     assert_eq!(l.ask(net(2), 2, 6, Timestamp(back), share).len(), 4);
 }
 
+/// A lease nobody renews lapses LOAD_STALE after its last renewal even when the ledger is called rarely: the ledger
+/// object's heartbeat (`beat` every `LEDGER_BEAT` while a lease is held) is what tells a quiet ledger from a down one.
+/// LM-1's m21 tore down two networks at k 4 without releasing, no later call came within LEDGER_GAP of another, and
+/// their 6 slots, their owner's whole share, stayed leased for 95 minutes (`lm1-memory` round
+/// 10). The other side: a ledger that misses its beats (down) for an hour expires nothing on its return.
+#[test]
+fn a_lease_nobody_renews_lapses_however_rarely_the_ledger_is_called() {
+    use graftyard_git::{LEDGER_BEAT, LEDGER_GAP, LOAD_STALE, PoolLedger};
+    let share = |_| 6;
+    let stale = LOAD_STALE.as_millis() as u64;
+    let beat = LEDGER_BEAT.as_millis() as u64;
+    assert!(2 * beat <= LEDGER_GAP.as_millis() as u64, "two beats fit in a gap");
+    // m21: two networks of one owner at k 4 (3 slots each), then never renewed. The ledger's object runs only its
+    // alarm, which beats while a lease is held, and one ask comes every 20 minutes from a third network of that owner.
+    let mut l = PoolLedger::default();
+    assert_eq!(l.ask(net(1), 1, 3, Timestamp(0), share).len(), 3);
+    assert_eq!(l.ask(net(2), 1, 3, Timestamp(1), share).len(), 3);
+    let mut t = 1;
+    let mut at = |l: &mut PoolLedger, now: u64| {
+        while let Some(next) = l.beat_due(Timestamp(t)).filter(|n| n.0 <= now) {
+            t = next.0;
+            l.beat(next);
+        }
+        t = now;
+    };
+    let mut freed = None;
+    for m in 1..=6u64 {
+        at(&mut l, m * 20 * MIN);
+        let got = l.ask(net(3), 1, 6, Timestamp(m * 20 * MIN), share).len();
+        if got == 6 && freed.is_none() {
+            freed = Some(m * 20 * MIN);
+        }
+    }
+    // LOAD_STALE (3 min) after the last renewal is before the first 20-minute ask, so that ask gets the whole share.
+    assert_eq!(freed, Some(20 * MIN), "the torn-down networks' slots were freed by the first ask after LOAD_STALE");
+    assert_eq!(l.renew(net(1), Timestamp(20 * MIN)), Vec::<u16>::new());
+    // With no calls at all, the beats alone drop the lease LOAD_STALE after its last renewal, and then stop.
+    let mut l = PoolLedger::default();
+    l.ask(net(1), 1, 3, Timestamp(0), share);
+    let mut now = Timestamp(0);
+    let mut beats = 0;
+    while let Some(next) = l.beat_due(now) {
+        now = next;
+        l.beat(now);
+        beats += 1;
+        assert!(beats < 100);
+    }
+    assert!(l.leases.is_empty());
+    assert!(now.0 >= stale && now.0 < stale + beat, "lapsed at {} ms, LOAD_STALE {stale}", now.0);
+    // A ledger that beats on time and then misses every beat for an hour (its object down) expires nothing on return.
+    let mut l = PoolLedger::default();
+    let held = l.ask(net(1), 1, 3, Timestamp(0), share);
+    l.beat(Timestamp(beat));
+    assert_eq!(l.renew(net(1), Timestamp(beat + 3_600_000)), held);
+}
+
 /// The leader's step from two warm sites' grants: up to 1 plus the fewer either granted, never past what it asked;
 /// down only as `fanout` asked; and with either ledger unreachable, k stays where it was, up or down.
 #[test]
