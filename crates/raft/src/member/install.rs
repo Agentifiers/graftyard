@@ -314,7 +314,7 @@ impl<C: Command> Member<C> {
             reads.retain(|(id, at)| !late(*at) || (failed.push(*id), false).1);
             // A batch whose every read failed is dropped, so the next one goes out. Kept, it was resent forever to a
             // half-hung leader that never answered, the reads queued behind it failed as never sent, which is no
-            // failed call, and the follower never forgot that leader or campaigned (F67 rule 11).
+            // failed call, and the follower never forgot that leader or campaigned (F67 rule 12).
             if reads.is_empty() {
                 r.inflight = None;
             }

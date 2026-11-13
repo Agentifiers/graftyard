@@ -1349,7 +1349,7 @@ fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
 /// B's first unanswered batch is a failed call: B forgets A and fails the read naming no leader. A's next append
 /// teaches B the leader again, and a later read's unanswered batch must count as a failed call too. Before the fix the
 /// emptied batch stayed in flight and was resent forever, the later read failed as queued behind it, naming A, and B
-/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 11, liveness seed 9
+/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 12, liveness seed 9
 /// once 30% of follower reads are answered later).
 #[test]
 fn every_unanswered_read_index_batch_is_a_failed_call() {

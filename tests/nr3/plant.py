@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), and F67 rule 11 (`crates/raft`). Plants one mutant at a time,
+(`crates/lookup`), and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -65,7 +65,7 @@ MUTANTS = [
     ('genesis: an unreadable view drops the binding', LOOKUP,
      '    let Some(view) = view else { return false };',
      '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
-    # Liveness (F67 rule 11).
+    # Liveness (F67 rule 12).
     ('raft: an emptied read-index batch stays in flight', INSTALL,
      '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),
 ]

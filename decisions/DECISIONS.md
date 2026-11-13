@@ -2444,17 +2444,17 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved b
 
 **Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
 
-### F67 rule 11: every unanswered read-index batch is a failed call, 2026-11-13
+### F67 rule 12: every unanswered read-index batch is a failed call, 2026-11-13
 
-Branch `narrow-reads-3` (`tests/m0/results/f67.md`, rule 11).
+Branch `narrow-reads-3` (`tests/m0/results/f67.md`, rule 12).
 
 **Decision.** A follower drops an in-flight read-index batch once every read in it has failed, so the next read goes out as a new batch, whose own failure makes the follower forget the leader again (F67 rule 2).
 
-**Why.** With 30% of follower reads answered later through `fresh_after` (the narrow answer cache), the kept test `a_read_only_group_elects_off_a_half_hung_leader` failed at seed 9 on the merged tree: an emptied batch stayed in flight and was resent forever to a half-hung leader; after that leader's next append the follower followed it again, and later reads failed as queued behind the batch, which is no failed call, so it never forgot the leader and never campaigned [measured, simulator].
+**Why.** With 30% of follower reads answered later through `fresh_after` (the narrow answer cache), the kept test `a_read_only_group_elects_off_a_half_hung_leader` failed at seed 9 on the merged tree: an emptied batch stayed in flight and was resent forever to a half-hung leader; after that leader's next append the follower followed it again, and later reads failed as queued behind the batch, which is no failed call, so it never forgot the leader and never campaigned [measured, simulator]. m0-carried-8 found the same change on its branch (seeds 21, 31, 92 of that test on its pipelined core); the two copies are to be settled into one when both merge.
 
-**Beat.** Rule 10, reports during a transfer not barring its leader in pre-vote: it moved live seed 11713 from 31.1 s to 14.6 s, but rule 11 alone does the same (14.6 s), and it left seed 11961 at 40.4 s, so it was dropped.
+**Beat.** Putting it on main's core branch (`f67-wide`): on main without deferred reads it pushed live seeds 10,273, 11,401, and 12,761 past 30 s, and it fixed no main seed. Reports during a transfer setting no pre-vote bar at all, which `f67-wide`'s rule 11 replaced with a bar that ends with the hand-off.
 
-**Evidence.** `crates/raft/tests/leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` fails without the fix ("round 1: the read failed naming A"); `tests/nr3/plant.py` mutant 15. The live bound is still exceeded on some seeds by this tree and by main (`tests/am1/results/narrow-reads-3.md`, "Liveness"; F67).
+**Evidence.** `crates/raft/tests/leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` fails without the fix ("round 1: the read failed naming A"); `tests/nr3/plant.py` mutant 15. The widened long sweep on this branch merged with `f67-wide` is in `tests/am1/results/narrow-reads-3.md`.
 
 **Flip.** A follower that should keep a batch it has resent, such as one whose leader answers late but answers.
 

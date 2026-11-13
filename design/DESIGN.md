@@ -414,7 +414,7 @@ pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) 
 /// Two colos' reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For
 /// that window, which a higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back
 /// (M0-WP2: a 24 s move without it). A follower whose promise has lapsed campaigns on one report, or once its read-index
-/// batch is unanswered for 3 s (each such batch is dropped, F67 rule 11), when it also names no leader; a withheld
+/// batch is unanswered for 3 s (each such batch is dropped, F67 rule 12), when it also names no leader; a withheld
 /// leader's appends do not count as one seen.
 /// Campaigns are request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and
 /// two voters up and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`]: a leader whose
