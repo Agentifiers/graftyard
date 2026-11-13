@@ -233,6 +233,14 @@ MUTANTS = [
     ('merge-p99: mergeSplit counts tier and authz in series, so the untimed gap reads short', 'tests/am1/rest/a1.mjs',
      '- Math.max(d.tier ?? 0, d.authz ?? 0) -', '- (d.tier ?? 0) - (d.authz ?? 0) -',
      ['node', 'tests/am1/rest/a1.mjs', '--selftest']),
+    ('merge-p99: a read ahead is kept for another repository under the name', API,
+     '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r == g =>',
+     '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r.owner == g.owner =>',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_write_keeps']),
+    ('merge-p99: a read ahead is kept when the placement moved', API,
+     '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r == g =>',
+     '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r.id == g.id =>',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_write_keeps']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

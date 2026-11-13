@@ -141,7 +141,7 @@ fn buckets(env: &Env, sites: &SiteTable) -> Result<Vec<(SiteId, R2)>> {
 }
 
 /// A repository the edge serves: its id, its owner, and the owner's placement record.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct Repo {
     id: RepoId,
     owner: AccountId,
@@ -189,6 +189,19 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
         owner: account,
         record,
     })))
+}
+
+/// `resolve` from this isolate's `rcache` entries alone, whatever the request's class, or `None` when one is missing
+/// or past `READ_CACHE`: a write's guess, which it reads ahead on and keeps only if its own fresh `resolve` names the
+/// same repository and record (`api::rest_repo`).
+fn resolve_cached(owner: &str, repo: &str) -> Option<Repo> {
+    let name = RepoName::parse(repo).ok()?;
+    let at = now();
+    let account = rcache::get(&rcache::LOGINS, &Login::parse(owner).ok()?.key(), at, true)?;
+    let record = rcache::get(&rcache::PLACEMENTS, &account, at, true)?;
+    let fold = rcache::get(&rcache::AUTHZ, &account, at, true)?;
+    let (id, _) = graftyard_identity::AuthzRead::resolve(&fold, &name.key())?;
+    Some(Repo { id, owner: account, record })
 }
 
 /// Whether the caller may read `repo`, before the edge serves any of its bytes (`graftyard_identity::authorize_read`
