@@ -1164,7 +1164,29 @@ It also carries BM-4's job events and the deliveries in BF-37 (M4-WP3).
 | BF-67 | Delete an `Inbox` and rebuild it. Also 10,000 stars, then a refold | Read and done state kept, nothing from `sources` lost. `/stargazers` lists all 10,000 | Any lost read or done state, a lost event from a `sources` chain, or a missing star |
 | BF-68 | EU-resident org's search documents. Kill one `SearchShard` | Documents only in the `eu`-jurisdiction shards. `incomplete_results` until the rebuild, then full results | A document outside EU, a partial result without `incomplete_results`, or results wrong after the rebuild |
 
-BF-68 assumes FTS5 inside Durable Object SQLite, which Milestone 0 has not confirmed (`decisions/OPEN-QUESTIONS.md`, C15).
+BF-68 assumes FTS5 inside Durable Object SQLite, which a hosted probe confirmed on 2026-11-13, under the `eu` jurisdiction too (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`).
+
+**Built so far (2026-11-13), the pure half** (`tests/m4/results/m4-wp2.md`; branch `m4-wp2`). In `crates/identity`:
+- `UserRecord` as `IdentityEvent::Record`, through `IdentityOp::SetRecord`, which only the account sends and which emits nothing on a repeat.
+- The `Counts` cursor, operator only and forward only.
+- `ThreadId` and the user's rows in the fold's trailing part (format 0x14.3).
+
+In `crates/git`:
+- The watcher index (`watcher`, `stargazer`, `subscriber`, `thread_sub`, `watch_count`), written by `CountsCmd` from whole-state updates that a row never takes at an older `src`, and `counts_plan`.
+- `ConsumerCursorCmd` for `Notify` and `Search` (format 32.19).
+- `notices`, `Inbox` with `sources`, the daily snapshot, and `rebuild_from` with `INBOX_WINDOW`.
+- `Domain`, `SearchShard` placement, the FTS5 `DDL`, documents, the query parser and SQL, and `merge` with `incomplete`.
+
+In `crates/api`: the `rest:activity` and `GET /search/issues` renderers; 8 replies are valid against GHES 3.22.
+
+On real members and real SQLite FTS5:
+- **BF-5 passes**: star and notice both after 1,400 ms; the rebuilt Inbox keeps read state.
+- **BF-67 passes**: both rebuilds keep read and done state and every `sources` event; 10,000 stars are listed live and after a refold.
+- **BF-68 passes**: EU documents only in `eu` shards; `incomplete_results` with a shard killed; full results after the generation-2 rebuild.
+
+30 of 30 planted bugs caught. Wire tags: `RepoEvent` 42 `Watchers`; `IdentityEvent` 6 and 7; `IdentityOp` 8 and 9 (`decisions/DECISIONS.md`, "M4-WP2's pure half").
+
+Not built: the `Inbox` and `SearchShard` site classes and their migration, the consumers' Queue wiring, the edge routes behind `FORMATS_ENABLED` 32.19 and 0x14.3, and the site day. Then a hosted BF-5, BF-67, and BF-68, estimated at about $8.
 
 ### M4-WP3. The Actions engine
 
