@@ -229,7 +229,11 @@ async fn round(
         };
         render(h, repo, &dir, start, through)?
     } else {
-        (Vec::new(), Vec::new(), start)
+        // Nothing new to render, but the store still takes the chain's hooks as they are: an empty list would read
+        // as every hook deleted.
+        let core = h.core.borrow();
+        let c = core.as_ref().ok_or("not joined")?;
+        (Vec::new(), hooks(&c.m.group_fold().fold.core), start)
     };
     let recorded_rows = !rows.is_empty();
     let req = RecordReq { chain, from: start, through, replay, hooks, rows, drop: false };
