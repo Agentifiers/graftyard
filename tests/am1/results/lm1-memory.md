@@ -1412,5 +1412,5 @@ fails the other; this run's 3.10 s misses both.
 | B0-35 | pass on the measured lines: 0.146 of 0.25 vCPU, 0 list computes; dispatch not measured | 0 s |
 | L0-12 | fail: clock spread 3.2 s (≤ 0.5 s), feed p99 3.1 s; 0 lease overlaps | 8.7 s |
 
-F67: no leaderless stretch over 30 s with requests waiting in any row (worst 21.1 s, B0-33 at 5,000 agents).
+F67: no leaderless stretch over 30 s with requests waiting in any row (worst 21.1 s, B0-33).
 Cost through the rows: $47.90 of $150 (containers $10.59). Shards are torn down after each row.
