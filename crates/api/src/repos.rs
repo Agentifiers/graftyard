@@ -113,6 +113,7 @@ pub fn full_repository(r: &Repo<'_>) -> Value {
     let at = graftyard_git::tiers::created(r.core).unwrap_or(Timestamp(0));
     let id = r.at.id.0.0;
     let issues = r.issue_count();
+    let (stars, subscribers) = crate::activity::counts(r);
     let mut v = json!({
         "id": id, "node_id": NodeId::top(NodeType::Repository, id).encode(),
         "name": n, "full_name": format!("{o}/{n}"), "owner": simple_user(r.host, r.dir, Some(r.at.owner_id)),
@@ -125,7 +126,7 @@ pub fn full_repository(r: &Repo<'_>) -> Value {
     });
     let rest = json!({
         "forks": 0, "forks_count": 0, "network_count": 0, "open_issues": issues, "open_issues_count": issues,
-        "stargazers_count": 0, "watchers": 0, "watchers_count": 0, "subscribers_count": 0,
+        "stargazers_count": stars, "watchers": stars, "watchers_count": stars, "subscribers_count": subscribers,
         "has_issues": s.has_issues, "has_projects": s.has_projects, "has_wiki": s.has_wiki, "has_pages": false,
         "has_downloads": false, "has_discussions": false, "archived": s.archived, "disabled": false,
         "is_template": false, "topics": s.topics.iter().map(|t| &**t).collect::<Vec<_>>(),
