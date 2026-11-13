@@ -2370,6 +2370,22 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
 
+### `narrow-reads-3`: a read that waits for an answer's build is answered at or above its floor, with no second read-index, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65).
+
+**Decision.** Every read grant carries a floor (`raft::ReadGrant::floor`): the commit index the leader confirmed for that read, its read index on a follower or learner and its applied index on the leader. A member keeps each narrow API query's newest answer with the index it was built at and whether the metadata tier was loaded, and serves it to any read whose floor it covers. A read whose floor is newer waits for the next build, spaced by `NARROW_EVERY_MS` (now 100 ms), and is then answered at the member's state at that moment (`raft::Member::fresh_after`, same boot only), with no second read-index round. A follower or learner numbers its read-index batches from its boot (`RemoteReads::starting_at`). Reads answered in one input share an answer only at the same floor.
+
+**Why.** After `narrow-reads-2`, the learners' narrow tier read set API p99 at journey 9 (2.2 to 2.6 s on the edge, 8 learners at 200 reads/s), and each learner counted 448 to 4,427 reads that waited for a build and 428 to 3,461 answered late in 300 s [measured, `tests/am1/results/narrow-reads-2.md`]. Each wait slept the build's spacing and then redid the read-index: a new batch behind the one in flight (50 ms floor and a leader round trip), and in that time the tiers moved again, so the answer it waited for was stale once more and the read could wait again until `FOLLOWER_WAIT`. A build of journey 9's queries over 500 PRs costs 2 to 4 ms natively [measured], so the spacing protects little and the repeated read-index cost most of the wait [inference].
+
+**Safety.** The rule stays "no answer older than the commit index the leader confirmed for that read": an answer built at index `i` is the fold at `i`, which is a function of the committed log, so an answer at `i >= floor` holds every entry acknowledged before the read arrived. Answering later at the member's current state is also at or above the floor, since its applied index never moves back within a boot. The simulator now answers 30% of granted follower reads later through `fresh_after`; its live sweep found that an answer the leader sent a follower's previous boot (late, or held for a learner's next call) matched the new boot's first batch number and granted a read below an acknowledged write. That is a bug on `main` too, and it is now a regression test (`a_read_index_answer_from_a_previous_boot_grants_nothing`, which fails on `main` 20147db).
+
+**Beat.** Adding learners, which costs money every month and moves the queue (operator). Sharing one in-flight read-index among waiters only: the batch already shares one, and the cost was the second round per wait, not the first. Serving the newest cached answer whatever its index, which would answer below the floor. Removing `NARROW_EVERY_MS` outright: with no spacing a learner rebuilds on every entry for every query, and the hosted run should show the build share first.
+
+**Evidence.** `crates/raft/tests/leadership.rs` (floor and `fresh_after`; the previous-boot answer), the simulator with deferred reads (long sweep and Porcupine below), `workers/site/src/fanout.rs` (an answer below the floor is never served, a covered floor never waits, loading and loaded answers are kept apart, another query's answer never serves), `workers/site/src/host.rs` (shared answers keyed by floor); `tests/nr3/plant.py` catches 11 of 11. Hosted on `graft-m3e`: `tests/am1/results/narrow-reads-3.md`.
+
+**Flip.** A hosted run where the grant stage (`readStages.grant`, `tier_grant`) rather than the build wait sets the learner p99, which would make sharing or shortening the read-index round the next change. A narrow build that costs a learner more than about 20% of its CPU at journey 9, which would raise `NARROW_EVERY_MS` again.
+
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
 **Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
