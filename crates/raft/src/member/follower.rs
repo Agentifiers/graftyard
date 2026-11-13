@@ -54,6 +54,12 @@ impl<C: Command> Member<C> {
             self.state.follow_seq = req.lead_seq;
             self.dirty = true;
         }
+        // Another leader is heard: every hand-off's bar on an earlier leader ends (`handing_off`).
+        let ended: Vec<SiteId> = self.handing_off.iter().copied().filter(|h| *h != req.leader).collect();
+        for h in ended {
+            self.handing_off.remove(&h);
+            self.suspected.remove(&h);
+        }
         self.leader = Some(req.leader);
         self.forgot = None;
         // A leader two colos reported, from which this member withholds promises, does not count as seen, or its

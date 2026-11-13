@@ -47,12 +47,16 @@ impl<C: Command> Member<C> {
     }
 
     /// May `s` take leadership from this leader: a voter of the latest config other than this member, not drained,
-    /// and not unable to follow.
+    /// not unable to follow, and not one this member refuses in pre-vote as `Suspected`. Such a target was reported
+    /// as a gray leader by two colos while this member followed it; handed leadership, it led once more, half-hung,
+    /// until check quorum moved it, and a drained leader handed off to it again: two hand-offs to the same sick site
+    /// kept a group with two healthy voters leaderless for 37.4 s (F67 rule 10, live seed 12073 on main 0f7bf06).
     pub(super) fn may_lead_target(&self, s: SiteId) -> bool {
         s != self.cfg.me
             && quorum::is_voter(self.log_config(), s)
             && !self.drained.contains(&s)
             && !self.state.cannot_follow.contains(&s)
+            && self.suspected.get(&s).is_none_or(|u| self.now >= *u)
     }
 
     pub(super) fn start_transfer(&mut self, to: SiteId, step_down: bool) -> Result<TransferId, TransferError> {

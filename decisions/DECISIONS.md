@@ -2414,6 +2414,20 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
 
+### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
+
+Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Decision.** (10) A leader hands off, by `STEP_DOWN`, `home`, or a drained hand-off, to no member it refuses in pre-vote as `Suspected` (`may_lead_target`). (11) A `Suspected` bar whose every report arrived while the follower held that leader's transfer id ends once the follower accepts another leader's append; a report outside a transfer keeps it a full bar. The long sweep's live half runs at least 4,000 seeds from 10,000 (`sim.rs`, `LIVE_SEEDS_MIN`), whatever `RAFT_SEEDS` says.
+
+**Why.** Main passed the 30 s bound on live seeds 10,000 to 11,999, the window the long sweep ran, and failed it on 12,048 (33.0 s) and 12,073 (37.4 s); m0-carried-8 found four more in 12,000 to 15,999 (30.1 to 34.6 s) [measured, simulator]. In 12,073 a drained leader handed leadership back to a half-hung member it already refused as suspected, so the gray leader came back each time until check quorum moved it. With that fixed, 11,121 showed the other side: reports sent during each leader's own hand-off barred both healthy voters from each other for 31.3 s. The 2,000-seed window had hidden both, and the bound is absolute (operator: "gates pass as written").
+
+**Beat.** A relative gate, "no worse than main" (operator: refused). Setting no bar at all during a transfer, which left a half-hung leader free to win back. Dropping an emptied read-index batch from flight, which on main pushed 10,273, 11,401, and 12,761 past 30 s; it helps only narrow-reads-3's deferred reads, and stays there pending the agreed version with m0-carried-8.
+
+**Evidence.** `crates/raft/tests/leadership.rs` `a_leader_hands_off_to_no_member_it_suspects` and `a_hand_offs_suspect_bar_ends_when_another_leader_is_heard` (with its control); `sim.rs` `a_leader_hands_off_to_no_member_it_suspects_live` (seeds 12,048 and 12,073). Each fails without its fix. Live seeds 10,000 to 15,999 with both fixes: none over 30 s, worst 29.3 s (14,945). Long sweep (`RAFT_SEEDS=2000`, live half 4,000 seeds): HARSH 16,027 ms (11,895), gray 26,832 ms (10,676), live 27,601 ms (13,161); Porcupine Ok on all three histories (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Flip.** A live seed past 30 s in the 4,000-seed window again, or a gray leader that keeps clearing its bar by handing off, which would need the hand-off bar to count reports by target instead.
+
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
 **Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
