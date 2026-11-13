@@ -8,7 +8,7 @@ set -uo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
 cd /home/user/workspace/hs-deploy
 source /home/user/workspace/repo/tests/am1/lf13/env-m3c.sh
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:696907a2838fafd91cb9cab7b9be4a673af54f56b1c811014a4eb0a4e055aec5
+IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:f6d2ef408c766594b541156664de402d3db5107aa480ed3676fe2d62e34fed09
 IMG=${IMG_OVERRIDE:-$IMG}
 L=/home/user/workspace/repo/tests/am1/raw/hotshards/$1
 # SHARD_INSTANCE: standard-4 from hot-shards-3 on, journey 9's tier size, which the operator approved for test installs.
