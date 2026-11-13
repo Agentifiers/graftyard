@@ -75,11 +75,12 @@ const DIR_FOR_MS: u64 = 30_000;
 /// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 8].
 const PRUNE_EVERY_MS: u64 = 60_000;
 /// Attempt reports are written together, once per this window, not one transaction each [guess]. A Durable Object
-/// holds every outgoing fetch until all its earlier writes are confirmed, so with one commit per report, about 160 a
-/// second in BF-57 run 9, an attempt took 110 ms at p50 against 6 ms unloaded, and 119 ms when it overlapped a write
-/// against 42 ms when it did not [measured, `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 9]. A report lost to a reset
-/// inside the window leaves its attempt to be re-sent under its GUID after `RESEND_AFTER_MS`.
-const REPORT_SAVE_MS: u64 = 50;
+/// holds every outgoing fetch until all its earlier writes are confirmed, so an attempt's POST waits for any write still
+/// unconfirmed. With one commit per report an attempt took 110 ms at p50 (BF-57 run 9), and with one every 50 ms 223 ms
+/// at p50 against 6 ms when no write was pending (run 11) [measured, `tests/m4/results/m4-wp1-hosted.md`]: a window of
+/// 50 ms left a write pending almost always. A report lost to a reset inside the window leaves its attempt to be
+/// re-sent under its GUID after `RESEND_AFTER_MS`, which the at-least-once contract allows.
+const REPORT_SAVE_MS: u64 = 1_000;
 
 /// One leadership's consumer state, in this isolate's memory.
 #[derive(Default)]
