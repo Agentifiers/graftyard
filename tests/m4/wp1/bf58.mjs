@@ -27,6 +27,9 @@ const LOAD_S = Number(process.env.LOAD_S ?? 900);
 const RATE = 2;
 const REPOS = ["bf58a", "bf58b", "bf58c"];
 const HOOKS = 5;
+// The slow hook's delay: `1` is the receiver's 11 s; a number is milliseconds. 3 s keeps a backlog at 2/s over three
+// repositories (one status in three reaches it) that drains within the driver's wait.
+const SLOW = process.env.SLOW_MS ?? "1";
 
 async function ensureRepo(name) {
   const r = await api("GET", `/api/v3/repos/m3org/${name}`, T);
@@ -37,7 +40,7 @@ async function ensureRepo(name) {
 }
 async function hooks(name, base, slow) {
   const have = await api("GET", `/api/v3/repos/m3org/${name}/hooks`, T);
-  const want = Array.from({ length: HOOKS }, (_, i) => `${SINK}/h/${base + i}${slow && i === 0 ? "?slow=1" : ""}`);
+  const want = Array.from({ length: HOOKS }, (_, i) => `${SINK}/h/${base + i}${slow && i === 0 ? `?slow=${SLOW}` : ""}`);
   if (JSON.stringify(have.body.map((h) => h.config.url).sort()) === JSON.stringify([...want].sort())) {
     return want.map((u) => have.body.find((h) => h.config.url === u).id);
   }
@@ -50,6 +53,18 @@ async function hooks(name, base, slow) {
     ids.push(c.body.id);
   }
   return ids;
+}
+
+// The receiver's log, read again after a failed connection.
+async function sinkDump() {
+  for (let i = 0; ; i++) {
+    try {
+      return await (await fetch(`${SINK}/dump`)).json();
+    } catch (e) {
+      if (i >= 5) throw e;
+      await sleep(5_000);
+    }
+  }
 }
 
 const repos = [];
@@ -96,7 +111,7 @@ const want = new Set();
 for (const r of repos) for (const key of sent.keys()) if (key.startsWith(`${r.name} `)) for (const h of r.hooks) want.add(`${h}|${key}`);
 let dump = [];
 for (let i = 0; i < 360; i++) {
-  dump = (await (await fetch(`${SINK}/dump`)).json()).filter((x) => x.event === "status");
+  dump = (await sinkDump()).filter((x) => x.event === "status");
   const got = new Set(dump.map((x) => `${x.hook}|${x.after}`));
   const missing = [...want].filter((w) => !got.has(w));
   if (missing.length === 0) break;
