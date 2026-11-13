@@ -12,13 +12,13 @@
 //!   leadership is first asked what it holds, and one that holds nothing of the chain (new, rebuilt, or lost with its
 //!   site) is filled from the committed `replay_from`, which redelivers unfinished deliveries under their GUIDs.
 //! - **The object** (`HookSequencer`). It keeps the `Sequencer` in its SQLite (one `core` row and one row per delivery)
-//!   and owns order, the cursor halves, and the delivery rows. Its alarm starts attempts (`Sequencer::start`) and hands
-//!   each to a delivery Worker, a stateless invocation of this site script over its own `SITE` binding
-//!   (`attempt_handled`), with the request already built and signed. The invocation POSTs it with the 10 s deadline and
-//!   reports to the object (`/report`), whose answer may be the same queue's next attempt (`next_in_queue`).
+//!   and owns order, the cursor halves, and the delivery rows. Its alarm starts attempts (`Sequencer::start`); each
+//!   attempt runs as a call from the object to itself (`/attempt`), which builds and signs the request and hands it
+//!   to the hook's lane (`lane_post`), the delivery Worker: an object of this class that keeps nothing, POSTs with the
+//!   10 s deadline, and answers the result, which the store reports. A report starts the queue's next attempt at once.
 //! - **Attempts in flight.** One per (chain, hook) queue and one on the hook's own queue (pings and manual
-//!   redeliveries), so at most two per hook, and at most `HOOK_OWNER_CONCURRENCY` per owner, failing hooks at most
-//!   half. A next attempt answered to a report keeps its queue's slot; it never takes another queue's.
+//!   redeliveries), so at most two per hook and per lane, and at most `HOOK_OWNER_CONCURRENCY` per owner, failing
+//!   hooks at most half. The next attempt a report starts keeps its queue's slot; it never takes another queue's.
 //! - **Secrets.** A hook secret is unwrapped by `graft-ops` (`/unwrap` over the `OPS` binding) and kept only in this
 //!   isolate's memory. A hook whose secret cannot be unwrapped gets a failed attempt, never an unsigned one.
 //!
@@ -62,9 +62,9 @@ const CURSOR_EVERY_MS: u64 = 1_000;
 const POLL_MS: i64 = 1_000;
 /// A store call with no answer by then counts as failed [guess].
 const STORE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
-/// How long one delivery Worker invocation (`attempt_handled`) keeps taking its queue's next attempt [guess: its last
-/// attempt, up to the 10 s deadline, and its report then end within the 30 s `waitUntil` grace after its 202].
-const CHAIN_FOR_MS: u64 = 15_000;
+/// How long one `/attempt` call keeps starting its queue's next attempts (`HookSequencer::attempt`) [guess: under the
+/// 30 s `waitUntil` grace of the alarm that started it].
+const CHAIN_FOR_MS: u64 = 20_000;
 /// After falling back from the home site's store, the consumer tries the home site again this often [guess].
 const HOME_RETRY_MS: u64 = 30_000;
 /// How long a batch's logins and `Authz` read serve the next batches of the same leadership before a refresh starts
@@ -603,9 +603,12 @@ const SCHEMA: [&str; 5] = [
 
 impl DurableObject for HookSequencer {
     fn new(state: State, env: Env) -> Self {
-        let sql = state.storage().sql();
-        for s in SCHEMA {
-            sql.exec(s, None).expect("hookseq schema");
+        // A lane keeps nothing (`lane_post`).
+        if !state.id().name().is_some_and(|n| n.starts_with(LANE_PREFIX)) {
+            let sql = state.storage().sql();
+            for s in SCHEMA {
+                sql.exec(s, None).expect("hookseq schema");
+            }
         }
         HookSequencer {
             state: Rc::new(state),
@@ -621,6 +624,10 @@ impl DurableObject for HookSequencer {
             return Response::error("site down", 503);
         }
         let url = req.url()?;
+        if req.method() == Method::Post && url.path() == "/lane" {
+            let r: Lane = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
+            return Response::from_json(&post(&r).await);
+        }
         self.load()?;
         match (req.method(), url.path()) {
             (Method::Post, "/record") => {
@@ -629,10 +636,10 @@ impl DurableObject for HookSequencer {
                 let res = self.record(r)?;
                 Response::from_json(&res)
             }
-            (Method::Post, "/report") => {
-                let r: Report = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
-                let next = self.report(r).await?;
-                Response::from_bytes(codec::to_bytes(&next))
+            (Method::Post, "/attempt") => {
+                let s: StartWire = req.json().await?;
+                self.attempt(s.start()).await?;
+                Response::empty()
             }
             (Method::Post, "/route") => {
                 let r: RouteReq = req.json().await?;
@@ -679,34 +686,27 @@ impl DurableObject for HookSequencer {
     }
 }
 
-/// One attempt as a stateless invocation of this site script runs it (`attempt_handled`): the request the store built,
-/// signed, so the invocation never holds the hook's secret, and where to report.
+/// A `Start` as `/attempt`'s body.
 #[derive(Serialize, Deserialize)]
-pub struct Job {
-    owner: AccountId,
-    store: SiteId,
+struct StartWire {
+    guid: String,
+    hook: i64,
     attempt: u64,
-    guid: Guid,
-    hook: HookId,
     redelivery: bool,
-    url: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
 }
 
-/// `/report`'s body: one attempt's result. `more` says the invocation may run the queue's next attempt, which the
-/// store then answers with.
-#[derive(Serialize, Deserialize)]
-struct Report {
-    guid: Guid,
-    hook: HookId,
-    attempt: u64,
-    redelivery: bool,
-    took_ms: u64,
-    status: Option<u16>,
-    timed_out: bool,
-    response: Option<String>,
-    more: bool,
+impl StartWire {
+    fn of(s: &Start) -> StartWire {
+        StartWire { guid: s.guid.to_string(), hook: s.hook.0.0, attempt: s.attempt, redelivery: s.redelivery }
+    }
+    fn start(&self) -> Start {
+        Start {
+            guid: Guid::parse(&self.guid).unwrap_or(Guid([0; 16])),
+            hook: HookId(DbId(self.hook)),
+            attempt: self.attempt,
+            redelivery: self.redelivery,
+        }
+    }
 }
 
 /// `/route`'s body, from the edge: the sequencer route and what it needs of the repository.
@@ -835,9 +835,9 @@ impl HookSequencer {
         });
     }
 
-    /// The alarm's work: hands what the sequencer starts to stateless invocations of this site script
-    /// (`attempt_handled`), without waiting for them, and comes back in a second while anything runs (retries and
-    /// re-sends), or in an hour to prune finished deliveries.
+    /// The alarm's work: starts what the sequencer hands out, each as a call to this object's own `/attempt` that the
+    /// alarm does not wait for, and comes back in a second while anything runs (retries and re-sends), or in an hour
+    /// to prune finished deliveries.
     async fn run(&self) -> Result<()> {
         let now = Timestamp(now_ms());
         let starts = {
@@ -863,13 +863,22 @@ impl HookSequencer {
             s.start(now)
         };
         self.save()?;
+        let site = SiteEnv::read(&self.env)?.id.0;
+        let name = self.state.id().name().unwrap_or_default();
         for s in starts {
-            let Some(job) = self.job(&s).await? else { continue };
             let env = self.env.clone();
+            let name = name.clone();
             self.state.wait_until(async move {
-                if let Err(e) = dispatch(&env, &job).await {
+                let r = async {
+                    let stub = env.durable_object(&format!("HOOKSEQ_{site}"))?.get_by_name(&name)?;
+                    let mut init = RequestInit::new();
+                    let body = serde_json::to_string(&StartWire::of(&s))?;
+                    init.with_method(Method::Post).with_body(Some(body.into()));
+                    stub.fetch_with_request(Request::new_with_init("https://hookseq/attempt", &init)?).await
+                };
+                if let Err(e) = r.await {
                     // Unreported, the attempt is re-sent under its GUID after `RESEND_AFTER_MS`.
-                    console_error!("hookseq attempt {}: {e}", job.attempt);
+                    console_error!("hookseq attempt {}: {e}", s.attempt);
                 }
             });
         }
@@ -888,10 +897,27 @@ impl HookSequencer {
         Ok(())
     }
 
-    /// The attempt `s` as a job: the request for the delivery's hook as it is now, signed here, so the invocation that
-    /// sends it never holds the secret. `None` once the attempt is reported failed here: its delivery or hook is gone,
-    /// or the secret could not be unwrapped (never an unsigned attempt).
-    async fn job(&self, s: &Start) -> Result<Option<Job>> {
+    /// One attempt: the request for the delivery's hook as it is now, POSTed with the 10 s deadline, then reported.
+    /// Then, while the sequencer hands this queue its next attempt (`Sequencer::next_in_queue`), runs that one too in
+    /// the same call: a queue busy with one event after another no longer waits a whole `start` round between its
+    /// attempts, which held healthy first attempts to a p99 of 6.8 s in BF-57's run 2.
+    /// A call chains for at most `CHAIN_FOR_MS`, so the alarm invocation that started it never holds it for long; a
+    /// call cut short leaves its attempt to be re-sent under its GUID after `RESEND_AFTER_MS`.
+    async fn attempt(&self, first: Start) -> Result<()> {
+        let t0 = now_ms();
+        let mut next = Some(first);
+        while let Some(s) = next.take() {
+            self.attempt_one(&s).await?;
+            if now_ms() >= t0 + CHAIN_FOR_MS {
+                break;
+            }
+            next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&s, Timestamp(now_ms()));
+        }
+        self.kick();
+        Ok(())
+    }
+
+    async fn attempt_one(&self, s: &Start) -> Result<()> {
         self.ensure_body(&s.guid)?;
         let built = {
             let g = self.seq.borrow();
@@ -901,73 +927,39 @@ impl HookSequencer {
                 _ => None,
             }
         };
-        let failed = match built {
-            None => "the delivery or its hook is gone".to_owned(),
+        let started = now_ms();
+        let (status, timed_out, response) = match built {
+            None => (None, false, Some("the delivery or its hook is gone".to_owned())),
             Some((d, t)) => match self.secret(&t).await {
-                Err(e) => format!("the hook secret could not be unwrapped: {e}"),
+                Err(e) => (None, false, Some(format!("the hook secret could not be unwrapped: {e}"))),
                 Ok(secret) => {
                     let target = ("repository", d.repo.map_or(0, |r| r.0.0));
                     let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
-                    return Ok(Some(Job {
-                        owner: self.owner(),
-                        store: SiteEnv::read(&self.env)?.id,
-                        attempt: s.attempt,
-                        guid: s.guid,
-                        hook: s.hook,
-                        redelivery: s.redelivery,
+                    let lane = Lane {
                         url: r.url,
                         headers: r.headers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
                         body: r.body,
-                    }));
+                    };
+                    lane_post(&self.env, s.hook, &lane).await
                 }
             },
         };
-        self.seq.borrow_mut().as_mut().expect("loaded").report(
-            s.attempt,
-            Timestamp(now_ms()),
-            None,
-            false,
-            Some(&failed),
-        );
-        self.save_soon();
-        Ok(None)
-    }
-
-    /// One attempt's report from the invocation that sent it. While that invocation may go on (`more`), answers the
-    /// queue's next attempt for it to send at once (`Sequencer::next_in_queue`), so a queue busy with one event after
-    /// another does not wait a whole `start` round between its attempts, which held healthy first attempts to a p99 of
-    /// 6.8 s in BF-57's run 2. Other queues' attempts start from the alarm, never from here: an object's calls are
-    /// charged to the newest request it received, so a call made from a report would run one hop deeper each time
-    /// (`tests/m3/results/m3-wp5.md`, "Where the depth comes from"). The answer is a response, not a call.
-    async fn report(&self, r: Report) -> Result<Option<Job>> {
-        let now = Timestamp(now_ms());
-        let prev = Start { guid: r.guid, hook: r.hook, attempt: r.attempt, redelivery: r.redelivery };
-        let mut next = {
+        {
             let mut g = self.seq.borrow_mut();
             let seq = g.as_mut().expect("loaded");
-            seq.report(r.attempt, now, r.status, r.timed_out, r.response.as_deref());
-            if r.more { seq.next_in_queue(&prev, now) } else { None }
-        };
+            seq.report(s.attempt, Timestamp(now_ms()), status, timed_out, response.as_deref());
+        }
         console_log!(
             "hookseq {} {} hook {} attempt {} {:?} {}ms",
             self.owner().0.0,
-            r.guid,
-            r.hook.0.0,
-            r.attempt,
-            r.status,
-            r.took_ms
+            s.guid,
+            s.hook.0.0,
+            s.attempt,
+            status,
+            now_ms() - started
         );
         self.save_soon();
-        let mut job = None;
-        while let Some(n) = next.take() {
-            job = self.job(&n).await?;
-            if job.is_some() {
-                break;
-            }
-            next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&n, Timestamp(now_ms()));
-        }
-        self.kick();
-        Ok(job)
+        Ok(())
     }
 
     /// Writes what changed within `REPORT_SAVE_MS`, in one transaction with every other report of the window.
@@ -1097,7 +1089,7 @@ async fn unwrap(env: &Env, w: &Wrapped) -> std::result::Result<HookSecret, Strin
 }
 
 /// POSTs one attempt under `ATTEMPT_DEADLINE_MS`: the status, whether it timed out, and the response body's start.
-async fn post(r: &Job) -> (Option<u16>, bool, Option<String>) {
+async fn post(r: &Lane) -> (Option<u16>, bool, Option<String>) {
     let headers = Headers::new();
     for (k, v) in &r.headers {
         let _ = headers.set(k, v);
@@ -1127,64 +1119,42 @@ async fn post(r: &Job) -> (Option<u16>, bool, Option<String>) {
     }
 }
 
-/// Where the store's alarm hands a job to a stateless invocation of this site script, over its own `SITE` binding.
-pub const ATTEMPT_PATH: &str = "/hookseq/attempt";
+/// A lane: an object of this class named `hooklane:<hook>` on the store's site, which keeps nothing and only sends
+/// the requests the store hands it (`/lane`) and answers each result. The POST runs outside the store object, whose
+/// own outgoing fetches waited behind its other work: with 49 busy queues a POST took 205 to 301 ms at p50 from inside
+/// one object, the same from a stateless invocation of the site script over its own `SITE` binding (which runs beside
+/// its caller), and 7 ms from a separate object [measured, probes `graft-m4-probe-sb5` and `-sb8`, 2026-11-13,
+/// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 13]. Calls go one way, store to lane, so no call cycle forms
+/// (`tests/m3/results/m3-wp5.md`, "Where the depth comes from"). One lane per hook: it carries at most that hook's two
+/// queues' attempts at once.
+const LANE_PREFIX: &str = "hooklane:";
 
-async fn dispatch(env: &Env, job: &Job) -> std::result::Result<(), String> {
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(job)[..]).into()));
-    let req = Request::new_with_init(&format!("https://site{ATTEMPT_PATH}"), &init).map_err(|e| e.to_string())?;
-    let r = env.service("SITE").map_err(|e| e.to_string())?.fetch_request(req).await.map_err(|e| e.to_string())?;
-    match r.status_code() {
-        202 => Ok(()),
-        s => Err(format!("the attempt invocation answered {s}")),
-    }
+/// One attempt's request, signed by the store, so a lane never holds the hook's secret.
+#[derive(Serialize, Deserialize)]
+struct Lane {
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
 }
 
-/// The site script's fetch handler for `dispatch`: a delivery Worker (DESIGN, Shape, `HookSequencer`). It answers 202
-/// at once and, under `wait_until`, POSTs the job, reports it to the owner's store, and sends whatever next job the
-/// report answers, for at most `CHAIN_FOR_MS`. It keeps nothing: a job it loses is re-sent by the store under its GUID
-/// after `RESEND_AFTER_MS`. Attempts here run outside the store object, whose own outgoing fetches and storage writes
-/// held each POST: with 49 queues busy, an attempt's cycle took 184 to 301 ms at p50 inside one object and 84 to 89
-/// ms through stateless invocations [measured, probes `graft-m4-probe-sb5` and `-sb7`, 2026-11-13,
-/// `tests/m4/results/m4-wp1-hosted.md`].
-pub async fn attempt_handled(mut req: Request, env: Env, ctx: &Context) -> Result<Response> {
-    let first: Job = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
-    ctx.wait_until(async move {
-        let t0 = now_ms();
-        let mut job = Some(first);
-        while let Some(j) = job.take() {
-            let started = now_ms();
-            let (status, timed_out, response) = post(&j).await;
-            let r = Report {
-                guid: j.guid,
-                hook: j.hook,
-                attempt: j.attempt,
-                redelivery: j.redelivery,
-                took_ms: now_ms() - started,
-                status,
-                timed_out,
-                response,
-                more: now_ms() < t0 + CHAIN_FOR_MS,
-            };
-            match send_report(&env, &j, &r).await {
-                Ok(next) => job = next,
-                // Unreported, the attempt is re-sent under its GUID after `RESEND_AFTER_MS`.
-                Err(e) => console_error!("hookseq report {}: {e}", j.attempt),
-            }
-        }
-    });
-    Response::empty().map(|r| r.with_status(202))
-}
-
-async fn send_report(env: &Env, job: &Job, r: &Report) -> std::result::Result<Option<Job>, String> {
-    let stub = stub(env, job.owner, job.store).map_err(|e| e.to_string())?;
-    let mut init = RequestInit::new();
-    init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(r)[..]).into()));
-    let req = Request::new_with_init("https://hookseq/report", &init).map_err(|e| e.to_string())?;
-    let mut res = stub.fetch_with_request(req).await.map_err(|e| e.to_string())?;
-    match res.status_code() {
-        200 => codec::from_bytes(&res.bytes().await.map_err(|e| e.to_string())?).map_err(|e| e.to_string()),
-        s => Err(format!("{s} {}", res.text().await.unwrap_or_default())),
+/// `post` through `hook`'s lane on this site. A lane that does not answer within the attempt deadline and a margin
+/// counts as a failed attempt.
+async fn lane_post(env: &Env, hook: HookId, r: &Lane) -> (Option<u16>, bool, Option<String>) {
+    let call = async {
+        let site = SiteEnv::read(env)?;
+        let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+        let stub = env
+            .durable_object(&format!("HOOKSEQ_{}", site.id.0))?
+            .get_by_name_with_location_hint(&format!("{LANE_PREFIX}{}", hook.0.0), region.hint())?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(r)[..]).into()));
+        let mut res = stub.fetch_with_request(Request::new_with_init("https://hookseq/lane", &init)?).await?;
+        res.json::<(Option<u16>, bool, Option<String>)>().await
+    };
+    let deadline = std::time::Duration::from_millis(ATTEMPT_DEADLINE_MS + 5_000);
+    match crate::host::within(deadline, call).await {
+        Some(Ok(r)) => r,
+        Some(Err(e)) => (None, false, Some(format!("the delivery lane failed: {e}"))),
+        None => (None, true, None),
     }
 }
