@@ -2449,6 +2449,20 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
 
+### F67 rules 12 and 13: an emptied read-index batch leaves flight, and no hand-off onto a link that loses answers, 2026-11-13
+
+Branch `f67-r12` (`tests/m0/results/f67.md`, "Rules 12 and 13").
+
+**Decision.** (12) A follower drops a read-index batch from flight once every read in it failed past CAMPAIGN_DEADLINE, so the next batch goes out (`check_remote`). (13) A `/transfer` or drain hand-off refuses a target whose link from the leader is lossy while another follower's is not, and a running one of those is abandoned once its target's link turns so. Lossy is the commit-error rule's measure (over `commit_errors`, at least `commit_fail_min` failed) over every commit-path call in the `STEP_DOWN` window, including the misses `call_counts` leaves out. `STEP_DOWN` keeps its own target choice and probes, and the move `home` its HOME_CALLS rule.
+
+**Why.** m0-carried-8 found main `a7d28e5` failing `a_read_only_group_elects_off_a_half_hung_leader` on seeds 21, 31, and 92 of 0 to 119: the emptied batch stayed in flight to the half-hung leader, later reads failed as queued, which forgets no leader, and no follower campaigned for the minute [measured, simulator]. Rule 12 alone pushed live seeds 10,273 (31.8 s), 11,401 (30.0 s), and 12,761 (31.6 s) past 30 s: each is a hand-off onto a half-hung follower whose losses the leader had counted but under `commit_fail_min`, after which the target led with its answers lost or the leader served nothing for the transfer's LEASE. The hand-off already refuses a `Suspected` target (rule 10); a lossy link is the leader's own evidence of the same fault.
+
+**Beat.** Rule 12 without 13 (three seeds past 30 s). A clean-link rule (at most `commit_errors` failed, any calls): it refused drain targets on single noise misses, and left 10,576 and 10,768 past 30 s. Guarding the move `home` too: with crashes and partitions it refused 279 of 328 home moves the HOME_CALLS rule had cleared, which would delay B0-31's re-home. Refusing with no fallback when every link is lossy: that is usually the leader's own fault, which handing off cures.
+
+**Evidence.** `leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` and `a_leader_hands_off_to_no_follower_whose_answers_it_loses` (with its control); `liveness.rs` `a_read_only_group_elects_off_a_half_hung_leader` now also runs seeds 21, 31, and 92. Each fails without its rule. With no faults but transfers and drains, 500 seeds made 14,786 transfers and rule 13 refused none; with 2% drops it refused 256 of 14,919 [measured, simulator]. Live seeds 10,000 to 13,999: none over 30 s, worst 26.2 s (12,361). Long sweep: HARSH 16,027 ms, gray 26,832 ms, live (4,000 seeds) 26,237 ms; Porcupine Ok on all three histories.
+
+**Flip.** A live seed past 30 s in the 4,000-seed window, or a healthy group whose `/transfer` or drain hand-off rule 13 refuses for longer than one `STEP_DOWN` window.
+
 ### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
 
 Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").

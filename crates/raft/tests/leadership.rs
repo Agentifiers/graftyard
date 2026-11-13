@@ -1383,3 +1383,68 @@ fn a_hand_offs_suspect_bar_ends_when_another_leader_is_heard() {
         }
     }
 }
+
+/// A `/transfer` or drain hand-off goes only to a follower whose AppendEntries this leader saw answered, with at most
+/// `commit_errors` of its calls to it failed, in the window. A half-hung target answers some calls; handed leadership,
+/// it won the transfer vote and led with its answers lost, or the leader served nothing for the transfer's LEASE
+/// (F67 rule 13, live seeds 10273, 11401, and 12761 once rule 12 dropped emptied read-index batches). The control is
+/// the same target with every call answered.
+#[test]
+fn a_leader_hands_off_to_no_follower_whose_answers_it_loses() {
+    for half_hung in [true, false] {
+        let mut c = Cluster::new(79);
+        let mut id = 0;
+        c.elect(A);
+        c.sync(A);
+        // One AppendEntries to B in three loses its answer: under the commit-error rule's `commit_fail_min` in a
+        // quiet window, so no STEP_DOWN, but not a link to hand leadership over.
+        let mut n = 0;
+        drive(&mut c, 4_000, true, &mut id, |e| {
+            let to_b = e.to == B && matches!(e.msg, Message::Append(_));
+            n += u32::from(to_b);
+            half_hung && to_b && n % 3 == 0
+        });
+        assert_eq!(c.leader(), Some(A));
+        let r = c.on(A, |m, now| m.transfer(now, B));
+        if half_hung {
+            assert!(matches!(r, Err(TransferError::Target(t)) if t == B), "{r:?}");
+            // A's site is drained: it hands off to C, the follower it hears in full, not to B.
+            for s in SITES {
+                c.on(s, |m, now| m.set_drained(now, [A]));
+            }
+            drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+            assert_eq!(c.leader(), Some(C));
+        } else {
+            assert!(r.is_ok(), "{r:?}");
+        }
+    }
+}
+
+/// A leader whose read-index answers to B are lost, while its appends still arrive (a half-hung leader for reads).
+/// B's first unanswered batch is a failed call: B forgets A and fails the read naming no leader. A's next append
+/// teaches B the leader again, and a later read's unanswered batch must count as a failed call too. Before the fix the
+/// emptied batch stayed in flight and was resent forever, the later read failed as queued behind it, naming A, and B
+/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 12, liveness seeds 21,
+/// 31, and 92 on main a7d28e5).
+#[test]
+fn every_unanswered_read_index_batch_is_a_failed_call() {
+    let mut c = Cluster::new(76);
+    c.elect(A);
+    c.sync(A);
+    let lost = |e: &Envelope<KvEvent>| !(e.to == B && matches!(e.msg, Message::ReadIndexRes { .. }));
+    let failed_naming = |c: &Cluster, id| {
+        c.resolutions.iter().find_map(|(s, r)| match r {
+            Resolution::Read { id: i, result: Err(nl) } if *s == B && *i == id => Some(nl.leader),
+            _ => None,
+        })
+    };
+    for round in 0..2 {
+        // A write makes A append, which teaches B its leader again after the first round forgot it.
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(round + 1)), put("k", "v"))).expect("A leads");
+        c.run(1_000, 100, lost);
+        assert_eq!(c.m(B).leader(), Some(A), "round {round}: B follows A");
+        let id = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+        c.run(4_000, 100, lost);
+        assert_eq!(failed_naming(&c, id), Some(None), "round {round}: the read failed naming no leader");
+    }
+}

@@ -198,10 +198,12 @@ fn a_healthy_group_keeps_its_leader() {
 /// F67: a group read only by read-index through its followers (an owner's `Authz` under API load) whose leader's site
 /// goes half-hung: its AppendEntries arrive and every answer is lost. Followers shed the reads with no `suspect`
 /// report, and the leader's appends keep renewing their promises. Before check quorum and the read-index failure rule
-/// some seeds never elected for the whole minute (`tests/m0/results/f67.md`, paths 1 and 2).
+/// some seeds never elected for the whole minute (`tests/m0/results/f67.md`, paths 1 and 2). Seeds 21, 31, and 92 never
+/// elected on main a7d28e5: an emptied read-index batch stayed in flight to the half-hung leader, so later reads failed
+/// as queued, which forgets no leader, and no follower campaigned (F67 rule 12).
 #[test]
 fn a_read_only_group_elects_off_a_half_hung_leader() {
-    for seed in 0..SEEDS {
+    for seed in (0..SEEDS).chain([21, 31, 92]) {
         let mut sim = Sim::new(seed, Faults::WAN, 8, 3);
         sim.edge = Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: false };
         sim.run(1_500);

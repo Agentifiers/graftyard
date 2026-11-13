@@ -47,6 +47,9 @@ pub(super) struct LeaderHealth {
     heard: BTreeSet<SiteId>,
     /// Per follower, the send time of the last deadline miss counted.
     missed: BTreeMap<SiteId, Timestamp>,
+    /// Per follower, when each commit-path call to it ended in the window, and whether it was answered: every one,
+    /// unlike `calls`, which counts no failure before the follower first answered and one miss per stall.
+    links: VecDeque<(Timestamp, SiteId, bool)>,
     hold_until: Option<Timestamp>,
     probe: Option<LeaderProbe>,
     /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
@@ -155,6 +158,9 @@ impl<C: Command> Member<C> {
         if ok {
             h.heard.insert(to);
         }
+        if !h.counted.contains(&(to, round)) {
+            h.links.push_back((now, to, ok));
+        }
         if !h.counted.insert((to, round)) || (!ok && !h.heard.contains(&to)) {
             return;
         }
@@ -185,6 +191,9 @@ impl<C: Command> Member<C> {
         while h.calls.front().is_some_and(|c| c.0 < since) {
             h.calls.pop_front();
         }
+        while h.links.front().is_some_and(|c| c.0 < since) {
+            h.links.pop_front();
+        }
         while h.confirms.front().is_some_and(|c| c.0 < since) {
             h.confirms.pop_front();
         }
@@ -208,6 +217,31 @@ impl<C: Command> Member<C> {
 
     fn rate(n: u32, failed: u32) -> f32 {
         if n == 0 { 0.0 } else { failed as f32 / n as f32 }
+    }
+
+    /// This leader's calls to `s` fail in the window over `commit_errors`, with at least `commit_fail_min` failed, as
+    /// the commit-error rule counts them: one or two misses in a quiet window pass 5% on noise alone (F37).
+    pub(super) fn link_failing(&self, s: SiteId) -> bool {
+        self.call_counts().iter().find(|c| c.0 == s).is_some_and(|c| {
+            Self::rate(c.1, c.2) > STEP_DOWN.commit_errors && c.2 >= u32::from(STEP_DOWN.commit_fail_min)
+        })
+    }
+
+    /// This leader's calls to `s` in the window fail as the commit-error rule counts a failing link (over
+    /// `commit_errors`, at least `commit_fail_min`), but over every call: `call_counts` leaves out the misses before `s`
+    /// first answered and the repeats within one stall, which on a half-hung follower are most of them (F67 rule 13).
+    fn link_lossy(&self, s: SiteId) -> bool {
+        let Some(lead) = &self.lead else { return false };
+        let mine = lead.health.links.iter().filter(|c| c.1 == s);
+        let (n, failed) = mine.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
+        failed >= u32::from(STEP_DOWN.commit_fail_min) && Self::rate(n, failed) > STEP_DOWN.commit_errors
+    }
+
+    /// `s` is no target for a `/transfer` or drain hand-off: its link is lossy while another follower's is not. When
+    /// every link is lossy the fault is likely this leader's own, which handing off cures, so any target qualifies
+    /// (F67 rule 13).
+    pub(super) fn link_refused(&self, s: SiteId) -> bool {
+        self.link_lossy(s) && self.peers().into_iter().any(|p| p != s && !self.link_lossy(p))
     }
 
     pub(super) fn quarantined(&self, s: SiteId) -> bool {
@@ -248,14 +282,7 @@ impl<C: Command> Member<C> {
             return;
         }
         let Some(why) = self.tripped() else { return };
-        let counts = self.call_counts();
-        // A link fails when its calls fail over `commit_errors` with at least `commit_fail_min` failed, as the
-        // commit-error rule counts it: one or two misses in a quiet window pass 5% on noise alone (F37).
-        let failing = |s: SiteId| {
-            counts.iter().find(|c| c.0 == s).is_some_and(|c| {
-                Self::rate(c.1, c.2) > STEP_DOWN.commit_errors && c.2 >= u32::from(STEP_DOWN.commit_fail_min)
-            })
-        };
+        let failing = |s: SiteId| self.link_failing(s);
         let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
         // A follower that may lead, outside RESET_QUARANTINE; on a confirm trip also one whose link from this leader
         // is not failing.
@@ -308,7 +335,7 @@ impl<C: Command> Member<C> {
             self.hold(why);
             return;
         };
-        match self.start_transfer(to, true) {
+        match self.start_transfer(to, true, false) {
             Ok(_) => self.out.alarms.push(Alarm::StepDown { why, to: Some(to) }),
             Err(_) => self.hold(why),
         }
@@ -394,7 +421,7 @@ impl<C: Command> Member<C> {
         let calls = lead.health.calls.iter().filter(|c| c.1 == home);
         let (n, failed) = calls.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
         if n >= HOME_CALLS && failed == 0 && self.tripped().is_none() {
-            let _ = self.start_transfer(home, false);
+            let _ = self.start_transfer(home, false, false);
         }
     }
 

@@ -400,11 +400,11 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// AppendEntries it accepted [inference from Raft section 3.10]. A granted transfer vote also promises the target; else
 /// a report to the old leader let it win the other follower back [measured, simulator, `tests/m1/results/m1-wp3.md`,
 /// bug 1]. It lasts the campaign's 3 s, or a target that could not win held both voters leaderless (F67). A transfer is
-/// abandoned after one LEASE, or at once when the target answers `TransferRefused`: the leader sends `transfer: None`
-/// and serves `fresh` again after one full round. A leader transfers when its site is drained, when STEP_DOWN trips,
-/// when a follower on an older release refuses its uncommitted entry, and when its group's `home` has recovered (5
-/// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, the leader not tripped) and holds every
-/// committed entry, retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`].
+/// abandoned after one LEASE, at once on `TransferRefused`, or, for a `/transfer` or drain's, once its target loses
+/// answers while the other follower does not (F67 rule 13): it sends `transfer: None`, serves `fresh` after a round. It
+/// transfers when its site is drained, STEP_DOWN trips, an older release refuses its entry, or `home` recovered (5
+/// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, not tripped) and holds every committed entry,
+/// retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`].
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
