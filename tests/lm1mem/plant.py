@@ -25,6 +25,8 @@ EDGE_GATE = ['cargo', '-p', 'graftyard-edge', '--lib', 'a_shed_authz']
 FOLD = ['cargo', '-p', 'graftyard-fold', '--test', 'install', 'a_learner_behind']
 
 GO = 'containers/git/server/main.go'
+CLOCK = 'tests/am1/rest/clock.mjs'
+A1_SELF = ['node', 'tests/am1/rest/a1.mjs', '--selftest']
 EDGE_T = ['cargo', '-p', 'graftyard-edge', '--lib', 'tests::a_']
 SITE_SUM = ['cargo', '-p', 'graftyard-site', '--lib', 'a_summary_ranks']
 
@@ -223,6 +225,18 @@ MUTANTS = [
     ('round 8: misses are deduped forever, so a follower that keeps failing never trips', 'crates/raft/src/member/health.rs',
      'sent_at >= *l && sent_at < after(*l, CALL_DEADLINE)', 'sent_at >= *l',
      ['cargo', '-p', 'graftyard-raft', '--test', 'leadership', 'one_follower_stall']),
+    # L0-12's clock probe (tests/am1/rest/clock.mjs), gated by a1.mjs --selftest.
+    ('clock: a slow sample is widened, not rejected (rows-m19 read 3.2 s)', CLOCK,
+     'return xs.filter((c) => c.rtt <= best.get(c.site) + CLOCK_RTT_OVER);', 'return xs;', A1_SELF),
+    ('clock: a flat 200 ms cap, not one over each site\'s floor (rejects every apac sample)', CLOCK,
+     'c.rtt <= best.get(c.site) + CLOCK_RTT_OVER', 'c.rtt <= CLOCK_RTT_OVER', A1_SELF),
+    ('clock: the interval is the whole round trip, not half of it', CLOCK,
+     'const hi = (c) => c.offset + c.rtt / 2, lo = (c) => c.offset - c.rtt / 2;',
+     'const hi = (c) => c.offset + c.rtt, lo = (c) => c.offset - c.rtt;', A1_SELF),
+    ('clock: a member\'s own interval counts as spread', CLOCK,
+     'r.filter((b) => b.site !== a.site)', 'r.filter(() => true)', A1_SELF),
+    ('clock: a round with one member counts', CLOCK,
+     'new Set(r.map((c) => c.site)).size > 1', 'r.length > 0', A1_SELF),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

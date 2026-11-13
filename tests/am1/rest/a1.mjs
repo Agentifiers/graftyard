@@ -48,6 +48,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
+import { clockSpread } from "./clock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
@@ -294,8 +295,19 @@ if (opt.selftest) {
     const enc = (ms) => { let o = ""; for (let k = 0; k < 10; k++) { o = CROCKFORD[ms % 32] + o; ms = Math.floor(ms / 32); } return `${o}0000000000000000`; };
     const lease = ulidMs(held) === 1469918176385 && overlapMs(held, 60, enc(1469918176385 + 59_700)) === 300
       && overlapMs(held, 60, enc(1469918176385 + 60_001)) === -1;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease
+    // L0-12's clock spread (clock.mjs). Round 1 is rows-m19's idle shape, three members within 60 ms on round trips of
+    // 70, 180 and 240 ms; round 2's 3,000 ms round trip on site 0 is queueing and is rejected, not widened (widening
+    // it read 3.2 s). Site 2's floor is 480 ms in the apac rounds, so 680 is kept and 681 rejected: the cap is over each
+    // site's own floor. Round 5 is a real 900 ms skew: at least 850 and at most 950.
+    const cs = (round, site, offset, rtt) => ({ round, site, offset, rtt });
+    const idle = clockSpread([cs(1, 0, 8000, 70), cs(1, 1, 8030, 180), cs(1, 2, 8060, 240), cs(2, 0, 6500, 3000), cs(2, 1, 8040, 190)]);
+    const apac = clockSpread([cs(3, 0, 0, 60), cs(3, 2, 10, 480), cs(4, 0, 0, 60), cs(4, 2, 10, 680), cs(4, 2, 1500, 681)]);
+    const skew = clockSpread([cs(5, 0, 0, 50), cs(5, 1, 900, 50)]);
+    const clock = JSON.stringify(idle) === JSON.stringify({ upperMs: 240, lowerMs: 0, rounds: 1, kept: 4, rejected: 1 })
+      && JSON.stringify(apac) === JSON.stringify({ upperMs: 380, lowerMs: 0, rounds: 2, kept: 4, rejected: 1 })
+      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, clock }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !clock
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -667,21 +679,10 @@ if (plan.leases) for (let k = 0; k < PROBE_PAIRS; k++) {
     }
   })());
 }
-// Member clock offsets against the orb, from `/status` `now` at each response's midpoint: each sample's bound is its
-// offset plus half the round trip (L0-12's measured-offset line).
+// Member clock samples for L0-12: each member's `/status` `now` against the midpoint of its round trip, every 15 s.
 const clockSamples = [];
 let clockRound = 0;
-// L0-12's line is the members' offsets from each other, not from this orb (whose clock ran about 4 s behind
-// Cloudflare's in round 6): per round of three samples, the widest spread of offsets, each widened by half its RTT.
-const clockSpread = (xs) => {
-  const by = new Map();
-  for (const c of xs) by.set(c.round, [...(by.get(c.round) ?? []), c]);
-  const spreads = [...by.values()].filter((r) => r.length > 1).map((r) => {
-    const half = (c) => c.bound - Math.abs(c.offset);
-    return Math.max(...r.map((c) => c.offset + half(c))) - Math.min(...r.map((c) => c.offset - half(c)));
-  });
-  return spreads.length ? Math.round(Math.max(...spreads)) : null;
-};
+// L0-12's clock line: `clockSpread` in clock.mjs.
 if (plan.leases) jobs.push((async () => {
   await sleep(Math.max(0, t0 - Date.now()));
   while (Date.now() < end) {
@@ -691,7 +692,7 @@ if (plan.leases) jobs.push((async () => {
       try {
         const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
         const e = Date.now();
-        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, bound: Math.abs(v.now - (s + e) / 2) + (e - s) / 2 });
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s });
       } catch { /* a member mid-kill */ }
     }));
     await sleep(15_000);
@@ -815,11 +816,11 @@ const v = {
       maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),
       asksP50: pct(overlaps.map(([, n]) => n), 0.5) },
     // A grant is decided on its leader's own `at`, so the stamps alone never show two leaders' clock skew: the bound
-    // on a real overlap adds the widest spread of member clocks seen (each offset widened by half its round trip).
-    overlapBoundMs: overlaps.length && clockSamples.length ? Math.round(Math.max(...overlaps.map(([o]) => o))
-      + Math.max(...clockSamples.map((c) => c.offset + (c.bound - Math.abs(c.offset)))) - Math.min(...clockSamples.map((c) => c.offset - (c.bound - Math.abs(c.offset))))) : null,
-    clock: { samples: clockSamples.length, memberSpreadMs: clockSpread(clockSamples), maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null,
-      maxBoundMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => c.bound))) : null },
+    // on a real overlap adds the members' clock spread (clock.mjs's upper bound).
+    overlapBoundMs: overlaps.length && clockSpread(clockSamples).upperMs != null
+      ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
+    clock: { samples: clockSamples.length, ...clockSpread(clockSamples),
+      maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
     pollAnswers: codes["read:mergeable"] ?? {}, restPollAnswers: codes["read:mergeableRest"] ?? {},

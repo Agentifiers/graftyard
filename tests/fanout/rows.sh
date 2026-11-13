@@ -26,7 +26,11 @@ for row in $ROWS; do
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
   rid=$(id "$repo")
   [ -n "$rid" ] || { echo "$row: no repo" >> "$ST"; continue; }
-  [ "$row" = b0-31 ] && node tests/am1/runs/transfer.mjs "repo:$rid" 2 "$repo" >> "$ST" 2>&1
+  # B0-31: the group homed on apac (its config's `home`), so the hand-off back to `home` keeps the leader there.
+  if [ "$row" = b0-31 ]; then
+    node tests/am1/runs/transfer.mjs "repo:$rid" 2 "$repo" >> "$ST" 2>&1
+    tail -1 "$ST" | grep -q "^rehomed on 2" || { echo "$(date -u +%FT%TZ) b0-31: not rehomed on apac, row skipped" >> "$ST"; continue; }
+  fi
   # Learners for reads (design/DESIGN.md, "Follower read"), before k.mjs, whose commit tells them the leader.
   [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
   # B0-34 leaves k to `fanout` itself (in band, from NetworkLoad); the others start at K.
@@ -44,6 +48,17 @@ for row in $ROWS; do
   bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
   node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1
   echo "$(date -u +%FT%TZ) $row $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-$row-$repo.log)" >> "$ST"
+  # L0-12's other parts on the same repository: the 30-minute stall with every member call blackholed, then the idle
+  # 60 s lease and the overlapping Exclusive acquire 10 minutes later (stall.mjs), then 100 conflicting pushes and 100
+  # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012).
+  if [ "$row" = l0-12 ]; then
+    STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
+      > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
+    echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
+    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 7200 node tests/am1/hosted/rows.mjs l012 100 \
+      > tests/am1/raw/runs/l012-refusals-$repo.log 2>&1
+    echo "$(date -u +%FT%TZ) l0-12 refusals exit $?" >> "$ST"
+  fi
   # A durable_object shard container never sleeps on its own: the row's own shards are torn down after it.
   [ -n "${TEARDOWN:-}" ] && python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
 done

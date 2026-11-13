@@ -13,6 +13,7 @@
 // Rows go to tests/am1/raw/stall.jsonl.
 //   node tests/am1/hosted/stall.mjs [minutes=30] [n=20] [change]
 import { api, bedGet, ghs, log, logFrom, member, row, sleep, state, statuses, tokens } from "./lib.mjs";
+import { clockSpread } from "../rest/clock.mjs";
 
 const STALL = Number(process.argv[2] ?? 30);
 const N = Number(process.argv[3] ?? 20);
@@ -25,16 +26,23 @@ const CHAIN = `repo:${process.env.STALL_REPO_ID ?? state.repo}`;
 const tag = Date.now().toString(36);
 const step = (name, v) => { row(OUT, { step: name, at: Date.now(), ...v }); log(`${name} ${JSON.stringify(v).slice(0, 400)}`); };
 
+// Member clock samples, three rounds, as a1.mjs takes them: the spread between members by `clockSpread`, which rejects
+// a sample whose round trip is over 200 ms above its site's fastest rather than widening it.
+let clockRound = 0;
 async function offsets() {
   const out = [];
   for (let k = 0; k < 3; k++) {
-    const t0 = Date.now();
-    const st = await statuses(CHAIN);
-    const t1 = Date.now();
-    // The member's clock against the midpoint of the round trip; the half round trip bounds the error.
-    for (const s of st) if (s.now) out.push({ site: s.site, offsetMs: s.now - (t0 + t1) / 2, halfRttMs: (t1 - t0) / 2 });
+    clockRound++;
+    await Promise.all([0, 1, 2].map(async (site) => {
+      const s = Date.now();
+      try {
+        const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
+        const e = Date.now();
+        if (v?.now) out.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s });
+      } catch { /* a member that did not answer */ }
+    }));
   }
-  return out;
+  return { spread: clockSpread(out), samples: out.map((c) => [c.site, Math.round(c.offset), c.rtt]) };
 }
 
 let app = (await ghs({})).body.token;
