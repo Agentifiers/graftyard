@@ -179,6 +179,8 @@ while (!stop) {
     if (u >= SEED_BYTES) stop = true;
   }
   if (MODE !== "seed" && now - t0 >= SECONDS * 1000) stop = true;
+  // SEED_N: a seed also stops after this many pushes, to build a tail of a given pack count.
+  if (MODE === "seed" && k >= Number(process.env.SEED_N ?? Infinity)) stop = true;
   await sleep(100);
 }
 while (inflight) await sleep(500);
