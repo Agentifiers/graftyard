@@ -532,7 +532,9 @@ impl Family for Repo {
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
     /// `InitRepo` and `DeleteRepo`). 32.15 is `RepoEvent::Fanout`, which only a leader of this release records itself;
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
-    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it.
+    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it. 32.16 is
+    /// M4-WP1's hook commands, which the edge sends once `FormatsEnable` enabled it, and the `Webhooks` consumer's
+    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -551,6 +553,7 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
             git::issue_ops::call::REPO_FORMAT_CHECKS,
+            git::hooks::REPO_FORMAT_HOOKS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -692,6 +695,7 @@ impl Family for Repo {
         crate::load::on_alarm(host).await;
         crate::prsync::on_alarm(host).await;
         crate::merge_queue::on_alarm(host).await;
+        crate::hookseq::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
         crate::archive::on_alarm(host);
     }
@@ -969,6 +973,11 @@ impl Family for Repo {
             return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise(),
                 "created": git::tiers::created(&*fold.core).is_some(),
                 "deleted": git::tiers::deleted(&*fold.core).is_some() });
+        }
+        // The `Webhooks` consumer's committed cursor and the applied index, for BF-57's cursor lag.
+        if q.get("hookCursor").is_some() {
+            return json!({ "cursor": git::hooks::hook_cursor(&*fold.core),
+                "applied": graftyard_fold::meta(&*fold.core).applied.0 });
         }
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);

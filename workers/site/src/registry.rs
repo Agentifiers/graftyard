@@ -9,7 +9,6 @@ use worker::*;
 #[durable_object(fetch)]
 pub struct Registry {
     state: State,
-    #[cfg(feature = "test-faults")]
     env: Env,
 }
 
@@ -20,7 +19,6 @@ struct Row {
 
 impl DurableObject for Registry {
     fn new(state: State, env: Env) -> Self {
-        let _ = &env;
         state
             .storage()
             .sql()
@@ -31,14 +29,13 @@ impl DurableObject for Registry {
             .sql()
             .exec("CREATE TABLE IF NOT EXISTS claim (chain TEXT PRIMARY KEY, generation INTEGER NOT NULL)", None)
             .expect("claim schema");
-        Self {
-            state,
-            #[cfg(feature = "test-faults")]
-            env,
-        }
+        Self { state, env }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::error("site down", 503);
+        }
         let sql = self.state.storage().sql();
         let url = req.url()?;
         match (req.method(), url.path()) {

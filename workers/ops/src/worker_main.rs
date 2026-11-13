@@ -1,4 +1,4 @@
-//! The Worker: `POST /mint` and `POST /wrap` from the edge's `OPS` binding. Answers 503 when the signing key cannot be read, so the
+//! The Worker: `POST /mint` and `POST /wrap` from the edge's `OPS` binding, and `POST /unwrap` from the site scripts'. Answers 503 when the signing key cannot be read, so the
 //! edge mints nothing then.
 
 use std::cell::RefCell;
@@ -22,9 +22,24 @@ fn rand10() -> [u8; 10] {
     b
 }
 
-/// `POST /wrap` (M4-WP1): a hook secret the edge received, sealed under `SecretsWrapKey`'s current slot. The two
-/// slots are the Secrets Store bindings `SECRETS_WRAP_KEY_A` and `_B`, and `SECRETS_WRAP_KEY_CURRENT` names the one new
-/// values take [inference: the design names the secret, not its bindings]. Nothing here logs the body.
+/// The `SecretsWrapKey` slots: the Secrets Store bindings `SECRETS_WRAP_KEY_A` and `_B`, and `SECRETS_WRAP_KEY_CURRENT`
+/// naming the one new values take [inference: the design names the secret, not its bindings].
+async fn wrap_keys(env: &Env) -> std::result::Result<crate::WrapKeySource, String> {
+    let mut texts = Vec::new();
+    for name in ["SECRETS_WRAP_KEY_A", "SECRETS_WRAP_KEY_B"] {
+        if let Ok(s) = env.secret_store(name)
+            && let Some(t) = s.get().await.map_err(|e| e.to_string())?
+        {
+            texts.push(t);
+        }
+    }
+    let current = env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0);
+    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    crate::WrapKeySource::parse(current, &refs).map_err(|e| e.to_string())
+}
+
+/// `POST /wrap` (M4-WP1): a hook secret the edge received, sealed under `SecretsWrapKey`'s current slot. Nothing here
+/// logs the body.
 async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
     use graftyard_identity::sealed::HookSecrets as _;
     #[derive(serde::Deserialize)]
@@ -32,19 +47,9 @@ async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
         secret: String,
     }
     let Ok(b) = req.json::<Body>().await else { return Response::error("not a hook secret", 400) };
-    let mut texts = Vec::new();
-    for name in ["SECRETS_WRAP_KEY_A", "SECRETS_WRAP_KEY_B"] {
-        if let Ok(s) = env.secret_store(name)
-            && let Some(t) = s.get().await?
-        {
-            texts.push(t);
-        }
-    }
-    let current = env.var("SECRETS_WRAP_KEY_CURRENT").ok().and_then(|v| v.to_string().parse().ok()).unwrap_or(0);
-    let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-    let src = match crate::WrapKeySource::parse(current, &refs) {
+    let src = match wrap_keys(env).await {
         Ok(s) => s,
-        Err(e) => return Response::error(e.to_string(), 503),
+        Err(e) => return Response::error(e, 503),
     };
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&rand10().into_iter().chain(rand10()).take(12).collect::<Vec<_>>());
@@ -54,10 +59,32 @@ async fn wrap(mut req: Request, env: &Env) -> Result<Response> {
     }
 }
 
+/// `POST /unwrap` (M4-WP1), from a site's `HookSequencer` over its `OPS` binding: the hook secret a `Wrapped` seals,
+/// as hex, which the sequencer signs attempts with and keeps only in its isolate's memory (`design/DESIGN.md`, Shape:
+/// "Only `graft-ops` reads `SecretsWrapKey`: it ... unwraps hook secrets for `HookSequencer`"). The script has no
+/// public route, so only a binding reaches it. Nothing here logs the body or the answer.
+async fn unwrap(mut req: Request, env: &Env) -> Result<Response> {
+    use graftyard_identity::sealed::HookSecrets as _;
+    let Ok(w) = req.json::<graftyard_identity::sealed::Wrapped>().await else {
+        return Response::error("not a wrapped secret", 400);
+    };
+    let src = match wrap_keys(env).await {
+        Ok(s) => s,
+        Err(e) => return Response::error(e, 503),
+    };
+    match src.unwrap(&w) {
+        Ok(s) => Response::from_json(&json!({ "secret": s.0.iter().map(|b| format!("{b:02x}")).collect::<String>() })),
+        Err(e) => Response::error(e.to_string(), 422),
+    }
+}
+
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
     if req.method() == Method::Post && req.path() == "/wrap" {
         return wrap(req, &env).await;
+    }
+    if req.method() == Method::Post && req.path() == "/unwrap" {
+        return unwrap(req, &env).await;
     }
     if req.method() != Method::Post || req.path() != "/mint" {
         return Response::error("Not Found", 404);

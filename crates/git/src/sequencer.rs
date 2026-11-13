@@ -78,14 +78,15 @@ pub struct HookDelivery {
     pub done: bool,
 }
 
-/// What the consumer records: one delivery, before any attempt.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What the consumer records: one delivery, before any attempt. It crosses from the repository leader to the owner's
+/// `HookSequencer` in the raft codec.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewDelivery {
     pub guid: Guid,
     pub hook: HookId,
     pub entry: Option<(ChainId, Index, u16)>,
-    pub event: &'static str,
-    pub action: Option<&'static str>,
+    pub event: Box<str>,
+    pub action: Option<Box<str>>,
     pub repo: Option<RepoId>,
     pub body: Vec<u8>,
 }
@@ -134,21 +135,34 @@ pub enum RedeliverErr {
     Expired,
 }
 
-/// One owner's store. Everything is a row the object keeps in its SQLite.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One owner's store. The object keeps it in its SQLite as two parts: this struct's small fields (targets, round
+/// robin, failing hooks, `recorded`, the next attempt id), one row written whenever it changes, and one row per
+/// delivery, written when `take_dirty` names it. The queues and `pending` are rebuilt from the deliveries not yet done
+/// (`restore`), in chain order; an attempt running when the object reset is started again under its GUID, and a
+/// retry hook's backoff starts over [inference: at-least-once, as a delivery Worker lost mid-attempt].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Sequencer {
     pub owner: AccountId,
     targets: BTreeMap<HookId, HookRecord>,
+    #[serde(skip)]
     deliveries: BTreeMap<Guid, HookDelivery>,
+    #[serde(skip)]
     by_attempt: BTreeMap<u64, Guid>,
+    #[serde(skip)]
     queues: BTreeMap<QueueKey, Queue>,
     /// The queue `start` served last, so the next round starts after it.
     last: Option<QueueKey>,
     failing: BTreeSet<HookId>,
     recorded: BTreeMap<ChainId, Index>,
+    /// Each chain's hooks as its consumer last listed them, so a hook its chain deleted loses its target.
+    chain_hooks: BTreeMap<ChainId, BTreeSet<HookId>>,
     /// Unfinished deliveries per (chain, index), for `replay_from`.
+    #[serde(skip)]
     pending: BTreeMap<(ChainId, Index), u32>,
     next_attempt: u64,
+    /// Deliveries added, changed, or dropped since the last `take_dirty`.
+    #[serde(skip)]
+    dirty: BTreeSet<Guid>,
 }
 
 impl Sequencer {
@@ -164,9 +178,47 @@ impl Sequencer {
             last: None,
             failing: BTreeSet::new(),
             recorded: BTreeMap::new(),
+            chain_hooks: BTreeMap::new(),
             pending: BTreeMap::new(),
             next_attempt: now.0.saturating_mul(1_000).max(1),
+            dirty: BTreeSet::new(),
         }
+    }
+
+    /// A store read back from its rows: the small part and every delivery row. Each delivery not done goes back on
+    /// its queue in chain order, (index, slot); one with no chain entry (a ping) on its hook's own queue in the order
+    /// of its GUID. A manual redelivery not yet started when the object reset is lost.
+    pub fn restore(mut core: Sequencer, deliveries: impl IntoIterator<Item = HookDelivery>) -> Sequencer {
+        let mut undone: Vec<(QueueKey, (u64, u16), Guid)> = Vec::new();
+        for d in deliveries {
+            for a in &d.attempts {
+                core.by_attempt.insert(a.id, d.guid);
+            }
+            if !d.done {
+                let (chain, at) = match d.entry {
+                    Some((c, i, slot)) => {
+                        *core.pending.entry((c, i)).or_default() += 1;
+                        (Some(c), (i.0, slot))
+                    }
+                    None => (None, (0, 0)),
+                };
+                undone.push((QueueKey { chain, hook: d.hook }, at, d.guid));
+            }
+            core.deliveries.insert(d.guid, d);
+        }
+        undone.sort();
+        for (k, _, g) in undone {
+            core.queues.entry(k).or_default().items.push_back((g, false));
+        }
+        core.next_attempt = core.next_attempt.max(core.by_attempt.keys().next_back().map_or(0, |a| a + 1));
+        core.dirty.clear();
+        core
+    }
+
+    /// The deliveries to write since the last call: `Some` to upsert, `None` to delete.
+    pub fn take_dirty(&mut self) -> Vec<(Guid, Option<&HookDelivery>)> {
+        let dirty = std::mem::take(&mut self.dirty);
+        dirty.into_iter().map(|g| (g, self.deliveries.get(&g))).collect()
     }
 
     /// The hooks' current records, as the consumer read them with the batch. An attempt goes to the hook's current
@@ -175,6 +227,34 @@ impl Sequencer {
         for (id, r) in chain_hooks {
             self.targets.insert(*id, r.clone());
         }
+    }
+
+    /// `chain`'s hooks as its consumer read them with a batch: their current records, and a hook the chain listed
+    /// before and no longer does (deleted) loses its target, so its queued deliveries end with no attempt.
+    pub fn set_chain_targets(&mut self, chain: ChainId, hooks: &[(HookId, HookRecord)]) {
+        let now: BTreeSet<HookId> = hooks.iter().map(|(id, _)| *id).collect();
+        for gone in self.chain_hooks.get(&chain).into_iter().flatten().filter(|h| !now.contains(h)) {
+            self.targets.remove(gone);
+        }
+        self.set_targets(hooks);
+        self.chain_hooks.insert(chain, now);
+    }
+
+    /// The consumer moved `chain` to another store: its queued deliveries end here unattempted, and an attempt
+    /// running now is the last. What it recorded is forgotten, so a later batch fills it again from `replay_from`.
+    pub fn drop_chain(&mut self, chain: ChainId) {
+        let keys: Vec<QueueKey> = self.queues.keys().filter(|k| k.chain == Some(chain)).copied().collect();
+        for k in keys {
+            let q = self.queues.get_mut(&k).expect("listed");
+            let keep = q.running.and(q.items.pop_front());
+            let gone: Vec<Guid> = q.items.drain(..).map(|(g, _)| g).collect();
+            q.items.extend(keep);
+            for g in gone {
+                self.finish(g);
+            }
+        }
+        self.recorded.remove(&chain);
+        self.chain_hooks.remove(&chain);
     }
 
     pub fn forget_hook(&mut self, id: HookId) {
@@ -203,14 +283,15 @@ impl Sequencer {
         if let Some((c, i, _)) = r.entry {
             *self.pending.entry((c, i)).or_default() += 1;
         }
+        self.dirty.insert(r.guid);
         self.deliveries.insert(
             r.guid,
             HookDelivery {
                 guid: r.guid,
                 hook: r.hook,
                 entry: r.entry,
-                event: r.event.into(),
-                action: r.action.map(Into::into),
+                event: r.event,
+                action: r.action,
                 repo: r.repo,
                 body: r.body.into(),
                 attempts: SmallVec::new(),
@@ -319,6 +400,7 @@ impl Sequencer {
             return;
         }
         d.done = true;
+        self.dirty.insert(guid);
         if let Some((c, i, _)) = d.entry
             && let Some(n) = self.pending.get_mut(&(c, i))
         {
@@ -361,6 +443,7 @@ impl Sequencer {
             _ => Outcome::Failed,
         };
         let d = self.deliveries.get_mut(&guid).expect("held");
+        self.dirty.insert(guid);
         d.attempts.push(Attempt {
             id: attempt,
             at: started,
@@ -438,6 +521,7 @@ impl Sequencer {
         let gone: Vec<Guid> = self.deliveries.values().filter(|d| d.done && now >= d.expires).map(|d| d.guid).collect();
         for g in gone {
             self.deliveries.remove(&g);
+            self.dirty.insert(g);
         }
         let live = &self.deliveries;
         self.by_attempt.retain(|_, g| live.contains_key(g));
@@ -516,8 +600,8 @@ pub fn plan(
                 guid: crate::hooks::delivery_guid(generation, chain, e.index, slot, hook),
                 hook,
                 entry: Some((chain, e.index, slot)),
-                event: w.event,
-                action: w.action,
+                event: w.event.into(),
+                action: w.action.map(Into::into),
                 repo: Some(repo),
                 body: body.clone(),
             });
@@ -558,7 +642,7 @@ mod tests {
             guid: delivery_guid(1, CHAIN, Index(i), 0, HookId(DbId(hook))),
             hook: HookId(DbId(hook)),
             entry: Some((CHAIN, Index(i), 0)),
-            event: "push",
+            event: "push".into(),
             action: None,
             repo: Some(RepoId(DbId(7))),
             body: b"{}".to_vec(),
@@ -714,6 +798,80 @@ mod tests {
         let g: BTreeSet<Guid> = fresh.deliveries.keys().copied().collect();
         assert!(g.iter().all(|x| s.deliveries.contains_key(x)));
         assert_eq!(consumer_start(cur, Some(Index(4))), Index(4));
+    }
+
+    #[test]
+    fn a_store_written_through_take_dirty_reads_back_and_resends_what_ran() {
+        // The object writes the small part and the dirty delivery rows after each change; a reset reads them back.
+        // Queues come back in chain order, the attempt that was running starts again under its GUID with a new id,
+        // its old id's late report changes nothing, and pruned rows are deleted.
+        let mut s = seq(&[(1, false), (2, true)]);
+        let mut rows: BTreeMap<Guid, HookDelivery> = BTreeMap::new();
+        let write = |s: &mut Sequencer, rows: &mut BTreeMap<Guid, HookDelivery>| {
+            for (g, d) in s.take_dirty() {
+                match d {
+                    Some(d) => rows.insert(g, d.clone()),
+                    None => rows.remove(&g),
+                };
+            }
+            postcard::to_allocvec(&*s).unwrap()
+        };
+        // Recorded out of chain order within the batch, so a rebuild that kept insertion order would differ.
+        s.record(CHAIN, Index(3), vec![row(3, 1), row(1, 1), row(2, 1), row(1, 2)], Timestamp(0));
+        let a = s.start(Timestamp(0));
+        let first = a.iter().find(|x| x.hook == HookId(DbId(1))).unwrap().clone();
+        let running = a.iter().find(|x| x.hook == HookId(DbId(2))).unwrap().clone();
+        s.report(first.attempt, Timestamp(1), Some(200), false, None);
+        let core = write(&mut s, &mut rows);
+        let mut back = Sequencer::restore(postcard::from_bytes(&core).unwrap(), rows.values().cloned());
+        assert_eq!(back.replay_from(CHAIN), s.replay_from(CHAIN));
+        assert_eq!(back.recorded(CHAIN), Some(Index(3)));
+        back.report(running.attempt, Timestamp(2), Some(200), false, None);
+        let again = back.start(Timestamp(3));
+        let by_hook = |h: i64| again.iter().find(|x| x.hook == HookId(DbId(h))).unwrap().clone();
+        assert_eq!(by_hook(2).guid, running.guid, "the running attempt is sent again under its GUID");
+        assert!(by_hook(2).attempt > running.attempt);
+        // Hook 1's queue held 3, 1, 2 in the order recorded, and 3 ran first; the rebuilt queue is 1, then 2.
+        assert_eq!(s.delivery(&first.guid).unwrap().entry.unwrap().1, Index(3));
+        assert_eq!(back.delivery(&by_hook(1).guid).unwrap().entry.unwrap().1, Index(1));
+        back.report(by_hook(1).attempt, Timestamp(4), Some(200), false, None);
+        let next = back.start(Timestamp(5));
+        assert_eq!(back.delivery(&next[0].guid).unwrap().entry.unwrap().1, Index(2));
+        for x in back.start(Timestamp(5)).into_iter().chain(next).chain([by_hook(2)]) {
+            back.report(x.attempt, Timestamp(6), Some(200), false, None);
+        }
+        assert!(back.idle());
+        write(&mut back, &mut rows);
+        back.prune(Timestamp(10 + DELIVERY_KEEP_MS));
+        write(&mut back, &mut rows);
+        assert!(rows.is_empty(), "pruned rows are deleted");
+    }
+
+    #[test]
+    fn a_hook_its_chain_no_longer_lists_gets_no_more_attempts() {
+        let mut s = seq(&[]);
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(1)), rec(false)), (HookId(DbId(2)), rec(false))]);
+        s.record(CHAIN, Index(2), vec![row(1, 1), row(2, 1), row(1, 2)], Timestamp(0));
+        let a = s.start(Timestamp(0));
+        assert_eq!(a.len(), 2);
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(2)), rec(false))]);
+        for x in a {
+            s.report(x.attempt, Timestamp(1), Some(200), false, None);
+        }
+        assert!(s.start(Timestamp(2)).is_empty(), "hook 1 was deleted; its entry 2 is dropped");
+        assert_eq!(s.replay_from(CHAIN), Index(3));
+    }
+
+    #[test]
+    fn a_dropped_chain_stops_delivering_and_refills_from_replay_from() {
+        let mut s = seq(&[(1, false)]);
+        s.record(CHAIN, Index(3), vec![row(1, 1), row(2, 1), row(3, 1)], Timestamp(0));
+        let a = s.start(Timestamp(0)).remove(0);
+        s.drop_chain(CHAIN);
+        assert_eq!(s.recorded(CHAIN), None, "the consumer fills it again from replay_from");
+        s.report(a.attempt, Timestamp(1), Some(200), false, None);
+        assert!(s.start(Timestamp(2)).is_empty(), "entries 2 and 3 are not attempted here");
+        assert!(s.idle());
     }
 
     #[test]

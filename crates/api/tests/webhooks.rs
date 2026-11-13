@@ -324,7 +324,7 @@ fn the_request_is_signed_over_the_body_it_sends_and_the_rest_object_hides_the_se
             guid,
             hook: id,
             entry: Some((chain, Index(4), 0)),
-            event: "ping",
+            event: "ping".into(),
             action: None,
             repo: Some(REPO),
             body: body.clone(),
@@ -418,17 +418,23 @@ fn ping_deliveries_and_redelivery_through_the_sequencer() {
     let row = hook_row(r.core, HOOK).unwrap();
     let mut seq = Sequencer::new(AccountId(DbId(OWNER)), c.now);
     let now = c.now;
-    let ping = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["pings"], "", now, [7; 16]).unwrap();
+    let cx = graftyard_api::webhooks::RouteCtx {
+        repo: r.at.id,
+        url: graftyard_api::webhooks::deliveries_url(&r, HOOK),
+        ping: Some(serde_json::to_vec(&graftyard_api::webhooks::ping(&r, HOOK, &row)).unwrap()),
+    };
+    let r = &cx;
+    let ping = sequencer_route(&mut seq, r, HOOK, &row, "POST", &["pings"], "", now, [7; 16]).unwrap();
     assert_eq!(ping.status, 204);
     keep_rest("hook-ping", "POST", "/repos/{owner}/{repo}/hooks/{hook_id}/pings", &ping);
     // Three attempts: the ping fails, a second ping succeeds, then the first is redelivered.
     let a = seq.start(now).remove(0);
     seq.report(a.attempt, Timestamp(now.0 + 120), Some(500), false, Some("boom"));
-    sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["pings"], "", now, [8; 16]).unwrap();
+    sequencer_route(&mut seq, r, HOOK, &row, "POST", &["pings"], "", now, [8; 16]).unwrap();
     let b = seq.start(Timestamp(now.0 + 200)).remove(0);
     seq.report(b.attempt, Timestamp(now.0 + 260), Some(200), false, Some("ok"));
     let path = format!("{}", a.attempt);
-    let red = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["deliveries", &path, "attempts"], "", now, [0; 16]);
+    let red = sequencer_route(&mut seq, r, HOOK, &row, "POST", &["deliveries", &path, "attempts"], "", now, [0; 16]);
     let red = red.unwrap();
     assert_eq!(red.status, 202);
     keep_rest(
@@ -441,7 +447,7 @@ fn ping_deliveries_and_redelivery_through_the_sequencer() {
     assert!(again.redelivery && again.guid == a.guid, "a redelivery keeps its GUID");
     seq.report(again.attempt, Timestamp(now.0 + 330), Some(200), false, None);
     // The list, newest first, two to a page with a `Link` to the rest.
-    let list = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries"], "per_page=2", now, [0; 16]).unwrap();
+    let list = sequencer_route(&mut seq, r, HOOK, &row, "GET", &["deliveries"], "per_page=2", now, [0; 16]).unwrap();
     keep_rest("hook-deliveries", "GET", "/repos/{owner}/{repo}/hooks/{hook_id}/deliveries", &list);
     let items = list.value();
     let ids: Vec<u64> = items.as_array().unwrap().iter().map(|i| i["id"].as_u64().unwrap()).collect();
@@ -451,12 +457,12 @@ fn ping_deliveries_and_redelivery_through_the_sequencer() {
     let link = list.header("link").unwrap();
     let cursor = link.split("cursor=").nth(1).unwrap().split('>').next().unwrap();
     let q = format!("per_page=2&cursor={cursor}");
-    let rest = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries"], &q, now, [0; 16]).unwrap();
+    let rest = sequencer_route(&mut seq, r, HOOK, &row, "GET", &["deliveries"], &q, now, [0; 16]).unwrap();
     let ids: Vec<u64> = rest.value().as_array().unwrap().iter().map(|i| i["id"].as_u64().unwrap()).collect();
     assert_eq!(ids, [a.attempt]);
     assert!(rest.header("link").is_none());
     let one = format!("{}", a.attempt);
-    let get = sequencer_route(&mut seq, &r, HOOK, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap();
+    let get = sequencer_route(&mut seq, r, HOOK, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap();
     keep_rest("hook-delivery", "GET", "/repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}", &get);
     let v = get.value();
     assert_eq!((v["status_code"].as_u64(), v["status"].as_str()), (Some(500), Some("Invalid HTTP Response: 500")));
@@ -465,11 +471,11 @@ fn ping_deliveries_and_redelivery_through_the_sequencer() {
     // Another hook's delivery is not this hook's; past 3 days a redelivery is refused.
     let other = HookId(DbId(1));
     assert_eq!(
-        sequencer_route(&mut seq, &r, other, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap().status,
+        sequencer_route(&mut seq, r, other, &row, "GET", &["deliveries", &one], "", now, [0; 16]).unwrap().status,
         404
     );
     let late = Timestamp(now.0 + graftyard_git::hooks::DELIVERY_KEEP_MS + 1_000);
-    let exp = sequencer_route(&mut seq, &r, HOOK, &row, "POST", &["deliveries", &one, "attempts"], "", late, [0; 16]);
+    let exp = sequencer_route(&mut seq, r, HOOK, &row, "POST", &["deliveries", &one, "attempts"], "", late, [0; 16]);
     assert_eq!(exp.unwrap().status, 422);
 }
 
