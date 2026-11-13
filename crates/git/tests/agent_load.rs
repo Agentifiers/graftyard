@@ -295,6 +295,16 @@ fn an_unreachable_ledger_keeps_k() {
             assert_eq!(granted_k(k, want, g), k, "k {k} want {want} {g:?}");
         }
     }
+    // Two ledgers that disagree: the leader asks the richer one again for the k both granted, and it shrinks to it.
+    let (mut rich, mut poor) = (graftyard_git::PoolLedger::default(), graftyard_git::PoolLedger::default());
+    let t = Timestamp(0);
+    poor.ask(net(9), 9, 6, t, |_| 6);
+    let want = 7u8;
+    let g = [rich.ask(net(1), 1, want - 1, t, |_| 6).len() as u8, poor.ask(net(1), 1, want - 1, t, |_| 6).len() as u8];
+    let k = granted_k(1, want, [Some(g[0]), Some(g[1])]);
+    assert_eq!((g, k), ([6, 1], 2));
+    assert_eq!(rich.ask(net(1), 1, k - 1, t, |_| 6).len(), 1, "the trim gives back what the k does not use");
+    assert_eq!(rich.ask(net(2), 2, 6, t, |_| 6).len(), 6, "and another network gets it at once");
     // A cool network never asks a ledger; a held k renews, and a step asks for its pool shards.
     assert_eq!(pool_ask(1, None), None);
     assert_eq!(pool_ask(1, Some(2)), Some(1));

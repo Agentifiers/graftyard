@@ -129,6 +129,15 @@ impl Grant {
         if next != self.k {
             commit(h, next).await?;
         }
+        // A ledger that granted more than the k both granted gives the rest back, so no site holds pool shards the
+        // network does not serve from (hosted smoke r3: one site granted 6 and the other 0, and the 6 stayed leased).
+        let trim = json!({ "network": self.net.0.0, "owner": self.owner, "want": next - 1 });
+        let (mut a, mut b) = (a, b);
+        for (s, g) in [(self.warm[0], &mut a), (self.warm[1], &mut b)] {
+            if g.as_ref().is_some_and(|x| x.len() > usize::from(next - 1)) {
+                *g = pool_call(&h.env, &site.sites, s, "/pool/grant", &trim).await.or(g.take());
+            }
+        }
         Ok(json!({ "k": next, "stepped": next != self.k, "want": want,
                    "grants": [[self.warm[0].0, a], [self.warm[1].0, b]] }))
     }
