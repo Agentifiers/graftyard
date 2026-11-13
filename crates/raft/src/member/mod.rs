@@ -33,7 +33,7 @@ mod log;
 mod transfer;
 
 pub use install::LEARNER_READ_EVERY;
-pub use leader::APPEND_BYTES_MAX;
+pub use leader::{APPEND_BYTES_MAX, PIPELINE};
 pub use log::{FoldView, verify};
 
 /// Who this member is and what it was built from. The host reads `record` from the record's source itself (the
@@ -413,6 +413,8 @@ pub enum StepDownWhy {
     CommitErrors { calls: Vec<(SiteId, u32, u32)> },
     /// The window's p99 and how many of `of` confirms passed `confirm_p99_ms`.
     Confirm { p99_ms: u32, slow: u32, of: u32 },
+    /// The event loop is behind (LOOP_LAG): `clamped` confirms in LOOP_LAG's window read whole 100 ms ticks.
+    LoopLag { clamped: u32 },
 }
 
 /// A member-to-member call the host saw fail: an error, or no reply within CALL_DEADLINE. `Envelope::failure` builds

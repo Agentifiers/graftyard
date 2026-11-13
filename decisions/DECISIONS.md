@@ -1247,6 +1247,8 @@ M1-WP8 ran BM-1's git half on the test install with one site's member class fail
 
 **Flip.** BM-1's next rerun losing a baseline pass under a gray fault, or t5549 #2 failing for a cause the host controls.
 
+**Amended, 2026-11-13 (`m0-carried-8`): `APPEND_BYTES_MAX` is 100,000 bytes.** On B0-02's far link (leader enam, far voter apac), far calls answered at p99 768 to 845 ms for 75 to 100 KB and 810 to 869 ms for 100 to 125 KB, and missed `CALL_DEADLINE` from 150 KB; calls of up to 125 KB with 500 to 550 KB of earlier pipelined calls still out answered at p99 644 ms [measured, `m0-carried-6` to `-8` traces, `tests/m0/results/carried-8.md`]. At 1.5 MB, r330-6's far voter fell 7 to 14 entries behind, its catch-up calls of 319 to 717 KB missed one after another, and with a slow near follower `CommitErrors` moved leadership to the far site (1,635 ms). A call still carries one whole entry however large, so an entry of up to 100 KB plus 128 KiB of agent packs, or one command up to `ENTRY_MAX`, still replicates (`a_lagging_follower_catches_up_in_calls_under_the_byte_cap`, entries of 400 KB). Pipelining to a voter now stops only on a lossy link (F67 rule 13's `link_lossy`, over every call in the window), not on one missed call, which had turned the pipeline off for the window and left the backlog to one call at a time (`a_voter_is_pipelined_unless_its_link_is_lossy`, `a_far_voter_behind_catches_up_in_calls_that_answer_in_time`). Flip: a far link whose calls of up to 100 KB miss `CALL_DEADLINE` at p99, or a follower that catches up slower in calls this small than the backlog grows.
+
 ### The hosted closing runs, 2026-11-02
 
 BF-14, BF-18, and BF-19 ran on the hosted test install, and BM-1's git half reran under a gray fault (`tests/m1/results/m1-wp8.md`, "Gate rows closed on the hosted install"; `tests/m1/results/m1-wp5.md` and `tests/m1/results/m1-wp4.md`, the 2026-11-02 sections). The lead made the decisions below under the operator's delegation of 2026-10-30.
@@ -2417,6 +2419,8 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Flip.** A run where the far follower makes the quorum and its held sends set commit p99.
 
+**Partly reversed, 2026-11-13 (`m0-carried-8`).** The flip was met for (b'), not for (b). In four `m0-carried-7` A/B failures the near follower went quiet for about 1 s and the far follower made the quorum. In 9 of 9 near calls of 400 ms or more, the far call for an earlier entry was still out when the late entry was appended (50 to 1,235 ms left), so the entry reached the far follower one call late, 50 to 984 ms after its append. None of the 9 was held behind an unconfirmed write, and the far follower answered promptly (its own time p50 10 to 26 ms). See "AppendEntries are pipelined to a voter". (b) stays dropped.
+
 #### An entry stops at `ENTRY_SOFT` bytes past its first command
 
 **Decision.** The leader fills an `Events` entry only while it stays within `ENTRY_SOFT` (60,000 encoded bytes) past its first command; `ENTRY_MAX` (1.5 MB) still bounds one command alone, and admission's capacity counts entries of `ENTRY_SOFT`. This reverses "Entry batching gets no command or byte cap" (`m0-carried-2`).
@@ -2431,7 +2435,9 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Measured, 2026-11-13 (`m0-carried-7`).** The cap removes big-entry heavy turns: a 20 s smoke at 330 offered ran 85 commands per entry uncapped (CPU p999 98 ms, 11 `/commit` turns of 80 ms or more, commit p99 1,000 ms) against 42 capped (14 ms, 0, 276 ms). It does not pass B0-02: over two same-window A/Bs, 60 KB passed 4 of 8, 80 KB 7 of 8 and 5 of 8, and no cap 7 of 8. The failures were a lagging leader loop under the cap and near-follower calls held about 1 s while the leader was idle (`tests/m0/results/carried-7.md`). The cap stays, because it bounds the turn's CPU and stays under the body step; whether it is worth its rounds is the flip above, which the A/Bs neither met nor ruled out.
 
-**Amended, 2026-11-13 (`m0-entry-soft-packs`): the cap counts no Agent inline pack bytes.** The flip was met on journey 9. On `graft-m2b` (500 agents, standard-4, 8 learners, 180 s, one deploy), 60 KB put B0-29's commit p99 at 1,718 ms, against 702 ms with entries filled to `ENTRY_MAX`. Commands waited for an entry at p99 1,583 ms against 507 ms, while the round fell from 202 to 151 ms and the leader ran at about 9% CPU [measured, `tests/am1/results/lm1-memory.md`, round 9]. Agent packs of 10 to 70 KB go inline, so one push filled an entry, and admission's capacity shrank with the cap. Agent inline bytes already have their own per-entry bound, `AGENT_INLINE_ENTRY` (128 KiB), so the cap now counts an entry's other bytes, and the entry's full bytes stay within `ENTRY_MAX`. Human, MergeQueue and Bot packs still count, because no other rule bounds them. Admission's capacity estimate uses the same bytes. B0-02 has no packs, so its entries are unchanged. In the simulator on journey 9's mix, commit p99 was 365 ms capped against 245 ms at `ENTRY_MAX` before the change, and 245 ms against 245 ms after it (`entry_soft_does_not_slow_journey_9`, `crates/raft/tests/admission.rs`) [measured, simulator]. An entry can now reach about 60 KB plus 128 KiB, so it can cross the 64 KiB body step again. The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) passed with longest stretches of 16.0, 24.0 and 29.8 s, and Porcupine read Ok on all three histories, 6,000 segments each; plants 9 of 9 (`tests/m0carried/plant.py`). Pending: the hosted A/B on journey 9 decides this amendment, LM-1's m21 rows capped against `ENTRY_MAX` on this code.
+**Amended, 2026-11-13 (`m0-entry-soft-packs`): the cap counts no Agent inline pack bytes.** The flip was met on journey 9. On `graft-m2b` (500 agents, standard-4, 8 learners, 180 s, one deploy), 60 KB put B0-29's commit p99 at 1,718 ms, against 702 ms with entries filled to `ENTRY_MAX`. Commands waited for an entry at p99 1,583 ms against 507 ms, while the round fell from 202 to 151 ms and the leader ran at about 9% CPU [measured, `tests/am1/results/lm1-memory.md`, round 9]. Agent packs of 10 to 70 KB go inline, so one push filled an entry, and admission's capacity shrank with the cap. Agent inline bytes already have their own per-entry bound, `AGENT_INLINE_ENTRY` (128 KiB), so the cap now counts an entry's other bytes, and the entry's full bytes stay within `ENTRY_MAX`. Human, MergeQueue and Bot packs still count, because no other rule bounds them. Admission's capacity estimate uses the same bytes. B0-02 has no packs, so its entries are unchanged. In the simulator on journey 9's mix, commit p99 was 365 ms capped against 245 ms at `ENTRY_MAX` before the change, and 245 ms against 245 ms after it (`entry_soft_does_not_slow_journey_9`, `crates/raft/tests/admission.rs`) [measured, simulator]. An entry can now reach about 60 KB plus 128 KiB, so it can cross the 64 KiB body step again. The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) passed with longest stretches of 16.0, 24.0 and 29.8 s, and Porcupine read Ok on all three histories, 6,000 segments each; plants 9 of 9 (`tests/m0carried/plant.py`). Settled by the hosted A/B on journey 9 (LM-1, `graft-m2b` site day m21, tree `74f0e1a` = main `a7d28e5`, standard-4, 500 agents, 180 s, one deploy): commit p50/p99 381/717 ms capped as shipped against 394/761 ms at `ENTRY_MAX` (`/stats?entry=max`), queue p99 499 against 508 ms, round p99 297 against 331 ms, leader held at term 2 in both [measured, `tests/am1/results/lm1-memory.md`, round 10]. The amended cap is no worse than uncapped, so the flip line is not met. Both arms miss B0-29's 600 ms line, which LM-1 owns. Contradicted on another install: narrow-reads-3 on `graft-m3e` (B0-29, 500 agents, main `84d29c2`) measured commit p99 2,902 and 2,893 ms at 60 KB, queue p99 2.7 s, against 949 ms with `ENTRY_MAX` on all voters, queue p99 580 ms (`tests/nr3/rows/` on branch `narrow-reads-3`) [measured]. The two A/Bs disagree; LM-1's journey 9 A/B on `m0-carried-8`'s 100 KB cap decides.
+
+**Amended, 2026-11-13 (`m0-carried-8`): `ENTRY_SOFT` is 100,000 bytes.** The flip was met at 330 offered: on main `84d29c2` with the pipeline, one 60 KB entry a round held B0-02's group to 322 to 331 commands/s at a near round p50 of 169 to 174 ms, and r330-4 (1,495 ms) and r330-1 (646 ms) queued past the line; over 32 runs on that code, every run at a utilization of 0.91 or more reached 583 ms or more [measured, `tests/m0/results/carried-8.md`]. Entries of 90 to 110 KB carried about 92 commands in a near round of p50 234 ms, 393 commands/s, a utilization of 0.78 at 308 committed. A cut takes the whole queue up to the bound, so a bound that rises only once more than one entry is queued is the same rule as a flat one; at light load an entry still carries one round's arrivals (B0-02 at 300 committed: 33 to 50 commands). Agent inline packs still do not count. This crosses the 64 KiB body step that set 60 KB, and confirm p99 at 80 to 110 KB was 168 ms against 95 to 132 ms below: B0-02's gate on this code reports CPU p999, `/commit` turns of 80 ms or more and confirm p99 by entry size per run, and heavy turns fail it on their cause (operator). B0-02's gate on this tree passed 16 of 16 (commit p99 249 to 579 ms); heavy `/commit` turns were 28 over 16 runs against 24 at 60 KB, CPU p999 23 to 49 ms, and confirm p99 108 ms at 80 to 100 KB and 131 ms at 100 to 130 KB [measured, `tests/m0/results/carried-8.md`]. Pending: LM-1's B0-29 commit A/B on journey 9 on this tree before merge, which must also settle narrow-reads-3's `graft-m3e` result (60 KB at 2.9 s against 949 ms uncapped).
 
 ### `narrow-reads-2`: API reads start with their identity and name reads at once, cached per isolate for `READ_CACHE`, 2026-11-12
 
@@ -2972,3 +2978,71 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
 
 **Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
+
+### M4-WP2's hosted half, as built (2026-11-13)
+
+#### M4-WP2's consumers run in band on the leader alarm
+
+**Decision.** `Notify` and `Search` run on each repository leader's alarm, and `Counts` on each `Identity` leader's, as `Webhooks` does (`workers/site/src/activity.rs`). Each reads its committed cursor, does one batch (at most 100 entries [guess]), and commits its cursor through its own member under a request id derived from the chain, the consumer, and the batch's end. A target that does not answer keeps the cursor, and the alarm comes back in 2 s. Nothing goes through Queues. Every consumer runs only where the site variable `GRAFTYARD_ACTIVITY` is `1`.
+
+**Why.** BF-5 bounds a star and a notice at 10 s. `PrSync`'s queue path delivered at p50 2.0 s and p90 5.1 s with outliers near 37 s, which is why its first attempt moved in band (`PrSync`'s first attempt runs in band, above). These consumers' work is a few Durable Object writes and no git cache merge, so the leader's isolate holds none of it for long. The cursor already gives at-least-once delivery, and each target is idempotent: `Inbox::apply` ignores an entry at or below `sources`, a document write replaces the document, and `CountsCmd::decide` keeps only newer `src`.
+
+**Beat.** A Queue message per batch, as SHARED's "Event fan-out" names: it adds the measured queue delay to every star and notice and buys nothing the cursor does not already give.
+
+**Evidence.** `tests/m4/results/m4-wp2.md`, "Hosted" [measured once BF-5 runs hosted]; the in-band precedent `tests/m2/results/m2-wp5.md`, "2026-11-05".
+
+**Flip.** A hosted run where the consumers' batches hold a leader's alarm long enough to slow its commits, measured, or a queue delivery bound under 2 s at p99.
+
+#### A jurisdiction domain with no site of its jurisdiction binds its shards on its regions
+
+**Decision.** `SearchShard::site` takes the domain's admitted sites as before. When the install has no site of an `Eu` or `Us` domain's jurisdiction at all, it binds that domain's shards on the sites of its regions (`weur` and `eeur` for `Eu`, `enam` and `wnam` for `Us`). The object is still created under the jurisdiction, through the namespace's `jurisdiction()` (`graftyard_lookup::Bindings::object`; `worker` 0.8 has none, so the JavaScript method is called).
+
+**Why.** The jurisdiction, not the binding's script, decides where a Durable Object runs and stores (`tests/m4/c15`: an `eu` object ran in WAW from a script deployed with no placement). `graftyard sites add` refuses once an install has a genesis, so `graft-m4a` can gain no `eu` site, and BF-68's pass line is about the documents' shards only. Where the org's repository chains sit is Milestone 5's EU sites, outside BF-68 (operator, 2026-11-13, relayed by the M4-WP2 lead).
+
+**Beat.** Deferring BF-68 to a new install with an `eu` site, which costs a site set and a genesis for a claim the shards alone carry.
+
+**Evidence.** `crates/api/tests/activity_gates.rs`, `eu_shards_bind_on_eu_regions_when_no_site_is_eu_and_names_round_trip`; hosted, each EU shard's `/stats` reports `jurisdiction: "eu"` and its colo (`tests/m4/results/m4-wp2.md`, "Hosted").
+
+**Flip.** A hosted EU shard that reports no `eu` jurisdiction or a colo outside the EU.
+
+#### A shard's generation is a map on every site's `Registry`, and a lost shard is rebuilt by the consumer that meets it
+
+**Decision.** The newest generation of each (domain, shard) lives in the `search_map` table of every site's `Registry` object `search_map`, and only moves forward. A `Search` write that finds its shard lost (`GRAFTYARD_SEARCH_LOST`, a site day's variable, or the operator's `/lose`) rebuilds the shard under the next generation from every repository of the domain and shard that the `MemberRegistry` rows list, read on each leader (`/activity {"docs": true}`). The new object answers 503 to queries until its `/built`, then the map moves, and the consumer's cursor, held meanwhile, resumes. The edge leaves a 503 or late shard out with `incomplete_results`.
+
+**Why.** DESIGN names a generation per rebuild but no place to keep it. The `Registry` objects already exist on every site, and a map read by every query must survive the loss of any one site.
+
+**Beat.** A chain of its own for the map, which a derived store does not need: a lost map row only makes the next rebuild reuse a generation's name, which the map's forward-only write refuses.
+
+**Evidence.** `workers/site/src/search.rs`, `workers/site/src/activity.rs`, `workers/site/src/registry.rs`.
+
+**Flip.** A hosted rebuild that misses a repository the registry rows list, or a query that reads a stale generation after `/built`.
+
+### `m0-carried-8`: a pipeline to each voter, and a loop-lag step-down, 2026-11-13
+
+#### AppendEntries are pipelined to a voter
+
+**Decision.** A leader keeps up to `PIPELINE` (4) AppendEntries calls out to one voter. A call to a voter whose earlier calls are still out carries only the entries after the last of them, and the follower stores it right behind them. Any failure, refusal, catch-up, install, or truncation clears the voter's pipe, and the next call starts again from `next`. Learners keep one call each. This reverses the (b') half of "The far follower's held sends get no host change".
+
+**Why.** With one call per voter, an entry appended while the far voter's previous call was running waited for that call to end. When the near voter went quiet for about 1 s, the far voter made the quorum, and commit waited one whole far call: 9 of 9 such calls in `m0-carried-7`'s four near-gap failures, 50 to 984 ms late. The far follower's own side was fast. Pipelining sends each entry at once; a model of those 9 calls puts 6 of them near 250 ms instead of 447 to 818 ms [inference, `tests/m0/results/carried-8.md`].
+
+**Beat.** Keeping one call per voter (operator, `m0-carried-7`), on the premise that the near follower makes the quorum, which these runs broke. An unbounded pipeline, which lets a stalled far follower collect every entry's call. Reordering a turn's sends before its writes (b), which moved none of the held sends.
+
+**Evidence.** `tests/m0/results/carried-8.md`, "Near-gap traces" [measured]. `a_far_voter_gets_each_entry_while_its_earlier_calls_are_out` and `a_voter_never_has_more_than_pipeline_calls_out` (`crates/raft/tests/scenarios.rs`) fail with no pipeline and with no bound. The long sweep counts pipelined calls and those delivered late or twice, and asserts both happen.
+
+**Flip.** A hosted A/B in which the pipeline does not shorten commit when the near follower is quiet, or a Raft history it breaks.
+
+#### A leader whose loop is behind steps down (`LOOP_LAG`)
+
+**Decision.** `STEP_DOWN` also trips when two of the leader's storage confirms within 2 s took 200 ms or more and an exact multiple of 100 ms (`LOOP_LAG`, `StepDownWhy::LoopLag`). It transfers as a confirm trip does: no probe, to a candidate outside RESET_QUARANTINE whose link is not failing.
+
+**Why.** While a Durable Object's event loop is behind, workerd clamps `Date.now()` to the overdue 100 ms tick's deadline, so a confirm that begins and ends late reads a whole number of ticks. The clamp hides the lag from the ticker and from any wall-clock measure, but not from that signature. Three B0-02 failures (r300-7, r330-8, ab07) were such a leader, with confirms of 300 to 1,000 ms that stayed under the confirm rule's six-over-500 ms. Over 82 one-minute B0-02 runs, two such confirms in 2 s matched 11 of 25 failing runs and 1 of 57 passing ones (`m0c6-ab04`, at 600 ms); three in 5 s gave the same false positive and 10 matches, four in 5 s none and 8 [measured].
+
+**Beat.** A peer-stamped lag (follower arrival time against the leader's call end), whose worst 5 s median reached 1,290 ms in a passing run. The clamp share of the trace, which matched fewer failing runs at the same false-positive rate. Four in 5 s, which matched none of the passing runs but 3 fewer failing ones.
+
+**Evidence.** `tests/m0/results/carried-8.md`, "LOOP_LAG" [measured]. `two_clamped_confirms_trip_loop_lag` (`crates/raft/tests/leadership.rs`); `leaders_leave_a_lagging_loop` (`crates/raft/tests/liveness.rs`), whose sick leader's confirms stay under `confirm_p99_ms`, moves 12 of 12 groups by `STEP_DOWN` in 1.4 to 3.3 s with it; without it 11 of 12 never moved in the fault's minute and one moved at 37 s. The simulator's `LoopLag` gray fault runs in the gray and live sweeps.
+
+**Flip.** A hosted leader that trips `LoopLag` with no lag in its trace, or a run where the transfer costs more than the lag it ends.
+
+#### The gate on the final tree, 2026-11-13
+
+**Measured, not a decision.** On main `84d29c2` (F67 rules 10 to 13) plus the pipeline and `LOOP_LAG`, B0-02's gate passed 7 of 8 at 300 and 5 of 8 at 330 (`tests/m0/results/carried-8.md`). The near-gap shape did not recur (no near call of 400 ms or more outside r330-6) and no leader was clamped, so neither rule above is reversed. Two misses meet the `ENTRY_SOFT` flip ("capped entries do not lower commit p99") at 330: one 60 KB entry per round at a round p50 of 169 to 174 ms holds the group to 322 to 331 commands/s. One miss is a far follower whose catch-up calls of 319 to 717 KB missed `CALL_DEADLINE`, so `failed_to` turned off its pipeline and every later call carried the backlog; with a slow near follower, `CommitErrors` moved leadership to the far site. The next step is the operator's (C20).

@@ -571,7 +571,7 @@ fn six_slow_confirms_trip_and_five_do_not() {
         c.elect(A);
         drive(&mut c, 2_000, true, &mut id, |_| false);
         for _ in 0..slow {
-            c.slow_confirm(A, 700);
+            c.slow_confirm(A, 750);
             c.deliver_all();
         }
         drive(&mut c, 3_000, true, &mut id, |_| false);
@@ -580,6 +580,35 @@ fn six_slow_confirms_trip_and_five_do_not() {
         if trips {
             assert!(matches!(sd[0].1, StepDownWhy::Confirm { slow: 6, .. }), "{sd:?}");
             assert!(!c.inbox.iter().any(|e| matches!(e.msg, Message::Probe { .. })));
+            assert_ne!(c.leader(), Some(A));
+        }
+    }
+}
+
+/// LOOP_LAG: two confirms within 2 s that read whole ticks of 200 ms or more move the leader, as a confirm trip does.
+/// One does not, nor do two that are not whole ticks, nor two whole ticks of 100 ms, nor two 3 s apart
+/// (`tests/m0/results/carried-8.md`).
+#[test]
+fn two_clamped_confirms_trip_loop_lag() {
+    let cases = [(300u64, 1, 0, false), (250, 2, 0, false), (100, 2, 0, false), (300, 2, 3_000, false)];
+    for (ms, n, gap, trips) in cases.into_iter().chain([(200, 2, 0, true), (700, 2, 0, true), (300, 2, 1_000, true)]) {
+        let mut c = Cluster::new(53);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 2_000, true, &mut id, |_| false);
+        for i in 0..n {
+            if i > 0 && gap > 0 {
+                drive(&mut c, gap, true, &mut id, |_| false);
+            }
+            c.slow_confirm(A, ms);
+            c.deliver_all();
+        }
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        let sd = step_downs(&c);
+        assert_eq!(!sd.is_empty(), trips, "{n} confirms of {ms} ms, {gap} ms apart: {sd:?}");
+        if trips {
+            assert!(matches!(sd[0].1, StepDownWhy::LoopLag { clamped: 2 }), "{sd:?}");
+            assert!(sd[0].2.is_some(), "held: {sd:?}");
             assert_ne!(c.leader(), Some(A));
         }
     }
@@ -607,7 +636,7 @@ fn a_confirm_trip_ignores_fewer_than_commit_fail_min_failures_to_a_target() {
             *n <= max
         });
         for _ in 0..6 {
-            c.slow_confirm(A, 700);
+            c.slow_confirm(A, 750);
             c.deliver_all();
         }
         drive(&mut c, 1_000, true, &mut id, |_| false);
@@ -733,7 +762,7 @@ fn a_stepped_down_member_is_not_a_target_so_healthy_sites_do_not_ping_pong() {
     c.elect(A);
     drive(&mut c, 3_000, true, &mut id, |_| false);
     for _ in 0..6 {
-        c.slow_confirm(A, 700);
+        c.slow_confirm(A, 750);
         c.deliver_all();
     }
     drive(&mut c, 3_000, true, &mut id, |_| false);
@@ -849,7 +878,7 @@ fn a_quarantined_home_gets_no_transfer() {
     c.elect(A);
     drive(&mut c, 2_000, true, &mut id, |_| false);
     for _ in 0..6 {
-        c.slow_confirm(A, 700);
+        c.slow_confirm(A, 750);
         c.deliver_all();
     }
     drive(&mut c, 30_000, true, &mut id, |_| false);
