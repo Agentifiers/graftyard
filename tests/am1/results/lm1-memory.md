@@ -1220,3 +1220,37 @@ edge `b9c0fd62`. Smokes of 180 s each, 8 learners (enam 4, weur 2, apac 2), k 4 
 
 Cost after both smokes: $31.99. Rows `rows-m19` started in the operator's order: B0-29, B0-32, B0-31, B0-33, B0-34,
 B0-35, L0-12.
+
+### Round 8f: rows m19 (standard-2 shards)
+
+Shard instance on every m19 row: **standard-2** (`SHARD_INSTANCE` unset). The operator approved standard-4 for gate
+rows on 2026-11-13 (journey 9's design size); the next site day sets it, and any B0-29 merge or push line that missed
+here reruns there.
+
+**B0-29** (131289, 500 agents, 600 s, 8 learners, k 4, 02:38:24 to 02:48:24Z) [measured]:
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Commit p99 at most 600 ms (fail over 1 s) | 796 ms (p50 444; queue p99 515, round 347, confirm 124) | miss, not a fail |
+| Merge p99 at most 2 s (fail: any queue merge waiting over 10 s) | merge:only p99 4.26 s; the merge loop's p99 20.0 s | miss |
+| Zero `Stale` on distinct refs | 0 agent `stale` in 2,500 agent pushes (2,499 ok, 1 client fetch failure); human pushes 7 `stale`, 19 `stale:race` on shared branches | pass |
+| Leader under 600 req/s, zero feed polls | 116.2 req/s, 0 feed polls | pass |
+| API read p99 at most 2 s, at least 99% served (fail over 5 s) | p99 3.60 s; 117,390 of 119,506 = 98.2% 200 (246 × 503, 1,870 capped by the driver) | miss, not a fail |
+| Leader held | term 2 throughout, 4 failed calls | pass |
+| Longest leaderless stretch with requests waiting | 0 s (no group changed leader; no `STEP_DOWN` on any site) | |
+
+Push p99: agent 12.2 s, human 10.5 s.
+
+**Commit tails follow the leader's CPU** [measured, Workers Logs, leader `repo:131289#1#f0` on site a, 10 s bins
+02:39:40 to 02:48:30Z, `tests/fanout/raw/tools/cpubin.py`]:
+
+- Pearson r = 0.83 between the leader's CPU per bin and the p90 of its `/commit` walls in that bin, and 0.84 against
+  the bin's worst `/commit`. Controlling for the bin's invocation count, the partial r is 0.82, so the cause is CPU
+  per bin, not request count (invocations against p90: r = 0.35).
+- The worst `/commit` bins (1.0 to 1.5 s) are the top-CPU bins: 02:44:40 (3.4 s of CPU in 10 s, 34% of one core,
+  `/commit` wall p90 949 ms, max 1,298), 02:46:20 (2.6 s, max 1,491), 02:48:00 (2.6 s, max 1,199). The largest single
+  invocation in those bins is 196 to 218 ms of CPU.
+- Leader CPU rises over the row, from 1.5 to 1.9 s per 10 s between the first and last 200 s, and commit p90 from 628
+  to 683 ms.
+- This matches m0-carried-6's finding that sends wait on every earlier unconfirmed write and the worst tails are when
+  the leader's event loop fell behind. Which invocations make the 200 ms turns is not yet traced.
