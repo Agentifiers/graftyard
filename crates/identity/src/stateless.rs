@@ -227,6 +227,11 @@ impl Unverified {
         self.claims.kid
     }
 
+    /// The claimed `jti`, before the signature is checked: only to start its revocation read early.
+    pub fn jti(&self) -> Jti {
+        self.claims.jti
+    }
+
     /// The claims once the signature verifies under `key` and the token is inside its window at `now`.
     pub fn verify(self, key: &Ed25519Public, now: Timestamp) -> Result<InstallationClaims, StatelessError> {
         let vk = VerifyingKey::from_bytes(&key.0).map_err(|_| StatelessError::Signature)?;

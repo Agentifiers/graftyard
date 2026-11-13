@@ -1,0 +1,7 @@
+{"check":"new repository resolves at once","repo":65564,"rest":200,"graphql":200,"data":true,"ok":true}
+{"check":"a non-member cannot read the private repository","status":200,"ok":false}
+{"check":"membership opens access at once","status":200,"ok":true}
+{"check":"removed membership closes within READ_CACHE","ms":8872,"bound":13000,"seen":"200,200,200,200,200,200,200,200,200,200,200,404","after":"404,404,404,404,404,404,404,404,404,404","ok":true}
+{"check":"revoked PAT: write at once, reads within READ_CACHE","before":200,"write":401,"ms":186,"seen":"401","ok":true}
+{"check":"revoked ghs_: reads within READ_CACHE","before":200,"delete":204,"ms":90,"seen":"401","ok":true}
+{"repos":[65564,65565],"failed":["a non-member cannot read the private repository"]}
