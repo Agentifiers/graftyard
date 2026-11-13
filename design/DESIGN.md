@@ -1077,7 +1077,10 @@ pub struct Promoted { pub from: Index, pub to: Index, pub pack: PackRef /* alway
 /// each member chain's entries name after its last `Promoted`, read a page at a time with the next read meanwhile, so it
 /// holds two pages. It saves its place per page with its disk id and loaded promotions, so a cut-off run resumes, never
 /// anew, and loads later promotions (B0-30, 9 to 11). Ingest uses `--fix-thin`; promotions all load first. A midx every
-/// 50 ingests keeps ingest flat: 2.05 GB rehydrated in 20 to 22 min, from 30 to 43 [measured, `hot-shards-2`].
+/// 50 ingests keeps ingest flat: 2.05 GB rehydrated in 20 to 22 min, from 30 to 43 [measured, `hot-shards-2`]. Inline
+/// packs go to the container a call per run of up to 4 MB, one `index-pack` of their concatenation, split in halves
+/// when two packs share an object: a 1.66 GB tail of 8,145 packs took 2.8 to 4.6 min, from 6.5 to 7.6 on `standard-4`
+/// [measured, `rehydrate-batch`].
 pub async fn rehydrate(shard: &GitCacheShard, network: NetworkId) -> Result<IngestCursor, GitError>;
 /// One follower writes each tier's snapshot: the Full follower at position `to / SNAPSHOT_EVERY` modulo the number of
 /// Full followers, in config order, and for `Solo` the member itself. It snapshots once SNAPSHOT_EVERY entries or

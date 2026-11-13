@@ -2588,6 +2588,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 
 **Flip.** A Workers runtime that lets a Durable Object run past its last request without `waitUntil` or an alarm, which would let the catch-up stay in its caller; or a hosted run where two pages of `ENTRIES_PAGE_BYTES` with a pack in flight still pass the isolate's 128 MB.
 
+### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
+
+**Decision.** A catch-up's and a rehydrate's inline packs go to the shard's container in one `POST /ingest-batch` per run of up to `INGEST_BATCH_BYTES` (4 MB, `crates/git/src/catchup.rs`), one answer per pack, `done` or `later`. The container concatenates the run's packs not already ingested into one pack and indexes it with one `index-pack --strict --fix-thin`. Each pack's objects are recorded under its own SHA-256 for `/promote`, found by their offsets in the joined pack. When the joined pack fails, the run is split in halves down to one pack, which is ingested as `/ingest` ingests it, so two packs that carry the same object (which `--strict` refuses in one pack) and a pack whose base is missing each end up on their own. A stored pack still streams alone from its bucket. A container whose image has no `/ingest-batch` (404) gets one `/ingest` a pack.
+
+**Why.** After the multi-pack-index, a 2.05 GB cold rehydrate still took 20 to 22 min hosted, its tail 66 to 72 ms a pack against about 10 ms of `index-pack` locally (`tests/am1/results/hot-shards-2.md`). The difference is one shard-object-to-container call per pack plus `index-pack`'s per-run setup. One `index-pack` per batch removes both for small packs: locally, on one CPU, 9,000 packs of 20 KB took 4.9 s in 4 MB batches, from 94.3 s one call a pack.
+
+**Beat.** A dedupe pass that rewrites a pack without its duplicate objects, which would need a pack parser in the container and changes the bytes a pack's SHA-256 names. One call carrying many packs but one `index-pack` each, which saves the round trip but not `index-pack`'s setup. Larger `/entries` pages, which raise the shard's held memory.
+
+**Evidence.** `tests/am1/results/rehydrate-batch.md`: `containers/git/server/batch_test.go`, `crates/git/tests/catchup.rs` (`a_rehydrate_ingests_runs_of_inline_packs_a_call_at_a_time`), the planted bugs in `tests/am1/hotshards/plant.py`, the local benchmark `tests/am1/hotshards/bench/batchserve.py`, and the hosted cold rehydrates on `graft-m3f`.
+
+**Flip.** A hosted run where the split path dominates (many batches that fail whole), or where one batch's body pushes the shard object past its memory.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
