@@ -1,0 +1,12 @@
+{
+  "name": "graftyard-bf38",
+  "private": true,
+  "description": "BF-38 under Playwright against a hosted edge (build/BUILD-PLAN.md, M4-WP5). Never shipped.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.0"
+  }
+}

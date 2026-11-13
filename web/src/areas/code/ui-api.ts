@@ -57,6 +57,9 @@ export type BranchSummary = {
   pull: { number: number; state: "open" | "draft" | "merged" | "closed" } | null;
 };
 
+// A directory's README, decoded (GET /repos/{owner}/{repo}/readme answers base64).
+export type Readme = { name: string; path: string; sha: string; size: number; text: string };
+
 export type TrafficPoint = { timestamp: string; count: number; uniques: number };
 export type ViewTraffic = { count: number; uniques: number; views: TrafficPoint[] };
 export type CloneTraffic = { count: number; uniques: number; clones: TrafficPoint[] };
@@ -86,6 +89,7 @@ export type UiPaths = {
   "/repos/{owner}/{repo}/blame/{ref}/{path}": {
     get: Get<Repo & { ref: string; path: string }, Blame>;
   } & Unused;
+  "/repos/{owner}/{repo}/readme": { get: Get<Repo, Readme, { ref?: string }> } & Unused;
   "/repos/{owner}/{repo}/branch-summaries": { get: Get<Repo, BranchSummary[]> } & Unused;
   "/repos/{owner}/{repo}/traffic/views": {
     get: Get<Repo, ViewTraffic, { per?: "day" | "week" }>;

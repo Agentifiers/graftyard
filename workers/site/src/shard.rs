@@ -76,6 +76,17 @@ fn pool_slots(net: NetworkId) -> Vec<u16> {
 /// Storage key of the site's `PoolLedger`, on the ledger object (`crate::fanout::ledger_name`).
 const LEDGER_KEY: &str = "pool_ledger";
 
+/// Arms the ledger object's alarm for its next heartbeat while it holds a lease. The object has one alarm, which the
+/// container's renewal (`ShardHost::on_alarm`) and catch-ups also set, so an earlier one is kept: every alarm runs the
+/// beat, and the beat re-arms after it.
+async fn arm_beat(s: &Storage, ledger: &graftyard_git::PoolLedger, now: Timestamp) -> Result<()> {
+    let Some(at) = ledger.beat_due(now) else { return Ok(()) };
+    if s.get_alarm().await.ok().flatten().is_none_or(|a| a > at.0 as i64) {
+        s.set_alarm(std::time::Duration::from_millis(at.0 - now.0)).await?;
+    }
+    Ok(())
+}
+
 /// A catch-up in the background, and the callers waiting for it to end.
 #[derive(Default)]
 struct Run {
@@ -91,6 +102,8 @@ const WARMING_ALARM_MS: u64 = 30_000;
 const ALARM_HOLDS: std::time::Duration = std::time::Duration::from_secs(600);
 /// Storage key: a catch-up is running or was cut off, with the record it reads the group through.
 const WARMING_KEY: &str = "warming";
+/// The container's read-only routes for the web app (`containers/git/server/ui.go`), forwarded as `/ui/<route>`.
+const UI_ROUTES: [&str; 7] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits"];
 
 /// The shard container's instance type when the site sets no `SHARD_INSTANCE`: the 50-developer tier's
 /// (`design/DESIGN.md`, Shape, `HOT_POOL`). A site day sets the tier's size, `standard-4` at 2,000 developers, which
@@ -371,6 +384,16 @@ fn budget_key(net: NetworkId) -> String {
 }
 
 impl GitShard {
+    /// Re-arms the pool ledger's heartbeat after another writer replaced the object's one alarm. Only the object
+    /// that holds a ledger has `LEDGER_KEY`.
+    async fn rearm_beat(&self) -> Result<()> {
+        let s = self.state.storage();
+        match s.get::<graftyard_git::PoolLedger>(LEDGER_KEY).await.ok().flatten() {
+            Some(l) => arm_beat(&s, &l, Timestamp(now_ms())).await,
+            None => Ok(()),
+        }
+    }
+
     /// The pool ledger's routes. Each reads the ledger, applies one call at the object's clock, and stores it before
     /// answering, so the object's input gate keeps two calls from interleaving.
     async fn pool(&self, req: &mut Request, path: &str, site: &SiteEnv) -> Result<Response> {
@@ -407,6 +430,7 @@ impl GitShard {
             _ => return Response::error("no such pool route", 404),
         };
         s.put(LEDGER_KEY, &ledger).await?;
+        arm_beat(&s, &ledger, now).await?;
         Response::from_json(&json!({ "slots": slots }))
     }
 
@@ -533,6 +557,8 @@ impl DurableObject for GitShard {
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
             self.state.storage().delete_alarm().await?;
+            // A pool ledger outlives its shard's container: its heartbeat goes on while it holds a lease.
+            self.rearm_beat().await?;
             return Response::from_json(&json!({ "torn_down": true }));
         }
         let repo: i64 = q(&url, "repo").and_then(|v| v.parse().ok()).ok_or("repo")?;
@@ -591,7 +617,11 @@ impl DurableObject for GitShard {
         let running = self.state.container().is_some_and(|c| c.running());
         match graftyard_git::serve(caller, running) {
             Serve::Skip => return Response::from_json(&json!({ "skipped": "stopped" })),
-            Serve::Run { touch: true } => host.touch(Timestamp(now_ms())).await.map_err(se)?,
+            Serve::Run { touch: true } => {
+                host.touch(Timestamp(now_ms())).await.map_err(se)?;
+                // `touch` sets the renewal alarm an hour out, past a pool ledger's next heartbeat.
+                self.rearm_beat().await?;
+            }
             Serve::Run { touch: false } => {}
         }
         // Every catch-up runs in the background on this object (`Jobs`), so one a caller stops waiting for goes on,
@@ -914,6 +944,20 @@ impl DurableObject for GitShard {
                     .join("&");
                 host.archive(net, &q).await.map_err(se)
             }
+            // The web app's private reads (`design/SHARED.md`, "Frontend and native app", the `/_t/ui/*` API): a
+            // tree, blame, diff, compare, README, or ref resolution of a commit the cache holds once it caught up.
+            p if p.strip_prefix("/ui/").is_some_and(|r| UI_ROUTES.contains(&r)) => {
+                if let Err(r) = caught_up().await {
+                    return r;
+                }
+                let q: String = url
+                    .query_pairs()
+                    .filter(|(k, _)| !matches!(&**k, "repo" | "wait" | "next"))
+                    .map(|(k, v)| format!("{k}={}", js_sys::encode_uri_component(&v)))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                host.ui(net, &p[4..], &q).await.map_err(se)
+            }
             _ => Response::error("not found", 404),
         }
     }
@@ -922,7 +966,24 @@ impl DurableObject for GitShard {
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };
-        host.on_alarm(Timestamp(now_ms())).await.map_err(se)?;
+        let renewed = host.on_alarm(Timestamp(now_ms())).await.map_err(se);
+        // The pool ledger's heartbeat (`graftyard_git::PoolLedger::beat`), on the one object that holds a ledger. It
+        // runs after the container's renewal, which replaces the object's alarm, so its nearer one is armed last, and
+        // whether or not the renewal failed. A test-faults outage skips the beat, as a down object would.
+        let s = self.state.storage();
+        if let Some(mut ledger) = s.get::<graftyard_git::PoolLedger>(LEDGER_KEY).await.ok().flatten() {
+            let now = Timestamp(now_ms());
+            #[cfg(feature = "test-faults")]
+            let down = s.get::<u64>("pool_down_until").await.ok().flatten().is_some_and(|t| now.0 < t);
+            #[cfg(not(feature = "test-faults"))]
+            let down = false;
+            if !down {
+                ledger.beat(now);
+                s.put(LEDGER_KEY, &ledger).await?;
+            }
+            arm_beat(&s, &ledger, now).await?;
+        }
+        renewed?;
         // A catch-up an isolate reset cut off (its `warming` key outlived it) starts again here, from its saved page,
         // and the alarm waits for it, so an object with no request in flight stays up while it runs.
         let s = self.state.storage();

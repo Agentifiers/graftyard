@@ -1,0 +1,6 @@
+{
+  "PullMergeState": {
+    "sha256": "c48e6d58cbac59dbd9a0f704f7e24d5fd8da5339f5bcd21e19f26fd1059dee13",
+    "query": "query PullMergeState($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { mergeable mergeStateStatus reviewDecision headRefOid } } }"
+  }
+}

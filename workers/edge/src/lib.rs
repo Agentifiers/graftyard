@@ -58,6 +58,7 @@ mod rcache;
 mod release;
 mod repos;
 mod transfer;
+mod ui;
 mod usertok;
 
 const AGENT: &str = "git/graftyard-m1";
@@ -607,7 +608,7 @@ struct TokenRow {
 /// `Tokens` shard, never a cache, or a `ghs_` token verified offline (`ident::stateless`). The leader re-reads the
 /// row, or the `jti` row, at `decide` either way.
 async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
-    let Some(t) = token_of(req)? else { return Ok(None) };
+    let Some(t) = token_of(req)? else { return ui::session(c, req).await };
     if t.starts_with("ghs_") {
         return ident::stateless(c, &t).await;
     }
@@ -1936,6 +1937,18 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             "trace": trace.into_inner(),
         }));
     }
+    // A site's pool ledger as stored (`GET /pool` on `git#<site>#pool:1`, `graftyard_git::PoolLedger`). The read
+    // runs nothing on the ledger, so a lease missing from it was dropped by a call or by the ledger's own heartbeat.
+    if path == "/_bed/pool" {
+        let site = qp("site").and_then(|v| v.parse::<u8>().ok()).map(SiteId).ok_or("site")?;
+        let region = c.sites.get(site).ok_or("unknown site")?.region;
+        return c
+            .env
+            .durable_object(&format!("SHARD_{}", site.0))?
+            .get_by_name_with_location_hint(&format!("git#{}#pool:1", site.0), region.hint())?
+            .fetch_with_str("https://shard/pool")
+            .await;
+    }
     // A hot-pool shard, `git#<site>#pool:<n>`, belongs to no one network, so `?site=S&pool=N` names it directly; it
     // is torn down like a network's shard (`tests/fanout/teardown.py --pools`).
     if path == "/_bed/kill_pool" {
@@ -2256,11 +2269,35 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     // REST, GraphQL, LFS, uploads, and codeload (`api`); git smart HTTP below.
     let authority = url.host_str().unwrap_or_default().to_owned();
-    if let Ok(host) = graftyard_wire::Host::new(&cfg.host, false)
-        && let Some(e) = host.endpoint(&authority, &path)
+    let host = graftyard_wire::Host::new(&cfg.host, false).ok();
+    let endpoint = host.as_ref().and_then(|h| h.endpoint(&authority, &path));
+    if let (Some(host), Some(e)) = (&host, endpoint)
         && api::serves(&e)
     {
-        return api::serve(&c, &mut req, &host, e).await;
+        return api::serve(&c, &mut req, host, e).await;
+    }
+    // The web app (`ui`): its private API, its assets, and the HTML shell for a browser's `GET` of a page path, which
+    // is a `Web` path or a repository path that is not git's (no `info/refs`, no RPC).
+    if let Some(host) = &host {
+        if let Some(rest) = path.strip_prefix(ui::PREFIX) {
+            return ui::serve(&c, &mut req, host, rest).await;
+        }
+        if (path.starts_with("/assets/") || path == "/favicon.ico") && req.method() == Method::Get {
+            return match ui::asset(&c, req.clone()?).await? {
+                Some(r) => Ok(r),
+                None => text(c.rid, 404, "Not Found\n"),
+            };
+        }
+        let page = match endpoint {
+            Some(graftyard_wire::Endpoint::Web(_)) => true,
+            Some(graftyard_wire::Endpoint::Repo { .. }) => {
+                matches!(smart::route(&path, url.query().unwrap_or("")), Some(Route::Dumb { .. }) | None)
+            }
+            _ => false,
+        };
+        if page && !path.starts_with("/assets/") && ui::wants_shell(&req)? {
+            return ui::shell(&c, &req, host, &path).await;
+        }
     }
     let ua = req.headers().get("user-agent")?;
     let incoming = graftyard_wire::Incoming { user_agent: ua.as_deref(), ..Default::default() };

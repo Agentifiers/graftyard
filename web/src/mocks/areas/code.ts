@@ -82,6 +82,14 @@ function at(code: CodeRepo, ref: string | null, fallback: string) {
   return hit && code.commits.get(hit.sha);
 }
 
+function findReadme(params: { owner: string; repo: string }, ref: string | null) {
+  const r = codeRepo(params.owner, params.repo);
+  const c = r && at(r.code, ref, r.repo.default_branch ?? "main");
+  const path = c && [...c.files.keys()].find((p) => /^readme(\.md|\.markdown|\.txt)?$/i.test(p));
+  if (!r || !c || !path) return undefined;
+  return { r, path, key: c.files.get(path)!, ref: ref || (r.repo.default_branch ?? "main") };
+}
+
 // The changes PUT and DELETE contents write as one new commit on a branch.
 function commitTo(
   code: CodeRepo,
@@ -133,18 +141,9 @@ export const handlers = [
   http.get("/repos/{owner}/{repo}/readme", async ({ params, query, response }) => {
     const fault = await gate("code-readme");
     if (fault) return response.untyped(fault);
-    const r = codeRepo(params.owner, params.repo);
-    const c = r && at(r.code, query.get("ref"), r.repo.default_branch ?? "main");
-    const path = c && [...c.files.keys()].find((p) => /^readme(\.md|\.markdown|\.txt)?$/i.test(p));
-    if (!r || !c || !path) return response.untyped(notFound());
-    return response(200).json(
-      contentFile(
-        r.repo,
-        query.get("ref") || (r.repo.default_branch ?? "main"),
-        path,
-        c.files.get(path)!,
-      ),
-    );
+    const hit = findReadme(params, query.get("ref"));
+    if (!hit) return response.untyped(notFound());
+    return response(200).json(contentFile(hit.r.repo, hit.ref, hit.path, hit.key));
   }),
 
   http.get("/repos/{owner}/{repo}/contents/{path}", async ({ params, query, response }) => {
@@ -772,6 +771,22 @@ export const handlers = [
       ranges,
       oldest: dates[0] ?? c.date,
       newest: dates.at(-1) ?? c.date,
+    });
+  }),
+
+  // The README decoded, so the overview needs no base64 (the edge serves this, not REST's).
+  ui.get("/repos/{owner}/{repo}/readme", async ({ params, query, response }) => {
+    const fault = await gate("code-readme");
+    if (fault) return response.untyped(fault);
+    const hit = findReadme(params, query.get("ref"));
+    if (!hit) return response.untyped(notFound());
+    const b = blob(hit.key)!;
+    return response(200).json({
+      name: hit.path.split("/").at(-1)!,
+      path: hit.path,
+      sha: hit.key,
+      size: b.size,
+      text: b.text ?? "",
     });
   }),
 

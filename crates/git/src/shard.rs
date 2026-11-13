@@ -203,9 +203,12 @@ pub fn owner_share(_owner: u64) -> u16 {
     HOT_POOL - 1
 }
 
-/// A pool ledger with no call for longer than this was out of reach, not idle by choice: a hot network's leader and
-/// first shard each call it at least once a minute [guess, the report interval plus slack].
+/// A pool ledger that did not run for longer than this was down or out of reach. While it holds a lease, its object's
+/// alarm calls `PoolLedger::beat` every `LEDGER_BEAT`, so a gap past this is never just a quiet stretch with no
+/// callers [guess, two missed beats].
 pub const LEDGER_GAP: Duration = Duration::from_secs(90);
+/// How often a ledger holding a lease beats: half of `LEDGER_GAP`.
+pub const LEDGER_BEAT: Duration = Duration::from_secs(45);
 
 /// One network's lease on a site's pool: the pool slots (`0..HOT_POOL`) it holds, its owner, and when its leader last
 /// asked, by the ledger's clock.
@@ -226,10 +229,11 @@ pub struct PoolLedger {
 }
 
 impl PoolLedger {
-    /// Drops leases not renewed within LOAD_STALE of the ledger's own answering time. A gap of more than LEDGER_GAP
-    /// with no call (the ledger was down or unreachable, or no network was hot) does not count against any lease, so
-    /// an outage of the ledger never frees a network's slots; a network that cooled meanwhile frees them within
-    /// LOAD_STALE of calls after the gap instead.
+    /// Drops leases not renewed within LOAD_STALE of the ledger's own running time. The ledger runs at every call and
+    /// at every `beat`, so a gap of more than LEDGER_GAP since it last ran means its object was down or out of reach,
+    /// and that gap counts against no lease: an outage of the ledger never frees every network's slots at once. A
+    /// network that cooled during the outage frees them within LOAD_STALE of the ledger's return. A lease nobody
+    /// renews while the ledger runs lapses LOAD_STALE after its last renewal, however few calls come.
     fn settle(&mut self, now: Timestamp) {
         let gap = self.seen.map_or(0, |s| now.0.saturating_sub(s.0));
         if gap > LEDGER_GAP.as_millis() as u64 {
@@ -271,6 +275,21 @@ impl PoolLedger {
             self.leases.push(PoolLease { network, owner, slots: slots.clone(), at: now });
         }
         slots
+    }
+
+    /// The ledger object's heartbeat, from its alarm every `LEDGER_BEAT` while any lease is held (`beat_due`): the
+    /// ledger runs with no call, drops what lapsed, and marks the time, so a quiet stretch is not read as an outage.
+    /// Without it a ledger called less often than LEDGER_GAP shifted every lease at each call, and none ever lapsed:
+    /// two networks torn down at k 4 held their owner's whole share for 95 minutes (LM-1's m21,
+    /// `lm1-memory` round 10).
+    pub fn beat(&mut self, now: Timestamp) {
+        self.settle(now);
+        self.seen = Some(now);
+    }
+
+    /// When the ledger's object must next `beat`: `LEDGER_BEAT` after `now` while it holds a lease, never otherwise.
+    pub fn beat_due(&self, now: Timestamp) -> Option<Timestamp> {
+        (!self.leases.is_empty()).then(|| Timestamp(now.0 + LEDGER_BEAT.as_millis() as u64))
     }
 
     /// The network's first shard on this site, once a minute while it serves pushes: renews `network`'s lease as it
