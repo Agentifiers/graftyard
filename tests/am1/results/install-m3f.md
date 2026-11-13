@@ -55,7 +55,7 @@ graft-m3f is shared by merge-p99 and rehydrate-batch. A site day resets every me
 | 2026-11-13 06:34Z | rehydrate-batch | site day and edge day from `rb-deploy` `0b645c4` (`rehydrate-batch` `c5b2130`, test-faults shard abort, + `merge-p99` `2f5f25d`), image `6c2a6461`, `--vars` | `95b96511` / `75eab7f8` / `0fabe172`, edge `697f1dd3` | done (06:36Z) |
 | 2026-11-13 06:56Z | merge-p99 | edge day (`merge-p99` `4595d33` + `rehydrate-batch` `c5b2130`, test-faults, `--ops graft-m3f-ops`, FORMATS through 32.18) then 600 s B0-29 row on repo 65548 (torn down); rehydrate-batch held pushes and deploys | edge `4c3d1db9`, sites unchanged | done (07:11:13Z) |
 | 2026-11-13 07:24Z | merge-p99 | site day and edge day from main `5293a6c`, image `696907a2` (built from `67db2c3`, which has `/ingest-batch`; `containers/` unchanged to `5293a6c`), `--vars` standard-4, test-faults; then two 600 s B0-29 rows on repos 65549 and 65550 (torn down) | `69171a6f` / `bea9831f` / `2673d48f`, edge `915b4446` | done (08:08:48Z) |
-| after merge-p99's "done" (~08:05Z) | rehydrate-batch | site day and edge day from `rb-deploy` = main `5293a6c` + `rehydrate-batch` `119fcaa` (shard run keyed by instance, local `/entries` learns voters), image `696907a2`, `--vars` | to follow | planned |
+| 2026-11-13 08:09Z | rehydrate-batch | site day and edge day from `rb-deploy` = main `5293a6c` + `rehydrate-batch` `119fcaa` (shard run keyed by instance, local `/entries` learns voters), image `696907a2`, `--vars` | `254f392c` / `5d47101f` / `c296807a`, edge `13599b59` | done (08:10:37Z) |
 
 ## Point the drivers at it
 
