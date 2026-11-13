@@ -4,7 +4,7 @@ This file records M4-WP1's hosted half on `graft-m4a`, a product build with `sta
 
 Branch `m4-actions`. Every site day is in `install-m4a.md`'s site-day log. The raw data is in `tests/m4/results/raw/`: `bf57-runN.jsonl` holds the driver's rows, and `bf57-runN-sink.json` holds the receiver's log where it was kept. The driver is `tests/m4/wp1/bf57.mjs`.
 
-Status: **in progress.** BF-57 does not pass yet. BF-58, `Audit`, and the DECISIONS and BUILD-PLAN entries are not written yet.
+Status: **in progress.** BF-57 does not pass yet: chain order and cursor lag pass, but healthy first-attempt p99 is 2.1 to 3.2 s against 2 s. BF-58, `Audit`, and the DECISIONS and BUILD-PLAN entries are not written yet.
 
 ## BF-57: one hook timing out at 10 s beside 49 healthy hooks, 10 events/s
 
@@ -44,14 +44,16 @@ Each fix below was found from Workers Logs in the run before it.
 | 9 | 11 | 2.11 s | 9,800 of 9,800 | in order (by GUID) | p50 1.6 to 2.1 s, max 3.2 s except one 8.6 s | The output gate held each attempt's POST behind the previous reports' writes, one transaction per report. An attempt took 119 ms at p50 when it overlapped a write and 42 ms when it did not. The one 8.6 s lag passed only the cursor's own entry. Fixed in [`813b461`](https://github.com/Agentifiers/graftyard/commit/813b461) (reports written every 50 ms) and [`170e988`](https://github.com/Agentifiers/graftyard/commit/170e988) (lag measured from the first non-cursor entry). |
 | 10 | 12 | 2.54 s | 9,800 of 9,800 | in order | p50 about 1.7 s; one 137 s | After the load stopped, bf57b's leader armed its alarm 2 s out, and no alarm ran after it. Five entries (bf57b 180, 20 deliveries) waited 137 s for an unrelated read to wake the member. Fixed in [`05cf164`](https://github.com/Agentifiers/graftyard/commit/05cf164): the alarm invocation sets the alarm it armed again, and awaits it, before it returns. Each 11.7 KB payload was also written 20 times per bf57b entry. Fixed in [`652ade3`](https://github.com/Agentifiers/graftyard/commit/652ade3): one body per entry and slot. |
 | 11 | 13 | 2.45 s | 9,800 of 9,800 | in order | p50 about 1.7 s | Batching every 50 ms still left a write pending almost always. An attempt took 223 ms at p50 with a write pending, against 6 ms with none. Fixed in [`223d41c`](https://github.com/Agentifiers/graftyard/commit/223d41c): reports written once a second. |
+| 12 | 14 | 3.18 s | 9,819 of 9,819 (601 statuses) | in order | p50 about 1.7 s | Reports written once a second made it worse, not better: 625 deliveries over 2 s against 291 in run 11. Attempt time still grows with concurrency (28 ms p50 under 10 in flight, 234 ms at 40 or more). Batching is not the lever; see below. |
 
 ### What bounds healthy latency now
 
-The figures below are from runs 8 to 11 on site a.
+The figures below are from runs 8 to 12 on site a. Healthy p99 across runs 8 to 12 was 2.45, 2.11, 2.54, 2.45 and 3.18 s, so it varies by about 1 s from run to run under the same code.
 
 - **Where the time goes.** The time from attempt start to receiver arrival is 470 to 540 ms at p50. With no load, an attempt takes 6 ms at p50 and 20 ms at most (the 44 pings). The rest is queueing inside the one `HookSequencer` object.
 - **Concurrency.** Up to 49 attempts are in flight at once. An attempt's time grows with how many others are running: in run 11, 23 ms at p50 with fewer than 10 running, and 266 ms with 40 or more.
 - **Which deliveries miss 2 s.** Every healthy delivery over 2 s arrived while its queue was still busy with earlier entries, 289 of 291 in run 11. The time between two attempts of one hook is about 110 to 220 ms at p50, and the edge commits statuses in bursts behind its own sheds. So a hook that receives 5 or 6 entries within one second finishes the last of them past 2 s.
+- **Next lever [inference].** Every attempt's POST runs inside the owner's one `HookSequencer` object, which serves up to 49 of them at once beside every `/record` and alarm. Batching its writes (runs 10 to 12) did not shorten attempts. DESIGN's Shape (`HookSequencer`) has stateless delivery Workers run the attempts. The next change is to send each attempt's request to a stateless invocation of the site script, as `prsync::in_band` does, and keep only the bookkeeping in the object.
 - **Edge sheds.** The edge sheds 40 to 55% of status writes with 503, because the members shed the pre-write read with `overloaded`. The client re-sends after `Retry-After`, so commits arrive in bursts. A status write takes 1.8 to 2.5 s at p50 to its 201.
 
 ### Order and cursor
@@ -63,3 +65,7 @@ Cursor lag stays around 1.6 to 2.2 s at p50 and does not grow with the slow hook
 - **Run 7.** Measured on the old code.
 - **Run 9.** One cursor-only commit, now excluded from the measure.
 - **Run 10.** The lost alarm, fixed in `05cf164`.
+
+## Cost
+
+`tests/fanout/m2bcost.py` for graft-m4a, 2026-11-13 00:00Z to 20:00Z: **$22.13** for the whole install. Containers are $13.19 of it. They are the `standard-4` git shards, which every thread on graft-m4a uses; BF-57 does not touch git. Durable Objects are 5.08 M requests and 1.67 M active seconds. The figure covers M4 web's, M4-WP2's and M5-WP1's use of the install too.
