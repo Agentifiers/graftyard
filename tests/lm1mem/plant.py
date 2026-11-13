@@ -259,6 +259,13 @@ MUTANTS = [
      'r.filter((b) => b.site !== a.site)', 'r.filter(() => true)', A1_SELF),
     ('clock: a round with one member counts', CLOCK,
      'new Set(r.map((c) => c.site)).size > 1', 'r.length > 0', A1_SELF),
+    # Round 10's queue split (`workers/site/src/host.rs`, `queue_split`).
+    ('queue split: the slot runs to the append, not to the apply that freed it', HOST,
+     '    let freed = last_apply.clamp(admitted, appended);', '    let freed = appended.max(admitted);',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_queue_splits']),
+    ('queue split: an apply before admission counts as slot wait', HOST,
+     '    let freed = last_apply.clamp(admitted, appended);', '    let freed = last_apply.min(appended).max(1_000);',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_queue_splits']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

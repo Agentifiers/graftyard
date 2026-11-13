@@ -1314,6 +1314,8 @@ impl<F: Family> Routes<F> {
                 "summary": true,
                 "commitMs": percentiles(&s.commit_ms),
                 "queueMs": percentiles(&s.queue_ms),
+                "queueSlotMs": percentiles(&s.queue_slot_ms),
+                "queuePostMs": percentiles(&s.queue_post_ms),
                 "roundMs": percentiles(&s.round_ms),
                 "confirmMs": percentiles(&s.confirm_ms),
                 "depsMs": deps,

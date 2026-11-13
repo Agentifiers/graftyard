@@ -105,6 +105,14 @@ const DRAIN_IDLE_MS: u64 = 60_000;
 const RESTORE_CHECK_MAX: u64 = 20_000;
 /// Latency samples kept for `/stats`.
 const SAMPLES_MAX: usize = 200_000;
+
+/// A command admitted at `admitted` and appended at `appended`, with the leader's last apply before the append at
+/// `last_apply`: (`slot`, `post`) ms, summing to its queue time. Admitted after that apply, it waited for no entry
+/// ahead of it, so its whole queue is `post`; admitted before it, `slot` runs to the apply and `post` from it.
+fn queue_split(admitted: u64, last_apply: u64, appended: u64) -> (u32, u32) {
+    let freed = last_apply.clamp(admitted, appended);
+    ((freed - admitted) as u32, (appended - freed) as u32)
+}
 /// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
 /// its commit, and a confirm row a minute old covers every index at or below it.
 const SYNCED_KEEP: usize = 256;
@@ -192,6 +200,13 @@ pub struct Stats {
     /// Leader: a command's admission to the append of the entry that carries it, in ms: the wait for the entry in
     /// flight, the cut, and the entry's dep reads. `commit_ms` less this is the entry's confirm and quorum round.
     pub queue_ms: Vec<u32>,
+    /// Leader: `queue_ms` split at the apply of the entry before the command's own (`queue_split`): `slot`, the wait
+    /// for the entries ahead of it, and `post`, that apply to its own entry's append (the cut, the dep reads that
+    /// outlast the entry in flight, and the decide). LM-1 round 10's plan for B0-29's commit line.
+    pub queue_slot_ms: Vec<u32>,
+    pub queue_post_ms: Vec<u32>,
+    /// Leader: when it last applied an entry, by this member's clock.
+    last_apply_at: u64,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
     /// Local `/entries` pages capped at `ENTRIES_BUSY_PAGE_BYTES` because other reads were in flight.
@@ -288,6 +303,8 @@ impl Stats {
         self.deps_ms.clear();
         self.dep_fails.clear();
         self.queue_ms.clear();
+        self.queue_slot_ms.clear();
+        self.queue_post_ms.clear();
         self.entries = 0;
         self.commands = 0;
         self.failed_calls = 0;
@@ -1374,6 +1391,10 @@ impl<F: Family> Host<F> {
     fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
         let mut s = self.stats.borrow_mut();
         let (leading, term) = (core.m.role() == Role::Leader, core.m.term());
+        // An apply in the same input as an append freed the slot that append took.
+        if leading && writes.iter().any(|w| matches!(w, Write::Apply(_))) {
+            s.last_apply_at = t;
+        }
         for w in writes {
             match w {
                 Write::Append(e) if leading && e.term == term && matches!(e.body, EntryBody::Events(_)) => {
@@ -1385,6 +1406,9 @@ impl<F: Family> Host<F> {
                             && s.queue_ms.len() < SAMPLES_MAX
                         {
                             s.queue_ms.push(t.saturating_sub(*at) as u32);
+                            let (slot, post) = queue_split(*at, s.last_apply_at, t);
+                            s.queue_slot_ms.push(slot);
+                            s.queue_post_ms.push(post);
                         }
                     }
                 }
@@ -3028,6 +3052,18 @@ mod tests {
     use std::cell::Cell;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};
+
+    /// LM-1 round 10's queue split: the wait for the entries ahead of the command, then its own entry's cut, dep reads
+    /// and decide, summing to its queue time. A command admitted after the last apply waited for no slot.
+    #[test]
+    fn a_queue_splits_at_the_apply_that_freed_its_slot() {
+        use super::queue_split;
+        assert_eq!(queue_split(1_000, 1_300, 1_420), (300, 120), "waited 300 ms for the slot, then 120 ms of its own");
+        assert_eq!(queue_split(1_000, 900, 1_150), (0, 150), "admitted after the last apply: no slot wait");
+        assert_eq!(queue_split(1_000, 1_500, 1_150), (150, 0), "an apply later than the append clamps to it");
+        let (slot, post) = queue_split(7, 40, 100);
+        assert_eq!(slot + post, 93, "the split sums to the queue time");
+    }
 
     /// `/stats`' `testMerges`: first attempts' asks and sheds add up, and the shard's latest counts are kept, not
     /// replaced by an attempt that asked for no merge.

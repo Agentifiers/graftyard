@@ -920,8 +920,9 @@ const v = {
     // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
     // Round 10 adds each follower's AppendEntries call time (`append:<site>`) and append to apply (`apply`), so the
     // round splits into the near follower's leg and the leader's own confirm.
-    split: Object.fromEntries([["queue", lstats.queueMs], ["round", lstats.roundMs], ["confirm", lstats.confirmMs],
-      ["apply", lstats.applyMs],
+    // `queue:slot` waits for the entries ahead; `queue:post` is the command's own entry's cut, dep reads and decide.
+    split: Object.fromEntries([["queue", lstats.queueMs], ["queue:slot", lstats.queueSlotMs], ["queue:post", lstats.queuePostMs],
+      ["round", lstats.roundMs], ["confirm", lstats.confirmMs], ["apply", lstats.applyMs],
       ...Object.entries(lstats.appendMs ?? {}).map(([k, xs]) => [`append:${k}`, xs]),
       ...Object.entries(lstats.depsMs ?? {}).map(([k, xs]) => [`deps:${k}`, xs])]
       .map(([k, xs]) => [k, ps(xs)])),
