@@ -1,0 +1,30 @@
+{"repo":"f67i-0038-r1","kind":"read","step":"first write","at":1794530945159,"status":201,"ms":6813}
+{"repo":"f67i-0038-w1","kind":"write","step":"first write","at":1794530960059,"status":201,"ms":4168}
+{"repo":"f67i-0038-r2","kind":"read","step":"first write","at":1794530980417,"status":201,"ms":4565}
+{"repo":"f67i-0038-w2","kind":"write","step":"first write","at":1794531000887,"status":201,"ms":4561}
+{"repo":"f67i-0038-r3","kind":"read","step":"first write","at":1794531020882,"status":201,"ms":4523}
+{"repo":"f67i-0038-w3","kind":"write","step":"first write","at":1794531040319,"status":201,"ms":4422}
+{"repo":"f67i-0038-r4","kind":"read","step":"first write","at":1794531060497,"status":201,"ms":4527}
+{"repo":"f67i-0038-w4","kind":"write","step":"first write","at":1794531081092,"status":201,"ms":4632}
+{"repo":"f67i-0038-r1","kind":"read","step":"shape","at":1794531095654,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r1","kind":"read","step":"result","at":1794531099191,"how":"idle","firstOkMs":2654,"tries":[[200,2654]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r5","kind":"read","step":"first write","at":1794531100343,"status":201,"ms":4034}
+{"repo":"f67i-0038-w1","kind":"write","step":"shape","at":1794531110507,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w1","kind":"write","step":"result","at":1794531115784,"how":"idle","firstOkMs":3560,"tries":[[201,3560]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w5","kind":"write","step":"first write","at":1794531119514,"status":201,"ms":3771}
+{"repo":"f67i-0038-r2","kind":"read","step":"shape","at":1794531130999,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r2","kind":"read","step":"result","at":1794531135042,"how":"idle","firstOkMs":2588,"tries":[[200,2588]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w2","kind":"write","step":"shape","at":1794531151395,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w2","kind":"write","step":"result","at":1794531156787,"how":"idle","firstOkMs":3586,"tries":[[201,3586]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r3","kind":"read","step":"shape","at":1794531171413,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r3","kind":"read","step":"result","at":1794531175969,"how":"idle","firstOkMs":2842,"tries":[[200,2842]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w3","kind":"write","step":"shape","at":1794531190790,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w3","kind":"write","step":"result","at":1794531195947,"how":"idle","firstOkMs":3636,"tries":[[201,3636]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r4","kind":"read","step":"shape","at":1794531210927,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r4","kind":"read","step":"result","at":1794531215437,"how":"idle","firstOkMs":2928,"tries":[[200,2928]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w4","kind":"write","step":"shape","at":1794531231558,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w4","kind":"write","step":"result","at":1794531236977,"how":"idle","firstOkMs":3855,"tries":[[201,3855]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r5","kind":"read","step":"shape","at":1794531250812,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-r5","kind":"read","step":"result","at":1794531254898,"how":"idle","firstOkMs":2419,"tries":[[200,2419]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w5","kind":"write","step":"shape","at":1794531270077,"how":"idle","members":[[0,"follower",2,2],[1,"follower",2,null],[2,"follower",2,null]]}
+{"repo":"f67i-0038-w5","kind":"write","step":"result","at":1794531275301,"how":"idle","firstOkMs":3529,"tries":[[201,3529]],"campaign":"none sent","members":[[0,"leader",2,2],[1,"follower",2,null],[2,"follower",2,null]]}

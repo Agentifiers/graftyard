@@ -408,20 +408,20 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
-/// member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
-/// promised in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from the
-/// new one [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2]. Reports from two colos within 10 s stop its
-/// promises to a leader still renewing, until 2 x the SUSPECT window or a higher term. For the same window, which a
-/// higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back (M0-WP2: a 24 s move
-/// without it). A follower whose promise has lapsed campaigns on one report, or once its read-index batch is unanswered
-/// for 3 s, when it also names no leader; a withheld leader's appends do not count as one seen. Campaigns are
-/// request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and two voters up
-/// and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`], because a leader whose entry,
-/// read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`; pre-vote
-/// denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not refused as
-/// suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to, not for that
-/// leader, and an edge answered `NotLeader` naming no leader also reports to that member, so a deposed leader holding
-/// the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
+/// member that missed or answered `NotLeader` naming no leader, and counts only if this follower promised and heard
+/// that leader in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from
+/// the new one, and on an unheard target barred it (F67) [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2].
+/// Two colos' reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For
+/// that window, which a higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back
+/// (M0-WP2: a 24 s move without it). A follower whose promise has lapsed campaigns on one report, or once its read-index
+/// batch is unanswered for 3 s, when it also names no leader; a withheld leader's appends do not count as one seen.
+/// Campaigns are request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and
+/// two voters up and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`]: a leader whose
+/// entry, read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`;
+/// pre-vote denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not
+/// refused as suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to,
+/// not for that leader, and an edge answered `NotLeader` naming none also reports to that member, so a deposed leader
+/// with the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -537,10 +537,10 @@ pub struct DurableAck { pub site: SiteId, pub durable: Index, pub at: Timestamp 
 /// over its fold at k and checks each `expect` against that running state, then rolls the transaction back. Each
 /// refusal carries the refuser's release. Only when the refuser runs an older release than the leader and the entry is
 /// uncommitted does the leader truncate its uncommitted tail, transfer (to the refuser when it qualifies), and persist
-/// `no_lead_until`. If both followers on the leader's own release refuse one uncommitted entry, the leader treats it as
-/// its own defect, truncates the uncommitted tail, and alarms. On any other refusal (same or newer release, or a
-/// committed entry) the leader keeps leading, adds the refuser to `cannot_follow` for that group, alarms, and
-/// `graft-ops` halts the site day. A member truncates an undecodable uncommitted tail at boot.
+/// `no_lead_until`. If both followers on its own release refuse one uncommitted entry, it is the leader's own defect:
+/// it alarms and truncates the tail as a new `lead_seq`, so a delayed older round cannot replace what commits there
+/// (F67). On any other refusal (same or newer release, or a committed entry) the leader keeps leading, adds the refuser
+/// to `cannot_follow`, alarms, and `graft-ops` halts the site day. A member truncates an undecodable tail at boot.
 pub fn verify(e: &LogEntry, fold: &FoldView) -> Result<(), Refusal>;
 
 // ---- Merge queue ----

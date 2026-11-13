@@ -74,8 +74,12 @@ impl<C: Command> Member<C> {
             // a transfer, withholds nothing from the new leader (found by the liveness runs, calls seed 1039).
             // A follower whose read-index call to that leader failed has forgotten it (`check_remote`) but still
             // promises it, and reports about it count, or a half-hung leader kept its promises renewed for 47.8 s
-            // (F67, live seed 7337).
-            let leader = self.state.promised_to.filter(|l| *l != self.cfg.me && self.leader.is_none_or(|x| x == *l));
+            // (F67, live seed 7337). A transfer target this member voted for but never heard from does not count:
+            // reports about it, sent while it was still a candidate, barred the only member holding the newest entry
+            // for 2 x SUSPECT's window, and nobody led for 17 s (F67, liveness calls seed 107).
+            let leader = self.state.promised_to.filter(|l| {
+                *l != self.cfg.me && (self.leader == Some(*l) || (self.leader.is_none() && self.forgot == Some(*l)))
+            });
             if let Some(l) = leader.filter(|l| *l == about)
                 && term == self.state.term
             {
@@ -124,7 +128,7 @@ impl<C: Command> Member<C> {
         if self.now < self.state.promise_until {
             return Verdict::Promised;
         }
-        if self.now < self.backoff_until {
+        if self.now < self.backoff_until || self.now < self.retry_pre_at {
             return Verdict::Busy;
         }
         self.start_campaign(true, None);
@@ -304,6 +308,7 @@ impl<C: Command> Member<C> {
             // keeps refusing the reported leader in pre-vote.
             self.withhold_until = Timestamp(0);
             self.reports.clear();
+            self.forgot = None;
             self.state.transfer_at = Timestamp(0);
             // The old term's leader leads no longer; this term's is known from its first append.
             if self.leader != Some(self.cfg.me) {
@@ -381,13 +386,19 @@ impl<C: Command> Member<C> {
             // `no_lead_until` refused every other candidate while no voter would grant it either, until the waiver
             // after 2 x ELECTION_AFTER (F67). One a voter refused as `Suspected` stands aside the same way.
             let aside = self.now < self.stand_aside_until;
-            if self.campaign.is_some() && req.candidate > self.cfg.me && !newer && self.may_take_lead() && !aside {
+            // Past the waiver a barred member may lead again, so it contends as before.
+            let waived = self.now >= after(self.last_leader_seen, ELECTION_AFTER * 2);
+            if self.campaign.is_some()
+                && req.candidate > self.cfg.me
+                && !newer
+                && !aside
+                && (self.may_take_lead() || waived)
+            {
                 return deny(self, Deny::Contending);
             }
             let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
             let flapping = inside(req.boots[0]) && inside(req.boots[1]);
             let stepped = req.stepped_down_at.is_some_and(inside);
-            let waived = self.now >= after(self.last_leader_seen, ELECTION_AFTER * 2);
             // Two colos reported the candidate as this voter's leader: refused for 2 x SUSPECT's window, across
             // terms, so a gray leader cannot win back the next election.
             if self.suspected.get(&req.candidate).is_some_and(|u| self.now < *u) {
@@ -434,6 +445,9 @@ impl<C: Command> Member<C> {
             // member that stopped campaigning for the whole 2 x SUSPECT window outlasted that bar and left a group
             // with requests waiting leaderless for 31.6 s (F67, gray seed 10395).
             self.stand_aside_until = after(self.now, SUSPECT.1 * 2);
+            // It retries after half the bar rather than at every backoff: retrying at once cost the harsh sweep about
+            // 20 of 1,200 acked writes once it also stopped contending (F67).
+            self.retry_pre_at = after(self.now, SUSPECT.1);
         }
         let Some(c) = self.campaign.as_mut() else { return };
         if res.granted {
