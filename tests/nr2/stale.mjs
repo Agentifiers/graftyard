@@ -3,8 +3,9 @@
 // and then reads again:
 //   1. new repository: a fresh repository under an owner whose `Authz` the isolate holds resolves at once (200, never
 //      404), on REST and GraphQL;
-//   2. grant opens access: a private repository the member cannot read (404), then `SetGrant` Read: 200 at once;
-//   3. grant closed: `SetGrant` None, then 404 within READ_CACHE (10 s) plus one read's time, and never 200 after;
+//   2. access opens: a private repository m3-member cannot read once removed from m3org (404), then membership again:
+//      200 at once (m3org's base permission is Write, so membership is what grants it);
+//   3. access closes: membership removed, then 404 within READ_CACHE (10 s) plus one read's time, and never 200 after;
 //   4. PAT revoked: 401 within READ_CACHE for reads, and at once for a write (a `POST` comment);
 //   5. installation token revoked (`DELETE /installation/token`): 401 within READ_CACHE for reads.
 // Prints one JSON line per check and exits 1 on any violation. Environment as tests/am1/hosted/lib.mjs.
@@ -48,24 +49,31 @@ const [r1, g1] = [await issues(a, tokens.admin), await gql(a, tokens.admin)];
 out({ check: "new repository resolves at once", repo: aId, rest: r1.status, graphql: g1.status, data: !!g1.body?.data?.repository,
   ok: r1.status === 200 && g1.status === 200 && !!g1.body?.data?.repository });
 
-// 2 and 3. A grant opens a private repository at once and closes it within READ_CACHE.
+// 2 and 3. m3org's base permission is Write, so access is m3-member's org membership: removing it hides a private
+// repository, adding it back opens it at once, and removing it again closes it within READ_CACHE. The membership is
+// restored at the end.
 const b = `nr2-priv-${tag}`;
 const bId = await mkrepo(b, true);
-await warm(tokens.member);
-const before = await issues(b, tokens.member);
-if (before.status !== 404) out({ check: "member cannot read the private repository first", status: before.status, ok: false });
-for (let i = 0; i < 10; i++) await issues(b, tokens.member); // the isolates hold the owner's Authz without the grant
-const grant = (permission) => must(`authz:${state.org}`, { cred: OP, op: { SetGrant: { repo: bId, user: state.member, permission } } });
-await grant("Read");
-const opened = await issues(b, tokens.member);
-out({ check: "grant opens access at once", status: opened.status, ok: opened.status === 200 });
-for (let i = 0; i < 10; i++) await issues(b, tokens.member); // now the isolates hold the fold with the grant
-await grant(null);
-const t3 = Date.now();
-const [closedAfter, seen3] = await until(() => issues(b, tokens.member), (s) => s === 404, BOUND + 5_000);
-const after = []; for (let i = 0; i < 10; i++) after.push((await issues(b, tokens.member)).status);
-out({ check: "removed grant closes within READ_CACHE", ms: closedAfter, bound: BOUND, seen: seen3.join(","), after: after.join(","),
-  ok: closedAfter !== null && closedAfter <= BOUND && after.every((s) => s === 404) });
+const role = (r) => must(`authz:${state.org}`, { cred: OP, op: { SetMember: { user: state.member, role: r } } });
+try {
+  // A close may serve up to READ_CACHE: wait for it, then keep reading so the isolates hold the fold without the member.
+  await role(null);
+  const [closed0, seen0] = await until(() => issues(b, tokens.member), (s) => s === 404, BOUND + 5_000);
+  const held = []; for (let i = 0; i < 10; i++) held.push((await issues(b, tokens.member)).status);
+  out({ check: "a removed member stops reading within READ_CACHE", ms: closed0, seen: seen0.join(","), after: held.join(","),
+    ok: closed0 !== null && closed0 <= BOUND && held.every((s) => s === 404) });
+  await role("Member");
+  const opened = await issues(b, tokens.member);
+  out({ check: "membership opens access at once", status: opened.status, ok: opened.status === 200 });
+  for (let i = 0; i < 10; i++) await issues(b, tokens.member); // now the isolates hold the fold with the member
+  await role(null);
+  const [closedAfter, seen3] = await until(() => issues(b, tokens.member), (s) => s === 404, BOUND + 5_000);
+  const after = []; for (let i = 0; i < 10; i++) after.push((await issues(b, tokens.member)).status);
+  out({ check: "removed membership closes within READ_CACHE", ms: closedAfter, bound: BOUND, seen: seen3.join(","), after: after.join(","),
+    ok: closedAfter !== null && closedAfter <= BOUND && after.every((s) => s === 404) });
+} finally {
+  await role("Member");
+}
 
 // 4. A revoked PAT: reads refused within READ_CACHE, a write at once.
 const p = await pat(state.admin, "nr2 stale probe");
