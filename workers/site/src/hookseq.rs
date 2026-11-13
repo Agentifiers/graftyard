@@ -65,7 +65,9 @@ const STORE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
 const CHAIN_FOR_MS: u64 = 20_000;
 /// After falling back from the home site's store, the consumer tries the home site again this often [guess].
 const HOME_RETRY_MS: u64 = 30_000;
-/// How long a batch's logins and `Authz` read serve the next batches of the same leadership [guess].
+/// How long a batch's logins and `Authz` read serve the next batches of the same leadership before a refresh starts
+/// beside them [guess]. A round that waited for that refresh stopped bf57b's consumer for 26 s in BF-57 run 4
+/// [inference: the stall began about 30 s after the leadership's first read, and nothing else in the round logged].
 const DIR_FOR_MS: u64 = 30_000;
 
 /// One leadership's consumer state, in this isolate's memory.
@@ -85,6 +87,8 @@ struct Consumer {
     /// Rows recorded since the last cursor commit.
     dirty: bool,
     dir: Option<(u64, HostedDir)>,
+    /// A refresh of a stale `dir` is running beside the rounds.
+    dir_refreshing: bool,
 }
 
 thread_local! {
@@ -198,12 +202,41 @@ async fn round(
 ) -> std::result::Result<Option<i64>, String> {
     let chain = ChainId::Repo(repo);
     let now = now_ms();
-    let (store, dir_cached) = CONSUMERS.with(|m| {
-        let m = m.borrow();
+    // A directory past `DIR_FOR_MS` still serves while a refresh runs beside the rounds, so its reads (the owner's
+    // `Authz` and the logins) never hold a round; only a consumer with none yet waits for one.
+    let (store, dir_cached, refresh) = CONSUMERS.with(|m| {
+        let mut m = m.borrow_mut();
+        let s = m.get_mut(key);
+        let stale = s.as_ref().and_then(|s| s.dir.as_ref()).is_some_and(|(at, _)| now >= at + DIR_FOR_MS);
+        let refresh = match s {
+            Some(s) if stale && !s.dir_refreshing => {
+                s.dir_refreshing = true;
+                true
+            }
+            _ => false,
+        };
         let s = m.get(key);
-        let dir = s.and_then(|s| s.dir.as_ref()).filter(|(at, _)| now < at + DIR_FOR_MS).map(|(_, d)| d.clone());
-        (s.and_then(|s| s.store), dir)
+        (s.and_then(|s| s.store), s.and_then(|s| s.dir.as_ref()).map(|(_, d)| d.clone()), refresh)
     });
+    if refresh {
+        let (w, key, record) = (Rc::downgrade(h), key.to_owned(), record.clone());
+        spawn_local(async move {
+            let Some(h) = w.upgrade() else { return };
+            let t0 = now_ms();
+            let d = crate::host::within(STORE_FOR, directory(&h, repo, owner, &record)).await;
+            console_log!("webhooks dir {} refreshed in {}ms", repo.0.0, now_ms() - t0);
+            CONSUMERS.with(|m| {
+                if let Some(s) = m.borrow_mut().get_mut(&key) {
+                    s.dir_refreshing = false;
+                    match d {
+                        Some(Ok(d)) => s.dir = Some((now_ms(), d)),
+                        Some(Err(e)) => console_error!("webhooks dir {}: {e}", repo.0.0),
+                        None => console_error!("webhooks dir {}: no answer in {} s", repo.0.0, STORE_FOR.as_secs()),
+                    }
+                }
+            });
+        });
+    }
     // The store in use, or the home site's when none answered yet or home is due to be tried again: asked first.
     let home_failed_at = CONSUMERS.with(|m| m.borrow().get(key).map_or(0, |s| s.home_failed_at));
     let home_down = now < home_failed_at + HOME_RETRY_MS;
@@ -231,7 +264,9 @@ async fn round(
         let dir = match dir_cached {
             Some(d) => d,
             None => {
-                let d = directory(h, repo, owner, record).await?;
+                let d = crate::host::within(STORE_FOR, directory(h, repo, owner, record))
+                    .await
+                    .ok_or_else(|| format!("the directory read took over {} s", STORE_FOR.as_secs()))??;
                 CONSUMERS.with(|m| {
                     if let Some(s) = m.borrow_mut().get_mut(key) {
                         s.dir = Some((now, d.clone()));
