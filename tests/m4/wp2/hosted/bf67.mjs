@@ -11,7 +11,7 @@
 //    equals the live one, read and done kept, and every new comment present.
 //
 //   source tests/am1/lf13/env-m4a.sh; node tests/m4/wp2/hosted/bf67.mjs <N>
-import { api, leaderOf, log, member, row, sleep, state, tokens } from "../../../am1/hosted/lib.mjs";
+import { api, leaderOf, log, member, row, sleep, state, tokens, voterNames } from "../../../am1/hosted/lib.mjs";
 
 const N = Number(process.argv[2] ?? 10000);
 // `stars`, `inbox`, or both (default): the halves run apart when a site day comes between them.
@@ -65,10 +65,12 @@ for (const t0 = Date.now(); Date.now() - t0 < 600_000; await sleep(3000)) {
   if (!v?.running && (v?.last?.index ?? 0) > 0 && (v.last.index !== prior || v.last.at !== started?.last?.at)) { rep = v.last; break; }
 }
 const at = rep?.index;
+// Each site's current voter by name: a voter replaced since the group was made has a later generation's object.
+const names = await voterNames(chain);
 const digests = [];
 for (const s of [0, 1, 2]) {
-  const v = (await member(chain, s, "/fold", { at }, 60_000)).v;
-  digests.push({ site: s, core: v?.core?.at, meta: v?.metadata?.at });
+  const v = (await member(chain, s, "/fold", { at }, 60_000, names[s])).v;
+  digests.push({ site: s, do_name: names[s], core: v?.core?.at, meta: v?.metadata?.at });
 }
 metaSame = digests.every((d) => d.meta && d.meta === rep?.metadata);
 coreSame = digests.every((d) => d.core && d.core === rep?.core);

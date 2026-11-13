@@ -1,7 +1,7 @@
 #!/bin/bash
-# graft-m4a site day 8 (M4-WP2) from a checkout of m4a-deploy 5af2de0, release build already made in workers/site/build
+# A graft-m4a site day of M4-WP2 (days 8 and 10) from a checkout of the deploy branch, release build already made in workers/site/build
 # (`worker-build --release`). Same image, --vars, --ops, and GRAFTYARD_HOST as site day 7, plus GRAFTYARD_ACTIVITY=1.
-#   bash tests/m4/wp2/hosted/siteday8.sh <checkout> <log>
+#   bash tests/m4/wp2/hosted/siteday.sh <checkout> <log>
 set -uo pipefail
 cd "$1"
 IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:15f6ed1b1d4b2b08c8adccbce713e89762677c3656dd7ee9a99bdd4bcab025c5

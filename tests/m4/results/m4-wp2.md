@@ -142,13 +142,14 @@ The plants also found code that could never matter, and both pieces were removed
 | 28 | the fold applies a cursor other than the one committed | CAUGHT | `user_records_are_the_accounts_own_kept_with_their_entry_and_the_counts_cursor_only_moves_forward` |
 | 29 | stargazers render without the star media type | CAUGHT | `activity_and_search_replies_render_ghes_objects`, `bf67_a_rebuilt_inbox_keeps_read_done_and_every_sources_event_and_10_000_stars_survive_a_refold` |
 
-## Hosted on `graft-m4a`: BF-5 and BF-68 pass, BF-67's stars and Inbox pass, its refold waits on site day 10
+## Hosted on `graft-m4a`: BF-5, BF-67, and BF-68 pass
 
 Built on `m4-wp2` and deployed through two days logged in `tests/am1/results/install-m4a.md`:
 
 - **Site day 8** (15:58Z, sites `c392af30` / `770a594d` / `bf9bb597`): `m4a-wp2-deploy` `0f32337` = `m4a-deploy` `5af2de0` + `m4-wp2` `4e9da43`. It adds migration v4 (`SearchShard`, `Inbox`), the `SEARCH_n` and `INBOX_n` bindings (own-only in phase 1), Repo reads 32.19, Identity reads 0x14.3, and `GRAFTYARD_ACTIVITY=1`. The 15:50Z attempt stopped at wrangler's check before any upload: the `durable_object` macro exports the Rust struct's own name, and `pub use inbox::InboxObject as Inbox` left the class exported as `InboxObject` (fixed in `4e9da43`).
 - **Edge day 7** (M4 web, 16:01Z, edge `3d41cbe7`): `FORMATS_ENABLED` plus 32.19 and 20.3.
-- M4 Actions' site day 9 (16:20Z) carried both, and every row below ran on it.
+- M4 Actions' site day 9 (16:20Z) carried both. BF-5, BF-68, and BF-67's Inbox half ran on it.
+- **Site day 10** (17:21Z, sites `06f464eb` / `24a3ab1f` / `9200a44f`): `m4a-wp2-deploy` `88652fe` = `m4a-deploy` `ff0e804` + `m4-wp2` `0055d62`, the `SQLITE_LOCKED` fix below. BF-67's stars half ran on it.
 
 What the hosted half is (`workers/site/src/{activity,inbox,search}.rs`, `workers/edge/src/activity.rs`):
 
@@ -170,7 +171,7 @@ m3-member watches `m3org/wp2-bf5`. m3-admin unstars, opens an issue (GraphQL `cr
 
 An earlier run failed on the driver, not the system: it read `before` while the unstar was still in flight through `Counts`, so `before + 1` never came. The driver now waits for the count to settle first.
 
-### BF-67. Stars and Inbox pass; the refold is blocked by a bug this run found.
+### BF-67. Pass.
 
 **Stars.** `seed.mjs` made 10,005 real accounts, the row's 10,000 plus a 5-account trial. Each one has:
 
@@ -183,7 +184,7 @@ That took 64 workers in each of 4 processes, 11 minutes, about 15 accounts/s. Tw
 | Measure | Pass | Result [measured] |
 | --- | --- | --- |
 | `/stargazers` (101 pages of 100, star media type) | all 10,000 listed | 10,005 listed, 10,005 distinct, 0 missing, 0 `ghost` (each page reads its own accounts' logins), `stargazers_count` 10,005; slowest page 6.2 s |
-| A refold of the repository | metadata digest equal; the list after | **not measured**: the product fold audit failed with `SQLITE_LOCKED` (below) |
+| A refold of the repository (the product fold audit, forced, on site day 10's build) | metadata digest equal; the list after | the refold of `repo:65543` through index 3,167 (616 KB, one batch) gives core `3ba604ba…` and metadata `feb8cc4b…`, and every voter's digests at 3,167 equal both, including site 1's replaced voter `#4#f1`. `/stargazers` after: 10,005 listed, 0 missing, 0 `ghost`, count 10,005 |
 
 **Inbox.** The watcher's Inbox held 4 threads on `wp2-bf5`. One was marked read and one done, then the Inbox was snapshotted. After the snapshot, a comment went on every thread, which is a new event on the `sources` chain. Then the Inbox was deleted and rebuilt from the snapshot plus `sources`.
 
@@ -191,7 +192,7 @@ That took 64 workers in each of 4 processes, 11 minutes, about 15 accounts/s. Tw
 | --- | --- | --- |
 | Rebuilt `/notifications?all=true` | read and done kept, nothing from `sources` lost | identical to the live view: all 4 threads with the post-snapshot comments' `updated_at`; the read and the done thread keep their `last_read_at` and are unread again under GHES's rule, because a newer notice arrived; 0 threads after the delete; rebuilt in 1,113 ms |
 
-**The bug.** The fold audit failed at its closing `DROP TABLE` of the scratch tables with `SQLITE_LOCKED` on every repository with a fold row read that hit: `wp2-stars`, `wp2-bf5`, and `wp2-probe`, but not `j4`. `TierSql::sql_get` took one row from its cursor and dropped it without reading to the end, so the statement held its table. It is the same class as d6e350d's log cursor. It is not specific to M4-WP2, but the new consumers are the first path that reads point rows on an audited repository. Fixed in `0055d62`: `sql_get` reads to the end. It reaches the members only through a site day, so site day 10 is announced for 17:20Z, and the refold row runs after it.
+**The bug.** The fold audit failed at its closing `DROP TABLE` of the scratch tables with `SQLITE_LOCKED` on every repository with a fold row read that hit: `wp2-stars`, `wp2-bf5`, and `wp2-probe`, but not `j4`. `TierSql::sql_get` took one row from its cursor and dropped it without reading to the end, so the statement held its table. It is the same class as d6e350d's log cursor. It is not specific to M4-WP2, but the new consumers are the first path that reads point rows on an audited repository. Fixed in `0055d62`: `sql_get` reads to the end. Site day 10 shipped the fix, and the refold row then passed. The first run after it compared site 1's generation-1 object, which a replacement had retired (null digests), so the driver now reads each site's current voter by name (`voterNames`).
 
 ### BF-68. Pass.
 
@@ -205,6 +206,18 @@ Org `wp2eu` (7400001) has an `Eu2w` record on sites [1, 0, 2], home 1 (weur), an
 | The same census after | only `eu` | `search#eu#2#2` (6, eu, WAW), `#4#1` (3, PRG), `#8#1` (3, MXP); 0 outside |
 
 Out of BF-68's scope, not a deviation: the org's repository chains still run on m4a's three sites (enam, weur, apac). Holding them on EU sites is Milestone 5's EU sites (the parent's ruling).
+
+### Teardown
+
+- **Deleted through the product route** (17:38Z, all 204): `m3org/wp2-stars`, `wp2-bf5`, and `wp2-probe`, and `wp2eu/e0` to `e3`. `DeleteRepo` tombstones each chain and holds its name for 90 days, as SHARED's retention says. The `Search` consumer removes their documents from the shards (`DocOp::Repo` on the tombstone).
+- **Left in place, because no product operation removes them:**
+  - the 10,005 seeded accounts `wp2-s0` to `wp2-s10004` (7300000 to 7310004), with their `Names` rows and `Identity` groups;
+  - the `wp2eu` org (7400001) and its `Authz` group;
+  - m3-member's Inbox (`inbox:7100002`) and its two R2 snapshots under `inbox/7100002/`;
+  - the `search#eu#*` and `search#default#*` objects and the `search_map` rows.
+  
+  Idle groups and objects bill storage only, and the whole install goes with `install-m4a.md`'s teardown.
+- Nothing else was created: no new script, bucket, queue, or secret. The `tests/m0/.m0-token` link was removed.
 
 ### GHES 3.22 shapes
 
@@ -236,6 +249,7 @@ BF-67's 10,000 accounts drive the cost. Seeding them through 10,000 real signups
 | 16:22Z to 16:34:50Z | 200 accounts, BF-5 | $0.31 | $0.29 |
 | 16:34:50Z to 16:48Z | 9,800 accounts, BF-68 | $4.81 (3.1 M rows written, 0.81 M DO active-seconds, 2.7 M DO requests) | $0.37 |
 | 16:48Z to 17:11Z | BF-67's listing, the Inbox half, the refold attempts, the GHES capture | $0.36 | $0.69 |
-| **15:00Z to 17:11Z** | | **$5.80** | **$2.91** |
+| 17:11Z to 17:37Z | site day 10, BF-67's stars half (two 101-page listings and the refold) | $0.81 | $0.80 |
+| **15:00Z to 17:37Z** | | **$6.62** | **$3.72** |
 
-The install's whole window was **$8.71**, against the $12 stop. The seed alone was about $5.1, against the $9 trip for seeding. The estimate was $7.50 for BF-67, and its guess of 2.2 M DO active-seconds came in at 0.85 M.
+The install's whole window was **$10.34**, against the $12 stop. Site day 10 resets every member, and each `/stargazers` page reads its accounts' logins on up to 100 `Names` groups. Together these kept about 400 objects active per minute after 17:20Z, so hosted work stopped at the last row. The seed alone was about $5.1, against the $9 trip for seeding. The estimate was $7.50 for BF-67, and its guess of 2.2 M DO active-seconds came in at 0.85 M.
