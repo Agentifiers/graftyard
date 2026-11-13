@@ -563,7 +563,15 @@ impl<C: Command> Member<C> {
         if self.no_lead() {
             return Err(IdBlockError::NotLeader(self.not_leader()));
         }
-        let committed = self.fold.id_block();
+        // The latest block this leader holds: queued, in flight, in its uncommitted log (a restarted leader resumes
+        // with the block an earlier leadership appended), or committed. A re-sent lease of a block already in the log
+        // was appended twice, both followers refused the copy, and the leader reused that index in its term.
+        let applied = self.fold.applied();
+        let logged = self.log.iter().rev().take_while(|e| e.index > applied).find_map(|e| match &e.body {
+            EntryBody::IdBlock(b) => Some(*b),
+            _ => None,
+        });
+        let committed = logged.or(self.fold.id_block());
         let lead = self.lead.as_mut().expect("leading");
         if lead.block_pending.map(|(_, b)| b) == Some(block) || lead.blocks.contains(&block) {
             return Ok(());
@@ -1483,6 +1491,11 @@ impl<C: Command> Member<C> {
             self.out.resolutions.push(Resolution::Recorded { id, result: Err(nl.clone()) });
         }
         lead.min_round = lead.round + 1;
+        // A new leader instance for followers: a round sent before the truncation carries the refused entry, and one
+        // delayed past the replacement's commit at the same index would make a follower delete a committed entry
+        // (found by the harsh sweep, seed 3013). Followers refuse an older instance's rounds.
+        self.state.lead_seq += 1;
+        self.dirty = true;
         for m in lead.matched.values_mut() {
             *m = (*m).min(commit);
         }
