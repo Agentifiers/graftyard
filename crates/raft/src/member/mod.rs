@@ -678,6 +678,11 @@ pub struct Member<C: Command> {
     withhold_until: Timestamp,
     /// Leaders two colos reported, and until when pre-vote refuses them. A higher term does not end it.
     suspected: BTreeMap<SiteId, Timestamp>,
+    /// Leaders in `suspected` whose bar every report set while they ran a transfer (`on_suspect`). Accepting another
+    /// leader's append ends it: the hand-off completed, so the reports measured it, not a gray leader. Kept, two leaders
+    /// in turn, each reported during its own hand-off, refused each other as `Suspected` while a half-hung third won
+    /// and lost again, and nobody led for 31.3 s (F67 rule 11, live seed 11121).
+    handing_off: BTreeSet<SiteId>,
     /// The host's storage confirms: begin, and end once confirmed. Kept 30 s after they end.
     confirms: BTreeMap<ConfirmId, (Timestamp, Option<Timestamp>)>,
     next_confirm: u64,
@@ -821,6 +826,7 @@ impl<C: Command> Member<C> {
             reports: BTreeMap::new(),
             withhold_until: Timestamp(0),
             suspected: BTreeMap::new(),
+            handing_off: BTreeSet::new(),
             confirms: BTreeMap::new(),
             next_confirm: 0,
             probing: None,

@@ -412,17 +412,16 @@ pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) 
 /// that leader in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from
 /// the new one, and on an unheard target barred it (F67) [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2].
 /// Two colos' reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For
-/// that window, which a higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back
-/// (M0-WP2: a 24 s move without it). A follower whose promise has lapsed campaigns on one report, or once its read-index
-/// batch is unanswered for 3 s (each such batch is dropped, F67 rule 12), when it also names no leader; a withheld
-/// leader's appends do not count as one seen.
-/// Campaigns are request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and
-/// two voters up and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`]: a leader whose
-/// entry, read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`;
-/// pre-vote denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not
-/// refused as suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to,
-/// not for that leader, and an edge answered `NotLeader` naming none also reports to that member, so a deposed leader
-/// with the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
+/// that window, not ended by a higher term, its pre-vote refuses that leader and it hands off to no such member (M0-WP2:
+/// 24 s without it; F67 rule 10), unless every report came during that leader's transfer, a bar that ends once another
+/// leader is heard (rule 11). A follower whose promise lapsed campaigns on one report, or once its read-index batch is
+/// unanswered for 3 s (then dropped, rule 12), naming no leader; a withheld leader's appends count as no leader seen.
+/// A group with a request waiting and two voters up and linked completes one within 30 s on 4,000 live seeds [measured,
+/// simulator, `tests/m0/results/f67.md`]: a leader whose entry, read, or transfer no quorum answered for ELECTION_AFTER
+/// stops leading (F67). Only `home` gets `/campaign`; pre-vote denies a higher site id with an equal log [inference,
+/// wire-fix]. Only a voter that may lead and was not refused as suspected denies a rival as contending. A promise bars
+/// votes for a rival of its leader, not for that leader, and an edge answered `NotLeader` naming none also reports to
+/// that member, so a deposed leader with the newest log can win the next term while promises run (11 s idle without).
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.

@@ -2,7 +2,8 @@
 //!
 //! `cargo test -p graftyard-raft` runs `SEEDS` seeds. `RAFT_SEEDS=n RAFT_STEPS=m cargo test -p graftyard-raft --release
 //! --test sim -- --ignored --nocapture` runs the long sweep, and `RAFT_HISTORY=path` also writes every seed's history
-//! for `tests/m0/porcupine` (the gray half to `path.gray`).
+//! for `tests/m0/porcupine` (the gray half to `path.gray`, the live half, at least `LIVE_SEEDS_MIN` seeds, to
+//! `path.live`).
 
 mod common;
 
@@ -302,6 +303,24 @@ fn a_half_hung_leader_cannot_hold_its_followers() {
     }
 }
 
+/// F67 rule 10: main left these two live seeds leaderless with requests waiting for 33.0 s and 37.4 s, past the
+/// 2,000 seeds the long sweep then ran: a drained or stepping-down leader handed leadership to a member it refused in
+/// pre-vote as `Suspected` (`a_leader_hands_off_to_no_member_it_suspects`).
+#[test]
+fn a_leader_hands_off_to_no_member_it_suspects_live() {
+    for seed in [12_048, 12_073] {
+        sweep_with(seed..seed + 1, 10_000, live_faults);
+    }
+}
+
+/// Seeds the long sweep's live half runs at least, from 10,000, whatever `RAFT_SEEDS` says: main passed the bound on
+/// 10,000 to 11,999 while 12,048 (33.0 s) and 12,073 (37.4 s) broke it, so a 2,000-seed window hid an F67 path
+/// (`tests/m0/results/f67.md`, "Rule 10 and the wider window").
+const LIVE_SEEDS_MIN: u64 = 4_000;
+
+/// The documented run: `RAFT_SEEDS=2000 RAFT_STEPS=10000 RAFT_HISTORY=path cargo test -p graftyard-raft --release
+/// --test sim long_sweep -- --ignored --nocapture`, then `tests/m0/porcupine -seg 2000` on `path`, `path.gray`, and
+/// `path.live`. HARSH and GRAY run `RAFT_SEEDS`; the live half runs at least LIVE_SEEDS_MIN.
 #[test]
 #[ignore = "long sweep: RAFT_SEEDS, RAFT_STEPS"]
 fn long_sweep() {
@@ -310,7 +329,7 @@ fn long_sweep() {
     sweep(10_000..10_000 + seeds, steps, Faults::HARSH);
     // The same seeds count again under gray faults, then under F67's live mixes, whose histories go to `path.live`.
     sweep(10_000..10_000 + seeds, steps, Faults::GRAY);
-    sweep_with(10_000..10_000 + seeds, steps, live_faults);
+    sweep_with(10_000..10_000 + seeds.max(LIVE_SEEDS_MIN), steps, live_faults);
 }
 
 fn row(client: usize, call: u64, ret: u64, op: HOp, out: Option<HOut>) -> Row {
