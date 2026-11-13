@@ -1323,3 +1323,30 @@ apac leader the row asks for lasts about 10 s.
   s), its storage confirms go over 500 ms 6 times in 29, and the confirm rule moves it; after that, followers and the
   edge shed the access-row reads as overloaded. Which of leader CPU, the identity groups, or the shards limits it
   first is not traced. The CPU correlation for this row is not computed: the leader moved 15 times.
+
+**B0-34** (131293, journey 9 replay, 500 agents, 600 s, the home shard killed at 300 s, k left to `fanout`,
+standard-2 shards, 03:25:40 to 03:35:40Z) [measured]: **not the row as written, and a fail on the lines it ran.**
+
+The driver runs only the first two parts of B0-34: the replay and one warm-site shard kill. The 5 GB network, the
+tip moving along real history, the second network turning hot with the API unreachable, and the hostile owner are not
+in `tests/fanout/rows.sh`, so "k set in band from `NetworkLoad` and the hot pool" and "the hostile owner held to its
+per-owner pool budget" are not measured.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| k set in band from `NetworkLoad`, at most 8 per site | k stayed 1 (`k 1 at 7`, `k 1 at 2812`); 10 `/fanout` reports reached the leader, answered `ok` in 5 to 20 ms, none stepped | k never moved; not shown in band |
+| Human push p99 at most 3 s beyond transfer | 65.2 s (p50 4.1 s); 255 ok, 28 `stale:race`, 1 `stale`, 1 `warming` refusal | fail |
+| Clone time to first byte p99 at most 1 s throughout (fail over 5 s) | 3.68 s (p50 739 ms), 602 of 603 | miss, not a fail |
+| No Cloudflare API call | none from a request path seen | pass |
+
+Agent pushes 2,244 of 2,500 ok, 247 refused `unpacker error: site N's shard answered N: {"warming":true}`, 5
+"Network connection lost"; agent push p99 64.0 s. Commit p99 744 ms (p50 415), leader at term 2 throughout, 107
+req/s, 0 feed polls, 1 failed call; no `STEP_DOWN` in the window. Longest leaderless stretch with requests waiting: 0
+s. Merge:only p99 67.8 s.
+
+Why k stayed 1 [inference from code]: `fanout` steps k up only when the larger warm-site `cpu_p99` stays over
+`FANOUT_UP` (0.75) for `FANOUT_UP_FOR` (180 s) (`crates/git/src/shard.rs`). The shard's `cpu_p99` excludes derived
+work and is the p99 of one-second busy fractions over a 2-vCPU container. That the replay's one network did not hold a
+standard-2 shard's client validates over 75% for 3 minutes is consistent with the 25.2 agent commands/s and 4.2
+pushes/s offered. The 64 s push tails then come from the kill and the `warming` answers, not from CPU-bound shards.
+The reports' loads are not logged, so this is not measured.
