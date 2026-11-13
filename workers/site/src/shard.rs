@@ -493,6 +493,13 @@ impl DurableObject for GitShard {
                 Some(_) => host.load().await.ok(),
                 None => None,
             };
+            // Whether a rehydrate's place is kept (`ShardHost::rehydrating`), and the cursor this isolate's latest
+            // catch-up reached, so a kill run can show the mark holds until the shard reaches the head.
+            let rehydrating = match net {
+                Some(n) => Some(host.rehydrating(n).await),
+                None => None,
+            };
+            let cursor = net.and_then(|n| CURSORS.with(|m| m.borrow().get(&(self.run_key.clone(), n.0.0)).copied()));
             return Response::from_json(&json!({
                 "running": running,
                 "alarm": self.state.storage().get_alarm().await?,
@@ -500,6 +507,8 @@ impl DurableObject for GitShard {
                 "load": load,
                 "k": net.map(fanout_k),
                 "pool": net.map(pool_slots),
+                "rehydrating": rehydrating,
+                "cursor": cursor,
             }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.

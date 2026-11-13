@@ -60,6 +60,8 @@ struct Queued<C> {
     /// Its encoded length, and the Agent-class inline pack bytes it carries (0 for every other class).
     bytes: usize,
     agent_inline: usize,
+    /// Its encoded length without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
+    soft_bytes: usize,
     at: Timestamp,
 }
 
@@ -72,7 +74,8 @@ struct Admission<C> {
     agent_inline: usize,
     tokens: f32,
     tokens_at: Timestamp,
-    /// The commit round of an `Events` entry, and the encoded bytes of an admitted command, as moving averages.
+    /// The commit round of an `Events` entry, and the encoded bytes of an admitted command without its Agent inline pack,
+    /// as moving averages.
     round_ms: f32,
     cmd_bytes: f32,
     /// When the last `Events` entry was cut.
@@ -735,8 +738,9 @@ impl<C: Command> Member<C> {
                 let seq = lead.seq;
                 lead.by_request.insert(id, seq);
                 let ad = &mut lead.admission;
-                ad.cmd_bytes = 0.98 * ad.cmd_bytes + 0.02 * len as f32;
                 let agent_inline = if class == AdmitClass::Agent { a.inline } else { 0 };
+                let soft_bytes = len.saturating_sub(agent_inline);
+                ad.cmd_bytes = 0.98 * ad.cmd_bytes + 0.02 * soft_bytes as f32;
                 if class == AdmitClass::Agent {
                     ad.agent_bytes += len;
                     ad.agent_inline += agent_inline;
@@ -745,7 +749,7 @@ impl<C: Command> Member<C> {
                     *ad.pending_by.entry(actor).or_insert(0) += 1;
                     ad.seq_actor.insert(seq, actor);
                 }
-                let q = Queued { seq, id, cmd, bytes: len, agent_inline, at: now };
+                let q = Queued { seq, id, cmd, bytes: len, agent_inline, soft_bytes, at: now };
                 ad.lanes[class.lane()].push(a.actor, q);
                 seq
             }
@@ -1000,23 +1004,27 @@ impl<C: Command> Member<C> {
     }
 
     /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
-    /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within
-    /// `soft` bytes (ENTRY_SOFT unless the host set it); the first command of an entry always goes, up to ENTRY_MAX. An
-    /// entry's Agent inline pack bytes stay within AGENT_INLINE_ENTRY because admission stages any agent pack that would
-    /// take the queued ones past it.
+    /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within `soft`
+    /// bytes (ENTRY_SOFT unless the host set it) not counting Agent inline packs, and within ENTRY_MAX counting them;
+    /// the first command of an entry always goes, up to ENTRY_MAX. Agent packs have their own bound: admission stages
+    /// any that would take the queued ones past AGENT_INLINE_ENTRY. Counted against `soft` as well, one 10 to 70 KB
+    /// agent pack filled an entry, and B0-29's commit p99 at 500 agents went from 702 to 1,718 ms (LM-1,
+    /// `tests/am1/results/lm1-memory.md`, round 9). Human, MergeQueue and Bot packs, which no other rule bounds, count.
     fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>, soft: usize) -> Vec<Queued<C>> {
         let ad = &mut lead.admission;
         let cap = ad.capacity(fixed, soft);
         ad.refill(now, cap);
         let mut batch: Vec<Queued<C>> = Vec::new();
-        let mut bytes = 0;
-        let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize| {
-            q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= soft)
+        // (bytes ENTRY_SOFT counts, all bytes)
+        let mut bytes = (0, 0);
+        let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], b: (usize, usize)| {
+            q.is_some_and(|q| batch.is_empty() || (b.0 + q.soft_bytes <= soft && b.1 + q.bytes <= ENTRY_MAX))
         };
+        let add = |b: (usize, usize), q: &Queued<C>| (b.0 + q.soft_bytes, b.1 + q.bytes);
         for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
             while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
                 let q = ad.take(class).expect("front");
-                bytes += q.bytes;
+                bytes = add(bytes, &q);
                 batch.push(q);
             }
         }
@@ -1025,17 +1033,17 @@ impl<C: Command> Member<C> {
         let mut n = 0;
         while n < floor && ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
-            (bytes, n, ad.tokens) = (bytes + q.bytes, n + 1, ad.tokens - 1.0);
+            (bytes, n, ad.tokens) = (add(bytes, &q), n + 1, ad.tokens - 1.0);
             batch.push(q);
         }
         while fits(ad.lanes[AdmitClass::Bot.lane()].front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Bot).expect("front");
-            bytes += q.bytes;
+            bytes = add(bytes, &q);
             batch.push(q);
         }
         while ad.tokens >= 1.0 && fits(ad.agent().front(), &batch, bytes) {
             let q = ad.take(AdmitClass::Agent).expect("front");
-            (bytes, ad.tokens) = (bytes + q.bytes, ad.tokens - 1.0);
+            (bytes, ad.tokens) = (add(bytes, &q), ad.tokens - 1.0);
             batch.push(q);
         }
         if !batch.is_empty() {

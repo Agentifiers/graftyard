@@ -13,23 +13,25 @@ import sys
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 LEADER = 'crates/raft/src/member/leader.rs'
 LIB = 'crates/raft/src/lib.rs'
-SCEN = ['cargo', 'test', '-q', '-p', 'graftyard-raft', '--test', 'scenarios']
-ADMIT = ['cargo', 'test', '-q', '-p', 'graftyard-raft', '--test', 'admission']
-RAFT = ['cargo', 'test', '-q', '-p', 'graftyard-raft']
+SCEN = ['cargo', 'test', '-q', '--release', '-p', 'graftyard-raft', '--test', 'scenarios']
+ADMIT = ['cargo', 'test', '-q', '--release', '-p', 'graftyard-raft', '--test', 'admission']
+RAFT = ['cargo', 'test', '-q', '--release', '-p', 'graftyard-raft']
 
-CUT = 'q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= soft)'
+CUT = 'batch.is_empty() || (b.0 + q.soft_bytes <= soft && b.1 + q.bytes <= ENTRY_MAX)'
 MUTANTS = [
     ('the cut caps at ENTRY_MAX again (no soft cap)', LEADER, CUT,
-     'q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= ENTRY_MAX)', SCEN),
+     'batch.is_empty() || (b.1 + q.bytes <= ENTRY_MAX)', SCEN),
     ('the cut splits early, at half the cap', LEADER, CUT,
-     'q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= soft / 2)', SCEN),
+     'batch.is_empty() || (b.0 + q.soft_bytes <= soft / 2 && b.1 + q.bytes <= ENTRY_MAX)', SCEN),
     ('the first command no longer always goes, so a command over the cap never commits', LEADER, CUT,
-     'q.is_some_and(|q| bytes + q.bytes <= soft)', RAFT),
+     '(b.0 + q.soft_bytes <= soft && b.1 + q.bytes <= ENTRY_MAX)', RAFT),
     ('the cap off by one command (strict less-than plus a command)', LEADER, CUT,
-     'q.is_some_and(|q| batch.is_empty() || bytes <= soft)', SCEN),
+     'batch.is_empty() || (b.0 <= soft && b.1 + q.bytes <= ENTRY_MAX)', SCEN),
     ('the bytes counter is not advanced for Human commands', LEADER,
-     '                let q = ad.take(class).expect("front");\n                bytes += q.bytes;\n                batch.push(q);\n            }\n        }',
+     '                let q = ad.take(class).expect("front");\n                bytes = add(bytes, &q);\n                batch.push(q);\n            }\n        }',
      '                let q = ad.take(class).expect("front");\n                batch.push(q);\n            }\n        }', SCEN),
+    ('the soft cap counts Agent inline packs again (LM-1 round 9)', LEADER,
+     'let soft_bytes = len.saturating_sub(agent_inline);', 'let soft_bytes = len;', ADMIT),
     ('capacity still sized from ENTRY_MAX, so admission over-admits', LEADER,
      'let per_entry = (soft as f32 / self.cmd_bytes.max(CMD_BYTES_MIN)).max(1.0);',
      'let per_entry = ENTRY_MAX as f32 / self.cmd_bytes.max(CMD_BYTES_MIN);', ADMIT),

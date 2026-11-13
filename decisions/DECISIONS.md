@@ -689,7 +689,7 @@ A fresh read-only agent, WalkRest, walked Milestone 4, Milestone 7, AM4, and the
 
 **Evidence.** `history/review/walk-rest-interrogate.md` WK-X10. `history/review/walk-rest-reports.md`, WriterX2. `design/DESIGN.md`, Shape, "Identity" (`SearchShard`).
 
-**Flip.** None stated. FTS5 inside Durable Object SQLite is not yet confirmed (`decisions/OPEN-QUESTIONS.md`, C15).
+**Flip.** None stated. FTS5 inside Durable Object SQLite, under the `eu` jurisdiction too, was confirmed on 2026-11-13 (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`).
 
 ### Rate limits count in one `RateCounter` per key, with a stated error bound
 
@@ -2202,6 +2202,39 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 
 **Status, 2026-11-11: F65 narrowed, not answered.** On `d9ee594` the 500-agent smoke held every member under 80 MB with 1,237 of 1,242 pushes ok, but B0-29's apac leader reached 262 MB, and about 600 cheap reads completed in one millisecond after a stall and then `exceededMemory`; the rows fail on leader step-downs from `Confirm` and `CommitErrors` (`build/BUILD-PLAN.md`, AM1-WP6, "After the read cap"). Next hypothesis [unverified]: one quorum round grants every waiting read and the host builds all their answers before sending any. The round now running caps every leader read in flight and streams the granted answers. The `Fresh` rule in `design/DESIGN.md`, "Commit and read paths", is reworded to admit the dump cache, whose key is read after the lease check.
 
+### C15 answered, and M4-WP2's pure half, 2026-11-13
+
+A hosted probe confirmed FTS5 in Durable Object SQLite under `eu` and with no jurisdiction (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`). M4-WP2's pure half then passed BF-5, BF-67, and BF-68 in memory (`tests/m4/results/m4-wp2.md`).
+
+#### M4-WP2's pure half: formats, tags, and three design points
+
+**Decision.** M4-WP2 takes repository format 32.19 (`REPO_FORMAT_WATCH`) and Identity format 0x14.3, the next free ones on main (32.17 is `REPO_FORMAT_LIFECYCLE`, and 32.18 is `REPO_FORMAT_CHECKS`). Wire tags, appended: `RepoEvent` 42 `Watchers`; `IdentityEvent` 6 `Record` and 7 `CountsCursor`; `IdentityOp` 8 `SetRecord` and 9 `CountsCursor`. New enums: `UserRecord`, `WatcherUpdate`, `inbox::Reason`, and `search::Domain`. Three design points. DESIGN, Shape, "Identity", states the first two, and `crates/identity/src/identity.rs` states the third:
+- A watcher row is the account's whole state for its key at `src`, never a delta.
+- `Counts` keeps a `CountsCursor` on each account's `Identity` chain, and `Notify` and `Search` commit SHARED's `ConsumerCursor` on the repository chain after their work.
+- `ThreadId { repo, number }` with REST id `repo << 24 | number`.
+
+**Why.**
+- A row that carries the full state at a fold index is idempotent and order-free under Queues' at-least-once delivery. The consumer needs no per-record bookkeeping, and an older batch is refused by comparing one index.
+- A consumer that reads one chain and writes others moves its cursor on the chain it reads, after the work, as SHARED's "Other consumers" rule already says.
+- GHES's thread id is an opaque string, so packing (repository, number) lets the edge route `/notifications/threads/{id}` with no lookup table [inference].
+
+**Beat.**
+- Sending each `UserRecord` as a delta, which a reordered redelivery would apply out of order.
+- A thread-id table in the Inbox, which a rebuilt Inbox would have to reproduce identically.
+- A shared cursor format, which would give `Counts` a cursor on chains it never writes.
+
+**Evidence.** `tests/m4/results/m4-wp2.md` [measured, in memory]:
+- BF-5: star and notice both visible after 1,400 ms.
+- BF-67: the rebuilds kept read and done state and every `sources` event; 10,000 stars were listed live and after a refold with an equal metadata digest; a redelivery applied 0.
+- BF-68: EU documents only in `eu` shards; 7 of 13 hits with `incomplete_results` while a shard was killed; 14 of 14 after the generation-2 rebuild.
+- 30 of 30 plants caught. 8 REST replies valid against GHES 3.22.
+- `crates/git/tests/wire_tags.golden`: 24 lines added, none removed.
+
+**Flip.**
+- For the tags: none, once released.
+- For the thread id: a repository id past 2^39 or an issue number past 2^24, which the packing cannot hold.
+- For the watcher rows: a hosted `Counts` lagging past BF-5's 10 s because each batch carries whole state.
+
 ### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
 
 `fanout` removed the git shard's per-network validate lock and built `fanout`; its hosted 500-agent reruns on `graft-m2b` then failed on the edge read gate. `04487ca` caches the gate's installation-token decisions, and LM-1's load rows are being rerun. M4-WP1's pure half passed BF-57 and BF-58 in memory (`tests/am1/results/fanout.md`; `tests/m4/results/m4-wp1.md`; `build/BUILD-PLAN.md`, AM1-WP1, AM1-WP6, and M4-WP1).
@@ -2397,6 +2430,8 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 **Flip.** A hosted A/B at the same rate where capped entries do not lower commit p99 or the count of heavy `/commit` turns, or confirm p99 that stops growing with entry size.
 
 **Measured, 2026-11-13 (`m0-carried-7`).** The cap removes big-entry heavy turns: a 20 s smoke at 330 offered ran 85 commands per entry uncapped (CPU p999 98 ms, 11 `/commit` turns of 80 ms or more, commit p99 1,000 ms) against 42 capped (14 ms, 0, 276 ms). It does not pass B0-02: over two same-window A/Bs, 60 KB passed 4 of 8, 80 KB 7 of 8 and 5 of 8, and no cap 7 of 8. The failures were a lagging leader loop under the cap and near-follower calls held about 1 s while the leader was idle (`tests/m0/results/carried-7.md`). The cap stays, because it bounds the turn's CPU and stays under the body step; whether it is worth its rounds is the flip above, which the A/Bs neither met nor ruled out.
+
+**Amended, 2026-11-13 (`m0-entry-soft-packs`): the cap counts no Agent inline pack bytes.** The flip was met on journey 9. On `graft-m2b` (500 agents, standard-4, 8 learners, 180 s, one deploy), 60 KB put B0-29's commit p99 at 1,718 ms, against 702 ms with entries filled to `ENTRY_MAX`. Commands waited for an entry at p99 1,583 ms against 507 ms, while the round fell from 202 to 151 ms and the leader ran at about 9% CPU [measured, `tests/am1/results/lm1-memory.md`, round 9]. Agent packs of 10 to 70 KB go inline, so one push filled an entry, and admission's capacity shrank with the cap. Agent inline bytes already have their own per-entry bound, `AGENT_INLINE_ENTRY` (128 KiB), so the cap now counts an entry's other bytes, and the entry's full bytes stay within `ENTRY_MAX`. Human, MergeQueue and Bot packs still count, because no other rule bounds them. Admission's capacity estimate uses the same bytes. B0-02 has no packs, so its entries are unchanged. In the simulator on journey 9's mix, commit p99 was 365 ms capped against 245 ms at `ENTRY_MAX` before the change, and 245 ms against 245 ms after it (`entry_soft_does_not_slow_journey_9`, `crates/raft/tests/admission.rs`) [measured, simulator]. An entry can now reach about 60 KB plus 128 KiB, so it can cross the 64 KiB body step again. The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) passed with longest stretches of 16.0, 24.0 and 29.8 s, and Porcupine read Ok on all three histories, 6,000 segments each; plants 9 of 9 (`tests/m0carried/plant.py`). Pending: the hosted A/B on journey 9 decides this amendment, LM-1's m21 rows capped against `ENTRY_MAX` on this code.
 
 ### `narrow-reads-2`: API reads start with their identity and name reads at once, cached per isolate for `READ_CACHE`, 2026-11-12
 
@@ -2657,6 +2692,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/am1/results/hot-shards-3.md`: A31's run (k stayed 1 through three cold rehydrates), j9g on standard-4 (push p99 4.70 s, 16 in-flight 503s, fsck clean on three shards, 0 depth errors), and the local B0-29-like runs (CPU 19.5 to 25.3 CPU-s/min down to 12.9 to 16.3; validate p99 up to 1,948 ms down to under 140 ms). Plants 38 to 46.
 
 **Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
+
+### A shard's repack searches deltas, waits for no lock but fsck waits for it, and a busy member serves 1 MB local pages (2026-11-13)
+
+**Decision.** `runRepack` runs `git repack -d --geometric=2` with git's default delta window, and the split commit-graph after it stays. `/fsck` waits for a running repack, as evict does. A member's local `/entries` page is at most `ENTRIES_BUSY_PAGE_BYTES` (1 MB) while `ENTRIES_BUSY_READS` (1) or more other reads are in flight, and up to `ENTRIES_LOCAL_PAGE_BYTES_MAX` (4 MB) on an idle member.
+
+**Why.** `--window=0` was added while a repack held the network's lock, and its 1 to 5 s delta search queued every validate. LM-1 round 7 took the repack out of the lock, so the search no longer delays anything, and a local B0-29-like A/B on the merged container showed the same CPU and validate p99 either way. Meanwhile `--window=0` kept every pushed version of a file whole: shards held 2.07 times the pushed bytes of real history and 13 times journey 9's. With the repack out of the lock, it could delete the packs it rolled up under a running fsck, and site c's fsck answered `ok: false` just after a rehydrate's repack. A 4 MB page built beside a busy member's other reads put site b's member near its 128 MB, and it trapped in F47's shape.
+
+**Beat.** Keeping `--window=0` with a nightly full repack, which still grows disk between nights and costs a second repack path. Taking the network's write lock for fsck, which would block every validate and fetch for the fsck's seconds. A page cap from the member's wasm memory, which only grows and so would cap every page after the first spike.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md` ("`--window=0` disk growth", "Site b's trap", the j9w fsck) and `tests/am1/results/hot-shards-4.md`. `TestRefsRepacksPastRepackAt` (deltas across packs), `TestRepackHoldsNoNetworkLock` (fsck waits, then answers ok), `only_a_local_entries_read_gets_a_larger_page`, and plants 56 to 58.
+
+**Flip.** A hosted run where the default-window repack's CPU, which is derived and outside `NetworkLoad`, starves validates on a standard-4; a member trap at a 1 MB page under load; or 1 MB pages that make a busy shard's catch-up fall behind journey 9's push rate.
 
 ### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
 

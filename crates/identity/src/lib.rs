@@ -55,8 +55,9 @@ pub use credential::{
 };
 pub use identity::{
     AUDIT_KEEP, AccountCapture, AuditEvent, CredentialEvent, CredentialRef, IDENTITY_FORMAT, IDENTITY_FORMAT_V2,
-    IdentityCmd, IdentityErr, IdentityEvent, IdentityFold, IdentityMore, IdentityOp, IdentityScratch, SessionEvent,
-    SsoEvent, key_fingerprint,
+    IDENTITY_FORMAT_V3, IdentityCmd, IdentityErr, IdentityEvent, IdentityFold, IdentityMore, IdentityOp,
+    IdentityScratch, RecordAt, SessionEvent, SsoEvent, ThreadId, ThreadRow, UserRecord, UserRows, WatchRow,
+    key_fingerprint,
 };
 pub use ids::{IdBlock, IdCursor, IdsCmd, IdsErr, IdsEvent, IdsFold, IdsScratch};
 pub use names::{
