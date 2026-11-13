@@ -615,7 +615,8 @@ fn search_scratch(table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
 }
 
 /// The FTS5 rows for a metadata row: an issue's or pull request's title and body under its number, a comment's body
-/// under its id. A contentless table deletes by rowid, so each write replaces the rowid's entry.
+/// under its id. A contentless table deletes by rowid, so each write replaces the rowid's entry. A split parent's
+/// slimmed text (`graftyard_git::split::SLIMMED`) is indexed on the metadata child, which holds it, not here.
 fn search_in(pre: &str, table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stmt> {
     let (issue, comment) = fts_names(pre);
     let (fts, id) = match (table, key.first()) {
@@ -632,12 +633,16 @@ fn search_in(pre: &str, table: &str, key: &Key, row: Option<&Stored>) -> Vec<Stm
     let Some(b) = row.and_then(rec) else { return out };
     if table == "issue" {
         let r: graftyard_git::tiers::IssueRow = postcard::from_bytes(&b).expect("an issue row");
+        let body = if &*r.body == graftyard_git::split::SLIMMED { "" } else { &r.body };
         out.push((
             leak(format!("INSERT INTO {fts} (rowid, title, body) VALUES (?, ?, ?)")),
-            vec![SqlStorageValue::Integer(id), r.title.to_string().into(), r.body.to_string().into()],
+            vec![SqlStorageValue::Integer(id), r.title.to_string().into(), body.into()],
         ));
     } else {
         let r: graftyard_git::tiers::CommentRow = postcard::from_bytes(&b).expect("a comment row");
+        if &*r.body == graftyard_git::split::SLIMMED {
+            return out;
+        }
         out.push((
             leak(format!("INSERT INTO {fts} (rowid, body) VALUES (?, ?)")),
             vec![SqlStorageValue::Integer(id), r.body.to_string().into()],

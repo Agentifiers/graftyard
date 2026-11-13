@@ -52,26 +52,32 @@ pub async fn route(h: &Rc<Host<Repo>>, b: &Value) -> Result<Value> {
 
 /// `ctx.storage.sql.databaseSize` as the `f64` the runtime returns.
 pub fn db_bytes(h: &Host<Repo>) -> f64 {
-    let storage = h.state.storage();
-    let raw: &worker::wasm_bindgen::JsValue = storage.as_raw().as_ref();
-    let sql = js_sys::Reflect::get(raw, &"sql".into()).unwrap_or_default();
-    js_sys::Reflect::get(&sql, &"databaseSize".into()).ok().and_then(|v| v.as_f64()).unwrap_or(-1.0)
+    crate::split::db_bytes(h)
 }
 
 fn size(h: &Rc<Host<Repo>>) -> Result<Value> {
     let sql = h.state.storage().sql();
     let one = |q: &str| -> Result<i64> { rows(&sql, q, vec![])?.first().map_or(Ok(0), |r| int(&r[0])) };
-    let (role, applied, commit, promoted) = {
+    let (role, applied, commit, promoted, split) = {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or_else(|| err("not joined"))?;
-        let promoted = c.m.group_fold().fold.promoted().map_or(0, |p| p.to.0);
-        (format!("{:?}", c.m.role()), c.m.state().applied.0, c.m.state().commit.0, promoted)
+        let f = &c.m.group_fold().fold;
+        let promoted = f.promoted().map_or(0, |p| p.to.0);
+        // The metadata split (`crate::split`): its state, the parent's slim cursor, and a child's restore.
+        let split = json!({
+            "state": git::split::SplitState::of(&*f.core),
+            "slim": f.meta.loaded().then(|| git::split::slim_cursor(&f.meta)).flatten(),
+            "child": f.child,
+            "childLoaded": f.child && crate::split::child_loaded(f),
+        });
+        (format!("{:?}", c.m.role()), c.m.state().applied.0, c.m.state().commit.0, promoted, split)
     };
     let above = rows(&sql, "SELECT COALESCE(SUM(length(row)), 0) FROM log WHERE idx > ?", vec![i(promoted)])?
         .first()
         .map_or(Ok(0), |r| int(&r[0]))?;
     Ok(json!({
         "dbBytes": db_bytes(h),
+        "split": split,
         "role": role,
         "applied": applied,
         "commit": commit,

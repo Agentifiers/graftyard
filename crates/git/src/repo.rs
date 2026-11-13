@@ -370,6 +370,9 @@ pub enum RepoEvent {
     // M4-WP2, format 32.19 (`crate::watch::REPO_FORMAT_WATCH`): tag 42.
     /// Metadata. The `Counts` consumer's watcher rows (`crate::watch`), each newer than the row it replaces.
     Watchers(Vec<crate::watch::WatcherUpdate>),
+    // Format 32.20 (`crate::split::REPO_FORMAT_SPLIT`): tag 43.
+    /// A metadata split's steps (`crate::split`), which only the parent's or the child's leader records itself.
+    Split(crate::split::SplitEntry),
 }
 
 impl RepoEvent {
@@ -426,11 +429,19 @@ pub struct RepoFold {
     pub owner: Option<AccountId>,
     pub core: Box<dyn TierStore>,
     pub meta: Box<dyn TierStore>,
+    /// The repository's metadata child group (`ChainId::RepoMeta`, `crate::split`), not the repository's own chain.
+    pub child: bool,
 }
 
 impl Default for RepoFold {
     fn default() -> RepoFold {
-        RepoFold { repo: None, owner: None, core: Box::new(MemStore::default()), meta: Box::new(MemStore::default()) }
+        RepoFold {
+            repo: None,
+            owner: None,
+            core: Box::new(MemStore::default()),
+            meta: Box::new(MemStore::default()),
+            child: false,
+        }
     }
 }
 
@@ -438,7 +449,7 @@ impl Default for RepoFold {
 impl PartialEq for RepoFold {
     fn eq(&self, o: &RepoFold) -> bool {
         let meta = |f: &RepoFold| f.meta.loaded().then(|| fold_digest(&*f.meta, Tier::Metadata));
-        (self.repo, self.owner) == (o.repo, o.owner)
+        (self.repo, self.owner, self.child) == (o.repo, o.owner, o.child)
             && fold_digest(&*self.core, Tier::Core) == fold_digest(&*o.core, Tier::Core)
             && meta(self) == meta(o)
     }
@@ -456,7 +467,7 @@ impl RepoFold {
         core: Box<dyn TierStore>,
         meta: Box<dyn TierStore>,
     ) -> RepoFold {
-        RepoFold { repo, owner, core, meta }
+        RepoFold { repo, owner, core, meta, child: false }
     }
 
     /// The tiers' chain-specific half. A fold with no repository (the CLI's latency probe) uses repository 0.
@@ -547,9 +558,11 @@ impl RepoFold {
         graftyard_fold::apply(&t, &mut *self.core, Tier::Core, e).expect("core tier applies the next entry");
     }
 
+    /// A metadata child's tier is its parent's snapshot, restored once (`crate::split`): no entry of its own log
+    /// writes it.
     pub fn apply_meta(&mut self, e: &LogEntry<RepoEvent>) {
         let t = self.tiers();
-        if self.meta.loaded() {
+        if self.meta.loaded() && !self.child {
             graftyard_fold::apply(&t, &mut *self.meta, Tier::Metadata, e)
                 .expect("metadata tier applies the next entry");
         }
@@ -745,6 +758,7 @@ impl Scratch for RepoScratch<'_> {
                 let prev: Option<Archived> = get_rec(&self.core, "archived", &[]);
                 return check_archived(self.base.repo, prev.as_ref(), promoted.as_ref(), a);
             }
+            RepoEvent::Split(x) => return crate::split::check(&self.core, self.base.repo, self.base.child, x),
             _ => return Ok(()),
         };
         let mut seen: BTreeMap<&RefName, Option<ObjectId>> = BTreeMap::new();
@@ -1737,6 +1751,7 @@ impl Record for RepoEvent {
             RepoEvent::HookCursor(c) => return tagged(out, 41, c),
             // M4-WP2, 32.19: tag 42.
             RepoEvent::Watchers(u) => return tagged(out, 42, u),
+            RepoEvent::Split(x) => return tagged(out, 43, x),
         };
         e.u8(0);
         e.u128(push.0.0);

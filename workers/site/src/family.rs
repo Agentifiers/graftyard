@@ -195,6 +195,14 @@ pub trait Family: 'static {
         Self: Sized,
     {
     }
+    /// Rows an answer built from the fold lacked (`crate::split::take_missed`): read them where the family keeps
+    /// them, so the answer can be built again.
+    async fn fetch_missed(_host: &std::rc::Rc<crate::host::Host<Self>>, _missed: &Value) -> Result<(), String>
+    where
+        Self: Sized,
+    {
+        Ok(())
+    }
     /// After restore built the core: the stored install source, and a load job to resume.
     fn restored(_host: &std::rc::Rc<crate::host::Host<Self>>)
     where
@@ -249,7 +257,9 @@ impl Kind {
             #[cfg(not(feature = "test-faults"))]
             ChainId::Repo(_) => Some(Kind::Repo),
             ChainId::Identity(_) => Some(Kind::Identity),
-            ChainId::Network(_) | ChainId::Actions(..) | ChainId::RepoMeta(_) => None,
+            // A repository's metadata child (`crate::split`) is hosted by the repository family.
+            ChainId::RepoMeta(_) => Some(Kind::Repo),
+            ChainId::Network(_) | ChainId::Actions(..) => None,
         }
     }
 }
@@ -262,7 +272,7 @@ pub struct Repo;
 
 fn repo_of(join: &Join) -> Option<RepoId> {
     match join.chain {
-        ChainId::Repo(r) => Some(r),
+        ChainId::Repo(r) | ChainId::RepoMeta(r) => Some(r),
         _ => None,
     }
 }
@@ -311,7 +321,13 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
     let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
     let index = graftyard_fold::meta(&*fold.core).applied.0;
-    let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
+    let mut rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
+    // A split parent's slimmed rows, filled from the child's; a dump that missed a child row is not kept.
+    let m0 = crate::split::mark();
+    crate::split::fill_answer(fold, &mut rows);
+    if let Some(miss) = crate::split::since(m0) {
+        return Some(serde_json::to_vec(&miss).unwrap_or_default().into());
+    }
     // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
     let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows.packed()).unwrap_or_else(|_| b"null".to_vec()).into();
     BUILDS.with(|b| b.set(b.get() + 1));
@@ -392,8 +408,11 @@ pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc
     if let Some(b) = hit {
         return Some(b);
     }
-    let bytes: std::rc::Rc<[u8]> =
-        serde_json::to_vec(&<Repo as Family>::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into();
+    let v = <Repo as Family>::read_json(fold, q);
+    let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&v).unwrap_or_else(|_| b"null".to_vec()).into();
+    if crate::split::is_miss(&v) {
+        return Some(bytes);
+    }
     NARROW.with(|n| {
         let mut n = n.borrow_mut();
         if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {
@@ -504,6 +523,8 @@ pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
         Some(Value::Bool(true)) => meta_loaded,
         Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,
         Some(r) if r.get("api").is_some() => meta_loaded,
+        // A metadata child's rows (`crate::split::child_rows`): any member whose restored tier is loaded.
+        Some(r) if r.get("child").is_some() => meta_loaded,
         Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
         None => false,
     }
@@ -513,6 +534,109 @@ pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
 pub fn forget_dumps() {
     DUMPS.with(|d| d.borrow_mut().clear());
     NARROW.with(|n| n.borrow_mut().clear());
+}
+
+/// Whether a repository member's metadata tier serves reads and takes `apply`'s writes: once it stands where the
+/// core tier does, or on a metadata child once its seed's restore finished (`crate::split`).
+fn meta_loaded(fold: &git::repo::RepoFold, caught_up: bool) -> bool {
+    if fold.child { crate::split::child_loaded(fold) } else { caught_up }
+}
+
+/// `Repo::read_json` before a split parent's fills are checked (`crate::split`).
+fn repo_read(fold: &git::repo::RepoFold, q: &Value) -> Value {
+    // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
+    // `Audit` consumer's transfer plans.
+    if q.get("settings").is_some() {
+        return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise(),
+            "created": git::tiers::created(&*fold.core).is_some(),
+            "deleted": git::tiers::deleted(&*fold.core).is_some() });
+    }
+    if let Some(prs) = q.get("prsync") {
+        return crate::prsync::read_json(fold, prs);
+    }
+    if let Some(base) = q.get("mergequeue") {
+        return crate::merge_queue::read_json(fold, base);
+    }
+    // A metadata child's state and rows (`crate::split`), which its parent's leader and members read.
+    if q.get("split").is_some() {
+        return crate::split::child_view(fold);
+    }
+    if let Some(keys) = q.get("rows").and_then(|r| r.get("child")) {
+        return crate::split::child_rows(fold, keys);
+    }
+    // After a split, every read of the metadata tier sees each slimmed field filled from the child
+    // (`crate::split::with_filled`, `fill_answer`).
+    if let Some(of) = q.get("rows").and_then(graftyard_api::hosted::MergeOf::of_query) {
+        let mut t = crate::split::with_filled(fold, |m| {
+            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(m);
+            graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, of)
+        });
+        t.index = graftyard_fold::meta(&*fold.core).applied.0;
+        return serde_json::to_value(t).unwrap_or(Value::Null);
+    }
+    // A narrow API read (`graftyard_api::narrow`): the rows one REST or GraphQL reply reads, not both whole tiers.
+    if let Some(spec) = q.get("rows").and_then(|r| r.get("api")) {
+        let index = graftyard_fold::meta(&*fold.core).applied.0;
+        // The answer's metadata rows are recorded as `Filled` reads them.
+        return crate::split::with_filled(fold, |m| {
+            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(m);
+            graftyard_api::narrow::answer(&fold.core, meta, index, spec, &|| named_accounts(fold))
+        });
+    }
+    if q.get("rows").and_then(|r| r.get("access")).is_some() {
+        let core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
+        let index = graftyard_fold::meta(&*fold.core).applied.0;
+        return serde_json::to_value(graftyard_api::hosted::TierRows {
+            index,
+            core,
+            meta: None,
+            complete: true,
+            picks: None,
+        })
+        .unwrap_or(Value::Null);
+    }
+    if q.get("rows").and_then(|r| r.get("agent")).is_some() {
+        let core = graftyard_api::hosted::TierRows::agent_rows(&fold.core);
+        let index = graftyard_fold::meta(&*fold.core).applied.0;
+        return serde_json::to_value(graftyard_api::hosted::TierRows {
+            index,
+            core,
+            meta: None,
+            complete: true,
+            picks: None,
+        })
+        .unwrap_or(Value::Null);
+    }
+    // The packed dump, as `read_bytes` shares it (`dump_bytes`).
+    if let Some(b) = dump_bytes(fold, q) {
+        return serde_json::from_slice(&b).unwrap_or(Value::Null);
+    }
+    if q.get("rows").is_some() {
+        use graftyard_api::hosted::{Budget, TierRows};
+        let mut budget = Budget::READ;
+        let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
+        let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
+        let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
+        let index = graftyard_fold::meta(&*fold.core).applied.0;
+        let mut rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
+        crate::split::fill_answer(fold, &mut rows);
+        return serde_json::to_value(rows).unwrap_or(Value::Null);
+    }
+    if q.get("ranges").is_some() {
+        // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).
+        return json!({
+            "promoted": fold.promoted(),
+            "archived": fold.archived(),
+            "first": fold.first_index().0,
+            "fanout": fold.fanout_k(),
+        });
+    }
+    if q.get("tiers").is_some() {
+        return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));
+    }
+    // The refs: `{"refs": {..}}` one page of them, `{}` all of them only while they fit one page
+    // (`graftyard_git::group::refs_read`), so no reply grows with the ref count.
+    git::group::refs_read(fold, q)
 }
 
 impl Family for Repo {
@@ -551,14 +675,22 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
             git::issue_ops::call::REPO_FORMAT_CHECKS,
+            git::split::REPO_FORMAT_SPLIT,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
     /// joined with no owner holds none, and every push to it is refused `Forbidden` (`may_write` needs the owner's
     /// `Authz`). The metadata tier is attached by `load_fold`, never on a core request's path.
+    /// A metadata child (`repo-meta:<id>`) is hosted the same way; its tier is the parent's seed (`crate::split`).
     fn new_fold(sql: &SqlStorage, join: &Join) -> git::repo::RepoFold {
         let (core, meta) = crate::tier::repo_tiers(sql);
-        git::repo::RepoFold::with_tiers(repo_of(join), join.owner, Box::new(core), Box::new(meta))
+        let child = matches!(join.chain, ChainId::RepoMeta(_));
+        let mut f = git::repo::RepoFold::with_tiers(repo_of(join), join.owner, Box::new(core), Box::new(meta));
+        f.child = child;
+        if child {
+            crate::tier::handle(&*f.meta).set_loaded(crate::split::child_loaded(&f));
+        }
+        f
     }
     /// The tiers' writes, buffered by `apply`, as statements in the input's transaction (`crate::tier::TierSql`).
     fn store_fold(fold: &git::repo::RepoFold, _entries: &[&raft::LogEntry<Self::Ev>], stmts: &mut Vec<Stmt>) {
@@ -576,7 +708,7 @@ impl Family for Repo {
     /// the member following until it catches up. The ring waits for the owner's `Authz` (`crate::feed::Feed::owner`,
     /// read on the first poll) and keeps the entries meanwhile.
     fn stepped(m: &raft::Member<Self::C>, join: &Join, from: raft::Index, to: raft::Index, out: &raft::Out<Self::C>) {
-        let Some(repo) = repo_of(join) else { return };
+        let ChainId::Repo(repo) = join.chain else { return };
         let f = crate::feed::of(repo);
         let mut f = f.borrow_mut();
         let gap = out.early.iter().chain(&out.messages).any(|e| matches!(&e.msg, raft::Message::AppendRes(r) if !r.ok));
@@ -635,7 +767,7 @@ impl Family for Repo {
     fn load_fold(sql: &SqlStorage, join: &Join) -> worker::Result<git::repo::RepoFold> {
         let fold = Self::new_fold(sql, join);
         let caught_up = graftyard_fold::meta(&*fold.meta).applied == graftyard_fold::meta(&*fold.core).applied;
-        crate::tier::handle(&*fold.meta).set_loaded(caught_up);
+        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(&fold, caught_up));
         Ok(fold)
     }
     /// A member that applied entries before its chain had tier tables (an M1 group on an M2 build) has a core tier
@@ -682,13 +814,14 @@ impl Family for Repo {
             )));
         }
         let meta = graftyard_fold::meta(&*fold.meta).applied;
-        crate::tier::handle(&*fold.meta).set_loaded(meta == applied);
+        crate::tier::handle(&*fold.meta).set_loaded(meta_loaded(fold, meta == applied));
         Ok(())
     }
     fn tiered() -> bool {
         true
     }
     async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::split::on_alarm(host).await;
         crate::load::on_alarm(host).await;
         crate::prsync::on_alarm(host).await;
         crate::merge_queue::on_alarm(host).await;
@@ -704,9 +837,9 @@ impl Family for Repo {
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
-        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout", "/prsync"];
+        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout", "/prsync", "/split"];
         #[cfg(not(feature = "test-faults"))]
-        &["/snapshot_commit", "/fold", "/feed", "/fanout", "/prsync"]
+        &["/snapshot_commit", "/fold", "/feed", "/fanout", "/prsync", "/split"]
     }
     /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
     /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
@@ -718,6 +851,7 @@ impl Family for Repo {
     ) -> Option<worker::Result<Value>> {
         match path {
             "/feed" => Some(crate::feed::route(host, body).await),
+            "/split" => Some(crate::split::route(host, body).await),
             "/fanout" => Some(crate::fanout::report(host, body).await),
             // The operator's replay of a chain `PrSync` parked (`design/SHARED.md`, "Event fan-out", Isolation).
             "/prsync" if body["replay"] == json!(true) => Some(crate::prsync::replay(host).await),
@@ -861,15 +995,23 @@ impl Family for Repo {
             git::repo::RepoOut::Lifecycle(o) => json!({ "Lifecycle": o }),
             git::repo::RepoOut::Counts(o) => json!({ "Counts": o }),
             git::repo::RepoOut::Issue(o) => {
+                let m0 = crate::split::mark();
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
-                    Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
+                    Ok(r) => crate::split::with_filled(fold, |m| {
+                        graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, m)
+                    }),
                     Err(e) => graftyard_api::hosted::WireReply {
                         status: 500,
                         headers: Vec::new(),
                         body: Some(json!({ "message": e.to_string() })),
                     },
                 };
-                json!({ "issue": { "out": format!("{:?}", o.out), "reply": reply } })
+                let mut v = json!({ "issue": { "out": format!("{:?}", o.out), "reply": reply } });
+                // A reply that missed a child row says so; the member reads the rows and renders it again.
+                if let Some(mut miss) = crate::split::since(m0) {
+                    v["missedChild"] = miss["missedChild"].take();
+                }
+                v
             }
             git::repo::RepoOut::Merge(o) => {
                 let reply = (!o.render.is_null()).then(|| {
@@ -963,84 +1105,9 @@ impl Family for Repo {
         dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q))
     }
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
-        // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the
-        // `Audit` consumer's transfer plans.
-        if q.get("settings").is_some() {
-            return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise(),
-                "created": git::tiers::created(&*fold.core).is_some(),
-                "deleted": git::tiers::deleted(&*fold.core).is_some() });
-        }
-        if let Some(prs) = q.get("prsync") {
-            return crate::prsync::read_json(fold, prs);
-        }
-        if let Some(base) = q.get("mergequeue") {
-            return crate::merge_queue::read_json(fold, base);
-        }
-        if let Some(of) = q.get("rows").and_then(graftyard_api::hosted::MergeOf::of_query) {
-            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
-            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, of);
-            t.index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(t).unwrap_or(Value::Null);
-        }
-        // A narrow API read (`graftyard_api::narrow`): the rows one REST or GraphQL reply reads, not both whole tiers.
-        if let Some(spec) = q.get("rows").and_then(|r| r.get("api")) {
-            let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
-            let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return graftyard_api::narrow::answer(&fold.core, meta, index, spec, &|| named_accounts(fold));
-        }
-        if q.get("rows").and_then(|r| r.get("access")).is_some() {
-            let core = graftyard_api::hosted::TierRows::access_rows(&fold.core);
-            let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(graftyard_api::hosted::TierRows {
-                index,
-                core,
-                meta: None,
-                complete: true,
-                picks: None,
-            })
-            .unwrap_or(Value::Null);
-        }
-        if q.get("rows").and_then(|r| r.get("agent")).is_some() {
-            let core = graftyard_api::hosted::TierRows::agent_rows(&fold.core);
-            let index = graftyard_fold::meta(&*fold.core).applied.0;
-            return serde_json::to_value(graftyard_api::hosted::TierRows {
-                index,
-                core,
-                meta: None,
-                complete: true,
-                picks: None,
-            })
-            .unwrap_or(Value::Null);
-        }
-        // The packed dump, as `read_bytes` shares it (`dump_bytes`).
-        if let Some(b) = dump_bytes(fold, q) {
-            return serde_json::from_slice(&b).unwrap_or(Value::Null);
-        }
-        if q.get("rows").is_some() {
-            use graftyard_api::hosted::{Budget, TierRows};
-            let mut budget = Budget::READ;
-            let (core, c_ok) = TierRows::dump(&fold.core, &git::tiers::CORE, &mut budget);
-            let meta = fold.meta.loaded().then(|| TierRows::dump(&fold.meta, &git::tiers::METADATA, &mut budget));
-            let complete = c_ok && meta.as_ref().is_none_or(|(_, ok)| *ok);
-            let index = graftyard_fold::meta(&*fold.core).applied.0;
-            let rows = TierRows { index, core, meta: meta.map(|(m, _)| m), complete, picks: None };
-            return serde_json::to_value(rows).unwrap_or(Value::Null);
-        }
-        if q.get("ranges").is_some() {
-            // `fanout`: the committed k, which the network's first shard reads on every catch-up (`crate::fanout`).
-            return json!({
-                "promoted": fold.promoted(),
-                "archived": fold.archived(),
-                "first": fold.first_index().0,
-                "fanout": fold.fanout_k(),
-            });
-        }
-        if q.get("tiers").is_some() {
-            return crate::snap::tiers_json(fold, q.get("at").and_then(Value::as_u64));
-        }
-        // The refs: `{"refs": {..}}` one page of them, `{}` all of them only while they fit one page
-        // (`graftyard_git::group::refs_read`), so no reply grows with the ref count.
-        git::group::refs_read(fold, q)
+        let m0 = crate::split::mark();
+        let v = repo_read(fold, q);
+        crate::split::since(m0).unwrap_or(v)
     }
     fn fold_bytes(_fold: &git::repo::RepoFold) -> Vec<u8> {
         Vec::new()
@@ -1122,6 +1189,10 @@ impl Family for Repo {
     }
     fn restored(host: &std::rc::Rc<crate::host::Host<Self>>) {
         crate::load::restored(host);
+        crate::split::restored(host);
+    }
+    async fn fetch_missed(host: &std::rc::Rc<crate::host::Host<Self>>, missed: &Value) -> Result<(), String> {
+        crate::split::fetch(host, missed).await
     }
     fn install_stmts(stmts: &mut Vec<Stmt>) {
         crate::load::install_stmts(stmts);

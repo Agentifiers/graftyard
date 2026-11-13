@@ -64,6 +64,8 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS load_report (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL, row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS load_want (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS install_source (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
+    // `crate::split`: a metadata child member's restore of its seed.
+    "CREATE TABLE IF NOT EXISTS split_job (id INTEGER PRIMARY KEY CHECK (id = 1), row TEXT NOT NULL)",
 ];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -168,6 +170,11 @@ fn bucket(env: &Env, s: u8) -> Result<Bucket> {
 
 /// The member's alarm work, before its Raft tick, and the next alarm it needs.
 pub async fn on_alarm(h: &Rc<Host<Repo>>) {
+    // A metadata child neither replays its log into its metadata tier nor snapshots: its tier is the seed's
+    // snapshot, and its log keeps every entry (`crate::split`).
+    if h.core.borrow().as_ref().is_some_and(|c| c.m.group_fold().fold.child) {
+        return;
+    }
     let sql = h.state.storage().sql();
     // The alarm writes tier rows outside any input's transaction, so it starts only once no deferred one is pending,
     // and does each write with no await between its read and its exec.
@@ -266,6 +273,27 @@ fn placement(c: &GroupConfig) -> &Placement {
 /// batch; complete it and ask the leader to commit; or end it once committed. Whether more work is waiting.
 async fn step(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier) -> Result<bool> {
     if held(sql)? {
+        return Ok(false);
+    }
+    // A split parent's slim pass (`crate::split::slimming`): no metadata snapshot starts, and one running stops.
+    let slimming = h.core.borrow().as_ref().is_some_and(|c| {
+        let f = &c.m.group_fold().fold;
+        f.meta.loaded() && crate::split::slimming(f)
+    });
+    if t == Tier::Metadata && slimming {
+        if let (Some((store, _)), Some((job, _))) = (tier_store(h, t), load_job(sql, t)?) {
+            let mut st = store.clone();
+            graftyard_fold::end_snapshot(&mut st, &schema(t));
+            let mut stmts = Vec::new();
+            crate::tier::handle(&*st).seal(&mut stmts);
+            for (q, a) in stmts {
+                sql.exec(q, a)?;
+            }
+            crate::tier::handle(&*st).flushed();
+            log_job(sql, t, &job, "aborted: slim pass")?;
+            sql.exec("DELETE FROM snap_run WHERE tier = ?", vec![i(tier_int(t))])?;
+            sql.exec("DELETE FROM snap_buf WHERE tier = ?", vec![i(tier_int(t))])?;
+        }
         return Ok(false);
     }
     let Some((store, core)) = tier_store(h, t) else { return Ok(false) };
@@ -533,12 +561,17 @@ pub async fn commit(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
 async fn retain(h: &Rc<Host<Repo>>, sql: &SqlStorage, t: Tier, store: &dyn TierStore) -> Result<()> {
     let kept: Vec<u64> = git::tiers::snapshots(store, t).iter().map(|(to, _, _)| to.0).collect();
     let newest = kept.iter().max().copied().unwrap_or(0);
+    // A split's seed stays: a metadata child member restores from it (`crate::split`).
+    let seed = git::split::SplitState::of(store).seed.map(|(_, k)| k.to_string());
     for r in rows(sql, "SELECT key, to_idx, sites FROM snap_put WHERE tier = ?", vec![i(tier_int(t))])? {
         let to = crate::host::int(&r[1])? as u64;
         if kept.contains(&to) || to >= newest {
             continue;
         }
         let key = crate::host::text(&r[0])?.to_owned();
+        if seed.as_deref() == Some(key.as_str()) {
+            continue;
+        }
         let sites: Vec<u8> = serde_json::from_str(crate::host::text(&r[2])?)?;
         for s in sites {
             bucket(&h.env, s)?.delete(&key).await?;

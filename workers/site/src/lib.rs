@@ -33,6 +33,7 @@ mod registry;
 mod release;
 mod shard;
 mod snap;
+mod split;
 mod sweep;
 mod tier;
 

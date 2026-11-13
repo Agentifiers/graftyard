@@ -39,6 +39,7 @@ pub mod search;
 pub mod sequencer;
 pub mod shard;
 pub mod smart;
+pub mod split;
 pub mod standin;
 pub mod store;
 pub mod sweep;

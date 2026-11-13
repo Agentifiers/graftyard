@@ -353,36 +353,32 @@ pub const SUSPECT: (usize, Duration) = (2, Duration::from_secs(10));  // distinc
 /// Pre-vote and transfers refuse a candidate whose two `boots`, or whose `stepped_down_at`, fall inside it. A voter that
 /// has seen no leader for 2 x ELECTION_AFTER waives it. Where every site resets often, every `STEP_DOWN` holds (F42).
 pub const RESET_QUARANTINE: Duration = Duration::from_secs(300);
-/// Member SQLite bytes no member of a repository's groups passes, because the metadata tier moves to a child group
-/// first. It caps the tier at 10 GB minus LOG_MAX_BYTES, the core tier, and a margin [guess margin]. The parent
-/// leader's alarm runs each step in band; there is no `MetaSplitter` Workflow. Start. At SPLIT_AT of
-/// `ctx.storage.sql.databaseSize` (https://developers.cloudflare.com/durable-objects/api/storage-api/), which leaves
-/// out free pages [doc: workerd `getDatabaseSize`], the leader records `MetaSplit { child: RepoMeta(repo) }`, and the
-/// snapshot writer snapshots the metadata tier at an index p after it. B0-30 peaked at 9.09 GB before an archive pass
-/// and settled at 8.45 GB after it [measured, `tests/m0/results/m0-wp9.md`, B0-30]. Seed. The leader records `MetaSeed
-/// { at: p, key }`, creates `RepoMeta(repo)` on the parent's placement record, and records the same `MetaSeed` there.
-/// Each child member restores that snapshot in the background, restamps the tier at its own `MetaSeed` entry, and
-/// replays its log from there; until then its metadata tier answers nothing. Halves. From `MetaSeed` on, the parent
-/// leader records the parent's committed entries on the child in order as `MetaHalf { parent, prev, at, block, events
-/// }`: an entry's metadata events and id block, and an empty half that marks how far a batch reached. The child refuses
-/// a half whose `prev` is not its last, so after half k its tier holds the parent's rows after entry k. The child
-/// decides no command, and the parent archives nothing past the child's last half. Commit point. Once the child
-/// leader's tier is loaded and its halves reach the parent's commit, the parent leader records `MetaDropped`; from it
-/// the parent applies only the core tier and deletes its metadata rows in batches. Every command still commits on the
-/// parent, so consumers, the feed, ids, `RestoredTo`, and `RepoReset` keep the parent's log and indexes, and no write
-/// gets 503. Reads. After `MetaDropped` a command that reads the metadata tier lists `RepoMeta(repo)` in `deps` and
-/// names the keys and prefixes its `decide` reads (`dep_keys`). The leader's host sends the child its halves through
-/// the parent's applied index k, reads just those rows once through the child leader's `fresh` at half k, and `decide`
-/// reads them under the entry's earlier events; a read of a row not fetched makes the command `Unavailable`. Its reply
-/// renders over rows read from the child at the entry's half, fetched again for each row the renderer missed. The child
-/// archives its log at CHILD_LOG_MAX with nothing to promote, since halves carry no packs (G4, G6).
+/// Member SQLite bytes no member of a repository's groups passes, because the text the parent's metadata tier holds
+/// moves to a child group first. It caps the tier at 10 GB minus LOG_MAX_BYTES, the core tier, and a margin [guess
+/// margin]. The parent leader's alarm runs each step in band; there is no `MetaSplitter` Workflow. Start. At SPLIT_AT
+/// of `ctx.storage.sql.databaseSize` (https://developers.cloudflare.com/durable-objects/api/storage-api/), which leaves
+/// out free pages [doc: workerd `getDatabaseSize`], the leader records `MetaSplit { child: RepoMeta(repo) }`. Seed.
+/// At its newest committed metadata snapshot p, the leader records `MetaSeed { at: p, key }`, creates `RepoMeta(repo)`
+/// on the parent's placement record (`repo-meta:<id>`, hosted by the repository family), and records the same
+/// `MetaSeed` there. Each child member restores that snapshot into its metadata tier in the background; no entry
+/// writes that tier after it, and the child decides nothing. Commit point. Once the child leader has restored it, the
+/// parent records `MetaDropped { seed: p }`, then `MetaSlim` entries until one pass is done, each over the next
+/// SLIM_ROWS rows: a row last written at or before p loses the text no `decide` reads (issue, comment, review and
+/// release bodies, a task's prompt and summary), which the child's snapshot holds, and `provenance` and `path_set`
+/// rows, which no read serves, go. A row written after p keeps its text. Every table and column `decide` reads stays,
+/// so every command commits on the parent with no new `deps`, no write gets 503, and consumers, the feed, ids,
+/// `RestoredTo`, and `RepoReset` keep the parent's log. Reads. A member answering a read or rendering a reply fills
+/// each slimmed field from the child's row, read once through `fresh` and kept, since it never changes; a row the
+/// parent deleted is never filled; an answer that missed a child row is built again once the member has read it. The
+/// parent's FTS5 rows drop slimmed text and the child keeps none, since no route serves search from them yet. The
+/// child's log holds its bootstrap, a `Noop` a term, and `MetaSeed`, so it needs no archive or truncation, and its
+/// seed snapshot is kept past retention (G4, G6; `decisions/DECISIONS.md`, "A split moves only the text `decide`
+/// never reads").
 pub const CHILD_GROUP_AT: u64 = 8 << 30;
-pub const SPLIT_AT: u64 = 7 << 30;         // a seed restores the whole tier on each child member, for hours [guess]
-pub const CHILD_LOG_MAX: u64 = 256 << 20;  // a child's log holds only halves [guess]
-pub enum SplitEntry { MetaSplit { child: ChainId }, MetaSeed { at: Index, key: R2Key },
-                      MetaHalf { parent: Index, prev: Index, at: Timestamp, block: Option<IdBlock>,
-                                 events: Vec<Event> },
-                      MetaDropped }
+pub const SPLIT_AT: u64 = 7 << 30;  // a seed restores the whole tier on each child member, for hours [guess]
+pub const SLIM_ROWS: usize = 512;   // about 1 MB of rows a `MetaSlim` entry [guess]
+pub enum SplitEntry { MetaSplit { child: ChainId }, MetaSeed { at: Index, key: R2Key }, MetaDropped { seed: Index },
+                      MetaSlim }
 /// One import entry (SHARED, `rest:migrations`). `apply` applies each `event` with `created` and `author` in place of the
 /// entry's `at` and actor, and `merged` records a merged pull request with no tree-diff check.
 pub struct ImportBatch { pub import: Ulid, pub items: Vec<ImportItem> }

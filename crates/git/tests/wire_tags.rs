@@ -341,6 +341,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         // M4-WP2: inside `IdentityEvent::Record` and `RepoEvent::Watchers`, an `Inbox`'s stored rows and snapshots,
         // and a `SearchShard`'s name.
         id::UserRecord, git::watch::WatcherUpdate, git::inbox::Reason, git::search::Domain,
+        // B0-30's metadata split: inside `RepoEvent::Split`.
+        git::split::SplitEntry,
     }
 }
 
