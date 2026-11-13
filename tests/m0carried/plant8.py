@@ -28,6 +28,8 @@ MUTANTS = [
      'failed >= 1'),
     ('catch-up calls of 1.5 MB', LEADER, 'pub const APPEND_BYTES_MAX: usize = 100_000;',
      'pub const APPEND_BYTES_MAX: usize = 1_500_000;'),
+    ('a call over APPEND_BYTES_MAX carries no entry', LEADER, '        if n > 0 && bytes > APPEND_BYTES_MAX {',
+     '        if bytes > APPEND_BYTES_MAX {'),
     ('the entry cap back at 60 KB', LIB, 'pub const ENTRY_SOFT: usize = 100_000;', 'pub const ENTRY_SOFT: usize = 60_000;'),
     ('no entry cap (ENTRY_MAX)', LIB, 'pub const ENTRY_SOFT: usize = 100_000;', 'pub const ENTRY_SOFT: usize = 1_500_000;'),
     ('a pipelined call starts at next, not after the calls out', LEADER,

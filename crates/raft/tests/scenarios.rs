@@ -1078,7 +1078,9 @@ fn a_member_is_replaced_on_its_own_site_in_two_config_changes() {
 
 /// A follower behind on large entries catches up in calls under APPEND_BYTES_MAX, not CATCHUP_MAX entries at once.
 /// Milestone 1's repository groups carry packs up to 1 MB inline, and 64 of them in one AppendEntries (9 MB) missed
-/// CALL_DEADLINE on every send, so the follower never caught up (`tests/m1/results/m1-wp8.md`, t-256).
+/// CALL_DEADLINE on every send, so the follower never caught up (`tests/m1/results/m1-wp8.md`, t-256). Each entry here
+/// is four times APPEND_BYTES_MAX, as an entry with agent packs or one large command can be: every call still carries
+/// one whole entry, so nothing stalls.
 #[test]
 fn a_lagging_follower_catches_up_in_calls_under_the_byte_cap() {
     let mut c = Cluster::new(23);
@@ -1096,17 +1098,22 @@ fn a_lagging_follower_catches_up_in_calls_under_the_byte_cap() {
     c.inbox.clear();
     assert_eq!(c.m(C).log().len(), behind, "C saw none of them");
     assert!(c.m(A).log().len() >= behind + 10, "A: {} entries, C: {behind}", c.m(A).log().len());
-    // Each later round carries at most APPEND_BYTES_MAX past its first entry; C still catches up.
-    let mut most = 0;
+    assert!(big.len() > 3 * graftyard_raft::APPEND_BYTES_MAX);
+    // Each later round carries one whole entry, and at most APPEND_BYTES_MAX past it; C still catches up.
+    let (mut most, mut empty) = (0, 0);
     for _ in 0..40 {
         c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
         let mut sizes = Vec::new();
+        let a_last = c.m(A).last_index();
         c.deliver(|e| {
             if let Message::Append(a) = &e.msg
                 && e.to == C
-                && a.entries.len() > 1
             {
-                sizes.push(a.entries.iter().map(|x| graftyard_raft::encode_entry(x).len()).sum::<usize>());
+                // A call that starts behind A's last entry carries at least one.
+                empty += usize::from(a.entries.is_empty() && a.prev_index < a_last);
+                if a.entries.len() > 1 {
+                    sizes.push(a.entries[1..].iter().map(|x| graftyard_raft::encode_entry(x).len()).sum::<usize>());
+                }
             }
             true
         });
@@ -1116,7 +1123,8 @@ fn a_lagging_follower_catches_up_in_calls_under_the_byte_cap() {
         }
     }
     assert_eq!(c.m(C).digests(), c.m(A).digests(), "C caught up");
-    assert!(most <= graftyard_raft::APPEND_BYTES_MAX, "one AppendEntries carried {most} bytes");
+    assert_eq!(empty, 0, "calls to C that started behind A's last entry carried none");
+    assert!(most <= graftyard_raft::APPEND_BYTES_MAX, "one AppendEntries carried {most} bytes past its first entry");
 }
 
 /// A stored fold outside the stored log window (`base <= applied <= base + log.len()`) is refused with an error the
