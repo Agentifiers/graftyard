@@ -2499,21 +2499,19 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved b
 
 **Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
 
-### Learners are pipelined as voters are, 2026-11-13
+### Not adopted: pipelining AppendEntries to learners, 2026-11-13
 
-Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Learners pipelined"; F65). Operator's choice (c), ahead of piggybacking entries on `ReadIndexRes`.
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Learners pipelined"; F65). The operator's choice (c), built as 682468de and reverted.
 
-**Decision.** `send_append` pipelines to a learner exactly as to a voter: up to `PIPELINE` (4) calls out, each carrying only entries after the last, within `APPEND_BYTES_MAX`, and one call at a time once `link_lossy` holds for that learner.
+**Decision.** `send_append` keeps pipelining only to voters (`voter && !lossy`); a learner gets one AppendEntries call at a time.
 
-**Why.** On the final tree, weur and apac learners answered `late` to 19 to 49% of their reads, and their wait to apply a read index after the leader's `ReadIndexRes` reached 1.4 to 2.1 s at p99, which set journey 9's API p99 [measured]. Main pipelined only to voters (`voter && !lossy`), so a far learner got each entry one whole call late on a 300 to 700 ms link while the `ReadIndexRes` went out at once [inference].
+**Why.** On B0-29 at 500 agents with 8 learners (gate5, repo:65549), pipelining learners left the far learners' apply wait after their `ReadIndexRes` where it was. At p99, weur went from 969 and 764 ms to 1,415 and 878 ms, and apac from 1,670 and 1,442 ms to 1,671 and 1,858 ms. Far learners still answered `late` to 1,743 to 2,870 of 7,800 to 9,400 reads, and API p99 was 2,475 ms at 99.92% served [measured]. The leader's peak memory rose to 126 MiB, against 67 to 80 MiB in every earlier final-tree run, near the 128 MB isolate [measured; the cause, pipelined batches held per learner, is an inference]. A learner that is calling the leader gets its messages in the response to its next call (`workers/site/src/callers.rs`), so the leader made 1,119 to 1,129 calls to each voter in 300 s but only 46 to 60 to each learner [measured]; the pipeline had few calls to change.
 
-**Safety.** A learner never counts toward a quorum or a lease, so more calls to it change no commit or read rule. A pipelined call carries only entries after the outstanding ones and is dropped by the learner when its `prev` does not match, as for a voter; any failure or refusal clears the pipe.
+**Beat.** Kept for the record: piggybacking entries on `ReadIndexRes` stays unbuilt until a split of the apply wait shows the wait for entries dominates (operator).
 
-**Beat.** Piggybacking the missing entries on `ReadIndexRes` (operator: only if apply wait p99 stays over about 500 ms). Fetching them from the learner side (two round trips).
+**Evidence.** Rows `tests/nr3/rows/a1-b0-29-gate5.jsonl`, `run-gate5.status`, `egress-gate5.txt`, `mem-gate5.json`.
 
-**Evidence.** `crates/raft/tests/scenarios.rs`, `a_learner_is_pipelined_unless_its_link_is_lossy`, which fails on main 82a0bf9 (1 call to a silent learner, not 4); `tests/nr3/plant.py` plants 15 and 16. Hosted rows in the results file.
-
-**Flip.** A learner's apply wait p99 over about 500 ms with the pipeline, which takes (a); leader CPU or egress past its budget with 8 learners × 4 calls.
+**Flip.** A learner that receives AppendEntries as calls (not in responses), with apply wait set by appends one call late.
 
 ### Not adopted: the edge hedging a slow learner read, 2026-11-13
 

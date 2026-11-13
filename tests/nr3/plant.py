@@ -19,7 +19,6 @@ HOST = 'workers/site/src/host.rs'
 LOOKUP = 'crates/lookup/src/lib.rs'
 ELECTION = 'crates/raft/src/member/election.rs'
 RAFT = ('graftyard-raft', '--test', 'leadership')
-SCN = ('graftyard-raft', '--test', 'scenarios')
 LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
 
@@ -66,11 +65,6 @@ MUTANTS = [
     ('genesis: an unreadable view drops the binding', LOOKUP,
      '    let Some(view) = view else { return false };',
      '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
-    # Learners pipelined (`crates/raft`, `send_append`).
-    ('raft: only voters are pipelined (learners one call at a time)', LEADER,
-     '                    if !lossy\n', '                    if !lossy && graftyard_types::learner_slot(peer).is_none()\n', SCN),
-    ('raft: a learner on a lossy link is still pipelined', LEADER,
-     '                    if !lossy\n', '                    if (!lossy || graftyard_types::learner_slot(peer).is_some())\n', SCN),
     # Liveness (F67 rule 12).
     ('raft: an emptied read-index batch stays in flight', INSTALL,
      '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),

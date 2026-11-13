@@ -60,9 +60,7 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
 /// `commit_errors` of every call in the `STEP_DOWN` window failed, at least `commit_fail_min`) gets one call at a time:
 /// a half-hung leader whose few answered calls each let several more out renewed its followers' promises and held a
 /// live-sweep group 50 s (seed 11497). One miss does not stop it: a far voter that missed once and lost its pipeline
-/// for the window caught up one backlog call at a time, and each missed again (r330-6). Learners are pipelined the same
-/// way: with one call at a time, a far learner's appends trailed the leader's `ReadIndexRes`, and it waited up to 2.1 s
-/// at p99 to apply a read index (`tests/am1/results/narrow-reads-3.md`).
+/// for the window caught up one backlog call at a time, and each missed again (r330-6).
 pub const PIPELINE: usize = 4;
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
@@ -240,8 +238,8 @@ pub(super) struct Lead<C: Command> {
     lease_end: Timestamp,
     /// The latest outstanding call to each follower.
     sent: BTreeMap<SiteId, (u64, Timestamp)>,
-    /// Per voter or learner, the outstanding AppendEntries a pipelined call may follow, oldest first: each round and the
-    /// last index it carried. At most PIPELINE; cleared by any failure, refusal, catch-up, or install to it.
+    /// Per voter, the outstanding AppendEntries a pipelined call may follow, oldest first: each round and the last
+    /// index it carried. At most PIPELINE; cleared by any failure, refusal, catch-up, or install to the voter.
     pipe: BTreeMap<SiteId, Vec<(u64, Index)>>,
     round: u64,
     admission: Admission<C>,
@@ -1280,12 +1278,13 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter or learner whose link is not lossy
-    /// is sent only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
+    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
+    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
+        let voter = quorum::is_voter(self.log_config(), peer);
         let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());
@@ -1293,7 +1292,8 @@ impl<C: Command> Member<C> {
             let pipe = lead.pipe.get(&peer).map_or(&[][..], Vec::as_slice);
             match pipe.last() {
                 Some(&(_, through))
-                    if !lossy
+                    if voter
+                        && !lossy
                         && pipe.len() < PIPELINE
                         && through < last
                         && through >= base
