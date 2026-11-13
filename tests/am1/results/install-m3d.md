@@ -57,6 +57,8 @@ IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:15
 node workers/site/deploy.mjs ~/.graft-m3d/sites.json --test-faults --anchor ~/.graft-m3d/install.toml --image "$IMG"
 ```
 
+**Shard size:** the operator approved `standard-4` shard containers on test installs (2026-11-13). graft-m3d was built without `SHARD_INSTANCE`, so its shards run the default `standard-2`. From its next site day it runs `standard-4`: add `--vars <file>` to the command above, where the file holds `{"SHARD_INSTANCE": "standard-4"}`, and tear the running shards down after so they restart at the new size.
+
 With a new image, add `--roll-shards https://graft-m3d-edge.<workers-subdomain>.workers.dev` (needs `BED_TOKEN_FILE`), or tear the running shards down after (`INSTALL=graft-m3d python3 tests/fanout/teardown.py --all-nets --pools`).
 
 ### Edge day
