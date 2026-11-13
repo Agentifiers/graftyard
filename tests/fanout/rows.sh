@@ -34,7 +34,10 @@ for row in $ROWS; do
   # Learners for reads (design/DESIGN.md, "Follower read"), before k.mjs, whose commit tells them the leader.
   [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "repo:$rid" "$LEARNERS" >> "$ST" 2>&1
   # B0-34 leaves k to `fanout` itself (in band, from NetworkLoad); the others start at K.
-  if [ "$row" = b0-34 ]; then node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1; else node tests/fanout/k.mjs "repo:$rid" "$K" >> "$ST" 2>&1; fi
+  if [ "$row" = b0-34 ]; then node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1; else node tests/fanout/k.mjs "repo:$rid" "$K" >> "$ST" 2>&1
+    # The ledgers cap a forced k: a row that did not get K is not the row as written, so it is skipped.
+    tail -1 "$ST" | grep -q ": k $K at " || { echo "$(date -u +%FT%TZ) $row: k $K not granted, row skipped" >> "$ST"; continue; }
+  fi
   case $row in
     b0-29) flags="--seconds 600" ;;
     b0-31) flags="--seconds 600" ;;
@@ -46,7 +49,10 @@ for row in $ROWS; do
   esac
   echo "$(date -u +%FT%TZ) $row $repo $rid start" >> "$ST"
   bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
-  node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1
+  # Back to k = 1, which releases the network's pool leases: a lease is only renewed or released by its own network,
+  # and the ledger shifts every lease past a call gap of LEDGER_GAP, so a network torn down at k > 1 kept its owner's
+  # pool share and every later row of the same owner was granted no slot (rows m21: k 1 on every row).
+  node tests/fanout/k.mjs "repo:$rid" 1 >> "$ST" 2>&1
   echo "$(date -u +%FT%TZ) $row $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-$row-$repo.log)" >> "$ST"
   # L0-12's other parts on the same repository: the 30-minute stall with every member call blackholed, then the idle
   # 60 s lease and the overlapping Exclusive acquire 10 minutes later (stall.mjs), then 100 conflicting pushes and 100
