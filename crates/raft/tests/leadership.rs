@@ -1305,3 +1305,81 @@ fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
     });
     assert!(!stale, "B granted its new read below the write A acknowledged before it");
 }
+
+/// A member this one refuses in pre-vote as `Suspected` is no transfer target either. B led, two colos reported it,
+/// so C suspects it; C then leads, and its site is drained. Before the fix C handed leadership straight back to B, the
+/// gray leader its own pre-vote refuses, and on a half-hung B that hand-off repeated until check quorum moved B each
+/// time: 37.4 s leaderless with two healthy voters (F67 rule 10, live seed 12073 on main 0f7bf06).
+#[test]
+fn a_leader_hands_off_to_no_member_it_suspects() {
+    let mut c = Cluster::new(77);
+    let mut id = 0;
+    c.elect(B);
+    c.sync(B);
+    let term = c.m(C).term();
+    for colo in [1, 2] {
+        c.on(C, |m, now| m.suspect(now, Colo(colo), B, term));
+    }
+    c.crash(B);
+    c.run(ms(graftyard_raft::ELECTION_AFTER) + 100, 100, |_| true);
+    c.elect(C);
+    c.sync(C);
+    c.restart(B);
+    c.run(1_000, 100, |_| true);
+    assert_eq!(c.leader(), Some(C));
+    assert!(matches!(c.on(C, |m, now| m.transfer(now, B)), Err(TransferError::Target(t)) if t == B));
+    // C's site is drained: it hands off to A, the one target it does not suspect.
+    for s in SITES {
+        c.on(s, |m, now| m.set_drained(now, [C]));
+    }
+    drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+    assert_eq!(c.leader(), Some(A));
+}
+
+/// A bar that `suspect` reports set while the leader ran a transfer is the hand-off's, not a gray leader's: once this
+/// member accepts another leader's append, it no longer refuses the old leader as `Suspected`. The same reports sent
+/// before the transfer began are a gray leader's, and that bar holds for its whole window. Kept, two leaders in turn,
+/// each reported during its own hand-off, refused each other as `Suspected` and nobody led for 31.3 s (F67 rule 11,
+/// live seed 11121).
+#[test]
+fn a_hand_offs_suspect_bar_ends_when_another_leader_is_heard() {
+    for during_transfer in [true, false] {
+        let mut c = Cluster::new(78);
+        c.elect(A);
+        c.sync(A);
+        let term = c.m(C).term();
+        let report = |c: &mut Cluster| {
+            for colo in [1, 2] {
+                c.on(C, |m, now| m.suspect(now, Colo(colo), A, term));
+            }
+        };
+        if !during_transfer {
+            report(&mut c);
+        }
+        // A hands off to B; C accepts a round carrying the transfer before B's campaign.
+        c.on(A, |m, now| m.transfer(now, B)).expect("started");
+        c.deliver(|e| !matches!(e.msg, Message::TimeoutNow { .. }));
+        assert!(c.m(C).state().transfer.is_some());
+        if during_transfer {
+            report(&mut c);
+        }
+        c.run(3_000, 100, |_| true);
+        assert_eq!(c.leader(), Some(B), "the hand-off completed");
+        c.sync(B);
+        assert_eq!(c.m(C).leader(), Some(B));
+        // A and B go down, so C's promise lapses and only the bar can refuse A.
+        let last = (c.m(B).log().len() as u64, c.m(B).log().last().unwrap().term);
+        c.crash(A);
+        c.crash(B);
+        c.advance(ms(graftyard_raft::ELECTION_AFTER) + 100);
+        let next = Term(c.m(C).term().0 + 1);
+        c.inbox.clear();
+        c.on(C, |m, now| m.step(now, A, Message::Vote(vote(next, A, true, last, None))));
+        let deny = vote_res(&c, C, A).and_then(|r| r.deny);
+        if during_transfer {
+            assert_ne!(deny, Some(Deny::Suspected), "a hand-off's bar outlived the hand-off");
+        } else {
+            assert_eq!(deny, Some(Deny::Suspected), "a gray leader's bar ended early");
+        }
+    }
+}
