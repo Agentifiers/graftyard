@@ -1169,7 +1169,7 @@ pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
     /// the default branch's tip; connectivity still uses the full ref set (`--not --all`, 3 s at 5,000 refs, m0-wp10; a
-    /// commit-graph each repack keeps it flat, `hot-shards-3`) [measured]. Only `rehydrate` reads all refs.
+    /// commit-graph each delta-searching repack keeps it flat, `hot-shards-4`) [measured]. Only `rehydrate` reads all refs.
     pub async fn validate(&self, staged: StagedPack, refs: &CoreRefs)
         -> Result<(PackIndex, Provenance, SmallVec<[ProtectedHits; 1]>), PackError>;
     pub async fn upload_pack(&self, req: FetchRequest, refs: &CoreRefs) -> Result<PackStream, GitError>;

@@ -191,6 +191,15 @@ MUTANTS = [
     ('a pack whose base is missing fails the batch instead of answering later', GO,
      '\t\t\tif unresolved(err) {\n\t\t\t\tresults[run[0]] = "later"',
      '\t\t\tif false && unresolved(err) {\n\t\t\t\tresults[run[0]] = "later"', GOBATCH),
+    # hot-shards-4
+    ('a repack searches no deltas (--window=0)', GO,
+     '"repack", "-d", "-q", "--geometric=2")', '"repack", "-d", "-q", "--geometric=2", "--window=0")', GOREPACK),
+    ('fsck runs alongside a repack', GO,
+     '\trepacking.Lock()\n\tdefer repacking.Unlock()\n\tout, err := git(rp, nil, nil, "fsck"',
+     '\tout, err := git(rp, nil, nil, "fsck"', ('go', [], 'RepackHolds')),
+    ('a busy member still serves 4 MB local pages', SITEHOST,
+     '    let max = if reads >= ENTRIES_BUSY_READS { ENTRIES_BUSY_PAGE_BYTES } else { ENTRIES_LOCAL_PAGE_BYTES_MAX };',
+     '    let _ = reads;\n    let max = ENTRIES_LOCAL_PAGE_BYTES_MAX;', SITE_P),
 ]
 
 
