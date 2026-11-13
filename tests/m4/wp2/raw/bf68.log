@@ -1,0 +1,11 @@
+2026-11-13T16:36:11.565Z org wp2eu = 7400001, record {"at":5,"generation":1,"home":1,"moving_from":null,"name":"Eu2w","sites":[1,0,2]}
+2026-11-13T16:40:01.492Z repos [{"name":"e0","id":589824},{"name":"e1","id":589825},{"name":"e2","id":589826},{"name":"e3","id":589827}]; 12 documents with kumquatmwf780kv
+2026-11-13T16:40:04.157Z indexed: {"status":200,"total":12,"incomplete":false,"n":12,"ms":2664} after 2664 ms
+2026-11-13T16:40:17.840Z gen1: 3 shards hold 12 docs of wp2eu: search#eu#2#1 eu PRG 6; search#eu#4#1 eu PRG 3; search#eu#8#1 eu MXP 3; outside EU: 0
+2026-11-13T16:40:17.841Z losing search#eu#2#1 (6 docs)
+2026-11-13T16:40:21.196Z with search#eu#2#1 lost: {"status":200,"total":6,"incomplete":true,"n":6,"ms":2679}; want total 6, incomplete true
+2026-11-13T16:41:00.385Z rebuild 39188 ms: {"docs":6,"meta":{"configIndex":7,"leader":0,"term":2},"repos":[589825,589824],"shard":"search#eu#2#2","site":1}
+2026-11-13T16:41:03.508Z after rebuild: {"status":200,"total":12,"incomplete":false,"n":12,"ms":3123}
+2026-11-13T16:41:28.729Z gen2: 3 shards hold 12 docs of wp2eu: search#eu#2#2 eu WAW 6; search#eu#4#1 eu PRG 3; search#eu#8#1 eu MXP 3; outside EU: 0
+2026-11-13T16:41:28.730Z BF-68 PASS
+exit 0

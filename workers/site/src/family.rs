@@ -532,7 +532,9 @@ impl Family for Repo {
     /// (AM1-WP3's task commands and any command whose token carries a `task` claim), and 32.13 (`rest:repos`'
     /// `InitRepo` and `DeleteRepo`). 32.15 is `RepoEvent::Fanout`, which only a leader of this release records itself;
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
-    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it.
+    /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it. 32.16 is
+    /// M4-WP1's hook commands, which the edge sends once `FormatsEnable` enabled it, and the `Webhooks` consumer's
+    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -551,6 +553,8 @@ impl Family for Repo {
             git::repo::REPO_FORMAT_FANOUT,
             git::lifecycle::REPO_FORMAT_LIFECYCLE,
             git::issue_ops::call::REPO_FORMAT_CHECKS,
+            git::hooks::REPO_FORMAT_HOOKS,
+            git::watch::REPO_FORMAT_WATCH,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -692,6 +696,8 @@ impl Family for Repo {
         crate::load::on_alarm(host).await;
         crate::prsync::on_alarm(host).await;
         crate::merge_queue::on_alarm(host).await;
+        crate::hookseq::on_alarm(host).await;
+        crate::activity::on_alarm(host).await;
         crate::snap::on_alarm(host).await;
         crate::archive::on_alarm(host);
     }
@@ -704,9 +710,9 @@ impl Family for Repo {
     }
     fn route_paths() -> &'static [&'static str] {
         #[cfg(feature = "test-faults")]
-        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout", "/prsync"];
+        return &["/snapshot_commit", "/fold", "/bench_seed", "/feed", "/fanout", "/prsync", "/activity"];
         #[cfg(not(feature = "test-faults"))]
-        &["/snapshot_commit", "/fold", "/feed", "/fanout", "/prsync"]
+        &["/snapshot_commit", "/fold", "/feed", "/fanout", "/prsync", "/activity"]
     }
     /// `/snapshot_commit`, the leader's half of a snapshot (`crate::snap::commit`); `/fold`, each tier's digests (at
     /// `at`), the fold audit's log replay (`replay`), a paged refold of one tier's rows (`refold`), and the snapshot
@@ -718,6 +724,8 @@ impl Family for Repo {
     ) -> Option<worker::Result<Value>> {
         match path {
             "/feed" => Some(crate::feed::route(host, body).await),
+            // M4-WP2: a shard rebuild's documents and an `Inbox` rebuild's notices (`crate::activity::route`).
+            "/activity" => Some(crate::activity::route(host, &body).await),
             "/fanout" => Some(crate::fanout::report(host, body).await),
             // The operator's replay of a chain `PrSync` parked (`design/SHARED.md`, "Event fan-out", Isolation).
             "/prsync" if body["replay"] == json!(true) => Some(crate::prsync::replay(host).await),
@@ -969,6 +977,11 @@ impl Family for Repo {
             return json!({ "owner": fold.authz_owner(), "enterprise": fold.authz_enterprise(),
                 "created": git::tiers::created(&*fold.core).is_some(),
                 "deleted": git::tiers::deleted(&*fold.core).is_some() });
+        }
+        // The `Webhooks` consumer's committed cursor and the applied index, for BF-57's cursor lag.
+        if q.get("hookCursor").is_some() {
+            return json!({ "cursor": git::hooks::hook_cursor(&*fold.core),
+                "applied": graftyard_fold::meta(&*fold.core).applied.0 });
         }
         if let Some(prs) = q.get("prsync") {
             return crate::prsync::read_json(fold, prs);
@@ -1636,9 +1649,32 @@ impl Family for Identity {
     type C = id::IdentityCmd;
 
     /// 0x14.2 is `AddKey` with its `KeyText` (BF-35), read on the same terms as every M3 format: the edge sends it only
-    /// once `FormatsEnable` enabled it.
+    /// once `FormatsEnable` enabled it. 0x14.3 is M4-WP2's `SetRecord` and the `Counts` consumer's `CountsCursor`, on
+    /// the same terms: the edge sends `SetRecord` only once 0x14.3 is enabled, and the consumer runs only under
+    /// `GRAFTYARD_ACTIVITY` (`crate::activity`).
     fn reads() -> Vec<Format> {
-        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2]
+        vec![id::IDENTITY_FORMAT, id::IDENTITY_FORMAT_V2, id::IDENTITY_FORMAT_V3]
+    }
+    /// A leader's alarm right after it applies entries runs the `Counts` consumer (`crate::activity`).
+    fn fold_alarm_ms(leading: bool) -> Option<i64> {
+        leading.then_some(git::watch::COUNTS_EVERY_MS as i64)
+    }
+    async fn on_alarm(host: &std::rc::Rc<crate::host::Host<Self>>) {
+        crate::activity::counts_on_alarm(host).await;
+    }
+    fn route_paths() -> &'static [&'static str] {
+        &["/inbox"]
+    }
+    /// `/inbox`: the account's `Inbox` object (`crate::inbox`) through its `Identity` leader, which holds the account's
+    /// record and `UserRows`: `{"op": "view" | "snapshot" | "delete" | "rebuild"}`. The operator's way to an `Inbox`,
+    /// with no binding of its own on the caller (BF-5, BF-67).
+    async fn route(
+        host: &std::rc::Rc<crate::host::Host<Self>>,
+        path: &str,
+        body: Value,
+    ) -> Option<worker::Result<Value>> {
+        (path == "/inbox").then_some(())?;
+        Some(crate::inbox::route(host, body).await)
     }
     fn new_fold(_sql: &SqlStorage, join: &Join) -> id::IdentityFold {
         match join.chain {
@@ -1664,7 +1700,12 @@ impl Family for Identity {
     }
     /// The created capture, the credential list with titles (what `GET /user/keys` lists), and the session count.
     /// The password hash and second factors never leave the member.
-    fn read_json(f: &id::IdentityFold, _q: &Value) -> Value {
+    fn read_json(f: &id::IdentityFold, q: &Value) -> Value {
+        // `{"user": true}`: the account's `UserRows` (format 0x14.3) in the raft codec, as hex, for the edge's
+        // `/notifications` and `/subscription` replies.
+        if q.get("user").is_some() {
+            return json!({ "user": crate::host::hex(&codec::to_bytes(f.user())) });
+        }
         let credentials: Vec<Value> = f
             .credentials
             .iter()

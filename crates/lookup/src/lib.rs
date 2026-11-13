@@ -47,6 +47,19 @@ impl Bindings<'_> {
     pub fn registry(&self, site: SiteId, do_name: &str) -> Result<Stub> {
         self.stub("REGISTRY", site, do_name)
     }
+
+    /// An object of `class` on `site` by name, made under DO jurisdiction `jurisdiction` (`"eu"`, `"us"`) when one is
+    /// given, as a `SearchShard` is (`design/DESIGN.md`, Shape, "Identity"). `worker` 0.8 has no `jurisdiction()`, so
+    /// the namespace's own JavaScript method is called. A jurisdiction object takes no location hint: the
+    /// jurisdiction decides where it runs.
+    pub fn object(&self, class: &str, site: SiteId, do_name: &str, jurisdiction: Option<&str>) -> Result<Stub> {
+        let Some(j) = jurisdiction else { return self.stub(class, site, do_name) };
+        let ns = self.env.durable_object(&format!("{class}_{}", site.0))?;
+        let raw: &wasm_bindgen::JsValue = ns.as_ref();
+        let f: js_sys::Function = js_sys::Reflect::get(raw, &"jurisdiction".into())?.into();
+        let sub: ObjectNamespace = wasm_bindgen::JsCast::unchecked_into(f.call1(raw, &j.into())?);
+        sub.get_by_name(do_name)
+    }
 }
 
 pub fn now_ms() -> u64 {

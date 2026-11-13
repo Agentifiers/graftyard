@@ -1,7 +1,9 @@
 // Deploys `graft-ops`'s minting Worker for a test install: no public route (`workers_dev` off), and the `MintWrapKey`
 // secret bound from the account's Secrets Store as `MINT_WRAP_KEY`. The edge reaches it through its `OPS` service
 // binding (`tests/m1/integ/deploy-edge.mjs --var` cannot add one; pass `--ops <name>` there). Usage:
-//   node workers/ops/deploy.mjs <name> <secrets store id> <secret name>
+//   node workers/ops/deploy.mjs <name> <secrets store id> <secret name> [<wrap key slot A secret name>]
+// The fourth argument binds `SecretsWrapKey`'s slot A as `SECRETS_WRAP_KEY_A` (current slot 0), for `/wrap` and
+// `/unwrap` (M4-WP1).
 // Needs CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID. The secret itself is written by `wrangler secrets-store secret
 // create` with its value on stdin, never here.
 
@@ -11,7 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const [name, storeId, secretName] = process.argv.slice(2);
+const [name, storeId, secretName, wrapA] = process.argv.slice(2);
 if (!name || !storeId || !secretName) throw new Error("usage: deploy.mjs <name> <secrets store id> <secret name>");
 const out = join(here, "build");
 execFileSync("worker-build", ["--release", "--out-dir", out], { cwd: here, stdio: "inherit" });
@@ -23,7 +25,11 @@ const cfg = {
   compatibility_date: "2026-10-01",
   workers_dev: false,
   preview_urls: false,
-  secrets_store_secrets: [{ binding: "MINT_WRAP_KEY", store_id: storeId, secret_name: secretName }],
+  secrets_store_secrets: [
+    { binding: "MINT_WRAP_KEY", store_id: storeId, secret_name: secretName },
+    ...(wrapA ? [{ binding: "SECRETS_WRAP_KEY_A", store_id: storeId, secret_name: wrapA }] : []),
+  ],
+  ...(wrapA ? { vars: { SECRETS_WRAP_KEY_CURRENT: "0" } } : {}),
   observability: { enabled: true },
 };
 writeFileSync(join(gen, `${name}.jsonc`), JSON.stringify(cfg, null, 2));

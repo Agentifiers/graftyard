@@ -44,6 +44,7 @@ use serde::Deserialize;
 use serde_json::json;
 use worker::*;
 
+mod activity;
 mod agents;
 mod api;
 #[cfg(feature = "test-faults")]

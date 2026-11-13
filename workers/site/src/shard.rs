@@ -498,6 +498,9 @@ impl DurableObject for GitShard {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::error("site down", 503);
+        }
         let url = req.url()?;
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
@@ -963,6 +966,9 @@ impl DurableObject for GitShard {
     }
 
     async fn alarm(&self) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::empty();
+        }
         let site = SiteEnv::read(&self.env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let host = ShardHost { state: &self.state, region, image: "git", instance: instance(&self.env)?.0 };

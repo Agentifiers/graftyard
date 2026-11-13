@@ -2972,3 +2972,41 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
 
 **Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
+
+### M4-WP2's hosted half, as built (2026-11-13)
+
+#### M4-WP2's consumers run in band on the leader alarm
+
+**Decision.** `Notify` and `Search` run on each repository leader's alarm, and `Counts` on each `Identity` leader's, as `Webhooks` does (`workers/site/src/activity.rs`). Each reads its committed cursor, does one batch (at most 100 entries [guess]), and commits its cursor through its own member under a request id derived from the chain, the consumer, and the batch's end. A target that does not answer keeps the cursor, and the alarm comes back in 2 s. Nothing goes through Queues. Every consumer runs only where the site variable `GRAFTYARD_ACTIVITY` is `1`.
+
+**Why.** BF-5 bounds a star and a notice at 10 s. `PrSync`'s queue path delivered at p50 2.0 s and p90 5.1 s with outliers near 37 s, which is why its first attempt moved in band (`PrSync`'s first attempt runs in band, above). These consumers' work is a few Durable Object writes and no git cache merge, so the leader's isolate holds none of it for long. The cursor already gives at-least-once delivery, and each target is idempotent: `Inbox::apply` ignores an entry at or below `sources`, a document write replaces the document, and `CountsCmd::decide` keeps only newer `src`.
+
+**Beat.** A Queue message per batch, as SHARED's "Event fan-out" names: it adds the measured queue delay to every star and notice and buys nothing the cursor does not already give.
+
+**Evidence.** `tests/m4/results/m4-wp2.md`, "Hosted" [measured once BF-5 runs hosted]; the in-band precedent `tests/m2/results/m2-wp5.md`, "2026-11-05".
+
+**Flip.** A hosted run where the consumers' batches hold a leader's alarm long enough to slow its commits, measured, or a queue delivery bound under 2 s at p99.
+
+#### A jurisdiction domain with no site of its jurisdiction binds its shards on its regions
+
+**Decision.** `SearchShard::site` takes the domain's admitted sites as before. When the install has no site of an `Eu` or `Us` domain's jurisdiction at all, it binds that domain's shards on the sites of its regions (`weur` and `eeur` for `Eu`, `enam` and `wnam` for `Us`). The object is still created under the jurisdiction, through the namespace's `jurisdiction()` (`graftyard_lookup::Bindings::object`; `worker` 0.8 has none, so the JavaScript method is called).
+
+**Why.** The jurisdiction, not the binding's script, decides where a Durable Object runs and stores (`tests/m4/c15`: an `eu` object ran in WAW from a script deployed with no placement). `graftyard sites add` refuses once an install has a genesis, so `graft-m4a` can gain no `eu` site, and BF-68's pass line is about the documents' shards only. Where the org's repository chains sit is Milestone 5's EU sites, outside BF-68 (operator, 2026-11-13, relayed by the M4-WP2 lead).
+
+**Beat.** Deferring BF-68 to a new install with an `eu` site, which costs a site set and a genesis for a claim the shards alone carry.
+
+**Evidence.** `crates/api/tests/activity_gates.rs`, `eu_shards_bind_on_eu_regions_when_no_site_is_eu_and_names_round_trip`; hosted, each EU shard's `/stats` reports `jurisdiction: "eu"` and its colo (`tests/m4/results/m4-wp2.md`, "Hosted").
+
+**Flip.** A hosted EU shard that reports no `eu` jurisdiction or a colo outside the EU.
+
+#### A shard's generation is a map on every site's `Registry`, and a lost shard is rebuilt by the consumer that meets it
+
+**Decision.** The newest generation of each (domain, shard) lives in the `search_map` table of every site's `Registry` object `search_map`, and only moves forward. A `Search` write that finds its shard lost (`GRAFTYARD_SEARCH_LOST`, a site day's variable, or the operator's `/lose`) rebuilds the shard under the next generation from every repository of the domain and shard that the `MemberRegistry` rows list, read on each leader (`/activity {"docs": true}`). The new object answers 503 to queries until its `/built`, then the map moves, and the consumer's cursor, held meanwhile, resumes. The edge leaves a 503 or late shard out with `incomplete_results`.
+
+**Why.** DESIGN names a generation per rebuild but no place to keep it. The `Registry` objects already exist on every site, and a map read by every query must survive the loss of any one site.
+
+**Beat.** A chain of its own for the map, which a derived store does not need: a lost map row only makes the next rebuild reuse a generation's name, which the map's forward-only write refuses.
+
+**Evidence.** `workers/site/src/search.rs`, `workers/site/src/activity.rs`, `workers/site/src/registry.rs`.
+
+**Flip.** A hosted rebuild that misses a repository the registry rows list, or a query that reads a stale generation after `/built`.
