@@ -139,14 +139,16 @@ pub trait Family: 'static {
     async fn admit(_env: &worker::Env, _chain: ChainId, _cmd: &mut Self::C) {}
     /// What a `fresh` read answers for query `q`.
     fn read_json(fold: &Self::Fold, q: &Value) -> Value;
-    /// For a granted whole-tier read `q` at `now`: the ms until its dump may be rebuilt (`dump_wait`), or `None`.
-    /// `every` is the member's rebuild spacing (`dump_every`).
-    fn heavy_wait(_fold: &Self::Fold, _q: &Value, _now: u64, _every: u64) -> Option<u64> {
+    /// For a granted whole-tier or narrow read `q` at `now`: the ms until its answer may be rebuilt (`dump_wait`,
+    /// `narrow_wait`), or `None`. `floor` is the grant's (`raft::ReadGrant::floor`), `every` the member's dump rebuild
+    /// spacing (`dump_every`).
+    fn heavy_wait(_fold: &Self::Fold, _q: &Value, _floor: u64, _now: u64, _every: u64) -> Option<u64> {
         None
     }
     /// What a `fresh` read answers for `q` as serialized JSON bytes shared across reads, when the family keeps them
-    /// (a repository's packed dump, `dump_bytes`); else `None` and the host serializes `read_json`.
-    fn read_bytes(_fold: &Self::Fold, _q: &Value) -> Option<std::rc::Rc<[u8]>> {
+    /// (a repository's packed dump, `dump_bytes`, and narrow answers at or above the grant's `floor`,
+    /// `narrow_bytes`); else `None` and the host serializes `read_json`.
+    fn read_bytes(_fold: &Self::Fold, _q: &Value, _floor: u64) -> Option<std::rc::Rc<[u8]>> {
         None
     }
     /// Whether a follower serves read `q` by read-index (`design/DESIGN.md`, "Follower read"); else it names the leader.
@@ -327,23 +329,34 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     Some(bytes)
 }
 
-/// One repository's narrow answers at one `DumpKey`, by query text.
-type NarrowAnswers = (DumpKey, Vec<(String, std::rc::Rc<[u8]>)>);
+/// One repository's newest narrow answers, by query text and whether the metadata tier was loaded: each with the
+/// applied index it was built at.
+type NarrowAnswers = Vec<(String, u64, bool, std::rc::Rc<[u8]>)>;
 
 thread_local! {
-    /// The last narrow API answers per repository (`narrow_bytes`), at one `DumpKey`, by query.
+    /// The newest narrow API answer per repository and query (`narrow_bytes`), served to any read whose floor it is
+    /// at or above. Every applied entry is committed, and the fold is a function of the committed log, so an answer
+    /// built at index `i` by any member of the repository in this isolate is the answer every member gives at `i`.
     static NARROW: std::cell::RefCell<std::collections::HashMap<RepoId, NarrowAnswers>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Narrow answers this isolate built (`/stats` `narrowBuilds`).
+    static NARROW_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// Narrow answers kept per repository and state [guess]: journey 9's API reads are a handful of distinct queries.
+/// Narrow answers this isolate has built.
+pub fn narrow_builds() -> u64 {
+    NARROW_BUILDS.with(std::cell::Cell::get)
+}
+
+/// Queries kept per repository [guess]: journey 9's API reads are a handful of distinct queries.
 const NARROW_PER_STATE: usize = 32;
 
 /// How often a member builds one narrow API answer (one query of one repository) at most [guess]: an answer reads
-/// only the page it renders but selects over the whole table (500 PRs' rows for journey 9's lists), and the tiers
-/// change with nearly every entry, so without spacing every read would rebuild. A read whose rebuild is not due waits
-/// for it as a whole-tier read does (`crate::member`).
-pub const NARROW_EVERY_MS: u64 = 200;
+/// only the page it renders but selects over the whole table (500 PRs' rows for journey 9's lists), about 2 to 4 ms
+/// natively on a 500-PR repository (`tests/am1/results/narrow-reads-3.md`). Reads whose floor the newest answer
+/// already covers never wait for it; one whose floor is newer waits for the next build and is answered at the
+/// member's state then (`raft::Member::fresh_after`), with no second read-index round (`crate::member`).
+pub const NARROW_EVERY_MS: u64 = 100;
 
 thread_local! {
     /// When each repository's member last built each narrow answer, by query (`narrow_wait`).
@@ -351,14 +364,21 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-/// For a narrow API read of `fold` at `now`: `None` to serve it now, because its cached answer is at the tiers' state
-/// or a build of it is due (which is recorded); else the ms until one is, as `dump_wait` spaces dumps.
-pub fn narrow_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u64> {
+/// The cached answer to query `text` of `repo` built at `floor` or later with the metadata tier as `loaded`.
+fn narrow_hit(repo: RepoId, text: &str, floor: u64, loaded: bool) -> Option<std::rc::Rc<[u8]>> {
+    NARROW.with(|n| {
+        n.borrow().get(&repo).and_then(|v| {
+            v.iter().find(|(t, at, l, _)| t == text && *at >= floor && *l == loaded).map(|(_, _, _, b)| b.clone())
+        })
+    })
+}
+
+/// For a narrow API read of `fold` granted at `floor`, at `now`: `None` to serve it now, because a cached answer is at
+/// or above its floor or a build is due (which is recorded); else the ms until one is, as `dump_wait` spaces dumps.
+pub fn narrow_wait(fold: &git::repo::RepoFold, q: &Value, floor: u64, now: u64) -> Option<u64> {
     let repo = fold.repo?;
-    let (key, text) = (dump_key(fold), q.to_string());
-    let cached =
-        NARROW.with(|n| n.borrow().get(&repo).is_some_and(|(k, v)| *k == key && v.iter().any(|(t, _)| *t == text)));
-    if cached {
+    let text = q.to_string();
+    if narrow_hit(repo, &text, floor, fold.meta.loaded()).is_some() {
         return None;
     }
     NARROW_BUILT.with(|b| {
@@ -377,34 +397,31 @@ pub fn narrow_wait(fold: &git::repo::RepoFold, q: &Value, now: u64) -> Option<u6
     })
 }
 
-/// The answer to a narrow API read (`{"rows": {"api": ..}}`, `graftyard_api::narrow::answer`) as serialized bytes:
-/// the cached ones when the same query was answered at the tiers' state, else built now and cached, as `dump_bytes`
-/// keys its dump. `None` for any other query.
-pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
+/// The answer to a narrow API read (`{"rows": {"api": ..}}`, `graftyard_api::narrow::answer`) granted at `floor`, as
+/// serialized bytes: the newest cached answer to the same query when it was built at `floor` or later, else built
+/// now at the fold's state and cached. `None` for any other query.
+pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value, floor: u64) -> Option<std::rc::Rc<[u8]>> {
     q.get("rows")?.get("api")?;
-    let (repo, key, text) = (fold.repo?, dump_key(fold), q.to_string());
-    let hit = NARROW.with(|n| {
-        n.borrow()
-            .get(&repo)
-            .filter(|(k, _)| *k == key)
-            .and_then(|(_, v)| v.iter().find(|(t, _)| *t == text).map(|(_, b)| b.clone()))
-    });
-    if let Some(b) = hit {
+    let (repo, text, loaded) = (fold.repo?, q.to_string(), fold.meta.loaded());
+    if let Some(b) = narrow_hit(repo, &text, floor, loaded) {
         return Some(b);
     }
+    let at = graftyard_fold::meta(&*fold.core).applied.0;
     let bytes: std::rc::Rc<[u8]> =
         serde_json::to_vec(&<Repo as Family>::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into();
+    NARROW_BUILDS.with(|b| b.set(b.get() + 1));
     NARROW.with(|n| {
         let mut n = n.borrow_mut();
         if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {
             n.clear();
         }
-        let e = n.entry(repo).or_insert_with(|| (key, Vec::new()));
-        if e.0 != key {
-            *e = (key, Vec::new());
-        }
-        if e.1.len() < NARROW_PER_STATE {
-            e.1.push((text, bytes.clone()));
+        let v = n.entry(repo).or_default();
+        // A build happens only when no cached answer covers the read's floor, so it is the newest one this isolate
+        // has for the query.
+        match v.iter().position(|(t, _, l, _)| *t == text && *l == loaded) {
+            Some(i) => v[i] = (text, at, loaded, bytes.clone()),
+            None if v.len() < NARROW_PER_STATE => v.push((text, at, loaded, bytes.clone())),
+            None => {}
         }
     });
     Some(bytes)
@@ -953,14 +970,14 @@ impl Family for Repo {
     fn follower_serves(fold: &git::repo::RepoFold, q: &Value) -> bool {
         follower_query(q, fold.meta.loaded())
     }
-    fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, now: u64, every: u64) -> Option<u64> {
+    fn heavy_wait(fold: &git::repo::RepoFold, q: &Value, floor: u64, now: u64, every: u64) -> Option<u64> {
         if q.get("rows").and_then(|r| r.get("api")).is_some() {
-            return narrow_wait(fold, q, now);
+            return narrow_wait(fold, q, floor, now);
         }
         (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now, every)).flatten()
     }
-    fn read_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
-        dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q))
+    fn read_bytes(fold: &git::repo::RepoFold, q: &Value, floor: u64) -> Option<std::rc::Rc<[u8]>> {
+        dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q, floor))
     }
     fn read_json(fold: &git::repo::RepoFold, q: &Value) -> Value {
         // The owner and enterprise `deps` read (`RepoSettings`, else the owner the group was joined with), for the

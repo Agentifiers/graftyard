@@ -105,6 +105,10 @@ impl Timing {
         self.phases.borrow_mut().push((name, now - since));
         self.last.set(self.last.get().max(now));
     }
+    /// A stage another party measured, such as the member's own split of a tier read (`member_stages`).
+    fn put(&self, name: &'static str, ms: f64) {
+        self.phases.borrow_mut().push((name, ms));
+    }
     /// Each stage and its ms, then `total`.
     fn phases(&self) -> Vec<(&'static str, f64)> {
         let mut out = self.phases.borrow().clone();
@@ -392,7 +396,11 @@ async fn read_repo(
             Rows::Merge(_, Some(v)) => v,
             Rows::Api(route) => {
                 let spec = graftyard_api::narrow::Spec { at: at.clone(), route };
-                match api_rows(c, &repo, &spec).await? {
+                let v = api_rows(c, &repo, &spec).await?;
+                if let Ok(v) = &v {
+                    member_stages(c, v);
+                }
+                match v {
                     // A route the member answers whole, or a member that cannot read the spec: both whole tiers.
                     Ok(v) if v["value"].get("whole").is_some() || v["value"].get("error").is_some() => {
                         tier_rows(c, &repo, None).await
@@ -474,6 +482,16 @@ enum Rows {
     Core,
     Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
     Api(graftyard_api::narrow::Route),
+}
+
+/// The member's split of a read it answered (`stages`, `[grant, waited]` ms): `tier_grant`, the wait for the
+/// leader's read index to be applied, and `tier_wait`, the wait for the answer's build (narrow-reads-3). A member built
+/// before it sends none.
+fn member_stages(c: &Ctx<'_>, v: &Value) {
+    if let Some([g, w]) = v.get("stages").and_then(Value::as_array).map(Vec::as_slice) {
+        c.timing.put("tier_grant", g.as_f64().unwrap_or(0.0));
+        c.timing.put("tier_wait", w.as_f64().unwrap_or(0.0));
+    }
 }
 
 /// A narrow API read (`{"rows": {"api": spec}}`, `graftyard_api::narrow::answer`) on the repository's learners and

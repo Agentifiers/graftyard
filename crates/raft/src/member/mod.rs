@@ -820,7 +820,7 @@ impl<C: Command> Member<C> {
             own_appended: None,
             early_from: Index(0),
             install: None,
-            remote: install::RemoteReads::default(),
+            remote: install::RemoteReads::starting_at(boot),
             admit_capacity: None,
         })
     }

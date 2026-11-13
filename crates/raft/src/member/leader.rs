@@ -1528,6 +1528,7 @@ impl<C: Command> Member<C> {
                     boot: self.boot,
                     step: self.step,
                     index: self.fold.applied(),
+                    floor: self.fold.applied(),
                     via_round: needs_round || !lease,
                     remote: false,
                 })
@@ -1551,6 +1552,18 @@ impl<C: Command> Member<C> {
             && grant.step == self.step
             && grant.index == self.fold.applied();
         if ok { Ok(Fresh { fold: &self.fold.fold, index: grant.index }) } else { Err(self.not_leader()) }
+    }
+
+    /// The member's fold now, for a read granted in an earlier input of this boot: every applied entry is committed,
+    /// and within a boot the applied index never moves back (an install only moves it forward), so this state is at or
+    /// above the grant's floor (`ReadGrant::floor`) and holds every entry acknowledged before the read arrived, as the
+    /// grant's own state did. A host that could not answer at the grant (an answer whose build was not due) answers
+    /// here later without another read-index round. Refused after the member restarted (`boot`).
+    pub fn fresh_after(&self, grant: &ReadGrant) -> Result<Fresh<'_, C::Fold>, NotLeader> {
+        if grant.boot != self.boot {
+            return Err(self.not_leader());
+        }
+        Ok(Fresh { fold: &self.fold.fold, index: self.fold.applied() })
     }
 
     /// The `extend` of the next entry this leader appends (`design/DESIGN.md`, Shape, `ExtendLeases`): with a stall

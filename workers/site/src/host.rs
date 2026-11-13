@@ -58,22 +58,26 @@ pub type ReadResult = Result<(ReadBody, Index), NotLeader>;
 /// query granted in the same input share one copy (`shared_answer`). The `Value` tree is dropped at once, so one
 /// quorum round that grants hundreds of reads no longer holds hundreds of trees until each is sent: 600 refs reads
 /// granted together took an idle leader from 56 to 94 MB, and on B0-29 600 reads ended in one millisecond before
-/// the apac leader's `exceededMemory` (`tests/am1/results/lm1-memory.md`, "Rows"). `Shed`: a whole-tier read whose
-/// dump rebuild is not due yet (`family::dump_wait`), with the ms until it is.
+/// the apac leader's `exceededMemory` (`tests/am1/results/lm1-memory.md`, "Rows"). `Shed`: a whole-tier or narrow
+/// read whose rebuild is not due yet (`family::dump_wait`, `family::narrow_wait`), with the ms until it is and the
+/// read's grant, which `Host::answer_after` answers later without another read-index round.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReadBody {
     Json(Rc<[u8]>),
-    Shed(u64),
+    Shed(u64, Option<raft::ReadGrant>),
 }
 
-/// The answer for query `q` from `built`, the answers already made in this input, else from `build`, kept for the
-/// input's other reads of the same query. `built` must not outlive the input: its answers are at that input's grant.
+/// The answer for query `q` granted at `floor` from `built`, the answers already made in this input, else from
+/// `build`, kept for the input's other reads of the same query and floor. `built` must not outlive the input: its
+/// answers are at that input's grant. The floor is part of the key because a cached narrow answer may be older than
+/// the input's state, and is good only for reads whose floor it covers (`family::narrow_bytes`).
 pub fn shared_answer(
     built: &mut HashMap<String, ReadBody>,
     q: &Value,
+    floor: u64,
     build: impl FnOnce() -> ReadBody,
 ) -> (ReadBody, bool) {
-    let key = q.to_string();
+    let key = format!("{floor} {q}");
     if let Some(b) = built.get(&key) {
         return (b.clone(), true);
     }
@@ -86,11 +90,11 @@ pub fn shared_answer(
 /// (`family::dump_every`): `Shed` when a stale dump's rebuild is not due (checked here, where the dump would be
 /// built, so one granted batch rebuilds at most once per `every`); else the family's shared bytes (`read_bytes`, one
 /// copy for every read at this state, from any input); else `read_json` serialized.
-pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, now: u64, every: u64) -> ReadBody {
-    if let Some(ms) = F::heavy_wait(fold, q, now, every) {
-        return ReadBody::Shed(ms);
+pub fn fold_answer<F: Family>(fold: &F::Fold, q: &Value, floor: u64, now: u64, every: u64) -> ReadBody {
+    if let Some(ms) = F::heavy_wait(fold, q, floor, now, every) {
+        return ReadBody::Shed(ms, None);
     }
-    if let Some(b) = F::read_bytes(fold, q) {
+    if let Some(b) = F::read_bytes(fold, q, floor) {
         return ReadBody::Json(b);
     }
     ReadBody::Json(serde_json::to_vec(&F::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into())
@@ -104,7 +108,7 @@ const DRAIN_IDLE_MS: u64 = 60_000;
 /// entries are applied. Longer logs skip it: replaying them would hold every request row the log ever carried.
 const RESTORE_CHECK_MAX: u64 = 20_000;
 /// Latency samples kept for `/stats`.
-const SAMPLES_MAX: usize = 200_000;
+pub const SAMPLES_MAX: usize = 200_000;
 /// Storage confirms and truncations kept for `ack_json`'s `selfSyncedAt`: an `Acked` is answered within seconds of
 /// its commit, and a confirm row a minute old covers every index at or below it.
 const SYNCED_KEEP: usize = 256;
@@ -187,8 +191,14 @@ pub struct Stats {
     pub shed_reads: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
-    /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
+    /// A learner's whole-tier reads, and any read-index member's narrow reads, that waited for a rebuild instead of
+    /// being shed, counted once per wait.
     pub waited_reads: u32,
+    /// Read-index reads this member answered, each `[grant, waited, total]` in ms: arrival to the leader's read index
+    /// applied and granted, the time spent waiting for a rebuild, and arrival to the answer (narrow-reads-3).
+    pub read_stages: Vec<[u32; 3]>,
+    /// The ms each narrow API answer took to build (`family::narrow_bytes`).
+    pub narrow_build_ms: Vec<u32>,
     /// Read-index reads this member served as a follower, refused to the leader (`Family::follower_serves`), and
     /// answered `overloaded` after FOLLOWER_WAIT (`crate::member`).
     pub follower_reads: u32,
@@ -1780,7 +1790,8 @@ impl<F: Family> Host<F> {
                             // read answers the whole fold in the crate's codec, hex, for another group's `deps`.
                             let v = result.and_then(|g| {
                                 core.m.fresh(&g).map(|f| {
-                                    let (body, hit) = shared_answer(&mut built, &q, || {
+                                    let floor = g.floor().0;
+                                    let (body, hit) = shared_answer(&mut built, &q, floor, || {
                                         // `probe`: only that a member leads (`graftyard_lookup::create`).
                                         let body = if q.get("probe").is_some() {
                                             Value::Null
@@ -1795,7 +1806,7 @@ impl<F: Family> Host<F> {
                                             Err(_) => json!({ "badRequestId": rid }),
                                         }
                                         } else {
-                                            return fold_answer::<F>(f.fold(), &q, now, every);
+                                            return self.timed_answer(f.fold(), &q, floor, now, every);
                                         };
                                         ReadBody::Json(
                                             serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()).into(),
@@ -1804,6 +1815,11 @@ impl<F: Family> Host<F> {
                                     if hit {
                                         self.stats.borrow_mut().shared_reads += 1;
                                     }
+                                    // A read whose answer is not built yet keeps its own grant, for `answer_after`.
+                                    let body = match body {
+                                        ReadBody::Shed(ms, _) => ReadBody::Shed(ms, Some(g.clone())),
+                                        b => b,
+                                    };
                                     (body, f.index())
                                 })
                             });
@@ -2253,6 +2269,45 @@ impl<F: Family> Host<F> {
             }
         }
         rx
+    }
+
+    /// `fold_answer`, with the ms of each narrow answer it builds kept in `Stats::narrow_build_ms`.
+    fn timed_answer(&self, fold: &F::Fold, q: &Value, floor: u64, now: u64, every: u64) -> ReadBody {
+        let (n, t) = (crate::family::narrow_builds(), now_ms());
+        let body = fold_answer::<F>(fold, q, floor, now, every);
+        if crate::family::narrow_builds() > n {
+            let mut s = self.stats.borrow_mut();
+            if s.narrow_build_ms.len() < SAMPLES_MAX {
+                s.narrow_build_ms.push(now_ms().saturating_sub(t) as u32);
+            }
+        }
+        body
+    }
+
+    /// The answer to read `q`, granted in an earlier input as `g`, at this member's state now
+    /// (`raft::Member::fresh_after`): for a read whose answer was not built at its grant (`ReadBody::Shed`), once the
+    /// build is due, with no second read-index round. It may be `Shed` again when another read took the build slot
+    /// with an answer below this read's floor. `None` when the object is resetting.
+    pub fn answer_after(self: &Rc<Self>, g: &raft::ReadGrant, q: &Value) -> Option<ReadResult> {
+        let now = now_ms();
+        let (r, lost) = {
+            let core = self.core.borrow();
+            let c = core.as_ref()?;
+            let every = crate::family::dump_every(c.m.me());
+            let r = c.m.fresh_after(g).map(|f| {
+                let body = match self.timed_answer(f.fold(), q, g.floor().0, now, every) {
+                    ReadBody::Shed(ms, _) => ReadBody::Shed(ms, Some(g.clone())),
+                    b => b,
+                };
+                (body, f.index())
+            });
+            (r, self.lost_cause(&c.m))
+        };
+        if let Some(why) = lost {
+            self.fail_lost(&why);
+            return None;
+        }
+        Some(r)
     }
 
     pub fn wait_read(&self, id: ReadId, q: Value) -> oneshot::Receiver<ReadResult> {
@@ -2972,19 +3027,23 @@ mod tests {
             ReadBody::Json(v.as_bytes().to_vec().into())
         };
         let a = serde_json::json!({ "refs": { "after": "YQ" } });
-        let (first, hit) = shared_answer(&mut built, &a, || make("1"));
+        let (first, hit) = shared_answer(&mut built, &a, 4, || make("1"));
         assert!(!hit);
-        let (again, hit) = shared_answer(&mut built, &a, || make("2"));
+        let (again, hit) = shared_answer(&mut built, &a, 4, || make("2"));
         assert!(hit);
         assert_eq!(again, first);
         let (ReadBody::Json(x), ReadBody::Json(y)) = (&first, &again) else { panic!("json") };
         assert!(std::rc::Rc::ptr_eq(x, y), "one copy, not one per read");
         let b = serde_json::json!({ "refs": { "after": "Yg" } });
-        let (other, hit) = shared_answer(&mut built, &b, || make("3"));
+        let (other, hit) = shared_answer(&mut built, &b, 4, || make("3"));
         assert!(!hit);
         assert_eq!(other, ReadBody::Json(b"3".to_vec().into()));
+        // A read of the same query with a newer floor does not take an answer built for an older one.
+        let (newer, hit) = shared_answer(&mut built, &a, 5, || make("4"));
+        assert!(!hit, "another floor is another answer");
+        assert_eq!(newer, ReadBody::Json(b"4".to_vec().into()));
         drop(make);
-        assert_eq!(builds, 2);
+        assert_eq!(builds, 3);
     }
 
     use futures_channel::oneshot;

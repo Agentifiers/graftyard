@@ -293,8 +293,8 @@ mod tests {
         }
         // Through the host, as a grant answers: two inputs' grants at one state get the same copy, not one each.
         let (crate::host::ReadBody::Json(x), crate::host::ReadBody::Json(y)) = (
-            crate::host::fold_answer::<Repo>(&a, &q, 0, DUMP_EVERY_MS),
-            crate::host::fold_answer::<Repo>(&a, &q, 1, LEARNER_DUMP_EVERY_MS),
+            crate::host::fold_answer::<Repo>(&a, &q, 0, 0, DUMP_EVERY_MS),
+            crate::host::fold_answer::<Repo>(&a, &q, 0, 1, LEARNER_DUMP_EVERY_MS),
         ) else {
             panic!("a cached dump is served")
         };
@@ -306,12 +306,14 @@ mod tests {
         const { assert!(LEARNER_DUMP_EVERY_MS < DUMP_EVERY_MS) };
     }
 
-    /// A narrow API read (`graftyard_api::narrow`) is built once per query and state of the tiers, never served from
-    /// an older state or another query's answer, and spaced by NARROW_EVERY_MS; a follower serves it only once its
-    /// metadata tier is loaded, and it is never a whole-tier read.
+    /// A narrow API read (`graftyard_api::narrow`) is answered from the newest cached answer to the same query when it
+    /// was built at or above the read's floor (the leader's read index for that read), and never below it: a read
+    /// whose floor is newer than the cache waits for the next build, spaced by NARROW_EVERY_MS, and is built at the
+    /// fold's state then. An answer never stands in for another query's, and an older build never replaces a newer
+    /// one. A follower serves it only once its metadata tier is loaded, and it is never a whole-tier read.
     #[test]
-    fn a_narrow_read_is_cached_per_query_and_state_and_spaced() {
-        use crate::family::{NARROW_EVERY_MS, follower_query, narrow_bytes, narrow_wait};
+    fn a_narrow_read_is_served_at_or_above_its_floor_and_spaced() {
+        use crate::family::{NARROW_EVERY_MS, follower_query, narrow_builds, narrow_bytes, narrow_wait};
         use graftyard_api::narrow::{Route, Spec};
         use graftyard_api::view::RepoRef;
         let at = RepoRef { id: RepoId(DbId(61)), owner: "o".into(), owner_id: AccountId(DbId(1)), name: "r".into() };
@@ -335,30 +337,92 @@ mod tests {
             extend: None,
             body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
         };
+        let index_of =
+            |b: &[u8]| graftyard_api::hosted::TierRows::from_value(&serde_json::from_slice(b).unwrap()).unwrap().index;
         let first = entry(1, 2, Digest([0; 32]));
+        let second = entry(2, 5, graftyard_raft::digest(&first));
         let mut a = RepoFold::new(RepoId(DbId(61)), AccountId(DbId(1)));
         a.apply_entry(&first);
         let (repo, pulls) = (q(&[]), q(&["pulls", "1"]));
-        assert_eq!(narrow_wait(&a, &repo, 5_000), None, "the first build is due");
-        let one = narrow_bytes(&a, &repo).expect("a narrow read");
-        assert!(std::rc::Rc::ptr_eq(&one, &narrow_bytes(&a, &repo).unwrap()), "one copy per query and state");
-        assert_eq!(narrow_wait(&a, &repo, 5_001), None, "a cached answer is served at once");
-        assert_ne!(narrow_bytes(&a, &pulls).unwrap(), one, "another query is its own answer");
+        assert_eq!(narrow_wait(&a, &repo, 1, 5_000), None, "the first build is due");
+        let built = narrow_builds();
+        let one = narrow_bytes(&a, &repo, 1).expect("a narrow read");
+        assert_eq!(index_of(&one), 1);
+        assert!(std::rc::Rc::ptr_eq(&one, &narrow_bytes(&a, &repo, 1).unwrap()), "one copy per query and state");
+        assert_eq!(narrow_builds(), built + 1, "built once");
+        assert_eq!(narrow_wait(&a, &repo, 1, 5_001), None, "a cached answer at the floor is served at once");
+        assert_ne!(narrow_bytes(&a, &pulls, 1).unwrap(), one, "another query is its own answer");
         assert_eq!(serde_json::to_vec(&Repo::read_json(&a, &repo)).unwrap(), one.to_vec(), "the bytes are the answer");
-        a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
-        assert_eq!(narrow_wait(&a, &repo, 5_050), Some(NARROW_EVERY_MS - 50), "a rebuild waits its spacing");
-        assert_eq!(narrow_wait(&a, &repo, 5_000 + NARROW_EVERY_MS), None, "then is due");
-        let two = narrow_bytes(&a, &repo).unwrap();
-        assert_ne!(two, one, "an applied entry is in the next answer, never the older state's");
-        assert_eq!(
-            graftyard_api::hosted::TierRows::from_value(&serde_json::from_slice(&two).unwrap()).unwrap().index,
-            2
+        // Entry 2 applies. A read whose floor is still 1 is served the answer at 1 at once: it holds every entry
+        // acknowledged before that read arrived. A read whose floor is 2 must not get it.
+        a.apply_entry(&second);
+        assert_eq!(narrow_wait(&a, &repo, 1, 5_050), None, "an older floor is covered by the cached answer");
+        assert!(std::rc::Rc::ptr_eq(&narrow_bytes(&a, &repo, 1).unwrap(), &one), "served from the cache, not rebuilt");
+        assert_eq!(narrow_wait(&a, &repo, 2, 5_050), Some(NARROW_EVERY_MS - 50), "a newer floor waits its spacing");
+        assert_eq!(narrow_wait(&a, &repo, 2, 5_000 + NARROW_EVERY_MS), None, "then is due");
+        let two = narrow_bytes(&a, &repo, 2).unwrap();
+        assert_eq!(index_of(&two), 2, "built at the fold's state, at the read's floor");
+        assert_eq!(narrow_builds(), built + 3, "the pulls answer and this rebuild");
+        // A second member of the same repository in this isolate that is behind (a follower at 1) is served the
+        // newer answer, which covers its read's floor, and builds nothing.
+        let mut b = RepoFold::new(RepoId(DbId(61)), AccountId(DbId(1)));
+        b.apply_entry(&first);
+        let behind = narrow_bytes(&b, &repo, 1).unwrap();
+        assert!(
+            std::rc::Rc::ptr_eq(&behind, &two),
+            "a member behind is served the newer answer, which covers its floor"
         );
+        assert_eq!(narrow_builds(), built + 3, "and builds nothing");
+        // A member of the same repository whose metadata tier is still loading, at the same index, answers without
+        // the metadata rows: its answer is its own, and never serves a read on a member that has loaded the tier.
+        let mut c = RepoFold::with_tiers(
+            Some(RepoId(DbId(61))),
+            Some(AccountId(DbId(1))),
+            Box::new(graftyard_fold::MemStore::default()),
+            Box::new(Unloaded),
+        );
+        c.apply_entry(&first);
+        c.apply_entry(&second);
+        let loading = narrow_bytes(&c, &repo, 2).unwrap();
+        assert!(!std::rc::Rc::ptr_eq(&loading, &two), "a loading member builds its own answer");
+        assert!(std::rc::Rc::ptr_eq(&narrow_bytes(&a, &repo, 2).unwrap(), &two), "a loaded member keeps its own");
         assert!(crate::family::dump_bytes(&a, &repo).is_none(), "not a dump");
         assert!(
             follower_query(&repo, true) && !follower_query(&repo, false),
             "served once the metadata tier is loaded"
         );
+    }
+
+    /// A metadata tier that has not loaded (`TierStore::loaded`).
+    #[derive(Clone, Debug, Default)]
+    struct Unloaded;
+
+    impl graftyard_fold::Store for Unloaded {
+        fn get(&self, _: &str, _: &[graftyard_fold::Val]) -> Option<graftyard_fold::Stored> {
+            None
+        }
+        fn put(&mut self, _: &str, _: graftyard_fold::Key, _: graftyard_fold::Stored) {}
+        fn delete(&mut self, _: &str, _: &[graftyard_fold::Val]) {}
+        fn scan(
+            &self,
+            _: &str,
+            _: &[graftyard_fold::Val],
+            _: usize,
+        ) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+            Vec::new()
+        }
+    }
+
+    impl graftyard_fold::TierStore for Unloaded {
+        fn clone_box(&self) -> Box<dyn graftyard_fold::TierStore> {
+            Box::new(self.clone())
+        }
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn loaded(&self) -> bool {
+            false
+        }
     }
 
     /// A follower serves by read-index only the reads the design names: whole-tier and merge rows once its metadata

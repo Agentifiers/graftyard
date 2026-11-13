@@ -1225,3 +1225,85 @@ fn one_request_elects_an_idle_group_whose_leader_restarted() {
         assert!(c.leader().is_some(), "to {to:?} write {write}: no leader {} ms after one request", c.now.0 - t0.0);
     }
 }
+
+/// A read granted on a follower carries the leader's read index as its floor, and `fresh_after` answers it later at
+/// any state the follower has applied at or above that floor, not below it and not after a restart. A host that
+/// answers a waited read from `fresh_after` therefore never answers older than the commit index the leader confirmed
+/// for that read (`design/DESIGN.md`, "Follower read").
+#[test]
+fn a_grant_answers_later_only_at_or_above_the_leaders_read_index() {
+    let mut c = Cluster::new(71);
+    c.elect(A);
+    c.sync(A);
+    let at_read = c.m(A).group_fold().applied();
+    c.resolutions.clear();
+    let id = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    // A write commits on A after the read arrived but before its answer reaches B: B must not be granted below it.
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7_100)), put("k", "late"))).expect("admitted");
+    c.deliver_all();
+    let g = c
+        .resolutions
+        .iter()
+        .find_map(|(s, r)| match r {
+            Resolution::Read { id: i, result: Ok(g) } if *s == B && *i == id => Some(g.clone()),
+            _ => None,
+        })
+        .expect("B's read was granted");
+    assert!(g.floor() >= at_read, "the floor is the leader's read index, at least its applied index at the read");
+    assert!(g.floor() <= g.index(), "the grant's own state is at or above its floor");
+    let floor = g.floor();
+    let later = c.m(B).fresh_after(&g).expect("a later input answers at B's applied state");
+    assert!(later.index() >= floor);
+    assert_eq!(later.index(), c.m(B).group_fold().applied(), "at B's current state, not the grant's");
+    // `fresh` itself refuses after the next input, while `fresh_after` still answers, at the newer state.
+    c.sync(A);
+    assert!(c.m(B).fresh(&g).is_err(), "a grant is good for `fresh` only in its own input");
+    let newer = c.m(B).fresh_after(&g).expect("still answers");
+    assert!(newer.index() > floor, "later states are at least as fresh");
+    // A member that restarted refuses it: its fold is reloaded, and the host's waiter is gone with the object.
+    c.restart(B);
+    assert!(c.m(B).fresh_after(&g).is_err(), "not after a restart");
+}
+
+/// A follower that restarted numbers its read-index batches from the start again, and an answer the leader sent its
+/// previous boot (held for the learner's next call, or late on the network) carries the same batch number. Taken as
+/// the new batch's answer it would grant a read below the commit index of a write acknowledged before that read
+/// arrived: a stale read. Found by the live sweep with reads answered later (`tests/am1/results/narrow-reads-3.md`).
+#[test]
+fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
+    let mut c = Cluster::new(72);
+    c.elect(A);
+    c.sync(A);
+    // B asks, and A's answer is held back.
+    c.resolutions.clear();
+    c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+    for e in std::mem::take(&mut c.inbox).into_iter().filter(|e| matches!(e.msg, Message::ReadIndex { .. })) {
+        let graftyard_raft::Envelope { from, to, msg } = e;
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    let held: Vec<_> = c.inbox.drain(..).filter(|e| matches!(e.msg, Message::ReadIndexRes { .. })).collect();
+    assert_eq!(held.len(), 1, "A answered at once, inside its lease");
+    // B restarts, and A's next append reaches it, so B names A again. Then a write commits through A and C while B
+    // hears nothing, so B has not applied it.
+    c.restart(B);
+    c.inbox.clear();
+    c.sync(A);
+    assert_eq!(c.m(B).leader(), Some(A), "A's append reached B");
+    c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7_200)), put("k", "new"))).expect("admitted");
+    c.deliver(|e| e.to != B && e.from != B);
+    assert_eq!(c.value(A, "k").as_deref(), Some("new"));
+    let acked = c.m(A).state().commit;
+    assert!(c.m(B).group_fold().applied() < acked, "B has not applied the write");
+    // B's new boot reads; the old boot's answer arrives first.
+    c.resolutions.clear();
+    let id = c.on(B, |m, now| m.read_index(now)).expect("B names A again");
+    c.inbox.retain(|e| e.to != A);
+    for e in held {
+        let graftyard_raft::Envelope { from, to, msg } = e;
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    let stale = c.resolutions.iter().any(|(s, r)| {
+        *s == B && matches!(r, Resolution::Read { id: i, result: Ok(g) } if *i == id && g.floor() < acked)
+    });
+    assert!(!stale, "B granted its new read below the write A acknowledged before it");
+}

@@ -49,6 +49,16 @@ pub(super) struct RemoteReads {
     serving: BTreeMap<ReadId, (SiteId, u64)>,
 }
 
+impl RemoteReads {
+    /// Batches numbered from `boot`'s high half: an answer the leader sent this member's previous boot, held for its
+    /// next call or late on the network, names a batch this boot never sends, so it grants no read. Numbered from 1
+    /// every boot, the old answer matched the new boot's first batch and granted it below a write acknowledged before
+    /// the read arrived (`tests/am1/results/narrow-reads-3.md`).
+    pub(super) fn starting_at(boot: u64) -> RemoteReads {
+        RemoteReads { next_batch: boot & !0xFFFF_FFFF, ..RemoteReads::default() }
+    }
+}
+
 impl<C: Command> Member<C> {
     /// Whether this member is a learner: it never votes, campaigns, or leads.
     pub(super) fn is_learner(&self) -> bool {
@@ -276,18 +286,19 @@ impl<C: Command> Member<C> {
         let (applied, now) = (self.fold.applied(), self.now);
         let late = |at: Timestamp| now >= after(at, CAMPAIGN_DEADLINE);
         let nl = self.not_leader();
-        let grant = |m: &Self| ReadGrant {
+        let grant = |m: &Self, floor: Index| ReadGrant {
             term: m.state.term,
             boot: m.boot,
             step: m.step,
             index: applied,
+            floor,
             via_round: true,
             remote: true,
         };
         let waiting = std::mem::take(&mut self.remote.waiting);
         for (id, at, i) in waiting {
             if i <= applied {
-                let g = grant(self);
+                let g = grant(self, i);
                 self.out.resolutions.push(Resolution::Read { id, result: Ok(g) });
             } else if late(at) {
                 self.out.resolutions.push(Resolution::Read { id, result: Err(nl.clone()) });

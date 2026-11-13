@@ -104,6 +104,20 @@ fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64
     (learner || narrow) && index && now + ms < until
 }
 
+/// `{n, p50, p99, max}` of `v`, sorted in place.
+fn pcts(v: &mut [u32]) -> Value {
+    v.sort_unstable();
+    let at = |p: f64| v.get(((v.len() as f64 * p) as usize).min(v.len().saturating_sub(1))).copied();
+    json!({ "n": v.len(), "p50": at(0.5), "p99": at(0.99), "max": v.last() })
+}
+
+/// `pcts` of each of a read's stages (`host::Stats::read_stages`): `grant`, `waited`, and `total`, and how many waited.
+fn read_stage_pcts(rows: &[[u32; 3]]) -> Value {
+    let col = |i: usize| rows.iter().map(|r| r[i]).collect::<Vec<_>>();
+    json!({ "grant": pcts(&mut col(0)), "waited": pcts(&mut col(1)), "total": pcts(&mut col(2)),
+        "waitedN": rows.iter().filter(|r| r[1] > 0).count() })
+}
+
 /// How long a started read waits for its grant, and the answer when it does not come: a read-index read waits
 /// FOLLOWER_WAIT and answers `overloaded`, which the edge takes to the next member without `suspect`; a leader's read
 /// waits three call deadlines and answers `busy`.
@@ -873,11 +887,20 @@ impl<F: Family> Routes<F> {
 
     /// A granted read's answer, `{"value": <value>, "index": n, "meta": ..}`, streamed out of the shared `value` bytes
     /// while it holds its places under READS_MAX and HEAVY_READS (`held_body`).
-    fn reply_read(&self, value: Rc<[u8]>, index: u64, held: (InFlight, Option<InFlight>)) -> Result<Response> {
+    /// `stages`, `[grant, waited]` ms, is how long the read waited for its grant (the leader's read index applied, on a
+    /// follower or learner) and then for its answer's build (narrow-reads-3), which the edge adds to its `server-timing`.
+    fn reply_read(
+        &self,
+        value: Rc<[u8]>,
+        index: u64,
+        held: (InFlight, Option<InFlight>),
+        stages: [u32; 2],
+    ) -> Result<Response> {
         if self.host.fold_lost() {
             return Response::error("member reset: fold storage lost", 503);
         }
-        let tail = format!(r#","index":{index},"meta":{}}}"#, self.meta()).into_bytes();
+        let tail =
+            format!(r#","index":{index},"stages":[{},{}],"meta":{}}}"#, stages[0], stages[1], self.meta()).into_bytes();
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
         Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, held))?.with_headers(headers))
@@ -1150,42 +1173,59 @@ impl<F: Family> Routes<F> {
         }
         let held = (InFlight::new(&self.host.reads_in_flight), heavy.then(|| InFlight::new(&self.host.heavy_reads)));
         let (wait, late) = read_wait(index);
-        let until = now_ms() + wait.as_millis() as u64;
-        loop {
-            let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
-            let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
-            self.host.dispatch(out, None);
-            let rx = match (r, rx) {
-                (Ok(_), Some(rx)) => rx,
-                (Err(nl), _) => {
-                    return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
-                }
-                (Ok(_), None) => unreachable!("a started read has a waiter"),
+        let t0 = now_ms();
+        let until = t0 + wait.as_millis() as u64;
+        let (r, out) = self.host.step(|m, t| if index { m.read_index(t) } else { m.read(t) })?;
+        let rx = r.as_ref().ok().map(|id| self.host.wait_read(*id, q.clone()));
+        self.host.dispatch(out, None);
+        let rx = match (r, rx) {
+            (Ok(_), Some(rx)) => rx,
+            (Err(nl), _) => {
+                return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
+            }
+            (Ok(_), None) => unreachable!("a started read has a waiter"),
+        };
+        self.host.served();
+        let left = Duration::from_millis(until.saturating_sub(t0));
+        let mut answer = within(left, rx).await;
+        let granted = now_ms();
+        // An answer whose rebuild is not yet due (`family::dump_wait`, `family::narrow_wait`). A read-index read that
+        // may wait sleeps until the build is due, then is answered at the member's state then, which is at or above
+        // the leader's read index for this read (`raft::Member::fresh_after`): no second read-index round. A voter's
+        // dump read and a leader's plain read are shed.
+        while let Some(Ok(Ok((host::ReadBody::Shed(ms, g), _)))) = &answer {
+            let (ms, g) = (*ms, g.clone());
+            let Some(g) = g.filter(|_| waits_for_rebuild(learner, narrow, index, now_ms(), ms, until)) else {
+                self.host.stats.borrow_mut().shed_reads += 1;
+                return self.reply(graftyard_lookup::overloaded_reply(ms));
             };
-            self.host.served();
-            let left = Duration::from_millis(until.saturating_sub(now_ms()));
-            return match within(left, rx).await {
-                // A stale dump whose rebuild is not yet due (`family::dump_wait`). A learner's read waits for the
-                // rebuild and is granted again, so it answers the state at its new grant; a voter's is shed.
-                Some(Ok(Ok((host::ReadBody::Shed(ms), _)))) => {
-                    if waits_for_rebuild(learner, narrow, index, now_ms(), ms, until) {
-                        self.host.stats.borrow_mut().waited_reads += 1;
-                        worker::Delay::from(Duration::from_millis(ms)).await;
-                        continue;
-                    }
-                    self.host.stats.borrow_mut().shed_reads += 1;
-                    self.reply(graftyard_lookup::overloaded_reply(ms))
-                }
-                Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held),
-                Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
-                Some(Err(_)) => Response::error("member reset", 503),
-                None => {
-                    if index {
-                        self.host.stats.borrow_mut().follower_late += 1;
-                    }
-                    self.reply(late)
-                }
+            self.host.stats.borrow_mut().waited_reads += 1;
+            worker::Delay::from(Duration::from_millis(ms.max(1))).await;
+            answer = match self.host.answer_after(&g, &q) {
+                Some(r) => Some(Ok(r)),
+                None => return Response::error("member reset: fold storage lost", 503),
             };
+        }
+        let done = now_ms();
+        let d = |a: u64, b: u64| b.saturating_sub(a) as u32;
+        let stages = [d(t0, granted), d(granted, done)];
+        if index && matches!(answer, Some(Ok(Ok(_)))) {
+            let mut s = self.host.stats.borrow_mut();
+            if s.read_stages.len() < host::SAMPLES_MAX {
+                s.read_stages.push([stages[0], stages[1], d(t0, done)]);
+            }
+        }
+        match answer {
+            Some(Ok(Ok((host::ReadBody::Json(value), index)))) => self.reply_read(value, index.0, held, stages),
+            Some(Ok(Ok((host::ReadBody::Shed(..), _)))) => unreachable!("a shed answer is waited out above"),
+            Some(Ok(Err(nl))) => self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) })),
+            Some(Err(_)) => Response::error("member reset", 503),
+            None => {
+                if index {
+                    self.host.stats.borrow_mut().follower_late += 1;
+                }
+                self.reply(late)
+            }
         }
     }
 
@@ -1323,6 +1363,11 @@ impl<F: Family> Routes<F> {
         v["testMerges"] = json!({ "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed });
         // learner-dumps: a learner's reads that waited for a dump rebuild, and the dumps this isolate built.
         v["waitedReads"] = json!(s.waited_reads);
+        // narrow-reads-3: each read-index read's grant, rebuild wait, and total ms, as p50/p99/max, and each narrow
+        // answer's build ms.
+        v["readStages"] = read_stage_pcts(&s.read_stages);
+        v["narrowBuildMs"] = pcts(&mut s.narrow_build_ms.clone());
+        v["narrowBuilds"] = json!(crate::family::narrow_builds());
         v["raftIn"] = json!(s.raft_in);
         v["placedOverNear"] = json!(s.placed_over_near);
         #[cfg(feature = "test-faults")]
@@ -1342,6 +1387,8 @@ impl<F: Family> Routes<F> {
             s.deps_ms.clear();
             s.dep_fails.clear();
             s.queue_ms.clear();
+            s.read_stages.clear();
+            s.narrow_build_ms.clear();
             s.entries = 0;
             s.commands = 0;
             s.failed_calls = 0;
