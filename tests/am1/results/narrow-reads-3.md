@@ -142,6 +142,58 @@ Without adding learners, the next cut is the far learners' apply wait: the leade
 - a learner answers from the commit index carried on the `ReadIndexRes`'s own envelope;
 - the leader sends the entries a far learner lacks with its `ReadIndexRes`.
 
+## Learners pipelined (operator's choice (c))
+
+The operator chose (c) over piggybacking entries on `ReadIndexRes` or a learner-side fetch. Main 82a0bf9 (m0-carried-8: PIPELINE 4, APPEND_BYTES_MAX and ENTRY_SOFT 100 KB) pipelined only to voters (`voter && !lossy`), so every learner still got one AppendEntries at a time. On a 300 to 700 ms far link, that alone puts a learner's appends behind the leader's `ReadIndexRes`.
+
+The change, 682468de, design first (DESIGN "Commit and read paths", DECISIONS "Learners are pipelined as voters are"):
+
+- `send_append` pipelines to a learner as to a voter: the same `PIPELINE` bound, the same `APPEND_BYTES_MAX`, and one call at a time once `link_lossy` holds for it.
+- A learner counts toward no quorum or lease, so no commit or read rule changes.
+- 9e16a8af adds the leader's calls and bytes per peer to `/stats` `peers`, with `tests/nr3/egress.mjs` after each run, for egress.
+
+Checks on 9e16a8af (main 82a0bf9 merged at 29041e83):
+
+- `crates/raft/tests/scenarios.rs`, `a_learner_is_pipelined_unless_its_link_is_lossy`: a silent learner on a clean link gets PIPELINE calls with entries, and on a lossy link 1. It **fails on main 82a0bf9** with 1 call where it expects 4.
+- `tests/nr3/plant.py` plants 15 (only voters pipelined) and 16 (a lossy learner still pipelined): both caught.
+- `cargo test -p graftyard-raft`: all pass.
+- Widened long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half 4,000 seeds): exited 0. HARSH longest 15,735 ms (seed 11431), gray 27,226 ms (seed 11551), live 28,340 ms (seed 11824), all under the 30 s bound.
+- Porcupine: Ok on all three histories (155,506 / 2,226,302 / 5,370,591 operations).
+- The simulator models no learners, so the sweep shows the change leaves voters' behaviour intact. It does not exercise the learner path; the kept test and the hosted runs do.
+- Site day 18:46 to 18:58Z from 9e16a8af: sites and edge exited 0. Shard image f6d2ef40 is unchanged: main's only container change is the web app's `/ui` routes.
+
+### Gate 5 on 9e16a8af: the gate fails, and pipelining did not cut the far learners' apply wait
+
+gate5: repo:65549, load from 19:15:00Z, 500 agents, 300 s, main 82a0bf9 as built (ENTRY_SOFT 100 KB):
+
+- **API:** 99.92% served (44 × 503), p50 794 ms, **p99 2,475 ms**; tier p99 2,410 ms; auth p99 0 and resolve p99 414 ms.
+- **Fails on p99.** It is the first final-tree run, so the three-in-a-row count is still at 0.
+- **Commit:** p50 557 ms, p99 1,923 ms (queue p99 1,659 ms); 360 `/outcome` calls.
+- **Agent push:** 1,255 of 1,255 ok, p99 5,193 ms.
+- **Other:** no leader change; 0 stale in 118 probe rounds.
+
+Far learners' apply wait after their `ReadIndexRes` (`tests/nr3/trace.mjs`), p99 in ms:
+
+| Learner | gate1 (no learner pipeline) | gate5 (pipelined) |
+| --- | --- | --- |
+| l1 weur | 969 | 1,415 |
+| l4 weur | 764 | 878 |
+| l2 apac | 1,670 | 1,671 |
+| l5 apac | 1,442 | 1,858 |
+| l0, l3, l6, l7 enam | 13 to 364 | 7 to 398 |
+
+The far learners still answered `late` to 1,743 to 2,870 of 7,800 to 9,400 reads, against 277 to 618 on enam.
+
+**Why pipelining did not move it [inference, read from the code].** A busy learner almost never receives AppendEntries as a call. While it calls the leader (every 50 to 100 ms with read-index batches), the leader holds its messages for the response to the learner's next call (`workers/site/src/callers.rs`, the subrequest-depth rule). Its appends and its `ReadIndexRes` therefore already travel in the same responses, held messages first. The leader's `/stats` peers show it: in 300 s the leader made 1,119 to 1,129 calls to each voter but only 46 to 60 to each learner. So the far learners' tail is not the leader waiting to send entries. It is the time for those responses, and the applies they carry, to cross a 300 to 700 ms link. Option (a), entries piggybacked on `ReadIndexRes`, sends the same bytes on the same path, so I expect it to change little too.
+
+**Costs.**
+
+- Leader CPU: 52.5 s over the run, against 56.6 s on abmax.
+- Leader egress as calls to voters: 139 MB; to learners as calls: about 3 MB. `peers` counts only calls, not messages held for a learner's response.
+- **The leader's peak memory rose to 126 MiB**, against 67 to 80 MiB in every earlier final-tree run, near the 128 MB isolate. Up to PIPELINE batches of up to 100 KB, or one entry up to ENTRY_MAX, held per learner for 8 learners fits that rise. I have not proven it.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate5.jsonl`, `run-gate5.status`, `fresh-gate5.jsonl`, `egress-gate5.txt`, `mem-gate5.json`. repo:65549 torn down.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
@@ -227,7 +279,7 @@ In each, site 1's original voter (`#1#f1`) stayed at commit 1, while a re-placed
 
 ## Cost
 
-Hosted spend on `graft-m3e` from 04:17Z to 18:10Z, the whole thread on the $40 cap, is **$10.19**, containers about $0.9 included. Every repository from the final-tree runs (65543 to 65548) is torn down. The sites and edge on `graft-m3e` still run 8c54adb, the reverted hedge, until the next site day. Earlier, hosted spend from 04:17Z to 07:10Z was **$4.64**, containers $0.54 included (`INSTALL=graft-m3e python3 tests/fanout/m2bcost.py 2026-11-13T04:17:00Z 2026-11-13T07:10:00Z`). That is under the $25 cap. Every shard container is torn down (`teardown.py --all-nets --pools`).
+Hosted spend on `graft-m3e` from 04:17Z to 19:25Z, the whole thread on the $40 cap, is **$11.09**, containers about $0.9 included. Every repository from the final-tree runs (65543 to 65548) is torn down. The sites and edge on `graft-m3e` run 9e16a8af (learners pipelined). Earlier, hosted spend from 04:17Z to 07:10Z was **$4.64**, containers $0.54 included (`INSTALL=graft-m3e python3 tests/fanout/m2bcost.py 2026-11-13T04:17:00Z 2026-11-13T07:10:00Z`). That is under the $25 cap. Every shard container is torn down (`teardown.py --all-nets --pools`).
 
 No design cost moves:
 
