@@ -64,8 +64,6 @@ pub struct Feed {
     /// An InstallSnapshot catch-up is running, or the last AppendEntries left a gap.
     pub installing: bool,
     pub gap: bool,
-    /// Applied entries waiting for the owner's `Authz` before the ring takes them.
-    pub pending: Vec<(Index, Timestamp, Vec<graftyard_git::repo::RepoEvent>)>,
     /// Every `/feed` that reached this member while it led, and in all: LF-12 and L0-15 count them.
     pub leader_polls: u64,
     pub polls: u64,
@@ -145,7 +143,6 @@ impl Default for Feed {
             applied_at: Timestamp(0),
             installing: false,
             gap: false,
-            pending: Vec::new(),
             leader_polls: 0,
             polls: 0,
             by_token: BTreeMap::new(),
@@ -386,19 +383,16 @@ pub async fn route(host: &Rc<crate::host::Host<crate::family::Repo>>, body: Valu
             fd.owner = Some(f);
             fd.owner_at = now_ms();
         }
-        // Entries applied while no owner was known go into the ring now. The owner is cloned out first: a `borrow()`
-        // in the `if let` would live through the block and panic the `borrow_mut()` below (it reset the isolate on
-        // the first hosted poll).
+        // The first owner known: the ring starts at this member's applied entry (`Ring::start`). The owner is cloned
+        // out first: a `borrow()` in the `if let` would live through the block and panic the `borrow_mut()` below (it
+        // reset the isolate on the first hosted poll).
         let core = host.core.borrow();
         let owner = feed.borrow().owner.clone();
         if let (Some(c), Some(o)) = (core.as_ref(), owner) {
-            let fold = &c.m.group_fold().fold;
-            let empty = graftyard_fold::MemStore::default();
-            let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
+            let applied = c.m.group_fold().applied();
             let mut fd = feed.borrow_mut();
-            for (i, at, evs) in std::mem::take(&mut fd.pending) {
-                fd.ring.feed(repo, &o, &fold.core, meta, (i, at, &evs));
-            }
+            let at = c.m.entry_at(applied).map_or(fd.applied_at, |e| e.at);
+            fd.ring.start(repo, &o, &c.m.group_fold().fold.core, (applied, at));
         }
     }
     if feed.borrow().owner.is_none() {

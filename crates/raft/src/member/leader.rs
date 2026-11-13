@@ -22,7 +22,7 @@ use crate::{CALL_DEADLINE, COMMAND_MAX, DRIFT, ENTRY_MAX, LEASE, after};
 
 use super::election::CAMPAIGN_DEADLINE;
 use super::{
-    AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, DepsWanted, IdBlockError, Member, Message, ReadId,
+    AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, DepsUsed, DepsWanted, IdBlockError, Member, Message, ReadId,
     ReadStart, Ready, ReconfigError, Refusal, Resolution, Role,
 };
 
@@ -77,6 +77,9 @@ struct Admission<C> {
     cmd_bytes: f32,
     /// When the last `Events` entry was cut.
     cut_at: Timestamp,
+    /// A dependency read, `DepsWanted` to `deps_read`, as a moving average; `None` until this leadership measured
+    /// one, and until then no batch is cut while an entry is in flight.
+    deps_ms: Option<f32>,
     /// Commands this leadership admitted with an actor and has not resolved, per actor: they count toward
     /// DEMOTE_PER_MIN beside the committed ones in the fold.
     pending_by: BTreeMap<ActorKey, u32>,
@@ -108,6 +111,7 @@ impl<C> Admission<C> {
             round_ms: ROUND_PRIOR_MS,
             cmd_bytes: 1_000.0,
             cut_at: now,
+            deps_ms: None,
             pending_by: BTreeMap::new(),
             seq_actor: BTreeMap::new(),
             refused_by: BTreeMap::new(),
@@ -180,6 +184,24 @@ impl<C> Admission<C> {
     }
 }
 
+/// The next entry's frozen commands and their dependency reads. A batch may be cut while the previous entry is in
+/// flight, so its reads overlap that entry's round, but it is decided only once that entry committed and applied, on
+/// the fold then, with exactly the chains `deps()` names on that fold: any it names that were not read yet are read
+/// then, and any read that it no longer names are dropped.
+struct Deciding<C: Command> {
+    /// The outstanding `DepsWanted`, or `None` when no read is outstanding.
+    id: Option<u64>,
+    batch: Vec<Queued<C>>,
+    /// Every chain a `DepsWanted` asked for this batch.
+    chains: SmallVec<[ChainId; 3]>,
+    /// The folds the host read, without the chains it could not read.
+    deps: Vec<(ChainId, C::Dep)>,
+    /// When the outstanding `DepsWanted` left, for `deps_ms`.
+    asked: Timestamp,
+    /// Every `DepsWanted` whose reads `deps` holds, for `DepsUsed`.
+    ids: SmallVec<[u64; 2]>,
+}
+
 type Decided<C> = (u64, Result<<C as Command>::Out, <C as Command>::Err>);
 type Outcome<C> = Result<Acked<<C as Command>::Out>, CommitError<<C as Command>::Err>>;
 
@@ -206,8 +228,7 @@ pub(super) struct Lead<C: Command> {
     commit_floor: Index,
     /// Request ids queued, being decided, or in flight, so a re-send joins the ticket.
     by_request: BTreeMap<RequestId, u64>,
-    deciding: Option<(u64, Vec<Queued<C>>)>,
-    next_deps: u64,
+    deciding: Option<Deciding<C>>,
     /// The one entry in flight and its decided commands.
     pending: Option<(Index, Vec<Decided<C>>)>,
     /// Id blocks `Member::id_block` took, waiting for their own entry, in order.
@@ -315,7 +336,6 @@ impl<C: Command> Member<C> {
             commit_floor: Index(0),
             by_request: BTreeMap::new(),
             deciding: None,
-            next_deps: 0,
             pending: None,
             blocks: VecDeque::new(),
             block_pending: None,
@@ -391,7 +411,7 @@ impl<C: Command> Member<C> {
             .admission
             .drain()
             .map(|q| q.seq)
-            .chain(lead.deciding.iter().flat_map(|(_, b)| b.iter().map(|q| q.seq)))
+            .chain(lead.deciding.iter().flat_map(|d| d.batch.iter().map(|q| q.seq)))
             .chain(lead.pending.iter().flat_map(|(_, d)| d.iter().map(|(s, _)| *s)));
         let tickets: Vec<Ticket> = seqs.map(|s| self.ticket(s)).collect();
         for ticket in tickets {
@@ -776,19 +796,20 @@ impl<C: Command> Member<C> {
         })
     }
 
-    /// One entry in flight: freezes the next command set once the previous entry committed.
+    /// One entry in flight. Once the previous entry committed, the leader appends the next id block or recorded
+    /// entry, else decides the held batch, else cuts a batch and reads its dependencies. While an entry is in flight
+    /// it may cut the next batch early (`cut_early`), so that batch's reads overlap the round; the batch is decided
+    /// only here, after the entry in flight committed and applied.
     fn pump(&mut self) {
         loop {
             let no_lead = self.no_lead();
             let Some(lead) = self.lead.as_mut() else { return };
             // A transferring leader stops appending, and one with `no_lead_until` is handing off.
-            if !lead.ready
-                || lead.pending.is_some()
-                || lead.deciding.is_some()
-                || (lead.admission.is_empty() && lead.blocks.is_empty() && lead.records.is_empty())
-                || lead.transfer.is_some()
-                || no_lead
-            {
+            if !lead.ready || lead.transfer.is_some() || no_lead {
+                return;
+            }
+            if let Some((index, _)) = lead.pending {
+                self.cut_early(index);
                 return;
             }
             if let Some(block) = lead.blocks.pop_front() {
@@ -805,44 +826,170 @@ impl<C: Command> Member<C> {
                 self.append_record(id, format, events);
                 return;
             }
-            let batch = Self::cut(lead, self.now, self.admit_capacity);
-            if batch.is_empty() {
-                // Only agent commands wait, and the bucket is empty: `tick` cuts again once it refills.
+            if lead.deciding.is_some() {
+                if self.decide_held() {
+                    continue;
+                }
                 return;
             }
-            // A command whose id has a row is not decided again: answer it from the stored events.
-            let proof = lead.proof.clone().expect("ready implies a commit proof");
-            let mut fresh = Vec::new();
-            for q in batch {
-                match self.fold.request(q.id) {
-                    Some(row) => {
-                        let acked = outcome::replay(row.index, &proof, q.cmd.replay(&row.events));
-                        self.resolve(q.seq, Some(q.id), Ok(acked));
-                    }
-                    None => fresh.push(q),
-                }
+            if lead.admission.is_empty() {
+                return;
             }
+            let Some(fresh) = self.cut_fresh() else { return };
             if fresh.is_empty() {
                 continue;
             }
-            let mut chains: SmallVec<[ChainId; 3]> = SmallVec::new();
-            for q in &fresh {
-                for c in q.cmd.deps(&self.fold.fold) {
-                    if !chains.contains(&c) {
-                        chains.push(c);
-                    }
-                }
-            }
+            let chains = self.chains(&fresh);
             if chains.is_empty() {
-                self.decide(fresh, &[]);
+                self.decide(fresh, Vec::new(), SmallVec::new());
             } else {
-                let lead = self.lead.as_mut().expect("leading");
-                lead.next_deps += 1;
-                let id = lead.next_deps;
-                lead.deciding = Some((id, fresh));
-                self.out.deps.push(DepsWanted { id, chains });
+                self.hold_batch(fresh);
+                self.ask_deps(chains);
             }
             return;
+        }
+    }
+
+    /// While entry `index` is in flight: cut the next batch and ask for its dependencies, once the entry has been in
+    /// flight for its expected round less one expected dependency read, so the read ends about when the entry
+    /// commits. Not before this leadership measured a read, nor while an id block or recorded entry waits, since
+    /// those go next. The batch holds the commands admitted before its read was asked for; later ones wait for the
+    /// entry after it.
+    fn cut_early(&mut self, index: Index) {
+        let Some(lead) = self.lead.as_ref() else { return };
+        if lead.deciding.is_some() || lead.admission.is_empty() || !lead.blocks.is_empty() || !lead.records.is_empty() {
+            return;
+        }
+        let Some(deps_ms) = lead.admission.deps_ms else { return };
+        let Some(at) = self.entry_at(index).map(|e| e.at) else { return };
+        let wait = (lead.admission.round_ms - deps_ms).max(0.0) as u64;
+        if self.now.0 < at.0.saturating_add(wait) {
+            return;
+        }
+        // A batch with no dependency gains nothing from an early cut, and would keep out the commands that arrive
+        // before the entry commits.
+        let fold = &self.fold.fold;
+        if !lead.admission.lanes.iter().flat_map(Lane::iter).any(|q| !q.cmd.deps(fold).is_empty()) {
+            return;
+        }
+        let Some(fresh) = self.cut_fresh() else { return };
+        if fresh.is_empty() {
+            return;
+        }
+        let chains = self.chains(&fresh);
+        self.hold_batch(fresh);
+        if !chains.is_empty() {
+            self.ask_deps(chains);
+        }
+    }
+
+    /// The next batch by admission (`cut`), less the commands whose request already has a row, which are answered
+    /// from their stored events. `None` when admission gave nothing: only agent commands wait, and the bucket is empty,
+    /// so `tick` cuts again once it refills.
+    fn cut_fresh(&mut self) -> Option<Vec<Queued<C>>> {
+        let lead = self.lead.as_mut().expect("leading");
+        let batch = Self::cut(lead, self.now, self.admit_capacity);
+        if batch.is_empty() {
+            return None;
+        }
+        Some(self.drop_replays(batch))
+    }
+
+    /// A command whose id has a row is not decided again: answer it from the stored events.
+    fn drop_replays(&mut self, batch: Vec<Queued<C>>) -> Vec<Queued<C>> {
+        let proof = self.lead.as_ref().expect("leading").proof.clone().expect("ready implies a commit proof");
+        let mut fresh = Vec::with_capacity(batch.len());
+        for q in batch {
+            match self.fold.request(q.id) {
+                Some(row) => {
+                    let acked = outcome::replay(row.index, &proof, q.cmd.replay(&row.events));
+                    self.resolve(q.seq, Some(q.id), Ok(acked));
+                }
+                None => fresh.push(q),
+            }
+        }
+        fresh
+    }
+
+    /// The distinct chains the batch's commands name on the fold at `applied`, in order.
+    fn chains(&self, batch: &[Queued<C>]) -> SmallVec<[ChainId; 3]> {
+        let mut chains: SmallVec<[ChainId; 3]> = SmallVec::new();
+        for q in batch {
+            for c in q.cmd.deps(&self.fold.fold) {
+                if !chains.contains(&c) {
+                    chains.push(c);
+                }
+            }
+        }
+        chains
+    }
+
+    fn hold_batch(&mut self, batch: Vec<Queued<C>>) {
+        let now = self.now;
+        let lead = self.lead.as_mut().expect("leading");
+        debug_assert!(lead.deciding.is_none(), "one batch held at a time");
+        lead.deciding = Some(Deciding {
+            id: None,
+            batch,
+            chains: SmallVec::new(),
+            deps: Vec::new(),
+            asked: now,
+            ids: SmallVec::new(),
+        });
+    }
+
+    /// Asks the host to read `chains` for the held batch, under an id no earlier ask of this member used.
+    fn ask_deps(&mut self, chains: SmallVec<[ChainId; 3]>) {
+        self.next_deps = self.next_deps.wrapping_add(1);
+        let id = self.next_deps;
+        let now = self.now;
+        let d = self.lead.as_mut().and_then(|l| l.deciding.as_mut()).expect("a held batch");
+        d.id = Some(id);
+        d.asked = now;
+        d.chains.extend(chains.iter().copied());
+        self.out.deps.push(DepsWanted { id, chains });
+    }
+
+    /// The entry in flight committed and applied. Decides the held batch on the fold now, with exactly the chains
+    /// `deps()` names on it, in that order: a chain no read covered yet is read first, and a read chain no longer
+    /// named is dropped, so `decide` never sees the dependency of a chain the fold has moved away from. Returns
+    /// whether the batch is gone with nothing decided, so the next one may be cut.
+    fn decide_held(&mut self) -> bool {
+        let lead = self.lead.as_mut().expect("leading");
+        let d = lead.deciding.as_mut().expect("a held batch");
+        if d.id.is_some() {
+            return false;
+        }
+        let batch = std::mem::take(&mut d.batch);
+        let batch = self.drop_replays(batch);
+        if batch.is_empty() {
+            self.lead.as_mut().expect("leading").deciding = None;
+            return true;
+        }
+        let chains = self.chains(&batch);
+        let d = self.lead.as_mut().and_then(|l| l.deciding.as_mut()).expect("a held batch");
+        d.batch = batch;
+        let missing: SmallVec<[ChainId; 3]> = chains.iter().copied().filter(|c| !d.chains.contains(c)).collect();
+        if !missing.is_empty() {
+            self.ask_deps(missing);
+            return false;
+        }
+        let Deciding { batch, deps: mut have, ids, .. } =
+            self.lead.as_mut().expect("leading").deciding.take().expect("a held batch");
+        let deps =
+            chains.iter().filter_map(|c| have.iter().position(|(k, _)| k == c).map(|i| have.swap_remove(i))).collect();
+        self.decide(batch, deps, ids);
+        false
+    }
+
+    /// Ends the held batch's reads: a transfer may outlast them by a LEASE, and a revocation acknowledged meanwhile
+    /// must bind the batch, so once the transfer ends the batch reads every chain again.
+    pub(super) fn drop_held_deps(&mut self) {
+        if let Some(d) = self.lead.as_mut().and_then(|l| l.deciding.as_mut()) {
+            d.id = None;
+            d.chains.clear();
+            d.deps.clear();
+            d.ids.clear();
         }
     }
 
@@ -915,20 +1062,34 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// The dependency folds a `DepsWanted` asked for, each read once through its chain's `fresh`.
+    /// The dependency folds a `DepsWanted` asked for, each read once through its chain's `fresh`. The held batch keeps
+    /// them until the entry in flight commits; an answer to any other id, such as one asked for by an earlier
+    /// leadership or before a transfer, is ignored.
     pub fn deps_read(&mut self, now: Timestamp, id: u64, deps: Vec<(ChainId, C::Dep)>) -> Ready<C, ()> {
         self.begin(now);
-        let take = matches!(&self.lead, Some(l) if l.deciding.as_ref().is_some_and(|(d, _)| *d == id));
-        if take {
-            let (_, batch) = self.lead.as_mut().expect("leading").deciding.take().expect("deciding");
-            self.decide(batch, &deps);
+        let now = self.now;
+        if let Some(lead) = self.lead.as_mut()
+            && let Some(d) = lead.deciding.as_mut()
+            && d.id == Some(id)
+        {
+            d.id = None;
+            d.ids.push(id);
+            d.deps.extend(deps);
+            let ms = now.0.saturating_sub(d.asked.0) as f32;
+            let ad = &mut lead.admission;
+            ad.deps_ms = Some(ad.deps_ms.map_or(ms, |m| 0.9 * m + 0.1 * ms));
+            self.pump();
         }
         self.finish(())
     }
 
     /// Each command's `decide` sees the fold at `applied` plus the earlier commands of the same entry. The entry is
-    /// appended even if every command was refused.
-    fn decide(&mut self, batch: Vec<Queued<C>>, deps: &[(ChainId, C::Dep)]) {
+    /// appended even if every command was refused. Runs only with no entry in flight, so `applied` is the log's end.
+    /// `ids` are the `DepsWanted` whose reads `deps` holds, reported as `DepsUsed` with the entry's index.
+    fn decide(&mut self, batch: Vec<Queued<C>>, deps: Vec<(ChainId, C::Dep)>, ids: SmallVec<[u64; 2]>) {
+        debug_assert!(self.lead.as_ref().is_some_and(|l| l.pending.is_none()), "one entry in flight");
+        debug_assert_eq!(self.fold.applied(), self.last(), "decide on the fold at the log's end");
+        let deps = &deps[..];
         let mut events = Vec::new();
         let mut requests = SmallVec::new();
         let mut decided = Vec::with_capacity(batch.len());
@@ -974,6 +1135,9 @@ impl<C: Command> Member<C> {
         };
         let index = e.index;
         self.push_entry(e);
+        if !ids.is_empty() {
+            self.out.deps_used.push(DepsUsed { ids, index });
+        }
         self.lead.as_mut().expect("leading").pending = Some((index, decided));
         self.broadcast(false);
         self.advance_commit();

@@ -919,3 +919,304 @@ B0-32 $4.00, B0-31 $5.24, L0-12 $7.09, B0-34 $8.47, B0-35 $10.48 (the stop). Rou
 Teardown: each row's network, then networks 131217 to 131265 with `--pools`, which stopped 9 more instances. They
 were the seven pool shards on site a, 131260, and 131228, which an earlier round had left running. Afterwards,
 `ghosts.py` 21:52 to 21:56Z showed no running instance.
+
+## 13. Round 6: the git cache's memory and files, and dep reads overlapping the round
+
+### Baseline (`rows-m11`, sites `7583378f`, edge `afb025ac`, 2026-11-11 23:30Z to 2026-11-12 01:11Z)
+
+| Row (repo) | Gate line | Measured | Verdict |
+|---|---|---|---|
+| B0-29 (131261) | Commit p99 ≤ 600 ms, merge p99 ≤ 2 s, zero `Stale`, leader < 600 req/s, zero feed polls on the leader | Mid-run commit p50 582, p99 944 ms; split p99 queue 713, round 327, deps 380 ms. 2,328 of 2,500 agent pushes ok. `merge:only` 16 × 200, 15 × 503. The leader's wasm instance was rebuilt 70 ms after the late raw `/stats` read (23:44:19.7Z), then `StepDown CommitErrors` moved it to site 1 and back | **Fail** (commit p99, merges) |
+| B0-32 (131262) | Every push acked within 5 s or `ng … admission full`, zero leader changes, zero `suspect` | Burst: 87 ok, 411 `unpacker error`. The first shard took 512 validates at 23:52:08Z; all failed "Promise will never complete", with the shard isolate's `exceededMemory`. Commit p99 1,024 ms; leader held at term 2 | **Fail** (refusal shape) |
+| B0-31 (131263) | Commit p99 ≤ 1 s (buckets up); placement failing: Human/MergeQueue p99 ≤ 3 s, 0 refused, agent > `INLINE_MAX_HOT` refused in `ng` | Commit p50 480, p99 818 ms. 1,713 of 2,500 agent pushes `unpacker error`: the first shard logged 725 `exceededMemory` at 00:04Z. The placement-failing half was not driven | **Fail** (half not run; agent pushes refused in the wrong shape) |
+| B0-34 (131264) | k in band ≤ 8, human push p99 ≤ 3 s beyond transfer, clone TTFB p99 ≤ 1 s | k 1 throughout. 480 or more agent pushes refused "too many open files" in the container. Clone TTFB p99 120,031 ms. Human push p99 122 s. Commit p99 1,042 ms | **Fail** |
+| L0-12 (131265) | No Exclusive overlap > 500 ms, member clock offsets < 500 ms, feed p99 ≤ 3 s outside kills, … | 141 probe pairs, 0 overlapping (max −3,765 ms). Clock offsets as measured from the orb were up to 4,346 ms; the orb's own clock ran about 4 s behind Cloudflare's (`date` against `cloudflare.com`'s `Date`), so that number is not the members' spread. Feed p99 11,427 ms over the whole run, with kills not excluded by the driver. 694 agent pushes 503 "every member asked shed the read". Leader site 1, term 13; 22 `StepDown`s, all `CommitErrors` | **Fail** (feed; clock line not measured as written) |
+
+### Causes found
+
+- **The git cache shard buffered every push body in its Durable Object** [verified from logs and code]. `/validate`
+  read the whole body (`req.bytes()`), copied it with `to_vec`, prepended the tips, and built a `Uint8Array` for the
+  container: four copies per validate. A burst of 512 × 256 KiB, or 1 MiB packs at 4 a second, put the first shard's
+  isolate over 128 MB. This, not the group, failed B0-31 and B0-32.
+- **The container ran every validate at once** [verified]. Each opens a spool file, a quarantine, pipes, and an
+  `index-pack` process, so 500 in flight hit EMFILE (B0-34).
+- **A raw `/stats` read rebuilt a loaded leader's wasm instance** [inference: the rebuild followed the read by 70 ms in
+  B0-29 and twice before; no `exceededMemory` was logged]. It serialized megabytes of samples and traces.
+- **Dep reads add a serial step to every entry** [measured]. One entry is in flight, so a command waits the round in
+  flight, then its entry's dep reads (p50 118 ms under load against 28 ms idle on the same dep leaders, callee wall
+  11 ms), then its own round. A simulation of the measured split gave about 800 ms p99 with the reads overlapped and
+  the 600 ms gate only with near-free reads, so B0-29 needs both the overlap and less leader-side delay.
+
+### What changed (`d8571e88`, merged with `origin/main` as `2bcb4360`)
+
+- The shard streams `/validate`'s body to the container or pool shard unread, and picks the fan-out shard from the
+  pack trailer the edge puts in the URL.
+- The container runs at most min(16, max(4, 2 × vCPU)) validates: humans first, agents wait 2 s, at most 8 per slot
+  queued, then 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. It
+  raises `RLIMIT_NOFILE` at start.
+- Dep reads overlap the entry in flight (`crates/raft/src/member/leader.rs`): the next batch is cut once the entry in
+  flight is a mean dep read from its mean round's end; `decide` runs only after that entry applies, with exactly the
+  chains `deps()` names then, reading any missing.
+- `/stats?summary=1` answers percentiles only; `depsMs.spawn` times the isolate's queueing before a dep read starts.
+- `a1.mjs`: summaries only; L0-12's clock line from the spread between members in each sampling round and feed p99
+  outside a 15 s window after each kill push; B0-31's second half with placement failing through the bed-token header
+  `x-graft-place-fail`.
+- Design: DESIGN, "The write path", journey 1, Scale "Entries per group", and "Git cache shards (derived)"; DECISIONS,
+  "Dependency reads overlap the entry in flight" and "LM-1 round 6: shards stream push bodies and cap validates".
+
+### Raft checks (dep-read pipelining)
+
+- Long sweep, 2,000 seeds × 10,000 steps: exit 0 in 489 s. Harsh: 154,668 operations, 17,788 entries decided on
+  reads, 6,287 early asks, 534 re-reads. Gray: 2,030,333 operations, 292,936 entries on reads, 216,744 early asks,
+  13,221 re-reads.
+- Porcupine: `hist.jsonl` 151,346 operations Ok; `hist.jsonl.gray` 2,030,319 operations Ok.
+- Plants: decide when the reads arrive; stale extra deps; no re-read when chains change; dep ids reset per leadership;
+  a post-cut command joining the early batch; a transfer keeping its reads; two entries in flight. Each was caught by
+  `crates/raft/tests/deps.rs` or the simulator's checks.
+
+### Other checks
+
+On `d8571e88`: fmt, workspace clippy, wasm32 clippy for site and edge with and without `test-faults` and for ops,
+`cargo test --workspace` (75 suites), `check_design`, `check_names`, `go test`. `tests/lm1mem/plant.py` 41 to 47
+caught (4 Rust, 3 Go).
+
+### F67 lead (leaderless after a transfer under hung calls)
+
+L0-12's 22 `StepDown`s were all `CommitErrors`; 7 held with `to: None` (a 01:08:06; b 01:09:19 to 01:09:52, five in a
+row; c 01:06:26, 01:06:46, 01:07:46Z). A hold keeps the leader (`health.rs`, `hold`), so it alone leaves no group
+leaderless. Campaigns are not logged, so a transfer that ended leaderless is neither shown nor ruled out here.
+
+### Round 6 rows (`rows-m13`, sites `11ce32c3`/`7b7c2f87`/`2446b535`, edge `3858167a`, 2026-11-12 06:32Z to 08:20Z)
+
+| Row (repo) | Measured | Verdict |
+|---|---|---|
+| B0-29 (131269) | Commit p50 517, p99 1,478 ms (queue p99 1,096, round 397, deps 396). 2,291 of 2,500 agent pushes ok. `merge:only` p99 11.8 s. 17 human `stale` on shared refs. Leader held | **Fail** |
+| B0-32 (131270) | Burst 197 ok, 303 `full`, 0 acked within 5 s (ok p50 27 s). Commit p99 4,833 ms | **Fail** |
+| B0-31 (131271) | Buckets up: commit p99 652 ms. Human push p99 162 s up, 121 s with placement failing. 1,380 agent `full` (the `ng` shape) | **Fail** |
+| B0-34 (131272) | `read:ref` p99 110 s, clone TTFB p99 2.6 s, human push p99 121 s | **Fail** |
+| L0-12 (131273) | Leader 0 → 2 (term 7). 1,069 agent pushes 503 (access rows shed). Feed p99 26.5 s outside kills. Lease overlap 0. Clock spread 5,966 ms | **Fail** |
+| B0-33 (131274) | Leader 0 → 1; new leader queue p50 7 s; `failedCalls` 292 | **Fail** |
+
+## 14. Round 7: the shard's lock convoy, ls-refs' tag read, the feed's first poll, members holding entries, and merges
+
+### Causes found
+
+- **The git shard held its network lock across streamed bodies and repacks** [measured]. A waiting writer queued every
+  ls-refs and validate behind it: home-shard ls-refs walls went from 2.7 s to 12 s within a minute at 0.65 vCPU (B0-31,
+  m13). Fix `79212b59`: bodies are read before the lock, a repack takes none, and evict and fresh init wait on the
+  `repacking` mutex. A local repro took ls-refs p99 from 5.3 s to 0.26 s. Tests `TestValidateBodyHoldsNoLock` and
+  `TestRepackHoldsNoNetworkLock`; plants 60 to 63.
+- **Every v2 upload-pack read `refs/tags/` from the leader, ls-refs included** [measured]: 27 of 40 sampled leader
+  `/read`s in L0-12 came straight from the edge's upload-pack. Fix `9596128e` (`CloneKey::needs_tags`); plants 64, 65.
+- **A learner's first feed poll fed its whole backlog in one turn** [measured]: each of L0-12's 8 learners spent 15 to
+  46 s of CPU at 08:00:38Z (about 1,070 entries × 500 leases of SQL reads); voters sharing their isolates answered
+  "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39.
+- **Every member kept a clone of each applied entry's events, packs included, for a ring nobody polled** [measured].
+  Leaders and followers are never polled, so `Feed.pending` grew to FEED_RING's 10,000 entries: at 500 agents
+  (131276, 180 s, smoke m14) the leader's wasm memory went 2 → 67 MB and a follower's 2 → 40 MB, linearly with agent
+  pushes, and neither shrank after load.
+- **REST merges read both whole tiers** [measured]: about 1 MB parsed at the edge per merge; edge merge walls 1.2 to
+  4.4 s while the shard's plan took 68 to 1,232 ms (s500 m14).
+- **Every merge waited for whatever catch-up ran on the shard** [measured]: with the narrow read deployed (smoke
+  m15, 131278), `x-graft-shard-timing` showed the shard's merge waiting 64 to 2,151 ms of its 175 to 2,750 ms; no merge
+  caught up itself, so it already held its commits. Merge p99 6.2 s.
+
+### What changed
+
+| Commit | Change | Test | Plants |
+|---|---|---|---|
+| `79212b59` | Shard: bodies before the lock, lock-free repack | `TestValidateBodyHoldsNoLock`, `TestRepackHoldsNoNetworkLock` | 60–63 |
+| `9596128e` | ls-refs reads no tags | `only_a_cacheable_include_tag_fetch_needs_the_tags` | 64, 65 |
+| `2f30c61b` | `/stats?summary=1`: `wasmMemMb`, `admission`, `admitted` | — | — |
+| `aed68895`, `4471a1e9` | No entry kept for the ring before a poll reads the owner; that poll starts the ring at the applied entry (`Ring::start`); `lease::rows` decodes its scan | `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` | 66–68 |
+| `302d1a14`, `3cc1d6c1` | REST merge reads `{"rows": {"mergeN": n}}` only; followers serve it | `a_merge_plans_from_its_rows_as_from_both_tiers`, `a_follower_serves_only_the_designs_reads`, `the_tier_read_asks_for_packed_rows` | 69–71 |
+| `41f1860d` | A merge waits for a catch-up in flight only after it misses a commit | `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` | 72, 73 |
+
+Design: DESIGN Scale item 2 and DECISIONS (A25 amendment, shard lock); AGENT-LAYER activity feed and DECISIONS (ring
+start); DECISIONS (REST merge rows; merge wait after a miss, amending `bm2-repack`). `a1.mjs` writes each merge's
+`server-timing` and shard timing to the row's `mergeSteps`.
+
+### Smokes
+
+| Smoke (repo) | Deployed | Leader / follower peak wasm MB | Commit p99 (queue) | Merge p99 | Other |
+|---|---|---|---|---|---|
+| m14 s250 (131275) | to `ec97e3f1` | 52 / 49, still growing after load | 689 (457) | 4.4 s | 374/374 agent ok; 10 human `stale` (shared refs) |
+| m14 s500 (131276) | to `ec97e3f1` | 67 / 40, growing | 956 (599) | 4.4 s | 742/742 agent ok; API 89%; leader held |
+| m15 s250 (131277) | to `3cc1d6c1` | — | — | — | Create failed: `/place` refused 8 tries, weur near follower 108–126 ms over `NEAR_RTT` 100 (fixed on `m0-carried-4` `2e4cd9f`) |
+| m15 s500 (131278) | to `3cc1d6c1` | 46 / 14, flat after load | 658 (467) | 6.2 s | 741/741 agent ok; `read:ref` p99 10 s; leader held, 84 req/s, 0 feed polls |
+
+Checks on `3cc1d6c1`: fmt, workspace clippy, wasm32 clippy (site, edge, ops; with and without `test-faults`),
+`cargo test --workspace`, `check_design`, `check_names`, `go test`: all pass; `check_links` fails only on
+`.worktrees/` cache paths. Raft is unchanged since round 6's sweep (ok, 339 s) and Porcupine (Ok on 151,346 and
+2,029,703 operations), logged in `tests/am1/raw/runs/r6b-*.log`.
+
+## 15. Round 8: merging hot-shards, and why identity groups lose their leaders under load
+
+### Merge
+
+`origin/main` 6f82993 (hot-shards) is merged as `90808bd6`, with `03b66f22` fixing two test beds for
+`ShardHost::validate`'s new `derived` flag and a catch-up test that still counted the merge order before `41f1860d`.
+The edge keeps round 7's streamed validate (trailer and `class=agent` in the URL, 429 as `ShardRefusal::Busy`, the
+`via=0` retry after a failed fan-out) inside hot-shards' per-site loop; a 429, like a 422, ends the tries instead of
+moving to the next site's shard. The container keeps round 7's admission gate and lock-free repack with hot-shards'
+`derived=1` validate, which skips the queue count, and derived repack CPU. Full checks on `03b66f22`: fmt, workspace
+clippy, wasm32 clippy (site, edge, ops; with and without `test-faults`), `cargo test --workspace`, `check_design`,
+`check_names`, and `go test` pass; `check_links` fails only on `.worktrees/` cache paths. Not deployed yet.
+
+### Identity-group step-downs in smoke m16c s500 (131282, 15:19:30Z to 15:23:00Z)
+
+15 `STEP_DOWN` alarms, all `CommitErrors` with 3 to 18 failed calls per follower [measured, Workers Logs]:
+`tokens:2490` f0 → f1 → f2, then f2 held 3 times; `names:152` f0 → f1 → f2, held; `names:708` f0 → f1 → f2;
+`release` f0 → f1; and members of the torn-down `repo:131273`/`131274` groups.
+
+- **Not CPU on the identity members** [measured]: `tokens:2490` f0 used 4.3 CPU-s in 4 min, f1 32 s, f2 12 s; f1's
+  8,000 `/read`s cost 13.5 CPU-s.
+- **Not isolate sharing, as far as it can be read** [measured, idle]: `/isolate` on 11 members (identity voters,
+  `release`, `repo:131273/131274`) answered 11 distinct isolate ids. Under load is not shown.
+- **Synchronized ~3 s walls with no CPU** [measured]: at 15:20:30 both `tokens:2490` followers, on sites b and c,
+  ran one `/raft` of 3,146 and 3,152 ms wall at 19 and 38 ms CPU; at 15:20:42–45 five unrelated objects on site a
+  ran `/raft` calls of 3.05 to 3.07 s at under 20 ms CPU each, and at 15:20:20 two site-c objects did the same
+  (3.3 s). A 1 s `CALL_DEADLINE` misses on each, and three in a 10 s window trip the commit-error rule. That these
+  are storage-confirm (output gate) stalls on the follower is [inference]: the walls are flat at about 3 s, carry no
+  CPU, and hit many objects of one site at once. The own-stall exclusion covers only the leader's own confirms.
+- **Also measured, not yet tied to a trip**: old groups' members (131267–131274, torn-down repos) ran 0.5 to 4.7 s
+  CPU-bound turns at 15:19–15:20 (`repo:131274#1#f1`'s alarm: 4,730 ms CPU), the site-a fold audit cron refolds
+  4 chains every 15 min (logs "database table is locked" on most runs), and other threads' repositories
+  (`repo:65551`, 70 CPU-s per 5 min; `repo:33xx000`/`39xx000` groups, 20 to 30 CPU-s each per 30 min) share the
+  sites.
+
+Next: decide whether a follower's late-but-answered append should count against `STEP_DOWN` (a `crates/raft`
+change: design first, then the sweep and Porcupine), then site day, smokes, and the rows.
+
+### Round 8b: smokes m17 and a correction
+
+Site day m17 from `c756014d` (main 4265f3d merged: `NEAR_RTT` keeps the nearest try, member calls stream bodies),
+image `57ceedbb`, edge `70832204`.
+
+- **m17 s250**: no run. The create of `fm17s250` (131283) landed, its answer was lost, and `lib.mjs`'s re-send got
+  422 `name already exists`; `mkrepos.mjs` now reads the repository then (`a8d10cee`).
+- **m17 s500 (131284, 180 s, 8 learners, k 4)**: leader held at term 2, 107 req/s, 0 feed polls on it; commit
+  p50/p99 495/7,485 ms (queue p99 7,144, round p99 507, confirm p50/p99 37/121, `deps:tokens` p99 575); 722 of 736
+  agent pushes ok (12 client fetch failures, 2 × 503 `release: not leader`); merge:only p99 6.3 s with `resolve` up to
+  4.9 s of it; human push 69 ok, 2 `stale`, 5 `stale:race`; most side and read rows' p99 13 to 41 s. 3 `STEP_DOWN`s:
+  `tokens:2490` f0 (3 and 6 failed of 19 and 18 calls), `names:708` f0, and `names:708` f2 held. Leader confirm p99
+  121 ms against 89 ms in m16c before streamed bodies, sent to m0-carried-5 (one smoke each, not an A/B).
+
+**Correction to section 15.** The flat 3,101 to 3,103 ms `/raft` walls at about 10 ms CPU on followers are not
+stalls or holds: a follower replies at once, and the 100 ms ticker each input starts (`Host::kick`, `ACTIVE_FOR_MS`
+3,000 ms, exiting on the 31st tick) keeps the invocation open after the reply, which Workers Logs counts as wall time
+[inference from code, `workers/site/src/host.rs`; workerd's actor timers hold the request's drain]. So those walls do
+not show why identity leaders' calls miss `CALL_DEADLINE`. `tests/fanout/idstats.mjs` now saves each identity
+member's `/stats` peer calls after every smoke (each failed call's kind, size and time on the leader's side).
+
+### Round 8c: smokes m18, and the cause of the identity step-downs
+
+Site day m18 from `a8d10cee` (main 68166fe merged: the self `SITE` binding for PrSync), image `57ceedbb`, sites
+`abddb96c`, `2b49bafb`, `3f304093`, edge `fa6fa5ec`. Both smokes held their repository leader at term 2 with 0 feed
+polls on it.
+
+| Smoke | Commit p50/p99 | Queue p99 | Confirm p99 | merge:only p99 | Agent pushes | read:api p99 |
+|---|---|---|---|---|---|---|
+| s250 (131285) | 427/2,625 ms | 2,340 ms | 86 ms | 6.6 s | 343 of 343 ok | 6.4 s |
+| s500 (131286) | 427/950 ms | 697 ms | 146 ms | 6.9 s | 743 of 747 ok (3 × 503 `release: not leader`) | 20.2 s |
+
+`STEP_DOWN` alarms 19:13 to 19:29Z: `release` f0 (7 of 3, twice), `names:708` f0 → f1 → f2 twice, `names:369`,
+`names:152` (14 of 279 calls failed).
+
+**Cause** [measured, `idstats` and Workers Logs; the rule it trips is in code]:
+
+- The failed calls are the leader's AppendEntries to one follower: empty or one entry of about 112 bytes. They fail in
+  bursts at one instant: `tokens:2490` at 19:17:01Z had 31 and 17 deadline misses. Each one is answered late, 1.0 to
+  2.4 s after it left.
+- On that follower (`tokens:2490` f1) every `/raft` and `/read` that started from 19:17:00.22 to 01.82 ended together
+  at 19:17:02.16 with 0 to 2 ms CPU: one stall of the object's input queue of about 1.9 s. Why the object stalled is
+  not shown.
+- One stall became dozens of failed calls because a read that arrives after the lease lapsed forced a new round to
+  every follower (`start_read` → `broadcast(true)`), one per read. An idle identity group's lease lapses between
+  bursts, so the next burst of reads sends one AppendEntries per read to the stalled follower, each with its own
+  `CALL_DEADLINE`, and `record_call` counts each round. Three in 10 s trip `STEP_DOWN`.
+
+**Two fixes tried and withdrawn** (raft changes, both with tests and plants that caught their mutants):
+
+- `fa30bff9`, reverted in `67e71612`: a lapsed read sends a round only to a follower with no call out, or one whose
+  call is past `CALL_DEADLINE`, and an answer sends the next round for reads that arrived after it left. On the tree
+  merged with f67-liveness, the harsh sweep (`sim::harsh_network_keeps_every_invariant`, 60 seeds) acked 752 writes
+  against main's 1,259 (the test needs 1,200), and the long sweep stopped at seed 10909: 30,277 ms with a healthy
+  quorum, requests waiting and none completing, over the 30 s bound. A same-machine A/B of the harsh sweep on main
+  d7ee927 alone passed. The per-read forced rounds also stand in for retransmission after dropped calls.
+- Not committed: count a deadline miss to a follower only if it was sent at least `CALL_DEADLINE` after the last miss
+  counted to it (`health.rs`, `record_call`). On the f67-merged tree, `liveness::leaders_leave_a_site_whose_calls_fail`
+  failed (3 of 12 seeds with 3 leader changes, limit 2) and the harsh sweep acked 1,088. **Correction:** the same tree
+  without this change (`67e71612`) fails the same test on the same seeds 7, 9 and 11 with the same distribution, so
+  those failures are the f67 merge's, not this change's. It has not yet been tested on a tree without f67.
+
+The first fix is withdrawn. The second ships as `0c7cbc23` (branch `lm1-pref67`: `720bdb36` with main f10ea4b,
+`fa30bff9` reverted), merged here as `aba91cbe`. `record_call` excuses a deadline miss sent within `CALL_DEADLINE` of
+the last counted miss to the same follower, so one stall is one failed call. On that base [measured, simulator]:
+
+- `sim::harsh_network_keeps_every_invariant`: 1,233 writes acked (1,212 without the change; the test needs 1,200).
+- `liveness::leaders_leave_a_site_whose_calls_fail`: 12 of 12 seeds moved by `STEP_DOWN`, one leader change each, new
+  leader off the sick site in 3.6 to 7.7 s, as without the change. Gray-failure detection is kept.
+- Long sweep, 2,000 seeds x 10,000 steps, both halves: exit 0. Porcupine: `Ok` on `hist.jsonl` (150,903 operations)
+  and `hist.jsonl.gray` (2,029,109).
+- Test `leadership::one_follower_stall_counts_once_per_deadline`: 30 read rounds missed within 300 ms do not trip
+  the rule; 5 misses a deadline apart do. Plants 74 (no dedupe) and 75 (dedupe forever): 2 of 2 caught.
+- Design: `design/DESIGN.md`, Shape, the `STEP_DOWN` paragraph, one added sentence.
+
+**Merges**: main f10ea4b (merge-budget-4) as `8f54b3b0`, keeping `/stats?summary` beside main's test-faults
+`body=array|stream` switch; main d7ee927 (f67-liveness, a `crates/raft` change) as `77629bc7`. The f67 test
+`a_group_whose_every_member_flapped_elects_on_the_first_requests` sent `suspect` to all three flapping members in
+lockstep every 500 ms. Once f67 stopped flapping members denying rivals as `Contending`, all three split every vote,
+because the 500 ms cadence outlasts the losers' 100 to 400 ms backoff. Reports every 100 ms elect a leader in 700 ms;
+the test now uses that cadence and keeps its 1 s bound. It fails the same way with or without `fa30bff9`.
+
+**The merged tree fails raft's checks** [measured, simulator, `77629bc7`/`67e71612`]: with main d7ee927 (f67-liveness)
+merged into this branch, `sim::harsh_network_keeps_every_invariant` acks 1,102 writes (needs 1,200) and
+`liveness::leaders_leave_a_site_whose_calls_fail` gives 3 leader changes on seeds 7, 9 and 11 (limit 2). Main alone and
+this branch before the merge (`720bdb36`: 1,212 acked) pass both. **Correction:** `8f54b3b0` (main f10ea4b merged)
+is not a green pre-f67 tree: it still holds `fa30bff9`, and its harsh sweep acked 858. Seed 107 traced: S1 leads at term 3 after a
+transfer and holds the only copy of entry 160 (this branch's dep reads let the leader append while an entry is in
+flight). From 43.6 s S2 campaigns, both other voters refuse S1's pre-votes as `Suspected` for 2 x SUSPECT, and S1 refuses
+theirs as `LogBehind`, so no member can win until 60.4 s. Sent to f67-liveness, which owns the fix. Not deployed.
+
+### Round 8d: the combined tree
+
+`lm1-memory` `6ebc48c9`: main a9d1645, which carries narrow-reads-2 and f67-liveness f53b6f8, plus the identity
+step-down fix `0c7cbc23`. Its tree equals `742165ca`, where the checks ran.
+
+- **Merge of narrow-reads-2** (`8c152210`): the edge takes main's per-request `Ctx` timing, which replaces this
+  branch's thread-local timing (`236eca5b`) and its test. The branch keeps a shard's 429 ending the validate tries
+  and a REST merge reading only its rows. Edge and step-down plants 26, 27, 29, 30, 41 to 43, 74 and 75: 9 of 9
+  caught.
+- **Full checks**: fmt, workspace clippy, wasm32 clippy (site and edge, with and without `test-faults`; ops),
+  `cargo test --workspace`, `check_design`, `check_names`, `check_links` and `go test` all pass (Rust 1.100).
+- **Long sweep** (2,000 seeds x 10,000 steps, every half): exit 0 in 563 s. The longest stretch with a healthy quorum,
+  requests waiting and none completing is 29,799 ms (seed 10921), under the 30 s bound.
+- **Porcupine**: `Ok` on `hist.jsonl` (150,828 operations), `hist.jsonl.gray` (2,042,240) and `hist.jsonl.live`
+  (2,601,072).
+
+### Round 8e: site day m19 and smokes
+
+Site day m19 from `aac3e0b9`: new shard image `sha256:73d9b2ce79af6ee6d9a23cdea6982123855a5d3b109fa428e80bf4f19d7080c3`
+(this branch's container admission gate, which `15f6ed1b` lacks), site versions `049f955c`, `673e1876`, `343b1877`,
+edge `b9c0fd62`. Smokes of 180 s each, 8 learners (enam 4, weur 2, apac 2), k 4 [measured]:
+
+| Smoke | Leader | Commit p50/p99 | Queue / round / confirm p99 | merge:only p99 | Agent pushes | Push p99 agent / human | read:api p99 (n) |
+|---|---|---|---|---|---|---|---|
+| s250 (131287) | held at term 2, 0 feed polls | 363/982 ms | 577 / 352 / 79 ms | 3.3 s | 365 of 370 (5 `full`) | 37.8 / 38.1 s | 6.5 s |
+| s500 (131288) | held at term 2, 0 feed polls, 121.8 req/s | 341/567 ms | 421 / 255 / 147 ms | 2.7 s | 735 of 736 (1 client fetch failure) | 6.6 / 8.5 s | 3.8 s (35,659; 98.4% 200, 53 × 503, 506 capped) |
+
+- **No `STEP_DOWN` alarm on any site from 02:16 to 02:31Z** [measured, Workers Logs]. The same query over m18's
+  19:16:30–19:18Z returns its three known step-downs (`release`, `names:708` f0, `names:708` f1), so it is not blind.
+  In s500 the `release` leader recorded 179 and 181 deadline misses to its followers in one burst at 02:27:29Z, the
+  follower-stall pattern of round 8c, and did not move. In s250 `names:152`'s leader recorded 267 the same way.
+- **Leaderless stretches**: the repository leader held at term 2 through both smokes, and no identity group changed
+  leader, so the longest leaderless stretch with requests waiting is 0 s in both.
+- **s250's push p99 of about 38 s** is the first minute on a new image and new repository; s500, which followed on
+  warm shards, was 6.6 s [inference: the shard warm-up of a just-built image, not measured].
+- **API**: s500's `resolve` p99 is 3.2 s and `auth` 2.4 s, under narrow-reads-2's per-isolate caches. B0-29's API
+  line (p99 at most 2 s, at least 99% served) is not met in the smoke.
+- Leader confirm p99 147 ms at 500 agents, above the ~100 ms m0-carried-5 asked about.
+
+Cost after both smokes: $31.99. Rows `rows-m19` started in the operator's order: B0-29, B0-32, B0-31, B0-33, B0-34,
+B0-35, L0-12.
