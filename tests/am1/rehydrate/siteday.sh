@@ -1,6 +1,6 @@
 #!/bin/bash
 # rehydrate-batch's site day and edge day on graft-m3f from the deploy worktree ../rb-deploy (rehydrate-batch merged with
-# origin/merge-p99), test-faults, the install's anchor, `--vars` (SHARD_INSTANCE=standard-4), and the shard image built
+# origin/main or origin/merge-p99), test-faults, the install's anchor, `--vars` (SHARD_INSTANCE=standard-4), and the shard image built
 # from rehydrate-batch's containers/git (tests/am1/hotshards/image.sh, TAG=rb). Builds are taken as already made
 # (SKIP_BUILD=--skip-build for the site). Shards keep running on the old image until they next start; the cold
 # rehydrate tears its own repository's shards down. Log in tests/am1/raw/rehydrate/<log name>.
@@ -11,7 +11,7 @@ set -uo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=/home/user/workspace/rb-target
 cd /home/user/workspace/rb-deploy
 source /home/user/workspace/repo/tests/am1/lf13/env-m3f.sh
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:6c2a6461f9df4a0314a4e251f08a45e625560656bc7249e37192adb65ff2c932
+IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:696907a2838fafd91cb9cab7b9be4a673af54f56b1c811014a4eb0a4e055aec5
 FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
 L=/home/user/workspace/repo/tests/am1/raw/rehydrate/$1
 { date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5

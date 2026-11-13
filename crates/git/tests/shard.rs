@@ -18,34 +18,35 @@ fn shards_counts_are_the_b0_14_values() {
 }
 
 #[test]
-fn first_shard_is_in_count_and_the_rest_in_the_hot_pool_without_repeats() {
+fn first_shard_is_in_count_and_the_rest_are_the_granted_pool_slots() {
     for count in SHARDS {
         for n in 0..500 {
             for k in 1..=FANOUT_MAX {
-                let s = shards_for(net(n), SiteId(1), count, k);
+                let slots: Vec<u16> = (0..u16::from(k) - 1).map(|i| (i * 3 + n as u16) % HOT_POOL).collect();
+                let s = shards_for(net(n), SiteId(1), count, &slots);
                 assert_eq!(s.len(), k as usize);
                 assert!(s[0].shard < count);
-                assert!(s[1..].iter().all(|x| (count..count + HOT_POOL).contains(&x.shard)));
-                let mut v: Vec<u16> = s.iter().map(|x| x.shard).collect();
-                v.sort();
-                v.dedup();
-                assert_eq!(v.len(), s.len());
+                // Slot p is shard count + p, in the order the ledger granted them.
+                assert_eq!(s[1..].iter().map(|x| x.shard - count).collect::<Vec<_>>(), slots);
                 assert!(s.iter().all(|x| x.site == SiteId(1) && may_start(x.shard, count)));
+                // The first shard is the network's rendezvous one whatever the pool holds.
+                assert_eq!(s[0], shards_for(net(n), SiteId(1), count, &[])[0]);
             }
         }
     }
-    // k = 0 is clamped to one shard, and more than FANOUT_MAX to FANOUT_MAX.
-    assert_eq!(shards_for(net(1), SiteId(0), 5, 0).len(), 1);
-    assert_eq!(shards_for(net(1), SiteId(0), 5, 200).len(), FANOUT_MAX as usize);
+    // A slot outside the pool or named twice is skipped, and at most FANOUT_MAX shards serve.
+    assert_eq!(shards_for(net(1), SiteId(0), 5, &[HOT_POOL, 2, 2]).len(), 2);
+    assert_eq!(shards_for(net(1), SiteId(0), 5, &[0, 1, 2, 3, 4, 5, 6, 0]).len(), FANOUT_MAX as usize);
 }
 
 #[test]
 fn raising_k_moves_no_network_and_keeps_the_earlier_shards() {
     for n in 0..300 {
-        let base = shards_for(net(n), SiteId(0), 25, 1)[0];
+        let base = shards_for(net(n), SiteId(0), 25, &[])[0];
+        let pool: Vec<u16> = (0..HOT_POOL).collect();
         for k in 2..=FANOUT_MAX {
-            let lo = shards_for(net(n), SiteId(0), 25, k - 1);
-            let hi = shards_for(net(n), SiteId(0), 25, k);
+            let lo = shards_for(net(n), SiteId(0), 25, &pool[..usize::from(k) - 2]);
+            let hi = shards_for(net(n), SiteId(0), 25, &pool[..usize::from(k) - 1]);
             assert_eq!(hi[0], base);
             assert_eq!(&hi[..lo.len()], &lo[..], "k-1 shards are a prefix of k");
         }
@@ -56,7 +57,7 @@ fn raising_k_moves_no_network_and_keeps_the_earlier_shards() {
 fn rendezvous_spreads_networks_and_a_new_count_moves_only_about_one_in_n() {
     let mut load: BTreeMap<u16, u32> = BTreeMap::new();
     for n in 0..25_000 {
-        *load.entry(shards_for(net(n), SiteId(2), 25, 1)[0].shard).or_default() += 1;
+        *load.entry(shards_for(net(n), SiteId(2), 25, &[])[0].shard).or_default() += 1;
     }
     assert_eq!(load.len(), 25);
     let (min, max) = (load.values().min().unwrap(), load.values().max().unwrap());
@@ -64,8 +65,8 @@ fn rendezvous_spreads_networks_and_a_new_count_moves_only_about_one_in_n() {
     // From 25 to 26 shards, about 1/26 of networks move, and only onto the new shard.
     let mut moved = 0;
     for n in 0..25_000 {
-        let a = shards_for(net(n), SiteId(2), 25, 1)[0];
-        let b = shards_for(net(n), SiteId(2), 26, 1)[0];
+        let a = shards_for(net(n), SiteId(2), 25, &[])[0];
+        let b = shards_for(net(n), SiteId(2), 26, &[])[0];
         if a != b {
             assert_eq!(b.shard, 25);
             moved += 1;
@@ -90,7 +91,7 @@ fn warm_sites_start_at_home_and_pick_another_site() {
 
 #[test]
 fn validator_is_stable_for_a_push_and_ignores_shards_not_caught_up() {
-    let k = shards_for(net(9), SiteId(0), 5, 4);
+    let k = shards_for(net(9), SiteId(0), 5, &[0, 1, 2]);
     let v = validator(b"push-1", &k).unwrap();
     assert_eq!(validator(b"push-1", &k), Some(v));
     let without: Vec<GitCacheShard> = k.iter().copied().filter(|s| *s != v).collect();
