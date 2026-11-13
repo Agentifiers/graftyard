@@ -157,8 +157,68 @@ The cap was $25.
 
 ## Contradictions and open items
 
-- **The keep-warm costs a spike.** In j9h, at 05:12:00Z, the leader's keep-warm call to its own (home) shard got no answer in 25 s, and 16 pushes in the same seconds took about 18 s. The likely cause is the home shard's catch-up running while it also serves the pushes [inference]: the shard serializes catch-ups per network, and a push waits on the one running. Not traced further. It stays inside the 7.2 s p99. A keep-warm that skips the home's own site would avoid it, but then the home after a transfer is the one that falls behind.
+- **The keep-warm costs a spike** (traced and fixed below, "The 05:12 stall"). In j9h, at 05:12:00Z, the leader's keep-warm call to its own (home) shard got no answer in 25 s, and 16 pushes in the same seconds took about 18 s. The likely cause is the home shard's catch-up running while it also serves the pushes [inference]: the shard serializes catch-ups per network, and a push waits on the one running. Not traced further. It stays inside the 7.2 s p99. A keep-warm that skips the home's own site would avoid it, but then the home after a transfer is the one that falls behind.
 - **The 503 path is kept but untested hosted with warm shards.** j9h's in-flight pushes all succeeded, so none needed it. j9g showed it: 16 pushes got 503, not `unpacker error`.
 - **`--window=0`** costs deltas between pushes once packs roll up. On these random blobs that was free; on real source text it could grow disk. Not measured.
 - **A31's mechanism note:** a network with no pushes cannot step k, because only push validates report load. A31 shows derived work is left out of the report, not that the step logic is idle-safe for every input.
-- **Site b's member trapped** ("memory access out of bounds") at 04:06:31Z, during a 4 MB local `/entries` page read under the kill's load. It recovered at once. The cause is not traced.
+- **Site b's member trapped** ("memory access out of bounds") at 04:06:31Z: see "Site b's trap" below.
+
+## Merge with main, and the follow-ups (2026-11-13, 05:20 to 07:05Z)
+
+### Merges
+
+- **`6a92d62` merges main `020b3e5` (LM-1 rounds 6 to 8).** `ShardHost::validate` keeps LM-1's streamed body, admission slots and `Validated::{Busy, Done}`, and its error carries the container's status. Only the container's own 4xx is 422; a 429 is `Busy`, never an error. Everything else is 503. The edge's `ShardRefusal` gains `Unavailable` beside `Invalid` and `Busy`. `shard_refusal` gives no refusal for it, so the push is answered `shard_unavailable` (503, `Retry-After: 2`), never `unpacker error`. `--window=0` now lives in LM-1's `runRepack` hook, and the split commit-graph follows it. `pool_forward`, the keep-warm and `/archive/promote` are unchanged. Two test beds (`tests/m1/wp5`, `tests/m1/wp6/bed`) answer a failed validate by `validate_status` (`75f93c2`). New plant: the edge refuses `Unavailable` as `unpacker error`.
+- **`67db2c3` merges main `a2687fe` (rehydrate-batch).** Both sides are kept: `/ingest-batch`, the batched `ShardIo::ingest` and its plants, plus this branch's plants. DECISIONS keeps both entries. G7 takes rehydrate-batch's narrowing, then this branch's. `image.sh` keeps rehydrate-batch's `TAG`, defaulting to `hs3`.
+- **Image:** `registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:696907a2838fafd91cb9cab7b9be4a673af54f56b1c811014a4eb0a4e055aec5`, built from `67db2c3` (`tests/am1/raw/hotshards3/image-hs3b.log`). It holds LM-1's admission gate, `/ingest-batch`, the commit-graph and `--window=0`. An intermediate image from `75f93c2`, `sha256:8528e368…`, was superseded within the hour and is not to be used.
+
+### The 05:12 stall: a rehydrate dropped its mark before it could serve (`5f68216`)
+
+In j9h the home shard (site a) rehydrated after the kill. The rehydrate saved its cursor after the refs pages and dropped its `rehydrating` place in the same step. Its report (05:12:41Z) shows the catch-up from the first refs page, 338 entries, took 38 s after that (`refs` 556.9 s, `catch_up` 595.1 s). With the place gone, `warming_now` no longer sent a push that had another shard next on at once. Each push the home took waited out its 15 s (16 validates of 15.1 to 15.2 s at 05:12:23 to 05:12:27Z), then validated on site b in under 1.5 s. The keep-warm's "no answer in 25 s" was the same catch-up.
+
+Fix: the place is dropped only when the last catch-up reaches the head, or by the catch-up that finishes a run cut off in it. A dropped cursor drops it too, and `ShardHost::rehydrating` is the place alone. Kept test: `a_rehydrate_is_marked_rehydrating_until_its_last_catch_up_reaches_the_head` (`crates/git/tests/catchup.rs`), which cuts the run at every point and checks the mark through the last catch-up. Plants 43 and 44 (dropping the place with the cursor, and a finishing catch-up that keeps it) are both caught. Not rerun hosted: the smoke below had no kill.
+
+### Site b's trap at 04:06:31Z: the F47 shape, not a new bug
+
+The trapped invocation was Member `12100d32…` on `graft-m3c-site-b` (version `0299a6c8`), `POST /entries?from=20141&to=21263&local=1&bytes=4000000`. That is site b's shard reading a 4 MB local page during its catch-up, 3 s after the kill. The stack was `worker::delay::Delay::poll`, under `wasm_bindgen` `invoke`. The same request ended "Promise will never complete." at 04:06:35Z (outcome `exception`, 4,123 ms wall, 26 ms CPU). The next `/entries` call at 04:06:35Z answered in 602 ms (288 ms CPU), and the catch-up went on. No other invocation in that isolate failed in that window, and no `Critical` or "previous WASM instance" line appears.
+
+This matches `tests/m2/results/f47.md`, "How the generated glue turns this into `unreachable`": a JS-side allocation failed near the isolate's 128 MB, and the terminated instance's next call surfaced as "memory access out of bounds" [inference]. The page holds up to 4 MB of stored rows (`ENTRIES_LOCAL_PAGE_BYTES_MAX`) and is built as JSON in the member. It is not the Register restore issue: m0-carried-6's thread (T-01a1ccdd-804f-769d-b81a-5f937e3309df) reports no trap, Critical, or restore failure. Its "Register" is the test-faults member kind, not a failure. Open: whether the 4 MB local page should drop to 2 MB under load. Every later catch-up of the 2 GB tails today ran at 4 MB without a trap.
+
+### `--window=0` disk growth, measured locally
+
+Two local replays (`/tmp/hs3/win/run.sh` and `hot.sh`, not committed) ingest each push with `index-pack --strict --fix-thin` and repack geometric past 8 packs. They compare `--window=0` with the default window.
+
+| Shape | Pushes | Pushed bytes | Shard packs, `--window=0` | Shard packs, default window | Full `repack -adf` |
+| --- | --- | --- | --- | --- | --- |
+| This repository's last 148 first-parent commits | 148 | 29.0 MB | 60.0 MB (2.07×) | 35.8 MB (1.24×) | 29.8 MB |
+| Journey 9's push shape (`load.mjs`: 10 to 70 KB blobs, 5% 1 MiB, cut from one base) | 400 | 31.2 to 41.0 MB | 31.2 MB (1.00×) | 3.1 MB (0.075×) | 1.9 MB |
+
+On real source history, `--window=0` costs about 1.7 times the disk of a delta-searching repack. On journey 9's synthetic blobs it keeps every push whole, about 13 times the disk, because those blobs all delta against one base. That is why every shard here holds 2.56 GB for a 2.15 GB log.
+
+The reason for `--window=0` is also gone. It was the 1 to 5 s delta search under the network's lock, and LM-1 round 7 (`79212b5`, merged here) took the repack out of the lock. A local B0-29-like A/B on the merged container (300 s, one CPU) compared `--window=0` with the default window:
+
+| Arm | CPU-s per minute | Validate p99 |
+| --- | --- | --- |
+| `--window=0` | 15.8 to 18.9 | 102 to 172 ms |
+| Default window | 16.1 to 19.6 | 106 to 196 ms |
+
+The default-window arm's per-command breakdown did not record. The latency and CPU columns come from the driver and the cgroup.
+
+Recommendation, not made here: drop `--window=0` (keep the commit-graph), and record the disk numbers in DECISIONS. Doing that needs another image and another tell to LM-1, so it is the parent's call.
+
+### Hosted smoke on the merged tree (graft-m3c, standard-4)
+
+Site day 06:27:54 to 06:41Z from `hs3-deploy` = `bc069c8` (`67db2c3` plus the image pin), test-faults, `SHARD_INSTANCE=standard-4`, image `696907a2…`. Sites `7af8a462`/`32c229d6`/`2ef0139a`, edge `b527e1ef` (`--ops graft-m3c-ops`, FORMATS with 32.18). The site day tore down every shard, so all three started cold on repo:65551 (2.15 GB log, about 2.5 GB of objects).
+
+| Run | Window | Pushes | Result | p50 | p99 | Max |
+| --- | --- | --- | --- | --- | --- | --- |
+| j9s, cold start | 06:42:04 to 06:50:09Z | 113 sent (16 in flight cap) | 65 ok, 48 `http 503` | n/a | n/a | 65 s |
+| j9w, warm | 06:51:11 to 06:56:13Z, 4.17/s | 1,251 | **1,251 ok** | 3.07 s | **5.01 s** | 6.44 s |
+
+- **Cold start.** Every push in the first 7.5 min got `http 503` after about 64 s. It was the retryable answer, never `unpacker error`, because all three shards were rehydrating: 15 s home, then 60 s for the next shard, which answered `warming` first. Site a's rehydrate with batched ingest took 450 s (marked 395 s for 2,531 stored packs, tail 8 s for 1,104 inline packs, `held_max` 5.96 MB). Site c's took 1,091 s, its `/catchup` call cancelled at 119.6 s and continued in the background. The driver does not retry a 503; git clients do.
+- **Warm.** p99 was 4.4 to 5.2 s per minute, under 7.2 s, with no refusal.
+- **fsck** after catch-up (cursor 27,186 on every shard): sites a and b `ok` with 166,736 objects. Site c answered `ok: false` with empty output and 166,104 objects in one pack, just after its rehydrate's geometric repack. Refs are identical on all three (504). The script dropped `fsck`'s error text and the container was torn down, so the cause is open. A likely suspect is a repack finishing while `fsck` ran: `handleFsck` takes only the network's read lock, which a repack no longer takes [inference]. `tests/am1/raw/hotshards3/fsck-j9w.json`.
+- Depth: 0 "Subrequest depth" in the window [not rechecked separately; the run had no transfer or kill].
+
+### Cost of this part
+
+05:20 to 07:05Z: Workers and Durable Objects $0.13 (`usage.py`: 2,017 Workers requests, 93,044 DO requests). Containers: 154 standard-4 instance-minutes and 1,190 CPU-s. At `research/prices.json` rates (vCPU active only), that is $0.31, and at most $1.03 if every vCPU were busy. This part comes to about $0.45 to $1.16, and the whole of hot-shards-3 to about $2.8 to $3.5 of the $25 cap.
