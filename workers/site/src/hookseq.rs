@@ -624,7 +624,7 @@ impl DurableObject for HookSequencer {
             return Response::error("site down", 503);
         }
         let url = req.url()?;
-        if req.method() == Method::Post && url.path() == "/lane" {
+        if req.method() == Method::Post && url.path() == format!("/lane/{LANE_WIRE}") {
             let run: Vec<Lane> = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
             return Response::from_bytes(codec::to_bytes(&lane_run(&run).await));
         }
@@ -1176,6 +1176,11 @@ async fn post(r: &Lane) -> (Option<u16>, bool, Option<String>) {
 /// (`tests/m3/results/m3-wp5.md`, "Where the depth comes from"). One lane per hook: it carries at most that hook's two
 /// queues' attempts at once.
 const LANE_PREFIX: &str = "hooklane:";
+/// The lane wire's version, in the lane's name and route. A running object keeps its old code until it restarts, so
+/// after site day 17 a new store's calls reached lanes still on day 16's code, and every attempt for about 90 s failed
+/// to decode ("Hit the end of buffer", BF-57 run 15) [measured]. A new wire takes the next version: new lanes, which
+/// only ever ran it. Bump it with any change to `Lane` or `Sent` or what a lane does.
+const LANE_WIRE: u32 = 2;
 
 /// One attempt's request, signed by the store, so a lane never holds the hook's secret.
 #[derive(Serialize, Deserialize)]
@@ -1229,10 +1234,15 @@ async fn lane_post(env: &Env, hook: HookId, run: &[Lane]) -> Vec<Sent> {
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
         let stub = env
             .durable_object(&format!("HOOKSEQ_{}", site.id.0))?
-            .get_by_name_with_location_hint(&format!("{LANE_PREFIX}{}", hook.0.0), region.hint())?;
+            .get_by_name_with_location_hint(&format!("{LANE_PREFIX}{LANE_WIRE}:{}", hook.0.0), region.hint())?;
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(run)[..]).into()));
-        let mut res = stub.fetch_with_request(Request::new_with_init("https://hookseq/lane", &init)?).await?;
+        let mut res = stub
+            .fetch_with_request(Request::new_with_init(&format!("https://hookseq/lane/{LANE_WIRE}"), &init)?)
+            .await?;
+        if res.status_code() != 200 {
+            return Err(Error::RustError(format!("lane answered {}", res.status_code())));
+        }
         codec::from_bytes::<Vec<Sent>>(&res.bytes().await?).map_err(|e| Error::RustError(e.to_string()))
     };
     let deadline = std::time::Duration::from_millis(ATTEMPT_DEADLINE_MS + RUN_FOR_MS + 5_000);
