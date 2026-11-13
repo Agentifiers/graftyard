@@ -404,3 +404,72 @@ func TestUIReadme(t *testing.T) {
 		}
 	}
 }
+
+func TestUICommits(t *testing.T) {
+	s, wt, push := uiRepo(t)
+	commitMsg(t, wt, map[string]string{"f": "0\n"}, "fork")
+	run(t, wt, "", "checkout", "-qb", "pr")
+	h1 := commitMsg(t, wt, map[string]string{"h1": "1\n"}, "head 1")
+	run(t, wt, "", "checkout", "-q", "main")
+	commitMsg(t, wt, map[string]string{"b1": "1\n"}, "base 1")
+	run(t, wt, "", "checkout", "-q", "pr")
+	run(t, wt, "", "merge", "-q", "--no-edit", "main")
+	m := run(t, wt, "", "rev-parse", "HEAD")
+	// The last head commit's message is not UTF-8. git commit would re-encode it, so the object is written by hand.
+	commitMsg(t, wt, map[string]string{"h2": "2\n"}, "scratch")
+	tree := run(t, wt, "", "rev-parse", "HEAD^{tree}")
+	obj := "tree " + tree + "\nparent " + m + "\nauthor t <t@t> 1700000000 +0000\n" +
+		"committer t <t@t> 1700000000 +0000\n\nhead 2 \xff\n"
+	out, err := gitOut(wt, obj, "hash-object", "-t", "commit", "-w", "--stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h2 := strings.TrimSpace(string(out))
+	run(t, wt, "", "reset", "-q", "--hard", h2)
+	run(t, wt, "", "checkout", "-q", "main")
+	// The base moves after the head branched and after the merge.
+	base := commitMsg(t, wt, map[string]string{"b2": "2\n"}, "base 2")
+	push()
+
+	var o struct {
+		Commits []struct {
+			Sha string
+			Raw string
+		}
+		Truncated bool
+	}
+	if code, body := uiGet(t, s, "/ui/commits?net=7&base="+base+"&head="+h2+"&wait=1", &o); code != 200 {
+		t.Fatalf("commits: %d %s", code, body)
+	}
+	if len(o.Commits) != 3 || o.Commits[0].Sha != h1 || o.Commits[1].Sha != m || o.Commits[2].Sha != h2 ||
+		o.Truncated {
+		t.Fatalf("commits: %+v, want %s %s %s", o, h1, m, h2)
+	}
+	raw, err := gitOut(wt, "", "cat-file", "commit", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o.Commits[1].Raw != string(raw) || strings.Count(o.Commits[1].Raw, "\nparent ") != 2 {
+		t.Fatalf("merge raw %q, want %q", o.Commits[1].Raw, raw)
+	}
+	raw, err = gitOut(wt, "", "cat-file", "commit", h2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.ReplaceAll(string(raw), "\xff", "\uFFFD"); o.Commits[2].Raw != want || want == string(raw) {
+		t.Fatalf("non-UTF-8 raw %q, want %q", o.Commits[2].Raw, want)
+	}
+
+	// Nothing to list: head is behind base.
+	if code, body := uiGet(t, s, "/ui/commits?net=7&base="+base+"&head="+base, &o); code != 200 ||
+		len(o.Commits) != 0 || !strings.Contains(body, `"commits":[]`) {
+		t.Fatalf("empty: %d %s", code, body)
+	}
+	missing := strings.Repeat("ab", 20)
+	for q, code := range map[string]int{"base=" + missing + "&head=" + h2: 404, "base=" + base + "&head=" + missing: 404,
+		"base=main&head=" + h2: 400} {
+		if got, body := uiGet(t, s, "/ui/commits?net=7&"+q, nil); got != code {
+			t.Fatalf("commits %s: %d %s, want %d", q, got, body, code)
+		}
+	}
+}

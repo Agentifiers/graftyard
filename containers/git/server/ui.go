@@ -796,6 +796,70 @@ func handleUICompare(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"merge_base": m, "ahead_by": ahead, "behind_by": behind})
 }
 
+const prCommitsMax = 250 // GitHub lists at most 250 of a pull request's commits
+
+type rawCommit struct {
+	Sha string `json:"sha"`
+	Raw string `json:"raw"`
+}
+
+// handleUICommits is a pull request's commits: those H reaches and B does not, oldest first, raw.
+func handleUICommits(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	base, head := q.Get("base"), q.Get("head")
+	if !hexRe.MatchString(base) || !hexRe.MatchString(head) {
+		fail(w, 400, "bad base or head")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	if commitOf(rp, base) == "" || commitOf(rp, head) == "" {
+		fail(w, 404, "no commit %s or %s", base, head)
+		return
+	}
+	// --max-count would keep the newest, before --reverse, so the whole list is read and its oldest kept.
+	out, err := git(rp, nil, nil, "rev-list", "--reverse", "--topo-order", "--end-of-options", base+".."+head, "--")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	ids := strings.Fields(string(out))
+	truncated := len(ids) > prCommitsMax
+	if truncated {
+		ids = ids[:prCommitsMax]
+	}
+	commits := []rawCommit{}
+	if len(ids) > 0 {
+		out, err = git(rp, nil, strings.NewReader(strings.Join(ids, "\n")+"\n"), "cat-file", "--batch")
+		if err != nil {
+			fail(w, 500, "%v", err)
+			return
+		}
+		// Each object is "<oid> <type> <size>\n", its size bytes, and "\n".
+		for _, id := range ids {
+			hdr, rest, ok := bytes.Cut(out, []byte("\n"))
+			f := strings.Fields(string(hdr))
+			if !ok || len(f) != 3 || f[0] != id || f[1] != "commit" {
+				fail(w, 500, "cat-file printed %q for %s", hdr, id)
+				return
+			}
+			n, err := strconv.Atoi(f[2])
+			if err != nil || n < 0 || n+1 > len(rest) || rest[n] != '\n' {
+				fail(w, 500, "cat-file printed a bad size %q for %s", f[2], id)
+				return
+			}
+			commits = append(commits, rawCommit{Sha: id, Raw: strings.ToValidUTF8(string(rest[:n]), "\uFFFD")})
+			out = rest[n+1:]
+		}
+	}
+	jsonOut(w, map[string]any{"commits": commits, "truncated": truncated})
+}
+
 // readmeRank orders README names the way GitHub picks one; any other README.* ranks after these.
 var readmeRank = []string{"readme.md", "readme.markdown", "readme.rst", "readme.txt", "readme"}
 

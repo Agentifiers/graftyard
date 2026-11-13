@@ -592,7 +592,7 @@ impl ShardHost<'_> {
         self.call(Method::Get, &format!("/archive?net={}&{query}", network.0.0), None, &[]).await
     }
 
-    /// One of the web app's read-only routes (`/ui/resolve`, `/ui/tree`, `/ui/blame`, `/ui/diff`, `/ui/compare`,
+    /// One of the web app's read-only routes (`/ui/resolve`, `/ui/tree`, `/ui/blame`, `/ui/diff`, `/ui/compare`, `/ui/commits`,
     /// `/ui/readme`; `containers/git/server/ui.go`) on `network`, with the caller's query less `repo`. The container's
     /// status and JSON pass through unchanged.
     pub async fn ui(&self, network: NetworkId, route: &str, query: &str) -> Result<Response, StoreError> {

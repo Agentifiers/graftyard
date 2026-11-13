@@ -90,6 +90,10 @@
 //	                                 and H share no history
 //	GET  /ui/compare?net=N&base=B&head=H  {"merge_base": oid or null,"ahead_by": commits H has and B not,
 //	                                 "behind_by": commits B has and H not}
+//	GET  /ui/commits?net=N&base=B&head=H  a pull request's commits, `git rev-list --reverse --topo-order B..H`
+//	                                 (oldest first): {"commits": [{"sha","raw": `git cat-file commit` of it, invalid
+//	                                 UTF-8 replaced by U+FFFD}],"truncated"}, the first 250 and truncated true past
+//	                                 them
 //	GET  /ui/readme?net=N&commit=C&path=P  directory P's README, as GitHub picks it (README.md, .markdown, .rst,
 //	                                 .txt, README, then the first other README.* by name, all case-insensitive):
 //	                                 {"name","path","sha","size","text"}. 404 when there is none, 422 over 1 MiB or
@@ -1644,6 +1648,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("GET /ui/blame", handleUIBlame)
 	m.HandleFunc("GET /ui/diff", handleUIDiff)
 	m.HandleFunc("GET /ui/compare", handleUICompare)
+	m.HandleFunc("GET /ui/commits", handleUICommits)
 	m.HandleFunc("GET /ui/readme", handleUIReadme)
 	return m
 }
