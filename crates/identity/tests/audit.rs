@@ -524,7 +524,7 @@ fn authz_batch(
         |_, e| owed.extend(audit::authz_owed(owner, e)),
     )
     .unwrap();
-    if !audit::needs_batch(cursor, scanned.through, &owed) {
+    if !audit::needs_batch(cursor, scanned.through, &owed, 0) {
         return Ok(None);
     }
     let chain = ChainId::Authz(owner);
@@ -1131,4 +1131,56 @@ fn an_enterprise_change_before_the_finisher_runs_is_in_init() {
     assert_eq!(repo.read.enterprise, Some(new_enterprise));
     assert_live(&mut w, owner, &name, repo_id);
     assert_quiescent(&mut w, owner, repo_id, &mut repo);
+}
+
+/// The audit stream: every event of a scanned `Tokens` entry is a row with its (chain, index, slot) id and no hash,
+/// the consumer's own cursor event is none, and a range that owes nothing but streamed rows still moves the cursor,
+/// so a new leader does not send the same rows again from an old cursor.
+#[test]
+fn audit_stream_rows_name_each_event_once_and_the_cursor_passes_them() {
+    let mut w = World::default();
+    let u = acct(0, 2, 1);
+    created(&mut w, u, "alice");
+    let h = [0x21; 32];
+    let op = TokensOp::Store { hash: h, kind: TokenKind::Pat, account: u, scopes: ScopeSet(1), expires: None };
+    w.tokens_cmd(TokensCmd { cred: as_user(u), op }).unwrap();
+    // The edge finished it: the entry owes nothing.
+    let add = IdentityOp::AddCredential {
+        credential: CredentialRef::Token { hash: h, kind: TokenKind::Pat },
+        title: "ci".into(),
+    };
+    w.identity_cmd(u, IdentityCmd { cred: as_user(u), op: add }).unwrap();
+    let sh = shard_of_hash(&h);
+    let chain = ChainId::Tokens(sh);
+    let log = {
+        let g = w.tokens(sh);
+        let m = g.m(g.leader().unwrap());
+        m.log()[..m.state().commit.0 as usize].to_vec()
+    };
+    let rows: Vec<_> = log.iter().flat_map(|e| audit::stream_rows(chain, e)).collect();
+    let stored: Vec<_> = rows.iter().filter(|r| r.action == "Stored").collect();
+    assert_eq!(stored.len(), 1, "one row for the stored PAT: {rows:?}");
+    let r = stored[0];
+    assert_eq!(r.id, format!("{chain}:{}:{}", r.index, r.slot));
+    assert_eq!(r.fields.get("account"), Some(&serde_json::to_value(u).unwrap()));
+    let text = serde_json::to_string(&rows).unwrap();
+    assert!(!text.contains("hash"), "no hash reaches the stream: {text}");
+    // Owed nothing, but rows were streamed: the batch still commits the cursor past them.
+    let through = Index(log.len() as u64);
+    assert!(!audit::needs_batch(Index(0), through, &[], 0), "without rows, nothing owed and under a stride is no batch");
+    assert!(audit::needs_batch(Index(0), through, &[], rows.len()));
+    let mut f = Finisher::new(chain, Timestamp(u64::MAX / 2), Index(0), through, Vec::new()).streamed(rows.len());
+    let Want::Submit(step) = f.want() else { panic!("the cursor step") };
+    assert!(!submit(&mut w, step), "the cursor commits");
+    f.submitted(false);
+    assert!(matches!(f.want(), Want::Done(_)));
+    let t: TokensFold = w.tokens(sh).fresh_leader();
+    assert_eq!(t.audit_cursor(), through);
+    // The cursor's own entry streams nothing.
+    let last = {
+        let g = w.tokens(sh);
+        let m = g.m(g.leader().unwrap());
+        m.log()[m.state().commit.0 as usize - 1].clone()
+    };
+    assert!(audit::stream_rows(chain, &last).is_empty(), "{:?}", audit::stream_rows(chain, &last));
 }

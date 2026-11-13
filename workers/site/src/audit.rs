@@ -15,6 +15,9 @@
 //!   transfer's own `Settings` (repository format 32.10). A create's and a delete's (F59) read the chain's `created`
 //!   and `deleted` rows too, and a chain with no group as `NoGroup`; their steps are the first settings, after
 //!   creating the group under the owner's record, and the tombstone (`{"lifecycle": ..}`, 32.17).
+//! - **The audit stream.** With an `AUDIT_STREAM` binding (a Basin Pipelines stream, DESIGN Stack), each batch
+//!   first sends one row per event of its range (`audit::stream_rows`), then moves the cursor, so every event reaches
+//!   the stream at least once, keyed by (chain, index, slot); a range that owes nothing but has rows gets a batch.
 //! - **Off until enabled.** The cursor commands are formats 0x10.3, 0x11.3, and 0x12.4, which a member reads only once a site
 //!   day put every member of the group on this release; until then `GRAFTYARD_AUDIT` is unset and nothing runs, as
 //!   the edge sends no format before `FormatsEnable` (`design/SHARED.md`, the two-release rule). A fold whose cursor
@@ -31,7 +34,7 @@ use graftyard_identity::finish::Step;
 use graftyard_raft::{self as raft, Index, Role, codec};
 use graftyard_types::{ChainId, RequestId, Timestamp, Ulid};
 use serde_json::{Value, json};
-use worker::wasm_bindgen_futures::spawn_local;
+use worker::wasm_bindgen_futures::{self, spawn_local};
 use worker::*;
 
 use crate::family::{Authz, Family, Names, Tokens};
@@ -50,6 +53,34 @@ const MOVE_STEP: std::time::Duration = std::time::Duration::from_secs(60);
 thread_local! {
     /// Per member object of this isolate: the leadership whose batch is running.
     static RUNNING: RefCell<HashMap<String, (u64, u64)>> = RefCell::default();
+}
+
+/// The audit stream's binding: a Basin Pipelines stream (DESIGN, Stack). A site without it streams nothing, and the
+/// consumer only finishes, as before.
+const STREAM_BINDING: &str = "AUDIT_STREAM";
+/// Rows one `send` carries at most [guess: well under the stream's 5 MB request limit at a few hundred bytes a row].
+const STREAM_SEND_MAX: usize = 500;
+
+fn stream_on(env: &Env) -> bool {
+    js_sys::Reflect::get(env.as_ref(), &wasm_bindgen::JsValue::from_str(STREAM_BINDING))
+        .is_ok_and(|b| !b.is_undefined())
+}
+
+/// `send(records)` on the stream binding, which resolves once the stream confirmed the rows.
+async fn stream_send(env: &Env, rows: &[audit::StreamRow]) -> std::result::Result<(), String> {
+    use wasm_bindgen::JsCast;
+    let b = js_sys::Reflect::get(env.as_ref(), &wasm_bindgen::JsValue::from_str(STREAM_BINDING))
+        .map_err(|_| "no audit stream binding")?;
+    let send = js_sys::Reflect::get(&b, &wasm_bindgen::JsValue::from_str("send"))
+        .ok()
+        .and_then(|f| f.dyn_into::<js_sys::Function>().ok())
+        .ok_or("the audit stream binding has no send")?;
+    let json = serde_json::to_string(rows).map_err(|e| e.to_string())?;
+    let records = js_sys::JSON::parse(&json).map_err(|e| format!("{e:?}"))?;
+    let p = send.call1(&b, &records).map_err(|e| format!("audit stream send: {e:?}"))?;
+    let p: js_sys::Promise = p.dyn_into().map_err(|_| "audit stream send returned no promise")?;
+    wasm_bindgen_futures::JsFuture::from(p).await.map_err(|e| format!("audit stream send: {e:?}"))?;
+    Ok(())
 }
 
 /// Whether this site runs the consumer: `GRAFTYARD_AUDIT` set to `1`, which a test install sets once a site day put
@@ -109,17 +140,25 @@ pub async fn on_alarm<F: Audited>(h: &Rc<Host<F>>) {
         let cursor = F::cursor(fold);
         let sql = h.state.storage().sql();
         let mut owed = Vec::new();
+        let mut rows = Vec::new();
+        let streaming = stream_on(&h.env);
+        let chain = c.join.chain;
         let scanned = audit::scan(
             cursor,
             c.m.state().applied,
             now,
             SCAN_MAX,
             |i| c.m.entry_at(i).cloned().or_else(|| crate::host::stored_entry::<F>(&sql, i)),
-            |_, e| owed.extend(F::owed(fold, e)),
+            |_, e| {
+                owed.extend(F::owed(fold, e));
+                if streaming {
+                    rows.extend(audit::stream_rows(chain, e));
+                }
+            },
         );
-        (key, leadership, c.join.chain, cursor, scanned, owed)
+        (key, leadership, chain, cursor, scanned, owed, rows)
     };
-    let (key, leadership, chain, cursor, scanned, owed) = found;
+    let (key, leadership, chain, cursor, scanned, owed, rows) = found;
     let scanned = match scanned {
         Ok(s) => s,
         Err(i) => return console_error!("audit {chain}: entry {} is in neither the member nor the stored log", i.0),
@@ -130,7 +169,7 @@ pub async fn on_alarm<F: Audited>(h: &Rc<Host<F>>) {
     if let Some(due) = scanned.next_due {
         h.arm_in((due.0.saturating_sub(now.0) as i64).max(1_000));
     }
-    if !audit::needs_batch(cursor, scanned.through, &owed) {
+    if !audit::needs_batch(cursor, scanned.through, &owed, rows.len()) {
         return;
     }
     RUNNING.with(|r| r.borrow_mut().insert(key.clone(), leadership));
@@ -139,7 +178,7 @@ pub async fn on_alarm<F: Audited>(h: &Rc<Host<F>>) {
     let through = scanned.through;
     spawn_local(async move {
         let t0 = now_ms();
-        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, through, owed))
+        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, through, owed, rows))
             .await
             .unwrap_or_else(|| Err(format!("no answer in {} s", BATCH_FOR.as_secs())));
         match &r {
@@ -180,7 +219,7 @@ pub async fn finish_now<F: Audited>(h: &Rc<Host<F>>, body: Value) -> Result<Valu
     spawn_local(async move {
         let t0 = now_ms();
         let now = Timestamp(now_ms());
-        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, cursor, vec![owed]))
+        let r = crate::host::within(BATCH_FOR, batch(&env, chain, now, cursor, cursor, vec![owed], Vec::new()))
             .await
             .unwrap_or_else(|| Err(format!("no answer in {} s", BATCH_FOR.as_secs())));
         match &r {
@@ -208,8 +247,15 @@ async fn batch(
     from: Index,
     through: Index,
     owed: Vec<audit::Owed>,
+    rows: Vec<audit::StreamRow>,
 ) -> std::result::Result<Value, String> {
-    let mut f = Finisher::new(chain, now, from, through, owed);
+    // The range's stream rows go first: the cursor commits only after the stream confirmed them, so a lost batch sends
+    // them again (at least once; a reader deduplicates on `id`).
+    let streamed = rows.len();
+    for part in rows.chunks(STREAM_SEND_MAX) {
+        stream_send(env, part).await?;
+    }
+    let mut f = Finisher::new(chain, now, from, through, owed).streamed(streamed);
     for _ in 0..1_000 {
         match f.want() {
             Want::Read(chains) => {
