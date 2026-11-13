@@ -987,8 +987,15 @@ impl<F: Family> Routes<F> {
                 let mut out = self.host.callers.borrow_mut().take(from);
                 out.append(&mut back);
                 for e in &out {
-                    if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
-                        self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0);
+                    match &e.msg {
+                        raft::Message::ReadIndexRes { batch, index } => {
+                            self.host.trace(Trace::ResSent, from.0, *batch, index.map_or(0, |(i, _)| i.0), 0)
+                        }
+                        raft::Message::Append(a) => {
+                            let last = a.entries.last().map_or(a.prev_index.0, |x| x.index.0);
+                            self.host.trace(Trace::AppendTaken, from.0, a.round, last, a.commit.0)
+                        }
+                        _ => {}
                     }
                 }
                 self.raft_reply(out)

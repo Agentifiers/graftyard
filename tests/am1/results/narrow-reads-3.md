@@ -142,7 +142,9 @@ Without adding learners, the next cut is the far learners' apply wait: the leade
 - a learner answers from the commit index carried on the `ReadIndexRes`'s own envelope;
 - the leader sends the entries a far learner lacks with its `ReadIndexRes`.
 
-## Learners pipelined (operator's choice (c))
+## Learners pipelined (operator's choice (c)): reverted
+
+**Reverted in 6f0a50a5** on the operator's decision: gate 5 showed no gain in the far learners' apply wait, and the leader's peak memory rose to 126 MiB, near the 128 MB isolate. DECISIONS records it as "Not adopted: pipelining AppendEntries to learners", with the numbers below. The kept test and plants 15 and 16 went with it; 9e16a8af's per-peer `sent` and `sentBytes` stay. What follows is the record of what was tried.
 
 The operator chose (c) over piggybacking entries on `ReadIndexRes` or a learner-side fetch. Main 82a0bf9 (m0-carried-8: PIPELINE 4, APPEND_BYTES_MAX and ENTRY_SOFT 100 KB) pipelined only to voters (`voter && !lossy`), so every learner still got one AppendEntries at a time. On a 300 to 700 ms far link, that alone puts a learner's appends behind the leader's `ReadIndexRes`.
 

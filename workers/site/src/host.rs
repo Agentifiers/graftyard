@@ -354,6 +354,16 @@ pub enum Trace {
     Stepped = 15,
     /// The deferred transaction ran: `ms` how long after it was deferred, `index` its statements.
     Flushed = 16,
+    /// An AppendEntries was stepped here: `index` the last entry it carried (its `prev_index` when empty), `ms` its
+    /// commit, `batch` 0 when it rode the response to this member's own call, 1 when the leader sent it as a call
+    /// (narrow-reads-3's split of a learner's apply wait).
+    AppendStepped = 17,
+    /// An AppendEntries for a learner calling this member was held for its next call's response (`crate::callers`):
+    /// `batch` its round, `index` its last entry, `ms` its commit.
+    AppendHeld = 18,
+    /// A held AppendEntries left in the response to a learner's call: `batch` its round, `index` its last entry, `ms`
+    /// its commit.
+    AppendTaken = 19,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -1292,8 +1302,15 @@ impl<F: Family> Host<F> {
 
     /// Test installs: traces a `ReadIndexRes` stepped here, `own` when it answered this member's own call.
     pub fn trace_res<E>(&self, e: &raft::Envelope<E>, own: bool) {
-        if let raft::Message::ReadIndexRes { batch, index } = &e.msg {
-            self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own));
+        match &e.msg {
+            raft::Message::ReadIndexRes { batch, index } => {
+                self.trace(Trace::ResStepped, e.from.0, *batch, index.map_or(0, |(i, _)| i.0), u64::from(!own))
+            }
+            raft::Message::Append(a) => {
+                let last = a.entries.last().map_or(a.prev_index.0, |x| x.index.0);
+                self.trace(Trace::AppendStepped, e.from.0, u64::from(!own), last, a.commit.0)
+            }
+            _ => {}
         }
     }
 
@@ -2025,7 +2042,18 @@ impl<F: Family> Host<F> {
             return;
         }
         // A learner calling this member gets the message in the response to its next call, never as a call back.
-        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else { return };
+        let held = match &e.msg {
+            raft::Message::Append(a) => {
+                Some((e.to.0, a.round, a.entries.last().map_or(a.prev_index.0, |x| x.index.0), a.commit.0))
+            }
+            _ => None,
+        };
+        let Some(e) = self.callers.borrow_mut().route(e.to, e, now_ms()) else {
+            if let Some((to, round, last, commit)) = held {
+                self.trace(Trace::AppendHeld, to, round, last, commit);
+            }
+            return;
+        };
         self.call(e);
     }
 
