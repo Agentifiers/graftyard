@@ -115,7 +115,8 @@ impl SiteEnv {
 }
 
 /// No public route: `workers_dev` and preview URLs are off, so only this script's own `SITE` binding reaches the handler,
-/// with a `PrSync` first attempt (`prsync::in_band`) or an archive promotion (`archive::in_band`). Anything else is
+/// with a `PrSync` first attempt (`prsync::in_band`), an archive promotion (`archive::in_band`), or a webhook attempt
+/// (`hookseq::dispatch`). Anything else is
 /// refused.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
@@ -127,6 +128,9 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     if req.method() == Method::Post && req.path() == archive::PROMOTE_PATH {
         return archive::promote_handled(req, env, &ctx).await;
+    }
+    if req.method() == Method::Post && req.path() == hookseq::ATTEMPT_PATH {
+        return hookseq::attempt_handled(req, env, &ctx).await;
     }
     Response::error("not found", 404)
 }
