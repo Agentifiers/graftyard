@@ -1483,3 +1483,31 @@ AppendEntries p50, so the quorum leg is the near follower's call, not the leader
 
 **B0-34's seed.** m3org/b034-mono holds 5.02 GB of torvalds/linux (260 pushes of at most 30 MB, 6,075 s); push 4,
 linux's 52 MB root commit carried in parts, was cut off 4 times at the edge before it went. The repos are kept.
+
+**Rows m21 do not count: every row ran at k 1.** `k.mjs repo:N 4` answered `{"grants":[[0,[]],[2,[]]],"k":1,"want":3}`
+for every row (131304 to 131309), so the forced k was capped to 1 by pool-grants' ledgers. The cause: the smokes
+before them (131302, 131303) set k 4 for owner m3org, and `smoke.sh` and `rows.sh` read k after a run but never set it
+back, so those networks kept their leases (`PoolLedger::ask`) after their shards were torn down. Each owner is held to
+`HOT_POOL - 1` = 6 slots, and the two networks held all 6 (3 each) on every site. Asking k 1 on 131302 and 131303 freed
+them, and a k 4 ask on 131304 was then granted at once (`[[0,[2,1,6]],[2,[2,1,6]]]`). `rows.sh` and `smoke.sh` now set
+k 1 after each run, and `rows.sh` skips a row whose forced k was not granted.
+
+What the k 1 rows showed is still evidence of a single shard under the row's load, recorded as such:
+
+| Row (m21, k 1) | Leader | Commit p50 / p99 (ms) | Queue p99 | Notes |
+|---|---|---|---|---|
+| B0-29 (131304) | held, term 2 | 1,114 / 30,306 | 29,950 | 2,462 / 2,500 agent pushes ok, p99 37.7 s; merge:only p99 8.1 s; API p99 2.4 s, 99.4% served; leader CPU 31 to 37% of a core |
+| B0-32 (131305) | held | 391 / 871 | 712 | burst 225 / 500 ok, 274 `full`; burst p99 22.7 s |
+| B0-31 (131306) | apac held, term 3 | 22,151 / 30,549 | 30,354 | rehomed on apac; agent pushes p99 49 s; placement-failing half 1,265 `full` |
+| B0-33 (131307) | held | 30,017 / 30,674 | 30,515 | 864 of 12,432 agent pushes ok; 1,207 `/suspect` |
+| B0-35 (131308) | held | 428 / 934 | 690 | test-merge `computed` 10,191, waitMax 17.3 s on site 0 |
+
+At k 1 the queue waits reach `AGENT_WAIT` (30 s) and agent commands are refused `Full`: one shard's validates hold
+pushes back, the leader's admission fills, and every command class waits behind them. These are not the rows as
+written (k 4), so none is judged.
+
+**Design gap (pool-grants, for the parent).** A network whose shards are torn down at k > 1 keeps its pool lease
+until `LOAD_STALE` of later ledger calls, and `PoolLedger::settle` shifts every lease forward past a gap of
+`LEDGER_GAP`, so on a test install with a stream of short-lived networks of one owner the lease never lapses while
+other networks keep calling. DESIGN's lease text says leases "lapse past LOAD_STALE unless renewed"; here they were
+renewed by nobody and still held for over an hour (11:36Z to 13:11Z).
