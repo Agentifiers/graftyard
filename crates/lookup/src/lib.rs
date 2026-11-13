@@ -1008,8 +1008,84 @@ async fn place(
 
 // ---- the `Release` view ----
 
+/// The isolate's genesis and where it came from: the edge's deploy-time binding, or the `Release` view.
+#[derive(Clone)]
+enum Held {
+    Bound(graftyard_release::Genesis),
+    View(graftyard_release::Genesis),
+}
+
 thread_local! {
-    static GENESIS: RefCell<Option<graftyard_release::Genesis>> = const { RefCell::new(None) };
+    static GENESIS: RefCell<Option<Held>> = const { RefCell::new(None) };
+    /// The binding was refused, or the view held another genesis: this isolate reads the view from now on.
+    static BOUND_OFF: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The binding matched the view once (`check_bound`).
+    static CHECKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Seeds the isolate's genesis from the edge's `GRAFTYARD_GENESIS_SIGNED` binding (the signed genesis's stored bytes in
+/// hex, `design/DESIGN.md`, "Install operations", Genesis, step 6), accepted with `accept_genesis` against `anchor`
+/// exactly as the bytes a `Release` member answers are. Only an isolate that holds no genesis and has not refused or
+/// dropped the binding reads it; a binding that is not hex, unsigned, or another install's is refused once, and the
+/// isolate reads the view instead. Returns the refusal.
+pub fn bind_genesis(
+    anchor: &graftyard_release::Anchor,
+    bound: impl FnOnce() -> Option<String>,
+) -> std::result::Result<(), String> {
+    if BOUND_OFF.with(|o| o.get()) || GENESIS.with(|g| g.borrow().is_some()) {
+        return Ok(());
+    }
+    let Some(text) = bound() else { return Ok(()) };
+    let accepted = unhex(text.trim()).ok_or_else(|| "GRAFTYARD_GENESIS_SIGNED is not hex".to_string()).and_then(|b| {
+        graftyard_release::accept_genesis(anchor, &b)
+            .map_err(|e| format!("GRAFTYARD_GENESIS_SIGNED: {}: {e}", e.variant()))
+    });
+    match accepted {
+        Ok(g) => {
+            GENESIS.with(|c| *c.borrow_mut() = Some(Held::Bound(g)));
+            Ok(())
+        }
+        Err(e) => {
+            BOUND_OFF.with(|o| o.set(true));
+            Err(e)
+        }
+    }
+}
+
+/// The genesis this isolate holds, from the binding or the view.
+fn held_genesis() -> Option<graftyard_release::Genesis> {
+    GENESIS.with(|g| g.borrow().clone()).map(|(Held::Bound(g) | Held::View(g))| g)
+}
+
+/// Whether the isolate's genesis came from the binding.
+pub fn genesis_bound() -> bool {
+    GENESIS.with(|g| matches!(*g.borrow(), Some(Held::Bound(_))))
+}
+
+/// A system chain call under the binding's record found no group or failed, which a placement that a later entry
+/// moved (`LeaveEvaluation`) would cause, and so would a `Names` or `jti` shard not created yet. Reads the `Release`
+/// view once and compares: the same genesis keeps the binding for the rest of the isolate; another one replaces it, for
+/// good, and returns true, so the caller retries under the view's record. A failed read keeps the binding and asks
+/// again on the next miss. A genesis from the view, or one already checked, returns false at once.
+pub async fn check_bound(b: &Bindings<'_>, anchor: &graftyard_release::Anchor) -> bool {
+    if !genesis_bound() || CHECKED.with(|c| c.get()) {
+        return false;
+    }
+    let Ok(bytes) = read_genesis(b).await else { return false };
+    settle_bound(graftyard_release::accept_genesis(anchor, &bytes).ok())
+}
+
+/// `check_bound`'s decision on the view it read: `None` (unreadable or refused) keeps the binding; the same genesis
+/// keeps it and marks it checked; another replaces it for good and returns true.
+fn settle_bound(view: Option<graftyard_release::Genesis>) -> bool {
+    let Some(view) = view else { return false };
+    if held_genesis().as_ref() == Some(&view) {
+        CHECKED.with(|c| c.set(true));
+        return false;
+    }
+    BOUND_OFF.with(|o| o.set(true));
+    GENESIS.with(|c| *c.borrow_mut() = Some(Held::View(view)));
+    true
 }
 
 pub fn system_of(chain: ChainId) -> Option<graftyard_types::SystemChain> {
@@ -1032,20 +1108,21 @@ pub async fn read_genesis(b: &Bindings<'_>) -> std::result::Result<Vec<u8>, Stri
     unhex(hex).ok_or_else(|| "the genesis is not hex".into())
 }
 
-/// The accepted genesis, read once per isolate and accepted against the caller's own trust anchor, so a member that
-/// answers with another install's or an unsigned genesis is refused (`design/DESIGN.md`, Shape, the `Release` view).
-/// Milestone 1 builds no entry that changes it.
+/// The accepted genesis: the edge's binding once `bind_genesis` accepted it, else read once per isolate from the
+/// `Release` group and accepted against the caller's own trust anchor, so a member that answers with another install's
+/// or an unsigned genesis is refused (`design/DESIGN.md`, Shape, the `Release` view). Milestone 1 builds no entry that
+/// changes it.
 pub async fn genesis(
     b: &Bindings<'_>,
     anchor: &graftyard_release::Anchor,
 ) -> std::result::Result<graftyard_release::Genesis, String> {
-    if let Some(g) = GENESIS.with(|g| g.borrow().clone()) {
+    if let Some(g) = held_genesis() {
         return Ok(g);
     }
     let bytes = read_genesis(b).await?;
     let g = graftyard_release::accept_genesis(anchor, &bytes)
         .map_err(|e| format!("the Release group's genesis: {}: {e}", e.variant()))?;
-    GENESIS.with(|c| *c.borrow_mut() = Some(g.clone()));
+    GENESIS.with(|c| *c.borrow_mut() = Some(Held::View(g.clone())));
     Ok(g)
 }
 
@@ -1086,6 +1163,126 @@ mod tests {
             assert!(!readable(&v, &keys), "{v}");
         }
         assert_eq!(unreadable()["unsupported"]["family"], 0);
+    }
+
+    /// A signed genesis for install `n` under customer seed `seed`, its `Names` record at `names_gen`.
+    fn signed_genesis(n: u8, seed: &[u8; 32], names_gen: u32) -> (graftyard_release::Genesis, Vec<u8>) {
+        use graftyard_release::*;
+        use graftyard_types::{AccountId, DbId, Region, Site, SiteLink, SystemChain};
+        let install = InstallId(Ulid::new(Timestamp(1_790_000_000_000), [n; 10]));
+        let site = |id: u8, region| Site {
+            id: SiteId(id),
+            script: format!("graft-site-{id}"),
+            account: "acct".into(),
+            region,
+            jurisdiction: None,
+            bucket: format!("graft-packs-{id}"),
+            release: None,
+            link: SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let g = Genesis {
+            install,
+            account: AccountId(DbId(1)),
+            keys: Keys {
+                generation: 0,
+                customer: public_key(seed),
+                vendor: None,
+                release: public_key(&[3; 32]),
+                drain: public_key(&[4; 32]),
+                executor: public_key(&[5; 32]),
+                agents_executor: None,
+                ring: Default::default(),
+            },
+            sites: [site(0, Region::Enam), site(1, Region::Weur), site(2, Region::Apac)].into_iter().collect(),
+            placements: [SystemChain::Release, SystemChain::Names, SystemChain::Tokens, SystemChain::Ids]
+                .into_iter()
+                .map(|c| (c, rec(if c == SystemChain::Names { names_gen } else { 1 }, None)))
+                .collect(),
+            evaluation: false,
+            restore: None,
+        };
+        let bound = Bound { install, group: ChainId::Release, prev: None, parent: None };
+        let mut e = SignedEntry::unsigned(bound, ReleaseEntry::Genesis(Box::new(g.clone())));
+        e.sign(seed);
+        (g, e.encode())
+    }
+
+    fn anchor_for(n: u8, seed: &[u8; 32]) -> graftyard_release::Anchor {
+        graftyard_release::Anchor {
+            install: graftyard_release::InstallId(Ulid::new(Timestamp(1_790_000_000_000), [n; 10])),
+            customer: graftyard_release::public_key(seed),
+        }
+    }
+
+    fn reset_genesis() {
+        GENESIS.with(|g| *g.borrow_mut() = None);
+        BOUND_OFF.with(|o| o.set(false));
+        CHECKED.with(|c| c.set(false));
+    }
+
+    /// The binding is accepted only as a `Release` member's answer is: this install's genesis, signed by its customer
+    /// key. Another install's, another key's, an unsigned one, a flipped byte, or text that is not hex is refused, and
+    /// the isolate then reads the view for good, even when a good binding is offered later.
+    #[test]
+    fn the_genesis_binding_is_accepted_only_against_the_anchor() {
+        let (seed, other) = ([7; 32], [8; 32]);
+        let a = anchor_for(1, &seed);
+        let (g, good) = signed_genesis(1, &seed, 1);
+        let unsigned = {
+            let mut e = graftyard_release::SignedEntry::decode(&good).unwrap();
+            e.sigs.clear();
+            e.encode()
+        };
+        let mut flipped = good.clone();
+        let mid = flipped.len() / 2;
+        flipped[mid] ^= 1;
+        let bad = [
+            hex(&signed_genesis(2, &seed, 1).1),
+            hex(&signed_genesis(1, &other, 1).1),
+            hex(&unsigned),
+            hex(&flipped),
+            "zz".into(),
+        ];
+        for b in bad {
+            reset_genesis();
+            assert!(bind_genesis(&a, || Some(b.clone())).is_err(), "{}", &b[..8.min(b.len())]);
+            assert!(!genesis_bound() && held_genesis().is_none());
+            assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+            assert!(!genesis_bound(), "a refused binding is not retried in the same isolate");
+        }
+        reset_genesis();
+        assert!(bind_genesis(&a, || None).is_ok());
+        assert!(held_genesis().is_none(), "an absent binding reads the view");
+        assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+        assert!(genesis_bound());
+        assert_eq!(held_genesis(), Some(g));
+    }
+
+    /// A miss under the binding compares it with the view: an unreadable view keeps it and asks again later; the same
+    /// genesis keeps it and is not read again; another one (a moved placement) replaces it for good, so the caller
+    /// retries under the view's record.
+    #[test]
+    fn a_miss_under_the_binding_defers_to_a_different_view() {
+        let seed = [7; 32];
+        let a = anchor_for(1, &seed);
+        let (g, good) = signed_genesis(1, &seed, 1);
+        let (moved, _) = signed_genesis(1, &seed, 2);
+        reset_genesis();
+        bind_genesis(&a, || Some(hex(&good))).unwrap();
+        assert!(!settle_bound(None));
+        assert!(genesis_bound() && !CHECKED.with(|c| c.get()), "an unreadable view keeps the binding unchecked");
+        assert!(!settle_bound(Some(g.clone())));
+        assert!(genesis_bound() && CHECKED.with(|c| c.get()), "the same genesis keeps the binding, checked");
+        reset_genesis();
+        bind_genesis(&a, || Some(hex(&good))).unwrap();
+        assert!(settle_bound(Some(moved.clone())), "another genesis tells the caller to retry");
+        assert!(!genesis_bound());
+        assert_eq!(held_genesis(), Some(moved.clone()));
+        let names = held_genesis().unwrap().placement(graftyard_types::SystemChain::Names).unwrap().generation;
+        assert_eq!(names, 2, "system chains now use the view's record");
+        assert!(bind_genesis(&a, || Some(hex(&good))).is_ok());
+        assert_eq!(held_genesis(), Some(moved), "the binding never comes back in this isolate");
     }
 
     fn rec(generation: u32, moving_from: Option<PlacementRecord>) -> PlacementRecord {

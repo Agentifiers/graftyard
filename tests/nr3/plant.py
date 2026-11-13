@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`) and
-the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`). Plants one mutant at a time,
+"""narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
+the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
+(`crates/lookup`), and F67 rule 11 (`crates/raft`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -15,7 +16,10 @@ INSTALL = 'crates/raft/src/member/install.rs'
 LEADER = 'crates/raft/src/member/leader.rs'
 FAM = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
+LOOKUP = 'crates/lookup/src/lib.rs'
+ELECTION = 'crates/raft/src/member/election.rs'
 RAFT = ('graftyard-raft', '--test', 'leadership')
+LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
 
 MUTANTS = [
@@ -48,6 +52,22 @@ MUTANTS = [
      '            Some(at) if now < at + NARROW_EVERY_MS => Some(at + NARROW_EVERY_MS - now),', '', SITE),
     ('shared: answers in one input are shared across floors', HOST,
      '    let key = format!("{floor} {q}");', '    let key = format!("{} {q}", floor * 0);', SITE),
+    # Genesis on the edge (`crates/lookup`: `bind_genesis`, `settle_bound`).
+    ('genesis: the binding is taken without accept_genesis (any install, any signer)', LOOKUP,
+     '        graftyard_release::accept_genesis(anchor, &b)\n            .map_err(|e| format!("GRAFTYARD_GENESIS_SIGNED: {}: {e}", e.variant()))',
+     '        graftyard_release::SignedEntry::decode(&b).map_err(|e| e.to_string()).and_then(|e| match e.body { graftyard_release::ReleaseEntry::Genesis(g) => Ok(*g), _ => Err("not a genesis".into()) }).map(|g| { let _ = anchor; g })', LK),
+    ('genesis: a refused binding is tried again on the next request', LOOKUP,
+     '        Err(e) => {\n            BOUND_OFF.with(|o| o.set(true));\n            Err(e)\n        }',
+     '        Err(e) => Err(e),', LK),
+    ('genesis: a different view never replaces the binding', LOOKUP,
+     '    BOUND_OFF.with(|o| o.set(true));\n    GENESIS.with(|c| *c.borrow_mut() = Some(Held::View(view)));\n    true',
+     '    let _ = view;\n    false', LK),
+    ('genesis: an unreadable view drops the binding', LOOKUP,
+     '    let Some(view) = view else { return false };',
+     '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
+    # Liveness (F67 rule 11).
+    ('raft: an emptied read-index batch stays in flight', INSTALL,
+     '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')

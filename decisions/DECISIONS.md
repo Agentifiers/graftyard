@@ -2430,6 +2430,34 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65).
 
 **Flip.** A hosted run where the grant stage (`readStages.grant`, `tier_grant`) rather than the build wait sets the learner p99, which would make sharing or shortening the read-index round the next change. A narrow build that costs a learner more than about 20% of its CPU at journey 9, which would raise `NARROW_EVERY_MS` again.
 
+### The edge carries its signed genesis as a deploy-time variable, and a wrong placement sends it to the `Release` view, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved by the operator with the conditions below.
+
+**Decision.** The deploy tool writes the committed signed genesis (the file whose SHA-256 is `install.toml`'s `genesis`) into the edge script as `GRAFTYARD_GENESIS_SIGNED`, hex, and refuses any other file. An edge isolate accepts it once with `accept_genesis` against its own anchor, as it accepts a `Release` member's answer; an absent, unsigned, malformed, or other-install binding is refused for the isolate's lifetime and the isolate reads the view. A system chain call under the bound record that finds no group or fails, and a system write that may create a group, first read the view once (`graftyard_lookup::check_bound`): the same genesis keeps the binding for the isolate, another replaces it for good and the call is retried under the view's record. Site scripts are unchanged ("Install operations", Genesis, step 6).
+
+**Why.** On a clean 500-agent run the API p99 was 3.3 s, set by cold edge isolates whose `Release` genesis, token, name, `Placement`, and `Authz` reads took 1.2 to 3.8 s before the tier read; the `Release` group's follower answered 3,566 reads at p99 1.87 s [measured, `tests/am1/results/narrow-reads-3.md`]. The genesis never changes for an install (a restore is a new install), and the edge already ships its anchor, so the bytes add no trust: a forged binding is refused by the same check.
+
+**Beat.** Caching the view longer (the cold isolate still reads it once, which is the tail). A site-script variable too (a site day for every script, for reads sites make rarely). Trusting the binding without a fallback, which a `LeaveEvaluation` that moves a system placement would leave pointing at the old groups.
+
+**Evidence.** `crates/lookup` tests `the_genesis_binding_is_accepted_only_against_the_anchor` (another install, another key, unsigned, a flipped byte, not hex: each refused and never retried) and `a_miss_under_the_binding_defers_to_a_different_view`; `tests/nr3/plant.py` mutants 11 to 14.
+
+**Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
+
+### F67 rule 11: every unanswered read-index batch is a failed call, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/m0/results/f67.md`, rule 11).
+
+**Decision.** A follower drops an in-flight read-index batch once every read in it has failed, so the next read goes out as a new batch, whose own failure makes the follower forget the leader again (F67 rule 2).
+
+**Why.** With 30% of follower reads answered later through `fresh_after` (the narrow answer cache), the kept test `a_read_only_group_elects_off_a_half_hung_leader` failed at seed 9 on the merged tree: an emptied batch stayed in flight and was resent forever to a half-hung leader; after that leader's next append the follower followed it again, and later reads failed as queued behind the batch, which is no failed call, so it never forgot the leader and never campaigned [measured, simulator].
+
+**Beat.** Rule 10, reports during a transfer not barring its leader in pre-vote: it moved live seed 11713 from 31.1 s to 14.6 s, but rule 11 alone does the same (14.6 s), and it left seed 11961 at 40.4 s, so it was dropped.
+
+**Evidence.** `crates/raft/tests/leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` fails without the fix ("round 1: the read failed naming A"); `tests/nr3/plant.py` mutant 15. The live bound is still exceeded on some seeds by this tree and by main (`tests/am1/results/narrow-reads-3.md`, "Liveness"; F67).
+
+**Flip.** A follower that should keep a batch it has resent, such as one whose leader answers late but answers.
+
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
 **Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.

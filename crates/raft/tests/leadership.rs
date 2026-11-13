@@ -1344,3 +1344,32 @@ fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
     });
     assert!(!stale, "B granted its new read below the write A acknowledged before it");
 }
+
+/// A leader whose read-index answers to B are lost, while its appends still arrive (a half-hung leader for reads).
+/// B's first unanswered batch is a failed call: B forgets A and fails the read naming no leader. A's next append
+/// teaches B the leader again, and a later read's unanswered batch must count as a failed call too. Before the fix the
+/// emptied batch stayed in flight and was resent forever, the later read failed as queued behind it, naming A, and B
+/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 11, liveness seed 9
+/// once 30% of follower reads are answered later).
+#[test]
+fn every_unanswered_read_index_batch_is_a_failed_call() {
+    let mut c = Cluster::new(76);
+    c.elect(A);
+    c.sync(A);
+    let lost = |e: &Envelope<KvEvent>| !(e.to == B && matches!(e.msg, Message::ReadIndexRes { .. }));
+    let failed_naming = |c: &Cluster, id| {
+        c.resolutions.iter().find_map(|(s, r)| match r {
+            Resolution::Read { id: i, result: Err(nl) } if *s == B && *i == id => Some(nl.leader),
+            _ => None,
+        })
+    };
+    for round in 0..2 {
+        // A write makes A append, which teaches B its leader again after the first round forgot it.
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(round + 1)), put("k", "v"))).expect("A leads");
+        c.run(1_000, 100, lost);
+        assert_eq!(c.m(B).leader(), Some(A), "round {round}: B follows A");
+        let id = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+        c.run(4_000, 100, lost);
+        assert_eq!(failed_naming(&c, id), Some(None), "round {round}: the read failed naming no leader");
+    }
+}

@@ -499,18 +499,22 @@ async fn placement(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Option<
 }
 
 /// A `fresh` read of a system chain's group, found by its record in the `Release` view. A shard with no group holds
-/// no rows, so it reads as empty (`null`).
+/// no rows, so it reads as empty (`null`). A miss under the edge's genesis binding is retried once under the view's
+/// record when the view holds another genesis (`Ctx::rebind`).
 async fn system_read(
     c: &Ctx<'_>,
     chain: ChainId,
     q: serde_json::Value,
 ) -> std::result::Result<serde_json::Value, String> {
-    let record = c.system_record(chain).await?;
     let body = json!({ "q": q }).to_string();
-    Ok(match graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes()).await? {
-        Some((v, _, _)) => v["value"].clone(),
-        None => serde_json::Value::Null,
-    })
+    loop {
+        let record = c.system_record(chain).await?;
+        match graftyard_lookup::call_opt(&c.bindings(), chain, &record, "/read", body.as_bytes()).await {
+            Ok(Some((v, _, _))) => return Ok(v["value"].clone()),
+            _ if c.rebind().await => continue,
+            r => return r.map(|_| serde_json::Value::Null),
+        }
+    }
 }
 
 // ---- responses ----
@@ -904,6 +908,17 @@ impl Ctx<'_> {
         }
         let anchor = self.anchor.as_ref().ok_or("this edge has no trust anchor")?;
         graftyard_lookup::system_record(&self.bindings(), anchor, chain).await
+    }
+
+    /// After a system chain call found no group or failed, and before creating a system group: whether the isolate's
+    /// genesis came from the `GRAFTYARD_GENESIS_SIGNED` binding and the `Release` view now holds another, so the
+    /// caller asks `system_record` again and retries under the view's record (`graftyard_lookup::check_bound`). The
+    /// view is read at most once per isolate when it matches.
+    async fn rebind(&self) -> bool {
+        match &self.anchor {
+            Some(a) => graftyard_lookup::check_bound(&self.bindings(), a).await,
+            None => false,
+        }
     }
 }
 
@@ -2190,6 +2205,14 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         (Ok(i), Ok(k)) => Anchor::from_vars(&i.to_string(), &k.to_string()).ok(),
         _ => None,
     };
+    // The signed genesis the deploy tool wrote, accepted once per isolate against the anchor; a refused one is logged
+    // and the isolate reads the `Release` view ("Install operations", Genesis, step 6).
+    if let Some(a) = &anchor
+        && let Err(e) =
+            graftyard_lookup::bind_genesis(a, || env.var("GRAFTYARD_GENESIS_SIGNED").ok().map(|v| v.to_string()))
+    {
+        console_error!("{e}");
+    }
     graftyard_lookup::set_colo(colo_id(&req));
     let c = Ctx {
         env: &env,
