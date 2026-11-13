@@ -259,7 +259,8 @@ function eventText(e: PullEvent): ReactNode {
       return (
         <>
           merged commit <code className="font-mono">{e.commit_id.slice(0, 7)}</code> into{" "}
-          <BranchName>{e.base_ref}</BranchName> ({e.merge_method})
+          <BranchName>{e.base_ref}</BranchName>
+          {e.merge_method && ` (${e.merge_method})`}
         </>
       );
     case "closed":

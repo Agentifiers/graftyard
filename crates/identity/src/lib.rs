@@ -29,6 +29,7 @@ mod names;
 pub mod oidc;
 mod org;
 mod overlay;
+pub mod password;
 mod placement;
 pub mod sealed;
 pub mod stateless;

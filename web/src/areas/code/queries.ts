@@ -21,10 +21,10 @@ export const resolveQuery = ({ owner, repo, splat }: Repo & { splat: string }) =
 
 export const readmeQuery = ({ owner, repo, ref }: Repo & { ref?: string }) =>
   queryOptions({
-    queryKey: ["repos", owner, repo, "readme", ref ?? null],
+    queryKey: ["_t", "repos", owner, repo, "readme", ref ?? null],
     queryFn: ({ signal }) =>
       unwrap(
-        api.GET("/repos/{owner}/{repo}/readme", {
+        ui.GET("/repos/{owner}/{repo}/readme", {
           params: { path: { owner, repo }, query: ref ? { ref } : {} },
           signal,
         }),

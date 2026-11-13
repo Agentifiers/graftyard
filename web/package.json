@@ -6,7 +6,7 @@
     "dev": "vite dev --port 3000",
     "build": "vite build",
     "preview": "node ./scripts/preview.mjs",
-    "typecheck": "tsr generate && tsrs --noEmit --pretty false && node ./scripts/check-nav.mjs",
+    "typecheck": "tsr generate && tsrs --noEmit --pretty false && node ./scripts/check-nav.mjs && node ./scripts/check-persisted.mjs",
     "gen:api": "node ./scripts/gen-api.mjs",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",

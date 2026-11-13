@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -8,14 +9,7 @@ import { LabelBadge, UserAvatar } from "@/components/github";
 import { PickerSection } from "./bits";
 import { linkedIssues } from "./merge-rules";
 import { useAssignee, useReviewRequest, useSetLabels } from "./mutations";
-import {
-  assigneesQuery,
-  labelsQuery,
-  pullQuery,
-  requestedReviewersQuery,
-  reviewsQuery,
-  teamsQuery,
-} from "./queries";
+import { assigneesQuery, labelsQuery, pullQuery, reviewsQuery, teamsQuery } from "./queries";
 import { verdicts } from "./merge-rules";
 
 type Props = SlotProps["pull-sidebar"];
@@ -27,23 +21,40 @@ const VERDICT: Record<string, { label: string; tone: string }> = {
   DISMISSED: { label: "Dismissed", tone: "text-muted-foreground" },
 };
 
-// Reviewers, assignees, labels, and the issues this pull request closes.
+// Reviewers, assignees, labels, and the issues this pull request closes. The sections
+// draw from the pull itself and its reviews; each picker reads its candidates only once
+// opened, so a candidate list the server does not serve fails inside the picker.
 function PullSidebar(props: Props) {
   const pull = { owner: props.owner, repo: props.repo, number: props.number };
   const { data: pr } = useSuspenseQuery(pullQuery(pull));
-  const { data: requested } = useSuspenseQuery(requestedReviewersQuery(pull));
   const { data: reviews } = useSuspenseQuery(reviewsQuery(pull));
-  const { data: people } = useSuspenseQuery(assigneesQuery(pull));
-  const { data: teams } = useSuspenseQuery(teamsQuery(pull));
-  const { data: labels } = useSuspenseQuery(labelsQuery(pull));
+  const [opened, setOpened] = useState({ reviewers: false, assignees: false, labels: false });
+  const opener = (key: keyof typeof opened) => (open: boolean) => {
+    if (open) setOpened((o) => (o[key] ? o : { ...o, [key]: true }));
+  };
+  const peopleQ = useQuery({
+    ...assigneesQuery(pull),
+    enabled: opened.reviewers || opened.assignees,
+  });
+  const teamsQ = useQuery({ ...teamsQuery(pull), enabled: opened.reviewers });
+  const labelsQ = useQuery({ ...labelsQuery(pull), enabled: opened.labels });
   const request = useReviewRequest(pull);
   const assign = useAssignee(pull);
   const setLabels = useSetLabels(pull);
   const v = verdicts(reviews);
   const open = pr.state === "open";
 
+  const requested = { users: pr.requested_reviewers ?? [], teams: pr.requested_teams ?? [] };
   const reviewerLogins = new Set([...requested.users.map((u) => u.login), ...v.keys()]);
-  const candidates = people.filter((u) => u.login !== pr.user.login);
+  const people = peopleQ.data;
+  const candidates = people?.filter((u) => u.login !== pr.user.login);
+  const reviewerItems =
+    candidates && teamsQ.data
+      ? [
+          ...candidates.map((u) => ({ kind: "user" as const, user: u })),
+          ...teamsQ.data.map((t) => ({ kind: "team" as const, team: t })),
+        ]
+      : undefined;
   const chosen = new Set(pr.labels.map((l) => l.name));
 
   return (
@@ -52,10 +63,9 @@ function PullSidebar(props: Props) {
         title="Reviewers"
         label="Request reviewers"
         disabled={!open}
-        items={[
-          ...candidates.map((u) => ({ kind: "user" as const, user: u })),
-          ...teams.map((t) => ({ kind: "team" as const, team: t })),
-        ]}
+        items={reviewerItems}
+        failed={peopleQ.isError || teamsQ.isError}
+        onOpenChange={opener("reviewers")}
         keyOf={(x) => (x.kind === "user" ? x.user.login : `graftyard/${x.team.slug}`)}
         render={(x) =>
           x.kind === "user" ? (
@@ -123,6 +133,8 @@ function PullSidebar(props: Props) {
         title="Assignees"
         label="Assign people"
         items={people}
+        failed={peopleQ.isError}
+        onOpenChange={opener("assignees")}
         keyOf={(u) => u.login}
         render={(u) => (
           <>
@@ -148,7 +160,9 @@ function PullSidebar(props: Props) {
       <PickerSection
         title="Labels"
         label="Apply labels"
-        items={labels}
+        items={labelsQ.data}
+        failed={labelsQ.isError}
+        onOpenChange={opener("labels")}
         keyOf={(l) => l.name}
         render={(l) => <LabelBadge label={l} />}
         selected={(l) => chosen.has(l.name)}

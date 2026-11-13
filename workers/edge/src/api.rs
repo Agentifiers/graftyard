@@ -1128,7 +1128,12 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
     let session = req.headers().get("x-graftyard-agent-session")?;
     let body: Value = req.json().await.unwrap_or(Value::Null);
-    let q = body["query"].as_str().unwrap_or("").to_owned();
+    // A persisted document by hash (the web app's); a request that carries its own `query` is unchanged.
+    let q = match crate::ui::persisted(&body) {
+        Ok(Some(text)) => text,
+        Ok(None) => body["query"].as_str().unwrap_or("").to_owned(),
+        Err(reply) => return Ok(reply),
+    };
     let vars = body["variables"].as_object().cloned();
     let gq = match Gql::parse(&q, vars.clone(), body["operationName"].as_str().map(str::to_owned)) {
         Ok(r) => r,
