@@ -9,6 +9,7 @@ import { failed, TextField } from "@/areas/account/kit";
 import { call, ValidationError } from "@/areas/account/queries";
 import { ui } from "@/areas/account/ui-api";
 import { ApiError } from "@/api/client";
+import { MOCK_API } from "@/mocks/browser";
 import { Alert, AlertTitle } from "@/components/reui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -52,7 +53,7 @@ function LoginPage() {
       <AuthCard
         icon={CheckmarkCircle02Icon}
         title={`Signed in as ${step.login}`}
-        subtitle="The mock keeps you signed in as mira either way."
+        subtitle={MOCK_API ? "The mock keeps you signed in as mira either way." : undefined}
       >
         <div className="flex flex-col gap-2" data-testid="signed-in">
           <Button render={<a href={return_to ?? "/"} />}>Continue</Button>

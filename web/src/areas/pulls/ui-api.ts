@@ -39,7 +39,7 @@ type Base = { id: number; actor: User; created_at: string };
 // Events GHES puts on a pull request's timeline that the issue timeline does not own.
 export type PullEvent = Base &
   (
-    | { event: "merged"; commit_id: string; merge_method: MergeMethod; base_ref: string }
+    | { event: "merged"; commit_id: string; merge_method: MergeMethod | null; base_ref: string }
     | { event: "closed" | "reopened" | "ready_for_review" | "convert_to_draft" }
     | { event: "renamed"; rename: { from: string; to: string } }
     | { event: "base_ref_changed"; base: { from: string; to: string } }
@@ -84,6 +84,11 @@ type PR = Schemas["pull-request"];
 
 export type UiPaths = {
   "/repos/{owner}/{repo}/pulls/summary": { get: Get<RepoPath, PullSummary[]> };
+  // The diff from the merge base and the commits, oldest first, in their GHES shapes.
+  "/repos/{owner}/{repo}/pulls/{pull_number}/files": {
+    get: Get<PullPath, Schemas["diff-entry"][]>;
+  };
+  "/repos/{owner}/{repo}/pulls/{pull_number}/commits": { get: Get<PullPath, Schemas["commit"][]> };
   "/repos/{owner}/{repo}/pulls/{pull_number}/events": { get: Get<PullPath, PullEvent[]> };
   "/repos/{owner}/{repo}/pulls/{pull_number}/threads": { get: Get<PullPath, ThreadState[]> };
   "/repos/{owner}/{repo}/pulls/{pull_number}/merge-requirements": {

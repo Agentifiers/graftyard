@@ -493,14 +493,16 @@ export type ProvenanceSource =
   | { type: "ai_note"; note: string }
   | { type: "session"; session: string };
 
+// The edge serves graftyard_trust today; the other fields arrive with the agent layer's
+// later work packages, so a reply may leave them out.
 export type AgentPullFields = {
   graftyard_trust: TrustView;
-  graftyard_agent: { app_id: number; session: string | null; requester: User | null } | null;
-  graftyard_overlaps: {
+  graftyard_agent?: { app_id: number; session: string | null; requester: User | null } | null;
+  graftyard_overlaps?: {
     with: { ref: string; pr_number: number | null; verdict: Verdict }[];
     same_issue: number[];
-  };
-  graftyard_provenance: { sessions: ProvenanceSource[] };
+  } | null;
+  graftyard_provenance?: { sessions: ProvenanceSource[] } | null;
 };
 export type AgentPull = Schemas["pull-request"] & AgentPullFields;
 export type AgentIssue = Schemas["issue"] & { graftyard_trust: TrustView };

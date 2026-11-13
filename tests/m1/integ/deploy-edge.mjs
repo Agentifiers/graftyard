@@ -2,7 +2,7 @@
 // REGISTRY_<n>, and SHARD_<n> binding per site with script_name, and BUCKET_<n> per site. Usage:
 //   node tests/m1/integ/deploy-edge.mjs <sites.json> <name> [--test-faults] [--genesis <genesis.json>]
 //                                       [--anchor <install.toml>] [--genesis-signed <genesis.signed>] [--no-shard]
-//                                       [--ops <graft-ops name>] [--var K=V ...]
+//                                       [--ops <graft-ops name>] [--var K=V ...] [--web <web/dist/client>]
 // `--genesis` (test-faults only) is the test install's stand-in for the Release view; `--anchor` sets the trust anchor
 // a product edge accepts the Release group's genesis against. `--genesis-signed` (with `--anchor`) writes the committed
 // signed genesis into GRAFTYARD_GENESIS_SIGNED, hex, after checking its SHA-256 is install.toml's `genesis` digest,
@@ -57,9 +57,12 @@ const cfg = {
   compatibility_date: "2026-10-01",
   workers_dev: true,
   preview_urls: false,
-  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]]
+  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"], ["SEARCH", "SearchShard"], ["INBOX", "Inbox"]]
     .filter(([b]) => !(noShard && b === "SHARD")).map(([b, cls]) => ({ name: `${b}_${s.id}`, class_name: cls, script_name: s.script }))) },
   r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
+  // `--web <dir>`: the web app's build (`npm run build` in web/, `VITE_MOCK_API=false`) as the `ASSETS` binding, with
+  // the edge run first, so every path still reaches the edge (design/SHARED.md, "How the edge serves it").
+  ...(flag("--web") ? { assets: { directory: resolve(flag("--web")), binding: "ASSETS", run_worker_first: true } } : {}),
   // `--ops <name>`: the `fetch()` binding to `graft-ops` that mints installation tokens (M3-WP4).
   ...(flag("--ops") ? { services: [{ binding: "OPS", service: flag("--ops") }] } : {}),
   vars: {

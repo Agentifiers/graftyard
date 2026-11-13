@@ -19,7 +19,6 @@ import { UserAvatar } from "@/components/github";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { decodeText } from "./base64";
 import { Directory } from "./directory";
 import {
   branchesQuery,
@@ -57,7 +56,7 @@ function Overview({ owner, repo }: Repo) {
             void navigate({ to: "/$owner/$repo/tree/$", params: { owner, repo, _splat: r } })
           }
         />
-        <Region name="branch counts" fallback={null}>
+        <Region name="branch counts" fallback={null} hideNotFound>
           <RefCounts owner={owner} repo={repo} />
         </Region>
         <Link
@@ -107,7 +106,6 @@ function RefCounts({ owner, repo }: Repo) {
 
 function Readme({ owner, repo }: Repo) {
   const { data } = useSuspenseQuery(readmeQuery({ owner, repo }));
-  const text = decodeText(data.content) ?? "";
   return (
     <Panel
       title={
@@ -118,7 +116,7 @@ function Readme({ owner, repo }: Repo) {
       }
     >
       <div data-testid="readme">
-        <MarkdownBody text={text} />
+        <MarkdownBody text={data.text} />
       </div>
     </Panel>
   );

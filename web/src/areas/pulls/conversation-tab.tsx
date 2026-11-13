@@ -101,6 +101,18 @@ export function ConversationTab({
           </ReviewEntry>
         ),
       })),
+    // A thread whose review is not listed still shows, on its own, at its first comment.
+    ...[...threadsByReview]
+      .filter(([id]) => !model.reviews.some((r) => r.id === id))
+      .flatMap(([, ts]) => ts)
+      .map((t) => ({
+        key: `thread-${t.root.id}`,
+        at: t.root.created_at,
+        author: t.root.user,
+        node: (
+          <ThreadView pull={pull} thread={t} viewer={model.viewer.login} showContext open={open} />
+        ),
+      })),
     ...events.map((e) => ({
       key: `event-${e.id}`,
       at: e.created_at,
@@ -259,7 +271,8 @@ function eventText(e: PullEvent): ReactNode {
       return (
         <>
           merged commit <code className="font-mono">{e.commit_id.slice(0, 7)}</code> into{" "}
-          <BranchName>{e.base_ref}</BranchName> ({e.merge_method})
+          <BranchName>{e.base_ref}</BranchName>
+          {e.merge_method && ` (${e.merge_method})`}
         </>
       );
     case "closed":

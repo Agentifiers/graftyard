@@ -52,7 +52,7 @@ export function Slot<K extends SlotName>({
 }) {
   return (all.filter((e) => e.slot === name) as unknown as Entry<K>[]).map(
     ({ region, Component }) => (
-      <Region key={region} name={region} fallback={bare ? null : undefined}>
+      <Region key={region} name={region} fallback={bare ? null : undefined} hideNotFound>
         <Component {...props} />
       </Region>
     ),

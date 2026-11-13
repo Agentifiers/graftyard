@@ -1287,3 +1287,33 @@ fn activity_and_search_replies_render_ghes_objects() {
     let bad = activity::search_unsupported("language:rust");
     keep_rest("search-issues-422", "/search/issues", bad.status, bad.value().clone());
 }
+
+/// An install with no `eu` site (`graft-m4a`): EU shards bind on the `weur` and `eeur` sites, each generation on the
+/// next, while one that has `eu` sites keeps them there; and a shard's name parses back to itself.
+#[test]
+fn eu_shards_bind_on_eu_regions_when_no_site_is_eu_and_names_round_trip() {
+    let site = |id: u8, region, jurisdiction| Site {
+        id: SiteId(id),
+        script: format!("s{id}"),
+        account: "a".into(),
+        region,
+        jurisdiction,
+        bucket: format!("b{id}"),
+        release: None,
+        link: SiteLink::Binding { member_class: "Member".into() },
+        spare: false,
+    };
+    let m4a = SiteTable(vec![site(0, Region::Enam, None), site(1, Region::Weur, None), site(2, Region::Apac, None)]);
+    let k = |generation| SearchShard { domain: Domain::Eu, shard: 3, generation };
+    assert_eq!((k(1).site(&m4a, &[]), k(2).site(&m4a, &[])), (Some(SiteId(1)), Some(SiteId(1))));
+    assert_eq!(k(1).site(&m4a, &[SiteId(1)]), None, "no EU-region site left");
+    let d = SearchShard { domain: Domain::Default, shard: 3, generation: 2 };
+    assert_eq!(d.site(&m4a, &[]), Some(SiteId(1)), "Default still takes any site");
+    let with_eu = Bed::sites();
+    assert_eq!(k(1).site(&with_eu, &[]), Some(SiteId(3)), "an install with eu sites uses only those");
+    for s in [k(1), k(7), d, SearchShard { domain: Domain::Apac, shard: 15, generation: 40 }] {
+        assert_eq!(SearchShard::parse(&s.do_name()), Some(s));
+    }
+    assert_eq!(SearchShard::parse("search#eu#3"), None);
+    assert_eq!(SearchShard::parse("search#mars#3#1"), None);
+}

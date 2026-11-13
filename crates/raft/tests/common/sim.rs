@@ -103,7 +103,7 @@ pub struct Faults {
     pub drain: u64,
     /// When a member crashes, the most it stays down, in ms (4,000 unless set): an isolate eviction is back at once.
     pub down_max_ms: u64,
-    /// Gray faults may also be `HalfHung` (300 per mille).
+    /// Gray faults may also be `HalfHung`.
     pub half_hung: bool,
 }
 
@@ -183,6 +183,10 @@ pub enum FaultKind {
     /// sees a missed deadline (B0-07's hung calls, `drop_append_reply`). An edge's `suspect` to the site still starts
     /// a campaign there; the edge never hears the verdict.
     HalfHung(u64),
+    /// The site's event loop is behind (B0-02's lagging leader, `tests/m0/results/carried-8.md`): its clock reads
+    /// the last whole 100 ms tick, as workerd's clamped `Date.now()` does, and each storage confirm, with this chance per
+    /// mille, runs 200 to 500 ms late: under `confirm_p99_ms`, so the confirm rule never trips on it.
+    LoopLag(u64),
 }
 
 /// The hosted edge's lookup (`crates/lookup`), which the default simulator does not model (F67).
@@ -368,6 +372,10 @@ pub struct Stats {
     /// `suspect` reports the edge's damping held back.
     pub damped: u64,
     pub drains: u64,
+    /// AppendEntries with entries that left for a member while an earlier call to it was still pending (PIPELINE),
+    /// and pipelined calls a member received after a later round from the same leader instance, or twice.
+    pub pipelined: u64,
+    pub late_appends: u64,
 }
 
 pub struct Sim {
@@ -400,9 +408,17 @@ pub struct Sim {
     keys: usize,
     /// Per-member clock skew in ms.
     skew: [i64; 3],
+    /// Per member, the latest clock it read.
+    clock_seen: std::cell::Cell<[u64; 3]>,
     /// Gray faults: scheduled or drawn.
     pub site_faults: Vec<SiteFault>,
     pending_calls: BTreeMap<CallKey, PendingCall>,
+    /// Per (leader, member, boot, term), the newest AppendEntries round delivered.
+    append_seen: BTreeMap<(SiteId, SiteId, u64, u64), u64>,
+    /// Each pending AppendEntries call's last index.
+    append_prev: BTreeMap<CallKey, Index>,
+    /// Pipelined calls, so their late or duplicate arrivals are counted.
+    piped: BTreeSet<CallKey>,
     /// Per site: when its last storage confirm ends. Its outputs leave no earlier (the output gate).
     gate: [Timestamp; 3],
     confirm_ends: Vec<ConfirmEnd>,
@@ -476,8 +492,12 @@ impl Sim {
             applied_at: BTreeMap::new(),
             keys,
             skew: [0; 3],
+            clock_seen: std::cell::Cell::new([0; 3]),
             site_faults: Vec::new(),
             pending_calls: BTreeMap::new(),
+            append_seen: BTreeMap::new(),
+            append_prev: BTreeMap::new(),
+            piped: BTreeSet::new(),
             gate: [Timestamp(0); 3],
             confirm_ends: Vec::new(),
             generation: [0; 3],
@@ -567,6 +587,24 @@ impl Sim {
             self.stats.messages += 1;
             let from = env.from;
             let leave = if early { self.now } else { self.now.max(self.gate[from.0 as usize]) };
+            if let Message::Append(a) = &env.msg
+                && !a.entries.is_empty()
+            {
+                // Pipelined: it starts right where a call to the same member, still pending, ends.
+                let (f, t, prev) = (env.from, env.to, a.prev_index);
+                let behind = self
+                    .append_prev
+                    .iter()
+                    .any(|(k, through)| k.0 == f && k.1 == t && *through == prev && self.pending_calls.contains_key(k));
+                if behind && let Some(key) = request_key(&env) {
+                    self.stats.pipelined += 1;
+                    self.piped.insert(key);
+                }
+                self.append_prev.retain(|k, _| self.pending_calls.contains_key(k));
+                if let Some(key) = request_key(&env) {
+                    self.append_prev.insert(key, Index(prev.0 + a.entries.len() as u64));
+                }
+            }
             if let Some(key) = request_key(&env)
                 && let Some(failure) = env.failure(true)
             {
@@ -626,8 +664,20 @@ impl Sim {
     }
 
     /// The member's own clock: the global clock plus a fixed skew of up to +-SKEW_MS, under DRIFT.
+    ///
+    /// A site under `LoopLag` reads the last whole tick, as workerd's clamp reads the overdue tick's deadline, and never
+    /// earlier than it read before, so its clock stays monotonic and within DRIFT of the others.
     pub fn clock(&self, s: SiteId) -> Timestamp {
-        Timestamp((self.now.0 as i64 + self.skew[s.0 as usize]) as u64)
+        let i = s.0 as usize;
+        let t = (self.now.0 as i64 + self.skew[i]) as u64;
+        let t = match self.fault_on(s) {
+            Some(FaultKind::LoopLag(_)) => t / 100 * 100,
+            _ => t,
+        };
+        let mut seen = self.clock_seen.get();
+        seen[i] = seen[i].max(t);
+        self.clock_seen.set(seen);
+        Timestamp(seen[i])
     }
 
     /// Runs `f` on member `s`, persists its `Ready`, sends its outputs, and returns the reply and resolutions.
@@ -666,10 +716,10 @@ impl Sim {
         let (reply, mut out) = ready.persist(&mut pending);
         if has_writes {
             let mut ms = 2 + self.rng.below(20);
-            if let Some(FaultKind::SlowConfirm(p, slow)) = self.fault_on(s)
-                && self.rng.chance(p)
-            {
-                ms = slow;
+            match self.fault_on(s) {
+                Some(FaultKind::SlowConfirm(p, slow)) if self.rng.chance(p) => ms = slow,
+                Some(FaultKind::LoopLag(p)) if self.rng.chance(p) => ms += 200 + self.rng.below(300),
+                _ => {}
             }
             let Slot::Up(m) = &mut self.slots[i] else { unreachable!() };
             let id = m.confirm_begin(now);
@@ -921,10 +971,11 @@ impl Sim {
             return;
         }
         let site = SITES[self.rng.below(3) as usize];
-        let kind = match self.rng.below(if self.faults.half_hung { 4 } else { 3 }) {
+        let kind = match self.rng.below(if self.faults.half_hung { 5 } else { 4 }) {
             0 => FaultKind::Calls(300),
-            1 => FaultKind::SlowConfirm(300, 1_000),
+            1 => FaultKind::SlowConfirm(300, 1_050),
             2 => FaultKind::FailWrites(300),
+            3 => FaultKind::LoopLag(300),
             _ => FaultKind::HalfHung(800),
         };
         // A half-hung site lasts 30 to 90 s, longer than any one timer of the protocol, so a stuck state shows as a
@@ -1006,6 +1057,16 @@ impl Sim {
                 )
             {
                 eprintln!("{} {from:?} -> {to:?} {msg:?}", self.now.0);
+            }
+            if let Message::Append(a) = &msg
+                && !a.entries.is_empty()
+            {
+                let piped = self.piped.contains(&(from, to, 0, a.boot, a.round));
+                let seen = self.append_seen.entry((from, to, a.boot, a.term.0)).or_insert(0);
+                if piped && a.round <= *seen {
+                    self.stats.late_appends += 1;
+                }
+                *seen = (*seen).max(a.round);
             }
             if let Message::Append(a) = &msg
                 && !self.terms.iter().any(|t| t.0 == a.term)
@@ -1803,9 +1864,21 @@ impl Sim {
             assert!(base.index <= m.state().applied, "seed {seed}: {s:?} compacted past applied");
             if base.index.0 > 0 {
                 self.stats.compacted += 1;
-                let d = self.disks[s.0 as usize].digests.get(base.index.0 as usize - 1);
+                // What the member's own storage reads at its base: the disk, then its writes still being confirmed in
+                // order, as a Durable Object reads its unconfirmed writes. A follower behind a slow confirm can apply
+                // and compact entries a pipelined call committed before that confirm ends.
+                let mut d = self.disks[s.0 as usize].digests.get(base.index.0 as usize - 1).copied();
+                for c in self.confirm_ends.iter().filter(|c| c.1 == s && c.2 == self.generation[s.0 as usize]) {
+                    for w in &c.4 {
+                        match w {
+                            Write::Append(e) if e.index == base.index => d = Some(graftyard_raft::digest(e)),
+                            Write::Truncate(i) if *i <= base.index => d = None,
+                            _ => {}
+                        }
+                    }
+                }
                 assert!(
-                    d.is_none_or(|d| *d == base.digest),
+                    d.is_none_or(|d| d == base.digest),
                     "seed {seed}: {s:?} base {:?} differs from its disk",
                     base.index
                 );

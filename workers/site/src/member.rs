@@ -353,6 +353,9 @@ impl DurableObject for Member {
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::error("site down", 503);
+        }
         let url = req.url()?;
         if let (Method::Post, "/join") = (req.method(), url.path()) {
             let join: Join = req.json().await?;
@@ -377,6 +380,9 @@ impl DurableObject for Member {
     }
 
     async fn alarm(&self) -> Result<Response> {
+        if crate::site_down(&self.env) {
+            return Response::empty();
+        }
         let hosted = self.hosts.borrow().as_ref().map(Hosted::clone);
         if let Some(h) = hosted {
             each!(&h, x => if x.joined() {

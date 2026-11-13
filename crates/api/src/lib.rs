@@ -25,6 +25,7 @@ pub mod rest;
 pub mod schema;
 pub mod tasks;
 pub mod trust;
+pub mod ui;
 pub mod view;
 pub mod webhooks;
 pub mod wire;
