@@ -1266,7 +1266,7 @@ standard-2 shards) [measured]: **fail**.
 | Zero `suspect` reports | 56 `/suspect` calls, all to identity followers (`release#1#f1` 26 and its site-c peer 26 at 02:52:04, `names:708` 2 and 2), none to the repository group | fail as written |
 | Object reset from memory | none seen | pass |
 
-Commit p50/p99 366/789 ms, 123.4 leader req/s, 4 failed calls. Longest leaderless stretch with requests waiting: 0 s;
+Commit p50/p99 366/789 ms, 123.4 leader req/s, 4 failed calls. The row's background agent pushes: 676 of 737 ok, 17 `stale` (distinct refs, so a correctness signal to trace), 20 `admission full`, 6 `warming` refusals, 18 client failures; agent push p99 66.5 s. Longest leaderless stretch with requests waiting: 0 s;
 one `STEP_DOWN` in the window is `repo:131274#1#f2`, a torn-down repository's group, at 02:49:12Z.
 
 Cause [inference, not yet traced]: the burst's 500 validates arrive while the network's shards on standard-2 are still
