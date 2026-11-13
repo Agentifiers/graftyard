@@ -41,6 +41,8 @@ thread_local! {
     /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), and when
     /// this isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`).
     static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, (u8, u64)>> = Default::default();
+    /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
+    static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
 }
 
 /// The k `net`'s group committed, as this isolate last read it; 1 before any read.
@@ -577,8 +579,9 @@ impl DurableObject for GitShard {
                 }
                 if k > 1 && q(&url, "via").is_none() && !derived && body.len() >= 20 {
                     let pick = graftyard_git::push_validator(net, site.id, 1, k, &body[body.len() - 20..]);
-                    if pick.shard != 0 {
-                        let name = graftyard_git::object_name(net, pick, 1);
+                    let name = graftyard_git::object_name(net, pick, 1);
+                    let cold_at = POOL_COLD.with(|m| m.borrow().get(&name).copied());
+                    if pick.shard != 0 && graftyard_git::pool_forward(cold_at, now_ms()) {
                         let rec = serde_json::to_string(&log.record)?;
                         let mut fwd = url.clone();
                         fwd.query_pairs_mut().append_pair("via", "0").append_pair("pool", "1");
@@ -592,7 +595,16 @@ impl DurableObject for GitShard {
                             Err(e) => Err(e),
                         };
                         match r {
-                            Ok(r) if r.status_code() == 200 || r.status_code() == 422 => return Ok(r),
+                            Ok(r) if r.status_code() == 200 || r.status_code() == 422 => {
+                                POOL_COLD.with(|m| m.borrow_mut().remove(&name));
+                                return Ok(r);
+                            }
+                            Ok(r) if r.status_code() == 503 => {
+                                POOL_COLD.with(|m| m.borrow_mut().insert(name.clone(), now_ms()));
+                                console_log!(
+                                    "fanout: {name} is warming; pushes validate on the first shard for a while"
+                                );
+                            }
                             Ok(mut r) => console_error!(
                                 "fanout: {name} answered {} {}; validating on the first shard",
                                 r.status_code(),

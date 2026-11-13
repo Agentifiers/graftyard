@@ -1202,8 +1202,17 @@ func startRepack(net, rp string) bool {
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}
-		if _, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
+		// --window=0: no delta search. Once a geometric roll reached the big pack it searched deltas for 1 to 5 s under
+		// the network's lock, and every validate, fetch and ingest queued behind it (push p99 3.7 s locally, 7 to 38 s
+		// hosted); pushes' objects are already as small as their own packs made them.
+		if _, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2", "--window=0"); err != nil {
 			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
+		}
+		// A commit-graph over every ref's history: validate's two `--not --all` walks read each ref's tip from the
+		// packs without one, so their CPU grew with the refs, 7.8 to 14.9 ms a call, and the shard's CPU climbed
+		// within every B0-29 run until it saturated a vCPU (tests/am1/results/hot-shards-3.md).
+		if _, err := git(rp, []string{derivedEnv}, nil, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
+			fmt.Fprintf(os.Stderr, "commit-graph %s: %v\n", net, err)
 		}
 	}()
 	return true

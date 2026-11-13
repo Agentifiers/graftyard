@@ -285,3 +285,13 @@ fn a_shard_answers_warming_at_once_only_to_a_caller_with_somewhere_else_to_go() 
     assert!(warming_now(false, false, true) && warming_now(true, false, true));
     assert!(!warming_now(false, false, false));
 }
+
+/// A pool shard that answered `warming` gets no push for `POOL_COLD_SKIP_MS`, then is tried again, so a carried-over
+/// k does not make every push wait on a cold pool shard and a pool shard that warmed takes pushes again.
+#[test]
+fn a_pool_shard_that_answered_warming_gets_no_push_until_the_skip_passes() {
+    assert!(pool_forward(None, 0));
+    assert!(!pool_forward(Some(1_000), 1_000));
+    assert!(!pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS - 1));
+    assert!(pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS));
+}

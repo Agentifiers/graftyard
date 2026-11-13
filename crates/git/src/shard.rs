@@ -460,6 +460,17 @@ pub fn validate_status(container: Option<u16>) -> u16 {
     }
 }
 
+/// How long the network's first shard sends no push to a pool shard that answered `warming` [guess]: a pool shard
+/// that holds no cursor starts a rehydrate, which takes minutes on a hot group, and under a carried-over k every push
+/// meanwhile paid a call to it before the first shard validated it itself (`tests/am1/results/hot-shards-3.md`).
+pub const POOL_COLD_SKIP_MS: u64 = 30_000;
+
+/// Whether the network's first shard forwards a push to the pool shard `push_validator` picked: not while one that
+/// answered `warming` at `cold_at` is inside `POOL_COLD_SKIP_MS` of it, so pushes validate on the first shard at once.
+pub fn pool_forward(cold_at: Option<u64>, now: u64) -> bool {
+    cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))
+}
+
 /// Whether a shard answers a call 503 `warming` at once rather than waiting out the call's `wait` on its catch-up.
 /// `follows`: the caller has another site's shard to try after this one (`next=1`; never on its last try, which
 /// waits, so a call never runs out of shards that would serve it). `rehydrating`: a rehydrate of the network is under
