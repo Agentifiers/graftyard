@@ -20,7 +20,11 @@ leader held at site 0, term 2, no leader change) measured `merge:only` p50 907 m
 - **Three commits:** `8752c1e` (merge rows never wait for a dump rebuild; `o/r` resolves beside the token; per-request
   timing headers), `2f5f25d` (merge rows on the repository leader; reads ahead on the isolate's cached repository, kept
   only if the fresh resolve agrees), `4595d33` (a REST merge's `Authz` reads on the `Authz` leader).
-- **Not yet measured:** only one 600 s row on the final head. The merge-budget-3 3 s `/raft` stretches exist on
+- **Confirmed on main `5293a6c`** (merge-p99 merged with hot-shards-3 and m0-carried-7; site and edge day 07:24Z to
+  07:35Z, image `696907a2`): two more 600 s rows on fresh repositories, back to back with no window selection, at p99
+  **1,208** and **1,386 ms** (n 83 and 90), each with the leader held at term 2. All three 600 s rows pass: 1,571 /
+  1,208 / 1,386 ms. The commit is the largest stage on all three (p50 432 to 532 ms, p99 687 to 871 ms).
+- **The 3 s `/raft` lead:** the merge-budget-3 stretches exist on
   `graft-m3f` too (idle system-group followers on sites b and c) but do not line up with merge tails.
 
 ## 1. Where the time went before (LM-1's m19 runs on `graft-m2b`, standard-2)
@@ -82,6 +86,8 @@ change). Driver: `tests/am1/mp99/smoke.sh` (`a1.mjs b0-29`); each run's row (sta
 | `mwek3y8y` (ps500h) | `2f5f25d` | 48 | 1,282 / **3,618** | 531 / 2,116 | ahead 47 / 65 | ahead 489 / 804 | 138 / 596 | 495 / 746 | 681 |
 | `mwekzl20` (pg600b), 600 s | `2f5f25d` | 90 | 1,152 / **2,517** | 530 / 1,033 | ahead 30 / 193 | ahead 463 / 688 | 136 / 1,347 | 367 / 665 | 611 |
 | `mwemk5s2` (pg600c), 600 s | `4595d33` | 94 | 907 / **1,571** | 118 / 306 | ahead 36 / 355 | ahead 50 / 144 | 178 / 797 | 513 / 857 | 691 |
+| `mweo1bnh` (pc600a), 600 s | main `5293a6c` | 83 | 838 / **1,208** | 195 / 423 | ahead 71 / 163 | ahead 69 / 179 | 168 / 467 | 432 / 687 | 1,063 |
+| `mweolsoh` (pc600b), 600 s | main `5293a6c` | 90 | 944 / **1,386** | 197 / 351 | ahead 74 / 122 | ahead 70 / 171 | 171 / 470 | 532 / 871 | 1,702 |
 
 - **Standard-4 alone did not close the miss.** On main `20147db` at standard-4, `merge:only` p99 was 4,163 ms, against
   LM-1's 2,705 ms (smoke) and 4,260 ms (600 s row) at standard-2. The merge's tier read was still the tail (2,686 ms).
@@ -143,5 +149,6 @@ On `2f5f25d` and again on `4595d33` (main `020b3e5` merged): fmt; workspace clip
 
 ## Cost
 
-`graft-m3f`, install-wide, 04:22Z to 07:12Z (`tests/fanout/m2bcost.py`): **$12.34**, $3.73 of it containers. That
-window includes rehydrate-batch's runs on the same install, so merge-p99's own share is lower. It is under the $20 cap.
+`graft-m3f`, install-wide, 04:22Z to 08:09Z (`tests/fanout/m2bcost.py`): **$17.63**, of which the confirmation site day
+and two rows (07:24Z to 08:09Z, with m3f to this thread alone) were $4.82. The window before 07:12Z includes
+rehydrate-batch's runs on the same install, so merge-p99's own share is lower. It is under the $20 cap.
