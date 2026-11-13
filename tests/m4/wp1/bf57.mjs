@@ -68,6 +68,17 @@ for (const [j, [name, n]] of REPOS.entries()) {
   log(`${name} repo:${id} ${hooks.length} hooks`);
 }
 const slowHook = repos[0].hooks[0];
+// The receiver's log, read again after a failed connection (runs 12 and 13 ended on one while the slow hook drained).
+async function sinkDump() {
+  for (let i = 0; ; i++) {
+    try {
+      return await (await fetch(`${SINK}/dump`)).json();
+    } catch (e) {
+      if (i >= 5) throw e;
+      await sleep(5_000);
+    }
+  }
+}
 log(`slow hook ${slowHook}`);
 await sleep(process.env.KEEP_HOOKS ? 2_000 : 30_000); // let the pings drain
 await fetch(`${SINK}/clear`);
@@ -80,7 +91,7 @@ async function skew(tag) {
     await fetch(`${SINK}/h/1`, { method: "POST", body: JSON.stringify({ description: `skew ${tag} ${i}` }) });
     marks.push([`skew ${tag} ${i}`, (t0 + Date.now()) / 2]);
   }
-  const d = await (await fetch(`${SINK}/dump`)).json();
+  const d = await sinkDump();
   const v = marks.map(([k, mid]) => d.find((x) => x.after === k)?.at - mid).filter(Number.isFinite).sort((a, b) => a - b);
   return v[v.length >> 1];
 }
@@ -123,7 +134,7 @@ log(`sent ${sent.size} statuses, ${ok.length} committed, by ${(Math.max(...ok.ma
 // The slow hook takes 11 s per delivery, one at a time: wait for it.
 const slowWant = [...sent.keys()].filter((key) => key.startsWith("j4 ")).length;
 for (let i = 0; i < 400; i++) {
-  const d = await (await fetch(`${SINK}/dump`)).json();
+  const d = await sinkDump();
   const n = d.filter((x) => x.event === "status" && Number(x.hook) === slowHook).length;
   if (n >= slowWant) break;
   if (i % 6 === 0) log(`slow hook ${n} of ${slowWant}`);
@@ -132,7 +143,7 @@ for (let i = 0; i < 400; i++) {
 const skewAfter = await skew("after");
 const SKEW = Math.round((skewBefore + skewAfter) / 2);
 log(`clock skew after: ${skewAfter} ms; taken off arrivals: ${SKEW} ms`);
-const dump = (await (await fetch(`${SINK}/dump`)).json()).filter((x) => !String(x.after).startsWith("skew ")).map((x) => ({ ...x, at: x.at - SKEW }));
+const dump = (await sinkDump()).filter((x) => !String(x.after).startsWith("skew ")).map((x) => ({ ...x, at: x.at - SKEW }));
 for (const x of dump) row(out, { kind: "arrival", ...x });
 // Cursor lag from the leaders' log lines, through the Workers observability API.
 const lags = [];
