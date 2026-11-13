@@ -2588,6 +2588,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 
 **Flip.** A Workers runtime that lets a Durable Object run past its last request without `waitUntil` or an alarm, which would let the catch-up stay in its caller; or a hosted run where two pages of `ENTRIES_PAGE_BYTES` with a pack in flight still pass the isolate's 128 MB.
 
+### A push no git cache shard could check is retryable, and a hot network's shards are kept caught up (2026-11-13)
+
+**Decision.** A shard answers a failed `/validate` 422 only for its container's own 4xx (the pack's answer, the same on every shard), and 503 for a broken catch-up, a stopped container or a lost call (`graftyard_git::validate_status`). The edge answers a push no shard checked 503 `Retry-After: 2` before any byte of a git result. A leader catches up every Full site's first shard of its network at once and every `KEEP_WARM_MS` (15 s) while it applies entries. The archive's promotion runs in a stateless invocation of the site script, not in the leader member. Repacks search no deltas and write a commit-graph.
+
+**Why.** At `hot-shards-2`'s home-shard kill, 23 pushes in flight were refused `unpacker error`, which git reports as a failed push and a client does not retry. At `hot-shards-3`'s, the same pushes got 503, but each waited 137 s, because the other sites' shards were caught up only by pushes and sat 1,100 and 1,900 entries behind. A leader member that drove the promotion's shard calls charged each to its newest request, one the shard's own `/entries` reads had made, and failed "Subrequest depth" (merge-budget-4's trace `8c049c94`). B0-29's push p99 climbed within each run because validate's `--not --all` walks read every ref's tip from the packs, and a repack's delta search held the network's lock for seconds.
+
+**Beat.** Retrying inside the edge on 5xx, which would hold a push past its 180 s on a shard that is rehydrating. Keeping only the leader's own site warm, the old rule, cheaper by two catch-up calls each 15 s. A once-a-day full repack to drop pack count, which does not remove the per-tip read. A pool shard check on every forward rather than a 30 s skip, which pays a call a push.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md`: A31's run (k stayed 1 through three cold rehydrates), j9g on standard-4 (push p99 4.70 s, 16 in-flight 503s, fsck clean on three shards, 0 depth errors), and the local B0-29-like runs (CPU 19.5 to 25.3 CPU-s/min down to 12.9 to 16.3; validate p99 up to 1,948 ms down to under 140 ms). Plants 38 to 46.
+
+**Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.

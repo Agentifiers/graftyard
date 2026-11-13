@@ -1164,12 +1164,12 @@ pub const HOT_POOL: u16 = 7;
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
 /// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
 /// gets `warming`; a rehydrating shard says so at once to a caller with another shard next. Pushes, fetches and the
-/// archive's promotion try the home or own site, then other Full sites [measured, `hot-shards`]. Only `rehydrate` reads all refs.
+/// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {
     /// The new commits for `Provenance` are those reachable from the new tips and not from the updated refs' old tips or
-    /// the default branch's tip; connectivity still uses the full ref set. Walking `--not --all` took 3 s a push at
-    /// about 5,000 refs [measured, `tests/m0/results/m0-wp10.md`].
+    /// the default branch's tip; connectivity still uses the full ref set (`--not --all`, 3 s at 5,000 refs, m0-wp10; a
+    /// commit-graph each repack keeps it flat, `hot-shards-3`) [measured]. Only `rehydrate` reads all refs.
     pub async fn validate(&self, staged: StagedPack, refs: &CoreRefs)
         -> Result<(PackIndex, Provenance, SmallVec<[ProtectedHits; 1]>), PackError>;
     pub async fn upload_pack(&self, req: FetchRequest, refs: &CoreRefs) -> Result<PackStream, GitError>;
