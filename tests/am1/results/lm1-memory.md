@@ -1254,3 +1254,23 @@ Push p99: agent 12.2 s, human 10.5 s.
   to 683 ms.
 - This matches m0-carried-6's finding that sends wait on every earlier unconfirmed write and the worst tails are when
   the leader's event loop fell behind. Which invocations make the 200 ms turns is not yet traced.
+
+**B0-32** (131290, 500 agents, 180 s, burst of 500 × 256 KiB at 60 s with 5 merges queued, 02:49 to 02:55:20Z,
+standard-2 shards) [measured]: **fail**.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Every push acknowledged within 5 s, or 200 `ng … agent admission full, retry after <n>s` | 0 within 5 s (p50 25.4 s); 376 ok, 84 `admission full` (the allowed shape), 29 refused `unpacker error: site N's shard answered N: {"warming":true}`, 11 client timeouts at 120 s | fail: 29 in another refusal shape |
+| Merge in one of the next 2 entries, none delayed over 2 s | merge:only p99 19.9 s, p50 1.7 s | fail |
+| Zero leader changes | term 2 throughout on 131290 | pass |
+| Zero `suspect` reports | 56 `/suspect` calls, all to identity followers (`release#1#f1` 26 and its site-c peer 26 at 02:52:04, `names:708` 2 and 2), none to the repository group | fail as written |
+| Object reset from memory | none seen | pass |
+
+Commit p50/p99 366/789 ms, 123.4 leader req/s, 4 failed calls. Longest leaderless stretch with requests waiting: 0 s;
+one `STEP_DOWN` in the window is `repo:131274#1#f2`, a torn-down repository's group, at 02:49:12Z.
+
+Cause [inference, not yet traced]: the burst's 500 validates arrive while the network's shards on standard-2 are still
+catching up. A shard that answers `warming` past its wait on every placement site becomes the push's refusal
+(`unpacker error`), and the rest queue behind the busy shards for 25 s. The 52 `suspect` reports at 02:52:04 are
+edges that timed out reading `release` during the burst. Both need the standard-4 rerun before they are a code
+finding.
