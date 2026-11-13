@@ -32,6 +32,13 @@ pub async fn session(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     if req.headers().get(WEB_HEADER)?.as_deref() != Some("1") {
         return Ok(None);
     }
+    cookie_session(c, req).await
+}
+
+/// The cookie's caller without the header check, for the shell's own document `GET` only: the seed it renders is
+/// read-only and lands in HTML a cross-origin page cannot read, and `SameSite=Strict` keeps the cookie off a
+/// cross-site navigation.
+async fn cookie_session(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     let Some((account, id)) = cookie(req)? else { return Ok(None) };
     let Ok(Some(rec)) = crate::placement(c, account).await else { return Ok(None) };
     let fold = graftyard_lookup::read_spread(
@@ -410,7 +417,10 @@ async fn seed(c: &Ctx<'_>, req: &Request, host: &Host, path: &str, tab: Option<&
         _ => return None,
     };
     c.read_class.set(true);
-    let who = crate::authenticate(c, req).await.ok().flatten();
+    let who = match crate::authenticate(c, req).await.ok().flatten() {
+        Some(p) => Some(p),
+        None => cookie_session(c, req).await.ok().flatten(),
+    };
     let mut out: Vec<Value> = Vec::new();
     if let Some(Actor::User(me)) = who.as_ref().map(|w| w.actor)
         && let Some(login) = crate::ident::login(c, me.0).await
