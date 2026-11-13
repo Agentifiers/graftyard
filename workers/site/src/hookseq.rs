@@ -334,8 +334,10 @@ async fn round(
                     s.dirty = false;
                 }
             });
-            // BF-57's cursor lag: from the commit of the first entry this cursor passes to its own commit.
-            let first_at = entry_time(h, Index(committed.read.0 + 1));
+            // BF-57's cursor lag: from the commit of the first entry this cursor passes that carries anything but a
+            // cursor, to the cursor's own commit. A cursor entry has no webhook, and a lag from one only measures the
+            // cursor chasing its own tail (run 9's one 8.6 s lag passed nothing else).
+            let first_at = (committed.read.0 + 1..=next.read.0).find_map(|i| event_time(h, Index(i)));
             let (w, key) = (Rc::downgrade(h), key.to_owned());
             spawn_local(async move {
                 let Some(h) = w.upgrade() else { return };
@@ -535,13 +537,22 @@ fn api_host(env: &Env) -> String {
     env.var("GRAFTYARD_HOST").map(|v| v.to_string()).unwrap_or_else(|_| "graftyard.dev".into())
 }
 
-/// When the entry at `i` was appended, by the leader's clock, from the member's log or the stored log.
-fn entry_time(h: &Rc<Host<Repo>>, i: Index) -> Option<Timestamp> {
+/// When the entry at `i` was appended, by the leader's clock, if it carries an event other than `HookCursor`; from the
+/// member's log or the stored log.
+fn event_time(h: &Rc<Host<Repo>>, i: Index) -> Option<Timestamp> {
     let core = h.core.borrow();
     let c = core.as_ref()?;
-    match c.m.entry_at(i) {
-        Some(e) => Some(e.at),
-        None => crate::host::stored_entry::<Repo>(&h.state.storage().sql(), i).map(|e| e.at),
+    let e = match c.m.entry_at(i) {
+        Some(e) => e.clone(),
+        None => crate::host::stored_entry::<Repo>(&h.state.storage().sql(), i)?,
+    };
+    match &e.body {
+        graftyard_raft::EntryBody::Events(evs)
+            if evs.iter().any(|v| !matches!(v, git::repo::RepoEvent::HookCursor(_))) =>
+        {
+            Some(e.at)
+        }
+        _ => None,
     }
 }
 
