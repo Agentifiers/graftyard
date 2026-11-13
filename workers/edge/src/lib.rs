@@ -1984,9 +1984,12 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
         }
         // The home shard's routes, or with `?shard=N` site N's shard of the same network (BF-18's second shard,
         // behind its own `IngestCursor`).
-        "/_bed/fsck" | "/_bed/kill" | "/_bed/teardown" | "/_bed/catchup" | "/_bed/shard_status" => {
+        "/_bed/fsck" | "/_bed/kill" | "/_bed/teardown" | "/_bed/catchup" | "/_bed/shard_status"
+        | "/_bed/shard_abort" => {
             let inner = match path {
                 "/_bed/kill" => "/teardown",
+                // The shard object resets; its container and disk stay (`workers/site/src/shard.rs`, `/abort`).
+                "/_bed/shard_abort" => "/abort",
                 "/_bed/shard_status" => "/status",
                 p => &p[5..],
             };

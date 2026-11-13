@@ -432,6 +432,15 @@ impl DurableObject for GitShard {
         if path == "/load" {
             return Response::from_json(&host.load().await.map_err(se)?);
         }
+        // Test installs: resets this object (`ctx.abort()`) as an isolate reset does, while its container keeps running
+        // on the same disk, so a catch-up it cuts off resumes from its saved place when the alarm restarts it. A site
+        // redeploy did not cut one: the busy object stayed on its version until its run ended
+        // (`tests/am1/results/rehydrate-batch.md`).
+        #[cfg(feature = "test-faults")]
+        if path == "/abort" {
+            crate::host::abort(&self.state, "graftyard shard abort");
+            return Response::from_json(&json!({ "aborted": true }));
+        }
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
             self.state.storage().delete_alarm().await?;
