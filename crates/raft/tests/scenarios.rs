@@ -1450,6 +1450,96 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
     assert_eq!(silent_calls(lossy), 1, "a voter on a lossy link");
 }
 
+/// A learner's read-index answer is preceded by the entries it needs: when the leader answers a learner's batch at
+/// index i and has not sent it entries through i, an AppendEntries through i, carrying a commit at or past i, leaves
+/// ahead of the `ReadIndexRes`, so both ride one response to the learner's call. Before, a learner got one call at a
+/// time, its entries trailed its answer by one or two more calls, and far learners waited p99 1.9 to 4.5 s for them
+/// (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait goes"). A learner whose link is lossy still
+/// gets one call at a time (F67 rule 13).
+#[test]
+fn a_learner_read_index_answer_follows_the_entries_it_needs() {
+    use graftyard_raft::{GroupConfig, STEP_DOWN};
+    use graftyard_types::{
+        Member as MemberRef, MemberKind, Placement, PlacementChecks, Region, Rtt, Site, SiteTable, learner_addr,
+    };
+    // Per read, whether an append ahead of the answer carried entries through the read index and a commit at or past
+    // it. The learner answers no append; `fail` of its first calls failed with an error.
+    let before_answer = |fail: usize| {
+        let mut c = Cluster::new(49);
+        c.elect(A);
+        c.sync(A);
+        let Some((_, GroupConfig::Normal(p))) = c.m(A).committed_config().cloned() else { panic!("normal config") };
+        let l = MemberRef::new(CHAIN, B, MemberKind::Learner, 0, p.next_generation());
+        let addr = learner_addr(0);
+        let site = |id: SiteId, region| Site {
+            id,
+            script: String::new(),
+            account: "x".into(),
+            region,
+            jurisdiction: None,
+            bucket: String::new(),
+            release: None,
+            link: graftyard_types::SiteLink::Binding { member_class: "Member".into() },
+            spare: false,
+        };
+        let table = SiteTable(vec![site(A, Region::Enam), site(B, Region::Weur), site(C, Region::Apac)]);
+        let rtt: Vec<(SiteId, Rtt)> = [(A, B), (A, C), (B, C)]
+            .iter()
+            .map(|&(x, y)| (x, Rtt { peer: y, median_ms: 80, at: Timestamp(0) }))
+            .collect();
+        let checks = PlacementChecks { sites: &table, separate_accounts: false, rtt: &rtt, near: &[] };
+        let np =
+            Placement::new(p.voters().iter().cloned().collect(), [l].into_iter().collect(), p.home(), &checks).unwrap();
+        c.on(A, |m, now| m.reconfigure(now, GroupConfig::Normal(Box::new(np.clone())))).unwrap();
+        // Voters answer; the learner is not run here, and its calls stay outstanding unless failed.
+        let failed = std::cell::Cell::new(0);
+        let step = |c: &mut Cluster| {
+            for _ in 0..4 {
+                for e in std::mem::take(&mut c.inbox) {
+                    if e.to != addr {
+                        let graftyard_raft::Envelope { from, to, msg } = e;
+                        c.on(to, |m, now| m.step(now, from, msg));
+                    } else if failed.get() < fail && matches!(&e.msg, Message::Append(_)) {
+                        failed.set(failed.get() + 1);
+                        let f = e.failure(false).expect("an append");
+                        c.on(A, |m, now| m.call_failed(now, f));
+                    }
+                }
+            }
+        };
+        for i in 0..10u128 {
+            admit(&mut c, A, 9_960 + i, put(&format!("r{i}"), "v"));
+            step(&mut c);
+        }
+        assert_eq!(failed.get(), fail);
+        // Past CALL_DEADLINE, so a leader whose retries to the learner ran out sends a fresh call from its tick.
+        c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        step(&mut c);
+        // Entries commit while the learner's call is out, so it was sent none of them: two, then exactly one more.
+        let mut out = Vec::new();
+        for (batch, n) in [(7u64, 2u128), (8, 1)] {
+            for i in 0..n {
+                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), "v"));
+                step(&mut c);
+            }
+            let read_index = c.m(A).state().commit;
+            c.on(A, |m, now| m.step(now, addr, Message::ReadIndex { batch }));
+            let to_l: Vec<_> = std::mem::take(&mut c.inbox).into_iter().filter(|e| e.to == addr).collect();
+            let res = to_l.iter().position(|e| matches!(e.msg, Message::ReadIndexRes { batch: b, .. } if b == batch));
+            let res = res.expect("A answered the learner's batch");
+            let Message::ReadIndexRes { index: Some((i, _)), .. } = &to_l[res].msg else { panic!("a granted read") };
+            assert_eq!(*i, read_index, "the answer names the leader's commit");
+            out.push(to_l[..res].iter().any(|e| {
+                matches!(&e.msg, Message::Append(a)
+                    if a.entries.last().is_some_and(|x| x.index >= read_index) && a.commit >= read_index)
+            }));
+        }
+        out
+    };
+    assert_eq!(before_answer(0), [true, true], "a learner on a clean link");
+    assert_eq!(before_answer(usize::from(STEP_DOWN.commit_fail_min)), [false, false], "a learner on a lossy link");
+}
+
 /// B0-02's r330-6 (`tests/m0/results/carried-8.md`): a far voter more than ten entries behind catches up in calls of
 /// at most APPEND_BYTES_MAX past their first entry, each of which answers inside CALL_DEADLINE on the far link, so
 /// no call misses and the leader's pipeline to it stays on. At 1.5 MB, its catch-up calls of 319 to 717 KB missed

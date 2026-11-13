@@ -196,6 +196,53 @@ The far learners still answered `late` to 1,743 to 2,870 of 7,800 to 9,400 reads
 
 Rows: `tests/nr3/rows/a1-b0-29-gate5.jsonl`, `run-gate5.status`, `fresh-gate5.jsonl`, `egress-gate5.txt`, `mem-gate5.json`. repo:65549 torn down.
 
+## Where a far learner's wait goes (gate 6)
+
+The operator asked for a per-read split of the far learners' wait before choosing between (a), entries in the leader's `ReadIndexRes`, and learner-side work. a17a9138 adds the traces: every AppendEntries a member steps (`Trace::AppendStepped`, its last entry and commit, and whether it rode the response to the member's own call or came as a call), and on the leader each AppendEntries held for a learner's next call and taken into a response (`AppendHeld`, `AppendTaken`). `tests/nr3/split.mjs` splits each `ReadIndex` batch a learner sent into three parts:
+
+- (i) **rtt**: sent until its `ReadIndexRes` stepped.
+- (ii) **hold**: that answer until the learner held the entries through the read index R and a commit at or past R. It is 0 when it already held entry R, which the answer commits by digest.
+- (iii) **apply**: from then until its applied index reached R.
+
+gate6: site day from a17a9138 (the reverted tree, learners not pipelined) 19:52 to 20:03Z, then repo:65550 with the load at 20:15:15Z, 500 agents, 300 s, main as built. **It counts as a gate run, and fails**:
+
+- **API:** 98.36% served (988 × 503), p50 811 ms, **p99 3,159 ms**; tier p99 3,083 ms; auth p99 71 ms; resolve p99 443 ms.
+- **Commit:** p50 409 ms, p99 1,442 ms. Agent push: 1,247 of 1,249 ok, p99 5.3 s.
+- **Other:** no leader change, 0 stale in 147 probe rounds. Leader peak 70 MiB, learners 57 to 61 MiB.
+
+The split, per learner, in ms (p50 / p99):
+
+| Learner | rtt | hold (ii) | apply (iii) | total | how the entries through R arrived (same response / later own call / leader call / already held) |
+| --- | --- | --- | --- | --- | --- |
+| l1 weur | 174 / 639 | **638 / 1,933** | 0 / 709 | 847 / 2,125 | 31 / 1,309 / 2 / 175 |
+| l4 weur | 164 / 603 | **624 / 4,451** | 0 / 504 | 818 / 4,613 | 28 / 1,298 / 5 / 178 |
+| l2 apac | 189 / 488 | **574 / 3,111** | 0 / 559 | 797 / 3,454 | 8 / 1,236 / 6 / 296 |
+| l5 apac | 191 / 476 | **668 / 2,692** | 0 / 461 | 875 / 2,872 | 16 / 1,267 / 5 / 228 |
+| l0 enam | 48 / 908 | 0 / 305 | 39 / 1,197 | 128 / 1,414 | 153 / 170 / 3 / 1,568 |
+| l3 enam | 78 / 806 | 0 / 643 | 0 / 1,300 | 164 / 1,436 | 113 / 474 / 2 / 1,282 |
+| l6 enam | 62 / 958 | 0 / 993 | 0 / 1,048 | 150 / 1,625 | 132 / 516 / 3 / 1,087 |
+| l7 enam | 73 / 838 | 0 / 612 | 0 / 1,326 | 161 / 1,504 | 85 / 434 / 5 / 1,355 |
+
+**(ii) dominates on the far learners.** Their answer comes back at p99 under 640 ms. The entries it names come in a later response to their own call in 82 to 87% of batches, and in the same response in only 0.5 to 2%. Held messages are not capped by APPEND_BYTES_MAX as a queue: the leader sends a learner one AppendEntries call at a time (`send_append`, `voter && !lossy`), and while the learner calls, each is held for its next call's response (`workers/site/src/callers.rs`). So when the leader answers a far learner's batch at index R, the entries through R usually have not been sent to that learner at all: they go out only after the learner's previous append is answered, which is one of its own calls later.
+
+**(iii) is the near learners' wait.** They already held entry R in 58 to 83% of batches, and their apply p99 of 1.0 to 1.3 s sits with storage-confirm p99 of 1.0 to 1.4 s on the same learners, against 59 to 204 ms on apac and weur [measured; that confirms cause it is an inference]. That is learner-side work and the next limit after (ii).
+
+**Why gate 6 is worse than gates 1 to 4.** Main 82a0bf9 cut APPEND_BYTES_MAX from 1.5 MB to 100 KB. Gates 1 to 4 (dc5b200, 8c54adb) ran at 1.5 MB, where one learner call carried its whole backlog. Gate 5 ran at 100 KB with learners pipelined. Gate 6 is the first run at 100 KB with one call at a time, so a far learner behind by more than 100 KB needs several calls, each one of its own round trips later. The far learners' apply p50 was 0 to 495 ms in gates 1 to 5 and 564 to 667 ms here [measured; the cause is an inference].
+
+### The change: (a), entries ahead of the answer
+
+Design first: DESIGN "Follower read" and DECISIONS "A read-index answer follows the entries the asker needs". In `read_resolved` (`crates/raft/src/member/install.rs`), before the leader sends a `ReadIndexRes` at index i, `append_for_read` (`leader.rs`) sends that member the entries through i it was not yet sent:
+
+- It is pipelined as a voter's would be. It follows the member's outstanding calls, within `PIPELINE` and `APPEND_BYTES_MAX`, and not while the link is lossy (F67 rule 13). A catch-up, install, or failed call's retry still out sends nothing; `tick` sends after it.
+- On the host the AppendEntries and the answer leave in one `Out`, appends first, so a learner calling the leader gets both in the same response and steps the entries through the normal append path before the answer.
+- An answer with no entries ahead of it stays valid. No commit, lease, or grant rule changes.
+
+Checks:
+
+- Kept test `crates/raft/tests/scenarios.rs`, `a_learner_read_index_answer_follows_the_entries_it_needs`: a learner on a clean link that missed two entries, then one, gets an append through the read index with a commit at or past it ahead of each answer; a lossy learner gets none. It **fails without the change** (no such append).
+- `tests/nr3/plant.py` mutants 15 to 18: no entries sent, a learner with a call out not pipelined, sent only when two or more are missing, a lossy learner pipelined. All caught.
+- `cargo test -p graftyard-raft`: all pass.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

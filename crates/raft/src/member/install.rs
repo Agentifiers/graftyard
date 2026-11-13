@@ -243,6 +243,9 @@ impl<C: Command> Member<C> {
         match self.remote.serving.remove(&id) {
             Some((to, batch)) => {
                 let index = result.ok().and_then(|g| self.digest_at(g.index).map(|d| (g.index, d)));
+                if let Some((i, _)) = index {
+                    self.append_for_read(to, i);
+                }
                 self.send(to, Message::ReadIndexRes { batch, index })
             }
             None => self.out.resolutions.push(Resolution::Read { id, result }),

@@ -1281,10 +1281,34 @@ impl<C: Command> Member<C> {
     /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
     /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
+        self.append_to(peer, force, false);
+    }
+
+    /// Before the answer to `peer`'s read-index batch at `index`: the entries through `index` it was not sent yet, as
+    /// an AppendEntries that leaves ahead of the `ReadIndexRes`, in the same response when `peer` is a learner calling
+    /// this member (`design/DESIGN.md`, "Follower read"). Pipelined as a voter's would be, a learner too, within
+    /// PIPELINE and APPEND_BYTES_MAX and not on a lossy link. Without it a far learner's entries trailed its answer by
+    /// one or two more of its calls: p50 574 to 668 ms and p99 1.9 to 4.5 s on weur and apac at 500 agents, against a
+    /// read-index round trip of p99 476 to 639 ms (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait
+    /// goes").
+    pub(super) fn append_for_read(&mut self, peer: SiteId, index: Index) {
+        let Some(lead) = self.lead.as_ref() else { return };
+        let through = match lead.pipe.get(&peer).and_then(|p| p.last()) {
+            Some(&(_, t)) => t,
+            // A catch-up, an install, or a failed call's retry is out: `tick` sends after it.
+            None if lead.sent.contains_key(&peer) => return,
+            None => lead.matched(peer),
+        };
+        if through < index {
+            self.append_to(peer, false, true);
+        }
+    }
+
+    fn append_to(&mut self, peer: SiteId, force: bool, read: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
-        let voter = quorum::is_voter(self.log_config(), peer);
+        let voter = read || quorum::is_voter(self.log_config(), peer);
         let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());

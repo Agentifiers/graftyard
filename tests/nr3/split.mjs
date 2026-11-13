@@ -2,7 +2,7 @@
 // `/stats` trace (`workers/site/src/host.rs`, `Trace`):
 //   (i)   rtt:  IndexSent (1) to the leader's ReadIndexRes stepped here on its own call (3, ms 0), read index R;
 //   (ii)  hold: that response to the first AppendEntries stepped here (17) that brings this member both entries through
-//         R and a commit at or past R; 0 when it already had both. `via` says where that append came from: `same` in
+//         R and a commit at or past R; 0 when it already held entry R, which the answer's digest commits. `via` says where that append came from: `same` in
 //         the response that carried the ReadIndexRes, `own` in a later response to this member's own call, `call` in a
 //         call from the leader, `before` already held;
 //   (iii) apply: from the later of those two to the applied index (4) reaching R.
@@ -15,7 +15,7 @@ const chain = process.argv[2];
 const st = await statuses(chain);
 const cfg = st.find((s) => s.config)?.config?.config?.normal;
 const learners = (cfg?.learners ?? []).map((l, i) => [l.site, l.do_name, `l${i}`]);
-const leader = st.find((s) => s.role === "Leader")?.site;
+const leader = st.find((s) => s.role === "leader")?.site;
 const pct = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
   const at = (p) => (s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null);
@@ -42,7 +42,8 @@ for (const [site, name, tag] of learners) {
         rtt.push(at - t0);
         lastRes = at;
         const o = { R: index, t0, t1: at, t2: null, via: null };
-        if (last >= index && commit >= index) [o.t2, o.via] = [at, "before"];
+        // Holding entry R, the answer commits through it by its digest (`on_read_index_res`).
+        if (last >= index) [o.t2, o.via] = [at, "before"];
         open.push(o);
       } else if (kind === 17) {
         last = Math.max(last, index);

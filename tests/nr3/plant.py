@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -21,6 +21,7 @@ ELECTION = 'crates/raft/src/member/election.rs'
 RAFT = ('graftyard-raft', '--test', 'leadership')
 LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
+SCEN = ('graftyard-raft', '--test', 'scenarios')
 
 MUTANTS = [
     ('raft: a follower grant\'s floor is its own applied index, not the leader\'s read index', INSTALL,
@@ -65,6 +66,18 @@ MUTANTS = [
     ('genesis: an unreadable view drops the binding', LOOKUP,
      '    let Some(view) = view else { return false };',
      '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
+    # A learner's entries ride ahead of its read-index answer (`Member::append_for_read`).
+    ('read entries: none sent before the answer', INSTALL,
+     '                if let Some((i, _)) = index {\n                    self.append_for_read(to, i);\n                }\n', '', SCEN),
+    ('read entries: a learner with a call out is not pipelined', LEADER,
+     '        let voter = read || quorum::is_voter(self.log_config(), peer);',
+     '        let voter = quorum::is_voter(self.log_config(), peer);', SCEN),
+    ('read entries: sent only when two or more are missing (off by one)', LEADER,
+     '        if through < index {\n            self.append_to(peer, false, true);',
+     '        if through.next() < index {\n            self.append_to(peer, false, true);', SCEN),
+    ('read entries: a lossy learner is pipelined too', LEADER,
+     '        let lossy = self.link_lossy(peer);\n        let Some(lead) = self.lead.as_mut() else { return };\n        let next',
+     '        let lossy = !read && self.link_lossy(peer);\n        let Some(lead) = self.lead.as_mut() else { return };\n        let next', SCEN),
     # Liveness (F67 rule 12).
     ('raft: an emptied read-index batch stays in flight', INSTALL,
      '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),
