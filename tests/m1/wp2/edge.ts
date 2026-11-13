@@ -403,8 +403,9 @@ export default {
         case "/faults": return json(await e.all("/faults", 20_000));
         case "/stats": {
           await e.learnVoters();
-          // B0-02's A/B (`tests/m0/results/carried-5.md`): `body` "array" or "stream" sets how each member sends calls.
-          const q = [body.reset ? "reset=1" : "", body.body ? `body=${body.body}` : ""].filter(Boolean).join("&");
+          // B0-02's A/Bs (`tests/m0/results/carried-5.md`, `carried-6.md`): `body` "array" or "stream" sets how each member
+          // sends calls; `arrival` "mem" or "sql" where BF-14's arrival rows go.
+          const q = [body.reset ? "reset=1" : "", body.body ? `body=${body.body}` : "", body.arrival ? `arrival=${body.arrival}` : ""].filter(Boolean).join("&");
           return json(await e.all(`/stats${q ? `?${q}` : ""}`, 20_000));
         }
         case "/bf12": return json({ colo, kills: await bf12(e, body.key, body.from ?? 0, body.plan ?? [{ mode: "after_quorum" }]) });

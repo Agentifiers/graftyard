@@ -1,0 +1,7 @@
+{"check":"new repository resolves at once","repo":65562,"rest":200,"graphql":200,"data":true,"ok":true}
+{"check":"member cannot read the private repository first","status":200,"ok":false}
+{"check":"grant opens access at once","status":200,"ok":true}
+{"check":"removed grant closes within READ_CACHE","ms":null,"bound":13000,"seen":"200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200,200","after":"200,200,200,200,200,200,200,200,200,200","ok":false}
+{"check":"revoked PAT: write at once, reads within READ_CACHE","before":200,"write":401,"ms":1326,"seen":"200,200,401","ok":true}
+{"check":"revoked ghs_: reads within READ_CACHE","before":200,"delete":204,"ms":831,"seen":"200,401","ok":true}
+{"repos":[65562,65563],"failed":["member cannot read the private repository first","removed grant closes within READ_CACHE"]}

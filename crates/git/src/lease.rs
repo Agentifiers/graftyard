@@ -185,9 +185,19 @@ pub fn lease_row(r: &(impl Read + ?Sized), id: LeaseId) -> Option<LeaseRow> {
     get_rec(r, "lease", &[id_key(id)])
 }
 
-/// Every lease row, in id order (grant order).
+/// Every lease row, in id order (grant order), decoded from the scan itself: a second `get` per row doubled the SQL
+/// reads of every live-set rebuild, which the feed's ring makes once per applied entry (LM-1 round 7).
 pub fn rows(r: &(impl Read + ?Sized)) -> Vec<LeaseRow> {
-    r.prefix("lease", &[]).into_iter().filter_map(|(k, _)| id_of(k.first()).and_then(|id| lease_row(r, id))).collect()
+    r.prefix("lease", &[])
+        .into_iter()
+        .filter_map(|(k, v)| {
+            id_of(k.first())?;
+            match v.first() {
+                Some(Val::Blob(b)) => Some(postcard::from_bytes(b).expect("a fold row this release wrote")),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 fn ids_in(r: &(impl Read + ?Sized), table: &str, prefix: &[Val], col: usize) -> Vec<LeaseId> {

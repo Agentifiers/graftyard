@@ -20,6 +20,9 @@ for path in sys.argv[1:]:
                 out[kind] = dict(n=k[kind]["n"], ok=ok, e503=shed, skipped=skipped,
                                  okShare=round(ok / answered, 3) if answered else None, p50=k[kind]["p50"],
                                  p99=k[kind]["p99"], perS=k[kind]["perS"])
+        stages = {x[4:]: [k[x]["p50"], k[x]["p99"]] for x in sorted(k) if x.startswith("api:")}
+        if stages:
+            out["apiStages"] = stages
         out["feedLagging"] = k.get("feed", {}).get("codes", {}).get("lagging", 0)
         out["leader"] = {x: r.get("leader", {}).get(x) for x in ("before", "after")}
         print(json.dumps(out))

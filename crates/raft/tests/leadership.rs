@@ -656,6 +656,43 @@ fn deadline_misses_during_the_leaders_own_stall_are_excused() {
     assert!(counted.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{counted:?}");
 }
 
+/// One stall of a follower counts once per CALL_DEADLINE, however many rounds it missed (LM-1: a 1.9 s stall missed
+/// 17 to 31 per-read rounds at once and moved healthy identity leaders). Misses sent a deadline or more apart still
+/// count, so a follower that keeps failing still trips the rule.
+#[test]
+fn one_follower_stall_counts_once_per_deadline() {
+    let run = |reads: u32, gap_ms: u64| {
+        let mut c = Cluster::new(56);
+        let mut id = 0;
+        c.elect(A);
+        drive(&mut c, 3_000, true, &mut id, |_| false);
+        // An idle leader's lease lapses, so each read starts a round to each follower; every one misses its deadline.
+        c.advance(graftyard_raft::LEASE.as_millis() as u64);
+        c.deliver_all();
+        c.inbox.clear();
+        let mut misses = Vec::new();
+        for _ in 0..reads {
+            c.now = Timestamp(c.now.0 + gap_ms);
+            let _ = c.on(A, |m, now| m.read(now));
+            misses.extend(c.inbox.drain(..).filter(|e| e.from == A && request(e)));
+        }
+        c.now = Timestamp(c.now.0 + 1_000);
+        for e in misses {
+            let f = e.failure(true).unwrap();
+            c.on(A, |m, now| m.call_failed(now, f));
+        }
+        // A commit-error trip first has the other follower probe each target.
+        drive(&mut c, 2_000, false, &mut id, |_| false);
+        step_downs(&c)
+    };
+    // One stall: 30 rounds sent within 300 ms count as one miss per follower, under `commit_fail_min`.
+    let stall = run(30, 10);
+    assert!(stall.iter().all(|s| !matches!(s.1, StepDownWhy::CommitErrors { .. })), "{stall:?}");
+    // The control: 5 misses a deadline apart are 5 failures per follower and trip the rule.
+    let failing = run(5, graftyard_raft::CALL_DEADLINE.as_millis() as u64);
+    assert!(failing.iter().any(|s| matches!(s.1, StepDownWhy::CommitErrors { .. })), "{failing:?}");
+}
+
 /// A new leader counts a follower's failed calls only once that follower answered it in its term: a killed leader
 /// still resetting is not a sign of the new leader's sickness (7 of 60 groups changed again without this).
 #[test]
@@ -1108,4 +1145,120 @@ fn a_transfer_vote_promises_the_target_only_for_its_campaign() {
     let v = c.on(C, |m, now| m.suspect(now, Colo(1), B, term));
     c.run(3_000, 100, |_| true);
     assert!(c.leader() == Some(C) || c.leader() == Some(A), "{v:?}: nobody led 6 s after a failed transfer");
+}
+
+/// Both followers refuse an entry (the leader's own defect), so it truncates it, keeps leading, and appends another
+/// entry at that index in the same term, which commits. A round sent before the truncation, carrying the refused
+/// entry, may arrive after that commit: the follower must refuse it as an older leader instance's, not delete the
+/// committed entry (found by the harsh sweep, seed 3013, once id blocks re-sent across a leader restart were refused).
+#[test]
+fn a_round_from_before_an_own_defect_truncation_cannot_touch_a_commit() {
+    let mut c = on_releases(73, [(1, true), (1, false), (1, false)]);
+    let _ = future(&mut c, 900);
+    // A copy of the first round to B that carries the refused entry is delayed (the network duplicated it); the
+    // original arrives.
+    let mut held = Vec::new();
+    for _ in 0..40 {
+        c.advance(100);
+        if held.is_empty()
+            && let Some(e) = c.inbox.iter().find(|e| {
+                e.to == B && matches!(&e.msg, Message::Append(a) if a.entries.iter().any(|x| x.format == FUTURE_FORMAT))
+            })
+        {
+            held.push(e.clone());
+        }
+        c.deliver_all();
+    }
+    assert!(c.alarms().iter().any(|(_, a)| matches!(a, Alarm::OwnDefect { .. })), "{:?}", c.alarms());
+    assert_eq!(held.len(), 1, "no round with the refused entry was held");
+    // Two writes: B learns the first one's commit from the round that carries the second.
+    for id in [901, 902] {
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(id)), put("k", "v"))).expect("admitted");
+        c.run(2_000, 100, |_| true);
+    }
+    let commit = c.m(B).state().commit;
+    let refused_at = match &held[0].msg {
+        Message::Append(a) => a.entries.iter().find(|x| x.format == FUTURE_FORMAT).map(|x| x.index).expect("held"),
+        _ => unreachable!(),
+    };
+    assert!(commit >= refused_at, "B has not committed the replacement at {refused_at:?}");
+    let digest = c.m(B).digests()[refused_at.0 as usize - 1];
+    c.inbox.extend(held);
+    c.deliver_all();
+    assert_eq!(c.m(B).digests()[refused_at.0 as usize - 1], digest, "B replaced a committed entry");
+}
+
+/// A transfer target that a voter elected but never heard from (its appends to that voter are lost) is not that
+/// voter's leader for `suspect`: reports about it, sent while it was still a candidate, must not bar it in pre-vote.
+/// Before the fix C refused B as `Suspected` for 2 x SUSPECT's window while B alone held the newest entry and refused
+/// every other candidate as `LogBehind`, so nobody led for 17 s with requests waiting (F67, liveness calls seed 107).
+#[test]
+fn reports_about_an_unheard_transfer_target_do_not_bar_it() {
+    let mut c = Cluster::new(74);
+    c.elect(A);
+    c.sync(A);
+    c.on(A, |m, now| m.transfer(now, B)).expect("started");
+    let cut = |e: &Envelope<KvEvent>| e.from == B && e.to == C && matches!(e.msg, Message::Append(_));
+    for _ in 0..40 {
+        c.advance(100);
+        c.deliver(|e| !cut(e));
+        if c.m(B).role() == Role::Leader {
+            break;
+        }
+    }
+    assert_eq!(c.m(B).role(), Role::Leader);
+    assert_eq!(c.m(C).state().promised_to, Some(B));
+    assert_eq!(c.m(C).leader(), None, "C heard from B");
+    let term = c.m(C).term();
+    for colo in [1, 2] {
+        c.on(C, |m, now| m.suspect(now, Colo(colo), B, term));
+    }
+    let last = (c.m(B).log().len() as u64, c.m(B).log().last().unwrap().term);
+    c.inbox.clear();
+    c.on(C, |m, now| m.step(now, B, Message::Vote(vote(Term(term.0 + 1), B, true, last, None))));
+    assert_ne!(vote_res(&c, C, B).and_then(|r| r.deny), Some(Deny::Suspected));
+}
+
+/// F67's idle shape: the member holding `led_term` restarts as a follower (an idle eviction), so all three are
+/// followers with no leader. Campaigns are request-driven, so one ordinary request must elect, with the edge's
+/// reports as `graftyard_lookup` sends them: a write to the member holding `led_term` resumes it; a write a follower
+/// refuses is reported about the member it named; and a follower's read-index read, which the restarted member answers
+/// as not leading, fails naming no leader, which `call_opt` reports to every voter. Each elects within a few seconds.
+#[test]
+fn one_request_elects_an_idle_group_whose_leader_restarted() {
+    // (to, write): the request's target and kind.
+    for (to, write) in [(A, true), (B, true), (B, false), (C, false)] {
+        let mut c = Cluster::new(71);
+        c.elect(A);
+        c.sync(A);
+        c.crash(A);
+        c.advance(ms(graftyard_raft::ELECTION_AFTER) * 3);
+        c.restart(A);
+        c.deliver_all();
+        assert_eq!(c.leader(), None, "the idle group has no leader");
+        assert_eq!(c.m(A).state().led_term, Some(c.m(A).term()));
+        let t0 = c.now;
+        let report_all = |c: &mut Cluster, about: SiteId| {
+            for s in [A, B, C] {
+                let term = c.m(s).term();
+                c.on(s, |m, now| m.suspect(now, Colo(1), about, term));
+            }
+        };
+        if write {
+            if c.on(to, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(9)), put("k", "v"))).is_err() {
+                // The follower names A; A, asked next, resumes.
+                c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(9)), put("k", "v"))).expect("A resumes");
+            }
+        } else {
+            let id = c.on(to, |m, now| m.read_index(now)).expect("a follower naming A queues the read");
+            c.run(1_000, 100, |_| true);
+            let failed = c.resolutions.iter().any(|(s, r)| {
+                *s == to && matches!(r, Resolution::Read { id: i, result: Err(nl) } if *i == id && nl.leader.is_none())
+            });
+            assert!(failed, "the read fails naming no leader");
+            report_all(&mut c, to);
+        }
+        c.run(4_000, 100, |_| true);
+        assert!(c.leader().is_some(), "to {to:?} write {write}: no leader {} ms after one request", c.now.0 - t0.0);
+    }
 }

@@ -17,14 +17,15 @@ All resources are in account `<cf-account-id>`. The work directory is `~/.graft-
 | Git shard image | `registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:172216ad0cbdf8779b0c20a698a0b5040a3de4295581408698ea3b157a8df3e9`, the image `graft-m1` runs; reused, not rebuilt (`containers/` has no commit since `e46da45`) | |
 | Cron Trigger | `*/15 * * * *` on each site script | `sites add` |
 | Queues | `graft-m3c-prsync-a`, `graft-m3c-prsync-b`, `graft-m3c-prsync-c`. `sites add` created none, so the day-1 site scripts had no `PRSYNC` binding; site day 2 (`workers/site/deploy.mjs`) created them | `workers/site/deploy.mjs` |
-| Secrets Store | none. `graftyard genesis` failed with `maximum_stores_exceeded` (the account's one store is `graft-m2b`'s), so it ran with `--offline-keys`: the drain and executor keys were not stored | `graftyard genesis --offline-keys` |
+| Secrets Store | none of its own. `graftyard genesis` failed with `maximum_stores_exceeded` (the account has one store, which `graft-m2b` made), so it ran with `--offline-keys`: the drain and executor keys were not stored. The ops secret below is in that shared store | `graftyard genesis --offline-keys` |
 | Genesis | digest `0ec9dc705015…`, committed at `Release` index 3. Every system chain is `Tri` on sites 0, 1, and 2, with home 0. All 3,072 `Tokens` shard groups created (the first `install` hit its 30-min `timeout` in the precreation; the rerun answered "already installed" and finished it) | `genesis`, `sign`, `install --genesis` |
-| Git edge | `graft-m3c-edge`, `https://graft-m3c-edge.<workers-subdomain>.workers.dev`, a test-faults build with the install's anchor, `FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3`, no `OPS` binding, no `LOGINS`; secret `BED_TOKEN` (`~/.graft-m3c/bed.token`) | `tests/m1/integ/deploy-edge.mjs --test-faults --anchor --var FORMATS_ENABLED=…` |
+| Git edge | `graft-m3c-edge`, `https://graft-m3c-edge.<workers-subdomain>.workers.dev`, a test-faults build with the install's anchor, no `LOGINS`; secret `BED_TOKEN` (`~/.graft-m3c/bed.token`). Built with `FORMATS_ENABLED=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3` and no `OPS`; since `lf4-rest` it has `OPS = graft-m3c-ops`, and since `lf4-rest-3` the same formats plus 32.18 | `tests/m1/integ/deploy-edge.mjs --test-faults --anchor [--ops graft-m3c-ops] --var FORMATS_ENABLED=…` |
+| Ops worker | `graft-m3c-ops` (version `ee85c0b0`), added by `lf4-rest` (`tests/am1/results/lf4-rest.md`): Secrets Store secret `graft-m3c-mint-wrap-key` in the account's one store `bfaa0c1573de4775b1b92a12fb89acb4`, bound as `MINT_WRAP_KEY`; `PutVerifyingKey` kid 1 on `tokens:0` at index 7; the private half shredded | `tests/m3/hosted/tools` `mintkey 1`, `workers/ops/deploy.mjs` |
 | Raw `/member` test edge | `graft-m3c-tools-edge`, `https://graft-m3c-tools-edge.<workers-subdomain>.workers.dev`, secret `TOKEN` (`~/.graft-m3c/tools.token`) | `tests/m1/wp7/deploy-edge.mjs` with `SITES`, `GENESIS`, and `EDGES` |
 | Seed | org `m3org` 7100001, `m3-member` 7100002, `m3-admin` 7100003, App `m3-ci` 131072 installed on `m3org` as 7190001, a PAT each for member and admin; repository `m3org/j4` = `repo:65536` | `tests/m3/hosted/setup.ts --out ~/.graft-m3c/m3` |
 | LF-13 repositories | `m3org/lf13-g` = `repo:65537` (gap), `m3org/lf13-i` = `repo:65538` (install) | `tests/am1/runs/mkrepos.mjs lf13-g lf13-i` |
 
-No `graft-m3c-ops`: LF-13's lease commits are `m3-member`'s Shared leases under its PAT, which need no task and so no installation token. Without a Secrets Store there is nowhere to put a `MintWrapKey` without touching `graft-m2b`'s store, so `POST /app/installations/{id}/access_tokens` on this install answers 5xx (no `OPS` binding). `tests/am1/rest/apps.mjs` and `app-perms.mjs` were not run, for the same reason.
+The build had no `graft-m3c-ops`, because LF-13's lease commits are `m3-member`'s Shared leases under its PAT, which need no installation token. `lf4-rest` added it on 2026-11-12 (row above), with a new secret in the account's one Secrets Store, which other installs also use; m3-ci's mint answered 201 and `tests/am1/rest/apps.mjs` and `app-perms.mjs` ran then. Every later edge deploy must pass `--ops graft-m3c-ops` to keep the `OPS` binding (`tests/am1/lf4/siteday.sh`).
 
 The agent formats are enabled on the edge (32.8, 32.12, 32.14, 18.3); the site scripts read every format their build knows.
 
@@ -41,7 +42,9 @@ Files in `~/.graft-m3c`: `install.toml`, `customer.key` and `release.key` with t
 | 3 | 03:44Z to 03:51Z | `987311dc` / `96b8d31e` / `6ed07eb5` | `606b403` (the install skip keeps the snapshot's leases), test-faults, `--anchor`, the image above; via phase 1 `d2aea902` / `2ce5e7ce` / `5a84d5e4`. LF-13's batch 3 ran on these |
 | 4 | 04:11Z to 04:19Z | `13bd72fd` / `9418e14d` / `34c1fd4b` | `9d59283` (the ring restarts from the loaded tables in `finish_install`), test-faults, `--anchor`, the image above; via phase 1 `1beed8af` / `f62ec979` / `494ae79b`. The recorded LF-13 batch ran on these versions |
 
-Edge `graft-m3c-edge`: `0543a640-ccee-403f-8a60-5e592c864a72` (the build), then `ba54c862-bbb8-4b85-a793-17b9e26955e7` (the `BED_TOKEN` secret). Tools edge: `17adeb1a-3e51-43ad-a2c3-cbf6f5a2521e`, then `a3b633da-604f-46d0-b542-005e63e1c691` (`TOKEN`). Neither changed after.
+Edge `graft-m3c-edge`: `0543a640-ccee-403f-8a60-5e592c864a72` (the build), then `ba54c862-bbb8-4b85-a793-17b9e26955e7` (the `BED_TOKEN` secret). Tools edge: `17adeb1a-3e51-43ad-a2c3-cbf6f5a2521e`, then `a3b633da-604f-46d0-b542-005e63e1c691` (`TOKEN`); the tools edge has not changed since.
+
+Later site and edge days were run by other branches, each recorded in its own result file (`lf4-rest*.md`, `merge-budget*.md`, `learner-dumps.md`, `hot-shards.md`, `narrow-reads.md`, `idle-shards.md`); some of them deployed other shard images (`sha256:5f4f7f93…`, `sha256:7e0c4772…`). Read from the Cloudflare API at 23:35Z on 2026-11-12, the live versions were site a / b / c `bd507f40` / `f13e120e` / `80a331a6` (22:39Z), edge `3dd873b0` (23:15Z, `OPS = graft-m3c-ops`, formats through 32.18), ops `ee85c0b0`, tools edge `a3b633da`. Check the API before relying on a version.
 
 ## Point the drivers at it
 
@@ -49,6 +52,7 @@ Edge `graft-m3c-edge`: `0543a640-ccee-403f-8a60-5e592c864a72` (the build), then 
 
 - `LF13_ENV=tests/am1/lf13/env-m3c.sh bash tests/fanout/lf13.sh` runs LF-13, both modes, 3 runs each.
 - Redeploy the sites with `node workers/site/deploy.mjs ~/.graft-m3c/sites.json --test-faults --anchor ~/.graft-m3c/install.toml --image <the image above>`. Every new version resets the members: a site day.
+- Shard size: the operator approved `standard-4` shard containers on test installs (2026-11-13). graft-m3c runs `standard-2` (the default) unless a site day set `SHARD_INSTANCE`. From its next site day it runs `standard-4`: pass `--vars <file>` with `{"SHARD_INSTANCE": "standard-4"}` (as `tests/am1/mb4/siteday.sh` does), then tear the running shards down so they restart at the new size.
 - Cost: `INSTALL=graft-m3c python3 tests/fanout/m2bcost.py <from> <to>`, from `~/.graft-m3c/t0`.
 
 ## Proof it works
@@ -62,10 +66,11 @@ Edge `graft-m3c-edge`: `0543a640-ccee-403f-8a60-5e592c864a72` (the build), then 
 
 Run these in order. Each step is safe to repeat.
 
-1. Delete the scripts `graft-m3c-edge`, `graft-m3c-tools-edge`, `graft-m3c-site-a`, `graft-m3c-site-b`, and `graft-m3c-site-c` (`npx --prefix tests/m0 wrangler delete --name <script>`). Deleting a site script deletes its Durable Objects and their storage.
+1. Delete the scripts `graft-m3c-edge`, `graft-m3c-tools-edge`, `graft-m3c-ops`, `graft-m3c-site-a`, `graft-m3c-site-b`, and `graft-m3c-site-c` (`npx --prefix tests/m0 wrangler delete --name <script>`), the edge before `graft-m3c-ops`, which it binds. Deleting a site script deletes its Durable Objects and their storage.
 2. Delete the container applications `graft-m3c-site-{a,b,c}-gitshard` (`wrangler containers list`, then `wrangler containers delete <id>`).
 3. Empty and delete the buckets `graft-m3c-site-{a,b,c}-packs` (`wrangler r2 bucket delete <name>` after removing their objects).
 4. Delete the queues `graft-m3c-prsync-{a,b,c}` (`wrangler queues delete <name>`).
-5. Remove `~/.graft-m3c`. It holds the install's private keys and tokens.
+5. Delete the secret `graft-m3c-mint-wrap-key` from store `bfaa0c1573de4775b1b92a12fb89acb4`. Do not delete the store: it holds other installs' secrets.
+6. Remove `~/.graft-m3c` and every staged copy of it. It holds the install's private keys and tokens.
 
-The git shard image belongs to the `graft-m1` install. Do not delete it. There is no Secrets Store to delete.
+The git shard images live in `graft-m1`'s registry repository. Do not delete them.

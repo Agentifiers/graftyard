@@ -382,6 +382,15 @@ pub struct DepsWanted {
     pub chains: SmallVec<[ChainId; 3]>,
 }
 
+/// The entry at `index` was decided on the reads of these `DepsWanted` ids. A batch's reads may start while the
+/// previous entry is in flight, and an id block or recorded entry may go first, so only this names the entry a read
+/// decided. Hosts may ignore it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DepsUsed {
+    pub ids: SmallVec<[u64; 2]>,
+    pub index: Index,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Alarm {
     /// A follower on the same or a newer release refused an entry, or any follower refused a committed one. The
@@ -550,6 +559,7 @@ pub struct Out<C: Command> {
     pub messages: Vec<Envelope<Ev<C>>>,
     pub resolutions: Vec<Resolution<C>>,
     pub deps: Vec<DepsWanted>,
+    pub deps_used: Vec<DepsUsed>,
     pub alarms: Vec<Alarm>,
     /// Per entry this input decided, the admitted requests whose command `decide` refused. Each refusal's ticket
     /// resolves `Refused` only if that entry commits; if it is lost, the re-sent command is decided again.
@@ -570,6 +580,7 @@ impl<C: Command> Default for Out<C> {
             messages: Vec::new(),
             resolutions: Vec::new(),
             deps: Vec::new(),
+            deps_used: Vec::new(),
             alarms: Vec::new(),
             refused: Vec::new(),
             self_ack: None,
@@ -680,6 +691,11 @@ pub struct Member<C: Command> {
     drained: BTreeSet<SiteId>,
     /// A voter refused this member's pre-vote as `Suspected`: until then it denies no rival as `Contending`.
     stand_aside_until: Timestamp,
+    /// The leader this member forgot because its read-index call to it failed (F67): reports about it still count.
+    /// A leader it never heard from (a transfer target it voted for) is not one: reports about it do not count.
+    forgot: Option<SiteId>,
+    /// A voter refused this member's pre-vote as `Suspected`: it starts no other campaign until then, half the bar.
+    retry_pre_at: Timestamp,
     /// The highest index of this member's log that it knows is durable on its own storage: the stored log at
     /// `restore`, then raised only by `self_ack`. A leader counts itself toward a commit only up to here.
     own_durable: Index,
@@ -698,6 +714,9 @@ pub struct Member<C: Command> {
     remote: install::RemoteReads,
     /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
     admit_capacity: Option<f32>,
+    /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
+    /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
+    next_deps: u64,
 }
 
 impl<C: Command> Member<C> {
@@ -807,6 +826,8 @@ impl<C: Command> Member<C> {
             refuser_release: BTreeMap::new(),
             drained: BTreeSet::new(),
             stand_aside_until: Timestamp(0),
+            forgot: None,
+            retry_pre_at: Timestamp(0),
             own_durable,
             own_durable_at: Timestamp(0),
             epoch: 0,
@@ -815,6 +836,8 @@ impl<C: Command> Member<C> {
             install: None,
             remote: install::RemoteReads::default(),
             admit_capacity: None,
+            // The top bit clear leaves 2^63 ids before a wrap.
+            next_deps: boot >> 1,
         })
     }
 

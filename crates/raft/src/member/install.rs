@@ -308,6 +308,7 @@ impl<C: Command> Member<C> {
         // only through followers and learners never elects: their reads shed with no report.
         let failed_call = failed.len() > unanswered;
         let nl = if failed_call {
+            self.forgot = self.leader.or(self.forgot);
             self.leader = None;
             if self.role == Role::Follower {
                 let _ = self.try_campaign();
