@@ -32,7 +32,7 @@ pub use fold::{Command, Ev, Fold, GroupFold, MemRequests, Record, RequestRow, Re
 pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
     APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny,
-    DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource,
+    DepsUsed, DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource,
     InstallWanted, LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready,
     ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq,
     VoteRes, Write, verify,

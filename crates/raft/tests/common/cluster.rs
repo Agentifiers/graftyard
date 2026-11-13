@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use graftyard_raft::{Envelope, Member, Ready, Resolution, Role, Stored, Ticket};
+use graftyard_raft::{DepsUsed, DepsWanted, Envelope, Member, Ready, Resolution, Role, Stored, Ticket};
 use graftyard_types::{SiteId, Timestamp};
 
 use super::kv::{Kv, KvCmd, KvEvent};
@@ -30,6 +30,9 @@ pub struct Cluster {
     pub resolutions: Vec<(SiteId, Resolution<KvCmd>)>,
     /// Every `Out::refused` released: (site, entry index, request id).
     pub refused: Vec<(SiteId, graftyard_raft::Index, graftyard_raft::RequestId)>,
+    /// Every dependency read asked for, and every entry decided on reads, with the site and time.
+    pub deps: Vec<(SiteId, Timestamp, DepsWanted)>,
+    pub deps_used: Vec<(SiteId, DepsUsed)>,
     boots: u64,
     alarms: Vec<(SiteId, graftyard_raft::Alarm)>,
 }
@@ -43,6 +46,8 @@ impl Cluster {
             inbox: Vec::new(),
             resolutions: Vec::new(),
             refused: Vec::new(),
+            deps: Vec::new(),
+            deps_used: Vec::new(),
             boots: seed * 1000,
             alarms: Vec::new(),
         }
@@ -60,6 +65,8 @@ impl Cluster {
         let (r, mut out) = f(m, now).persist(&mut self.disks[s.0 as usize]);
         loop {
             self.refused.extend(out.refused.drain(..).map(|(i, r)| (s, i, r)));
+            self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
+            self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
             self.inbox.extend(out.early.drain(..).chain(out.messages.drain(..)));
             self.resolutions.extend(out.resolutions.drain(..).map(|r| (s, r)));
             self.alarms.extend(out.alarms.drain(..).map(|a| (s, a)));
@@ -120,6 +127,9 @@ impl Cluster {
         self.inbox.append(&mut out.messages);
         self.resolutions.extend(out.resolutions.drain(..).map(|r| (s, r)));
         self.alarms.extend(out.alarms.drain(..).map(|a| (s, a)));
+        let now = self.now;
+        self.deps.extend(out.deps.drain(..).map(|d| (s, now, d)));
+        self.deps_used.extend(out.deps_used.drain(..).map(|d| (s, d)));
         if let Some(ack) = out.self_ack.take() {
             self.on(s, |m, now| m.self_ack(now, ack));
         }

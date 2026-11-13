@@ -220,6 +220,10 @@ impl<T> Lane<T> {
         out
     }
 
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.queues.values().flatten()
+    }
+
     pub(crate) fn drain(self) -> impl Iterator<Item = T> {
         self.queues.into_values().flatten()
     }
