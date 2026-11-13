@@ -68,7 +68,7 @@ impl Enc<'_> {
 
 pub(crate) struct Dec<'a> {
     buf: &'a [u8],
-    at: usize,
+    pub(crate) at: usize,
 }
 
 impl<'a> Dec<'a> {
