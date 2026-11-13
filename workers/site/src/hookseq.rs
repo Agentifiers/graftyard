@@ -74,6 +74,12 @@ const DIR_FOR_MS: u64 = 30_000;
 /// a third of the object's time, which every attempt's report waited behind [measured,
 /// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 8].
 const PRUNE_EVERY_MS: u64 = 60_000;
+/// Attempt reports are written together, once per this window, not one transaction each [guess]. A Durable Object
+/// holds every outgoing fetch until all its earlier writes are confirmed, so with one commit per report, about 160 a
+/// second in BF-57 run 9, an attempt took 110 ms at p50 against 6 ms unloaded, and 119 ms when it overlapped a write
+/// against 42 ms when it did not [measured, `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 9]. A report lost to a reset
+/// inside the window leaves its attempt to be re-sent under its GUID after `RESEND_AFTER_MS`.
+const REPORT_SAVE_MS: u64 = 50;
 
 /// One leadership's consumer state, in this isolate's memory.
 #[derive(Default)]
@@ -561,6 +567,8 @@ pub struct HookSequencer {
     env: Env,
     seq: Rc<RefCell<Option<Sequencer>>>,
     pruned_at: std::cell::Cell<u64>,
+    /// A `save` of attempt reports is scheduled (`save_soon`).
+    save_due: Rc<std::cell::Cell<bool>>,
 }
 
 /// A delivery's payload is kept in `body`, apart from its `delivery` row, and the object holds in memory only the
@@ -582,7 +590,13 @@ impl DurableObject for HookSequencer {
         for s in SCHEMA {
             sql.exec(s, None).expect("hookseq schema");
         }
-        HookSequencer { state: Rc::new(state), env, seq: Rc::default(), pruned_at: std::cell::Cell::new(0) }
+        HookSequencer {
+            state: Rc::new(state),
+            env,
+            seq: Rc::default(),
+            pruned_at: std::cell::Cell::new(0),
+            save_due: Rc::default(),
+        }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -750,41 +764,7 @@ impl HookSequencer {
 
     /// Writes the core row and the deliveries that changed, in one transaction.
     fn save(&self) -> Result<()> {
-        let mut g = self.seq.borrow_mut();
-        let Some(s) = g.as_mut() else { return Ok(()) };
-        let mut stmts: Vec<crate::family::Stmt> = Vec::new();
-        let mut done = Vec::new();
-        for (guid, d) in s.take_dirty() {
-            let key: SqlStorageValue = guid.0.to_vec().into();
-            match d {
-                Some(d) => {
-                    // A delivery's first write carries its body, which goes to `body` once; the row never does.
-                    if d.attempts.is_empty() && !d.body.is_empty() {
-                        stmts.push((
-                            "INSERT OR IGNORE INTO body (guid, b) VALUES (?, ?)",
-                            vec![key.clone(), d.body.to_vec().into()],
-                        ));
-                    }
-                    let row = HookDelivery { body: Box::default(), ..d.clone() };
-                    stmts.push((
-                        "INSERT OR REPLACE INTO delivery (guid, row) VALUES (?, ?)",
-                        vec![key, codec::to_bytes(&row).into()],
-                    ));
-                    if d.done {
-                        done.push(guid);
-                    }
-                }
-                None => {
-                    stmts.push(("DELETE FROM delivery WHERE guid = ?", vec![key.clone()]));
-                    stmts.push(("DELETE FROM body WHERE guid = ?", vec![key]));
-                }
-            }
-        }
-        for g in done {
-            s.take_body(&g);
-        }
-        stmts.push(("INSERT OR REPLACE INTO core (k, v) VALUES (0, ?)", vec![codec::to_bytes(&*s).into()]));
-        crate::host::commit_tx(&self.state.storage(), stmts).map_err(Error::RustError)
+        save_seq(&self.state, &self.seq).map_err(Error::RustError)
     }
 
     fn record(&self, r: RecordReq) -> Result<RecordRes> {
@@ -893,9 +873,6 @@ impl HookSequencer {
                 break;
             }
             next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&s, Timestamp(now_ms()));
-            if next.is_some() {
-                self.save()?;
-            }
         }
         self.kick();
         Ok(())
@@ -937,7 +914,25 @@ impl HookSequencer {
             status,
             now_ms() - started
         );
-        self.save()
+        self.save_soon();
+        Ok(())
+    }
+
+    /// Writes what changed within `REPORT_SAVE_MS`, in one transaction with every other report of the window.
+    fn save_soon(&self) {
+        if self.save_due.replace(true) {
+            return;
+        }
+        let (state, seq, due) = (self.state.clone(), self.seq.clone(), self.save_due.clone());
+        spawn_local(async move {
+            worker::Delay::from(std::time::Duration::from_millis(REPORT_SAVE_MS)).await;
+            due.set(false);
+            if let Err(e) = save_seq(&state, &seq) {
+                console_error!("hookseq save: {e}");
+                // The writes failed: reset the object, as a failed synchronous `save` does through its error.
+                crate::host::abort(&state, "graftyard hookseq storage write failed");
+            }
+        });
     }
 
     /// Puts a delivery's body back in memory from `body` when it is not there: a done delivery's, for a manual
@@ -964,6 +959,45 @@ impl HookSequencer {
         SECRETS.with(|m| m.borrow_mut().insert(key, s.clone()));
         Ok(Some(s))
     }
+}
+
+/// `HookSequencer::save`: the core row and the deliveries that changed, in one transaction.
+fn save_seq(state: &State, seq: &RefCell<Option<Sequencer>>) -> std::result::Result<(), String> {
+    let mut g = seq.borrow_mut();
+    let Some(s) = g.as_mut() else { return Ok(()) };
+    let mut stmts: Vec<crate::family::Stmt> = Vec::new();
+    let mut done = Vec::new();
+    for (guid, d) in s.take_dirty() {
+        let key: SqlStorageValue = guid.0.to_vec().into();
+        match d {
+            Some(d) => {
+                // A delivery's first write carries its body, which goes to `body` once; the row never does.
+                if d.attempts.is_empty() && !d.body.is_empty() {
+                    stmts.push((
+                        "INSERT OR IGNORE INTO body (guid, b) VALUES (?, ?)",
+                        vec![key.clone(), d.body.to_vec().into()],
+                    ));
+                }
+                let row = HookDelivery { body: Box::default(), ..d.clone() };
+                stmts.push((
+                    "INSERT OR REPLACE INTO delivery (guid, row) VALUES (?, ?)",
+                    vec![key, codec::to_bytes(&row).into()],
+                ));
+                if d.done {
+                    done.push(guid);
+                }
+            }
+            None => {
+                stmts.push(("DELETE FROM delivery WHERE guid = ?", vec![key.clone()]));
+                stmts.push(("DELETE FROM body WHERE guid = ?", vec![key]));
+            }
+        }
+    }
+    for g in done {
+        s.take_body(&g);
+    }
+    stmts.push(("INSERT OR REPLACE INTO core (k, v) VALUES (0, ?)", vec![codec::to_bytes(&*s).into()]));
+    crate::host::commit_tx(&state.storage(), stmts)
 }
 
 /// A delivery's body from the `body` table.
