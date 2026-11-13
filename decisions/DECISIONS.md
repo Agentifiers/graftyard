@@ -2729,3 +2729,21 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
 
 **Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
+
+#### The per-owner pool budget is a lease ledger in each site's first pool shard
+
+**Decision.** Each site's first pool shard keeps a `PoolLedger` in its SQLite: per network, the pool slots it holds, its owner, and its last renewal. Before a network's leader commits a `Fanout` step, it asks both warm sites' ledgers at once (`/pool/grant {network, owner, want}`). Each ledger runs `pool_grants` over its live leases, with the asker last. The leader commits a step up to 1 plus the fewer either granted, a step down only as `fanout` asks, and keeps k when either ledger does not answer within 3 s [guess]. A lease lapses unless renewed within LOAD_STALE, by the leader's asks while k is above 1 or by the first shard's once-a-minute `/pool/renew`. Time in which the ledger answered no call for more than 90 s [guess] counts against no lease. `shards_for` takes the network's granted slots, so each pool shard serves one network.
+
+**Why.** `pool_grants` ran only in tests. `shards_for` gave every network the same first k - 1 pool shards by rendezvous, and the leader's `Fanout` commit raised k with no grant, so B0-34's "hostile owner held to its per-owner pool budget" and "the monorepo's k reduced by another owner" would have measured missing code. A per-owner budget means nothing while two networks share their pool shards. The operator's default design fixed the ledger's place, the grant before the commit, the lease, and the outage rule. The code differs from that default in three places:
+- The leader asks for the k it holds, not only for a step, so a hot network's lease stays alive.
+- A grant short of the held k (a ledger that lost a race, or a newly warm site whose pool is taken) never steps k down. Otherwise a ledger, not `fanout`, would take a network's shards away.
+- A ledger's own silence is not counted against leases. Otherwise a ledger outage longer than LOAD_STALE would expire every lease on its return.
+
+**Beat.**
+- Grants inside the leader's `Fanout` command's `decide`, which would read the site's pool through `fresh` as a cross-group dependency and make every network's step wait on a shared group.
+- A pool group or object of its own: a new failure domain for the same state.
+- Rendezvous pool slots with an owner check only on k: the shards stay shared, so one owner's grant still loads another's shards.
+
+**Evidence.** `crates/git/tests/agent_load.rs`: `b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share` now runs the leader's path (`LoadReports`, `pool_ask`, two `PoolLedger`s, `granted_k`) and checks distinct slots and each owner's share on each site every minute; `a_hostile_owner_with_three_hot_networks_is_held_to_its_share`, `another_owners_step_up_never_reduces_a_networks_held_shards`, `an_unrenewed_lease_expires_and_frees_its_shards`, `an_unreachable_ledger_keeps_k`; plants in `tests/am1/pool/plant.py`; the two-owner hosted smoke in `tests/am1/results/pool-grants.md`.
+
+**Flip.** A plan model with per-owner shares, which replaces `owner_share`. Also flips on a hosted run where a ledger round trip delays a step past `fanout`'s up window, or where a ledger's SQLite write rate on one pool shard shows in its validate latency.
