@@ -689,7 +689,7 @@ A fresh read-only agent, WalkRest, walked Milestone 4, Milestone 7, AM4, and the
 
 **Evidence.** `history/review/walk-rest-interrogate.md` WK-X10. `history/review/walk-rest-reports.md`, WriterX2. `design/DESIGN.md`, Shape, "Identity" (`SearchShard`).
 
-**Flip.** None stated. FTS5 inside Durable Object SQLite is not yet confirmed (`decisions/OPEN-QUESTIONS.md`, C15).
+**Flip.** None stated. FTS5 inside Durable Object SQLite, under the `eu` jurisdiction too, was confirmed on 2026-11-13 (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`).
 
 ### Rate limits count in one `RateCounter` per key, with a stated error bound
 
@@ -2201,6 +2201,39 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 **Flip.** A row whose leader still exceeds 128 MB with the cache warm and the cap holding, which would move whole-tier reads off the leader; or a `suspect` delay of `SUSPECT_GAP` measured in a leader move, which would shorten the gap.
 
 **Status, 2026-11-11: F65 narrowed, not answered.** On `d9ee594` the 500-agent smoke held every member under 80 MB with 1,237 of 1,242 pushes ok, but B0-29's apac leader reached 262 MB, and about 600 cheap reads completed in one millisecond after a stall and then `exceededMemory`; the rows fail on leader step-downs from `Confirm` and `CommitErrors` (`build/BUILD-PLAN.md`, AM1-WP6, "After the read cap"). Next hypothesis [unverified]: one quorum round grants every waiting read and the host builds all their answers before sending any. The round now running caps every leader read in flight and streams the granted answers. The `Fresh` rule in `design/DESIGN.md`, "Commit and read paths", is reworded to admit the dump cache, whose key is read after the lease check.
+
+### C15 answered, and M4-WP2's pure half, 2026-11-13
+
+A hosted probe confirmed FTS5 in Durable Object SQLite under `eu` and with no jurisdiction (`decisions/OPEN-QUESTIONS.md`, C15; `tests/m4/c15/`). M4-WP2's pure half then passed BF-5, BF-67, and BF-68 in memory (`tests/m4/results/m4-wp2.md`).
+
+#### M4-WP2's pure half: formats, tags, and three design points
+
+**Decision.** M4-WP2 takes repository format 32.19 (`REPO_FORMAT_WATCH`) and Identity format 0x14.3, the next free ones on main (32.17 is `REPO_FORMAT_LIFECYCLE`, and 32.18 is `REPO_FORMAT_CHECKS`). Wire tags, appended: `RepoEvent` 42 `Watchers`; `IdentityEvent` 6 `Record` and 7 `CountsCursor`; `IdentityOp` 8 `SetRecord` and 9 `CountsCursor`. New enums: `UserRecord`, `WatcherUpdate`, `inbox::Reason`, and `search::Domain`. Three design points. DESIGN, Shape, "Identity", states the first two, and `crates/identity/src/identity.rs` states the third:
+- A watcher row is the account's whole state for its key at `src`, never a delta.
+- `Counts` keeps a `CountsCursor` on each account's `Identity` chain, and `Notify` and `Search` commit SHARED's `ConsumerCursor` on the repository chain after their work.
+- `ThreadId { repo, number }` with REST id `repo << 24 | number`.
+
+**Why.**
+- A row that carries the full state at a fold index is idempotent and order-free under Queues' at-least-once delivery. The consumer needs no per-record bookkeeping, and an older batch is refused by comparing one index.
+- A consumer that reads one chain and writes others moves its cursor on the chain it reads, after the work, as SHARED's "Other consumers" rule already says.
+- GHES's thread id is an opaque string, so packing (repository, number) lets the edge route `/notifications/threads/{id}` with no lookup table [inference].
+
+**Beat.**
+- Sending each `UserRecord` as a delta, which a reordered redelivery would apply out of order.
+- A thread-id table in the Inbox, which a rebuilt Inbox would have to reproduce identically.
+- A shared cursor format, which would give `Counts` a cursor on chains it never writes.
+
+**Evidence.** `tests/m4/results/m4-wp2.md` [measured, in memory]:
+- BF-5: star and notice both visible after 1,400 ms.
+- BF-67: the rebuilds kept read and done state and every `sources` event; 10,000 stars were listed live and after a refold with an equal metadata digest; a redelivery applied 0.
+- BF-68: EU documents only in `eu` shards; 7 of 13 hits with `incomplete_results` while a shard was killed; 14 of 14 after the generation-2 rebuild.
+- 30 of 30 plants caught. 8 REST replies valid against GHES 3.22.
+- `crates/git/tests/wire_tags.golden`: 24 lines added, none removed.
+
+**Flip.**
+- For the tags: none, once released.
+- For the thread id: a repository id past 2^39 or an issue number past 2^24, which the packing cannot hold.
+- For the watcher rows: a hosted `Counts` lagging past BF-5's 10 s because each batch carries whole state.
 
 ### `fanout`, the read gate's installation-token cache, and M4-WP1's pure half, 2026-11-10
 

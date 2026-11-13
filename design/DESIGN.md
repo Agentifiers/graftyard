@@ -1281,9 +1281,9 @@ pub const RUNNER_VCPU_STOP_PCT: u8 = 70;   // [guess]
 /// SHARED's `IdentityEvent` gains `Record(UserRecord)` on the actor's group. These gate nothing. The `Counts` consumer
 /// reads every `Record` and writes the derived watcher index, in the Bot class and at most one entry a second, to each
 /// repository's metadata tier: `watcher(account, starred_at, watching, ignored, src)`, `thread_sub(thread, account,
-/// subscribed, src)`, and the counts. `src` is the record's `Identity` index, and a row never takes an older one, so a
-/// redelivery changes nothing. `/stargazers` and `/subscribers` page it. `Notify` reads it on a follower, with the
-/// thread's author, assignees, commenters, and mentions from the same fold. A refold of the repository rebuilds it.
+/// subscribed, src)`, and the counts: each row the account's whole state at `src`, the `Identity` index read, never a
+/// delta or an older `src` [measured, `tests/m4/results/m4-wp2.md`]; then `Counts` moves the account's `CountsCursor`.
+/// `/stargazers`, `/subscribers`, and `Notify` (on a follower, with authors, assignees, commenters, mentions) read it.
 pub enum UserRecord { Star { repo: RepoId, on: bool }, Watch { repo: RepoId, subscribed: bool, ignored: bool },
                       Follow { user: AccountId, on: bool }, Subscription { thread: ThreadId, subscribed: bool },
                       Thread { thread: ThreadId, read: bool, done: bool } }
@@ -1297,9 +1297,9 @@ pub enum UserRecord { Star { repo: RepoId, on: bool }, Watch { repo: RepoId, sub
 pub struct Inbox { pub account: AccountId, pub site: SiteId /* the home site, or the next record site after a loss */ }
 pub const INBOX_WINDOW: Duration = Duration::from_secs(2 * 86_400);   // [guess]
 /// Cross-repository search (SHARED, `rest:search`): FTS5 tables in one object per (residency domain, shard), defined
-/// by every site script and placed on the domain's first Full site with the domain's DO jurisdiction. `Search` writes
-/// each document to the shard of its repository's hash, 16 shards per domain [guess]. A lost shard is rebuilt under the
-/// next `generation` on the domain's next site, from the metadata tiers that `MemberRegistry` lists.
+/// by every site script and placed on the domain's first Full site with the domain's DO jurisdiction (FTS5 works in DO
+/// SQLite, `eu` too [measured, `tests/m4/c15`]). `Search` writes each document to its repository hash's shard, 16 per
+/// domain [guess]. A lost shard is rebuilt under the next `generation` on the domain's next site from the metadata tiers.
 pub struct SearchShard { pub domain: Domain, pub shard: u8, pub generation: u32 }
 pub enum Domain { Default, Us, Eu, Apac }      // the owner's residency, from its `PlacementRecord` name
 /// The counters behind `x-ratelimit-*`, where GHES rate limits are on (SHARED, "Public service concerns"). One object

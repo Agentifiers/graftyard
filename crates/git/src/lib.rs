@@ -15,6 +15,7 @@ pub mod commit_fetch;
 pub mod feed;
 pub mod group;
 pub mod hooks;
+pub mod inbox;
 pub mod ingest;
 pub mod init;
 pub mod issue_ops;
@@ -34,6 +35,7 @@ pub mod queue;
 pub mod queue_consumer;
 pub mod refs;
 pub mod repo;
+pub mod search;
 pub mod sequencer;
 pub mod shard;
 pub mod smart;
@@ -43,6 +45,7 @@ pub mod sweep;
 pub mod task;
 pub mod tiers;
 pub mod transfer;
+pub mod watch;
 
 #[cfg(feature = "worker")]
 pub mod host;
