@@ -19,7 +19,7 @@
 
 use std::cell::RefCell;
 
-use graftyard_git::inbox::{DAY_MS, From, Inbox, Notice, Snapshot};
+use graftyard_git::inbox::{DAY_MS, From, Inbox as Threads, Notice, Snapshot};
 use graftyard_identity::UserRows;
 use graftyard_raft::codec;
 use graftyard_types::{AccountId, ChainId, DbId, Index, PlacementRecord, SiteId, Timestamp};
@@ -63,19 +63,19 @@ pub async fn call(env: &Env, a: AccountId, record: &PlacementRecord, path: &str,
 }
 
 #[durable_object(alarm)]
-pub struct InboxObject {
+pub struct Inbox {
     state: State,
     env: Env,
-    inbox: RefCell<Option<Inbox>>,
+    inbox: RefCell<Option<Threads>>,
 }
 
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS core (k INTEGER PRIMARY KEY CHECK (k = 0), v BLOB NOT NULL, \
                       record TEXT)";
 
-impl DurableObject for InboxObject {
+impl DurableObject for Inbox {
     fn new(state: State, env: Env) -> Self {
         state.storage().sql().exec(SCHEMA, None).expect("inbox schema");
-        InboxObject { state, env, inbox: RefCell::default() }
+        Inbox { state, env, inbox: RefCell::default() }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -115,7 +115,7 @@ impl DurableObject for InboxObject {
             }
             "/delete" => {
                 self.state.storage().sql().exec("DELETE FROM core", None)?;
-                *self.inbox.borrow_mut() = Some(Inbox::default());
+                *self.inbox.borrow_mut() = Some(Threads::default());
                 Response::from_json(&json!({ "deleted": true }))
             }
             "/rebuild" => {
@@ -147,7 +147,7 @@ impl DurableObject for InboxObject {
     }
 }
 
-impl InboxObject {
+impl Inbox {
     fn account(&self) -> AccountId {
         let name = self.state.id().name().unwrap_or_default();
         AccountId(DbId(name.strip_prefix("inbox:").and_then(|n| n.parse().ok()).unwrap_or(0)))
@@ -160,13 +160,13 @@ impl InboxObject {
         let r = crate::host::rows(&self.state.storage().sql(), "SELECT v FROM core WHERE k = 0", vec![])?;
         let i = match r.first() {
             Some(r) => codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?,
-            None => Inbox::default(),
+            None => Threads::default(),
         };
         *self.inbox.borrow_mut() = Some(i);
         Ok(())
     }
 
-    fn with<T>(&self, f: impl FnOnce(&mut Inbox) -> T) -> T {
+    fn with<T>(&self, f: impl FnOnce(&mut Threads) -> T) -> T {
         f(self.inbox.borrow_mut().as_mut().expect("loaded"))
     }
 

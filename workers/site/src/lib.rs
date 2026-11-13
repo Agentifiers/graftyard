@@ -41,7 +41,7 @@ mod sweep;
 mod tier;
 
 pub use hookseq::HookSequencer;
-pub use inbox::InboxObject as Inbox;
+pub use inbox::Inbox;
 pub use member::Member;
 pub use registry::Registry;
 pub use search::SearchShard;
