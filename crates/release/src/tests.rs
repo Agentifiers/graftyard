@@ -2,8 +2,11 @@ use graftyard_types::{AccountId, DbId, PlacementRecord, Region, Site, SiteLink, 
 
 use super::*;
 
+mod group;
+
 const CUSTOMER: [u8; 32] = [7; 32];
 const OTHER: [u8; 32] = [8; 32];
+const T0: Timestamp = Timestamp(1_790_000_000_000);
 
 fn install(n: u8) -> InstallId {
     InstallId(Ulid::new(Timestamp(1_790_000_000_000), [n; 10]))
@@ -245,20 +248,21 @@ fn the_group_accepts_one_genesis_and_refuses_a_replay_or_a_second() {
     let a = anchor();
     let mut fold = ReleaseFold::default();
     let bytes = signed(genesis_for(install(1), &CUSTOMER), &CUSTOMER);
-    let ev = fold.decide(&a, &bytes).unwrap();
+    let ev = fold.decide(&a, T0, &bytes).unwrap();
     assert_eq!(&*ev.bytes, &bytes[..]);
-    fold.check(&a, &ev).unwrap();
-    fold.apply(&ev);
+    fold.check(&a, T0, &ev).unwrap();
+    fold.apply(&ev, T0);
     let digest = SignedEntry::decode(&bytes).unwrap().digest();
     assert_eq!(fold.last, Some(digest));
     assert_eq!(fold.keys.as_ref().map(|k| k.customer), Some(a.customer));
     // The same bytes again, and a different valid genesis for the same install.
-    assert_eq!(fold.decide(&a, &bytes), Err(Refusal::AlreadyInstalled(digest)));
+    assert_eq!(fold.decide(&a, T0, &bytes), Err(Refusal::AlreadyInstalled(digest)));
     let mut g2 = genesis_for(install(1), &CUSTOMER);
     g2.account = AccountId(DbId(2));
-    assert_eq!(fold.decide(&a, &signed(g2, &CUSTOMER)), Err(Refusal::AlreadyInstalled(digest)));
+    assert_eq!(fold.decide(&a, T0, &signed(g2, &CUSTOMER)), Err(Refusal::AlreadyInstalled(digest)));
     // A follower that already applied it refuses the event again.
-    assert_eq!(fold.check(&a, &ev), Err(Refusal::AlreadyInstalled(digest)));
+    assert_eq!(fold.check(&a, T0, &ev), Err(Refusal::AlreadyInstalled(digest)));
+    assert_eq!(Refusal::AlreadyInstalled(digest).status(), 409);
 }
 
 #[test]

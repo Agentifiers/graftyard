@@ -2449,6 +2449,20 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
 
+### F67 rules 12 and 13: an emptied read-index batch leaves flight, and no hand-off onto a link that loses answers, 2026-11-13
+
+Branch `f67-r12` (`tests/m0/results/f67.md`, "Rules 12 and 13").
+
+**Decision.** (12) A follower drops a read-index batch from flight once every read in it failed past CAMPAIGN_DEADLINE, so the next batch goes out (`check_remote`). (13) A `/transfer` or drain hand-off refuses a target whose link from the leader is lossy while another follower's is not, and a running one of those is abandoned once its target's link turns so. Lossy is the commit-error rule's measure (over `commit_errors`, at least `commit_fail_min` failed) over every commit-path call in the `STEP_DOWN` window, including the misses `call_counts` leaves out. `STEP_DOWN` keeps its own target choice and probes, and the move `home` its HOME_CALLS rule.
+
+**Why.** m0-carried-8 found main `a7d28e5` failing `a_read_only_group_elects_off_a_half_hung_leader` on seeds 21, 31, and 92 of 0 to 119: the emptied batch stayed in flight to the half-hung leader, later reads failed as queued, which forgets no leader, and no follower campaigned for the minute [measured, simulator]. Rule 12 alone pushed live seeds 10,273 (31.8 s), 11,401 (30.0 s), and 12,761 (31.6 s) past 30 s: each is a hand-off onto a half-hung follower whose losses the leader had counted but under `commit_fail_min`, after which the target led with its answers lost or the leader served nothing for the transfer's LEASE. The hand-off already refuses a `Suspected` target (rule 10); a lossy link is the leader's own evidence of the same fault.
+
+**Beat.** Rule 12 without 13 (three seeds past 30 s). A clean-link rule (at most `commit_errors` failed, any calls): it refused drain targets on single noise misses, and left 10,576 and 10,768 past 30 s. Guarding the move `home` too: with crashes and partitions it refused 279 of 328 home moves the HOME_CALLS rule had cleared, which would delay B0-31's re-home. Refusing with no fallback when every link is lossy: that is usually the leader's own fault, which handing off cures.
+
+**Evidence.** `leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` and `a_leader_hands_off_to_no_follower_whose_answers_it_loses` (with its control); `liveness.rs` `a_read_only_group_elects_off_a_half_hung_leader` now also runs seeds 21, 31, and 92. Each fails without its rule. With no faults but transfers and drains, 500 seeds made 14,786 transfers and rule 13 refused none; with 2% drops it refused 256 of 14,919 [measured, simulator]. Live seeds 10,000 to 13,999: none over 30 s, worst 26.2 s (12,361). Long sweep: HARSH 16,027 ms, gray 26,832 ms, live (4,000 seeds) 26,237 ms; Porcupine Ok on all three histories.
+
+**Flip.** A live seed past 30 s in the 4,000-seed window, or a healthy group whose `/transfer` or drain hand-off rule 13 refuses for longer than one `STEP_DOWN` window.
+
 ### `narrow-reads-3`: a read that waits for an answer's build is answered at or above its floor, with no second read-index, 2026-11-13
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65).
@@ -2479,19 +2493,6 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved b
 
 **Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
 
-### F67 rule 12: every unanswered read-index batch is a failed call, 2026-11-13
-
-Branch `narrow-reads-3` (`tests/m0/results/f67.md`, rule 12).
-
-**Decision.** A follower drops an in-flight read-index batch once every read in it has failed, so the next read goes out as a new batch, whose own failure makes the follower forget the leader again (F67 rule 2).
-
-**Why.** With 30% of follower reads answered later through `fresh_after` (the narrow answer cache), the kept test `a_read_only_group_elects_off_a_half_hung_leader` failed at seed 9 on the merged tree: an emptied batch stayed in flight and was resent forever to a half-hung leader; after that leader's next append the follower followed it again, and later reads failed as queued behind the batch, which is no failed call, so it never forgot the leader and never campaigned [measured, simulator]. m0-carried-8 found the same change on its branch (seeds 21, 31, 92 of that test on its pipelined core); the two copies are to be settled into one when both merge.
-
-**Beat.** Putting it on main's core branch (`f67-wide`): on main without deferred reads it pushed live seeds 10,273, 11,401, and 12,761 past 30 s, and it fixed no main seed. Reports during a transfer setting no pre-vote bar at all, which `f67-wide`'s rule 11 replaced with a bar that ends with the hand-off.
-
-**Evidence.** `crates/raft/tests/leadership.rs` `every_unanswered_read_index_batch_is_a_failed_call` fails without the fix ("round 1: the read failed naming A"); `tests/nr3/plant.py` mutant 15. The widened long sweep on this branch merged with `f67-wide` is in `tests/am1/results/narrow-reads-3.md`.
-
-**Flip.** A follower that should keep a batch it has resent, such as one whose leader answers late but answers.
 ### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
 
 Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
@@ -2939,3 +2940,53 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `crates/git/tests/agent_load.rs`: `b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share` now runs the leader's path (`LoadReports`, `pool_ask`, two `PoolLedger`s, `granted_k`) and checks distinct slots and each owner's share on each site every minute; `a_hostile_owner_with_three_hot_networks_is_held_to_its_share`, `another_owners_step_up_never_reduces_a_networks_held_shards`, `an_unrenewed_lease_expires_and_frees_its_shards`, `an_unreachable_ledger_keeps_k`; plants in `tests/am1/pool/plant.py`; the two-owner hosted smoke in `tests/am1/results/pool-grants.md`.
 
 **Flip.** A plan model with per-owner shares, which replaces `owner_share`. Also flips on a hosted run where a ledger round trip delays a step past `fanout`'s up window, or where a ledger's SQLite write rate on one pool shard shows in its validate latency.
+
+### M5-WP1: the `Release` group's rules, as built (2026-11-13)
+
+#### `decide`'s clock is the entry's own time
+
+**Decision.** `ReleaseFold::decide(anchor, at, bytes)` takes `at`, the time the leader stamped on the entry, and a follower's `check` takes the same stamp from the entry it verifies (the member's `release_at` table). `not_after` and a drain's 24 hours are judged against it, so the rules use no clock and the CLI, the member, and the tests run one function.
+
+**Why.** "`decide` is pure" (`design/DESIGN.md`, Shape, the `Command` trait). A wall clock read in `decide` would let a follower refuse an entry its leader accepted.
+
+**Beat.** Reading `Date.now()` in the member, which makes `decide` impure. Carrying the time in the signed body, which the signer controls.
+
+**Evidence.** `an_intent_past_not_after_is_refused` and `the_executor_key_replaces_only_a_lost_site_and_pins_nothing` (`crates/release/src/tests`); plants 2 and 11 in `tests/m5/plant.py`.
+
+**Flip.** A rule that needs time the leader cannot stamp, such as a deadline that must hold while no entry commits.
+
+#### `SignedIntent` carries no signature of its own
+
+**Decision.** `SignedIntent` drops `release_sig`, `key`, and `sig`. The entry's signature is the intent's, and the release's signature is on its `ReleaseUploaded` record, which an intent names by id.
+
+**Why.** A signed entry already carries its signers and binds the install and `prev`. A second signature inside the body signs fewer bytes and adds a check that can disagree with the first.
+
+**Beat.** Keeping the three fields and checking both, which doubles the signer rules.
+
+**Evidence.** `each_kind_takes_only_its_signers`; `design/DESIGN.md`, Shape, `SignedIntent`.
+
+**Flip.** An intent that must be relayed without its entry, such as one carried to a second install.
+
+#### Entries after genesis are format 0x30.2
+
+**Decision.** A `Release` member writes the genesis as 0x30.1 and every later entry as 0x30.2, and reads both. Tags 0 (`Genesis`) and 1 (`Keys`) are unchanged; tags 2 to 23 are new, in the design's order (`crates/release/src/tests/entry_tags.golden`).
+
+**Why.** A member built before M5-WP1 decodes only the genesis. A new format makes its refusal "unreadable format", not a wrong decode, and the existing installs' genesis bytes still re-sign byte for byte.
+
+**Beat.** Reusing 0x30.1 for the new tags, which an older member would misread as malformed.
+
+**Evidence.** `the_codec_round_trips_every_entry_kind`; graft-m4a's `genesis.unsigned`, signed again by this branch's `graftyard sign`, is byte-identical to its committed `genesis.signed` (digest `b40c10ed84bd…`).
+
+**Flip.** None expected: the wire format is append-only.
+
+#### An `EdgeRoll` undo pin names R or the release the edge runs
+
+**Decision.** An `EdgeRoll { release: R }`'s pre-signed undos may pin only R or the release the edge currently runs, and an `EdgeRoll` whose versions drop a version an undo of the current intent names is refused `DropsUndoVersion`.
+
+**Why.** The design says the roll may not drop an undo's version (`design/DESIGN.md`, Shape, "Release group") but not which versions an undo may name. Only these two are deployed during the roll, so a pin to any other release would point at a version no deployment holds.
+
+**Beat.** Accepting any uploaded release as the pin, which lets an undo name a version the roll already removed.
+
+**Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
+
+**Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.

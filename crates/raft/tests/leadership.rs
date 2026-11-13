@@ -1451,3 +1451,39 @@ fn a_hand_offs_suspect_bar_ends_when_another_leader_is_heard() {
         }
     }
 }
+
+/// A `/transfer` or drain hand-off goes only to a follower whose AppendEntries this leader saw answered, with at most
+/// `commit_errors` of its calls to it failed, in the window. A half-hung target answers some calls; handed leadership,
+/// it won the transfer vote and led with its answers lost, or the leader served nothing for the transfer's LEASE
+/// (F67 rule 13, live seeds 10273, 11401, and 12761 once rule 12 dropped emptied read-index batches). The control is
+/// the same target with every call answered.
+#[test]
+fn a_leader_hands_off_to_no_follower_whose_answers_it_loses() {
+    for half_hung in [true, false] {
+        let mut c = Cluster::new(79);
+        let mut id = 0;
+        c.elect(A);
+        c.sync(A);
+        // One AppendEntries to B in three loses its answer: under the commit-error rule's `commit_fail_min` in a
+        // quiet window, so no STEP_DOWN, but not a link to hand leadership over.
+        let mut n = 0;
+        drive(&mut c, 4_000, true, &mut id, |e| {
+            let to_b = e.to == B && matches!(e.msg, Message::Append(_));
+            n += u32::from(to_b);
+            half_hung && to_b && n % 3 == 0
+        });
+        assert_eq!(c.leader(), Some(A));
+        let r = c.on(A, |m, now| m.transfer(now, B));
+        if half_hung {
+            assert!(matches!(r, Err(TransferError::Target(t)) if t == B), "{r:?}");
+            // A's site is drained: it hands off to C, the follower it hears in full, not to B.
+            for s in SITES {
+                c.on(s, |m, now| m.set_drained(now, [A]));
+            }
+            drive(&mut c, ms(LEASE), true, &mut id, |_| false);
+            assert_eq!(c.leader(), Some(C));
+        } else {
+            assert!(r.is_ok(), "{r:?}");
+        }
+    }
+}

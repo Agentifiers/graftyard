@@ -1535,12 +1535,15 @@ impl<C: Command> Member<C> {
         if lead.transfer.is_some() {
             return;
         }
-        let mut to: Vec<SiteId> =
-            self.peers().into_iter().filter(|s| self.may_lead_target(*s) && !self.quarantined(*s)).collect();
+        let mut to: Vec<SiteId> = self
+            .peers()
+            .into_iter()
+            .filter(|s| self.may_lead_target(*s) && !self.quarantined(*s) && !self.link_refused(*s))
+            .collect();
         let refuser = lead.refuser;
         to.sort_by_key(|s| (Some(*s) != refuser, std::cmp::Reverse(lead.matched(*s))));
         if let Some(t) = to.first().copied() {
-            let _ = self.start_transfer(t, false);
+            let _ = self.start_transfer(t, false, true);
         }
     }
 
