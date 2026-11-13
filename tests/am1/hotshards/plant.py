@@ -34,6 +34,7 @@ SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
 GODER = ('go', [], 'Derived')
 GOREPACK = ('go', [], 'RefsRepacks')
 SHARD_P = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_pool_shard')
+SHARD_K = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_leader_keeps')
 SHARD_V = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_422')
 EDGE_V = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'only_a_shards_422')
 
@@ -153,6 +154,12 @@ MUTANTS = [
     ('a pool shard that answered warming is never tried again', SHARD,
      '    cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))', '    let _ = now;\n    cold_at.is_none()',
      SHARD_P),
+    ('a leadership catches the shards up once and never again', SHARD,
+     '    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))',
+     '    let _ = (now, applied);\n    last.is_none()', SHARD_K),
+    ('an idle group keeps waking its shards', SHARD,
+     '    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))',
+     '    let _ = applied;\n    last.is_none_or(|(at, _)| now >= at.saturating_add(KEEP_WARM_MS))', SHARD_K),
 ]
 
 

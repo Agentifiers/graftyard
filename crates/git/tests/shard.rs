@@ -295,3 +295,15 @@ fn a_pool_shard_that_answered_warming_gets_no_push_until_the_skip_passes() {
     assert!(!pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS - 1));
     assert!(pool_forward(Some(1_000), 1_000 + POOL_COLD_SKIP_MS));
 }
+
+/// A leadership catches its network's shards up at once, then again only after `KEEP_WARM_MS` and only when it applied
+/// entries since, so the shards a push falls back to stay a few seconds behind, and an idle group wakes nothing.
+#[test]
+fn a_leader_keeps_the_shards_warm_only_while_it_applies_entries() {
+    use graftyard_types::Index;
+    assert!(keep_warm_due(None, 0, Index(0)), "a new leadership catches up at once");
+    let last = Some((1_000, Index(50)));
+    assert!(!keep_warm_due(last, 1_000 + KEEP_WARM_MS - 1, Index(60)), "not before KEEP_WARM_MS");
+    assert!(keep_warm_due(last, 1_000 + KEEP_WARM_MS, Index(51)), "due once it passed, with an entry applied");
+    assert!(!keep_warm_due(last, 1_000 + 10 * KEEP_WARM_MS, Index(50)), "an idle group wakes no shard");
+}

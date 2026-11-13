@@ -460,6 +460,20 @@ pub fn validate_status(container: Option<u16>) -> u16 {
     }
 }
 
+/// How often a leading member catches up every Full site's first shard of its network while it applies entries
+/// [guess]. A shard that serves nothing falls behind by every push the home validated: at j9g's home-shard kill, site b's
+/// was 1,100 entries behind and site c's 1,900, so each push's fallback catch-up outlasted the edge's waits (15 s, then
+/// 60 s), and the 16 pushes in flight answered 503 after 137 s (`tests/am1/results/hot-shards-3.md`). 15 s of journey
+/// 9's pushes is about 60 entries, a catch-up of a second or two.
+pub const KEEP_WARM_MS: u64 = 15_000;
+
+/// Whether a leading member catches up its network's shards now: the first time this leadership asks (`last` is
+/// `None`), or `KEEP_WARM_MS` after the last time if it applied entries since. A group that applies nothing wakes no
+/// shard: a `warm` call never starts a stopped one either (`serve`).
+pub fn keep_warm_due(last: Option<(u64, Index)>, now: u64, applied: Index) -> bool {
+    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))
+}
+
 /// How long the network's first shard sends no push to a pool shard that answered `warming` [guess]: a pool shard
 /// that holds no cursor starts a rehydrate, which takes minutes on a hot group, and under a carried-over k every push
 /// meanwhile paid a call to it before the first shard validated it itself (`tests/am1/results/hot-shards-3.md`).
