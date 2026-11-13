@@ -4,7 +4,7 @@
 //   node tests/m1/wp2/run.ts bf12  --run NAME [--kills 10000] [--groups 10] [--down-every 25]
 //   node tests/m1/wp2/run.ts bf13  --run NAME [--rounds 400] [--groups 8] [--early]
 //   node tests/m1/wp2/run.ts bench --run NAME [--seconds 60] [--rate 100] [--bytes 1024] [--near-ms MS]
-//                                  [--chain repo:N] [--body array|stream] [--arrival sql|mem] [--entry soft|max]   # reuse a group; B0-02's A/B switches
+//                                  [--chain repo:N] [--body array|stream] [--arrival sql|mem] [--entry soft|max|<bytes>]   # reuse a group; B0-02's A/B switches
 //   node tests/m1/wp2/run.ts audit --run NAME      # BF-12 audit of every group's three members
 //
 // BF-12: each group appends unique tokens `i,` to one register, one command per kill. Kill modes alternate

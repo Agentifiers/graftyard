@@ -103,9 +103,10 @@ pub const ENTRY_MAX: usize = 1_500_000;
 /// stays within this many encoded bytes, so a backlog splits into several entries of this size, one round each.
 /// ENTRY_MAX still bounds one command alone. A Durable Object member's storage confirm grows with the entry: over 48
 /// one-minute B0-02 runs, confirm p99 was 95 to 132 ms for 20 to 80 KB entries, 168 ms at 80 to 100 KB, and 300 ms
-/// at 100 to 130 KB; with the leader's loop behind, 5 to 15% of confirms under 80 KB took 150 ms or more, against 26
-/// to 65% above it (`tests/m0/results/carried-6.md`) [measured].
-pub const ENTRY_SOFT: usize = 80_000;
+/// at 100 to 130 KB (`tests/m0/results/carried-6.md`). And a member call's body crosses a step just past 64 KiB: 0 to
+/// 2% of bodies up to 66 KiB took 60 ms or more to arrive, against 10 to 40% at 68 to 83 KiB, about one more round
+/// trip (`tests/m0/results/carried-7.md`) [measured]. So an entry stays under 64 KiB with its envelope.
+pub const ENTRY_SOFT: usize = 60_000;
 /// A boot more than this long after the member last saved its state is an idle eviction, not a reset
 /// (`MemberState.boots`).
 pub const BOOT_IDLE: Duration = Duration::from_secs(5);

@@ -597,7 +597,8 @@ pub struct Host<F: Family> {
     #[cfg(feature = "test-faults")]
     pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
     /// Test installs, B0-02's cap A/B (`tests/m0/results/carried-7.md`): where the leader stops filling an entry
-    /// (`/stats?entry=max` for ENTRY_MAX, `entry=soft` for ENTRY_SOFT). A reset object caps at ENTRY_SOFT again.
+    /// (`/stats?entry=max` for ENTRY_MAX, `entry=soft` for ENTRY_SOFT, `entry=<bytes>`). A reset object caps at
+    /// ENTRY_SOFT again.
     #[cfg(feature = "test-faults")]
     pub entry_soft: Cell<usize>,
     /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the

@@ -33,7 +33,7 @@ MUTANTS = [
     ('capacity still sized from ENTRY_MAX, so admission over-admits', LEADER,
      'let per_entry = (soft as f32 / self.cmd_bytes.max(CMD_BYTES_MIN)).max(1.0);',
      'let per_entry = ENTRY_MAX as f32 / self.cmd_bytes.max(CMD_BYTES_MIN);', ADMIT),
-    ('ENTRY_SOFT raised to ENTRY_MAX', LIB, 'pub const ENTRY_SOFT: usize = 80_000;',
+    ('ENTRY_SOFT raised to ENTRY_MAX', LIB, 'pub const ENTRY_SOFT: usize = 60_000;',
      'pub const ENTRY_SOFT: usize = 1_500_000;', SCEN),
     ('a member starts uncapped (the default is ENTRY_MAX)', 'crates/raft/src/member/mod.rs',
      'entry_soft: crate::ENTRY_SOFT,', 'entry_soft: crate::ENTRY_MAX,', SCEN),

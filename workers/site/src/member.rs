@@ -620,10 +620,14 @@ impl<F: Family> Routes<F> {
                         _ => {}
                     }
                 }
-                // `entry=max` or `entry=soft`: where the leader stops filling an entry (`Host::entry_soft`).
+                // `entry=max`, `entry=soft`, or `entry=<bytes>`: where the leader stops filling an entry
+                // (`Host::entry_soft`).
                 #[cfg(feature = "test-faults")]
                 if let Ok(e) = crate::registry::query(&url, "entry") {
-                    let soft = if e == "max" { raft::ENTRY_MAX } else { raft::ENTRY_SOFT };
+                    let soft = match e.as_str() {
+                        "max" => raft::ENTRY_MAX,
+                        n => n.parse().unwrap_or(raft::ENTRY_SOFT),
+                    };
                     self.host.entry_soft.set(soft);
                     if let Some(core) = self.host.core.borrow_mut().as_mut() {
                         core.m.set_entry_soft(soft);

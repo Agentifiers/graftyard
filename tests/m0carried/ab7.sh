@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # m0-carried-7's entry-cap A/B for B0-02 (`tests/m0/results/carried-7.md`): 16 one-minute runs at 330 offered, each on
 # a new group, alternating entries capped at ENTRY_SOFT (`soft`) and filled to ENTRY_MAX as before (`max`), all with
-# BF-14's arrival rows in memory. Resumes from the raw rows. With GATE=1 it runs the gate instead: 8 at 300 and 8 at
+# BF-14's arrival rows in memory. A and B name the two arms' `--entry` (default soft and max), such as A=soft B=80000.
+# Resumes from the raw rows. With GATE=1 it runs the gate instead: 8 at 300 and 8 at
 # 330 offered, each on a new group, capped.
 #
 #   PREFIX=m0c7 bash tests/m0carried/ab7.sh
+#   PREFIX=m0c7b A=soft B=80000 bash tests/m0carried/ab7.sh
 #   PREFIX=m0c7g GATE=1 bash tests/m0carried/ab7.sh
 set -u
 cd "$(dirname "$0")/../.."
@@ -22,7 +24,7 @@ if [ "${GATE:-0}" = 1 ]; then
 else
   for i in $(seq 1 16); do
     run=$(printf "%s-ab%02d" "$P" "$i")
-    [ -f $RAW/$run.bench.json ] || bench $run 330 $([ $((i % 2)) -eq 1 ] && echo soft || echo max)
+    [ -f $RAW/$run.bench.json ] || bench $run 330 $([ $((i % 2)) -eq 1 ] && echo ${A:-soft} || echo ${B:-max})
   done
 fi
 echo RUNS_DONE
