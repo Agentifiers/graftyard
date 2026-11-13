@@ -12,6 +12,7 @@ A shared install for Milestone 4. The M4 web thread ([thread](https://ampcode.co
 | Announced (UTC) | Start (UTC) | Thread | What | Site a / b / c, edge | State |
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-13 03:33Z | 03:34Z | build (`install-m3ef`) | site day 1 (product, `standard-4`), then the product edge with `--ops` | `bbe9dfae` / `20c39df1` / `48417c20`, edge `9fb34188` | done |
+| 2026-11-13 08:42Z | 08:54Z | M4 Actions | site day 2 (product, `standard-4`): `m4-actions` `aa1ac0d` (the `HookSequencer` class, migration v3, `HOOKSEQ_n` and `OPS` bindings, repository 32.16 read) merged with `m4-web` `8c57a4f` (`/ui/*` routes), image `sha256:099a022c…`, `--vars` site-vars.json, `--ops graft-m4a-ops`, `--var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev`. Every member resets once per site; no site is down for longer than its own deploy | | announced |
 
 ## Resources
 
