@@ -437,7 +437,8 @@ impl ShardHost<'_> {
     /// a burst of 512 pushes of 256 KiB, or 1 MiB packs at 4 a second, put the shard's isolate over its 128 MB (LM-1
     /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
     /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
-    /// counts as derived work, outside `NetworkLoad`.
+    /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
     pub async fn validate(
         &self,
         network: NetworkId,
@@ -446,7 +447,8 @@ impl ShardHost<'_> {
         agent: bool,
         derived: bool,
         body: Option<wasm_bindgen::JsValue>,
-    ) -> Result<Validated, StoreError> {
+    ) -> Result<Validated, (Option<u16>, StoreError)> {
+        let none = |e: StoreError| (None, e);
         let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
         if detailn > 0 {
             path.push_str(&format!("&detailn={detailn}"));
@@ -459,22 +461,23 @@ impl ShardHost<'_> {
         }
         let mut init = RequestInit::new();
         init.with_method(Method::Post).with_body(body);
-        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
-        let mut r = self.port()?.fetch_request(req).await.map_err(worker_err)?;
+        let req =
+            Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err).map_err(none)?;
+        let mut r = self.port().map_err(none)?.fetch_request(req).await.map_err(worker_err).map_err(none)?;
         if r.status_code() == 429 {
             let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
             return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
         }
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
-            return Err(StoreError(format!("validate: {} {t}", r.status_code())));
+            return Err((Some(r.status_code()), StoreError(format!("validate: {} {t}", r.status_code()))));
         }
-        let v: ValidateOut = r.json().await.map_err(worker_err)?;
+        let v: ValidateOut = r.json().await.map_err(worker_err).map_err(none)?;
         if v.checksum.is_empty() {
             return Ok(Validated::Done(None, v.detail));
         }
         let ix = PackIndex {
-            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
+            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| none(StoreError("checksum".into())))?,
             bytes: v.bytes,
             objects: v.objects,
             trailer: v.trailer.into(),
@@ -691,16 +694,11 @@ impl ShardHost<'_> {
     }
 
     /// Whether a rehydrate of `network` is under way or was cut off on this shard: its saved place is kept from its
-    /// start to its end (`crate::catchup::Rehydrating`). One storage read; the container is not asked.
-    /// A place saved on the disk the cursor is saved for is a run that finished but was cut off before it dropped the
-    /// place, so it does not count.
+    /// start until its last catch-up reaches the head, or until the catch-up that finishes a cut-off one does
+    /// (`crate::catchup`). One storage read; the container is not asked.
     pub async fn rehydrating(&self, network: NetworkId) -> bool {
         type Saved = (String, serde_json::Value);
-        let s = self.state.storage();
-        let Some((disk, _)) = s.get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten() else {
-            return false;
-        };
-        s.get::<Saved>(&Self::cursor_key(network)).await.ok().flatten().is_none_or(|(d, _)| d != disk)
+        self.state.storage().get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten().is_some()
     }
 
     fn rehydrating_key(network: NetworkId) -> String {

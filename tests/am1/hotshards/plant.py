@@ -33,6 +33,12 @@ GOMIDX = ('go', [], 'Midx')
 GOBATCH = ('go', [], 'IngestBatch')
 CATCHUP_B = ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_ingests_runs')
 SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
+GODER = ('go', [], 'Derived')
+GOREPACK = ('go', [], 'RefsRepacks')
+SHARD_P = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_pool_shard')
+SHARD_K = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_leader_keeps')
+SHARD_V = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers_422')
+EDGE_V = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'only_a_shards_422')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -134,6 +140,40 @@ MUTANTS = [
      GOMIDX),
     ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
      '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
+    # hot-shards-3
+    ('a running derived command counts its children only once they exit (A31 accounting)', GO,
+     '\t\t\tusec += cpu[p]\n', '', GODER),
+    ('a shard answers every failed validate 422, so a kill refuses the push', SHARD,
+     '        Some(s) if (400..500).contains(&s) => 422,', '        _ if true => 422,', SHARD_V),
+    ('a container 5xx is the pack\'s answer', SHARD,
+     '        Some(s) if (400..500).contains(&s) => 422,', '        Some(s) if (400..600).contains(&s) => 422,', SHARD_V),
+    ('the edge answers unpacker error when every shard failed without a 422', EDGE,
+     '    if let Some((_, _, e)) = tries.iter().find(|(_, s, _)| *s == 422) {',
+     '    if let Some((_, _, e)) = tries.last() {', EDGE_V),
+    ('the edge refuses a push no shard could check as unpacker error (merge with LM-1\'s ShardRefusal)', EDGE,
+     '        ShardRefusal::Unavailable(_) => None,', '        ShardRefusal::Unavailable(why) => Some(Refusal::unpack_failed(why)),',
+     ('cargo', ['-p', 'graftyard-edge', '--lib'], 'a_busy_git_cache')),
+    ('a rehydrate drops its place with the cursor, before its last catch-up reaches the head (05:12 stall)', CU,
+     '    saved.put_cursor(&disk, &cursor).await?;\n    lap(&mut ms, "refs");',
+     '    saved.put_cursor(&disk, &cursor).await?;\n    saved.drop_rehydrating().await?;\n    lap(&mut ms, "refs");',
+     ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_is_marked')),
+    ('the catch-up that finishes a cut-off rehydrate keeps its place', CU,
+     '    if finishing {\n        saved.drop_rehydrating().await?;\n    }', '    let _ = finishing;',
+     ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_is_marked')),
+    ('the repack writes no commit-graph (B0-29 CPU climb)', GO,
+     '"commit-graph", "write", "--reachable"', '"commit-graph", "verify", "--no-progress", "--reachable"', GOREPACK),
+    ('a pool shard that answered warming still gets every push', SHARD,
+     '    cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))', '    let _ = (cold_at, now);\n    true',
+     SHARD_P),
+    ('a pool shard that answered warming is never tried again', SHARD,
+     '    cold_at.is_none_or(|at| now >= at.saturating_add(POOL_COLD_SKIP_MS))', '    let _ = now;\n    cold_at.is_none()',
+     SHARD_P),
+    ('a leadership catches the shards up once and never again', SHARD,
+     '    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))',
+     '    let _ = (now, applied);\n    last.is_none()', SHARD_K),
+    ('an idle group keeps waking its shards', SHARD,
+     '    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))',
+     '    let _ = applied;\n    last.is_none_or(|(at, _)| now >= at.saturating_add(KEEP_WARM_MS))', SHARD_K),
     # rehydrate-batch (tests/am1/results/rehydrate-batch.md)
     ('each inline pack is still one ingest call', CU,
      '                        if !batch.is_empty() && bytes + b.len() > INGEST_BATCH_BYTES {',

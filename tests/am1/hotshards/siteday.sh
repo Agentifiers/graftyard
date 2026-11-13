@@ -8,12 +8,16 @@ set -uo pipefail
 export PATH=$HOME/.cargo/bin:$PATH CARGO_INCREMENTAL=0
 cd /home/user/workspace/hs-deploy
 source /home/user/workspace/repo/tests/am1/lf13/env-m3c.sh
-IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:15f6ed1b1d4b2b08c8adccbce713e89762677c3656dd7ee9a99bdd4bcab025c5
+IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:696907a2838fafd91cb9cab7b9be4a673af54f56b1c811014a4eb0a4e055aec5
+IMG=${IMG_OVERRIDE:-$IMG}
 L=/home/user/workspace/repo/tests/am1/raw/hotshards/$1
+# SHARD_INSTANCE: standard-4 from hot-shards-3 on, journey 9's tier size, which the operator approved for test installs.
+VARS=$(mktemp); echo "{\"SHARD_INSTANCE\": \"${SHARD_INSTANCE:-standard-4}\"}" > "$VARS"
 mkdir -p "$(dirname "$L")"
-{ date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5
-  node workers/site/deploy.mjs $HOME/.graft-m3c/sites.json --test-faults --anchor $HOME/.graft-m3c/install.toml --image "$IMG" ${SKIP_BUILD:-}
+{ date -u +%FT%TZ; git rev-parse --short HEAD; git status --short | head -5; cat "$VARS"
+  node workers/site/deploy.mjs $HOME/.graft-m3c/sites.json --test-faults --anchor $HOME/.graft-m3c/install.toml --image "$IMG" --vars "$VARS" ${SKIP_BUILD:-}
   echo "site exit $?"; date -u +%FT%TZ
   # KEEP_SHARDS=1: the image is unchanged, so running shards keep their disks (a resume across the deploy).
   if [ -z "${KEEP_SHARDS:-}" ]; then python3 tests/fanout/teardown.py --all-nets --pools; echo "teardown exit $?"; fi
   date -u +%FT%TZ; echo DONE; } > "$L" 2>&1
+rm -f "$VARS"

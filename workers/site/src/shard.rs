@@ -31,22 +31,50 @@ use worker::*;
 use crate::{SiteEnv, now_ms};
 
 thread_local! {
-    /// Per (shard object, network): the catch-up running in the background, which a caller that stops waiting leaves
-    /// running, and the callers waiting for it.
+    /// Per (shard object instance, network): the catch-up running in the background, which a caller that stops waiting
+    /// leaves running, and the callers waiting for it. Keyed by instance, not object: a reset object (`ctx.abort()`)
+    /// can come back in the same isolate, where its old run's future never ends, and keyed by the object id every
+    /// catch-up after the reset waited on that run (`tests/am1/results/rehydrate-batch.md`, "Resume, hosted").
     static RUNS: std::cell::RefCell<std::collections::HashMap<(String, i64), Run>> = Default::default();
     /// Per (shard object, network), the log index the latest catch-up reached, for `x-graft-cursor`.
     static CURSORS: std::cell::RefCell<std::collections::HashMap<(String, i64), u64>> = Default::default();
     /// Per (shard object, network), the latest catch-up's report, which `/catchup` answers.
     static REPORTS: std::cell::RefCell<std::collections::HashMap<(String, i64), Value>> = Default::default();
-    /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), and when
-    /// this isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`).
-    static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, (u8, u64)>> = Default::default();
+    /// Per network, the k its group's fold held at this isolate's latest catch-up (`ranges`' `fanout`), when this
+    /// isolate's first shard of it last reported `NetworkLoad` (`crate::fanout`), and the pool slots its site's
+    /// ledger last answered it holds.
+    static FANOUT: std::cell::RefCell<std::collections::HashMap<i64, Fan>> = Default::default();
+    /// Per pool shard object name, when it last answered a forwarded push `warming` (`graftyard_git::pool_forward`).
+    static POOL_COLD: std::cell::RefCell<std::collections::HashMap<String, u64>> = Default::default();
+}
+
+/// One network's `FANOUT` entry in this isolate.
+#[derive(Default)]
+struct Fan {
+    /// The committed k as last read; 0 before any read, which counts as 1.
+    k: u8,
+    /// When the first shard last reported `NetworkLoad`.
+    reported: u64,
+    /// The pool slots the site's ledger last answered the network holds.
+    slots: Vec<u16>,
 }
 
 /// The k `net`'s group committed, as this isolate last read it; 1 before any read.
 fn fanout_k(net: NetworkId) -> u8 {
-    FANOUT.with(|m| m.borrow().get(&net.0.0).map_or(1, |(k, _)| *k))
+    FANOUT.with(|m| m.borrow().get(&net.0.0).map_or(1, |f| f.k.max(1)))
 }
+
+/// The pool slots `net`'s first shard here forwards to: those the site's ledger last answered, at most k - 1.
+fn pool_slots(net: NetworkId) -> Vec<u16> {
+    FANOUT.with(|m| {
+        m.borrow()
+            .get(&net.0.0)
+            .map_or(Vec::new(), |f| f.slots.iter().take(usize::from(f.k.max(1)) - 1).copied().collect())
+    })
+}
+
+/// Storage key of the site's `PoolLedger`, on the ledger object (`crate::fanout::ledger_name`).
+const LEDGER_KEY: &str = "pool_ledger";
 
 /// A catch-up in the background, and the callers waiting for it to end.
 #[derive(Default)]
@@ -88,6 +116,8 @@ pub struct GitShard {
     /// TEST_MERGE_BUDGET of each network whose test merges run here, in this object's memory
     /// (`graftyard_git::prsync::Budgets`).
     budgets: std::cell::RefCell<graftyard_git::prsync::Budgets>,
+    /// This object instance's key in `RUNS`, `CURSORS` and `REPORTS`: the object id and a number drawn when it starts.
+    run_key: String,
 }
 
 struct GroupLog<'a> {
@@ -115,6 +145,7 @@ impl GroupLog<'_> {
         let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
         let b = Bindings { env: self.env, sites: self.sites };
         let me = Some(self.me);
+        graftyard_lookup::learn_voters(&b, self.chain, &self.record).await;
         let local = graftyard_lookup::known_voters(self.chain)
             .into_iter()
             .map(|t| (t.site, t.do_name))
@@ -146,7 +177,7 @@ impl ChainLog for GroupLog<'_> {
     async fn head(&self, chain: ChainId) -> std::result::Result<Head, StoreError> {
         let v = self.ranges().await?;
         if let (ChainId::Repo(r), Some(k)) = (chain, v["fanout"].as_u64()) {
-            FANOUT.with(|m| m.borrow_mut().entry(r.0.0).or_insert((1, 0)).0 = k as u8);
+            FANOUT.with(|m| m.borrow_mut().entry(r.0.0).or_default().k = k as u8);
         }
         Ok(Head { first: Index(v["first"].as_u64().unwrap_or(1)), applied: Index(v["index"].as_u64().unwrap_or(0)) })
     }
@@ -289,7 +320,8 @@ impl Jobs {
     }
 
     /// Waits for a catch-up that started after this call arrived, at most `wait` when given: `Err` with the reply to
-    /// send, 503 `warming` past the wait, 422 when the catch-up failed.
+    /// send, 503 `warming` past the wait, and 503 when the catch-up failed too: a failed catch-up is this shard's, not
+    /// the pack's, so the caller tries another site's shard (`graftyard_git::validate_status`).
     async fn wait(&self, wait: Option<std::time::Duration>) -> std::result::Result<(), Result<Response>> {
         let (tx, rx) = futures_channel::oneshot::channel();
         RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
@@ -314,7 +346,7 @@ impl Jobs {
             },
             None => next.await,
         };
-        r.map_err(|e| Response::error(e, 422))
+        r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
     /// Ends once no catch-up of the network runs here.
@@ -339,6 +371,45 @@ fn budget_key(net: NetworkId) -> String {
 }
 
 impl GitShard {
+    /// The pool ledger's routes. Each reads the ledger, applies one call at the object's clock, and stores it before
+    /// answering, so the object's input gate keeps two calls from interleaving.
+    async fn pool(&self, req: &mut Request, path: &str, site: &SiteEnv) -> Result<Response> {
+        let ns = self.env.durable_object(&format!("SHARD_{}", site.id.0))?;
+        let ledger = ns.id_from_name(&crate::fanout::ledger_name(site.id))?;
+        if ledger.to_string() != self.state.id().to_string() {
+            return Response::error("not this site's pool ledger", 404);
+        }
+        let s = self.state.storage();
+        let now = Timestamp(now_ms());
+        #[cfg(feature = "test-faults")]
+        if path == "/pool/down" {
+            let b: Value = req.json().await?;
+            s.put("pool_down_until", now.0 + b["ms"].as_u64().unwrap_or(0)).await?;
+            return Response::from_json(&json!({ "down_ms": b["ms"] }));
+        }
+        #[cfg(feature = "test-faults")]
+        if s.get::<u64>("pool_down_until").await.ok().flatten().is_some_and(|t| now.0 < t) {
+            return Response::error("pool ledger down (test fault)", 503);
+        }
+        let mut ledger: graftyard_git::PoolLedger = s.get(LEDGER_KEY).await.ok().flatten().unwrap_or_default();
+        if path == "/pool" {
+            return Response::from_json(&ledger);
+        }
+        let b: Value = req.json().await?;
+        let net = NetworkId(DbId(b["network"].as_i64().ok_or("network")?));
+        let slots = match path {
+            "/pool/grant" => {
+                let owner = b["owner"].as_u64().ok_or("owner")?;
+                let want = b["want"].as_u64().ok_or("want")?.min(u64::from(graftyard_git::FANOUT_MAX)) as u8;
+                ledger.ask(net, owner, want, now, graftyard_git::owner_share)
+            }
+            "/pool/renew" => ledger.renew(net, now),
+            _ => return Response::error("no such pool route", 404),
+        };
+        s.put(LEDGER_KEY, &ledger).await?;
+        Response::from_json(&json!({ "slots": slots }))
+    }
+
     /// Puts back `net`'s counts this object stored before it last reset, the first time the object sees `net`
     /// (`Budgets::restore`). The object resets about 90 s after its last request, and B0-35's gate reads the counts
     /// after the load (`tests/am1/results/merge-budget-2.md`, design change 5).
@@ -393,7 +464,9 @@ impl DurableObject for GitShard {
                 }
             });
         }
+        let run_key = format!("{}:{}", state.id(), (worker::js_sys::Math::random() * 1e15) as u64);
         GitShard {
+            run_key,
             state: std::rc::Rc::new(state),
             env,
             budgets: std::cell::RefCell::new(graftyard_git::prsync::Budgets::new(vcpu)),
@@ -426,11 +499,27 @@ impl DurableObject for GitShard {
                 "testMerges": budget,
                 "load": load,
                 "k": net.map(fanout_k),
+                "pool": net.map(pool_slots),
             }));
         }
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
         if path == "/load" {
             return Response::from_json(&host.load().await.map_err(se)?);
+        }
+        // Test installs: resets this object (`ctx.abort()`) as an isolate reset does, while its container keeps running
+        // on the same disk, so a catch-up it cuts off resumes from its saved place when the alarm restarts it. A site
+        // redeploy did not cut one: the busy object stayed on its version until its run ended
+        // (`tests/am1/results/rehydrate-batch.md`).
+        #[cfg(feature = "test-faults")]
+        if path == "/abort" {
+            crate::host::abort(&self.state, "graftyard shard abort");
+            return Response::from_json(&json!({ "aborted": true }));
+        }
+        // The site's pool ledger (`graftyard_git::PoolLedger`), on its first pool shard only: a network leader's ask
+        // (`/pool/grant {network, owner, want}`), a first shard's renewal (`/pool/renew {network}`), and the whole
+        // ledger (`/pool`). Storage only: no container starts for these.
+        if path.starts_with("/pool") {
+            return self.pool(&mut req, &path, &site).await;
         }
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
@@ -485,7 +574,7 @@ impl DurableObject for GitShard {
                 crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
             }
         };
-        let obj = self.state.id().to_string();
+        let obj = self.run_key.clone();
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
         // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
         // shard and starts no stopped one, and it never counts as the shard's last request.
@@ -543,16 +632,18 @@ impl DurableObject for GitShard {
                 // shard never forwards (`via`). One that cannot answer leaves the push to the first shard: the body
                 // is gone with the forward, so the caller sends it again with `via` (`x-graft-fanout-failed`). The
                 // first shard is index 0 of a one-shard `count` here: each network has its own first-shard object, so
-                // only the pool indices, `1..1 + HOT_POOL`, are shared between networks.
+                // only the pool indices, `1..1 + HOT_POOL`, are pool shards, each leased to one network at a time by
+                // the site's ledger.
                 let k = fanout_k(net);
+                let slots = pool_slots(net);
                 // Once a minute, on its own validates, the first shard reports its k shards' combined load to the
                 // group's leader, which steps k (`crate::fanout`). A network with no pushes reports nothing.
                 let due = FANOUT.with(|m| {
                     let mut m = m.borrow_mut();
-                    let e = m.entry(net.0.0).or_insert((1, 0));
-                    let due = now_ms() >= e.1 + crate::fanout::REPORT_EVERY_MS;
+                    let e = m.entry(net.0.0).or_default();
+                    let due = now_ms() >= e.reported + crate::fanout::REPORT_EVERY_MS;
                     if due {
-                        e.1 = now_ms();
+                        e.reported = now_ms();
                     }
                     due
                 });
@@ -561,9 +652,21 @@ impl DurableObject for GitShard {
                 if due && q(&url, "via").is_none() && !derived {
                     let own = host.load().await.unwrap_or_default();
                     let (env, sites, me, rec) = (self.env.clone(), site.sites.clone(), site.id, log.record.clone());
+                    let slots = slots.clone();
                     wasm_bindgen_futures::spawn_local(async move {
+                        // The network's lease on this site's ledger, renewed as it is while the network takes pushes,
+                        // and the slots it holds. A ledger that does not answer leaves the slots as they were.
+                        let mut held = slots.clone();
+                        if k > 1 || !slots.is_empty() {
+                            let body = json!({ "network": net.0.0 });
+                            if let Some(s) = crate::fanout::pool_call(&env, &sites, me, "/pool/renew", &body).await {
+                                FANOUT.with(|m| m.borrow_mut().entry(net.0.0).or_default().slots = s.clone());
+                                held = s;
+                            }
+                        }
+                        held.truncate(usize::from(k) - 1);
                         let mut loads = vec![own];
-                        for s in graftyard_git::shards_for(net, me, 1, k).iter().skip(1) {
+                        for s in graftyard_git::shards_for(net, me, 1, &held).iter().skip(1) {
                             let name = graftyard_git::object_name(net, *s, 1);
                             let r = match crate::fanout::stub(&env, &sites, me, &name) {
                                 Ok(st) => st.fetch_with_str("https://shard/load").await,
@@ -576,20 +679,28 @@ impl DurableObject for GitShard {
                             }
                         }
                         match crate::fanout::report_from_shard(&env, &sites, me, net, &rec, &loads).await {
-                            Ok(k) => FANOUT.with(|m| m.borrow_mut().entry(net.0.0).or_insert((1, 0)).0 = k),
+                            Ok((k, granted)) => FANOUT.with(|m| {
+                                let mut m = m.borrow_mut();
+                                let e = m.entry(net.0.0).or_default();
+                                e.k = k;
+                                if let Some(g) = granted {
+                                    e.slots = g;
+                                }
+                            }),
                             Err(e) => console_error!("fanout report {}: {e}", net.0.0),
                         }
                     });
                 }
                 let trailer = q(&url, "trailer").and_then(|t| graftyard_git::refs::ObjectId::parse_hex(t.as_bytes()));
-                if k > 1
+                if !slots.is_empty()
                     && q(&url, "via").is_none()
                     && !derived
                     && let Some(trailer) = trailer
                 {
-                    let pick = graftyard_git::push_validator(net, site.id, 1, k, &trailer.0);
-                    if pick.shard != 0 {
-                        let name = graftyard_git::object_name(net, pick, 1);
+                    let pick = graftyard_git::push_validator(net, site.id, 1, &slots, &trailer.0);
+                    let name = graftyard_git::object_name(net, pick, 1);
+                    let cold_at = POOL_COLD.with(|m| m.borrow().get(&name).copied());
+                    if pick.shard != 0 && graftyard_git::pool_forward(cold_at, now_ms()) {
                         let rec = serde_json::to_string(&log.record)?;
                         let mut fwd = url.clone();
                         fwd.query_pairs_mut().append_pair("via", "0").append_pair("pool", "1");
@@ -603,7 +714,18 @@ impl DurableObject for GitShard {
                             Err(e) => Err(e),
                         };
                         match r {
-                            Ok(r) if matches!(r.status_code(), 200 | 422 | 429) => return Ok(r),
+                            Ok(r) if matches!(r.status_code(), 200 | 422 | 429) => {
+                                POOL_COLD.with(|m| m.borrow_mut().remove(&name));
+                                return Ok(r);
+                            }
+                            // A pool shard still catching up gets no pushes for a while (`graftyard_git::pool_forward`);
+                            // this one goes back to the caller to send again with `via`, as any failed forward does.
+                            Ok(r) if r.status_code() == 503 => {
+                                POOL_COLD.with(|m| m.borrow_mut().insert(name.clone(), now_ms()));
+                                console_log!(
+                                    "fanout: {name} is warming; pushes validate on the first shard for a while"
+                                );
+                            }
                             Ok(mut r) => console_error!(
                                 "fanout: {name} answered {} {}; the caller validates on the first shard",
                                 r.status_code(),
@@ -618,6 +740,8 @@ impl DurableObject for GitShard {
                         );
                     }
                 }
+                // Only the container's own 4xx (a 429 is `Busy`) is the pack's answer; a call to it that broke (a kill
+                // mid-push) is this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
                 match host.validate(net, tipsn, detailn, agent, derived, body()).await {
                     Ok(graftyard_git::host::Validated::Done(Some(ix), _)) if detailn == 0 => Response::from_json(&ix),
                     Ok(graftyard_git::host::Validated::Done(ix, detail)) => {
@@ -629,7 +753,7 @@ impl DurableObject for GitShard {
                         Ok(Response::error(format!("validate queue full; retry after {retry_after_s} s"), 429)?
                             .with_headers(h))
                     }
-                    Err(e) => Response::error(e.0, 422),
+                    Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }
             }
             "/info-refs" | "/upload-pack" => {
@@ -796,7 +920,7 @@ impl DurableObject for GitShard {
         if let Some((net, record)) = s.get::<(i64, PlacementRecord)>(WARMING_KEY).await.ok().flatten() {
             s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await?;
             let net = NetworkId(DbId(net));
-            let obj = self.state.id().to_string();
+            let obj = self.run_key.clone();
             let jobs = Jobs { state: self.state.clone(), env: self.env.clone(), obj, net, record };
             jobs.start();
             crate::host::within(ALARM_HOLDS, jobs.idle()).await;

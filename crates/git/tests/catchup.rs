@@ -230,6 +230,9 @@ struct Log {
     /// Entries answered in all.
     served: Cell<usize>,
     refs_page: usize,
+    /// The index the first refs page is read at, when it is older than the head: the chain moved while the pages were
+    /// read, so the rehydrate catches up from it.
+    first_refs_at: Cell<Option<u64>>,
 }
 
 impl Log {
@@ -263,7 +266,8 @@ impl ChainLog for Log {
         let more = rest.len() > self.refs_page;
         let refs: Vec<(String, String)> = rest.into_iter().take(self.refs_page).collect();
         let next = more.then(|| refs.last().unwrap().0.clone());
-        Ok((RefsPage { refs, next }, Index(self.head())))
+        let at = if after.is_none() { self.first_refs_at.get().unwrap_or(self.head()) } else { self.head() };
+        Ok((RefsPage { refs, next }, Index(at)))
     }
     async fn entries(&self, _c: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError> {
         self.calls.set(self.calls.get() + 1);
@@ -352,6 +356,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
         calls: Cell::new(0),
         served: Cell::new(0),
         refs_page: 3,
+        first_refs_at: Cell::new(None),
     };
     Bed { disk, store: Store::default(), log }
 }
@@ -511,6 +516,40 @@ fn a_cut_off_rehydrate_resumes_and_never_starts_again_from_nothing() {
         assert!(asks <= attempts + 301 / page + 4, "cut {cut}: {asks} asks of `have` in {attempts} attempts");
         b.assert_serves_head();
     }
+}
+
+/// A rehydrate's last step catches up from its first refs page to the head. Until that reaches the head the disk
+/// cannot serve, so the shard must still say it is rehydrating, and a push with another shard next is sent on at once:
+/// j9h's home shard dropped its place with the cursor, 33 s before its last catch-up of 338 entries ended, and 16 pushes
+/// each waited out the home's 15 s (`tests/am1/results/hot-shards-3.md`). A run cut off in that catch-up keeps the
+/// place, and the catch-up that finishes it drops it.
+#[test]
+fn a_rehydrate_is_marked_rehydrating_until_its_last_catch_up_reaches_the_head() {
+    let mut cut_in_last = 0;
+    for cut in 1..400 {
+        let b = bed(300, 1_000, 9);
+        b.promote(100);
+        b.log.first_refs_at.set(Some(250));
+        b.disk.cut_after.set(Some(cut));
+        let first = b.run();
+        if first.is_ok() {
+            assert!(b.store.rehydrating.borrow().is_none(), "cut {cut}: a finished rehydrate keeps its place");
+            break;
+        }
+        if b.store.cursor.borrow().is_none() {
+            continue;
+        }
+        // Cut off after the refs, in the catch-up from entry 251.
+        cut_in_last += 1;
+        assert!(b.store.rehydrating.borrow().is_some(), "cut {cut}: the place went before the disk reached the head");
+        b.disk.cut_after.set(None);
+        let r = b.run().unwrap_or_else(|e| panic!("cut {cut}: {}", e.0));
+        assert!(r.rehydrated.is_none(), "cut {cut}: the cursor is kept, so this is a catch-up");
+        assert!(b.store.rehydrating.borrow().is_none(), "cut {cut}: the finishing catch-up keeps the place");
+        assert_eq!(b.disk.inits.get(), 1);
+        b.assert_serves_head();
+    }
+    assert!(cut_in_last > 0, "no cut fell in the last catch-up");
 }
 
 /// Promotion keeps running while a shard rehydrates (on another site's shard), so a cut-off rehydrate resumes after
