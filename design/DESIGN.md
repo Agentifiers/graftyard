@@ -1162,8 +1162,8 @@ pub const HOT_POOL: u16 = 7;
 /// `Merged`, and `Promoted` entries and the network's `Compacted` ones, saved per log page at the page's last index,
 /// never the range's end (B0-30 blocker 12). A shard behind reads pages, two at most in memory, from its site's member
 /// or the leader before it serves; a pack missing a base drops the cursor. Another disk id, or a cursor below an
-/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the shard object: a caller waits its `wait`, then
-/// gets `warming`; a rehydrating shard says so at once to a caller with another shard next. Pushes, fetches and the
+/// `Archived` truncation, means `rehydrate` (BF-18). Catch-ups run in the object instance, which reads its member by
+/// the committed config: a caller waits its `wait`, then `warming`; a rehydrating shard says so to a caller with another next. Pushes, fetches and the
 /// archive's (stateless) promotion try own site, then other Full sites; no shard checked is 503 [measured, `hot-shards`].
 pub struct IngestCursor { pub network: NetworkId, pub chains: SmallVec<[(ChainId, Index); 4]> }
 impl GitCacheShard {

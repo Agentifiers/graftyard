@@ -29,7 +29,11 @@ if (!R || !CHAIN) throw new Error("HOT_REPO and HOT_CHAIN");
 const size = () => {
   // 400 KB at 1.6/s is 0.64 MB/s of log, under the 0.8 MB/s B0-30 carried (tests/am1/results/b0-30.md, "Blocked on",
   // 7); 900 KB packs at that rate reset the leader's isolate.
-  if (MODE === "seed") return Number(process.env.SEED_PACK ?? 400_000);
+  // SEED_PACK=lo-hi: sizes drawn evenly from the range, to build a tail of a given pack count and size.
+  if (MODE === "seed") {
+    const [lo, hi] = String(process.env.SEED_PACK ?? 400_000).split("-").map(Number);
+    return hi ? lo + Math.floor(Math.random() * (hi - lo)) : lo;
+  }
   return Math.random() < 0.05 ? 1 << 20 : 10_000 + Math.floor(Math.random() * 60_000);
 };
 
