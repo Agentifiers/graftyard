@@ -1878,7 +1878,7 @@ fn a_voters_call_bound_halves_on_lost_calls_and_grows_back_on_answers() {
     c.inbox.clear();
     assert_eq!(c.m(C).log().len(), behind);
     // Each round: deliver what A sends; calls to C are lost (never answered) while `lose`, else answered.
-    let mut round = |c: &mut Cluster, lose: bool| {
+    let round = |c: &mut Cluster, lose: bool| {
         let wait = CALL_DEADLINE + if lose { LATE_LIMIT } else { Duration::ZERO };
         c.advance(wait.as_millis() as u64 + 1);
         let mut sizes = Vec::new();
