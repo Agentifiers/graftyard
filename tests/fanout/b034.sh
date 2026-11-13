@@ -19,7 +19,9 @@ n=$(rg -l "api\.cloudflare\.com" workers/edge/src workers/site/src crates --type
 node tests/fanout/b034setup.mjs >> "$ST" 2>&1 || { s "setup failed"; exec sleep infinity; }
 J=$M3_STATE/b034.json
 [ -s "$D/plan-git.txt" ] || python3 tests/fanout/b034plan.py "$D/git.git" "$D/plan-git.txt" 1e12 60e6 0 >> "$ST" 2>&1
-[ -s "$D/plan.txt" ] || python3 tests/fanout/b034plan.py "$D/linux.git" "$D/plan.txt" >> "$ST" 2>&1
+# 30 MB steps: the edge buffers a push body in a growing Vec, so one over 64 MB reserved 128 MB and the isolate
+# ran out of memory (rows m20, seed1: 6 of 6 tries of a 60 MB step).
+[ -s "$D/plan.txt" ] || python3 tests/fanout/b034plan.py "$D/linux.git" "$D/plan.txt" 5e9 30e6 >> "$ST" 2>&1
 seed() { node tests/fanout/b034seed.mjs "$1" "$2" "$3" "$4" > "tests/fanout/raw/b034-seed-${3//\//_}.log" 2>&1; s "seed $3 exit $?"; }
 q() { python3 -c "import json,sys; d=json.load(open('$J')); print(eval(sys.argv[1]))" "$1"; }
 seed "$D/git.git" "$D/plan-git.txt" "$(q "d['second']['repo']")" member

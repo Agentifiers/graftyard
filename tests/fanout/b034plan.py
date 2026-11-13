@@ -10,8 +10,8 @@ Each line of OUT is `<commit> <ref> <estimated bytes>`. A first-parent step whos
 recursively. Sizes are `git rev-list --disk-usage --objects` of the commit not reachable from what is already pushed,
 the on-disk (deltified) size, which a pushed pack's size follows [inference]. The last FUTURE commits go to
 a `# future` line; the row's merges push them to `main` one at a time, so the tip moves along real history.
-A single commit over CHUNK_BYTES with no second parent is pushed alone; on torvalds/linux the largest is the root,
-53 MB packed.
+A single commit over CHUNK_BYTES with no second parent (torvalds/linux's root, 53 MB packed) has its tree carried
+first in commits of top-level entries under the chunk, on `refs/heads/b034-parts`.
 """
 import subprocess, sys
 
@@ -37,6 +37,42 @@ def emit(c, ref, n):
     total += n
 
 
+def carry_tree(c):
+    """A commit over the chunk that history cannot split (linux's root, 53 MB packed): push its tree's objects first
+    as commits each holding a part of the top-level entries, on `refs/heads/b034-parts`, so the commit itself then
+    carries only what they lack. The part commits are written into the bare clone (`git commit-tree`)."""
+    tree = git("rev-parse", f"{c}^{{tree}}").strip()
+    entries = [l for l in git("ls-tree", tree).splitlines()]
+    part, parent = [], None
+    def flush():
+        nonlocal part, parent
+        if not part:
+            return
+        t = subprocess.run(["git", "mktree"], cwd=bare, input="\n".join(part) + "\n", capture_output=True, text=True, check=True).stdout.strip()
+        args = ["commit-tree", t, "-m", "b034 seed part"] + (["-p", parent] if parent else [])
+        env = {"GIT_AUTHOR_NAME": "b034", "GIT_AUTHOR_EMAIL": "b034@x", "GIT_COMMITTER_NAME": "b034", "GIT_COMMITTER_EMAIL": "b034@x",
+               "GIT_AUTHOR_DATE": "1700000000 +0000", "GIT_COMMITTER_DATE": "1700000000 +0000", "PATH": "/usr/bin:/bin"}
+        parent = subprocess.run(["git", *args], cwd=bare, capture_output=True, text=True, check=True, env=env).stdout.strip()
+        emit(parent, "refs/heads/b034-parts", size(parent))
+        part = []
+    for e in entries:
+        oid = e.split()[2]
+        n = int(git("rev-list", "--disk-usage", "--objects", oid, "--not", *pushed[-64:]).strip() or 0) if pushed else \
+            int(git("rev-list", "--disk-usage", "--objects", oid).strip())
+        part.append(e)
+        if n > chunk:
+            sys.stderr.write(f"one entry over the chunk: {e} {n}\n")
+        if sum_part(part) > chunk:
+            part.pop(); flush(); part = [e]
+    flush()
+
+
+def sum_part(part):
+    objs = [e.split()[2] for e in part]
+    return int(git("rev-list", "--disk-usage", "--objects", *objs, "--not", *pushed[-64:]).strip() or 0) if pushed else \
+        int(git("rev-list", "--disk-usage", "--objects", *objs).strip())
+
+
 def push_line(tips, ref):
     """Push first-parent list `tips` (oldest first) in steps of at most `chunk`, splitting any step that is over."""
     i = 0
@@ -52,6 +88,8 @@ def push_line(tips, ref):
             n *= 2
         if best is None:
             c = tips[i]
+            if size(c) > chunk:
+                carry_tree(c)
             parents = git("rev-list", "--parents", "-n1", c).split()[1:]
             if len(parents) > 1:
                 side = git("rev-list", "--first-parent", "--reverse", parents[1], "--not", *pushed[-64:]).split()
