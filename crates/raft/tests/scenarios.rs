@@ -2,6 +2,8 @@
 
 mod common;
 
+use std::time::Duration;
+
 use common::cluster::Cluster;
 use common::kv::{KvCmd, KvErr};
 use common::sim::{CHAIN, SITES, config, record};
@@ -1524,16 +1526,25 @@ fn a_voter_never_has_more_than_pipeline_calls_out() {
     assert_eq!(to_c, PIPELINE, "calls with entries sent to the silent voter");
 }
 
-/// Pipelining to a voter stops only on a lossy link (F67 rule 13), not on one missed call. A voter whose calls fail
-/// over `commit_errors` in the window gets one call at a time: a half-hung leader whose few answered calls each let
-/// PIPELINE more out held a live-sweep group 50 s (seed 11497). A voter that missed one call among many answered keeps
-/// its pipeline: with the pipeline off for the window after one miss, B0-02's far voter caught up one backlog call at
-/// a time and missed on each (r330-6, `tests/m0/results/carried-8.md`).
+/// Pipelining to a voter stops only on calls that fail with an error or go unanswered for LATE_LIMIT past their
+/// deadline, not on one failed call, and not on calls that answer late. A voter whose calls fail over `commit_errors`
+/// in the window gets one call at a time: a half-hung leader whose few answered calls each let PIPELINE more out held
+/// a live-sweep group 50 s (seed 11497). A voter that missed one call among many answered keeps its pipeline (r330-6,
+/// `tests/m0/results/carried-8.md`), and so does one whose calls all answer late: counted as losses, a weur leader's
+/// apac voter got one call at a time and fell 219 entries behind (r300-3).
 #[test]
-fn a_voter_is_pipelined_unless_its_link_is_lossy() {
-    // Calls with entries that reach C while C answers none of them, after `fail` of C's first calls failed with an
-    // error and the rest of the first ten entries were answered.
-    let silent_calls = |fail: usize| {
+fn a_voter_is_pipelined_unless_its_calls_are_lost() {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Fail {
+        Error,
+        /// Missed CALL_DEADLINE, then answered.
+        Late,
+        /// Missed CALL_DEADLINE, never answered.
+        Lost,
+    }
+    // Calls with entries that reach C while C answers none of them, after `fail` of C's first calls failed as `how`
+    // and the rest of the first ten entries were answered.
+    let silent_calls = |fail: usize, how: Fail| {
         let mut c = Cluster::new(46);
         c.elect(A);
         c.sync(A);
@@ -1544,8 +1555,13 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
                 for e in std::mem::take(&mut c.inbox) {
                     if e.to == C && failed < fail && matches!(&e.msg, Message::Append(a) if !a.entries.is_empty()) {
                         failed += 1;
-                        let f = e.failure(false).expect("an append");
+                        let f = e.failure(how != Fail::Error).expect("an append");
                         c.on(A, |m, now| m.call_failed(now, f));
+                        if how == Fail::Late {
+                            // The answer comes after the miss was reported, and is stepped.
+                            let graftyard_raft::Envelope { from, to, msg } = e;
+                            c.on(to, |m, now| m.step(now, from, msg));
+                        }
                         continue;
                     }
                     let graftyard_raft::Envelope { from, to, msg } = e;
@@ -1554,8 +1570,11 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
             }
         }
         assert_eq!(failed, fail);
-        // Past CALL_DEADLINE, so a leader whose retries to C ran out sends again from its tick.
-        c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+        // Past CALL_DEADLINE, so a leader whose retries to C ran out sends again from its tick; for unanswered misses,
+        // past LATE_LIMIT too, so they count as lost.
+        let wait =
+            graftyard_raft::CALL_DEADLINE + if how == Fail::Lost { graftyard_raft::LATE_LIMIT } else { Duration::ZERO };
+        c.advance(wait.as_millis() as u64 + 1);
         let mut to_c = 0;
         for i in 0..(graftyard_raft::PIPELINE as u128 * 3) {
             admit(&mut c, A, 9_800 + i, put(&format!("h{i}"), "v"));
@@ -1572,11 +1591,58 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
         }
         to_c
     };
-    // One failure among the answered calls: under `commit_fail_min`, so C stays pipelined.
-    assert_eq!(silent_calls(1), graftyard_raft::PIPELINE, "a voter that missed once");
-    // Every call failing, at least `commit_fail_min` of them: lossy, one call at a time.
-    let lossy = usize::from(graftyard_raft::STEP_DOWN.commit_fail_min);
-    assert_eq!(silent_calls(lossy), 1, "a voter on a lossy link");
+    let (pipe, lossy) = (graftyard_raft::PIPELINE, usize::from(graftyard_raft::STEP_DOWN.commit_fail_min));
+    // One error among the answered calls: under `commit_fail_min`, so C stays pipelined.
+    assert_eq!(silent_calls(1, Fail::Error), pipe, "a voter that failed once");
+    // Every call failing with an error, at least `commit_fail_min` of them: one call at a time.
+    assert_eq!(silent_calls(lossy, Fail::Error), 1, "a voter whose calls fail");
+    // As many calls missing CALL_DEADLINE and answering late: still pipelined.
+    assert_eq!(silent_calls(lossy, Fail::Late), pipe, "a voter whose calls answer late");
+    // As many missing it and never answering: one call at a time once LATE_LIMIT passed.
+    assert_eq!(silent_calls(lossy, Fail::Lost), 1, "a voter whose calls are lost");
+}
+
+/// Calls pipelined to a voter that arrive out of order are sent again behind the call ahead, and the voter keeps its
+/// pipeline: the far link reordered 34 of 166 calls to apac from a weur leader (r300-3, `tests/m0/results/carried-8.md`),
+/// and a voter started again from `next` on each reordering got its entries one round trip at a time.
+#[test]
+fn a_voter_whose_calls_arrive_out_of_order_keeps_its_pipeline() {
+    let mut c = Cluster::new(48);
+    c.elect(A);
+    c.sync(A);
+    let held = c.m(C).last_index();
+    // Four entries, one at a time; B answers each, C's calls are held.
+    let mut to_c = Vec::new();
+    for i in 0..4u128 {
+        admit(&mut c, A, 9_950 + i, put(&format!("o{i}"), "v"));
+        for _ in 0..4 {
+            for e in std::mem::take(&mut c.inbox) {
+                if e.to == C {
+                    to_c.push(e);
+                    continue;
+                }
+                let graftyard_raft::Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+    }
+    let piped = to_c.iter().filter(|e| matches!(&e.msg, Message::Append(a) if !a.entries.is_empty())).count();
+    assert!(piped >= 2, "only {piped} calls with entries to C");
+    // C gets them newest first, then everything is delivered at once, with no tick: no deadline passes.
+    to_c.reverse();
+    c.inbox.extend(to_c);
+    let mut calls = 0;
+    for _ in 0..12 {
+        for e in std::mem::take(&mut c.inbox) {
+            calls += usize::from(e.to == C && matches!(&e.msg, Message::Append(a) if !a.entries.is_empty()));
+            let graftyard_raft::Envelope { from, to, msg } = e;
+            c.on(to, |m, now| m.step(now, from, msg));
+        }
+    }
+    assert!(c.m(C).last_index() > held);
+    assert_eq!(c.m(C).digests(), c.m(A).digests(), "C caught up with no tick");
+    // Each refused call is sent once more behind the one ahead: at most one call per entry beyond those held.
+    assert!(calls <= piped + 4, "{calls} calls with entries reached C for 4 entries");
 }
 
 /// A learner's read-index answer is preceded by the entries it needs: when the leader answers a learner's batch at
@@ -1790,6 +1856,70 @@ fn a_far_voter_behind_catches_up_in_calls_that_answer_in_time() {
         "{misses} of {calls} calls to C missed; the largest carried {most} bytes past its first entry"
     );
     assert!(calls >= 2, "C caught up in {calls} calls of at most {most} bytes");
+}
+
+/// A voter's call bound halves each time a call to it goes unanswered for LATE_LIMIT past CALL_DEADLINE, down to one
+/// whole entry a call, and grows back on calls answered in time. A call always carries at least one whole entry, even
+/// one larger than APPEND_BYTES_MAX, so the bound never stalls the voter. Calls that answer late do not shrink it.
+#[test]
+fn a_voters_call_bound_halves_on_lost_calls_and_grows_back_on_answers() {
+    use graftyard_raft::{APPEND_BYTES_MAX, CALL_DEADLINE, LATE_LIMIT, encode_entry};
+    let mut c = Cluster::new(49);
+    c.elect(A);
+    c.sync(A);
+    // C misses 30 entries of 20 KB, then one of 300 KB, larger than APPEND_BYTES_MAX on its own.
+    let behind = c.m(C).log().len();
+    for i in 0..30u128 {
+        admit(&mut c, A, 9_970 + i, put(&format!("q{i}"), &"v".repeat(20_000)));
+        c.deliver(|e| e.to != C && e.from != C);
+    }
+    admit(&mut c, A, 9_969, put("huge", &"v".repeat(300_000)));
+    c.deliver(|e| e.to != C && e.from != C);
+    c.inbox.clear();
+    assert_eq!(c.m(C).log().len(), behind);
+    // Each round: deliver what A sends; calls to C are lost (never answered) while `lose`, else answered.
+    let mut round = |c: &mut Cluster, lose: bool| {
+        let wait = CALL_DEADLINE + if lose { LATE_LIMIT } else { Duration::ZERO };
+        c.advance(wait.as_millis() as u64 + 1);
+        let mut sizes = Vec::new();
+        for _ in 0..6 {
+            for e in std::mem::take(&mut c.inbox) {
+                if let Message::Append(a) = &e.msg
+                    && e.to == C
+                    && !a.entries.is_empty()
+                {
+                    sizes.push((a.entries.len(), a.entries[1..].iter().map(|x| encode_entry(x).len()).sum::<usize>()));
+                    if lose {
+                        let f = e.failure(true).expect("an append");
+                        c.on(A, |m, now| m.call_failed(now, f));
+                        continue;
+                    }
+                }
+                let graftyard_raft::Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+        sizes
+    };
+    let first = round(&mut c, true);
+    assert!(first.iter().any(|s| s.1 > APPEND_BYTES_MAX / 2), "the first calls use the whole bound: {first:?}");
+    // Lost calls halve it, one cut per round: after enough, each call carries one entry.
+    for _ in 0..8 {
+        round(&mut c, true);
+    }
+    let shrunk = round(&mut c, true);
+    assert!(!shrunk.is_empty() && shrunk.iter().all(|s| s.0 == 1), "after lost calls, one entry a call: {shrunk:?}");
+    // Answered in time, the voter catches up, the 300 KB entry included, and the bound grows back.
+    let mut grown = 0;
+    for _ in 0..40 {
+        let sizes = round(&mut c, false);
+        grown = sizes.iter().map(|s| s.1).fold(grown, usize::max);
+        if c.m(C).log().len() == c.m(A).log().len() {
+            break;
+        }
+    }
+    assert_eq!(c.m(C).digests(), c.m(A).digests(), "C caught up past an entry over APPEND_BYTES_MAX");
+    assert!(grown > APPEND_BYTES_MAX / 2, "the bound grew back: the largest call carried {grown} bytes past its first");
 }
 
 /// After a voter's call fails COMMIT_RETRIES + 1 times in a row, the leader waits for its tick to send again, and every

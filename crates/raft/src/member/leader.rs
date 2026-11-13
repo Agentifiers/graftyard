@@ -37,15 +37,22 @@ const CATCHUP_MAX: usize = 64;
 /// 550 KB ahead of them still answered at p99 644 ms.
 /// With 64 entries of up to ENTRY_MAX alone, 9 MB calls missed every time (`tests/m1/results/m1-wp8.md`, t-256).
 pub const APPEND_BYTES_MAX: usize = 100_000;
+/// What one AppendEntries answered within CALL_DEADLINE adds back to its link's call bound (`Lead::bound`), which a
+/// call lost past LATE_LIMIT halves: eight answers in time take a link from one entry a call back to APPEND_BYTES_MAX
+/// [guess]. A call that misses CALL_DEADLINE and answers late does not halve it: the host steps the late answer and the
+/// pipeline keeps going, so a smaller call only costs another round trip. Halving on every miss, in a model of r300-3's
+/// weur-to-apac link, left apac further behind: after enam stopped, commits resumed within 20 s in 7 of 24 seeds,
+/// against 24 of 24 (`tests/m0/results/carried-9.md`) [measured, in the simulator].
+const BOUND_STEP: usize = APPEND_BYTES_MAX / 8;
 
 /// How many of `entries` one AppendEntries carries: at most CATCHUP_MAX, and past the first, only while their encoded
-/// size stays within APPEND_BYTES_MAX.
-pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> usize {
+/// size stays within `max`, the link's call bound (`Lead::bound`). The first always goes, so no call is empty.
+pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>], max: usize) -> usize {
     let mut bytes = 0;
     let mut n = 0;
     for e in entries.iter().take(CATCHUP_MAX) {
         bytes += crate::encode_entry(e).len();
-        if n > 0 && bytes > APPEND_BYTES_MAX {
+        if n > 0 && bytes > max {
             break;
         }
         n += 1;
@@ -238,8 +245,12 @@ pub(super) struct Lead<C: Command> {
     lease_end: Timestamp,
     /// The latest outstanding call to each follower.
     sent: BTreeMap<SiteId, (u64, Timestamp)>,
+    /// Per follower, the call bound `append_batch` uses past a call's first entry, and when it was last halved
+    /// (`Member::bound`). Starts at APPEND_BYTES_MAX.
+    pub(super) bound: BTreeMap<SiteId, (usize, Timestamp)>,
     /// Per voter, the outstanding AppendEntries a pipelined call may follow, oldest first: each round and the last
-    /// index it carried. At most PIPELINE; cleared by any failure, refusal, catch-up, or install to the voter.
+    /// index it carried. At most PIPELINE; cleared by any failure, refusal, catch-up, or install to the voter, except a
+    /// call refused for arriving before the call ahead, which drops only it and the calls after it.
     pipe: BTreeMap<SiteId, Vec<(u64, Index)>>,
     round: u64,
     admission: Admission<C>,
@@ -351,6 +362,7 @@ impl<C: Command> Member<C> {
             lease_end: Timestamp(0),
             sent: BTreeMap::new(),
             pipe: BTreeMap::new(),
+            bound: BTreeMap::new(),
             round: 0,
             admission: Admission::new(self.now),
             seq: 0,
@@ -1240,6 +1252,30 @@ impl<C: Command> Member<C> {
         self.out.resolutions.push(Resolution::Ticket { ticket, result });
     }
 
+    /// The call bound to `peer`: APPEND_BYTES_MAX until a call to it is lost.
+    pub(super) fn bound(&self, peer: SiteId) -> usize {
+        self.lead.as_ref().and_then(|l| l.bound.get(&peer)).map_or(APPEND_BYTES_MAX, |b| b.0)
+    }
+
+    /// A call to `to` sent at `sent_at` went unanswered for LATE_LIMIT past CALL_DEADLINE: halve its bound, once for
+    /// the calls sent before the last cut, which carried the old bound. At 0 a call carries its one whole entry.
+    pub(super) fn bound_lost(&mut self, to: SiteId, sent_at: Timestamp) {
+        let now = self.now;
+        let Some(lead) = self.lead.as_mut() else { return };
+        let b = lead.bound.entry(to).or_insert((APPEND_BYTES_MAX, Timestamp(0)));
+        if sent_at >= b.1 {
+            *b = (b.0 / 2, now);
+        }
+    }
+
+    /// An AppendEntries to `from` answered within CALL_DEADLINE: its bound grows back by BOUND_STEP.
+    fn bound_answered(&mut self, from: SiteId) {
+        let Some(lead) = self.lead.as_mut() else { return };
+        if let Some(b) = lead.bound.get_mut(&from) {
+            b.0 = (b.0 + BOUND_STEP).min(APPEND_BYTES_MAX);
+        }
+    }
+
     /// The host reported the call for `round` to `to` failed. If it is the outstanding call, retry at once, at most
     /// COMMIT_RETRIES times in a row.
     pub(super) fn append_failed(&mut self, to: SiteId, round: u64) {
@@ -1304,7 +1340,9 @@ impl<C: Command> Member<C> {
                 return;
             }
             match lead.pipe.get(&peer).map(|p| (p.len(), p.last().map(|l| l.1))) {
-                Some((n, Some(through))) if through < index && n < PIPELINE => self.append_to(peer, false, true),
+                Some((n, Some(through))) if through < index && n < PIPELINE => {
+                    self.send_one(peer, false, true);
+                }
                 Some((_, Some(_))) => return,
                 _ if lead.matched(peer) < index => self.send_append(peer, true),
                 _ => return,
@@ -1313,19 +1351,25 @@ impl<C: Command> Member<C> {
     }
 
     /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
-    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
+    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`). A voter behind
+    /// gets calls until PIPELINE are out, each within its link's bound: a catch-up that sent one call per answer took
+    /// one bound's worth per far round trip, and a weur leader's apac voter fell further behind (r300-3).
     fn send_append(&mut self, peer: SiteId, force: bool) {
-        self.append_to(peer, force, false);
+        if self.send_one(peer, force, false) {
+            while self.send_one(peer, false, false) {}
+        }
     }
 
-    /// `send_append`, with `read` pipelining a learner as a voter (`append_for_read`).
-    fn append_to(&mut self, peer: SiteId, force: bool, read: bool) {
+    /// One AppendEntries to `peer`, as `send_append` says, with `read` pipelining a learner as a voter
+    /// (`append_for_read`). True when it sent a call later ones may be pipelined behind.
+    fn send_one(&mut self, peer: SiteId, force: bool, read: bool) -> bool {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
         let voter = read || quorum::is_voter(self.log_config(), peer);
-        let lossy = self.link_lossy(peer);
-        let Some(lead) = self.lead.as_mut() else { return };
+        let lossy = self.pipe_lossy(peer);
+        let max = self.bound(peer);
+        let Some(lead) = self.lead.as_mut() else { return false };
         let next = *lead.next.entry(peer).or_insert(last.next());
         let after = if !force && lead.sent.contains_key(&peer) {
             let pipe = lead.pipe.get(&peer).map_or(&[][..], Vec::as_slice);
@@ -1340,7 +1384,7 @@ impl<C: Command> Member<C> {
                 {
                     Some(through)
                 }
-                _ => return,
+                _ => return false,
             }
         } else {
             None
@@ -1354,21 +1398,21 @@ impl<C: Command> Member<C> {
         if after.is_none() {
             lead.pipe.remove(&peer);
             if self.send_install(peer, prev, round) {
-                return;
+                return false;
             }
         }
         if prev < self.base.index {
             // Below the in-memory window: the host reads the entries from storage and calls `catchup`.
             let through = Index(self.base.index.0.min(prev.0 + CATCHUP_MAX as u64));
             self.out.catchup.push(super::Catchup { to: peer, round, from: prev, through });
-            return;
+            return false;
         }
         // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The differences
         // are bounded by the in-memory window, so they fit.
         let from = (prev.0 - self.base.index.0) as usize;
         let to = ((last.0 - self.base.index.0) as usize).min(from + CATCHUP_MAX);
         let window = &self.log[from..to];
-        let entries = window[..append_batch(window)].to_vec();
+        let entries = window[..append_batch(window, max)].to_vec();
         let through = Index(prev.0 + entries.len() as u64);
         self.lead.as_mut().expect("leading").pipe.entry(peer).or_default().push((round, through));
         let req = AppendReq {
@@ -1386,6 +1430,7 @@ impl<C: Command> Member<C> {
             lead_seq: self.state.lead_seq,
         };
         self.send(peer, Message::Append(req));
+        true
     }
 
     /// The stored entries an `Out::catchup` asked for, `max(from, 1)..=through` in order: the entry at `from` gives the
@@ -1406,7 +1451,7 @@ impl<C: Command> Member<C> {
             }
         };
         let mut entries: Vec<_> = entries.collect();
-        entries.truncate(append_batch(&entries));
+        entries.truncate(append_batch(&entries, self.bound(c.to)));
         let chained = entries.iter().enumerate().all(|(k, e)| e.index.0 == c.from.0 + 1 + k as u64);
         if ok && chained && !entries.is_empty() {
             let lead = self.lead.as_mut().expect("leading");
@@ -1441,6 +1486,9 @@ impl<C: Command> Member<C> {
         }
         // Any answer is a call that succeeded, for `STEP_DOWN`.
         self.record_call(from, res.round, true, false, res.sent_at);
+        if res.ok && self.now <= after(res.sent_at, CALL_DEADLINE) {
+            self.bound_answered(from);
+        }
         let last = self.last();
         let lead = self.lead.as_mut().expect("leading");
         lead.retries.remove(&from);
@@ -1449,12 +1497,30 @@ impl<C: Command> Member<C> {
         if lead.sent.get(&from).is_some_and(|s| s.0 == res.round) {
             lead.sent.remove(&from);
         }
-        if let Some(p) = lead.pipe.get_mut(&from) {
-            p.retain(|(r, _)| *r != res.round);
-            // A refusal, stale or not, means the calls after it may not be stored: pipeline again only from an ack.
+        let now = self.now;
+        if let Some(p) = lead.pipe.get_mut(&from)
+            && let Some(i) = p.iter().position(|(r, _)| *r == res.round)
+        {
+            // A call that reached the follower before the call ahead of it, still out, is refused for the gap. The
+            // far link reorders calls: 34 of 166 to apac from a weur leader arrived before an earlier one (r300-3), 30
+            // of 420 from enam (r330-6), and 0 to 3 to the near voter. Keep the calls ahead, drop this one and those
+            // after it, and pipeline again when the call ahead answers. Clearing the pipe instead left the voter with
+            // no call to follow until a tick resent after CALL_DEADLINE.
+            let gap = !res.ok && res.refused.is_none() && res.prev_index > res.last;
+            if gap && i > 0 {
+                p.truncate(i);
+                lead.sent.insert(from, (p[i - 1].0, now));
+                return;
+            }
+            p.remove(i);
+            // Any other refusal means the calls after it may not be stored: pipeline again only from an ack.
             if !res.ok || p.is_empty() {
                 lead.pipe.remove(&from);
             }
+        } else if !res.ok {
+            // A refusal of a call no longer in the pipe, stale or overtaken, empties it too: the calls out may not
+            // be stored (`a_learner_read_index_answer_follows_the_entries_it_needs`).
+            lead.pipe.remove(&from);
         }
         if res.round < lead.min_round {
             // Sent before the leader truncated its uncommitted tail: `matched` may name entries it no longer holds.

@@ -23,6 +23,14 @@ use super::sim::{Rng, SITES, config};
 const ONE_WAY: [[u64; 3]; 3] = [[0, 40, 100], [40, 0, 110], [100, 110, 0]];
 /// Per byte of AppendEntries, in microseconds: 0.3 ms per KB.
 const US_PER_BYTE: f64 = 0.3;
+/// The far link's cost per KB of an AppendEntries above its round trip, ms, at each twentieth of r300-3's 163 calls of
+/// 20 KB or more from a weur leader to apac (0th to 100th percentile): p50 2.6, p90 12.6, max 87, so a 100 KB call
+/// misses CALL_DEADLINE about one time in five and a 50 KB call one in twenty [measured, `tests/m1/wp2/raw/`
+/// `m0c8h-r300-3.stats.json`, the leader's AppendQueued and AppendEnded trace rows]. Each call draws its own cost,
+/// whatever else is in flight: in that trace the per-call ms per KB had p50 6.4 to 7.3 at 1, 2, 3 and 4 or more calls
+/// out [measured], so the link is modelled as per call, not shared bandwidth [inference].
+const FAR_MS_PER_KB: [f64; 21] =
+    [0.0, 1.0, 1.2, 1.4, 1.6, 1.7, 1.8, 2.0, 2.2, 2.3, 2.6, 3.2, 3.9, 4.7, 5.9, 6.8, 8.7, 11.1, 12.6, 16.0, 87.0];
 /// The edge's R2 PUT of a staged pack [measured, `tests/m0/results/m0-wp9.md`, B0-32: stage p50 451 to 506 ms].
 pub const STAGE_MS: u64 = 500;
 const TICK_MS: u64 = 10;
@@ -119,6 +127,17 @@ pub struct Load {
     /// Per entry the leader appended: when, until its commit, in ms once it committed (`rounds`).
     appended: BTreeMap<u64, u64>,
     pub rounds: Vec<u64>,
+    /// AppendEntries from the first site to the second cost FAR_MS_PER_KB, drawn per call, not US_PER_BYTE.
+    pub far: Option<(SiteId, SiteId)>,
+    /// Sites whose member is stopped: nothing reaches it and it sends nothing.
+    pub stopped: BTreeSet<SiteId>,
+    /// Outstanding AppendEntries by (leader, follower, round): when CALL_DEADLINE passes, and the failure to report.
+    calls: BTreeMap<(SiteId, SiteId, u64), (u64, graftyard_raft::CallFailure)>,
+    /// AppendEntries that missed CALL_DEADLINE, and those that then answered, as the host counts them.
+    pub missed: u64,
+    pub late: u64,
+    /// Per AppendEntries sent with entries: (time, from, to, bytes past its first entry).
+    pub appends: Vec<(u64, SiteId, SiteId, usize)>,
 }
 
 fn event_bytes(e: &KvEvent) -> usize {
@@ -177,6 +196,12 @@ impl Load {
             slow_ms: 0,
             appended: BTreeMap::new(),
             rounds: Vec::new(),
+            far: None,
+            stopped: BTreeSet::new(),
+            calls: BTreeMap::new(),
+            missed: 0,
+            late: 0,
+            appends: Vec::new(),
         };
         l.on(leader, |m, now| m.campaign(now));
         for _ in 0..400 {
@@ -221,11 +246,22 @@ impl Load {
             for e in out.early.drain(..).chain(out.messages.drain(..)) {
                 let bytes = msg_bytes(&e.msg);
                 let jitter = self.rng.below(20);
-                let at = self.now
-                    + ONE_WAY[e.from.0 as usize][e.to.0 as usize]
-                    + self.slow_ms
-                    + (bytes as f64 * US_PER_BYTE / 1000.0) as u64
-                    + jitter;
+                let cost = if self.far == Some((e.from, e.to)) && matches!(e.msg, Message::Append(_)) {
+                    let u = self.rng.below(1000) as f64 / 1000.0 * 20.0;
+                    let (k, f) = (u as usize, u.fract());
+                    (bytes as f64 / 1000.0 * (FAR_MS_PER_KB[k] * (1.0 - f) + FAR_MS_PER_KB[k + 1] * f)) as u64
+                } else {
+                    (bytes as f64 * US_PER_BYTE / 1000.0) as u64
+                };
+                if let Message::Append(a) = &e.msg {
+                    let due = self.now + graftyard_raft::CALL_DEADLINE.as_millis() as u64;
+                    self.calls.insert((e.from, e.to, a.round), (due, e.failure(true).expect("an append")));
+                    if !a.entries.is_empty() {
+                        let past: usize = a.entries[1..].iter().map(|x| graftyard_raft::encode_entry(x).len()).sum();
+                        self.appends.push((self.now, e.from, e.to, past));
+                    }
+                }
+                let at = self.now + ONE_WAY[e.from.0 as usize][e.to.0 as usize] + self.slow_ms + cost + jitter;
                 self.seq += 1;
                 self.wire.insert((at, self.seq), e);
             }
@@ -363,7 +399,24 @@ impl Load {
             }
             let e = self.wire.remove(&(at, k)).expect("first");
             let Envelope { from, to, msg } = e;
+            if self.stopped.contains(&to) || self.stopped.contains(&from) {
+                continue;
+            }
+            // An answer after its call's deadline is still stepped, as the host steps one within LATE_LIMIT.
+            if let Message::AppendRes(r) = &msg
+                && self.calls.remove(&(to, from, r.round)).is_none()
+            {
+                self.late += 1;
+            }
             self.on(to, |m, now| m.step(now, from, msg));
+        }
+        let due: Vec<_> = self.calls.iter().filter(|(_, c)| c.0 <= self.now).map(|(k, c)| (*k, c.1)).collect();
+        for (k, f) in due {
+            self.calls.remove(&k);
+            if !self.stopped.contains(&k.0) {
+                self.missed += 1;
+                self.on(k.0, |m, now| m.call_failed(now, f));
+            }
         }
         while self.pending.last().is_some_and(|p| p.0 <= self.now) {
             let (_, op) = self.pending.pop().expect("last");
@@ -396,7 +449,9 @@ impl Load {
         }
         if self.now.is_multiple_of(TICK_MS) {
             for s in SITES {
-                self.on(s, |m, now| m.tick(now));
+                if !self.stopped.contains(&s) {
+                    self.on(s, |m, now| m.tick(now));
+                }
             }
             if let Some(l) = self.leader() {
                 let term = self.members[l.0 as usize].term().0;

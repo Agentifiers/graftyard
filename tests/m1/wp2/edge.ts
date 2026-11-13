@@ -380,7 +380,9 @@ export default {
     const chain = String(body.chain ?? url.searchParams.get("chain") ?? "repo:1");
     const gen = Number(body.gen ?? url.searchParams.get("gen") ?? 1);
     const colo = (req.cf as { colo?: string } | undefined)?.colo ?? "edge";
-    const e = new Edge(env, chain, gen, coloId(String(body.colo ?? colo)));
+    // `home`: the record's home site, so a group made with a weur home (`tests/m0/results/carried-9.md`) stays led there.
+    const home = Number(body.home ?? url.searchParams.get("home") ?? 0);
+    const e = new Edge(env, chain, gen, coloId(String(body.colo ?? colo)), home);
     const json = (v: unknown, status = 200) => Response.json(v, { status });
     try {
       switch (url.pathname) {
@@ -391,6 +393,11 @@ export default {
           return json({ ...r, trace: tr });
         }
         case "/status": await e.learnVoters(); return json(await e.all("/status"));
+        case "/member": {
+          // One POST to one member, such as `/sever` or `/transfer` (`tests/m0carried/far9.ts`).
+          await e.learnVoters();
+          return json(await e.call(Number(body.site), String(body.path), body.body ?? {}, 10_000));
+        }
         case "/raw": {
           await e.learnVoters();
           // One member's raw answer to a GET, for diagnosis.

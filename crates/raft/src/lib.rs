@@ -59,6 +59,10 @@ pub const ELECTION_AFTER: Duration = Duration::from_secs(10);
 pub const DRIFT: Duration = Duration::from_millis(500);
 /// Receipt and member-to-member calls.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(1);
+/// How long past CALL_DEADLINE a host still awaits a member call's answer and steps it (`Member::call_failed`)
+/// [guess]: the slowest AppendEntries a follower answered in the F43 logs took 2.0 s on the callee
+/// (`tests/m1/results/m1-f43.md`). A call that missed CALL_DEADLINE and answered within it does not stop pipelining.
+pub const LATE_LIMIT: Duration = Duration::from_secs(10);
 /// Per commit-path member call.
 pub const COMMIT_RETRIES: u8 = 2;
 /// Pre-vote refuses a candidate whose two `boots`, or whose `stepped_down_at`, fall inside it. A voter that has seen

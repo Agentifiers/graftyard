@@ -562,10 +562,6 @@ pub async fn answer<T>(
     }
 }
 
-/// How long past CALL_DEADLINE a call is still awaited [guess]: the slowest AppendEntries a follower answered in the
-/// F43 logs took 2.0 s on the callee (`tests/m1/results/m1-f43.md`).
-const LATE_LIMIT: Duration = Duration::from_secs(10);
-
 /// How long a learner's call waits for its answer before the same envelope is sent once more (`Host::hedge`)
 /// [guess]: past the slowest answer an apac learner had from an enam leader in a normal second of B0-18 (p99 330 ms,
 /// `tests/m3/results/m3-wp5.md`), and half of CALL_DEADLINE.
@@ -2163,7 +2159,7 @@ impl<F: Family> Host<F> {
             let (late, r) = match answer(
                 h.call_peer(to, body, call.hop.get()),
                 Delay::from(raft::CALL_DEADLINE),
-                Delay::from(LATE_LIMIT),
+                Delay::from(raft::LATE_LIMIT),
                 missed,
             )
             .await

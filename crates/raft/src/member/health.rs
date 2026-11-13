@@ -12,7 +12,7 @@ use graftyard_types::{SiteId, Timestamp};
 
 use crate::fold::Command;
 use crate::types::{GroupConfig, Term};
-use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
+use crate::{CALL_DEADLINE, LATE_LIMIT, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
 use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy};
 
@@ -53,6 +53,11 @@ pub(super) struct LeaderHealth {
     /// Per answered AppendEntries in the window: when it was answered, by whom, and its round trip in ms. A follower
     /// answers after its own storage confirms the entries, so its slow confirms show here.
     rtts: VecDeque<(Timestamp, SiteId, u32)>,
+    /// Per follower, as `links`, but a deadline miss counts as failed only once LATE_LIMIT passed with no answer, and
+    /// not at all if it answered: what stops pipelining (`pipe_lossy`). Rule 13 keeps `links`.
+    pipe_calls: VecDeque<(Timestamp, SiteId, bool)>,
+    /// Misses not yet in `pipe_calls`: (follower, round) and when the call was sent.
+    late: BTreeMap<(SiteId, u64), Timestamp>,
     hold_until: Option<Timestamp>,
     probe: Option<LeaderProbe>,
     /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
@@ -164,6 +169,13 @@ impl<C: Command> Member<C> {
         }
         if !h.counted.contains(&(to, round)) {
             h.links.push_back((now, to, ok));
+            if !ok && deadline {
+                h.late.insert((to, round), sent_at);
+            } else {
+                h.pipe_calls.push_back((now, to, ok));
+            }
+        } else if ok {
+            h.late.remove(&(to, round));
         }
         if !h.counted.insert((to, round)) || (!ok && !h.heard.contains(&to)) {
             return;
@@ -201,11 +213,28 @@ impl<C: Command> Member<C> {
         while h.rtts.front().is_some_and(|c| c.0 < since) {
             h.rtts.pop_front();
         }
+        let now = self.now;
+        let lost: Vec<((SiteId, u64), Timestamp)> = h
+            .late
+            .iter()
+            .filter(|(_, s)| after(**s, CALL_DEADLINE + LATE_LIMIT) <= now)
+            .map(|(k, s)| (*k, *s))
+            .collect();
+        for (k, _) in &lost {
+            h.late.remove(k);
+            h.pipe_calls.push_back((now, k.0, false));
+        }
+        while h.pipe_calls.front().is_some_and(|c| c.0 < since) {
+            h.pipe_calls.pop_front();
+        }
         while h.confirms.front().is_some_and(|c| c.0 < since) {
             h.confirms.pop_front();
         }
         if h.counted.len() > 4096 {
             h.counted.retain(|(_, r)| *r >= keep);
+        }
+        for ((to, _), sent_at) in lost {
+            self.bound_lost(to, sent_at);
         }
     }
 
@@ -238,8 +267,20 @@ impl<C: Command> Member<C> {
     /// `commit_errors`, at least `commit_fail_min`), but over every call: `call_counts` leaves out the misses before `s`
     /// first answered and the repeats within one stall, which on a half-hung follower are most of them (F67 rule 13).
     pub(super) fn link_lossy(&self, s: SiteId) -> bool {
-        let Some(lead) = &self.lead else { return false };
-        let mine = lead.health.links.iter().filter(|c| c.1 == s);
+        self.lead.as_ref().is_some_and(|l| Self::lossy(&l.health.links, s))
+    }
+
+    /// As `link_lossy`, but a call that missed CALL_DEADLINE and answered within LATE_LIMIT does not count: a
+    /// far voter whose larger calls answer late is behind, not failing, and one call at a time would leave it further
+    /// behind. From a weur leader, apac's calls missed 6 of 32 times and all 6 answered 1.0 to 2.3 s after they left;
+    /// counted lossy, apac got one call at a time and fell from 11 to 219 entries behind (r300-3,
+    /// `tests/m0/results/carried-8.md`). What stops pipelining (`PIPELINE`).
+    pub(super) fn pipe_lossy(&self, s: SiteId) -> bool {
+        self.lead.as_ref().is_some_and(|l| Self::lossy(&l.health.pipe_calls, s))
+    }
+
+    fn lossy(calls: &VecDeque<(Timestamp, SiteId, bool)>, s: SiteId) -> bool {
+        let mine = calls.iter().filter(|c| c.1 == s);
         let (n, failed) = mine.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
         failed >= u32::from(STEP_DOWN.commit_fail_min) && Self::rate(n, failed) > STEP_DOWN.commit_errors
     }

@@ -601,3 +601,56 @@ fn hot_is_read_from_the_log_so_a_new_leader_stages_at_once() {
     println!("hot from the log: new leader after {waited} ms; 200 KiB push staged {}", hot.staged);
     assert!(hot.staged, "the new leader read hot from the log");
 }
+
+/// B0-02's r300-3 (`tests/m0/results/carried-8.md`): a weur leader at about 300 commands/s, whose calls to apac
+/// cost what that run's did (`common::load`, FAR_MS_PER_KB: a heavy tail, so calls of any size miss CALL_DEADLINE now
+/// and then and answer late, and calls sent close together often arrive out of order). There apac's misses made its
+/// link lossy, it got one call at a time and fell 219 entries behind, so losing enam would have stalled commits 40 to
+/// 70 s [inference]. Here apac keeps up, so when enam's member stops, apac makes the quorum and the group commits
+/// again within 20 s. `R300_SEEDS=a..b` runs other seeds.
+#[test]
+fn a_far_voter_keeps_up_so_losing_the_near_one_stalls_commits_under_20_s() {
+    const WEUR: SiteId = SiteId(1);
+    let s = secs(60);
+    let seeds = std::env::var("R300_SEEDS").ok().and_then(|v| {
+        let (a, b) = v.split_once("..")?;
+        Some(a.parse::<u64>().ok()?..b.parse::<u64>().ok()?)
+    });
+    let mut failed = Vec::new();
+    for seed in seeds.unwrap_or(12..14) {
+        let mut l = Load::new(seed, WEUR);
+        l.far = Some((WEUR, APAC));
+        let t0 = l.now + 100;
+        // 300 commands/s of about 1 KB: about 290 KB/s to each follower, as r300-3's leader wrote.
+        let ops = (0..s * 300).map(|i| op(t0 + i * 10 / 3, AdmitClass::Human, None, Kind::Side, format!("w/{i}"), 900));
+        l.offer(ops);
+        l.run_for(s * 1000 / 2);
+        let behind = l.members[WEUR.0 as usize].last_index().0 - l.members[APAC.0 as usize].last_index().0;
+        let (stop, held) = (l.now, l.members[WEUR.0 as usize].last_index().0);
+        l.stopped.insert(ENAM);
+        l.run_for(s * 1000 / 2);
+        // Until the first command in an entry appended after the stop is acked: only apac's answer commits it.
+        let stall = l
+            .done
+            .iter()
+            .filter(|d| matches!(d.end, End::Acked { index } if index > held))
+            .map(|d| d.op.at + d.ms - stop)
+            .min();
+        let far: Vec<usize> = l.appends.iter().filter(|a| a.1 == WEUR && a.2 == APAC).map(|a| a.3).collect();
+        println!(
+            "r300-3 shape seed {seed}: apac {behind} entries behind at enam's stop, commits resumed {stall:?} ms after \
+             it; {} calls to apac, {} missed CALL_DEADLINE, {} answered late, largest {} bytes past its first entry; \
+             {} leader changes",
+            far.len(),
+            l.missed,
+            l.late,
+            far.iter().max().unwrap_or(&0),
+            l.changes()
+        );
+        assert!(l.missed > 0 && l.late > 0, "seed {seed}: the far link never missed CALL_DEADLINE: not r300-3's");
+        if !stall.is_some_and(|ms| ms <= 20_000) || l.changes() > 0 {
+            failed.push((seed, stall, l.changes()));
+        }
+    }
+    assert!(failed.is_empty(), "(seed, ms until commits resumed, leader changes): {failed:?}");
+}

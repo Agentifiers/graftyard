@@ -3282,3 +3282,37 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** `a_looplag_leader_with_slow_followers_hands_off_and_holds` (`crates/raft/tests/liveness.rs`) fails on main `1f51c6f` (seeds 904 at 8.5 s and 910 at 12.5 s unserved) and passes here, worst 4.9 s. Over 200 seeds, seeds unserved for more than 5 s went from 18 to 4, and the worst from 12.7 s to 5.6 s. The slow-storage term rise over 200 seeds is 0.94 a minute with every member slow and 0.20 with both followers slow, against 1.33 and 0.30. `long_liveness` at 60 seeds moved all 60 by STEP_DOWN for calls, slow and lag. `tests/m0carried/plant11.py` gains a mutant that restores six.
 
 **Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.
+
+**Open, for a second change.** The render still crosses every AppendEntries: each issue command sends its owner's whole Authz fold, about 10 KB, to every follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build the render's `HostedDir.authz` itself and the edge could send none. That would also cut the far follower's per-call bytes, a candidate in the far-leg question [inference].
+
+### `m0-adaptive-append`: a far voter that answers late keeps its pipeline, 2026-11-13
+
+#### Pipelining stops only on lost calls, and the call bound adapts per link
+
+**Decision.** Four changes to how a leader replicates to one voter (operator, 2026-11-13):
+- Pipelining (`PIPELINE`) stops only when the voter's calls are lost: they fail with an error, or miss `CALL_DEADLINE` and stay unanswered for `LATE_LIMIT` (10 s) more. That is over `commit_errors` of the window's calls, with at least `commit_fail_min` lost. A call that misses `CALL_DEADLINE` and then answers does not count (`pipe_lossy`). F67 rule 13's `link_lossy`, which picks hand-off targets, still counts a late answer as a loss, so a follower that answers 1 to 2 s late is not handed leadership. `LATE_LIMIT` moves from the site host into `crates/raft`.
+- Each link has its own call bound (`Lead::bound`). It starts at `APPEND_BYTES_MAX`. Each lost call halves it, once per cut. Each call answered within `CALL_DEADLINE` adds back an eighth of `APPEND_BYTES_MAX`. A call always carries one whole entry.
+- A pipelined call that arrives before the call ahead of it is refused for the gap. The leader then drops that call and the ones after it from the pipe, keeps the calls ahead, and pipelines again once the call ahead answers. Before, it cleared the pipe.
+- A voter behind gets calls until `PIPELINE` are out, not one call per answer.
+
+**Why.** In B0-02's r300-3, the weur leader's calls to apac missed `CALL_DEADLINE` 6 times in 32. All 6 answered 1.0 to 2.3 s after they left. Counted as losses, they made the link lossy, apac got one call at a time, and it fell from 11 to 219 entries behind [measured, `tests/m0/results/carried-8.md`]. Losing enam then would have stalled commits 40 to 70 s [inference]. The load net now models that link from the run's own trace. Each call's cost per KB is drawn from r300-3's distribution: p50 2.6 ms, p90 12.6, max 87. The draw ignores how many calls are in flight, because the trace's per-call ms per KB had p50 6.4 to 7.3 at 1 to 4 calls out [inference that the link is per call, not shared bandwidth, until hosted shows it]. In this model, 24 seeds at 300 commands/s gave these stalls after enam's member stopped (`a_far_voter_keeps_up_so_losing_the_near_one_stalls_commits_under_20_s`, `tests/m0/results/carried-9.md`) [measured, in the simulator]:
+
+| Tree | Seeds under 20 s | Median stall | Worst | Mean entries apac was behind |
+|---|---|---|---|---|
+| main `82a0bf9` | 0 of 24 | none (no commit within 30 s) | none | 149 |
+| this rule set | 24 of 24 | 12.6 s | 16.6 s | 60 |
+| without the gap rule | 16 of 24 | 18.5 s | 29.6 s | 104 |
+| without the fill | 21 of 24 | 14.5 s | 21.9 s | 65 |
+| halving on every missed `CALL_DEADLINE` | 7 of 24 | 23.9 s | none | 108 |
+
+**Beat.** Three alternatives lost.
+- Halving the bound on every missed `CALL_DEADLINE`, as first decided. The model's misses come from the link's tail at any call size, so smaller calls do not miss less, and each costs another round trip: see the table. Halving on a lost call keeps the bound for links that really drop calls.
+- Doubling back on an answer, which oscillated on an earlier tree (2 of 24 over 20 s).
+- Re-sending a gap-refused call behind the one ahead at once. If the call ahead is lost, that resends without end.
+
+**Evidence.** Kept tests: `a_voter_is_pipelined_unless_its_calls_are_lost`, `a_voter_whose_calls_arrive_out_of_order_keeps_its_pipeline` and `a_voters_call_bound_halves_on_lost_calls_and_grows_back_on_answers` (`crates/raft/tests/scenarios.rs`), and the r300-3 scenario (`crates/raft/tests/admission.rs`). `tests/m0carried/plant9.py` plants each rule.
+
+**Flip.** Any one of these reverses it:
+- a hosted far link whose per-call time grows with the calls in flight, where smaller calls would then not help;
+- a hosted run in which apac still falls behind at 300 offered from a weur leader;
+- a Raft history the gap rule breaks.
