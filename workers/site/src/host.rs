@@ -2641,6 +2641,20 @@ impl<F: Family> Host<F> {
         if leading && recent {
             self.arm();
         }
+        // The alarm this invocation armed is set again, awaited, before it returns. One armed only from the task
+        // `arm_in` spawns can be lost as the invocation ends [inference]: in BF-57 run 10 (graft-m4a) a leader's alarm
+        // armed `arm` 2 s out at 90 s, none ran after it, and five committed entries waited 137 s for an unrelated
+        // read to wake the member (`tests/m4/results/m4-wp1-hosted.md`).
+        let at = self.alarm_at.get();
+        let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
+        if at != 0
+            && let Err(e) = self.state.storage().set_alarm_with_options(at.saturating_sub(now_ms()) as i64, opts).await
+        {
+            let mut s = self.stats.borrow_mut();
+            if s.alarms.len() < 50 {
+                s.alarms.push(format!("{} set alarm at end: {e}", now_ms()));
+            }
+        }
     }
 
     /// Counts a failed write that SQLite refused for space (B0-30's `SQLITE_FULL`), and logs it, so a reader of
