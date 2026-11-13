@@ -677,9 +677,18 @@ impl HookSequencer {
             Some(r) => {
                 let c: Sequencer =
                     codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+                // One row at a time, keeping no done delivery's body: rows written before bodies had their own table
+                // carry theirs inline, and reading every one at once kept the store's isolate failing in `save` in
+                // BF-57's run 3, with about 14,000 of them from runs 1 and 2.
                 let mut ds: Vec<HookDelivery> = Vec::new();
-                for r in crate::host::rows(&sql, "SELECT row FROM delivery", vec![])? {
-                    ds.push(codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?);
+                for r in sql.exec("SELECT row FROM delivery", None)?.raw() {
+                    let r = r?;
+                    let mut d: HookDelivery =
+                        codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+                    if d.done {
+                        d.body = Box::default();
+                    }
+                    ds.push(d);
                 }
                 let undone: Vec<Guid> = ds.iter().filter(|d| !d.done).map(|d| d.guid).collect();
                 let mut seq = Sequencer::restore(c, ds);
@@ -912,9 +921,17 @@ impl HookSequencer {
 }
 
 /// A delivery's body from the `body` table.
+/// A delivery's body from the `body` table, or, for a row written before that table, from the row itself.
 fn read_body(sql: &SqlStorage, guid: &Guid) -> Result<Option<Box<[u8]>>> {
-    let rows = crate::host::rows(sql, "SELECT b FROM body WHERE guid = ?", vec![guid.0.to_vec().into()])?;
-    rows.first().map(|r| crate::host::blob(&r[0]).map(Box::from)).transpose()
+    let key: SqlStorageValue = guid.0.to_vec().into();
+    let rows = crate::host::rows(sql, "SELECT b FROM body WHERE guid = ?", vec![key.clone()])?;
+    if let Some(r) = rows.first() {
+        return Ok(Some(crate::host::blob(&r[0])?.into()));
+    }
+    let rows = crate::host::rows(sql, "SELECT row FROM delivery WHERE guid = ?", vec![key])?;
+    let Some(r) = rows.first() else { return Ok(None) };
+    let d: HookDelivery = codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+    Ok((!d.body.is_empty()).then_some(d.body))
 }
 
 async fn unwrap(env: &Env, w: &Wrapped) -> std::result::Result<HookSecret, String> {
