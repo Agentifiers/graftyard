@@ -1,7 +1,8 @@
 ---
 // Every figure here comes from tests/RESULTS.md, tests/m2/results/m2-edge.md, tests/m2/results/m2-wp6.md,
 // tests/m3/results/m3-close.md, m3-hosted.md, m3-finish.md, m3-rows.md, m3-repos.md, m3-wp5.md, tests/am1/results/am1-wp2.md,
-// am1-wp5.md, am1-rest.md and design/DESIGN.md ("Scale"), as of 2026-11-09. Update this page when those files change.
+// am1-wp5.md, am1-rest.md, lf4-rest.md, tests/m0/results/carried.md, f67.md and design/DESIGN.md ("Scale"), as of
+// 2026-11-13. The Rust test count is a full `cargo test --workspace` run. Update this page when those files change.
 import Page from '../layouts/Page.astro';
 import Film from '../components/Film.astro';
 import Table from '../components/Table.astro';
@@ -24,6 +25,8 @@ const schemaRows = [
   ['Live replies on Cloudflare', '26 GraphQL, 12 REST, 5 LFS', ok('0 failures')],
   ['Replayed client requests', '65 requests from git 2.56.0, git-lfs 3.8.0 and gh 2.102.1; 93 replies', ok('0 failures')],
   ['Agent layer off by default', '93 replies × 13 <code>Accept</code> values, compared byte for byte with and without the layer', ok('0 of 1,209') + ' differ'],
+  ['Agent trust view, opt-in media type (LF-4)', 'Issues, pull requests, issue comments, reviews, review comments, commits, check runs, releases', ok('16 of 16') + ' hidden payloads dropped and counted on each of the 8; raw <code>body</code> unchanged'],
+  ['Agent label rule over GraphQL (B0-36)', '<code>addLabelsToLabelable</code> with a label outside the allowlist, for two kinds of agent App', ok('100 of 100') + ' refused for each'],
 ];
 const chaosRows = [
   ['<code>cf-48h</code>', '48 h', '5,742,736', '5,729 resets, 3,607 transfers', ok('Pass') + '. 0 of 1,814,873 acked writes lost'],
@@ -38,6 +41,8 @@ const gateRows = [
   ['Leader killed after quorum, before the reply (BF-12)', '12,000 kills landed', ok('12,000 of 12,000') + ' kept their original outcome; 0 applied twice'],
   ['Receipts that miss their deadline (BF-14)', '2,400 commands', ok('2,400 of 2,400') + ' decided once; 0 forwarded'],
   ['One site\'s member class failing (B0-03)', '26 runs plus 6 reruns', ok('11.0 to 12.9 s') + ' to recover; 0 failed operations'],
+  ['A gray site during another site\'s deploy, on the Rust host (B0-07)', '3 days, 200 groups, 100 writes/s', ok('235 of 235') + ' groups led on the gray site moved within 20 s (max 17.2 s); 0 failed writes'],
+  ['A half-hung leader: its followers\' answers lost (F67)', 'Hosted, 60 s fault under writes and reads', ok('12.8 s') + ' to a new leader, with no operator action'],
   ['22% of member calls and storage writes failing (B0-25)', '9 runs, 300 pushes each', ok('92.3% to 98.7%') + ' of pushes land within three attempts'],
   ['Every member of 4 or 8 groups reset inside 60 s (B0-26)', '4 runs at 100 writes/s', ok('Pass') + '. Every group commits within 1.2 s of its last reset'],
   ['Simulator, HARSH and GRAY faults', '40,191,804 steps, 2,000 seeds', ok('1,000,856') + ' acked writes, every one with valid ack evidence'],
@@ -57,6 +62,7 @@ const latencyRows = [
   ['One cross-region round, enam to weur, under 100 commands/s', 'p50 107 to 189 ms', 'p99 283 to 473 ms', 'B0-01, Milestone 0'],
   ['Idle ping, leader to the weur member', 'p50 135 ms', 'p99 151 to 216 ms', 'B0-01, Milestone 0'],
   ['Commit, one entry in flight, 15 runs', 'p50 172 to 370 ms', 'p99 399 to 690 ms', 'B0-01, Milestone 0'],
+  ['Commit on the production Rust host, 6 runs at 100 commands/s', 'p50 165 to 280 ms', ok('p99 244 to 377 ms'), 'B0-01 rerun, 2026-11-11'],
   ['Learner reads, 16 learners at 1,000 reads/s each, Milestone 0', '16,000 reads/s, 0 failed', 'p99 683 to 743 ms', 'B0-18'],
   ['The same on the production host, under 10 pushes/s, 6 runs', '0 failed reads', 'worst learner p99 560 to 853 ms', 'B0-18 rerun, BM-3'],
   ['Merge on a newly elected leader, client in its region, 300 samples', '0 over 2 s', 'p99 1.36 s', 'BM-2'],
@@ -73,7 +79,7 @@ const latencyRows = [
       <div class="doc-head">
         <p class="eyebrow">Evidence overview</p>
         <h1 id="ev-h">What we tested, and what it showed</h1>
-        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 9 November 2026, failures included.</p>
+        <p class="t-lead">Graftyard ran on Cloudflare in test installs across North America, Europe and Asia-Pacific. Real clients hit it, a chaos driver attacked it, and checkers read back every site's log. These are the results through 13 November 2026, failures included.</p>
         <p class="more"><a class="link" href="/evidence/all/">Every check, benchmark and baseline, in full<Fragment set:html={ARROW} /></a></p>
       </div>
       <ul class="kpis">
@@ -82,7 +88,7 @@ const latencyRows = [
         <li><b>104.6 h</b><span>of chaos on Cloudflare, 12,304,207 operations checked</span></li>
         <li><b>172 to 370 ms</b><span>median commit across two continents</span></li>
         <li><b>200 of 200</b><span>revoked tokens refused on the next push, over HTTPS</span></li>
-        <li><b>591</b><span>Rust tests in the workspace, 0 failing</span></li>
+        <li><b>759</b><span>Rust tests in the workspace, 0 failing</span></li>
       </ul>
     </div>
   </section>
@@ -147,7 +153,7 @@ const latencyRows = [
         <p>A write waits for one round to the nearest site in another region. That is the price of losing nothing when a region goes down. Reads from the leader's region pay no such round.</p>
       </div>
       <Table head={['Measure', 'Median', 'Tail', 'Gate']} rows={latencyRows} />
-      <p class="note">The commit figures are from Milestone 0's prototype. The production Rust host measured p99 414 to 807 ms in its second pass: 2 of 6 runs under the 600 ms line, none over 1 s. Closing that gap is open work.</p>
+      <p class="note">The production Rust host now passes the 600 ms commit line in 6 of 6 runs, 6,000 commands each with none failed. At 300 commands/s it passes in 7 of 8 runs, and that gate is still open.</p>
     </div>
   </section>
 
@@ -161,7 +167,6 @@ const latencyRows = [
           <ul>
             <li>SSH git sessions held at 99.59% to 99.89% through container kills, between the 99% and 99.9% lines. SSH is opt-in, and its gate is carried to Milestone 6.</li>
             <li>In Milestones 0 and 1, one planted bug of 85 went uncaught: a resumed leader sending entries before they were durable. Later rounds catch every plant, though some needed a new test after a first run missed one; each results file records which.</li>
-            <li>The agent layer's first gate (LM-1) is not closed. Its two hosted failures, a lease stall across a leader change and a slow commit tail under held polls, are fixed and pass hosted; the agent load rows and the Graftyard-run agent kinds have not run hosted yet.</li>
           </ul>
           <p class="muted">Sources: <code>tests/RESULTS.md</code>, the results files it cites, and <code>tests/m2</code>, <code>tests/m3</code> and <code>tests/am1</code>'s results, in the Graftyard repository. <a href="/evidence/all/">All results</a> lists every row of the ledger and every gate.</p>
         </div>
