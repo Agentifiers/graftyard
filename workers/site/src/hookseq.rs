@@ -69,6 +69,11 @@ const HOME_RETRY_MS: u64 = 30_000;
 /// beside them [guess]. A round that waited for that refresh stopped bf57b's consumer for 26 s in BF-57 run 4
 /// [inference: the stall began about 30 s after the leadership's first read, and nothing else in the round logged].
 const DIR_FOR_MS: u64 = 30_000;
+/// The store drops finished deliveries past their 3 days at most this often [guess]. `prune` walks every delivery
+/// held, about 35 ms of CPU per alarm with BF-57 run 8's 80,000 (graft-m4a), and the alarm ran 4 to 5 times a second:
+/// a third of the object's time, which every attempt's report waited behind [measured,
+/// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 8].
+const PRUNE_EVERY_MS: u64 = 60_000;
 
 /// One leadership's consumer state, in this isolate's memory.
 #[derive(Default)]
@@ -555,6 +560,7 @@ pub struct HookSequencer {
     state: Rc<State>,
     env: Env,
     seq: Rc<RefCell<Option<Sequencer>>>,
+    pruned_at: std::cell::Cell<u64>,
 }
 
 /// A delivery's payload is kept in `body`, apart from its `delivery` row, and the object holds in memory only the
@@ -576,7 +582,7 @@ impl DurableObject for HookSequencer {
         for s in SCHEMA {
             sql.exec(s, None).expect("hookseq schema");
         }
-        HookSequencer { state: Rc::new(state), env, seq: Rc::default() }
+        HookSequencer { state: Rc::new(state), env, seq: Rc::default(), pruned_at: std::cell::Cell::new(0) }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -831,7 +837,10 @@ impl HookSequencer {
         let starts = {
             let mut g = self.seq.borrow_mut();
             let Some(s) = g.as_mut() else { return Ok(()) };
-            s.prune(now);
+            if now.0 >= self.pruned_at.get() + PRUNE_EVERY_MS {
+                self.pruned_at.set(now.0);
+                s.prune(now);
+            }
             s.start(now)
         };
         self.save()?;
