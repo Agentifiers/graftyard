@@ -1456,3 +1456,30 @@ buffering". The edge as built buffers. The seed now uses 30 MB steps (`tests/fan
 root commit is carried by its tree's parts first.
 
 Cost after round 9's smokes and A/B: $54.80 of $150 (containers $14.78); every shard torn down with `--pools`.
+
+### Round 10: site day m21 and the ENTRY_SOFT A/B on the fixed cap (2026-11-13)
+
+**Deploy.** Tree `lm1-memory` `74f0e1a` (main a7d28e5: m0-entry-soft-packs `ff29c65`, hot-shards-4, M4-WP2's pure
+half, f67-wide), sites `78a8c8f8`, `955377dc`, `2aeae0cc`; edge `bc314b3a`; `SHARD_INSTANCE=standard-4`; shard image
+hot-shards-4's `sha256:f6d2ef408c76…`. A first attempt on 745c116 (main 59308e9) stopped after site a, on a wrangler
+"fetch failed" for site b, and was replaced by this one. Checks on 74f0e1a: fmt, both clippies, wasm32 clippy for
+site, edge and ops with and without `test-faults`, `cargo test --workspace`, `go test`, and the three design checks
+(`check_links` in a clean worktree, 3,168 citations) pass. Long sweep (2,000 seeds × 10,000 steps) ok in 1,275 s;
+Porcupine Ok on `hist.jsonl` (150,828 operations), `.gray` (2,044,734) and `.live` (5,253,576).
+
+**A/B (diagnosis, not a row).** B0-29's shape, 500 agents, 180 s, learners enam 4,000, weur 2,000, apac 2,000, k 4.
+The uncapped arm sets `ENTRY_MAX` on every member through test-faults `/stats?entry=max`.
+
+| Run | Entry limit | Commit p50 / p99 (ms) | Queue p50 / p99 | Round p50 / p99 | Confirm p99 | Far follower (site 2) append p50 / p99 | Agent push p99 | merge:only p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|---|
+| m21cap500 (131302) | `ENTRY_SOFT`, as shipped | 381 / 717 | 205 / 499 | 168 / 297 | 56 | 262 / 635 | 6.5 s | 1,157 | 2,639, 99.97% |
+| m21max500 (131303) | `ENTRY_MAX` | 394 / 761 | 213 / 508 | 169 / 331 | 90 | 226 / 577 | 6.9 s | 1,476 | 2,610, 99.96% |
+
+The fixed cap is no worse than uncapped (717 against 761 ms p99; round 9's 60 KB cap was 1,718), so the gate rows run
+capped, as shipped. Neither arm meets B0-29's 600 ms line. Leader held at term 2 in both, 0 feed polls on it, 7 and 0
+`/suspect`. In both arms the queue (admission to append, which holds the entry's dep reads, p99 205 to 331 ms) is
+about two thirds of the commit p99 and the round the rest; the round's p50 equals the near follower's (site 1)
+AppendEntries p50, so the quorum leg is the near follower's call, not the leader's confirm (p99 56 to 90 ms).
+
+**B0-34's seed.** m3org/b034-mono holds 5.02 GB of torvalds/linux (260 pushes of at most 30 MB, 6,075 s); push 4,
+linux's 52 MB root commit carried in parts, was cut off 4 times at the edge before it went. The repos are kept.
