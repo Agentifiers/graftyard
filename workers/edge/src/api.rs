@@ -73,136 +73,89 @@ fn frame(i: &Incoming<'_>, r: Reply, s: Surface, m: &Meta) -> Result<Response> {
     Ok(resp.with_status(r.status).with_headers(h))
 }
 
-/// Test installs: each phase of one request and its time in ms, sent back as `server-timing`, so a latency gate can
-/// say where the time went. An isolate runs many requests' futures at once, so `scoped` gives each request its own
-/// phases: it swaps that request's state into the thread-locals for each poll of its future and out again after.
-/// Without it, concurrent requests wrote one shared list, and a loaded merge's header held other requests' phases
-/// (LM-1 round 7: a 3 s merge read `commit;dur=21`).
-#[cfg(any(feature = "test-faults", test))]
-#[cfg_attr(not(feature = "test-faults"), allow(dead_code, reason = "only its test uses it without test-faults"))]
-mod timing {
-    use std::cell::RefCell;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::task::{Context, Poll};
+/// Each stage of one request and its own time in ms, held in the request's `Ctx` (a Workers isolate serves many
+/// requests at once, so no isolate-wide list can hold them). Reads that run at once each record their own wall
+/// (`timed`), so stages may overlap and `total` is the request's. Test installs send it back as `server-timing`; every
+/// install logs it for 1 request in `TIMING_SAMPLE` (Workers Observability), so a latency gate can say where the time
+/// went (`design/DESIGN.md`, "Follower read").
+#[derive(Default)]
+pub(crate) struct Timing {
+    start: std::cell::Cell<f64>,
+    last: std::cell::Cell<f64>,
+    phases: std::cell::RefCell<Vec<(&'static str, f64)>>,
+}
 
-    /// One request's timing: its phases (the last mark's time, then each phase), hedge trace, and the shard's note.
-    #[derive(Default)]
-    pub struct State {
-        phases: (f64, Vec<(&'static str, f64)>),
-        trace: Vec<serde_json::Value>,
-        note: String,
-    }
-    thread_local! { static NOW: RefCell<State> = RefCell::default(); }
-
-    #[cfg(target_arch = "wasm32")]
-    fn now() -> f64 {
-        js_sys::Date::now()
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn now() -> f64 {
-        0.0
-    }
-
-    /// `fut` with its own `State`, swapped in for each poll; the state comes back with the output.
-    pub async fn scoped<F: Future>(fut: F) -> (F::Output, State) {
-        struct Scoped<F> {
-            fut: Pin<Box<F>>,
-            state: Option<State>,
-        }
-        impl<F: Future> Future for Scoped<F> {
-            type Output = (F::Output, State);
-            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                let mine = self.state.take().expect("polled after it finished");
-                let outer = NOW.with(|n| std::mem::replace(&mut *n.borrow_mut(), mine));
-                let r = self.fut.as_mut().poll(cx);
-                let mine = NOW.with(|n| std::mem::replace(&mut *n.borrow_mut(), outer));
-                match r {
-                    Poll::Ready(v) => Poll::Ready((v, mine)),
-                    Poll::Pending => {
-                        self.state = Some(mine);
-                        Poll::Pending
-                    }
-                }
-            }
-        }
-        let state = State { phases: (now(), Vec::new()), ..State::default() };
-        Scoped { fut: Box::pin(fut), state: Some(state) }.await
+impl Timing {
+    fn start(&self) {
+        let now = js_sys::Date::now();
+        self.start.set(now);
+        self.last.set(now);
+        self.phases.borrow_mut().clear();
     }
     /// Closes the phase that ends now.
-    pub fn mark(name: &'static str) {
-        NOW.with(|n| {
-            let p = &mut n.borrow_mut().phases;
-            let now = now();
-            let last = p.0;
-            p.1.push((name, now - last));
-            p.0 = now;
-        });
+    pub(crate) fn mark(&self, name: &'static str) {
+        let now = js_sys::Date::now();
+        self.phases.borrow_mut().push((name, now - self.last.get()));
+        self.last.set(now);
     }
-    /// The commit's hedge steps, sent back as `x-graft-trace`.
-    pub fn trace(t: Vec<serde_json::Value>) {
-        NOW.with(|n| n.borrow_mut().trace = t);
+    /// A stage that ran from `since` to now, whatever ran beside it; the next `mark` measures from the later of the
+    /// last mark and now.
+    fn add(&self, name: &'static str, since: f64) {
+        let now = js_sys::Date::now();
+        self.phases.borrow_mut().push((name, now - since));
+        self.last.set(self.last.get().max(now));
     }
-    /// The shard's own timing of its merge plan, sent back as `x-graft-shard-timing`.
-    pub fn note(t: String) {
-        NOW.with(|n| n.borrow_mut().note = t);
+    /// Each stage and its ms, then `total`.
+    fn phases(&self) -> Vec<(&'static str, f64)> {
+        let mut out = self.phases.borrow().clone();
+        out.push(("total", js_sys::Date::now() - self.start.get()));
+        out
     }
-    impl State {
-        pub fn header(&self) -> String {
-            self.phases.1.iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
-        }
-        pub fn trace(&self) -> String {
-            serde_json::Value::from(self.trace.clone()).to_string()
-        }
-        pub fn note(&self) -> &str {
-            &self.note
-        }
+    #[cfg(feature = "test-faults")]
+    fn header(&self) -> String {
+        self.phases().iter().map(|(n, d)| format!("{n};dur={d:.0}")).collect::<Vec<_>>().join(", ")
     }
+}
 
-    #[cfg(test)]
-    mod tests {
-        /// Two requests polled in turn each get only their own phases, as two merges in one isolate are.
-        #[test]
-        fn concurrent_requests_keep_their_own_phases() {
-            use futures_util::FutureExt;
-            // Pending on its first poll, ready on the next.
-            fn yield_once() -> impl std::future::Future<Output = ()> {
-                let mut first = true;
-                std::future::poll_fn(move |cx| {
-                    if std::mem::take(&mut first) {
-                        cx.waker().wake_by_ref();
-                        return std::task::Poll::Pending;
-                    }
-                    std::task::Poll::Ready(())
-                })
-            }
-            let mut a = Box::pin(super::scoped(async move {
-                super::mark("a1");
-                yield_once().await;
-                super::mark("a2");
-                super::note("shard a".into());
-            }));
-            let mut b = Box::pin(super::scoped(async move {
-                super::mark("b1");
-                yield_once().await;
-                super::mark("b2");
-            }));
-            assert!((&mut a).now_or_never().is_none());
-            assert!((&mut b).now_or_never().is_none());
-            let ((), sb) = (&mut b).now_or_never().expect("b done");
-            let ((), sa) = (&mut a).now_or_never().expect("a done");
-            let names = |s: &super::State| s.phases.1.iter().map(|(n, _)| *n).collect::<Vec<_>>();
-            assert_eq!(names(&sa), ["a1", "a2"]);
-            assert_eq!(names(&sb), ["b1", "b2"]);
-            assert_eq!((sa.note(), sb.note()), ("shard a", ""));
-        }
+/// Test installs: a commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
+/// (`x-graft-shard-timing`).
+mod timing {
+    #[cfg(feature = "test-faults")]
+    use std::cell::RefCell;
+    #[cfg(feature = "test-faults")]
+    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
+    #[cfg(feature = "test-faults")]
+    pub fn trace(t: Vec<serde_json::Value>) {
+        TRACE.with(|x| *x.borrow_mut() = t);
+    }
+    #[cfg(not(feature = "test-faults"))]
+    pub fn trace(_: Vec<serde_json::Value>) {}
+    #[cfg(feature = "test-faults")]
+    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
+    #[cfg(feature = "test-faults")]
+    pub fn note(t: String) {
+        NOTE.with(|n| *n.borrow_mut() = t);
+    }
+    #[cfg(feature = "test-faults")]
+    pub fn take_note() -> String {
+        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
+    }
+    #[cfg(feature = "test-faults")]
+    pub fn take_trace() -> String {
+        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
     }
 }
-#[cfg(not(any(feature = "test-faults", test)))]
-mod timing {
-    pub fn mark(_: &'static str) {}
-    pub fn trace(_: Vec<serde_json::Value>) {}
+
+/// `f`, with its own wall time recorded as stage `name` of `c`'s request.
+pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static str, f: F) -> F::Output {
+    let since = js_sys::Date::now();
+    let out = f.await;
+    c.timing.add(name, since);
+    out
 }
+
+/// One request in this many logs its stages (`timing`).
+const TIMING_SAMPLE: f64 = 100.0;
 
 /// A commit's hedge steps for this request's `x-graft-trace` (test installs only).
 #[cfg(feature = "test-faults")]
@@ -244,19 +197,26 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     // The colo this edge ran in, so a latency gate can show where the client entered (BM-2's home-site clause).
     #[cfg(feature = "test-faults")]
     let colo = req.cf().map(|c| c.colo()).unwrap_or_default();
-    #[cfg(feature = "test-faults")]
-    let (r, t) = timing::scoped(route(c, req, host, e, &m)).await;
-    #[cfg(not(feature = "test-faults"))]
-    let r = route(c, req, host, e, &m).await;
-    let r = match r {
+    c.timing.start();
+    let kind = match &e {
+        Endpoint::Graphql => "graphql",
+        Endpoint::Rest(p) if p.starts_with("/repos/") => "rest-repo",
+        _ => "other",
+    };
+    let r = match route(c, req, host, e, &m).await {
         Ok(r) => r,
         Err(err) => unavailable(&format!("Service Unavailable: {err}")),
     };
+    if js_sys::Math::random() * TIMING_SAMPLE < 1.0 {
+        let stages: serde_json::Map<String, Value> =
+            c.timing.phases().into_iter().map(|(n, d)| (n.to_owned(), json!(d.round()))).collect();
+        worker::console_log!("{}", json!({ "apiTiming": stages, "kind": kind, "status": r.status }));
+    }
     #[cfg(feature = "test-faults")]
     let r = r
-        .with("server-timing", t.header())
-        .with("x-graft-trace", t.trace())
-        .with("x-graft-shard-timing", t.note().to_owned())
+        .with("server-timing", c.timing.header())
+        .with("x-graft-trace", timing::take_trace())
+        .with("x-graft-shard-timing", timing::take_note())
         .with("x-graft-colo", colo);
     frame(&i, r, s, &m)
 }
@@ -321,7 +281,20 @@ async fn read_as(
     viewer: Option<&Principal>,
     rows: Rows,
 ) -> Result<std::result::Result<Read, Reply>> {
-    let repo = match resolve(c, owner, name).await? {
+    let found = resolve(c, owner, name).await?;
+    read_found(c, found, owner, name, viewer, rows).await
+}
+
+/// `read_as` of a name `resolve` already answered.
+async fn read_found(
+    c: &Ctx<'_>,
+    found: std::result::Result<Option<Repo>, String>,
+    owner: &str,
+    name: &str,
+    viewer: Option<&Principal>,
+    rows: Rows,
+) -> Result<std::result::Result<Read, Reply>> {
+    let repo = match found {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(Err(Reply::not_found())),
         Err(e) => return Ok(Err(read_failed("the repository lookup failed; retry", &e))),
@@ -408,13 +381,12 @@ async fn read_repo(
     };
     let core_only = matches!(rows, Rows::Core);
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
-    timing::mark("resolve");
-    let read_authz = async {
+    let read_authz = timed(c, "authz", async {
         match known {
             Some(a) => Some(a),
             None => authz(c, &repo).await,
         }
-    };
+    });
     let read_rows = async {
         match rows {
             Rows::Merge(_, Some(v)) => v,
@@ -431,7 +403,7 @@ async fn read_repo(
             _ => tier_rows(c, &repo, merge).await,
         }
     };
-    let (v, authz) = futures_util::future::join(read_rows, read_authz).await;
+    let (v, mut authz) = futures_util::future::join(timed(c, "tier", read_rows), read_authz).await;
     let v = match v? {
         Ok(v) => v,
         Err(r) => return Ok(Err(r)),
@@ -447,11 +419,18 @@ async fn read_repo(
     let Some(meta) = served_meta(&rows, core_only, &no_meta) else {
         return Ok(Err(unavailable("the repository's metadata tier is loading; retry")));
     };
-    timing::mark("rows_authz");
     // The read gate (`crate::read_gate`), on the rows this read already holds: every read and merge row set carries
     // `settings` and the `collaborator` rows. A private repository whose owner's `Authz` did not answer is 503, not a
     // 404 the caller would take as "no such repository".
     let core = TierRows::store(&rows.core);
+    // A read-class request's owner `Authz` may be up to `READ_CACHE` old (`crate::rcache`): one that would hide the
+    // repository is read again fresh first, so a grant shows at once and only a revocation waits out the cache.
+    if gate == Gate::Readers
+        && c.read_class.get()
+        && may_read(c, &repo, &core, authz.as_ref(), viewer) != graftyard_identity::Decision::Allow
+    {
+        authz = timed(c, "authz_fresh", crate::authz_read_as(c, repo.owner, &repo.record, false)).await.ok().flatten();
+    }
     if gate == Gate::Readers {
         match may_read(c, &repo, &core, authz.as_ref(), viewer) {
             graftyard_identity::Decision::Allow => {}
@@ -468,7 +447,7 @@ async fn read_repo(
     let meta = TierRows::store(meta);
     let mut rd = Read { repo, at, core, meta, dir, index: rows.index };
     if merge.is_none() {
-        rd.dir.logins = read_logins(c, &rd).await;
+        rd.dir.logins = timed(c, "logins", read_logins(c, &rd)).await;
     }
     Ok(Ok(rd))
 }
@@ -984,7 +963,7 @@ async fn merge_plan(
         return Err(format!("{} {text}", r.status_code()));
     }
     let a: ChainAnswer = serde_json::from_str(&text).map_err(|e| format!("{e}: {text}"))?;
-    timing::mark("merge_plan");
+    c.timing.mark("merge_plan");
     #[cfg(feature = "test-faults")]
     if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
         timing::note(t);
@@ -1072,7 +1051,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     if let Some(a) = admit {
         body["admit"] = serde_json::to_value(a)?;
     }
-    timing::mark("plan");
+    c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
     let trace = std::cell::RefCell::new(Vec::new());
     let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
@@ -1086,7 +1065,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
         hooks,
     )
     .await;
-    timing::mark("commit");
+    c.timing.mark("commit");
     timing::trace(trace.into_inner());
     Ok(match r {
         Ok(done) => {
@@ -1192,6 +1171,8 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     // other, and only the leader's render reads them (the `Plan::Merge` arm). Every other request reads both tiers
     // and its logins first.
     let merging = merge_pull_id(&gq);
+    // A query is read-class (`Ctx::read_class`); a mutation, including a merge, reads everything fresh.
+    c.read_class.set(!gq.is_mutation().unwrap_or(true));
     // The caller's token and the repository are read at once: neither read needs the other.
     let find = async {
         match &target {
@@ -1221,8 +1202,8 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             }
         }
     };
-    let (who, found) = futures_util::future::join(authenticate(c, req), find).await;
-    timing::mark("auth_resolve");
+    let (who, found) =
+        futures_util::future::join(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find)).await;
     let Some(who) = who? else { return Ok(Reply::json(401, json!({ "message": "Bad credentials", "status": "401" }))) };
     let (owner, name, rd, found) = match found? {
         None => {
@@ -1279,9 +1260,11 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     };
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
+        let rendered = js_sys::Date::now();
         let (v, asks) = graphql::query_asks(&gq, Some(&r));
         if !rd.dir.picks.missed() {
             ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
+            c.timing.add("render", rendered);
             return Ok(Reply::json(200, v));
         }
         // The render asked for a selection the member did not make (a member of another release): both whole tiers.
@@ -1378,17 +1361,26 @@ async fn account_logins(
     c: &Ctx<'_>,
     accounts: &std::collections::BTreeSet<graftyard_types::AccountId>,
 ) -> std::collections::BTreeMap<i64, String> {
+    // A read-class request may use a login up to `READ_CACHE` old (`crate::rcache`); an account with no login row
+    // is read again.
+    let at = crate::now();
+    let mut out = std::collections::BTreeMap::new();
     let mut by_shard: std::collections::BTreeMap<_, Vec<i64>> = Default::default();
     for a in accounts {
-        by_shard.entry(graftyard_identity::account_shard(*a)).or_default().push(a.0.0);
+        match crate::rcache::get(&crate::rcache::ACCOUNT_LOGINS, &a.0.0, at, c.read_class.get()) {
+            Some(l) => {
+                out.insert(a.0.0, l);
+            }
+            None => by_shard.entry(graftyard_identity::account_shard(*a)).or_default().push(a.0.0),
+        }
     }
     let reads = by_shard.into_iter().take(LOGIN_SHARDS_MAX).map(|(shard, ids)| async move {
         crate::system_read(c, ChainId::Names(shard), json!({ "accountLogins": ids })).await
     });
-    let mut out = std::collections::BTreeMap::new();
     for v in futures_util::future::join_all(reads).await.into_iter().flatten() {
         for (id, l) in v["accountLogins"].as_object().into_iter().flatten() {
             if let (Ok(id), Some(l)) = (id.parse(), l.as_str()) {
+                crate::rcache::put(&crate::rcache::ACCOUNT_LOGINS, id, at, l.to_owned());
                 out.insert(id, l.to_owned());
             }
         }
@@ -1414,19 +1406,32 @@ fn logins(c: &Ctx<'_>) -> std::collections::BTreeMap<i64, String> {
 async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: &str) -> Result<Reply> {
     let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
     let tail = segs.as_slice();
-    let who = authenticate(c, req).await?;
+    let method = req.method();
+    // A `GET` is read-class (`Ctx::read_class`), and its token and `o/r` are read at once: neither needs the other.
+    c.read_class.set(method == Method::Get);
+    let find = async {
+        match &at {
+            graftyard_wire::RepoPath::Name { owner, name } if method == Method::Get => {
+                Some(resolve(c, owner, name).await)
+            }
+            _ => None,
+        }
+    };
+    let (who, found) =
+        futures_util::future::join(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find)).await;
+    let who = who?;
+    let found = found.transpose()?;
     // A credential the edge refuses (revoked, lapsed, unknown) is 401, as on GitHub, not an anonymous caller whom the
     // read gate would answer 404 on a private repository.
     if who.is_none() && crate::token_of(req)?.is_some() {
         return Ok(Reply::error(401, "Bad credentials", "rest"));
     }
-    timing::mark("auth");
-    let method = req.method();
     let agent_accept = req.headers().get("accept")?;
     // A `GET` that `graftyard_api::narrow::rest_get` serves reads only the rows its reply renders.
     if method == Method::Get
         && graftyard_api::narrow::rest_serves(tail)
-        && let Some(r) = rest_narrow(c, &at, tail, p, query, who.as_ref(), agent_accept.as_deref(), host).await?
+        && let Some(r) =
+            rest_narrow(c, &at, found.clone(), tail, p, query, who.as_ref(), agent_accept.as_deref(), host).await?
     {
         return Ok(r);
     }
@@ -1439,10 +1444,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         _ => Rows::All,
     };
     let rd = match at {
-        graftyard_wire::RepoPath::Name { owner, name } => match resolve(c, owner, name).await? {
-            Ok(Some(repo)) => read_repo(c, repo, owner, name, who.as_ref(), None, rows(), Gate::Readers).await?,
-            Ok(None) => Err(Reply::not_found()),
-            Err(e) => Err(read_failed("the repository lookup failed; retry", &e)),
+        graftyard_wire::RepoPath::Name { owner, name } => match found {
+            Some(found) => read_found(c, found, owner, name, who.as_ref(), rows()).await?,
+            None => read_found(c, resolve(c, owner, name).await?, owner, name, who.as_ref(), rows()).await?,
         },
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
             Some((owner, name, repo, a)) => {
@@ -1706,6 +1710,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
 async fn rest_narrow(
     c: &Ctx<'_>,
     at: &graftyard_wire::RepoPath<'_>,
+    found: Option<std::result::Result<Option<Repo>, String>>,
     tail: &[&str],
     p: &str,
     query: &str,
@@ -1721,7 +1726,10 @@ async fn rest_narrow(
         agent,
     };
     let rd = match at {
-        graftyard_wire::RepoPath::Name { owner, name } => read_as(c, owner, name, who, Rows::Api(route)).await?,
+        graftyard_wire::RepoPath::Name { owner, name } => match found {
+            Some(found) => read_found(c, found, owner, name, who, Rows::Api(route)).await?,
+            None => read_as(c, owner, name, who, Rows::Api(route)).await?,
+        },
         graftyard_wire::RepoPath::Id(id) => match repo_name(c, *id).await {
             Some((owner, name, repo, a)) => {
                 read_repo(c, repo, &owner, &name, who, Some(a), Rows::Api(route), Gate::Readers).await?
@@ -1741,6 +1749,7 @@ async fn rest_narrow(
         rd.dir.install = crate::install_authz(c).await;
     }
     let r = rd.view(host);
+    let rendered = js_sys::Date::now();
     let reply = match tail {
         ["commits", reference] => match rest::resolve(&r, reference) {
             Some(sha) => match commit_object(c, &rd.repo, sha).await {
@@ -1756,6 +1765,7 @@ async fn rest_narrow(
         },
     };
     let reply = graftyard_api::trust::layer(accept, p, &r, reply);
+    c.timing.add("render", rendered);
     Ok((!rd.dir.picks.missed()).then_some(reply))
 }
 

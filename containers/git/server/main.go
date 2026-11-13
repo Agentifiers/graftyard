@@ -1122,7 +1122,34 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "%v", err)
 		return
 	}
+	midxAfterIngest(net, rp)
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n})
+}
+
+// MIDX_EVERY: a rehydrate ingests thousands of packs and repacks only at its end (/refs), and each index-pack looked
+// up every object it named in every pack: per-pack ingest grew linearly with the count, 10 s per 1,000 packs at 1,000
+// to 42 s at 3,000, one CPU (tests/am1/results/hot-shards-2.md). A multi-pack-index over them, rewritten every
+// midxEvery ingests, keeps it nearly flat: 9,000 packs in 96 s, the writes included [measured]. An incremental
+// midx chain grew instead, 81 s per 1,000 at 7,000 [measured].
+const midxEvery = 50
+
+// Ingests per repository path since its last multi-pack-index; the count starts over with the process.
+var sinceMidx sync.Map
+
+// midxAfterIngest writes the repository's multi-pack-index after every midxEvery-th ingest. The caller holds the
+// network's lock alone, so no reader sees a half-written one; a repack that deletes packs drops it, and git reads
+// the packs it does not cover as before.
+func midxAfterIngest(net, rp string) {
+	v, _ := sinceMidx.LoadOrStore(rp, new(int))
+	n := v.(*int)
+	*n++
+	if *n < midxEvery {
+		return
+	}
+	*n = 0
+	if _, err := git(rp, []string{derivedEnv}, nil, "multi-pack-index", "write"); err != nil {
+		fmt.Fprintf(os.Stderr, "multi-pack-index %s: %v\n", net, err)
+	}
 }
 
 func listRefs(rp string, env []string) (map[string]string, error) {

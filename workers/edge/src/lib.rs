@@ -54,6 +54,7 @@ mod ident;
 mod keys;
 mod oidc;
 mod precreate;
+mod rcache;
 mod release;
 mod repos;
 mod transfer;
@@ -162,6 +163,15 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
         Ok(None) => return Ok(Ok(None)),
         Err(e) => return Ok(Err(e)),
     };
+    // A read-class request resolves the name in the owner's `Authz` fold, which its read gate needs anyway: from
+    // `rcache` when one is at most `READ_CACHE` old, else one read that the gate then reuses. A name the fold does
+    // not hold is read again fresh below, so a repository created since resolves at once.
+    if c.read_class.get()
+        && let Ok(Some(f)) = authz_read(c, account, &record).await
+        && let Some((r, _)) = graftyard_identity::AuthzRead::resolve(&f, &name.key())
+    {
+        return Ok(Ok(Some(Repo { id: r, owner: account, record })));
+    }
     let authz = ChainId::Authz(account);
     let b = c.bindings();
     // By read-index on the `Authz` group's learners and followers, as `authz_read`: one per request, it was about
@@ -403,12 +413,15 @@ pub(crate) async fn install_authz(c: &Ctx<'_>) -> Option<graftyard_identity::Aut
 /// The account that holds `login`, from its `Names` row read through `fresh`.
 async fn account_of(c: &Ctx<'_>, login: &str) -> std::result::Result<Option<AccountId>, String> {
     let Ok(l) = Login::parse(login) else { return Ok(None) };
-    let names = ChainId::Names(name_shard(&NameKey::Login(l.key())));
-    let row = system_read(c, names, json!({ "login": login })).await?;
-    Ok(match serde_json::from_value::<Option<LoginRow>>(row["login"].clone()) {
-        Ok(Some(LoginRow::Claimed { account, .. })) => Some(account),
-        _ => None,
-    })
+    let read = async {
+        let names = ChainId::Names(name_shard(&NameKey::Login(l.key())));
+        let row = system_read(c, names, json!({ "login": login })).await?;
+        Ok(match serde_json::from_value::<Option<LoginRow>>(row["login"].clone()) {
+            Ok(Some(LoginRow::Claimed { account, .. })) => Some(account),
+            _ => None,
+        })
+    };
+    rcache::through(&rcache::LOGINS, l.key(), now(), c.read_class.get(), read).await
 }
 
 /// `owner`'s `Authz` fold, read as a `dep` by read-index on the group's learners and followers
@@ -420,12 +433,26 @@ pub(crate) async fn authz_read(
     owner: AccountId,
     record: &PlacementRecord,
 ) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
-    let q = json!({ "q": { "dep": true } });
-    let Some((v, _, _)) = graftyard_lookup::read_spread(&c.bindings(), ChainId::Authz(owner), record, &q).await? else {
-        return Ok(None);
+    authz_read_as(c, owner, record, c.read_class.get()).await
+}
+
+/// `authz_read`, from `rcache` only when `cached` (a read-class request that has not been refused on it).
+pub(crate) async fn authz_read_as(
+    c: &Ctx<'_>,
+    owner: AccountId,
+    record: &PlacementRecord,
+    cached: bool,
+) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
+    let read = async {
+        let q = json!({ "q": { "dep": true } });
+        let Some((v, _, _)) = graftyard_lookup::read_spread(&c.bindings(), ChainId::Authz(owner), record, &q).await?
+        else {
+            return Ok(None);
+        };
+        let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
+        graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
     };
-    let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
-    graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
+    rcache::through(&rcache::AUTHZ, owner, now(), cached, read).await
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -435,8 +462,11 @@ async fn authz_fold(c: &Ctx<'_>, owner: AccountId, record: &PlacementRecord) -> 
 
 /// The owner's `Placement` row on `account_shard(owner)`.
 async fn placement(c: &Ctx<'_>, owner: AccountId) -> std::result::Result<Option<PlacementRecord>, String> {
-    let v = system_read(c, ChainId::Names(account_shard(owner)), json!({ "placement": owner.0.0 })).await?;
-    serde_json::from_value(v["placement"].clone()).map_err(|e| e.to_string())
+    let read = async {
+        let v = system_read(c, ChainId::Names(account_shard(owner)), json!({ "placement": owner.0.0 })).await?;
+        serde_json::from_value(v["placement"].clone()).map_err(|e| e.to_string())
+    };
+    rcache::through(&rcache::PLACEMENTS, owner, now(), c.read_class.get(), read).await
 }
 
 /// A `fresh` read of a system chain's group, found by its record in the `Release` view. A shard with no group holds
@@ -520,7 +550,7 @@ fn token_of(req: &Request) -> Result<Option<String>> {
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct TokenRow {
     account: i64,
     revoked: bool,
@@ -543,10 +573,16 @@ async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
     }
     let Ok(tok) = OpaqueToken::parse(&t) else { return Ok(None) };
     let hash = tok.hash();
-    let chain = ChainId::Tokens(tok.shard());
-    let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
-    let row: Option<TokenRow> = serde_json::from_value(v["token"].clone())?;
-    // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock.
+    let at = now();
+    // A read-class request may use a usable row up to `READ_CACHE` old (`rcache`); a refused one is read again.
+    let read = async {
+        let chain = ChainId::Tokens(tok.shard());
+        let v = system_read(c, chain, json!({ "token": Digest(hash).hex() })).await.map_err(Error::RustError)?;
+        Ok::<_, Error>(serde_json::from_value::<Option<TokenRow>>(v["token"].clone())?)
+    };
+    let row = rcache::through(&rcache::TOKENS, hash, at, c.read_class.get(), read).await?;
+    // A `ghr_` only refreshes (`usertok`), and a lapsed token is no caller: `decide` sees no clock. Checked on every
+    // use, so a cached row lapses at its `expires`.
     let row = row.filter(|r| !r.revoked && usertok::usable(r.kind, r.expires, now()));
     c.token_app.set(row.as_ref().and_then(|r| r.fields.as_ref()?.app));
     c.token_fields.replace(row.as_ref().and_then(|r| r.fields.clone()));
@@ -796,6 +832,12 @@ struct Ctx<'a> {
     token_fields: std::cell::RefCell<Option<graftyard_identity::TokenFields>>,
     /// The request sent `X-Graftyard-Agent-Session`, which classes a user token's commands Agent and grants nothing.
     agent_session: bool,
+    /// A read-class request (a REST `GET` or a GraphQL query on `api`): its token, name, placement, `Authz`, and
+    /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
+    /// as before.
+    read_class: std::cell::Cell<bool>,
+    /// This request's stages, for `server-timing` and the sampled log (`api::Timing`).
+    timing: api::Timing,
 }
 
 impl Ctx<'_> {
@@ -1145,6 +1187,15 @@ fn mark_shard(repo: &Repo, site: SiteId, cold: bool) {
 const VALIDATE_WAIT_HOME_S: u32 = 15;
 const VALIDATE_WAIT_OTHER_S: u32 = 60;
 
+/// Try `i` of `n` on a shard: the first waits `VALIDATE_WAIT_HOME_S` on its catch-up, each later one
+/// `VALIDATE_WAIT_OTHER_S`, and every try but the last says another shard follows (`next=1`), so a shard that is
+/// rehydrating answers it 503 `warming` at once rather than after the wait (`workers/site/src/shard.rs`).
+fn shard_url(url: &str, i: usize, n: usize) -> String {
+    let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
+    let next = if i + 1 < n { "&next=1" } else { "" };
+    format!("{url}&wait={wait}{next}")
+}
+
 /// `GitCacheShard::validate` on the network's home shard, or, while that one catches up past its wait or fails,
 /// another placement site's shard of the network (`shard_order`): tips in the body ahead of the pack. With
 /// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
@@ -1174,9 +1225,9 @@ pub(crate) async fn validate(
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
     let mut last = String::new();
-    for (i, site) in shard_order(repo, pinned).into_iter().enumerate() {
-        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
-        let r = validate_on(c, repo, site, &format!("{url}&wait={wait}"), &head, detail).await;
+    let sites = shard_order(repo, pinned);
+    for (i, site) in sites.iter().copied().enumerate() {
+        let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &head, detail).await;
         mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422 | 429, _)))));
         match r {
             Ok(Ok(r)) => return Ok(r),
@@ -1206,7 +1257,6 @@ pub(crate) async fn shard_read(
     let pinned = None;
     let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().enumerate() {
-        let wait = if i == 0 { VALIDATE_WAIT_HOME_S } else { VALIDATE_WAIT_OTHER_S };
         let h = Headers::new();
         h.set("git-protocol", proto)?;
         let mut init = RequestInit::new();
@@ -1214,7 +1264,7 @@ pub(crate) async fn shard_read(
         if let Some(b) = body {
             init.with_body(Some(js_sys::Uint8Array::from(b).into()));
         }
-        let req = Request::new_with_init(&format!("{url}&wait={wait}"), &init)?;
+        let req = Request::new_with_init(&shard_url(url, i, sites.len()), &init)?;
         let r = shard_at(c, repo, Some(*site))?.fetch_with_request(req).await;
         mark_shard(repo, *site, !r.as_ref().is_ok_and(|r| r.status_code() == 200));
         if i + 1 == sites.len() || r.as_ref().is_ok_and(|r| r.status_code() == 200) {
@@ -2079,6 +2129,8 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         token_app: std::cell::Cell::new(None),
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
+        read_class: std::cell::Cell::new(false),
+        timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,
         #[cfg(feature = "test-faults")]
@@ -2213,7 +2265,7 @@ mod tests {
 
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
-    use super::{ShardRefusal, gunzip, shard_refusal, validate_sites, validate_url, warm_first};
+    use super::{ShardRefusal, gunzip, shard_refusal, shard_url, validate_sites, validate_url, warm_first};
     /// The shard picks the fan-out shard from the URL's trailer without reading the body, so the trailer must be
     /// the pack's last 20 bytes, not its first; an agent's validate is marked so the container sheds it first.
     #[test]
@@ -2257,6 +2309,16 @@ mod tests {
         assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try
+    /// waits, so a call never runs out of shards that would serve it. The home try waits less than the others.
+    #[test]
+    fn every_shard_try_but_the_last_says_another_follows() {
+        assert_eq!(shard_url("u?repo=1", 0, 3), "u?repo=1&wait=15&next=1");
+        assert_eq!(shard_url("u?repo=1", 1, 3), "u?repo=1&wait=60&next=1");
+        assert_eq!(shard_url("u?repo=1", 2, 3), "u?repo=1&wait=60");
+        assert_eq!(shard_url("u?repo=1", 0, 1), "u?repo=1&wait=15");
     }
 
     /// A shard seen cold goes last and the rest keep their order: the home first among the warm ones, and the cold

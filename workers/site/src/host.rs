@@ -111,7 +111,22 @@ const SYNCED_KEEP: usize = 256;
 /// Stored bytes per `/entries` page. 239 entries of `wp6/main` were 4.6 MB of JSON and took 7.8 s to answer through
 /// the test edge, past the lookup's 3.5 s CALL, so the git cache shard's rehydrate never finished
 /// (`tests/m1/results/m1-wp8.md`, t-256). A page this size is under 1 MB of JSON [guess for the bound].
-const ENTRIES_PAGE_BYTES: usize = 600_000;
+pub const ENTRIES_PAGE_BYTES: usize = 600_000;
+/// The most stored bytes a local `/entries` page may ask for (`bytes=`): a git cache shard reading its own site's
+/// member, inside the site, under the lookup's 3.5 s CALL. A hot group's entry is about one 500 KB inline pack, so a
+/// 600 KB page held one entry, and a rehydrate's tail ran at one member read per pack, about 120 ms each
+/// (`tests/am1/results/hot-shards-2.md`). The shard holds two pages at once, so this bounds its memory too.
+pub const ENTRIES_LOCAL_PAGE_BYTES_MAX: usize = 4_000_000;
+
+/// The page an `/entries` read gets: a local read (the site's own git cache shard) the `bytes` it asks for, within
+/// `ENTRIES_PAGE_BYTES..=ENTRIES_LOCAL_PAGE_BYTES_MAX`; a remote one, which crosses regions under the lookup's CALL,
+/// always `ENTRIES_PAGE_BYTES`.
+pub fn entries_page_bytes(local: bool, asked: Option<u64>) -> usize {
+    match asked {
+        Some(b) if local => b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize,
+        _ => ENTRIES_PAGE_BYTES,
+    }
+}
 
 pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS raft_state (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
@@ -2677,9 +2692,9 @@ impl<F: Family> Host<F> {
         });
     }
 
-    /// Committed entries `from..=to` from storage, at most 2,000, each with its index and the family's fields
+    /// Committed entries `from..=to` from storage, at most 2,000 and about `page_bytes` of stored rows (always one), each with its index and the family's fields
     /// (`Family::entry_json`): what the git cache shard's `ChainLog::entries` reads.
-    pub fn entries_json(&self, from: u64, to: u64) -> Result<Value> {
+    pub fn entries_json(&self, from: u64, to: u64, page_bytes: usize) -> Result<Value> {
         let commit = self.core.borrow().as_ref().map_or(0, |c| c.m.state().commit.0);
         let to = to.min(commit);
         let sql = self.state.storage().sql();
@@ -2693,11 +2708,11 @@ impl<F: Family> Host<F> {
             "SELECT row FROM log WHERE idx >= ? AND idx <= ? ORDER BY idx LIMIT 2000",
             vec![i(from.max(1)), i(to)],
             |r| {
-                // A page stops past ENTRIES_PAGE_BYTES (and always holds one entry), so a log of inline packs answers
+                // A page stops past `page_bytes` (and always holds one entry), so a log of inline packs answers
                 // well within the lookup's CALL; the shard asks again from the next index.
                 let row = blob(&r[0])?;
                 bytes += row.len();
-                if !out.is_empty() && bytes > ENTRIES_PAGE_BYTES {
+                if !out.is_empty() && bytes > page_bytes {
                     return Ok(false);
                 }
                 let e: Entry<F> = codec::from_bytes(row).map_err(|e| err(e.to_string()))?;
@@ -2964,6 +2979,18 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    /// The site's own shard gets the larger page it asks for, never past the local cap or under the standard page; a
+    /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL.
+    #[test]
+    fn only_a_local_entries_read_gets_a_larger_page() {
+        use super::{ENTRIES_LOCAL_PAGE_BYTES_MAX as MAX, ENTRIES_PAGE_BYTES as STD, entries_page_bytes};
+        assert_eq!(entries_page_bytes(true, Some(2_000_000)), 2_000_000);
+        assert_eq!(entries_page_bytes(true, Some(u64::MAX)), MAX);
+        assert_eq!(entries_page_bytes(true, Some(1)), STD);
+        assert_eq!(entries_page_bytes(true, None), STD);
+        assert_eq!(entries_page_bytes(false, Some(2_000_000)), STD);
+    }
+
     use std::cell::Cell;
     use std::pin::pin;
     use std::task::{Context, Poll, Waker};

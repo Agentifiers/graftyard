@@ -605,7 +605,8 @@ impl<F: Family> Routes<F> {
                 if let Some(nl) = nl {
                     return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }
-                let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX))?;
+                let page = host::entries_page_bytes(local, q("bytes"));
+                let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX), page)?;
                 self.reply(json!({ "entries": e }))
             }
             (Method::Get, "/stats") => {

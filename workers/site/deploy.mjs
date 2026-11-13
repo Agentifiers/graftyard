@@ -53,17 +53,18 @@ if (!flags.includes("--skip-build")) {
 const wrangler = (args) =>
   execFileSync("npx", ["--prefix", resolve(here, "../../tests/m0"), "wrangler", ...args], { cwd: gen, stdio: "inherit" });
 
-// A site binds only its own `GitShard` class: the edge reaches shards, members never do, and Cloudflare attaches the
-// container config to the first binding of the class, which must be the script's own.
+// A site binds every site's `GitShard` class, its own first: Cloudflare attaches the container config to the first
+// binding of the class, which must be the script's own. Another site's binding is how the archive alarm promotes on
+// that site's shard while its own rehydrates (workers/site/src/archive.rs, `SiteHost::promote`).
 function bindings(self, targets) {
-  return targets.flatMap((s) =>
-    [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]]
-      .filter(([b]) => b !== "SHARD" || s.id === self.id)
-      .map(([b, cls]) => ({
-        name: `${b}_${s.id}`,
-        class_name: cls,
-        ...(s.id === self.id ? {} : { script_name: s.script }),
-      })),
+  const own = targets.filter((s) => s.id === self.id);
+  const order = [...own, ...targets.filter((s) => s.id !== self.id)];
+  return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]].flatMap(([b, cls]) =>
+    order.map((s) => ({
+      name: `${b}_${s.id}`,
+      class_name: cls,
+      ...(s.id === self.id ? {} : { script_name: s.script }),
+    })),
   );
 }
 
