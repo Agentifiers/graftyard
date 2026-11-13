@@ -42,7 +42,7 @@ function logsHits(from, to) {
     out[s] = 0;
     for (const needle of ["SQLITE_FULL", "database or disk is full"]) {
       try {
-        const v = execFileSync("python3", ["/home/user/workspace/repo/.worktrees/b0-30/tests/am1/b030/logs.py", s, String(from / 1000), String(to / 1000), needle], { maxBuffer: 16 << 20 }).toString();
+        const v = execFileSync("python3", ["tests/am1/b030/logs.py", s, String(from / 1000), String(to / 1000), needle], { maxBuffer: 16 << 20 }).toString();
         out[s] += v.split("\n").filter(Boolean).length;
       } catch (e) { out[s] = `error ${String(e).slice(0, 60)}`; }
     }

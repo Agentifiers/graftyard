@@ -32,10 +32,14 @@ async function sizes(chain = C) {
 
 // Comment rows by key on the leader, through the same fill a reply's render uses (`{"rows": {"keys"}}`, test installs).
 async function bodies(keys) {
-  const s = await leaderOf(C);
   const q = { q: { rows: { keys: keys.map((k) => ["comment", [{ Int: k }]]) } } };
-  const v = (await member(C, s, "/read", q, 300_000)).v;
-  if (!Array.isArray(v.value)) throw new Error(`keys read: ${JSON.stringify(v).slice(0, 300)}`);
+  let v;
+  // A member that does not answer (an election, a restart) is asked again through the leader it then names.
+  for (let i = 0; i < 10 && !Array.isArray(v?.value); i++) {
+    if (i) await sleep(15_000);
+    v = (await member(C, await leaderOf(C), "/read", q, 300_000).catch((e) => ({ v: { error: String(e) } }))).v;
+  }
+  if (!Array.isArray(v?.value)) throw new Error(`keys read: ${JSON.stringify(v).slice(0, 300)}`);
   const out = {};
   for (const [, key, cols] of v.value) if (cols) out[key[0].Int] = Buffer.from(cols[0].Blob).toString("latin1");
   return { index: v.index, out };
