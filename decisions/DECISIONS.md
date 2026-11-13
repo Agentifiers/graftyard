@@ -2417,6 +2417,8 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Flip.** A run where the far follower makes the quorum and its held sends set commit p99.
 
+**Partly reversed, 2026-11-13 (`m0-carried-8`).** The flip was met for (b'), not for (b). In four `m0-carried-7` A/B failures the near follower went quiet for about 1 s and the far follower made the quorum. In 9 of 9 near calls of 400 ms or more, the far call for an earlier entry was still out when the late entry was appended (50 to 1,235 ms left), so the entry reached the far follower one call late, 50 to 984 ms after its append. None of the 9 was held behind an unconfirmed write, and the far follower answered promptly (its own time p50 10 to 26 ms). See "AppendEntries are pipelined to a voter". (b) stays dropped.
+
 #### An entry stops at `ENTRY_SOFT` bytes past its first command
 
 **Decision.** The leader fills an `Events` entry only while it stays within `ENTRY_SOFT` (60,000 encoded bytes) past its first command; `ENTRY_MAX` (1.5 MB) still bounds one command alone, and admission's capacity counts entries of `ENTRY_SOFT`. This reverses "Entry batching gets no command or byte cap" (`m0-carried-2`).
@@ -2960,3 +2962,29 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
 
 **Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
+
+### `m0-carried-8`: a pipeline to each voter, and a loop-lag step-down, 2026-11-13
+
+#### AppendEntries are pipelined to a voter
+
+**Decision.** A leader keeps up to `PIPELINE` (4) AppendEntries calls out to one voter. A call to a voter whose earlier calls are still out carries only the entries after the last of them, and the follower stores it right behind them. Any failure, refusal, catch-up, install, or truncation clears the voter's pipe, and the next call starts again from `next`. Learners keep one call each. This reverses the (b') half of "The far follower's held sends get no host change".
+
+**Why.** With one call per voter, an entry appended while the far voter's previous call was running waited for that call to end. When the near voter went quiet for about 1 s, the far voter made the quorum, and commit waited one whole far call: 9 of 9 such calls in `m0-carried-7`'s four near-gap failures, 50 to 984 ms late. The far follower's own side was fast. Pipelining sends each entry at once; a model of those 9 calls puts 6 of them near 250 ms instead of 447 to 818 ms [inference, `tests/m0/results/carried-8.md`].
+
+**Beat.** Keeping one call per voter (operator, `m0-carried-7`), on the premise that the near follower makes the quorum, which these runs broke. An unbounded pipeline, which lets a stalled far follower collect every entry's call. Reordering a turn's sends before its writes (b), which moved none of the held sends.
+
+**Evidence.** `tests/m0/results/carried-8.md`, "Near-gap traces" [measured]. `a_far_voter_gets_each_entry_while_its_earlier_calls_are_out` and `a_voter_never_has_more_than_pipeline_calls_out` (`crates/raft/tests/scenarios.rs`) fail with no pipeline and with no bound. The long sweep counts pipelined calls and those delivered late or twice, and asserts both happen.
+
+**Flip.** A hosted A/B in which the pipeline does not shorten commit when the near follower is quiet, or a Raft history it breaks.
+
+#### A leader whose loop is behind steps down (`LOOP_LAG`)
+
+**Decision.** `STEP_DOWN` also trips when two of the leader's storage confirms within 2 s took 200 ms or more and an exact multiple of 100 ms (`LOOP_LAG`, `StepDownWhy::LoopLag`). It transfers as a confirm trip does: no probe, to a candidate outside RESET_QUARANTINE whose link is not failing.
+
+**Why.** While a Durable Object's event loop is behind, workerd clamps `Date.now()` to the overdue 100 ms tick's deadline, so a confirm that begins and ends late reads a whole number of ticks. The clamp hides the lag from the ticker and from any wall-clock measure, but not from that signature. Three B0-02 failures (r300-7, r330-8, ab07) were such a leader, with confirms of 300 to 1,000 ms that stayed under the confirm rule's six-over-500 ms. Over 82 one-minute B0-02 runs, two such confirms in 2 s matched 11 of 25 failing runs and 1 of 57 passing ones (`m0c6-ab04`, at 600 ms); three in 5 s gave the same false positive and 10 matches, four in 5 s none and 8 [measured].
+
+**Beat.** A peer-stamped lag (follower arrival time against the leader's call end), whose worst 5 s median reached 1,290 ms in a passing run. The clamp share of the trace, which matched fewer failing runs at the same false-positive rate. Four in 5 s, which matched none of the passing runs but 3 fewer failing ones.
+
+**Evidence.** `tests/m0/results/carried-8.md`, "LOOP_LAG" [measured]. `two_clamped_confirms_trip_loop_lag` (`crates/raft/tests/leadership.rs`); `leaders_leave_a_lagging_loop` (`crates/raft/tests/liveness.rs`), whose sick leader's confirms stay under `confirm_p99_ms`, moves 12 of 12 groups by `STEP_DOWN` in 1.4 to 3.3 s with it; without it 11 of 12 never moved in the fault's minute and one moved at 37 s. The simulator's `LoopLag` gray fault runs in the gray and live sweeps.
+
+**Flip.** A hosted leader that trips `LoopLag` with no lag in its trace, or a run where the transfer costs more than the lag it ends.

@@ -1283,3 +1283,185 @@ fn a_backlog_splits_into_entries_within_entry_soft_in_order() {
         assert_eq!(c.m(s).log().len(), c.m(A).log().len());
     }
 }
+
+/// B0-02's far follower (`tests/m0/results/carried-8.md`): the near follower B commits entry k-1 while the far
+/// follower C's call for it is still out, then goes silent. Entry k must reach C at once, in a call of its own while
+/// the older one is still out, so A and C commit it; with one call per voter it waited for the older call to end.
+/// The held calls then arrive late, out of order and twice, and every voter still ends with the leader's log.
+#[test]
+fn a_far_voter_gets_each_entry_while_its_earlier_calls_are_out() {
+    let mut c = Cluster::new(43);
+    c.elect(A);
+    c.sync(A);
+    let first = admit(&mut c, A, 9_000, put("k0", "v"));
+    // Entry k-1 goes to both; B answers and it commits, C's call is held unanswered.
+    let mut held: Vec<graftyard_raft::Envelope<common::kv::KvEvent>> = Vec::new();
+    let to_c = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| {
+        e.to == C && matches!(&e.msg, Message::Append(a) if !a.entries.is_empty())
+    };
+    let mut second = None;
+    for _ in 0..6 {
+        let (c_calls, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut c.inbox).into_iter().partition(|e| to_c(e));
+        held.extend(c_calls);
+        for e in rest {
+            // Once entry k exists, B hears nothing more.
+            if second.is_some() && (e.to == B || e.from == B) {
+                continue;
+            }
+            let graftyard_raft::Envelope { from, to, msg } = e;
+            c.on(to, |m, now| m.step(now, from, msg));
+        }
+        if second.is_none()
+            && c.ticket_results(first).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. }))
+        {
+            second = Some(admit(&mut c, A, 9_001, put("k1", "v")));
+        }
+    }
+    let second = second.expect("entry k-1 committed with B");
+    let k = c.m(A).last_index();
+    // A call carrying entry k left for C while C's call for k-1 was still out.
+    let carrying_k =
+        held.iter().position(|e| matches!(&e.msg, Message::Append(a) if a.entries.iter().any(|x| x.index == k)));
+    let Some(i) = carrying_k else { panic!("entry {k:?} never left for C while its earlier call was out") };
+    assert!(i > 0, "the older call to C was sent first");
+    // It carries only what follows the calls already out, not their entries again.
+    let ends = |e: &graftyard_raft::Envelope<common::kv::KvEvent>| match &e.msg {
+        Message::Append(a) => (a.prev_index, a.entries.last().map_or(a.prev_index, |x| x.index)),
+        _ => unreachable!(),
+    };
+    assert_eq!(ends(&held[i]).0, ends(&held[i - 1]).1, "the call for entry k re-sent entries already out");
+    // C stores the older calls in order, but their answers are still on the way; then it takes the newer call, and
+    // only that answer arrives: A and C commit entry k with B silent.
+    for e in &held[..i] {
+        let graftyard_raft::Envelope { from, to, msg } = e.clone();
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    c.inbox.clear();
+    let graftyard_raft::Envelope { from, to, msg } = held[i].clone();
+    c.on(to, |m, now| m.step(now, from, msg));
+    for e in std::mem::take(&mut c.inbox) {
+        if e.to == A {
+            let graftyard_raft::Envelope { from, to, msg } = e;
+            c.on(to, |m, now| m.step(now, from, msg));
+        }
+    }
+    assert!(
+        c.ticket_results(second).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. })),
+        "entry k did not commit on A and C"
+    );
+    // The held calls arrive again, newest first and each twice: C ignores what it holds, and B catches up.
+    for e in held.iter().rev().chain(held.iter()) {
+        let graftyard_raft::Envelope { from, to, msg } = e.clone();
+        c.on(to, |m, now| m.step(now, from, msg));
+    }
+    c.deliver_all();
+    c.sync(A);
+    for s in [B, C] {
+        assert_eq!(c.m(s).digests(), c.m(A).digests(), "{s:?}");
+    }
+}
+
+/// The pipeline is bounded: while PIPELINE calls to a voter are out and unanswered, no further call leaves for it.
+#[test]
+fn a_voter_never_has_more_than_pipeline_calls_out() {
+    use graftyard_raft::PIPELINE;
+    let mut c = Cluster::new(44);
+    c.elect(A);
+    c.sync(A);
+    let mut to_c = 0;
+    for i in 0..(PIPELINE as u128 * 3) {
+        admit(&mut c, A, 9_500 + i, put(&format!("p{i}"), "v"));
+        // B answers everything, so each entry commits and the next is cut; C answers nothing.
+        for _ in 0..4 {
+            let msgs = std::mem::take(&mut c.inbox);
+            for e in msgs {
+                if e.to == C {
+                    if matches!(&e.msg, Message::Append(a) if !a.entries.is_empty()) {
+                        to_c += 1;
+                    }
+                    continue;
+                }
+                let graftyard_raft::Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+    }
+    assert_eq!(to_c, PIPELINE, "calls with entries sent to the silent voter");
+}
+
+/// A voter with a failed call in the STEP_DOWN window gets one call at a time: a half-hung leader whose few answered
+/// calls each let PIPELINE more out held a live-sweep group 50 s (seed 11497).
+#[test]
+fn a_voter_with_a_failed_call_gets_one_call_at_a_time() {
+    let mut c = Cluster::new(46);
+    c.elect(A);
+    c.sync(A);
+    let mut failed = false;
+    let mut to_c = 0;
+    for i in 0..(graftyard_raft::PIPELINE as u128 * 3) {
+        admit(&mut c, A, 9_700 + i, put(&format!("g{i}"), "v"));
+        for _ in 0..4 {
+            for e in std::mem::take(&mut c.inbox) {
+                if e.to == C {
+                    if matches!(&e.msg, Message::Append(a) if !a.entries.is_empty()) {
+                        if !failed {
+                            // C's first call fails with an error; the retry and everything after it stay unanswered.
+                            failed = true;
+                            let f = e.failure(false).expect("an append");
+                            c.on(A, |m, now| m.call_failed(now, f));
+                        } else {
+                            to_c += 1;
+                        }
+                    }
+                    continue;
+                }
+                let graftyard_raft::Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+    }
+    assert!(failed, "no call to C carried entries");
+    assert_eq!(to_c, 1, "calls with entries sent to C after its failed call");
+}
+
+/// After a voter's call fails COMMIT_RETRIES + 1 times in a row, the leader waits for its tick to send again, and every
+/// call it sends the voter starts from what the voter holds, never past the failed call: a pipelined call behind it
+/// would leave a gap the voter must refuse.
+#[test]
+fn after_a_failed_call_the_next_call_starts_from_what_the_voter_holds() {
+    let mut c = Cluster::new(45);
+    c.elect(A);
+    c.sync(A);
+    let mut failures = 0;
+    let mut to_c = Vec::new();
+    for i in 0..8u128 {
+        admit(&mut c, A, 9_600 + i, put(&format!("f{i}"), "v"));
+        for _ in 0..6 {
+            for e in std::mem::take(&mut c.inbox) {
+                if e.to == C && matches!(&e.msg, Message::Append(a) if !a.entries.is_empty()) {
+                    if failures <= graftyard_raft::COMMIT_RETRIES {
+                        // The call fails with an error, reported at once.
+                        failures += 1;
+                        let f = e.failure(false).expect("an append");
+                        c.on(A, |m, now| m.call_failed(now, f));
+                        continue;
+                    }
+                    // Calls reach C in the order they left, so a call behind one C stored starts within C's log.
+                    let Message::Append(a) = &e.msg else { unreachable!() };
+                    to_c.push((a.prev_index, c.m(C).last_index()));
+                }
+                let graftyard_raft::Envelope { from, to, msg } = e;
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        }
+        c.advance(200);
+    }
+    assert!(failures > graftyard_raft::COMMIT_RETRIES, "only {failures} calls to C failed, {} went", to_c.len());
+    assert!(!to_c.is_empty(), "no call reached C after its failures");
+    for (prev, held) in &to_c {
+        assert!(prev <= held, "a call to C started at {prev:?}, past its log at {held:?}");
+    }
+    c.deliver_all();
+    c.sync(A);
+    assert_eq!(c.m(C).digests(), c.m(A).digests());
+}

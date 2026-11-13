@@ -12,7 +12,7 @@ use graftyard_types::{SiteId, Timestamp};
 
 use crate::fold::Command;
 use crate::types::{GroupConfig, Term};
-use crate::{CALL_DEADLINE, RESET_QUARANTINE, STEP_DOWN, after};
+use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
 use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy};
 
@@ -79,6 +79,13 @@ pub(super) struct Prober {
     batch: BTreeMap<u8, (Timestamp, Option<bool>)>,
     sent: u8,
     failed: u8,
+}
+
+impl LeaderHealth {
+    /// A call to `s` failed in the window: the leader keeps one call out to it (`PIPELINE`).
+    pub(super) fn failed_to(&self, s: SiteId) -> bool {
+        self.calls.iter().any(|c| c.1 == s && !c.2)
+    }
 }
 
 impl<C: Command> Member<C> {
@@ -269,6 +276,15 @@ impl<C: Command> Member<C> {
         let slow = ms.iter().filter(|m| **m > STEP_DOWN.confirm_p99_ms).count() as u32;
         if p99 > STEP_DOWN.confirm_p99_ms && slow >= u32::from(STEP_DOWN.confirm_slow_min) {
             return Some(StepDownWhy::Confirm { p99_ms: p99, slow, of: ms.len() as u32 });
+        }
+        // A lagging loop: confirms that read whole ticks. Its confirms stay under `confirm_p99_ms` often enough that
+        // the confirm rule never tripped in B0-02's runs with the signature (`tests/m0/results/carried-8.md`).
+        let (min, within, at_least) = LOOP_LAG;
+        let since = Timestamp(self.now.0.saturating_sub(within.as_millis() as u64));
+        let clamped =
+            lead.health.confirms.iter().filter(|c| c.0 >= since && c.1 >= at_least && c.1 % 100 == 0).count() as u32;
+        if clamped >= min {
+            return Some(StepDownWhy::LoopLag { clamped });
         }
         None
     }

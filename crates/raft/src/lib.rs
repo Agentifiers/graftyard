@@ -33,7 +33,7 @@ pub use graftyard_types::{Digest, IdBlock, Index, RequestId, Ulid};
 pub use member::{
     APPEND_BYTES_MAX, AdmissionView, Alarm, AppendReq, AppendRes, ByRequest, CallFailure, Catchup, ConfirmId, Deny,
     DepsUsed, DepsWanted, Envelope, FailedCall, FoldView, IdBlockError, InstallError, InstallSnapshot, InstallSource,
-    InstallWanted, LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, ReadId, ReadStart, Ready,
+    InstallWanted, LEARNER_READ_EVERY, LogBase, Member, MemberConfig, Message, Out, PIPELINE, ReadId, ReadStart, Ready,
     ReconfigError, Refusal, Resolution, RestoreError, Role, SelfAck, StepDownWhy, Storage, Stored, Verdict, VoteReq,
     VoteRes, Write, verify,
 };
@@ -79,6 +79,11 @@ pub struct Health {
 /// [measured, B0-06; commit_fail_min M0-WP4 min3]
 pub const STEP_DOWN: Health =
     Health { window_s: 10, commit_errors: 0.05, commit_fail_min: 3, confirm_p99_ms: 500, confirm_slow_min: 6 };
+/// A leader whose event loop is behind steps down when at least `.0` of its storage confirms in `.1` took `.2` ms or
+/// more and an exact multiple of 100 ms. While an isolate is behind, workerd clamps `Date.now()` to the deadline of
+/// the overdue 100 ms tick, so a confirm's begin and end both read tick deadlines. Over 82 one-minute B0-02 runs this
+/// rule matched 11 of 25 failing runs and 1 of 57 passing ones, at 600 ms (`tests/m0/results/carried-8.md`).
+pub const LOOP_LAG: (u32, Duration, u32) = (2, Duration::from_secs(2), 200);
 /// Distinct colos reporting, and the window.
 pub const SUSPECT: (usize, Duration) = (2, Duration::from_secs(10));
 /// [guess]

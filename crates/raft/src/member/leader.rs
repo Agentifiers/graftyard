@@ -48,6 +48,14 @@ pub(super) fn append_batch<E: crate::fold::Record>(entries: &[LogEntry<E>]) -> u
     }
     n
 }
+/// AppendEntries calls a leader keeps outstanding to one voter. A call to a voter that is caught up may leave while
+/// earlier ones are still out, carrying only the entries after them, so a far voter whose call for entry k is still
+/// running gets k+1 at once: with one call per voter, B0-02's far follower got each entry one whole call late, and in
+/// four failing runs the near follower went quiet for 0.6 to 1.6 s while the far one, which then made the quorum,
+/// waited on calls of 43 to 301 KB (`tests/m0/results/carried-8.md`). Only a voter with no failed call in the
+/// `STEP_DOWN` window is pipelined: a half-hung leader whose few answered calls each let several more out renewed its
+/// followers' promises and held a live-sweep group 50 s (seed 11497).
+pub const PIPELINE: usize = 4;
 /// How often a follower in `cannot_follow` is sent to again.
 const CANNOT_FOLLOW_RETRY: Duration = Duration::from_secs(5);
 /// Resolved tickets kept for a late `outcome` call.
@@ -222,8 +230,11 @@ pub(super) struct Lead<C: Command> {
     promised_at: BTreeMap<SiteId, Timestamp>,
     acked_at: BTreeMap<SiteId, Timestamp>,
     lease_end: Timestamp,
-    /// The outstanding call to each follower.
+    /// The latest outstanding call to each follower.
     sent: BTreeMap<SiteId, (u64, Timestamp)>,
+    /// Per voter, the outstanding AppendEntries a pipelined call may follow, oldest first: each round and the last
+    /// index it carried. At most PIPELINE; cleared by any failure, refusal, catch-up, or install to the voter.
+    pipe: BTreeMap<SiteId, Vec<(u64, Index)>>,
     round: u64,
     admission: Admission<C>,
     seq: u64,
@@ -333,6 +344,7 @@ impl<C: Command> Member<C> {
             acked_at: BTreeMap::new(),
             lease_end: Timestamp(0),
             sent: BTreeMap::new(),
+            pipe: BTreeMap::new(),
             round: 0,
             admission: Admission::new(self.now),
             seq: 0,
@@ -550,6 +562,7 @@ impl<C: Command> Member<C> {
             lead.matched.insert(p, Index(0));
             lead.matched_at.remove(&p);
             lead.sent.remove(&p);
+            lead.pipe.remove(&p);
             lead.promised_at.remove(&p);
             lead.acked_at.remove(&p);
             lead.retries.remove(&p);
@@ -1225,10 +1238,14 @@ impl<C: Command> Member<C> {
     /// COMMIT_RETRIES times in a row.
     pub(super) fn append_failed(&mut self, to: SiteId, round: u64) {
         let Some(lead) = self.lead.as_mut() else { return };
-        if lead.sent.get(&to).is_none_or(|s| s.0 != round) {
+        let latest = lead.sent.get(&to).is_some_and(|s| s.0 == round);
+        let piped = lead.pipe.get(&to).is_some_and(|p| p.iter().any(|(r, _)| *r == round));
+        if !latest && !piped {
             return;
         }
+        // The calls after a failed one cannot be stored behind it: start again from `next`.
         lead.sent.remove(&to);
+        lead.pipe.remove(&to);
         let n = lead.retries.entry(to).or_insert(0);
         *n += 1;
         if *n <= crate::COMMIT_RETRIES {
@@ -1255,22 +1272,44 @@ impl<C: Command> Member<C> {
         }
     }
 
+    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose calls have not failed in the
+    /// window is sent only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
+        let base = self.base.index;
+        let voter = quorum::is_voter(self.log_config(), peer);
         let Some(lead) = self.lead.as_mut() else { return };
-        if !force && lead.sent.contains_key(&peer) {
-            return;
-        }
         let next = *lead.next.entry(peer).or_insert(last.next());
+        let after = if !force && lead.sent.contains_key(&peer) {
+            let pipe = lead.pipe.get(&peer).map_or(&[][..], Vec::as_slice);
+            match pipe.last() {
+                Some(&(_, through))
+                    if voter
+                        && !lead.health.failed_to(peer)
+                        && pipe.len() < PIPELINE
+                        && through < last
+                        && through >= base
+                        && through.next() >= next =>
+                {
+                    Some(through)
+                }
+                _ => return,
+            }
+        } else {
+            None
+        };
         lead.matched.entry(peer).or_insert(Index(0));
         let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
         lead.round += 1;
         let round = lead.round;
         lead.sent.insert(peer, (round, now));
-        let prev = Index(next.0 - 1);
-        if self.send_install(peer, prev, round) {
-            return;
+        let prev = after.unwrap_or(Index(next.0 - 1));
+        if after.is_none() {
+            lead.pipe.remove(&peer);
+            if self.send_install(peer, prev, round) {
+                return;
+            }
         }
         if prev < self.base.index {
             // Below the in-memory window: the host reads the entries from storage and calls `catchup`.
@@ -1284,6 +1323,8 @@ impl<C: Command> Member<C> {
         let to = ((last.0 - self.base.index.0) as usize).min(from + CATCHUP_MAX);
         let window = &self.log[from..to];
         let entries = window[..append_batch(window)].to_vec();
+        let through = Index(prev.0 + entries.len() as u64);
+        self.lead.as_mut().expect("leading").pipe.entry(peer).or_default().push((round, through));
         let req = AppendReq {
             term,
             leader: me,
@@ -1361,6 +1402,13 @@ impl<C: Command> Member<C> {
         lead.health.peer_quarantine.insert(from, (res.stepped_down_at, res.boots));
         if lead.sent.get(&from).is_some_and(|s| s.0 == res.round) {
             lead.sent.remove(&from);
+        }
+        if let Some(p) = lead.pipe.get_mut(&from) {
+            p.retain(|(r, _)| *r != res.round);
+            // A refusal, stale or not, means the calls after it may not be stored: pipeline again only from an ack.
+            if !res.ok || p.is_empty() {
+                lead.pipe.remove(&from);
+            }
         }
         if res.round < lead.min_round {
             // Sent before the leader truncated its uncommitted tail: `matched` may name entries it no longer holds.
@@ -1517,6 +1565,7 @@ impl<C: Command> Member<C> {
         for n in lead.next.values_mut() {
             *n = (*n).min(commit.next());
         }
+        // The broadcast below forces a fresh call to every follower, which clears its pipe.
         lead.sent.clear();
         lead.ready_at = lead.ready_at.min(commit);
         for seq in seqs {
