@@ -1,0 +1,170 @@
+# narrow-reads-3: the learners' narrow tier read
+
+Branch `narrow-reads-3`, from main 20147db. Decision record `decisions/DECISIONS.md`, "`narrow-reads-3`"; F65. Hosted on `graft-m3e` (this branch's own install, built by LF-13 from main 20147db), 2026-11-13. Its shard containers run `SHARD_INSTANCE=standard-4`, which the operator approved for test installs; that does not touch the learners, which are Durable Objects.
+
+## Summary
+
+The learners' narrow tier read is fixed. At 500 agents with 8 learners, its share of API latency at the edge fell from p99 2,879 ms to 1,669 ms, and the learners' `late` answers fell from 96 to 3,399 per learner to 17 to 263. Every learner read now waits for at most one read-index round, never a second one.
+
+**The B0-29 API gate is not met on a run with no leader change.** The best clean run, after run 4, served 99.9% at p50 559 ms and **p99 3,279 ms**, against 2 s. The p99 there is no longer the tier read. It is cold edge isolates whose identity, name, and `Release` genesis reads take 2 to 4 s before the tier read starts. The fix for that changes how an edge isolate learns the system chains' records, which is a design question and is asked below. After run 2 met the gate's p99 within 112 ms (2,112 ms, 99.97% served) on a run with the same build, so the gate is near but not reliably met.
+
+| `read:api`, 500 agents, 200 reads/s, 300 s | Before (main 20147db) | After run 2 | After run 4 |
+| --- | --- | --- | --- |
+| Repository | nr3-before1, repo:65537 | nr3-after2, repo:65539 | nr3-after4, repo:65540 |
+| Load window | 04:35:42 to 04:40:42Z | 06:12:27 to 06:17:27Z | 06:57:46 to 07:02:46Z |
+| 200 / 503 / skipped at the driver's cap | 58,425 / 323 / 52 | 58,701 / 17 / 0 | 58,406 / 70 / 201 |
+| Served, of answered | 99.5% | 99.97% | 99.9% |
+| **p50 / p99** | **732 / 3,262 ms** | **687 / 2,112 ms** | **559 / 3,279 ms** |
+| `tier` stage at the edge, p50 / p99 | 674 / 2,879 ms | 637 / 1,964 ms | 515 / 1,669 ms |
+| `tier_grant` (member: arrival to the leader's read index applied), p50 / p99 | not measured | 247 / 964 ms | 265 / 912 ms |
+| `tier_wait` (member: waiting for an answer build), p50 / p99 | not measured | 0 / 100 ms | 0 / 97 ms |
+| `resolve` / `auth`, p99 | 911 / 728 ms | 577 / 293 ms | 2,153 / 2,078 ms |
+| Edge CPU per answer, `/issues` and GraphQL, p50 / p99 | 4 / 58 and 2 / 76 ms | 4 / 55 and 2 / 71 ms | 3 / 59 and 2 / 72 ms |
+| Leader change during the load | none (term 2) | none (term 2) | none (term 2) |
+| Learners' `late` (300 s, per learner) | 96 to 3,399 | 7 to 2,472 | 17 to 263 |
+| Learners' `waited` | 1,002 to 8,390 | 209 to 2,001 | 268 to 791 |
+| Agent pushes ok, p50 / p99 | 1,236 of 1,237, 2,240 / 4,550 ms | 1,252 of 1,253, 2,088 / 4,391 ms | 1,257 of 1,263, 2,127 / 5,355 ms |
+| `read:ref` served, p99 | 99.99%, 3,753 ms | 99.99%, 3,253 ms | 99.4%, 3,904 ms |
+| Read-your-write probe (`tests/nr3/fresh.mjs`), stale | 0 of 150 [see "The probe"] | 0 of 149 | 0 of 150 |
+
+`apiStages` in the rows are the driver's per-reply `server-timing`; stages overlap (auth and resolve run at once), so they do not sum to `total`.
+
+**After runs 1 and 3 are not results.** Each had a leader change during the load. Run 1 (repo:65538, 05:11:35Z) moved to term 10 after site b's re-placed voter and site a's leader ended 1,081 and 1,017 invocations `exceededMemory` and `exception`, peaking at 286 and 281 MiB: 85.6% served, p99 20.3 s. Run 3 reloaded run 2's repository, which had grown to about 1,800 entries, and moved the leader from site 0 to 2 (term 7): 93.7% served, p99 3.95 s, with 501 `exceededMemory` on site a. Runs 2 and 4, on fresh repositories, had no reset and no leader change, and every site outcome was `ok` or `canceled`. The resets are voters, not learners: learners peaked at 59 to 93 MiB in every run. I did not find what drove the voters to 280 MiB in runs 1 and 3; it is F65's open shape, not this change's, since the learner path is the only one that changed, and runs 2 and 4 on the same build peaked at 178 and 216 MiB. Rows: `tests/nr3/rows/a1-b0-29-nr3after.jsonl` and `-nr3after3.jsonl`.
+
+## Where the tier read's time went, and the change
+
+The before run's learner reads waited for an answer build, then redid a full read-index round (a new batch behind the one in flight, a 50 ms batch floor, and a leader round trip). By then the tiers had moved again, so the answer the read waited for was stale and it could wait again, up to `FOLLOWER_WAIT` (1 s), then answer `late`. A narrow build costs 2 to 4 ms natively on 500 PRs: REST `/issues?per_page=30` p50 2.3 ms and max 3.4 ms, 44 KB; GraphQL `pullRequests(last:10)` p50 1.8 ms and max 3.8 ms, 15 KB. The 200 ms spacing therefore protected little, and the repeated read-index cost most of the wait.
+
+The change (commit e07375f, design first in DESIGN "Follower read"):
+
+- **Every grant carries a floor** (`raft::ReadGrant::floor`): the commit index the leader confirmed for that read. That is the leader's read index on a follower or learner, and the applied index on the leader.
+- **A cached answer serves any read whose floor it covers.** A member keeps each narrow query's newest answer with the index it was built at, and with whether the metadata tier was loaded. A read whose floor that index covers is served at once, with no wait.
+- **A read that waits is answered later at the member's current state, with no second read-index** (`raft::Member::fresh_after`, refused after a restart). `NARROW_EVERY_MS` goes from 200 to 100 ms. Answers shared within one input are keyed by floor.
+- **Per-boot read-index batches** (`RemoteReads::starting_at`), for the bug below.
+- **Stage timing.** `/stats` has `readStages` (grant, waited, and total, with their counts), `narrowBuilds`, and `narrowBuildMs`. Every read answer carries `"stages": [grant, waited]`, which the edge adds to `server-timing` as `tier_grant` and `tier_wait`. `tests/nr3/trace.mjs` splits each learner's grant into its read-index round trip and its apply wait, from the test-faults trace.
+
+The correctness rule is unchanged: no answer older than the commit index the leader confirmed for that read. An answer built at index `i` is the fold at `i`, a function of the committed log, so one at `i ≥ floor` holds every entry acknowledged before the read arrived. A later answer at the member's current state is also at or above the floor, since within a boot the applied index never moves back.
+
+After the change, the measured split on run 4's learners (`tests/nr3/rows/run-nr3after4.status`):
+
+| Learner (site) | grant p50 / p99 | waited p99 | read-index round trip p50 / p99 | apply wait after it, p99 |
+| --- | --- | --- | --- | --- |
+| l0 (enam) | 231 / 782 | 93 | 124 / 546 | 104 |
+| l3 (enam) | 219 / 807 | 100 | 112 / 568 | 264 |
+| l6 (enam) | 175 / 822 | 100 | 88 / 713 | 127 |
+| l7 (enam) | 83 / 513 | 58 | 29 / 348 | 0 |
+| l1 (weur) | 335 / 887 | 100 | 186 / 646 | 672 |
+| l4 (weur) | 349 / 868 | 100 | 195 / 640 | 656 |
+| l2 (apac) | 486 / 978 | 99 | 243 / 721 | 1,677 |
+| l5 (apac) | 436 / 964 | 98 | 246 / 669 | 1,273 |
+
+The build wait is at most about one `NARROW_EVERY_MS` (100 ms) at p99. Every learner's narrow build measured 0 ms (`narrowBuildMs` max 0, the isolate's millisecond clock). What is left in a learner read is the read-index round trip to the enam leader, which grows with distance, and on weur and apac the wait to apply the leader's index after it answers: the leader's AppendEntries reach those learners later than its `ReadIndexRes` does. Both are bounded by `FOLLOWER_WAIT` (1 s), so the tier stage at the edge is now at most about 1 s plus the edge's own calls. 1.7 s at p99 is a read whose first learner answered `late` and was retried on the next member.
+
+What was not changed, and why:
+
+- **Share one read-index confirm across waiting reads.** A learner already sends one batch for every read waiting at that moment, so this was already the case.
+- **Serve a cached answer the read-index covers instead of waiting.** Done: this is the floor rule above.
+- **Remove `NARROW_EVERY_MS`.** Lowered to 100 ms. The build is cheap, but builds are 1,300 to 2,000 per learner per 300 s already. With no spacing, a learner rebuilds every query on every entry it applies, and the hosted run should show the build's share first. It shows 0 ms, so a later change can drop the spacing. The p99 is not there.
+- **No learners added** (operator).
+
+## The bug the simulator found
+
+With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
+
+## Tests, plants, sweep
+
+- `crates/raft/tests/leadership.rs`:
+  - `a_grant_answers_later_only_at_or_above_the_leaders_read_index`: the floor on a learner is the leader's read index, and `fresh_after` answers at or above it and refuses after a restart;
+  - the previous-boot test above.
+- `workers/site/src/fanout.rs`, `a_narrow_read_is_served_at_or_above_its_floor_and_spaced`. It checks four things:
+  - an answer below the floor is never served;
+  - a covered floor never waits;
+  - answers built with the metadata tier loading are kept apart from loaded ones;
+  - another query's answer never serves.
+- `workers/site/src/host.rs`: answers shared within an input are keyed by floor.
+- `python3 tests/nr3/plant.py`: **11 of 11 caught**. The plants:
+  - a follower grant's floor is its own applied index, not the leader's read index;
+  - `fresh_after` answers after a restart;
+  - `fresh_after` answers at the grant's index, not the state now;
+  - any cached answer serves, below the read's floor too;
+  - a floor one above the answer is still served (off by one);
+  - an answer built while the metadata tier loaded serves once it is loaded;
+  - another query's answer serves;
+  - the answer is stamped with the floor, not the index it was built at;
+  - a read whose floor the cache covers waits for a build;
+  - never spaced;
+  - answers in one input are shared across floors.
+- The previous-boot batch bug is gated by its regression test, which fails on main, rather than by a plant.
+- `tests/nr/plant.py` mutants 22 to 28 updated for the new signatures: 7 of 7 caught.
+- Long sweep, 2,000 seeds × 10,000 steps (`RAFT_SEEDS=2000 RAFT_STEPS=10000 cargo test -p graftyard-raft --release --test sim -- --ignored long_sweep`):
+  - HARSH and GRAY pass every invariant;
+  - Porcupine passes on all three histories: HARSH Ok (156,414 ops), GRAY Ok (2,244,942 ops), live Ok (2,438,823 ops).
+- **The live half fails the 30 s liveness bound** (F67's `LIVE_BOUND_MS`):
+  - seed 10336 reaches 30,742 ms with deferred reads, against 15.1 s without them; the maximum over 2,000 live seeds is 32,736 ms (seed 11577);
+  - in both, the stretch is a leader in a transfer that does not complete (seed 11577: the leader at term 5 starts transfer 3791… at 122.1 s, a new term only at 134.8 s, then the same at term 6 to 142.5 s), during which no request completes;
+  - counting a deferred grant as progress does not change either number, so the deferred answer is not what holds the stretch;
+  - the control without deferral reaches 29,296 ms on seeds 10,000 to 11,999 and 29,347 ms past 12,000 (partial), with 5 stretches over 25 s against 10 with deferral.
+
+  My reading is that the 30 s bound has about 1 s of headroom, and deferral moves which seeds land past it. That is an inference, not a root cause. It is asked below.
+
+## Full checks
+
+On the final tree:
+
+- `cargo fmt --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- wasm32 clippy: clean for site and edge, each with and without `test-faults`, and for ops.
+- `cargo test --workspace`: 76 suites, 761 passed, 0 failed.
+- `go test ./...` in `containers/git/server`: ok.
+- The three `scripts/check_*.py`: pass. `check_links` flags only the untracked `.worktrees/target-rows` build directory.
+
+## The probe
+
+`tests/nr3/fresh.mjs` comments on an issue, then reads its count by REST (the page holding the comment) and by GraphQL, 150 rounds during the load. It found 0 stale answers on every after run. The before run's "stale" rows were the probe's own bug: `a1.mjs` comments on the same issue, so the REST page it read was the wrong one. GraphQL counts were never low. It was fixed in 5dbc1d3, before the after runs.
+
+## The remaining p99: cold edge isolates
+
+Run 4's sampled requests (1 in 100, 570 at status 200, `tests/nr2/stages.mjs`):
+
+- **The tier read.** p50 495, p90 995, p99 1,791 ms.
+- **The slow requests.** Of the 43 requests over 1.5 s total, most had `resolve` or `auth` over 1 s: 1.2 to 3.8 s, on isolates that read the token, the login, the `Placement`, the owner `Authz`, and the `Release` genesis cold. Their tier reads were 0.4 to 1.8 s.
+- **One read sits under every system read on a cold isolate.** That is the `Release` genesis, which `graftyard_lookup::genesis` reads once per isolate, on the `Release` group's leader through `call`. During run 4, `release#1#f2` answered 3,566 `/read`s at wall p50 5 ms and p99 1,867 ms, against 0 to a few hundred in the other runs: a burst of cold isolates.
+- **Install `Authz`.** `authz:1`, the install's `Authz`, is read by `install_authz` for every GraphQL query and every REST `GET` that renders the directory. It answered at p99 1.6 to 1.8 s on both followers in runs 2 and 4. It already goes through the same per-isolate `AUTHZ` cache as the owner's, so this tail is cold isolates too.
+
+Run 2's isolates were warmer: `resolve` p99 577 ms and `auth` p99 293 ms. That is the whole difference between 2.1 and 3.3 s, since the tier read was 1.96 and 1.67 s.
+
+So the next cut is not the learners. It is the first reads of a cold edge isolate.
+
+**Candidate cut.** Have the edge accept the `Release` genesis from the edge script's own binding, as test installs' `GRAFTYARD_GENESIS` stands in for, instead of reading it from the `Release` group's leader. Then a burst of new isolates no longer queues on one member before any other read can start.
+
+That changes how an isolate learns the system chains' records, which DESIGN, Shape, "The `Release` view", states. It is the design question below.
+
+## F67 at setup
+
+All four fresh repositories this window came up with three followers at term 2 and no leader after setup. Learner placement failed "no leader" until a test-only `/campaign` on site 0 answered `resumed`:
+
+- repo:65538 at 05:08:28Z;
+- repo:65539 at 06:09:38Z;
+- repo:65540 at 06:54:56Z;
+- repo:65537 for the before run, at 04:32Z.
+
+In each, site 1's original voter (`#1#f1`) stayed at commit 1, while a re-placed `#N#f1` held the slot. This is the same shape narrow-reads-2 sent to f67-liveness.
+
+## Cost
+
+Hosted spend on `graft-m3e` from 04:17Z to 07:10Z is **$4.64**, containers $0.54 included (`INSTALL=graft-m3e python3 tests/fanout/m2bcost.py 2026-11-13T04:17:00Z 2026-11-13T07:10:00Z`). That is under the $25 cap. Every shard container is torn down (`teardown.py --all-nets --pools`).
+
+No design cost moves:
+
+- Learner count and read rate are unchanged.
+- A learner now does at most one read-index round per read, where it did up to several. That lowers learner-to-leader calls; `scripts/cost.py` prices learner reads as one Durable Object request each and does not count retries.
+- The cost scripts were not rerun.
+
+## Push p99
+
+The raw push timing from narrow-reads-2's window went to hot-shards-2, with the per-minute series in `tests/nr3/raw/git-by-minute.jsonl`. Nothing in it is specific to learners or reads: git requests never take the read-class caches, and learners serve no git path. In this window's clean runs, agent push p99 was 4.4 and 5.4 s.
+
+## Design questions
+
+1. **May an edge isolate take the `Release` genesis from its own script binding** instead of reading it from the `Release` group's leader? The trust anchor already sits in the script, and acceptance against it would not change. Or should the genesis stay a group read and be spread to followers as `Authz` reads are? This is the cut I would make next for the cold-isolate p99.
+2. **The 30 s liveness bound.** The long sweep's live half passes linearizability, but exceeds the bound by 0.7 to 2.7 s on 2 seeds of 2,000 with deferred reads, from transfers that do not complete. Should F67's bound carry more headroom, or is a stalled transfer at 10 to 12 s a liveness bug to chase on f67-liveness?

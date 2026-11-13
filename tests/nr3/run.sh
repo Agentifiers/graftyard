@@ -32,7 +32,9 @@ node tests/am1/rest/a1.mjs b0-29 --repo "$NAME" --chain "repo:$rid" --run "$TAG"
 echo "$(date -u +%FT%TZ) b0-29 done $?" >> "$ST"
 node tests/ld/lstats.mjs "repo:$rid" >> "$ST" 2>&1
 node tests/nr3/lstats.mjs "repo:$rid" >> "$ST" 2>&1
+node tests/nr3/trace.mjs "repo:$rid" >> "$ST" 2>&1
 wait
-INSTALL=graft-m3e python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
+# KEEP=1 leaves the repository up for tests/nr3/load.sh reruns.
+[ -z "${KEEP:-}" ] && INSTALL=graft-m3e python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
 echo DONE >> "$ST"
 exec sleep infinity
