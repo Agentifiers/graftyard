@@ -400,11 +400,11 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 /// AppendEntries it accepted [inference from Raft section 3.10]. A granted transfer vote also promises the target; else
 /// a report to the old leader let it win the other follower back [measured, simulator, `tests/m1/results/m1-wp3.md`,
 /// bug 1]. It lasts the campaign's 3 s, or a target that could not win held both voters leaderless (F67). A transfer is
-/// abandoned after one LEASE, or at once when the target answers `TransferRefused`: the leader sends `transfer: None`
-/// and serves `fresh` again after one full round. A leader transfers when its site is drained, when STEP_DOWN trips,
-/// when a follower on an older release refuses its uncommitted entry, and when its group's `home` has recovered (5
-/// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, the leader not tripped) and holds every
-/// committed entry, retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`].
+/// abandoned after one LEASE, at once on `TransferRefused`, or, for a `/transfer` or drain's, once its target loses
+/// answers while the other follower does not (F67 rule 13): it sends `transfer: None`, serves `fresh` after a round. It
+/// transfers when its site is drained, STEP_DOWN trips, an older release refuses its entry, or `home` recovered (5
+/// calls in a `STEP_DOWN` window, none failed, outside RESET_QUARANTINE, not tripped) and holds every committed entry,
+/// retrying 60 s after a failure [guess, `tests/m1/results/m1-wp3.md`].
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
@@ -859,8 +859,8 @@ pub enum ReadView<'a> { Fresh(Fresh<'a>), Stale(Stale<'a>) }
 /// the digest of the last committed signed `ReleaseEntry`, and `Noop` and `Config` do not count. A pre-signed undo
 /// binds `parent` instead of `prev`. The group accepts an undo only while its parent is the current intent, and only
 /// when its bytes equal an entry of the parent's `undo` list, or of the `Resume` that replaced that list. Undo
-/// signatures are checked against the `Keys` that were current at the parent intent's index. The release-signing half
-/// of `FormatsEnable` ships in the release record and signs only the format. The group and `graft-ops` refuse any other
+/// signatures are checked against the `Keys` that were current at the parent intent's index. `decide`'s clock is its
+/// entry's time. Entries after genesis are format 0x30.2. `FormatsEnable`'s release-signing half signs only the format. The group and `graft-ops` refuse any other
 /// signature by a key absent from the latest committed `Keys` (genesis carries the first), a `Keys` whose `generation`
 /// is not the latest plus one, and an intent past `not_after`. Signers. `Keys` takes the current customer key, and also
 /// the new one when it changes. Intents take the vendor or customer intent key, except `ReplaceMember`, which only the
@@ -981,11 +981,11 @@ pub enum DayTarget { Site(SiteId), Workflows, Containers(SiteId) /* undo of a `C
 pub enum SecretName { DeployToken, ReadToken, TunnelToken, MintWrapKey, SshHostKeys, McpAppKey, McpClientSecret,
                       InsightsAppKey, AgentsAppKey, WorkspaceAppKey, SecretsWrapKey, HostedRunnersAppKey }
 /// `undo` is pre-signed with the intent: a `Rollback` per day target, and a pointer pin per pinned script it rolls.
-/// `graft-ops` or an edge submits one on a gate breach, unsigned by a human. A committed undo ends forward steps.
+/// Each undo signature is the intent's key over the undo bound to `parent: Some(id)`. `graft-ops` or an edge submits
+/// one on a gate breach, unsigned by a human. A committed undo ends forward steps.
 /// `graft-ops` runs a `Rollback` as drain, N at 100%, then undrain, deploys N at 100% for a pinned script when the API
 /// answers, and commits `IntentDone`. A `Containers` rollback needs no API call; shards restart onto `git_prev`.
 pub struct SignedIntent { pub id: IntentId, pub issued_at: Timestamp, pub not_after: Timestamp, pub intent: Intent,
-                          pub release_sig: Signature, pub key: KeyId, pub sig: Signature,
                           pub undo: SmallVec<[(ReleaseEntry, Signature); 8]> }
 /// Each pin as the fold holds it. `None` follows the script's deployment split, so a call carries no version
 /// override. `Some(v)` pins every pinned call to `v`, which is the swap-back. Only a pre-signed undo sets `Some`, and
@@ -1010,7 +1010,7 @@ pub const POINTER_TTL: Duration = Duration::from_secs(5);         // compiled [g
 pub const STALE_MAX: Duration = Duration::from_secs(24 * 3_600);  // compiled [guess]
 /// `POST /api/graftyard/v1/release/entries` takes one signed entry, encoded as stored (`Bound`, body, signatures), with
 /// no token: the signatures are the credential. The edge checks them against its cached `Keys` before `commit`, under a
-/// WAF rate rule. 201 returns `{"index": n, "digest": "<hex>"}` after `Acked`. 409 returns `{"message": "stale prev",
+/// WAF rate rule (before M5-WP2's cached view, only decoding and genesis; `decide` runs every other rule). 201 returns `{"index": n, "digest": "<hex>"}` after `Acked`. 409 returns `{"message": "stale prev",
 /// "prev": "<hex>", "index": n}` when `prev` is not the current digest, a second genesis included, with `prev` the held
 /// genesis's digest, so a retried install after a lost 201 sees its own, and the signer re-signs. 422 returns
 /// `{"message": "...", "refusal": "<variant>"}` when `decide` refuses. Signed entries land hours apart, so offline
