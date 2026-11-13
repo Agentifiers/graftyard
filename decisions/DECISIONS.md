@@ -2741,3 +2741,79 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
 
 **Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
+
+### `merge-p99`: a merge's rows wait for no dump rebuild, and a REST write resolves its name beside its token, 2026-11-13
+
+Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line (`merge:only` p99 at most 2 s at 500 agents).
+
+#### A merge's rows read is never spaced as a dump rebuild
+
+**Decision.** `Repo::heavy_wait` spaces only a whole-tier dump (`{"rows": true, "packed": true}`) by `DUMP_EVERY_MS` or `LEARNER_DUMP_EVERY_MS`. A merge's rows (`{"rows": {"merge": id}}`, `{"rows": {"mergeN": n}}`), which the edge also sends with `packed`, are answered at once from `read_json` and take no rebuild slot.
+
+**Why.** The check keyed on `packed` alone, so a merge's few rows waited for, or were shed behind, a dump rebuild it never made, and each one let through claimed the slot the next whole-tier read needed. In LM-1's m19 smokes on `graft-m2b` the REST merge's tier read was its largest stage, p90 955 ms (250 agents) and 1,030 ms (500), max 2.2 and 1.4 s, and 1,715 ms p90 and 2.8 s max on the m19 B0-29 row [measured, `mergeSteps`], while the dep-free stages (`auth`, `merge_plan`, `commit`) stayed near 50, 150 to 400, and 500 to 700 ms. The spacing is the cause by the code path; no member log isolates it [inference].
+
+**Beat.** A shorter `LEARNER_DUMP_EVERY_MS`, which spends learner CPU on dumps to shorten a wait merges should never have had.
+
+**Evidence.** `a_merge_rows_read_never_waits_for_a_dump_rebuild` (`workers/site/src/fanout.rs`) fails on the old check; plants in `tests/lm1mem/plant.py`.
+
+**Flip.** A merge rows answer large enough that rebuilding it per read costs a member what a dump did.
+
+#### A REST write reads its token and `o/r` at once
+
+**Decision.** `rest_repo` resolves the repository name beside `authenticate` for every method, as it did for `GET` only. A write still reads both fresh (`read_class` stays false).
+
+**Why.** A write resolved after its token, outside every timed stage: 135 to 705 ms of each m19 REST merge was untimed (`total` less `auth`, the longer of `tier` and `authz`, `merge_plan`, and `commit`) [measured]. Running it beside the token takes that serial step off every REST write [inference until the hosted split shows the gap gone].
+
+**Beat.** Keeping the order for writes, which buys nothing: neither read needs the other's answer.
+
+**Evidence.** The edge's per-request `server-timing` (`resolve` is now a stage of every REST request) and `a1.mjs`'s `mergeSplit`.
+
+**Flip.** A write path that must authenticate before it may learn whether a repository exists, which `resolve` does not reveal to the caller.
+
+#### Test timing headers are per request
+
+**Decision.** A test install's `x-graft-trace` and `x-graft-shard-timing` live in the request's `Timing`, not in isolate-wide thread-locals.
+
+**Why.** 54 of 58 merges in the m19 smokes and 68 of 70 on the m19 B0-29 row carried no shard timing [measured], so the shard's share of a merge was not measured. Concurrent requests in one isolate taking each other's notes fits: any request's reply cleared the isolate's note [inference from code].
+
+**Beat.** Nothing; LM-1 round 7 moved `server-timing` into the request for the same reason (`236eca5b`).
+
+**Evidence.** The hosted `mergeSplit` carries `shard:*` stages for each merge.
+
+**Flip.** A note that must outlive its request, such as a shard timing reported after the reply, which would need its own channel.
+
+#### A merge's rows are read on the leader
+
+**Decision.** `tier_rows` sends a merge's rows (`MergeOf`) to the repository's leader by `call_opt`; whole-tier reads keep `read_spread`. It amends "F65 follow-up" and "LM-1 round 7: a REST merge reads only its rows", which sent merge rows to followers and learners.
+
+**Why.** With the rebuild spacing gone, the merge's tier read still ran p50 224 to 300 ms and p99 1.0 to 1.4 s on `graft-m3f` at 500 agents [measured, `tests/am1/results/merge-p99.md`]: a learner or follower answers only after a read-index round to the leader, from as far as apac, and after it has applied that index. The leader answers from its lease in its own turn. The F65 move was for 200 API reads a second; merges are 10 a minute, and the merge's commit goes to the same leader right after.
+
+**Beat.** Keeping merge rows on learners and placing one near the leader, which still waits for a read-index round and costs a learner.
+
+**Evidence.** The hosted `mergeSplit` `tier` stage before and after.
+
+**Flip.** Merges at a rate whose reads show in the leader's `/read` share, or a leader shedding them (`READS_MAX`), which would move them back to followers.
+
+#### A REST merge reads ahead on its cached repository
+
+**Decision.** `PUT pulls/{n}/merge` takes its isolate's cached login, `Placement`, and `Authz` (`resolve_cached`, entries at most `READ_CACHE` old), and while its own fresh `resolve` runs, reads its merge rows and the owner's `Authz` fresh for that repository. It keeps them only if the resolve answers the same repository, owner, and placement record (`kept_ahead`), and reads again otherwise. Every read it keeps is a fresh one started after the request arrived; only which repository to read is a guess.
+
+**Why.** After the two fixes above, the write's fresh `resolve` was the merge's longest serial stage, p50 381 to 452 ms and p99 861 to 884 ms on `graft-m3f`, and the tier and `Authz` reads waited for it [measured, `tests/am1/results/merge-p99.md`]. Run beside it, the two smokes' merges would have run p99 1.6 and 2.0 s [inference from the same stages].
+
+**Beat.** Reading a write's `o/r` from the cache outright, which lets a renamed or moved repository take another's merge for up to `READ_CACHE`, against SHARED's write path that reads identity fresh.
+
+**Evidence.** `a_write_keeps_its_ahead_reads_only_for_the_repository_it_resolved` (`workers/edge/src/api.rs`); plants in `tests/lm1mem/plant.py`; the hosted `mergeSplit`'s `tier_ahead` and `authz_ahead` stages.
+
+**Flip.** Guesses that miss often enough that the wasted reads show on the leader, or a repository renamed so often that merges pay the second read.
+
+#### A REST merge reads the owner's `Authz` on its leader
+
+**Decision.** For `PUT pulls/{n}/merge` (`api::rest_merge`, `Ctx::leader_reads`), the owner's `Authz` reads, both the fresh name lookup in `resolve` and the fold read ahead or in `read_repo`, go to the `Authz` group's leader by `call_opt`. Every other request keeps `read_spread`. It amends "F65 follow-up: the edge reads an owner's `Authz` by read-index" for this one route, as "A merge's rows are read on the leader" amends F65.
+
+**Why.** With the rows on the repository's leader and read ahead, a REST merge's longest serial stages were `resolve` (p50 398 to 531 ms, p99 784 to 1,033 ms) and `authz_ahead` (p50 451 to 489 ms), both `Authz` reads by read-index through far members, while the rows read on a leader took 30 to 47 ms. The 600 s B0-29 row on `graft-m3f` missed at p99 2,517 ms [measured, `tests/am1/results/merge-p99.md`]. The 123/s that overloaded the `Authz` leader were API reads; merges add about 20 reads a minute [inference].
+
+**Beat.** Caching the `Authz` fold for writes, which SHARED's write path rules out (the fold names who may merge), and a learner near the edge, which still waits a read-index round.
+
+**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`. On the 600 s B0-29 row at 500 agents on `graft-m3f`, `resolve` went from p50 530 / p99 1,033 ms to 118 / 306 ms and `authz_ahead` from p50 463 to 50 ms, and `merge:only` p99 from 2,517 to 1,571 ms, with no leader change [measured, `tests/am1/results/merge-p99.md`].
+
+**Flip.** An `Authz` leader whose `/read` share or `READS_MAX` sheds show merge reads, or merges at a rate near the API reads that moved off it.

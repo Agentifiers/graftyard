@@ -950,7 +950,11 @@ impl Family for Repo {
         if q.get("rows").and_then(|r| r.get("api")).is_some() {
             return narrow_wait(fold, q, now);
         }
-        (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now, every)).flatten()
+        // Only a whole-tier dump is spaced: a merge's rows (`{"rows": {"merge": id}}`) carry `packed` too, but build
+        // no dump, and spaced as one they waited out a rebuild they never made and took its slot (`merge-p99`).
+        let dump =
+            q.get("rows").is_some_and(Value::is_boolean) && q.get("packed").and_then(Value::as_bool) == Some(true);
+        dump.then(|| dump_wait(fold, now, every)).flatten()
     }
     fn read_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
         dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q))
