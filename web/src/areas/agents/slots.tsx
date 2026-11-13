@@ -38,7 +38,7 @@ function PullAgentCard({
   });
   const insight = (checks.data?.check_runs ?? []).filter((c) => c.name.startsWith("graftyard/"));
   const app = apps.find((a) => a.app_id === pr.graftyard_agent?.app_id);
-  const overlaps = pr.graftyard_overlaps.with;
+  const overlaps = pr.graftyard_overlaps?.with ?? [];
   return (
     <Panel
       title={

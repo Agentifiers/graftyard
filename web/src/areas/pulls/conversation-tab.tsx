@@ -101,6 +101,18 @@ export function ConversationTab({
           </ReviewEntry>
         ),
       })),
+    // A thread whose review is not listed still shows, on its own, at its first comment.
+    ...[...threadsByReview]
+      .filter(([id]) => !model.reviews.some((r) => r.id === id))
+      .flatMap(([, ts]) => ts)
+      .map((t) => ({
+        key: `thread-${t.root.id}`,
+        at: t.root.created_at,
+        author: t.root.user,
+        node: (
+          <ThreadView pull={pull} thread={t} viewer={model.viewer.login} showContext open={open} />
+        ),
+      })),
     ...events.map((e) => ({
       key: `event-${e.id}`,
       at: e.created_at,

@@ -21,7 +21,9 @@ const must = (what, r, ...ok) => {
 // The admin's web password, under the admin's own PAT (`PUT /_t/ui/settings/password`).
 must("password", await api("PUT", "/_t/ui/settings/password", admin, { password }), 204);
 
-must("create", await api("POST", "/api/v3/orgs/m3org/repos", admin, { name, private: true, auto_init: true }), 201);
+// A create can outlast the client's timeout (161 s on graft-m4a); the retry then finds the repository made.
+const made = await api("POST", "/api/v3/orgs/m3org/repos", admin, { name, private: true, auto_init: true });
+if (!(made.status === 422 && JSON.stringify(made.body).includes("already exists"))) must("create", made, 201);
 const g = new Git(R).as(admin);
 for (let i = 0; ; i++) {
   if (g.clone().ok) break;
