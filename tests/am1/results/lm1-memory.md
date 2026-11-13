@@ -1274,3 +1274,29 @@ catching up. A shard that answers `warming` past its wait on every placement sit
 (`unpacker error`), and the rest queue behind the busy shards for 25 s. The 52 `suspect` reports at 02:52:04 are
 edges that timed out reading `release` during the burst. Both need the standard-4 rerun before they are a code
 finding.
+
+**B0-31** (131291, 500 agents, 600 s, every agent push 1 MiB, placement failing from 300 s, standard-2 shards,
+03:00:05 to 03:10:05Z) [measured]: **not a valid run of the row, and a fail on two lines as run.**
+
+- **The leader was not on apac.** `transfer.mjs` moved it from site 0 to site 2 (apac) at about 02:57:30Z, term 3, and
+  it was back on site 0 (enam) by 02:57:41Z, term 4, 2.5 minutes before load: site 2's member took its last
+  `/commit`s at 02:57:33 to 02:57:40, and site 0's from 02:57:43 on (Workers Logs, `repo:131291#1#f0`/`#f2`). No
+  `STEP_DOWN` fired in the window. Moving back matches `maybe_hand_off`: a leader whose group's `home` answered
+  HOME_CALLS calls with none failed in a window transfers back to it (`crates/raft/src/member/health.rs`). So a
+  transfer cannot hold a leader on apac in a group homed on enam; the row needs the group re-homed to apac.
+- With the leader on enam: commit p99 584 ms (queue 458, round 226, confirm 76), 117.3 req/s, 0 feed polls, 2 failed
+  calls. Longest leaderless stretch with requests waiting: 0 s (the two term changes are transfers before load).
+- Buckets up: agent pushes 1,023 of 1,130 ok, 86 `admission full`, 18 client timeouts, 3 `warming` refusals; agent
+  push p99 120 s (the client cap); human pushes 36 of 41 ok, p99 240 s; merge:only p99 21.6 s.
+- Placement failing: human pushes 133 of 141 ok (7 `stale:race`, 1 `stale`), push p99 22.0 s; merges 32 ok, 3 × 409,
+  1 × 503 "the repository's tier rows did not answer"; agent pushes 1,262 `admission full` of 1,370, 47 ok, 56
+  client timeouts at 120 s.
+- Against the gate: Human and MergeQueue **commit** p99 by class is not in this row's output (the driver records the
+  push's whole time, not its commit), so "at most 3 s" is not measured. "Agent pushes over `INLINE_MAX_HOT` refused at
+  once in the `ng` shape" fails: 1,262 were refused as `admission full`, not with the placement refusal, and 103
+  were accepted or timed out. One merge was refused (503) while placement failed.
+
+Design contradiction, quoted: B0-31 is "the same replay with the leader on apac" (`build/BUILD-PLAN.md`, B0-31), but
+"a leader … whose group's `home` has recovered and caught up, transfers" back to `home`
+(`crates/raft/src/member/health.rs`, `maybe_hand_off`, from DESIGN "Leadership"). On a group homed on enam, the
+apac leader the row asks for lasts about 10 s.
