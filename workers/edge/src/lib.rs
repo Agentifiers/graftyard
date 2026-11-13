@@ -58,6 +58,7 @@ mod rcache;
 mod release;
 mod repos;
 mod transfer;
+mod ui;
 mod usertok;
 
 const AGENT: &str = "git/graftyard-m1";
@@ -607,7 +608,7 @@ struct TokenRow {
 /// `Tokens` shard, never a cache, or a `ghs_` token verified offline (`ident::stateless`). The leader re-reads the
 /// row, or the `jti` row, at `decide` either way.
 async fn authenticate(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
-    let Some(t) = token_of(req)? else { return Ok(None) };
+    let Some(t) = token_of(req)? else { return ui::session(c, req).await };
     if t.starts_with("ghs_") {
         return ident::stateless(c, &t).await;
     }
@@ -2256,11 +2257,35 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     }
     // REST, GraphQL, LFS, uploads, and codeload (`api`); git smart HTTP below.
     let authority = url.host_str().unwrap_or_default().to_owned();
-    if let Ok(host) = graftyard_wire::Host::new(&cfg.host, false)
-        && let Some(e) = host.endpoint(&authority, &path)
+    let host = graftyard_wire::Host::new(&cfg.host, false).ok();
+    let endpoint = host.as_ref().and_then(|h| h.endpoint(&authority, &path));
+    if let (Some(host), Some(e)) = (&host, endpoint)
         && api::serves(&e)
     {
-        return api::serve(&c, &mut req, &host, e).await;
+        return api::serve(&c, &mut req, host, e).await;
+    }
+    // The web app (`ui`): its private API, its assets, and the HTML shell for a browser's `GET` of a page path, which
+    // is a `Web` path or a repository path that is not git's (no `info/refs`, no RPC).
+    if let Some(host) = &host {
+        if let Some(rest) = path.strip_prefix(ui::PREFIX) {
+            return ui::serve(&c, &mut req, host, rest).await;
+        }
+        if (path.starts_with("/assets/") || path == "/favicon.ico") && req.method() == Method::Get {
+            return match ui::asset(&c, req.clone()?).await? {
+                Some(r) => Ok(r),
+                None => text(c.rid, 404, "Not Found\n"),
+            };
+        }
+        let page = match endpoint {
+            Some(graftyard_wire::Endpoint::Web(_)) => true,
+            Some(graftyard_wire::Endpoint::Repo { .. }) => {
+                matches!(smart::route(&path, url.query().unwrap_or("")), Some(Route::Dumb { .. }) | None)
+            }
+            _ => false,
+        };
+        if page && !path.starts_with("/assets/") && ui::wants_shell(&req)? {
+            return ui::shell(&c, &req, host, &path).await;
+        }
     }
     let ua = req.headers().get("user-agent")?;
     let incoming = graftyard_wire::Incoming { user_agent: ua.as_deref(), ..Default::default() };

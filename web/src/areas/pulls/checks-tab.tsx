@@ -1,4 +1,4 @@
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Alert02Icon,
@@ -20,7 +20,7 @@ import {
   annotationsQuery,
   checkRunsQuery,
   checkSuitesQuery,
-  combinedStatusQuery,
+  commitStatusesQuery,
   mergeRequirementsQuery,
   pullQuery,
   type Pull,
@@ -48,7 +48,8 @@ export function ChecksTab({
   const { data: pr } = useSuspenseQuery(pullQuery(pull));
   const ref = { ...pull, ref: pr.head.sha };
   const { data } = useSuspenseQuery(checkRunsQuery(ref));
-  const { data: suites } = useSuspenseQuery(checkSuitesQuery(ref));
+  // Suites only add the re-run-all buttons, so the tab renders without them.
+  const suites = useQuery(checkSuitesQuery(ref)).data?.check_suites ?? [];
   const { data: req } = useSuspenseQuery(mergeRequirementsQuery(pull));
   const rerun = useRerun(pull);
   const runs = data.check_runs;
@@ -68,7 +69,7 @@ export function ChecksTab({
         <span className="text-muted-foreground font-mono text-xs">
           on {pr.head.sha.slice(0, 7)}
         </span>
-        {suites.check_suites.map((s) => (
+        {suites.map((s) => (
           <Button
             key={s.id}
             size="sm"
@@ -122,7 +123,7 @@ export function ChecksTab({
         </div>
       )}
       <Region name="commit statuses" rows={2}>
-        <Statuses pull={pull} sha={pr.head.sha} />
+        <Statuses pull={pull} sha={pr.head.sha} required={required} />
       </Region>
     </div>
   );
@@ -238,8 +239,26 @@ function Annotations({ pull, runId }: { pull: Pull; runId: number }) {
   );
 }
 
-function Statuses({ pull, sha }: { pull: Pull; sha: string }) {
-  const { data } = useSuspenseQuery(combinedStatusQuery({ ...pull, ref: sha }));
+type Status = Schemas["status"];
+
+// GHES's combined status: the newest status per context, then failure if any of those is
+// an error or failure, pending if any is pending or there are none, and success otherwise.
+function combine(all: Status[]) {
+  const latest = new Map<string, Status>();
+  for (const s of [...all].sort((a, b) => b.created_at.localeCompare(a.created_at)))
+    if (!latest.has(s.context)) latest.set(s.context, s);
+  const statuses = [...latest.values()];
+  const state = statuses.some((s) => s.state === "error" || s.state === "failure")
+    ? "failure"
+    : statuses.length === 0 || statuses.some((s) => s.state === "pending")
+      ? "pending"
+      : "success";
+  return { state, statuses };
+}
+
+function Statuses({ pull, sha, required }: { pull: Pull; sha: string; required: Set<string> }) {
+  const { data: all } = useSuspenseQuery(commitStatusesQuery({ ...pull, ref: sha }));
+  const data = combine(all);
   return (
     <section className="flex flex-col gap-1.5" data-testid="statuses" data-state={data.state}>
       <h3 className="text-sm font-semibold">
@@ -277,7 +296,7 @@ function Statuses({ pull, sha }: { pull: Pull; sha: string }) {
                 <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">
                   {s.description}
                 </span>
-                {s.required && (
+                {required.has(s.context) && (
                   <Badge variant="outline" size="sm">
                     Required
                   </Badge>

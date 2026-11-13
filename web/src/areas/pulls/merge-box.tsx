@@ -33,6 +33,7 @@ import {
   checkRunsQuery,
   mergeRequirementsQuery,
   pullCommitsQuery,
+  pullMergeStateQuery,
   pullQuery,
   type Pull,
 } from "./queries";
@@ -84,6 +85,19 @@ export function MergeBox({ pull }: { pull: Pull }) {
     last.current = req.mergeable_state;
     void refreshPull(qc, pull);
   }, [req.mergeable_state, qc, pull]);
+  // GraphQL's mergeable is UNKNOWN until the test merge is computed; it polls until then,
+  // and when it settles the pull and its requirements are read again. It never blocks
+  // the box: without it the box shows what REST says.
+  const open = pr.state === "open" && !pr.merged;
+  const mergeState = useQuery({ ...pullMergeStateQuery(pull), enabled: open }).data;
+  const lastMergeable = useRef(mergeState?.mergeable);
+  useEffect(() => {
+    const was = lastMergeable.current;
+    lastMergeable.current = mergeState?.mergeable;
+    if (was !== "UNKNOWN" || !mergeState || mergeState.mergeable === "UNKNOWN") return;
+    void qc.invalidateQueries({ queryKey: pullQuery(pull).queryKey, exact: true });
+    void qc.invalidateQueries({ queryKey: mergeRequirementsQuery(pull).queryKey });
+  }, [mergeState, qc, pull]);
   const { data: repo } = useSuspenseQuery(repoQuery(pull));
   const updatePull = useUpdatePull(pull);
   const branch = useHeadBranch(pull);
@@ -193,6 +207,22 @@ export function MergeBox({ pull }: { pull: Pull }) {
       data-mergeable-state={req.mergeable_state}
     >
       <ul className="divide-y">
+        {pr.mergeable === null &&
+          !req.requirements.some((r) => r.key === "conflicts" && r.state === "pending") && (
+            <li className="flex items-start gap-3 px-4 py-2.5" data-testid="merge-checking">
+              <HugeiconsIcon
+                icon={LOOK.pending.icon}
+                strokeWidth={2}
+                className={cn("mt-0.5 size-5 shrink-0", LOOK.pending.tone)}
+              />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold">Checking whether this branch can merge</p>
+                <p className="text-muted-foreground text-xs">
+                  The test merge is still being computed. This updates on its own.
+                </p>
+              </div>
+            </li>
+          )}
         {req.requirements.map((r) => (
           <li
             key={r.key}

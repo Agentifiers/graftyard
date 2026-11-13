@@ -2745,6 +2745,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 
 **Flip.** A hosted run where the split path dominates (many batches that fail whole), or where one batch's body pushes the shard object past its memory.
 
+### The edge serves the web app: `/_t/ui`, an unsigned session cookie behind a header, and the inlined first route (2026-11-13)
+
+**Decision.** The edge carries the web build as a Workers static-assets binding and serves `/assets/*` immutable and the HTML shell to a browser's `GET` of any page path nothing else claims, with the first route's reads rendered in process and inlined as `__graft_seed`. The private API lives under `/_t/ui/` behind the same authentication and read gate as the repository API; git-derived routes ask the git cache shard's `/ui/*` routes, and fold-derived ones (events, threads, merge requirements) render from the rows `mergeStateStatus` reads. Web sign-in checks a PBKDF2-HMAC-SHA256 hash on the `Identity` fold, commits `SignIn { method: Password }`, and sets `__Host-gy_session=<account>.<session>`, which counts only on a request that also sends `x-graftyard-web: 1` and only while the fold lists the session and `sessions_not_before` allows it. GraphQL from the app goes as persisted documents by hash (`web/src/api/persisted.json`, embedded in the edge) (`design/SHARED.md`, "Frontend and native app", "How the edge serves it").
+
+**Why.** `/_t` is reserved, the shell answers only `text/html` `GET`s of paths no GHES route owns, the cookie needs a header no GHES client sends, and a persisted request is one with no `query`, so no GHES 3.22 reply changes. An unsigned cookie whose 80 random bits name a session the fold must hold needs no new secret, and so no rotation row or site-day-only secret change. Rendering the seed with the same renderers as the routes keeps the inlined data identical to what a refetch returns.
+
+**Beat.** A signed (HMAC) cookie with a new edge secret, which adds a key to rotate for no gain while the fold is read anyway. Serving the pages' reads through new `/api/v3` routes, which would be GHES paths with no oracle for their private shapes. A second `ASSETS` Worker, which would add a failure domain.
+
+**Evidence.** `crates/identity/src/password.rs` (RFC 7914 vectors), `workers/edge/src/ui.rs` and its tests, `crates/api/src/ui.rs`; BF-38's run against `graft-m4a` (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** A session read on every cookie request that measurably raises read latency (then cache it for `READ_CACHE`, as tokens are); a GHES client that sends `x-graftyard-web`; or a shell whose seed reads push first paint past a second round trip.
+
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
 **Decision.** The web app (M4-WP5) is React 19 on TanStack Start in SPA mode, with TanStack Router, Query, and DB, shadcn/ui on Base UI, ReUI's free primitives and examples from the `@reui` registry, and HugeIcons' free icons (`FRAME.md`, "Operator decision, 2026-11-08, web stack"). It lives in `web/`. It starts now, before M4's backends, against a browser mock (MSW) whose handlers and the app's client share one set of types generated from the pinned `ghes-3.22.json` at `755ee33b`, pruned to the operations the pages read. Each page region owns one `queryOptions` and one error boundary; reads retry at most twice with jitter and mutations never retry.
