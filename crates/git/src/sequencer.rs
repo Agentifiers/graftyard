@@ -582,6 +582,11 @@ impl Sequencer {
         self.by_attempt.retain(|_, g| live.contains_key(g));
     }
 
+    /// Every delivery held, done or not.
+    pub fn deliveries(&self) -> impl Iterator<Item = &HookDelivery> {
+        self.deliveries.values()
+    }
+
     /// Deliveries held, for tests and the store's size.
     pub fn len(&self) -> usize {
         self.deliveries.len()

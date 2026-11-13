@@ -588,11 +588,14 @@ pub struct HookSequencer {
 /// inside `transactionSync` ("Critical", "Reinitializing Wasm application") 21 times in 13 minutes, losing the
 /// attempts it was running each time [measured, `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 2]. A done delivery's
 /// body is read back from SQLite only for `GET .../deliveries/{id}` and a manual redelivery.
-const SCHEMA: [&str; 4] = [
+const SCHEMA: [&str; 5] = [
     "CREATE TABLE IF NOT EXISTS core (k INTEGER PRIMARY KEY CHECK (k = 0), v BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS delivery (guid BLOB PRIMARY KEY, row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS born (k INTEGER PRIMARY KEY CHECK (k = 0), at INTEGER NOT NULL)",
     "CREATE TABLE IF NOT EXISTS body (guid BLOB PRIMARY KEY, b BLOB NOT NULL)",
+    // One body per entry and slot, which every hook of that webhook shares (`body_key`), kept while the store holds a
+    // delivery of it. The per-delivery `body` table above is read only for rows written before it.
+    "CREATE TABLE IF NOT EXISTS shared_body (k BLOB PRIMARY KEY, b BLOB NOT NULL)",
 ];
 
 impl DurableObject for HookSequencer {
@@ -735,6 +738,7 @@ impl HookSequencer {
                     ("DELETE FROM core", vec![]),
                     ("DELETE FROM delivery", vec![]),
                     ("DELETE FROM body", vec![]),
+                    ("DELETE FROM shared_body", vec![]),
                     ("INSERT OR REPLACE INTO born (k, at) VALUES (0, ?)", vec![crate::host::i(now)]),
                 ],
             )
@@ -758,10 +762,11 @@ impl HookSequencer {
                     }
                     ds.push(d);
                 }
-                let undone: Vec<Guid> = ds.iter().filter(|d| !d.done).map(|d| d.guid).collect();
+                let undone: Vec<(Guid, Vec<u8>)> =
+                    ds.iter().filter(|d| !d.done).map(|d| (d.guid, body_key(d))).collect();
                 let mut seq = Sequencer::restore(c, ds);
-                for g in undone {
-                    if let Some(b) = read_body(&sql, &g)? {
+                for (g, k) in undone {
+                    if let Some(b) = read_body(&sql, &g, k)? {
                         seq.set_body(&g, b);
                     }
                 }
@@ -831,6 +836,19 @@ impl HookSequencer {
             if now.0 >= self.pruned_at.get() + PRUNE_EVERY_MS {
                 self.pruned_at.set(now.0);
                 s.prune(now);
+                // A shared body goes once the store holds none of its deliveries.
+                let held: std::collections::HashSet<Vec<u8>> = s.deliveries().map(body_key).collect();
+                let sql = self.state.storage().sql();
+                let mut gone: Vec<Vec<u8>> = Vec::new();
+                for r in sql.exec("SELECT k FROM shared_body", None)?.raw() {
+                    let k = crate::host::blob(&r?[0])?.to_vec();
+                    if !held.contains(&k) {
+                        gone.push(k);
+                    }
+                }
+                for k in gone {
+                    sql.exec("DELETE FROM shared_body WHERE k = ?", vec![k.into()])?;
+                }
             }
             s.start(now)
         };
@@ -951,8 +969,9 @@ impl HookSequencer {
     fn ensure_body(&self, guid: &Guid) -> Result<()> {
         let mut g = self.seq.borrow_mut();
         let seq = g.as_mut().expect("loaded");
-        if seq.delivery(guid).is_some_and(|d| d.body.is_empty())
-            && let Some(b) = read_body(&self.state.storage().sql(), guid)?
+        let key = seq.delivery(guid).filter(|d| d.body.is_empty()).map(body_key);
+        if let Some(k) = key
+            && let Some(b) = read_body(&self.state.storage().sql(), guid, k)?
         {
             seq.set_body(guid, b);
         }
@@ -982,11 +1001,12 @@ fn save_seq(state: &State, seq: &RefCell<Option<Sequencer>>) -> std::result::Res
         let key: SqlStorageValue = guid.0.to_vec().into();
         match d {
             Some(d) => {
-                // A delivery's first write carries its body, which goes to `body` once; the row never does.
+                // A delivery's first write carries its body, which goes to `shared_body` once per entry and slot; the
+                // row never does.
                 if d.attempts.is_empty() && !d.body.is_empty() {
                     stmts.push((
-                        "INSERT OR IGNORE INTO body (guid, b) VALUES (?, ?)",
-                        vec![key.clone(), d.body.to_vec().into()],
+                        "INSERT OR IGNORE INTO shared_body (k, b) VALUES (?, ?)",
+                        vec![body_key(d).into(), d.body.to_vec().into()],
                     ));
                 }
                 let row = HookDelivery { body: Box::default(), ..d.clone() };
@@ -1011,9 +1031,24 @@ fn save_seq(state: &State, seq: &RefCell<Option<Sequencer>>) -> std::result::Res
     crate::host::commit_tx(&state.storage(), stmts)
 }
 
-/// A delivery's body from the `body` table.
-/// A delivery's body from the `body` table, or, for a row written before that table, from the row itself.
-fn read_body(sql: &SqlStorage, guid: &Guid) -> Result<Option<Box<[u8]>>> {
+/// Where a delivery's body is kept in `shared_body`: its (chain, index, slot), which every hook of one webhook shares,
+/// or a ping's own GUID. One copy per entry and slot: graft-m4a's bf57b wrote 20 copies of each 11.7 KB payload, about
+/// 234 KB an entry, and an attempt whose POST the output gate held behind such a `/record` write took 114 ms at p50
+/// against 36 ms with none (BF-57 run 10, `tests/m4/results/m4-wp1-hosted.md`) [measured].
+fn body_key(d: &HookDelivery) -> Vec<u8> {
+    match d.entry {
+        Some(e) => codec::to_bytes(&e),
+        None => d.guid.0.to_vec(),
+    }
+}
+
+/// A delivery's body: from `shared_body` by `key`; for one written before that table, from `body`, or from before
+/// that, the row itself.
+fn read_body(sql: &SqlStorage, guid: &Guid, key: Vec<u8>) -> Result<Option<Box<[u8]>>> {
+    let rows = crate::host::rows(sql, "SELECT b FROM shared_body WHERE k = ?", vec![key.into()])?;
+    if let Some(r) = rows.first() {
+        return Ok(Some(crate::host::blob(&r[0])?.into()));
+    }
     let key: SqlStorageValue = guid.0.to_vec().into();
     let rows = crate::host::rows(sql, "SELECT b FROM body WHERE guid = ?", vec![key.clone()])?;
     if let Some(r) = rows.first() {
