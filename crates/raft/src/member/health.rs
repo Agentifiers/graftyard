@@ -12,7 +12,7 @@ use graftyard_types::{SiteId, Timestamp};
 
 use crate::fold::Command;
 use crate::types::{GroupConfig, Term};
-use crate::{CALL_DEADLINE, RESET_QUARANTINE, STEP_DOWN, after};
+use crate::{CALL_DEADLINE, LOOP_LAG, RESET_QUARANTINE, STEP_DOWN, after};
 
 use super::{Alarm, CallFailure, ConfirmId, FailedCall, Member, Message, Ready, Role, StepDownWhy};
 
@@ -230,7 +230,7 @@ impl<C: Command> Member<C> {
     /// This leader's calls to `s` in the window fail as the commit-error rule counts a failing link (over
     /// `commit_errors`, at least `commit_fail_min`), but over every call: `call_counts` leaves out the misses before `s`
     /// first answered and the repeats within one stall, which on a half-hung follower are most of them (F67 rule 13).
-    fn link_lossy(&self, s: SiteId) -> bool {
+    pub(super) fn link_lossy(&self, s: SiteId) -> bool {
         let Some(lead) = &self.lead else { return false };
         let mine = lead.health.links.iter().filter(|c| c.1 == s);
         let (n, failed) = mine.fold((0u32, 0u32), |(n, f), c| (n + 1, f + u32::from(!c.2)));
@@ -269,6 +269,15 @@ impl<C: Command> Member<C> {
         let slow = ms.iter().filter(|m| **m > STEP_DOWN.confirm_p99_ms).count() as u32;
         if p99 > STEP_DOWN.confirm_p99_ms && slow >= u32::from(STEP_DOWN.confirm_slow_min) {
             return Some(StepDownWhy::Confirm { p99_ms: p99, slow, of: ms.len() as u32 });
+        }
+        // A lagging loop: confirms that read whole ticks. Its confirms stay under `confirm_p99_ms` often enough that
+        // the confirm rule never tripped in B0-02's runs with the signature (`tests/m0/results/carried-8.md`).
+        let (min, within, at_least) = LOOP_LAG;
+        let since = Timestamp(self.now.0.saturating_sub(within.as_millis() as u64));
+        let clamped =
+            lead.health.confirms.iter().filter(|c| c.0 >= since && c.1 >= at_least && c.1 % 100 == 0).count() as u32;
+        if clamped >= min {
+            return Some(StepDownWhy::LoopLag { clamped });
         }
         None
     }
