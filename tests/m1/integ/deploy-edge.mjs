@@ -40,7 +40,7 @@ const cfg = {
   compatibility_date: "2026-10-01",
   workers_dev: true,
   preview_urls: false,
-  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]]
+  durable_objects: { bindings: sites.flatMap((s) => [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"]]
     .filter(([b]) => !(noShard && b === "SHARD")).map(([b, cls]) => ({ name: `${b}_${s.id}`, class_name: cls, script_name: s.script }))) },
   r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
   // `--ops <name>`: the `fetch()` binding to `graft-ops` that mints installation tokens (M3-WP4).

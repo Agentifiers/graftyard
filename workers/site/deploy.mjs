@@ -4,8 +4,14 @@
 // binding only its own classes. Usage:
 //   node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]
 //                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
+//                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
-// (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S).
+// (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
+// payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
+// `--var K=V` adds one more variable to every site deployed. `--only <id>` deploys that site alone (its phase 2
+// config), leaving the others' versions and members untouched. `--down <id>` sets `GRAFTYARD_SITE_DOWN=1` on that
+// site, which stops every class it hosts as if the site were lost (workers/site/src/lib.rs, `site_down`); the next
+// deploy without it brings the site back.
 // `--genesis` (test-faults installs only) names the system chains' records, which each site reads from
 // GRAFTYARD_GENESIS in place of the `Release` view; a product install reads them from the genesis its `Release`
 // group accepted, and needs `--anchor` (the trust anchor `graftyard init` wrote: GRAFTYARD_INSTALL and
@@ -28,11 +34,17 @@ const gi = flags.indexOf("--genesis");
 const genesis = gi >= 0 ? JSON.parse(readFileSync(flags[gi + 1], "utf8")).placements : null;
 const vi = flags.indexOf("--vars");
 // Keys starting with `_` are comments.
-const extraVars = Object.fromEntries(
-  Object.entries(vi >= 0 ? JSON.parse(readFileSync(flags[vi + 1], "utf8")) : {}).filter(([k]) => !k.startsWith("_")),
-);
+const extraVars = Object.fromEntries([
+  ...Object.entries(vi >= 0 ? JSON.parse(readFileSync(flags[vi + 1], "utf8")) : {}).filter(([k]) => !k.startsWith("_")),
+  ...flags.flatMap((f, i) => (f === "--var" ? [flags[i + 1].split(/=(.*)/s).slice(0, 2)] : [])),
+]);
+const idFlag = (name) => (flags.indexOf(name) >= 0 ? Number(flags[flags.indexOf(name) + 1]) : null);
+const only = idFlag("--only");
+const down = idFlag("--down");
 const ii = flags.indexOf("--image");
 const image = ii >= 0 ? flags[ii + 1] : null;
+const oi = flags.indexOf("--ops");
+const ops = oi >= 0 ? flags[oi + 1] : null;
 const ai = flags.indexOf("--anchor");
 const anchor = ai >= 0 ? Object.fromEntries(
   readFileSync(flags[ai + 1], "utf8").split("\n").map((l) => l.match(/^(install|customer_key)\s*=\s*"([^"]*)"/)).filter(Boolean).map((m) => [m[1], m[2]]),
@@ -56,11 +68,13 @@ const wrangler = (args) =>
 // A site binds every site's `GitShard` class, its own first: Cloudflare attaches the container config to the first
 // binding of the class, which must be the script's own. Another site's binding is how the archive alarm promotes on
 // that site's shard while its own rehydrates (workers/site/src/archive.rs, `SiteHost::promote`).
-function bindings(self, targets) {
+// `HookSequencer` (v3) is new to scripts that exist, so phase 1 binds only a site's own; phase 2, once every site has the
+// class, binds every site's.
+function bindings(self, targets, phase1 = false) {
   const own = targets.filter((s) => s.id === self.id);
   const order = [...own, ...targets.filter((s) => s.id !== self.id)];
-  return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"]].flatMap(([b, cls]) =>
-    order.map((s) => ({
+  return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"]].flatMap(([b, cls]) =>
+    order.filter((s) => !(phase1 && b === "HOOKSEQ" && s.id !== self.id)).map((s) => ({
       name: `${b}_${s.id}`,
       class_name: cls,
       ...(s.id === self.id ? {} : { script_name: s.script }),
@@ -69,7 +83,7 @@ function bindings(self, targets) {
 }
 
 // `own`: the script exists, so it can bind itself; a site new to the install gets its `SITE` binding in phase 2.
-function config(site, targets, own = true) {
+function config(site, targets, own = true, phase1 = false) {
   return {
     name: site.script,
     main: "../build/index.js",
@@ -82,10 +96,15 @@ function config(site, targets, own = true) {
       ...(genesis ? { GRAFTYARD_GENESIS: JSON.stringify(genesis) } : {}),
       ...(anchor ? { GRAFTYARD_INSTALL: anchor.install, GRAFTYARD_CUSTOMER_KEY: anchor.customer_key } : {}),
       ...Object.fromEntries(Object.entries(extraVars).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])),
+      ...(site.id === down ? { GRAFTYARD_SITE_DOWN: "1" } : {}),
     },
-    durable_objects: { bindings: bindings(site, targets) },
-    // The script's own fetch handler, which runs each `PrSync` first attempt in a new invocation (prsync.rs, `in_band`).
-    ...(own ? { services: [{ binding: "SITE", service: site.script }] } : {}),
+    durable_objects: { bindings: bindings(site, targets, phase1) },
+    // The script's own fetch handler, which runs each `PrSync` first attempt in a new invocation (prsync.rs, `in_band`),
+    // and `--ops <name>`'s `graft-ops`, which unwraps hook secrets for `HookSequencer` (hookseq.rs).
+    services: [
+      ...(own ? [{ binding: "SITE", service: site.script }] : []),
+      ...(ops ? [{ binding: "OPS", service: ops }] : []),
+    ],
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
     containers: [{
       class_name: "GitShard",
@@ -102,10 +121,12 @@ function config(site, targets, own = true) {
     limits: { cpu_ms: 300000 },
     // The pack sweeper (workers/site/src/sweep.rs). Each site sweeps the networks it is home for.
     triggers: { crons: [SWEEP_CRON] },
-    // v2 adds the git cache shard class to scripts that v1 created with members and registries only.
+    // v2 adds the git cache shard class to scripts that v1 created with members and registries only; v3 the owners'
+    // webhook delivery stores (M4-WP1).
     migrations: [
       { tag: "v1", new_sqlite_classes: ["Member", "Registry"] },
       { tag: "v2", new_sqlite_classes: ["GitShard"] },
+      { tag: "v3", new_sqlite_classes: ["HookSequencer"] },
     ],
     observability: { enabled: true },
   };
@@ -135,11 +156,19 @@ const queues = JSON.parse(
 ).result.map((q) => q.queue_name);
 for (const s of sites.filter((s) => !queues.includes(queueOf(s)))) wrangler(["queues", "create", queueOf(s)]);
 
+if (only !== null) {
+  const site = sites.find((s) => s.id === only);
+  if (!site || !listed.includes(site.script)) throw new Error(`--only ${only}: no deployed site with that id`);
+  writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, sites), null, 2));
+  wrangler(["deploy", "-c", `${site.script}.jsonc`]);
+  process.exit(0);
+}
+
 // Phase 1: every site gets its own classes (a new site binds only itself; an existing one keeps its member and
 // registry bindings to the sites that exist).
 for (const site of sites) {
   const targets = listed.includes(site.script) ? sites.filter((s) => s === site || listed.includes(s.script)) : [site];
-  writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, targets, listed.includes(site.script)), null, 2));
+  writeFileSync(join(gen, `${site.script}.jsonc`), JSON.stringify(config(site, targets, listed.includes(site.script), true), null, 2));
   wrangler(["deploy", "-c", `${site.script}.jsonc`]);
 }
 for (const site of sites) {

@@ -466,16 +466,17 @@ pub fn delivery(d: &HookDelivery, a: &Attempt, url: &str) -> Value {
     v
 }
 
-/// The deliveries list's `Link` header: `rel="next"` with the cursor of the last attempt listed, when `more`.
-pub fn deliveries_link(r: &Repo<'_>, hook: HookId, last: Option<u64>, per_page: usize, more: bool) -> Option<String> {
+/// The deliveries list's URL for `hook`, which its `Link` header pages.
+pub fn deliveries_url(r: &Repo<'_>, hook: HookId) -> String {
+    format!("{}/repos/{}/{}/hooks/{}/deliveries", r.host.api(), r.at.owner, r.at.name, hook.0.0)
+}
+
+/// The deliveries list's `Link` header: `rel="next"` with the cursor of the last attempt listed, when `more`. `url` is
+/// `deliveries_url`.
+pub fn deliveries_link(url: &str, last: Option<u64>, per_page: usize, more: bool) -> Option<String> {
     let last = last.filter(|_| more)?;
-    let api = r.host.api();
-    let (o, n) = (&r.at.owner, &r.at.name);
     let cursor = graftyard_wire::cursor(last as i64);
-    Some(format!(
-        "<{api}/repos/{o}/{n}/hooks/{}/deliveries?per_page={per_page}&cursor={cursor}>; rel=\"next\"",
-        hook.0.0
-    ))
+    Some(format!("<{url}?per_page={per_page}&cursor={cursor}>; rel=\"next\""))
 }
 
 /// The GUID a ping without a chain entry takes, from the host's random bytes.
@@ -603,6 +604,16 @@ pub fn refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
 
 // ---- the sequencer's routes ----
 
+/// What a sequencer route needs from the repository besides the store, which the edge reads and sends to the owner's
+/// `HookSequencer`: the repository, the deliveries list's URL (`deliveries_url`), and for `pings` the rendered `ping`
+/// body.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RouteCtx {
+    pub repo: graftyard_types::RepoId,
+    pub url: String,
+    pub ping: Option<Vec<u8>>,
+}
+
 /// `POST .../hooks/{id}/pings`, `GET .../deliveries`, `GET .../deliveries/{id}`, and `POST .../deliveries/{id}/attempts`
 /// on the owner's `HookSequencer` (`seq`), for hook `id` whose row the edge read. `tail` is the path after
 /// `hooks/{id}`; `query` the raw query string; `random` the host's bytes for a ping's GUID. `None` for a route this
@@ -610,7 +621,7 @@ pub fn refused(e: &graftyard_git::issue_ops::IssueErr) -> Reply {
 #[allow(clippy::too_many_arguments)]
 pub fn sequencer_route(
     seq: &mut graftyard_git::sequencer::Sequencer,
-    r: &Repo<'_>,
+    cx: &RouteCtx,
     id: HookId,
     row: &HookRow,
     method: &str,
@@ -623,14 +634,14 @@ pub fn sequencer_route(
     let param = |k: &str| query.split('&').find_map(|kv| kv.strip_prefix(k)?.strip_prefix('=')).map(str::to_owned);
     Some(match (method, tail) {
         ("POST", ["pings"]) => {
-            let body = serde_json::to_vec(&ping(r, id, row)).unwrap_or_default();
+            let Some(body) = cx.ping.clone() else { return Some(Reply::error(500, "no ping body", DOC)) };
             let d = NewDelivery {
                 guid: ping_guid(random),
                 hook: id,
                 entry: None,
-                event: "ping",
+                event: "ping".into(),
                 action: None,
-                repo: Some(r.at.id),
+                repo: Some(cx.repo),
                 body,
             };
             seq.set_targets(&[(id, row.record.clone())]);
@@ -652,7 +663,7 @@ pub fn sequencer_route(
             let last = rows.last().map(|(_, a)| a.id);
             let v: Vec<Value> = rows.iter().map(|(d, a)| delivery_item(d, a)).collect();
             let reply = Reply::json(200, Value::Array(v));
-            match deliveries_link(r, id, last, per_page, more) {
+            match deliveries_link(&cx.url, last, per_page, more) {
                 Some(l) => reply.with("link", l),
                 None => reply,
             }
