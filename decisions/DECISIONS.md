@@ -2499,6 +2499,22 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved b
 
 **Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
 
+### Learners are pipelined as voters are, 2026-11-13
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Learners pipelined"; F65). Operator's choice (c), ahead of piggybacking entries on `ReadIndexRes`.
+
+**Decision.** `send_append` pipelines to a learner exactly as to a voter: up to `PIPELINE` (4) calls out, each carrying only entries after the last, within `APPEND_BYTES_MAX`, and one call at a time once `link_lossy` holds for that learner.
+
+**Why.** On the final tree, weur and apac learners answered `late` to 19 to 49% of their reads, and their wait to apply a read index after the leader's `ReadIndexRes` reached 1.4 to 2.1 s at p99, which set journey 9's API p99 [measured]. Main pipelined only to voters (`voter && !lossy`), so a far learner got each entry one whole call late on a 300 to 700 ms link while the `ReadIndexRes` went out at once [inference].
+
+**Safety.** A learner never counts toward a quorum or a lease, so more calls to it change no commit or read rule. A pipelined call carries only entries after the outstanding ones and is dropped by the learner when its `prev` does not match, as for a voter; any failure or refusal clears the pipe.
+
+**Beat.** Piggybacking the missing entries on `ReadIndexRes` (operator: only if apply wait p99 stays over about 500 ms). Fetching them from the learner side (two round trips).
+
+**Evidence.** `crates/raft/tests/scenarios.rs`, `a_learner_is_pipelined_unless_its_link_is_lossy`, which fails on main 82a0bf9 (1 call to a silent learner, not 4); `tests/nr3/plant.py` plants 15 and 16. Hosted rows in the results file.
+
+**Flip.** A learner's apply wait p99 over about 500 ms with the pipeline, which takes (a); leader CPU or egress past its budget with 8 learners × 4 calls.
+
 ### Not adopted: the edge hedging a slow learner read, 2026-11-13
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The final tree's gate runs"; F65).
