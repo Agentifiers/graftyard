@@ -72,6 +72,8 @@ struct Totals {
     early_asks: u64,
     deps_entries: u64,
     rereads: u64,
+    pipelined: u64,
+    late_appends: u64,
     /// The liveness monitor's longest stretch (F67): ms, seed, and when it began.
     stuck: (u64, u64, u64),
 }
@@ -118,6 +120,8 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         early_asks: 0,
         deps_entries: 0,
         rereads: 0,
+        pipelined: 0,
+        late_appends: 0,
         stuck: (0, 0, 0),
     };
     // The gray half of the long sweep writes next to the HARSH half's file, as `<path>.gray`.
@@ -185,6 +189,8 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.early_asks += s.early_asks;
         t.deps_entries += s.deps_entries;
         t.rereads += s.rereads;
+        t.pipelined += s.pipelined;
+        t.late_appends += s.late_appends;
         // BF-14: a missed receipt is hedged only by `suspect`; no command reaches a second member.
         assert_eq!(s.forwarded, 0, "seed {seed}: a command was forwarded");
     }
@@ -197,7 +203,7 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
          forwarded {} call failures {} step-downs {} holds {} gray faults {} write failures {} | leader writes lost \
          after their AppendEntries left {} (a follower stored one the leader then lacked: {}) | id blocks recorded {} \
          committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {} | entries \
-         decided on reads {} early asks {} re-reads {}",
+         decided on reads {} early asks {} re-reads {} | pipelined appends {} appends received late or twice {}",
         t.seeds,
         t.steps,
         t.ops,
@@ -232,7 +238,9 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.catchups,
         t.deps_entries,
         t.early_asks,
-        t.rereads
+        t.rereads,
+        t.pipelined,
+        t.late_appends
     );
     eprintln!(
         "longest stretch with a healthy quorum, requests waiting, and none completing (ms, seed, from): {:?}",
@@ -252,8 +260,9 @@ fn quiet_network_commits_and_reads() {
 #[test]
 fn harsh_network_keeps_every_invariant() {
     let t = sweep(1_000..1_000 + SEEDS, STEPS, Faults::HARSH);
-    // The sweep must have done work under faults, or it proves nothing.
-    assert!(t.acked > SEEDS * 20, "only {} writes acked", t.acked);
+    // The sweep must have done work under faults, or it proves nothing. HARSH acks about 20 writes a seed (1,196 to
+    // 1,203 over these seeds as the pipeline moved timing, 2,293 to 2,406 over twice as many), so the floor is 15.
+    assert!(t.acked > SEEDS * 15, "only {} writes acked", t.acked);
     assert!(t.crashes > SEEDS, "only {} crashes", t.crashes);
     assert!(t.partitions > SEEDS / 2, "only {} partitions", t.partitions);
     // The leader's own write lost after its AppendEntries left, with a follower storing the entry it lost.
@@ -264,6 +273,8 @@ fn harsh_network_keeps_every_invariant() {
     assert!(t.compacted > 0 && t.catchups > SEEDS, "compacted {} catch-ups {}", t.compacted, t.catchups);
     // Dependency reads overlap the entry in flight, and a recorded entry moving the dependency forces a re-read.
     assert!(t.early_asks > SEEDS && t.rereads > 0, "early asks {} re-reads {}", t.early_asks, t.rereads);
+    // PIPELINE: calls leave behind earlier ones still out, and reordering and duplicates deliver them late or twice.
+    assert!(t.pipelined > SEEDS && t.late_appends > SEEDS, "pipelined {} late {}", t.pipelined, t.late_appends);
 }
 
 /// HARSH plus gray faults on one site at a time: calls failing 30%, storage confirms 30% at 1 s, or writes failing 30%.

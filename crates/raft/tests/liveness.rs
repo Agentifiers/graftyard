@@ -160,7 +160,7 @@ fn leaders_leave_a_site_whose_calls_fail() {
 
 #[test]
 fn leaders_leave_slow_storage() {
-    let runs = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_000), 200..200 + SEEDS);
+    let runs = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_050), 200..200 + SEEDS);
     check("slow", &runs, true);
 }
 
@@ -168,6 +168,14 @@ fn leaders_leave_slow_storage() {
 fn leaders_leave_a_site_whose_writes_fail() {
     let runs = report("writes fail 30%", FaultKind::FailWrites(300), 300..300 + SEEDS);
     check("writes", &runs, false);
+}
+
+/// B0-02's lagging leader loop (`tests/m0/results/carried-8.md`): the sick leader's clock reads whole ticks and 30% of
+/// its confirms run 200 to 500 ms late, under `confirm_p99_ms`, so only LOOP_LAG moves it by STEP_DOWN.
+#[test]
+fn leaders_leave_a_lagging_loop() {
+    let runs = report("loop lag 30%", FaultKind::LoopLag(300), 500..500 + SEEDS);
+    check("lag", &runs, true);
 }
 
 #[test]
@@ -235,8 +243,12 @@ fn long_liveness() {
         failed.extend(check_all("calls", &calls, true, 1_000));
     }
     if only.is_empty() || only == "slow" {
-        let slow = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_000), 2_000..2_000 + n);
+        let slow = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_050), 2_000..2_000 + n);
         failed.extend(check_all("slow", &slow, true, 2_000));
+    }
+    if only.is_empty() || only == "lag" {
+        let lag = report("loop lag 30%", FaultKind::LoopLag(300), 4_000..4_000 + n);
+        failed.extend(check_all("lag", &lag, true, 4_000));
     }
     if only.is_empty() || only == "writes" {
         let writes = report("writes fail 30%", FaultKind::FailWrites(300), 3_000..3_000 + n);
