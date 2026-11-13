@@ -142,13 +142,73 @@ The plants also found code that could never matter, and both pieces were removed
 | 28 | the fold applies a cursor other than the one committed | CAUGHT | `user_records_are_the_accounts_own_kept_with_their_entry_and_the_counts_cursor_only_moves_forward` |
 | 29 | stargazers render without the star media type | CAUGHT | `activity_and_search_replies_render_ghes_objects`, `bf67_a_rebuilt_inbox_keeps_read_done_and_every_sources_event_and_10_000_stars_survive_a_refold` |
 
-## Not built: the hosted half
+## Hosted on `graft-m4a`: BF-5 and BF-68 pass, BF-67's stars and Inbox pass, its refold waits on site day 10
 
-- **Site classes.** `Inbox` and `SearchShard` Durable Object classes in `workers/site`: the Inbox's SQLite rows, its snapshot to two buckets, and the rebuild; `SearchShard` running `DDL` and created with `idFromName` under `Domain::jurisdiction()`. `workers/site/deploy.mjs` needs a migration for both. The M4 Actions thread is adding `HookSequencer` as migration v3 there, so these go after it.
-- **The consumers' Queue wiring** for `Counts`, `Notify`, and `Search`.
-- **Edge routes.** `/stargazers`, `/subscribers`, `/subscription`, `/user/starred`, `/notifications` and its threads, and `/search/issues`, all behind `FORMATS_ENABLED` 32.19 and 0x14.3, so a deployment that has not enabled them keeps its current replies.
-- **The site day** that enables 32.19 and 0x14.3.
-- **Out of scope here:** feeds, `/issues`, and `/user/repos` from the Inbox (BUILD-PLAN's `Inbox` row lists them, and no M4-WP2 gate measures them), `Follow` rendering, and the generation counter's home (the tests keep it in memory; the hosted half stores it on the `Release` group, or derives it from the newest live object).
+Built on `m4-wp2` and deployed through two days logged in `tests/am1/results/install-m4a.md`:
+
+- **Site day 8** (15:58Z, sites `c392af30` / `770a594d` / `bf9bb597`): `m4a-wp2-deploy` `0f32337` = `m4a-deploy` `5af2de0` + `m4-wp2` `4e9da43`. It adds migration v4 (`SearchShard`, `Inbox`), the `SEARCH_n` and `INBOX_n` bindings (own-only in phase 1), Repo reads 32.19, Identity reads 0x14.3, and `GRAFTYARD_ACTIVITY=1`. The 15:50Z attempt stopped at wrangler's check before any upload: the `durable_object` macro exports the Rust struct's own name, and `pub use inbox::InboxObject as Inbox` left the class exported as `InboxObject` (fixed in `4e9da43`).
+- **Edge day 7** (M4 web, 16:01Z, edge `3d41cbe7`): `FORMATS_ENABLED` plus 32.19 and 20.3.
+- M4 Actions' site day 9 (16:20Z) carried both, and every row below ran on it.
+
+What the hosted half is (`workers/site/src/{activity,inbox,search}.rs`, `workers/edge/src/activity.rs`):
+
+- The consumers run in band on their chain's leader alarm, not through Queues (DECISIONS, "M4-WP2's hosted half, as built"). `Counts` runs on each account's `Identity` leader, and `Notify` and `Search` on each repository leader, each from its committed cursor.
+- `SearchShard` objects are created under the domain's jurisdiction. m4a has no `eu` site, so the `Eu` domain binds on the weur site under `ns.jurisdiction("eu")`.
+- The edge routes answer only once `FORMATS_ENABLED` holds 32.19 and 0x14.3.
+
+Drivers are in `tests/m4/wp2/hosted/`, raw logs in `tests/m4/wp2/raw/`.
+
+### BF-5. Pass.
+
+m3-member watches `m3org/wp2-bf5`. m3-admin unstars, opens an issue (GraphQL `createIssue`, as gh sends it: the install serves no REST issue create), waits 15 s, then stars and comments (`addComment`). Both are timed from the star's `PUT`.
+
+| Measure | Pass | Result [measured] |
+| --- | --- | --- |
+| Star in `stargazers_count` | within 10 s, fail over 60 s | 3,984 ms (the two writes took 3,601 ms of it) |
+| Comment's thread in the watcher's `/notifications`, unread | within 10 s | 5,041 ms |
+| Mark read, snapshot, delete, rebuild through the `Identity` leader's `/inbox` | read state kept | `/notifications?all=true` was empty after the delete, and after an 851 ms rebuild it was identical to the live view, including the read thread's `last_read_at` |
+
+An earlier run failed on the driver, not the system: it read `before` while the unstar was still in flight through `Counts`, so `before + 1` never came. The driver now waits for the count to settle first.
+
+### BF-67. Stars and Inbox pass; the refold is blocked by a bug this run found.
+
+**Stars.** `seed.mjs` made 10,005 real accounts, the row's 10,000 plus a 5-account trial. Each one has:
+
+- its `Names` rows (`Account`, a claimed login `wp2-s<i>`, `AccountLogin`, and a `Tri` placement),
+- its own `Identity` group with `Created`,
+- a `SetRecord(Star)` under the account's own web-session credential, which `decide` checks as the account itself, in the same entry as `Created`.
+
+That took 64 workers in each of 4 processes, 11 minutes, about 15 accounts/s. Two accounts failed on a group-creation timeout and passed on a rerun.
+
+| Measure | Pass | Result [measured] |
+| --- | --- | --- |
+| `/stargazers` (101 pages of 100, star media type) | all 10,000 listed | 10,005 listed, 10,005 distinct, 0 missing, 0 `ghost` (each page reads its own accounts' logins), `stargazers_count` 10,005; slowest page 6.2 s |
+| A refold of the repository | metadata digest equal; the list after | **not measured**: the product fold audit failed with `SQLITE_LOCKED` (below) |
+
+**Inbox.** The watcher's Inbox held 4 threads on `wp2-bf5`. One was marked read and one done, then the Inbox was snapshotted. After the snapshot, a comment went on every thread, which is a new event on the `sources` chain. Then the Inbox was deleted and rebuilt from the snapshot plus `sources`.
+
+| Measure | Pass | Result [measured] |
+| --- | --- | --- |
+| Rebuilt `/notifications?all=true` | read and done kept, nothing from `sources` lost | identical to the live view: all 4 threads with the post-snapshot comments' `updated_at`; the read and the done thread keep their `last_read_at` and are unread again under GHES's rule, because a newer notice arrived; 0 threads after the delete; rebuilt in 1,113 ms |
+
+**The bug.** The fold audit failed at its closing `DROP TABLE` of the scratch tables with `SQLITE_LOCKED` on every repository with a fold row read that hit: `wp2-stars`, `wp2-bf5`, and `wp2-probe`, but not `j4`. `TierSql::sql_get` took one row from its cursor and dropped it without reading to the end, so the statement held its table. It is the same class as d6e350d's log cursor. It is not specific to M4-WP2, but the new consumers are the first path that reads point rows on an audited repository. Fixed in `0055d62`: `sql_get` reads to the end. It reaches the members only through a site day, so site day 10 is announced for 17:20Z, and the refold row runs after it.
+
+### BF-68. Pass.
+
+Org `wp2eu` (7400001) has an `Eu2w` record on sites [1, 0, 2], home 1 (weur), and four public repositories with three issues each, whose titles carry the run's word. Search reached all 12 in the 2.7 s it took to ask.
+
+| Measure | Pass | Result [measured] |
+| --- | --- | --- |
+| Where the documents are (every shard of both domains, `/stats`) | only `eu`-jurisdiction shards | 3 shards hold all 12: `search#eu#2#1` (6), `#4#1` (3), and `#8#1` (3). Each reports `state.id.jurisdiction = "eu"` and an EU colo (PRG, PRG, MXP). No `default` shard holds any |
+| `search#eu#2#1` lost | `incomplete_results` | `total_count` 6 (exactly the other two shards' documents), `incomplete_results: true` |
+| The rebuild (`{rebuild}`, generation 2) | full results | 39 s to scan every site's registry shards and rewrite 2 repositories' 6 documents into `search#eu#2#2`; then 12 of 12, `incomplete_results: false` |
+| The same census after | only `eu` | `search#eu#2#2` (6, eu, WAW), `#4#1` (3, PRG), `#8#1` (3, MXP); 0 outside |
+
+Out of BF-68's scope, not a deviation: the org's repository chains still run on m4a's three sites (enam, weur, apac). Holding them on EU sites is Milestone 5's EU sites (the parent's ruling).
+
+### GHES 3.22 shapes
+
+`replies.mjs` captured 11 live replies: both `/stargazers` media types, `/subscribers`, `/subscription`, `GET /user/starred/{o}/{r}`, `/notifications`, a thread, its subscription, `/search/issues` and its 422, and `full-repository` with the counts. `crates/api/gh/validate.py` against the pinned descriptions (both sha256s match the README): 11 checked, 0 failed.
 
 ## Hosted cost estimate for BF-5, BF-67, and BF-68 on `graft-m4a`
 
@@ -164,3 +224,18 @@ Estimated at `research/prices.json` overage rates with allowances ignored. The a
 | **Total** | | **about $8, with a $12 stop** |
 
 BF-67's 10,000 accounts drive the cost. Seeding them through 10,000 real signups is what the row says. Seeding the stars through 100 accounts with 100 repositories each would test something else, so the estimate keeps the row as written.
+
+### Measured
+
+`INSTALL=graft-m4a python3 tests/fanout/m2bcost.py`, per window, at the same rates. The install is shared, so each window also holds the other threads' work, mostly the git shard containers that M4 Actions' runs keep up. From 15:00Z to 16:12Z, before any row of this work ran, they cost $1.37.
+
+| Window (2026-11-13) | What ran | Durable Objects and Workers | Containers (every thread's) |
+| --- | --- | --- | --- |
+| 15:00Z to 16:12Z | site day 8, edge day 7 (M4 web), the tools edge | $0.30 | $1.37 |
+| 16:12Z to 16:22Z | the 5-account seed trial; site day 9 (M4 Actions) | $0.02 | $0.19 |
+| 16:22Z to 16:34:50Z | 200 accounts, BF-5 | $0.31 | $0.29 |
+| 16:34:50Z to 16:48Z | 9,800 accounts, BF-68 | $4.81 (3.1 M rows written, 0.81 M DO active-seconds, 2.7 M DO requests) | $0.37 |
+| 16:48Z to 17:11Z | BF-67's listing, the Inbox half, the refold attempts, the GHES capture | $0.36 | $0.69 |
+| **15:00Z to 17:11Z** | | **$5.80** | **$2.91** |
+
+The install's whole window was **$8.71**, against the $12 stop. The seed alone was about $5.1, against the $9 trip for seeding. The estimate was $7.50 for BF-67, and its guess of 2.2 M DO active-seconds came in at 0.85 M.
