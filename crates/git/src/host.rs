@@ -694,16 +694,11 @@ impl ShardHost<'_> {
     }
 
     /// Whether a rehydrate of `network` is under way or was cut off on this shard: its saved place is kept from its
-    /// start to its end (`crate::catchup::Rehydrating`). One storage read; the container is not asked.
-    /// A place saved on the disk the cursor is saved for is a run that finished but was cut off before it dropped the
-    /// place, so it does not count.
+    /// start until its last catch-up reaches the head, or until the catch-up that finishes a cut-off one does
+    /// (`crate::catchup`). One storage read; the container is not asked.
     pub async fn rehydrating(&self, network: NetworkId) -> bool {
         type Saved = (String, serde_json::Value);
-        let s = self.state.storage();
-        let Some((disk, _)) = s.get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten() else {
-            return false;
-        };
-        s.get::<Saved>(&Self::cursor_key(network)).await.ok().flatten().is_none_or(|(d, _)| d != disk)
+        self.state.storage().get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten().is_some()
     }
 
     fn rehydrating_key(network: NetworkId) -> String {
