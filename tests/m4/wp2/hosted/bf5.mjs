@@ -10,6 +10,12 @@ const out = new URL("../raw/bf5.jsonl", import.meta.url).pathname;
 const REPO = "m3org/wp2-bf5";
 const watcher = tokens.member, actor = tokens.admin;
 const must = (r, ...ok) => { if (!ok.includes(r.status)) throw new Error(`${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r; };
+// Issues and comments through GraphQL (`createIssue`, `addComment`), as gh sends them; the install serves no REST create.
+async function gql(token, query, variables) {
+  const r = await api("POST", "/api/graphql", token, { query, variables });
+  if (r.status !== 200 || r.body?.errors) throw new Error(`graphql ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`);
+  return r.body.data;
+}
 
 /** Polls `f` every 250 ms until it answers truthy; the ms it took, or null after 60 s. */
 async function until(f, t0) {
@@ -22,15 +28,25 @@ async function until(f, t0) {
 
 must(await api("PUT", `/api/v3/repos/${REPO}/subscription`, watcher, { subscribed: true }), 200);
 must(await api("DELETE", `/api/v3/user/starred/${REPO}`, actor), 204);
-const before = (await api("GET", `/api/v3/repos/${REPO}`, actor)).body.stargazers_count;
-const issue = must(await api("POST", `/api/v3/repos/${REPO}/issues`, actor, { title: `BF-5 ${new Date().toISOString()}` }), 201).body;
+// The unstar reaches the count through `Counts` too, so wait until the count stops moving before taking `before`.
+let before = -1;
+for (let same = 0; same < 4; await sleep(1000)) {
+  const n = (await api("GET", `/api/v3/repos/${REPO}`, actor)).body.stargazers_count;
+  same = n === before ? same + 1 : 0;
+  before = n;
+}
+const repoNode = must(await api("GET", `/api/v3/repos/${REPO}`, actor), 200).body.node_id;
+const issue = (await gql(actor, "mutation($r: ID!, $t: String!) { createIssue(input: {repositoryId: $r, title: $t}) { issue { id number } } }",
+  { r: repoNode, t: `BF-5 ${new Date().toISOString()}` })).createIssue.issue;
 const thread = (await api("GET", "/api/v3/notifications?all=true", watcher)).body;
 log(`before: ${before} stars; issue #${issue.number}; watcher threads ${Array.isArray(thread) ? thread.length : thread}`);
 await sleep(15_000); // let the issue's own notice land first, so the comment is what moves `updated_at`
 
 const t0 = Date.now();
 must(await api("PUT", `/api/v3/user/starred/${REPO}`, actor), 204);
-const comment = must(await api("POST", `/api/v3/repos/${REPO}/issues/${issue.number}/comments`, actor, { body: "BF-5: a comment on a watched issue" }), 201).body;
+const comment = (await gql(actor, "mutation($s: ID!) { addComment(input: {subjectId: $s, body: \"BF-5: a comment on a watched issue\"}) { commentEdge { node { createdAt } } } }",
+  { s: issue.id })).addComment.commentEdge.node;
+comment.created_at = comment.createdAt;
 const tWrite = Date.now() - t0;
 const [star, notice] = await Promise.all([
   until(async () => (await api("GET", `/api/v3/repos/${REPO}`, actor)).body?.stargazers_count === before + 1, t0),

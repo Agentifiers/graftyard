@@ -12,7 +12,17 @@
 // hits, `{rebuild}` builds generation 2, and search is complete again.
 //
 //   source tests/am1/lf13/env-m4a.sh; node tests/m4/wp2/hosted/bf68.mjs [R] [ISSUES]
-import { OP, accountShard, api, log, loginShard, member, must, repoShard, row, sleep, state, tokens, tools } from "../../../am1/hosted/lib.mjs";
+import { OP, accountShard, api, log, loginShard, member, rid, row, sleep, state, tokens, tools } from "../../../am1/hosted/lib.mjs";
+
+// Every commit through the tools edge, which finds `authz:` groups from the owner's `Placement` row; lib.mjs's `must`
+// sends owner chains to `/_bed`, which a product edge does not serve.
+async function must(chain, cmd, ...allowed) {
+  await tools("/create", { chain });
+  const r = await tools("/commit", { chain, cmd, rid: rid() });
+  const why = r.outcome?.refused?.err?.split?.(/[ ({]/)[0];
+  if (!r.ok || (!r.outcome?.ok && !allowed.includes(why))) throw new Error(`${chain}: ${JSON.stringify(r).slice(0, 300)}`);
+  return r.outcome;
+}
 
 const [R = 4, ISSUES = 3] = process.argv.slice(2).map(Number);
 const out = new URL("../raw/bf68.jsonl", import.meta.url).pathname;
@@ -25,8 +35,6 @@ const SHARDS = 16;
 
 // ---- seed ----
 const home = `names:${accountShard(ORG)}`;
-await tools("/create", { chain: home });
-await tools("/create", { chain: `names:${loginShard(LOGIN)}` });
 await must(home, { cred: OP, op: { PutAccount: { id: ORG, suspended: false, sessions_not_before: 0 } } });
 await must(`names:${loginShard(LOGIN)}`, { cred: OP, op: { ClaimLogin: { login: LOGIN, kind: "Org", account: ORG } } }, "Taken");
 await must(home, { cred: OP, op: { SetAccountLogin: { account: ORG, login: LOGIN } } });
@@ -44,8 +52,10 @@ for (let i = 0; i < R; i++) {
   if (![200, 201].includes(r.status)) throw new Error(`${name}: ${r.status} ${JSON.stringify(r.body).slice(0, 200)}`);
   repos.push({ name, id: r.body.id });
   for (let n = 0; n < ISSUES; n++) {
-    const x = await api("POST", `/api/v3/repos/${LOGIN}/${name}/issues`, admin, { title: `${WORD} ${name} ${n}`, body: "BF-68" });
-    if (x.status !== 201) throw new Error(`issue ${name}: ${x.status} ${JSON.stringify(x.body).slice(0, 200)}`);
+    // GraphQL `createIssue`, as gh sends it; the install serves no REST create.
+    const x = await api("POST", "/api/graphql", admin, { query: "mutation($r: ID!, $t: String!) { createIssue(input: {repositoryId: $r, title: $t, body: \"BF-68\"}) { issue { number } } }",
+      variables: { r: r.body.node_id, t: `${WORD} ${name} ${n}` } });
+    if (x.status !== 200 || x.body?.errors) throw new Error(`issue ${name}: ${x.status} ${JSON.stringify(x.body).slice(0, 200)}`);
   }
 }
 const want = R * ISSUES;
