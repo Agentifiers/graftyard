@@ -1272,7 +1272,10 @@ pub fn actions_shard(run: &WorkflowRun) -> u8;
 pub struct RunnerBroker { pub owner: AccountId, pub scope: RunnerScope }   pub struct LogRelay { pub job: JobId }
 pub const BROKER_HELD_MAX: u32 = 2_000;   // held long polls per broker object [guess]
 /// Site-script class, one per hook owner on its `home` site: SHARED's delivery store (`HookDelivery` rows) and sequencer.
-/// Delivery Workers take attempts from the site's queue. One unreported for 30 s is re-sent under its GUID.
+/// Its delivery Workers are stateless lanes of the same class, `hooklane:<wire>:<hook>` on the store's site: the store
+/// signs each request and a lane POSTs a queue's run (its head and up to 8 queued, in order, to the first non-2xx),
+/// because POSTs from the store itself waited on its other work (BF-57 runs 8 to 14, `tests/m4/results/m4-wp1-hosted.md`)
+/// [measured]. One unreported for 30 s is re-sent under its GUID.
 pub struct HookSequencer { pub owner: AccountId }
 /// `graft-runners`, a Worker in the runner account, is SHARED's hosted-runner service. It holds `HostedRunnersAppKey`,
 /// reaches the install only through the front, sweeps on a Cron Trigger, and runs each runner in one Sandbox named by
