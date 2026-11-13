@@ -1194,3 +1194,29 @@ step-down fix `0c7cbc23`. Its tree equals `742165ca`, where the checks ran.
   requests waiting and none completing is 29,799 ms (seed 10921), under the 30 s bound.
 - **Porcupine**: `Ok` on `hist.jsonl` (150,828 operations), `hist.jsonl.gray` (2,042,240) and `hist.jsonl.live`
   (2,601,072).
+
+### Round 8e: site day m19 and smokes
+
+Site day m19 from `aac3e0b9`: new shard image `sha256:73d9b2ce79af6ee6d9a23cdea6982123855a5d3b109fa428e80bf4f19d7080c3`
+(this branch's container admission gate, which `15f6ed1b` lacks), site versions `049f955c`, `673e1876`, `343b1877`,
+edge `b9c0fd62`. Smokes of 180 s each, 8 learners (enam 4, weur 2, apac 2), k 4 [measured]:
+
+| Smoke | Leader | Commit p50/p99 | Queue / round / confirm p99 | merge:only p99 | Agent pushes | Push p99 agent / human | read:api p99 (n) |
+|---|---|---|---|---|---|---|---|
+| s250 (131287) | held at term 2, 0 feed polls | 363/982 ms | 577 / 352 / 79 ms | 3.3 s | 365 of 370 (5 `full`) | 37.8 / 38.1 s | 6.5 s |
+| s500 (131288) | held at term 2, 0 feed polls, 121.8 req/s | 341/567 ms | 421 / 255 / 147 ms | 2.7 s | 735 of 736 (1 client fetch failure) | 6.6 / 8.5 s | 3.8 s (35,659; 98.4% 200, 53 × 503, 506 capped) |
+
+- **No `STEP_DOWN` alarm on any site from 02:16 to 02:31Z** [measured, Workers Logs]. The same query over m18's
+  19:16:30–19:18Z returns its three known step-downs (`release`, `names:708` f0, `names:708` f1), so it is not blind.
+  In s500 the `release` leader recorded 179 and 181 deadline misses to its followers in one burst at 02:27:29Z, the
+  follower-stall pattern of round 8c, and did not move. In s250 `names:152`'s leader recorded 267 the same way.
+- **Leaderless stretches**: the repository leader held at term 2 through both smokes, and no identity group changed
+  leader, so the longest leaderless stretch with requests waiting is 0 s in both.
+- **s250's push p99 of about 38 s** is the first minute on a new image and new repository; s500, which followed on
+  warm shards, was 6.6 s [inference: the shard warm-up of a just-built image, not measured].
+- **API**: s500's `resolve` p99 is 3.2 s and `auth` 2.4 s, under narrow-reads-2's per-isolate caches. B0-29's API
+  line (p99 at most 2 s, at least 99% served) is not met in the smoke.
+- Leader confirm p99 147 ms at 500 agents, above the ~100 ms m0-carried-5 asked about.
+
+Cost after both smokes: $31.99. Rows `rows-m19` started in the operator's order: B0-29, B0-32, B0-31, B0-33, B0-34,
+B0-35, L0-12.
