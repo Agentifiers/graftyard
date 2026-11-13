@@ -1414,3 +1414,45 @@ fails the other; this run's 3.10 s misses both.
 
 F67: no leaderless stretch over 30 s with requests waiting in any row (worst 21.1 s, B0-33).
 Cost through the rows: $47.90 of $150 (containers $10.59). Shards are torn down after each row.
+
+### Round 9: site day m20 on standard-4, smokes, and the entry-cap A/B (2026-11-13)
+
+**Deploy.** Tree `lm1-memory` `b50ec6d` (main 5293a6c: hot-shards-3, merge-p99, m0-carried-7's `ENTRY_SOFT`), sites
+`2f633c70`, `f52dce4e`, `0cb8c021`; edge `ea865919`; `SHARD_INSTANCE=standard-4` on every site (set by `--vars` in
+`tests/am1/runs/siteday.sh`); shard image hot-shards-4's `sha256:f6d2ef408c76…`. Learners enam 4,000, weur 2,000,
+apac 2,000 (8). Every run below is B0-29's shape for 180 s.
+
+**The L0-12 clock rule as built.** The operator's "reject samples whose round trip is over 200 ms" is read as over
+200 ms above that site's fastest sample, because apac's idle round trip from this orb through the tools edge is 240
+to 590 ms [measured on 131291], so a flat cap would reject every apac sample. The operator accepted this reading.
+
+| Run | Agents | Entry limit | Commit p50 / p99 (ms) | Queue to append p50 / p99 | Round p50 | Commands per entry | Agent / human push p99 (s) | merge:only p99 | API p99, served |
+|---|---|---|---|---|---|---|---|---|---|
+| m20s250 (131297) | 250 | 60 KB | 356 / 1,469 | 205 / 1,332 | 153 | 2.16 | 7.7 / 5.7 | 4,051 | 2,810, 99.1% |
+| m20s500 (131298) | 500 | 60 KB | 791 / 1,619 | 642 / 1,461 | 151 | 3.50 | 8.3 / 7.0 | 966 | 2,406, 100.0% |
+| A/B 1 (131300) | 500 | `ENTRY_MAX` | 453 / 702 | 247 / 507 | 202 | 4.67 | 7.2 / 6.3 | 1,424 | 2,474, 100.0% |
+| A/B 2 (131301) | 500 | 60 KB | 739 / 1,718 | 578 / 1,583 | 151 | 3.38 | 8.0 / 6.9 | 1,117 | 2,331, 100.0% |
+| m19 s500, for reference | 500 | `ENTRY_MAX` | 341 / 567 | 194 / 421 | 142 | 3.41 | 6.6 / 8.5 | | |
+
+The entry limit is set per member through test-faults `/stats?entry=max|<bytes>` (`tests/fanout/smoke.sh`'s fourth
+field); a plain `/stats` read confirms `entrySoft` 1,500,000 on the uncapped arm. No run changed leader (term 2
+throughout), no `STEP_DOWN`, and API reads were served at 99.1 to 100%.
+
+**Cause [measured, A/B on one deploy]: `ENTRY_SOFT` (60 KB) doubles B0-29's commit p99.** With the cap, commands wait
+p50 578 to 642 ms and p99 1,461 to 1,583 ms for an entry, against 247 / 507 ms uncapped; the quorum round itself is
+the same or faster (151 against 202 ms p50). The leader is not busy: its CPU is about 9% of one core in every 10 s bin
+of m20s500 and no turn reached 100 ms (`tests/fanout/raw/tools/m20.txt`), so this is not m19's heavy-turn shape.
+Why [inference from the code and the plan]: journey 9 inlines agent packs of 10 to 70 KB (`INLINE_MAX_HOT` 64 KiB), so
+a 60 KB entry carries about one push past its first command. One entry is in flight at a time, at about 5 entries a
+second (round about 150 ms plus deps about 55 ms), and the 4.17 pushes a second alone fill most of them, so commands
+queue behind entries. The cap's capacity term (`Admission::capacity`, `soft / cmd_bytes` commands per entry) shrinks
+with it, so admission does not shed the excess either. m0-carried-7 measured on B0-02, which pushes no inline packs.
+
+**B0-34's seed and the edge's push memory (design contradiction).** Every 60 MB push of the torvalds/linux seed ended
+`exceededMemory` or "the Worker's code had hung" on `graft-m2b-edge` (6 of 6 tries, 08:31 to 08:35Z). The edge reads
+a receive-pack body into one `Vec` (`read_capped`), so a push of tens of MB passes the 128 MB isolate. DESIGN,
+Milestone 0, says of a 2 GB push: "Enterprise completes with Worker memory under 100 MB", and its fail line is "needs
+buffering". The edge as built buffers. The seed now uses 30 MB steps (`tests/fanout/b034plan.py`), and linux's 53 MB
+root commit is carried by its tree's parts first.
+
+Cost after round 9's smokes and A/B: $54.80 of $150 (containers $14.78); every shard torn down with `--pools`.
