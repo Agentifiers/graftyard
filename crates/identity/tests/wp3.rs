@@ -636,3 +636,65 @@ fn add_key_lists_the_key_text_only_for_its_own_committed_fingerprint() {
     assert_eq!(codec::from_bytes::<IdentityFold>(&codec::to_bytes(&f)).unwrap(), f);
     assert_eq!(graftyard_raft::Command::format(&add(&line)), graftyard_identity::IDENTITY_FORMAT_V2);
 }
+
+/// M4-WP2's `UserRecord` (format 0x14.3): only the account sets its own records, a repeat emits no record, a record
+/// keeps its entry's time and index, `CountsCursor` is the operator's and moves only forward, and a fold with no
+/// record keeps 0x14.2's bytes.
+#[test]
+fn user_records_are_the_accounts_own_kept_with_their_entry_and_the_counts_cursor_only_moves_forward() {
+    use graftyard_identity::{IdentityOp, ThreadId, UserRecord};
+    use graftyard_raft::codec;
+    use graftyard_types::{Index, RepoId};
+    let mut w = World::default();
+    let (u, other) = (acct(0, 2, 1), acct(0, 2, 2));
+    for a in [u, other] {
+        account(&mut w, a);
+    }
+    created(&mut w, u, "alice");
+    let before = codec::to_bytes(&w.identity(u).fresh_leader());
+
+    let repo = RepoId(DbId(7));
+    let set = |by: AccountId, r: UserRecord| IdentityCmd { cred: as_user(by), op: IdentityOp::SetRecord(r) };
+    let star = UserRecord::Star { repo, on: true };
+    assert_eq!(refused(w.identity_cmd(u, set(other, star))), IdentityErr::Forbidden, "another account's star");
+    let ops = IdentityCmd { cred: CredentialShard::NONE, op: IdentityOp::SetRecord(star) };
+    assert_eq!(refused(w.identity_cmd(u, ops)), IdentityErr::Forbidden, "the operator stars for nobody");
+    let at = w.identity_cmd(u, set(u, star)).unwrap().index;
+    let f: IdentityFold = w.identity(u).fresh_leader();
+    let first = f.user().stars[&repo];
+    assert_eq!(first.index, at, "the star keeps its entry's index, the watcher rows' src");
+    w.identity_cmd(u, set(u, star)).unwrap();
+    assert_eq!(w.identity(u).fresh_leader().user().stars[&repo], first, "a repeat emits no record: its src stays");
+    let thread = ThreadId { repo, number: 3 };
+    w.identity_cmd(u, set(u, UserRecord::Thread { thread, read: true, done: false })).unwrap();
+    w.identity_cmd(u, set(u, UserRecord::Thread { thread, read: true, done: true })).unwrap();
+    let marked = w.identity(u).fresh_leader().user().threads[&thread].set;
+    w.identity_cmd(u, set(u, UserRecord::Thread { thread, read: true, done: true })).unwrap();
+    assert_eq!(w.identity(u).fresh_leader().user().threads[&thread].set, marked, "a repeated mark keeps its time");
+    w.identity_cmd(u, set(u, UserRecord::Watch { repo, subscribed: true, ignored: false })).unwrap();
+    w.identity_cmd(u, set(u, UserRecord::Star { repo, on: false })).unwrap();
+    let f: IdentityFold = w.identity(u).fresh_leader();
+    let t = f.user().threads[&thread];
+    assert_eq!((t.read, t.done), (true, true), "the last thread state wins");
+    assert!(f.user().stars.is_empty() && f.user().watches[&repo].subscribed);
+    assert_eq!(codec::from_bytes::<IdentityFold>(&codec::to_bytes(&f)).unwrap(), f, "the fold round-trips");
+    let mut cleared = f.clone();
+    cleared.more.more = Default::default();
+    assert_eq!(codec::to_bytes(&cleared), before, "without its records the fold is 0x14.2's bytes");
+
+    let cursor = |through: u64| IdentityCmd {
+        cred: CredentialShard::NONE,
+        op: IdentityOp::CountsCursor { through: Index(through) },
+    };
+    assert_eq!(
+        refused(
+            w.identity_cmd(u, IdentityCmd { cred: as_user(u), op: IdentityOp::CountsCursor { through: Index(9) } })
+        ),
+        IdentityErr::Forbidden
+    );
+    w.identity_cmd(u, cursor(9)).unwrap();
+    w.identity_cmd(u, cursor(4)).unwrap();
+    assert_eq!(w.identity(u).fresh_leader().user().counts_cursor, Index(9), "never back");
+    assert_eq!(graftyard_raft::Command::format(&cursor(1)), graftyard_identity::IDENTITY_FORMAT_V3);
+    assert_eq!(graftyard_raft::Command::format(&set(u, star)), graftyard_identity::IDENTITY_FORMAT_V3);
+}
