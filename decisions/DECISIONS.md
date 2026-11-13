@@ -2760,6 +2760,6 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Beat.** Caching the `Authz` fold for writes, which SHARED's write path rules out (the fold names who may merge), and a learner near the edge, which still waits a read-index round.
 
-**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`; the hosted `mergeSplit` `resolve` and `authz_ahead` stages.
+**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`. On the 600 s B0-29 row at 500 agents on `graft-m3f`, `resolve` went from p50 530 / p99 1,033 ms to 118 / 306 ms and `authz_ahead` from p50 463 to 50 ms, and `merge:only` p99 from 2,517 to 1,571 ms, with no leader change [measured, `tests/am1/results/merge-p99.md`].
 
 **Flip.** An `Authz` leader whose `/read` share or `READS_MAX` sheds show merge reads, or merges at a rate near the API reads that moved off it.
