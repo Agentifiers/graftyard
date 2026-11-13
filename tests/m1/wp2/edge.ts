@@ -404,8 +404,9 @@ export default {
         case "/stats": {
           await e.learnVoters();
           // B0-02's A/Bs (`tests/m0/results/carried-5.md`, `carried-6.md`): `body` "array" or "stream" sets how each member
-          // sends calls; `arrival` "mem" or "sql" where BF-14's arrival rows go.
-          const q = [body.reset ? "reset=1" : "", body.body ? `body=${body.body}` : "", body.arrival ? `arrival=${body.arrival}` : ""].filter(Boolean).join("&");
+          // sends calls; `arrival` "mem" or "sql" where BF-14's arrival rows go; `entry` "max" or "soft" where the leader
+          // stops filling an entry (`carried-7.md`).
+          const q = [body.reset ? "reset=1" : "", body.body ? `body=${body.body}` : "", body.arrival ? `arrival=${body.arrival}` : "", body.entry ? `entry=${body.entry}` : ""].filter(Boolean).join("&");
           return json(await e.all(`/stats${q ? `?${q}` : ""}`, 20_000));
         }
         case "/bf12": return json({ colo, kills: await bf12(e, body.key, body.from ?? 0, body.plan ?? [{ mode: "after_quorum" }]) });

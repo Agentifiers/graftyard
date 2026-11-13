@@ -187,15 +187,41 @@ fn describe(g: &Genesis) -> String {
     s
 }
 
-/// Offline: no network, no install.toml. Refuses a key that is not the genesis's own customer key, then checks the
-/// signed result against the anchor the genesis names.
-pub fn sign(input: &Path, out: &Path, key: &Path) -> Res<()> {
+/// Offline: no network, no install.toml. A genesis: refuses a key that is not the genesis's own customer key, then
+/// checks the signed result against the anchor the genesis names. Any other entry: adds this key's signature, after
+/// rebinding it to `prev` (the digest a 409 named), which drops every earlier signature, since each covered the old
+/// bound.
+pub fn sign(input: &Path, out: &Path, key: &Path, prev: Option<&str>) -> Res<()> {
     let bytes = fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
     let mut entry = SignedEntry::decode(&bytes).map_err(|e| format!("{}: {e}", input.display()))?;
-    let ReleaseEntry::Genesis(g) = &entry.body else {
-        return Err(format!("{}: a {} entry, not a genesis", input.display(), entry.body.kind()));
-    };
     let seed = read_private_key(key)?;
+    let ReleaseEntry::Genesis(g) = &entry.body else {
+        if let Some(p) = prev {
+            let d =
+                graftyard_types::Digest::parse_hex(p).ok_or_else(|| format!("--prev {p:?} is not 64 hex digits"))?;
+            if entry.bound.parent.is_some() {
+                return Err("a pre-signed undo binds its intent, not prev".into());
+            }
+            entry.bound.prev = Some(d);
+            entry.sigs.clear();
+        }
+        let k = entry.sign(&seed);
+        let signed = entry.encode();
+        fs::write(out, &signed).map_err(|e| format!("{}: {e}", out.display()))?;
+        println!(
+            "signed {} with {}: wrote {} ({} bytes), prev {}, digest {}",
+            entry.body.kind(),
+            k.hex(),
+            out.display(),
+            signed.len(),
+            entry.bound.prev.map(|d| d.hex()).unwrap_or_else(|| "none".into()),
+            entry.digest().hex()
+        );
+        return Ok(());
+    };
+    if prev.is_some() {
+        return Err("a genesis binds no prev".into());
+    }
     if public_key(&seed) != g.keys.customer {
         return Err(format!(
             "{} is key {}, but the genesis names customer key {}",
@@ -420,10 +446,10 @@ mod tests {
     fn edge(anchor: graftyard_release::Anchor, n: usize) -> (String, mpsc::Receiver<Seen>) {
         let mut fold = graftyard_release::ReleaseFold::default();
         let mut index = 1; // the bootstrap Config entry
-        serve(n, move |seen| match fold.decide(&anchor, &seen.body) {
+        serve(n, move |seen| match fold.decide(&anchor, graftyard_types::Timestamp(0), &seen.body) {
             _ if seen.line.starts_with(&format!("POST {TOKENS_PATH}")) => (200, "{}".into()),
             Ok(ev) => {
-                fold.apply(&ev);
+                fold.apply(&ev, graftyard_types::Timestamp(0));
                 index += 2; // the leader's term Noop, then the entry
                 (201, format!(r#"{{"index": {index}, "digest": "{}"}}"#, ev.digest().hex()))
             }
@@ -504,7 +530,7 @@ mod tests {
         let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
         let key = key_file(&dir, "customer.key", &customer, false);
         let signed = dir.join("genesis.signed");
-        sign(&unsigned, &signed, &key).unwrap();
+        sign(&unsigned, &signed, &key, None).unwrap();
         // The unsigned file is refused by the edge's own rule before anything is sent.
         assert!(install(&config, &unsigned, Some("http://127.0.0.1:9")).is_err_and(|e| e.contains("WrongKey")));
 
@@ -525,7 +551,7 @@ mod tests {
         t2.save(&config).unwrap();
         let unsigned2 = make_genesis(&dir, &config, "genesis2.unsigned");
         let signed2 = dir.join("genesis2.signed");
-        sign(&unsigned2, &signed2, &key).unwrap();
+        sign(&unsigned2, &signed2, &key, None).unwrap();
         let r = install(&config, &signed2, Some(&url));
         assert!(r.as_ref().is_err_and(|e| e.contains("already holds another genesis")), "{r:?}");
         fs::remove_dir_all(&dir).unwrap();
@@ -538,7 +564,7 @@ mod tests {
         let config = install_toml(&dir, &customer);
         let unsigned = make_genesis(&dir, &config, "genesis.unsigned");
         let other = key_file(&dir, "other.key", &[8; 32], false);
-        let r = sign(&unsigned, &dir.join("x"), &other);
+        let r = sign(&unsigned, &dir.join("x"), &other, None);
         assert!(r.is_err_and(|e| e.contains("but the genesis names customer key")));
 
         // A genesis for another install, signed by that install's key, sent straight to this install's edge.
@@ -546,7 +572,7 @@ mod tests {
         let other_config = install_toml(&other_dir, &[8; 32]);
         let foreign = make_genesis(&other_dir, &other_config, "g.unsigned");
         let foreign_signed = other_dir.join("g.signed");
-        sign(&foreign, &foreign_signed, &other).unwrap();
+        sign(&foreign, &foreign_signed, &other, None).unwrap();
         let anchor = InstallToml::load(&config).unwrap().anchor().unwrap();
         let (url, _seen) = edge(anchor, 1);
         assert_eq!(

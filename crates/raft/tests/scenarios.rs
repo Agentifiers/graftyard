@@ -368,6 +368,64 @@ fn flapping_member_is_quarantined() {
     assert_eq!(c.m(B).role(), Role::Leader);
 }
 
+/// LM-1 round 6's "leaderless" groups: every member of a group reset twice inside RESET_QUARANTINE, and a lost
+/// campaign moved the term past the old leader's `led_term`, so no member resumes. Campaigns are request-driven, so
+/// the group stays leaderless while idle; the first requests' `suspect` reports elect a leader once the restored
+/// promises lapse (ELECTION_AFTER after the last append), though every candidate is flapping.
+#[test]
+fn a_group_whose_every_member_flapped_elects_on_the_first_requests() {
+    let mut c = Cluster::new(72);
+    c.elect(A);
+    c.sync(A);
+    for _ in 0..2 {
+        for s in SITES {
+            c.crash(s);
+        }
+        c.advance(100);
+        for s in SITES {
+            c.restart(s);
+        }
+        c.deliver_all();
+    }
+    c.advance(graftyard_raft::ELECTION_AFTER.as_millis() as u64 + 1);
+    assert_eq!(c.on(B, |m, now| m.campaign(now)), Verdict::Started);
+    // B wins its pre-vote and its votes are granted, then it resets before it hears them: the term moved on.
+    c.deliver(|e| !matches!(&e.msg, Message::VoteRes(r) if !r.pre));
+    c.crash(B);
+    c.inbox.clear();
+    c.advance(100);
+    c.restart(B);
+    assert!(SITES.iter().all(|s| c.m(*s).state().led_term.is_none() && c.m(*s).role() == Role::Follower));
+    let start = c.now.0;
+    for _ in 0..60 {
+        c.advance(500);
+        c.deliver_all();
+        assert!(SITES.iter().all(|s| c.m(*s).role() != Role::Leader), "a leader with no request");
+    }
+    // Requests' lookups: every voter answers NotLeader naming none, so each gets a `suspect` report, every 100 ms.
+    // Every member is flapping, so none denies a rival as `Contending` (F67); the losers' random backoff, not a
+    // lockstep 500 ms cadence that outlasts it and splits every vote, picks the winner.
+    let begun = c.now.0;
+    for _ in 0..200 {
+        let term = SITES.iter().map(|s| c.m(*s).term()).max().unwrap();
+        for s in SITES {
+            c.on(s, |m, now| m.suspect(now, graftyard_raft::Colo(7), A, term));
+        }
+        c.deliver_all();
+        if let Some(l) = SITES.iter().copied().find(|s| c.m(*s).role() == Role::Leader) {
+            assert!(c.now.0 - begun <= 1_000, "elected {} ms after the first report", c.now.0 - begun);
+            let t = admit(&mut c, l, 9, put("k", "v"));
+            c.deliver_all();
+            assert_eq!(c.m(l).outcome(t).unwrap().map(|a| a.out), Ok(true));
+            assert!(c.now.0 - start >= 30_000);
+            return;
+        }
+        c.advance(100);
+        c.deliver_all();
+    }
+    panic!("no leader 20 s after the first report");
+}
+
 /// A quarantined member campaigning does not contend: B, flapping, refuses no rival, so C wins at once with B's vote.
 /// Before F67's fix B denied C as `Contending` while every voter refused B, and with A down nothing led until the
 /// waiver after 2 x ELECTION_AFTER (`tests/m0/results/f67.md`, path 4).
@@ -1175,4 +1233,53 @@ fn a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry() {
     let late = resent.into_iter().find(|e| e.to == B).unwrap();
     c.on(B, |m, now| m.step(now, late.from, late.msg));
     assert_eq!(c.m(B).state().stalled_since, None, "a delayed append past the commit marks nothing");
+}
+
+/// B0-02's large entries (`tests/m0/results/carried-6.md`): a backlog that queues behind the entry in flight splits into
+/// entries within ENTRY_SOFT, each command in admission order and exactly once, and every one commits.
+#[test]
+fn a_backlog_splits_into_entries_within_entry_soft_in_order() {
+    use graftyard_raft::{ENTRY_SOFT, encode_entry};
+    let mut c = Cluster::new(41);
+    c.elect(A);
+    let hold = admit(&mut c, A, 1_000, put("hold", "x"));
+    let first = c.m(A).log().len() as u64 + 1;
+    // 300 commands of about 1 KB, as B0-02's puts: about 300 KB queued behind `hold`, about four soft-capped entries.
+    let value = "v".repeat(1_000);
+    let tickets: Vec<_> =
+        (0..300u32).map(|i| admit(&mut c, A, 2_000 + u128::from(i), append("k", &format!("{i:03}{value}")))).collect();
+    for _ in 0..40 {
+        c.deliver_all();
+        c.advance(10);
+    }
+    assert!(!c.ticket_results(hold).is_empty());
+    let entries: Vec<_> =
+        c.m(A).log().iter().filter(|e| e.index.0 >= first && !e.requests.is_empty()).cloned().collect();
+    assert!(entries.len() >= 4, "{} entries for 300 KB", entries.len());
+    let mut seen = Vec::new();
+    for e in &entries {
+        // The entry's commands fit ENTRY_SOFT with room for one more neither way: a cap that never binds or one that
+        // splits early both fail here.
+        let len = encode_entry(e).len();
+        assert!(len <= ENTRY_SOFT + 2_000, "entry {} is {len} bytes", e.index.0);
+        if let EntryBody::Events(evs) = &e.body {
+            for ev in evs {
+                if let common::kv::KvEvent::Push { s, .. } = ev {
+                    seen.push(s[..3].parse::<u32>().unwrap());
+                }
+            }
+        }
+    }
+    assert!(
+        entries[..entries.len() - 1].iter().all(|e| encode_entry(e).len() > ENTRY_SOFT - 2_000),
+        "an entry split early"
+    );
+    assert_eq!(seen, (0..300).collect::<Vec<_>>(), "every command once, in admission order");
+    for t in tickets {
+        assert!(c.ticket_results(t).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. })));
+    }
+    // Every follower holds the same entries.
+    for s in [B, C] {
+        assert_eq!(c.m(s).log().len(), c.m(A).log().len());
+    }
 }

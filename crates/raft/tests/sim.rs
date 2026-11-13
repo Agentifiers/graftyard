@@ -2,7 +2,8 @@
 //!
 //! `cargo test -p graftyard-raft` runs `SEEDS` seeds. `RAFT_SEEDS=n RAFT_STEPS=m cargo test -p graftyard-raft --release
 //! --test sim -- --ignored --nocapture` runs the long sweep, and `RAFT_HISTORY=path` also writes every seed's history
-//! for `tests/m0/porcupine` (the gray half to `path.gray`).
+//! for `tests/m0/porcupine` (the gray half to `path.gray`, the live half, at least `LIVE_SEEDS_MIN` seeds, to
+//! `path.live`).
 
 mod common;
 
@@ -68,6 +69,9 @@ struct Totals {
     records_committed: u64,
     compacted: u64,
     catchups: u64,
+    early_asks: u64,
+    deps_entries: u64,
+    rereads: u64,
     /// The liveness monitor's longest stretch (F67): ms, seed, and when it began.
     stuck: (u64, u64, u64),
 }
@@ -111,6 +115,9 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         records_committed: 0,
         compacted: 0,
         catchups: 0,
+        early_asks: 0,
+        deps_entries: 0,
+        rereads: 0,
         stuck: (0, 0, 0),
     };
     // The gray half of the long sweep writes next to the HARSH half's file, as `<path>.gray`.
@@ -175,6 +182,9 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.records_committed += s.records_committed;
         t.compacted += s.compacted;
         t.catchups += s.catchups;
+        t.early_asks += s.early_asks;
+        t.deps_entries += s.deps_entries;
+        t.rereads += s.rereads;
         // BF-14: a missed receipt is hedged only by `suspect`; no command reaches a second member.
         assert_eq!(s.forwarded, 0, "seed {seed}: a command was forwarded");
     }
@@ -186,7 +196,8 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
          partitions {} hedges {} messages {} dropped {} duplicated {} leaders {} | missed receipts {} suspect {} \
          forwarded {} call failures {} step-downs {} holds {} gray faults {} write failures {} | leader writes lost \
          after their AppendEntries left {} (a follower stored one the leader then lacked: {}) | id blocks recorded {} \
-         committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {}",
+         committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {} | entries \
+         decided on reads {} early asks {} re-reads {}",
         t.seeds,
         t.steps,
         t.ops,
@@ -218,7 +229,10 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.records,
         t.records_committed,
         t.compacted,
-        t.catchups
+        t.catchups,
+        t.deps_entries,
+        t.early_asks,
+        t.rereads
     );
     eprintln!(
         "longest stretch with a healthy quorum, requests waiting, and none completing (ms, seed, from): {:?}",
@@ -248,6 +262,8 @@ fn harsh_network_keeps_every_invariant() {
     assert!(t.records_committed > SEEDS, "only {} recorded entries committed", t.records_committed);
     // Members compact their in-memory log, and followers behind the window are caught up from storage.
     assert!(t.compacted > 0 && t.catchups > SEEDS, "compacted {} catch-ups {}", t.compacted, t.catchups);
+    // Dependency reads overlap the entry in flight, and a recorded entry moving the dependency forces a re-read.
+    assert!(t.early_asks > SEEDS && t.rereads > 0, "early asks {} re-reads {}", t.early_asks, t.rereads);
 }
 
 /// HARSH plus gray faults on one site at a time: calls failing 30%, storage confirms 30% at 1 s, or writes failing 30%.
@@ -287,6 +303,24 @@ fn a_half_hung_leader_cannot_hold_its_followers() {
     }
 }
 
+/// F67 rule 10: main left these two live seeds leaderless with requests waiting for 33.0 s and 37.4 s, past the
+/// 2,000 seeds the long sweep then ran: a drained or stepping-down leader handed leadership to a member it refused in
+/// pre-vote as `Suspected` (`a_leader_hands_off_to_no_member_it_suspects`).
+#[test]
+fn a_leader_hands_off_to_no_member_it_suspects_live() {
+    for seed in [12_048, 12_073] {
+        sweep_with(seed..seed + 1, 10_000, live_faults);
+    }
+}
+
+/// Seeds the long sweep's live half runs at least, from 10,000, whatever `RAFT_SEEDS` says: main passed the bound on
+/// 10,000 to 11,999 while 12,048 (33.0 s) and 12,073 (37.4 s) broke it, so a 2,000-seed window hid an F67 path
+/// (`tests/m0/results/f67.md`, "Rule 10 and the wider window").
+const LIVE_SEEDS_MIN: u64 = 4_000;
+
+/// The documented run: `RAFT_SEEDS=2000 RAFT_STEPS=10000 RAFT_HISTORY=path cargo test -p graftyard-raft --release
+/// --test sim long_sweep -- --ignored --nocapture`, then `tests/m0/porcupine -seg 2000` on `path`, `path.gray`, and
+/// `path.live`. HARSH and GRAY run `RAFT_SEEDS`; the live half runs at least LIVE_SEEDS_MIN.
 #[test]
 #[ignore = "long sweep: RAFT_SEEDS, RAFT_STEPS"]
 fn long_sweep() {
@@ -295,7 +329,7 @@ fn long_sweep() {
     sweep(10_000..10_000 + seeds, steps, Faults::HARSH);
     // The same seeds count again under gray faults, then under F67's live mixes, whose histories go to `path.live`.
     sweep(10_000..10_000 + seeds, steps, Faults::GRAY);
-    sweep_with(10_000..10_000 + seeds, steps, live_faults);
+    sweep_with(10_000..10_000 + seeds.max(LIVE_SEEDS_MIN), steps, live_faults);
 }
 
 fn row(client: usize, call: u64, ret: u64, op: HOp, out: Option<HOut>) -> Row {

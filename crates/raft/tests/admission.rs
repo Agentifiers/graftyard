@@ -98,6 +98,35 @@ fn b0_29_the_journey_9_mix_commits_under_600_ms_with_no_stale_and_merges_in_the_
     assert!(worst <= AGENT_INLINE_ENTRY, "{worst} agent inline bytes in one entry");
 }
 
+/// ENTRY_SOFT counts no Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: on journey 9's mix the capped leader commits no slower than one that fills
+/// entries to ENTRY_MAX. Counted against the cap, one 20 to 60 KB agent pack filled an entry and hosted B0-29's commit
+/// p99 at 500 agents went from 702 to 1,718 ms (LM-1, `tests/am1/results/lm1-memory.md`, round 9).
+#[test]
+fn entry_soft_does_not_slow_journey_9() {
+    let s = secs(60);
+    let run = |soft: usize| {
+        let mut l = Load::new(1, ENAM);
+        l.agent = |a| a.is_some_and(|a| a >= 1_000);
+        for m in &mut l.members {
+            m.set_entry_soft(soft);
+        }
+        let t0 = l.now + 100;
+        l.offer(journey9(t0, s, false, 29));
+        l.drain(s * 1000 + 30_000);
+        let mut all = acked_ms(&l.done, |_| true);
+        let per = l.entries.iter().filter(|e| e.1 > 0).map(|e| e.1).sum::<usize>() as f64
+            / l.entries.iter().filter(|e| e.1 > 0).count().max(1) as f64;
+        (pct(&mut all, 99.0), per, l.entries.iter().map(|e| e.2).max().unwrap_or(0))
+    };
+    let (capped, capped_per, capped_max) = run(graftyard_raft::ENTRY_SOFT);
+    let (max, max_per, _) = run(graftyard_raft::ENTRY_MAX);
+    println!(
+        "journey 9 {s} s: commit p99 {capped} ms at ENTRY_SOFT ({capped_per:.1} commands an entry, largest {capped_max} \
+         bytes), {max} ms at ENTRY_MAX ({max_per:.1})"
+    );
+    assert!(capped <= max + 20, "ENTRY_SOFT commit p99 {capped} ms against {max} ms uncapped");
+}
+
 #[test]
 fn b0_31_an_apac_leader_stages_1_mib_agent_pushes_and_refuses_them_at_once_while_placement_fails() {
     let s = secs(30);
@@ -365,6 +394,10 @@ fn b0_33_at_measured_capacity_every_agent_command_is_admitted() {
     assert!(m.agent_per_s >= 240.0, "{:.1}/s", m.agent_per_s);
     assert_eq!(m.refused, 0);
     assert!(m.human_p99 <= 1_000 && m.mq_p99 <= 1_000);
+    // Capacity is what entries of ENTRY_SOFT carry, not ENTRY_MAX: at most ENTRY_SOFT over the 200-byte command floor,
+    // every 50 ms round floor, a second.
+    let bound = graftyard_raft::ENTRY_SOFT as f32 / 200.0 * 1000.0 / 50.0;
+    assert!(cap <= bound, "capacity {cap:.0}/s above the ENTRY_SOFT bound {bound:.0}/s");
 }
 
 #[test]
@@ -373,8 +406,9 @@ fn a_bot_flood_cannot_take_the_agent_floor() {
     l.set_capacity(Some(300.0));
     let t0 = l.now + 100;
     let mut ops = Vec::new();
-    // Bot: 200 commands/s of 299,000 bytes, 60 MB/s, so five fill an entry to within a few KB of ENTRY_MAX; agents:
-    // 100 commands/s of 10 KB (a long key, not an inline pack), which fit only ahead of Bot.
+    // Bot: 200 commands/s of 299,000 bytes, 60 MB/s, each over ENTRY_SOFT, so one fills an entry alone; agents:
+    // 100 commands/s of 4 KB (a long key, not an inline pack), which fit only ahead of Bot. At 4 KB, ENTRY_SOFT holds
+    // more than the floor's share of a round, so what the test measures is Bot against the floor, not the byte cap.
     for (i, t) in (t0..t0 + 20_000).step_by(5).enumerate() {
         ops.push(op(t, AdmitClass::Bot, None, Kind::Side, format!("bot/{i}"), 299_000));
     }
@@ -384,7 +418,7 @@ fn a_bot_flood_cannot_take_the_agent_floor() {
             AdmitClass::Agent,
             Some(i as u64 % 50),
             Kind::Side,
-            format!("ag/{i}/{}", "k".repeat(10_000)),
+            format!("ag/{i}/{}", "k".repeat(4_000)),
             0,
         ));
     }

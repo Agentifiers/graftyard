@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func postBody(t *testing.T, url string, body []byte) (int, []byte) {
@@ -123,5 +124,40 @@ func TestDerivedGitCommandsAreCountedApart(t *testing.T) {
 	}
 	if d := spent([]string{derivedEnv}); d < 20_000 {
 		t.Fatalf("a derived hash of 72 MiB counted only %d µs", d)
+	}
+}
+
+// A derived command's CPU counts while it runs, including a child it has not reaped yet: `git repack` spends its
+// time in `pack-objects`, and with only the git process counted, /load read about 0.99 busy through every rehydrate's
+// final repack (tests/am1/results/hot-shards-2.md, A31). Here git's alias runs a shell whose own child burns the CPU.
+func TestARunningDerivedCommandsChildCountsBeforeItExits(t *testing.T) {
+	dir := t.TempDir()
+	burn := "alias.burn=!sh -c 'sh -c \"i=0; while [ \\$i -lt 1500000 ]; do i=\\$((i+1)); done\"'"
+	done := make(chan error, 1)
+	before := sampleDerived()
+	t0 := time.Now()
+	go func() {
+		_, err := git(dir, []string{derivedEnv}, nil, "-c", burn, "burn")
+		done <- err
+	}()
+	time.Sleep(1500 * time.Millisecond)
+	mid := sampleDerived() - before
+	select {
+	case err := <-done:
+		t.Fatalf("the burn ended within 1.5 s (%v), so the test shows nothing; make it longer", err)
+	default:
+	}
+	if mid < 500_000 {
+		t.Fatalf("1.5 s into a derived command whose grandchild burns a CPU, %d µs counted, want at least 500,000", mid)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	// At its exit the rusage is added once: one single-threaded burn's CPU is at most its wall time, where counting
+	// the running child and then the reaped one again would read about twice that.
+	wall := time.Since(t0).Microseconds()
+	total := sampleDerived() - before
+	if total < mid || total > wall+wall/10+50_000 {
+		t.Fatalf("after exit %d µs counted over %d µs of wall, %d µs while running", total, wall, mid)
 	}
 }

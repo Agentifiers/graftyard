@@ -1,0 +1,19 @@
+12:08:24 probe -> {"index":54,"prev":"b40c10ed84bd54ea38186b57e872039e234971544c5ea2aa81c6a340f2a2e7f8","status":409}
+12:08:24 start: prev b40c10ed84bd54ea38186b57e872039e234971544c5ea2aa81c6a340f2a2e7f8
+12:08:25 keys-gen1 -> {"digest":"b39ff17681ed844b7c4d0c025e19b1f4ce538b5e9301031732c3d2fa7419a19d","index":55,"status":201}
+12:08:25 release af45659ebf23439c2e3880cac951dd1585d45e808142ee5c2c3c5b2500134977
+12:08:26 bf45-forged-upload -> {"message":"bad release record: the record's signature does not verify under Keys.release","refusal":"BadRecord","status":422}
+12:08:26 bf45-replace-undrained -> {"message":"site 1 is neither SiteLost nor drained ZERO_ACKS","refusal":"NotLost","status":422}
+12:08:27 bf45-pointer-forward -> {"message":"bound wrongly: a pre-signed undo binds its parent intent, not prev","refusal":"BadBound","status":422}
+12:08:27 bf45-pointer-undo -> {"message":"intent IntentId(Ulid(1)) is not the current intent","refusal":"NotCurrent","status":422}
+12:08:27 bf45-upload -> {"digest":"4d2227b2f8af82f1bb25946169c100c8c0da681f02daec5bb53d0c0426071ae8","index":60,"status":201}
+12:08:28 bf40-no-upload -> {"message":"release abababababababababababababababababababababababababababababababab has no ReleaseUploaded","refusal":"NoUpload","status":422}
+12:08:28 bf40-first-intent -> {"digest":"34e04de307c1ecae4a6cd7bfe023c08276f803ecb0a59565ebacafa71134eae6","index":62,"status":201}
+12:08:29 bf40-second-intent -> {"message":"intent IntentId(Ulid(2169487660844997275227093786557791360)) is current; only a ReplaceMember commits over it","refusal":"IntentCurrent","status":422}
+12:08:29 bf42-step -> {"digest":"9298816e6f4a279a8558b9b69e35e43abe6a8457d56d626bcc5666c133b8d3c6","index":64,"status":201}
+12:08:30 bf42-stale-halt -> {"index":65,"prev":"9298816e6f4a279a8558b9b69e35e43abe6a8457d56d626bcc5666c133b8d3c6","status":409}
+12:08:30 bf42: 409 names the current digest 9298816e6f4a279a8558b9b69e35e43abe6a8457d56d626bcc5666c133b8d3c6
+12:08:30 bf42-resigned-halt -> {"digest":"10b06d3fdf50357911baf25573a58fc4905d0b3ba5249b78d3d31c3631a9d138","index":66,"status":201}
+12:08:31 cleanup-abort -> {"digest":"6c89f5a543311486b16dcfeb8e5e7c667221242e8a1aa234df13cb64032e4d16","index":67,"status":201}
+12:08:31 cleanup-done -> {"digest":"8b2f42786806766dd255188a3d9a9a8553ad4bfe1461209732946f750627f8e1","index":68,"status":201}
+12:08:31 end: prev 8b2f42786806766dd255188a3d9a9a8553ad4bfe1461209732946f750627f8e1

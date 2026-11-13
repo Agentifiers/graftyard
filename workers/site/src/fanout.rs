@@ -5,16 +5,22 @@
 //! - **Report.** A warm site's first shard of a network (`git#<site>#net:<repo>`, the one the edge has always called)
 //!   reads its k shards' `/load` once a minute, combines them (`graftyard_git::combine`: the most loaded one's CPU),
 //!   and posts the result to the network group's leader at `/fanout` ([`report_from_shard`]).
-//! - **Commit.** The leader folds each warm site's latest report into `LoadReports` and, when `fanout` steps k, records
-//!   `RepoEvent::Fanout { k }` (format 32.15) in an entry of its own. One k serves both warm sites. The reports and
-//!   the hysteresis live in the leader's isolate only, so a new leader starts from the committed k and at worst waits
-//!   one more `FANOUT_UP_FOR` to step.
-//! - **Use.** Every catch-up of the first shard reads k from the fold's `ranges`, and its `/validate` forwards a push
-//!   to the shard `push_validator` picks among the k, by rendezvous on the push id. A pool shard (`git#<site>#pool:<n>`)
-//!   catches up before it validates, like any shard, so it holds every commit the push could build on; if it cannot
-//!   answer, the first shard validates the push itself.
+//! - **Grant.** The leader folds each warm site's latest report into `LoadReports`. While k is above 1 or `fanout`
+//!   wants it above 1, it asks both warm sites' pool ledgers (`POST /pool/grant` on `git#<site>#pool:1`, a
+//!   `graftyard_git::PoolLedger` in that object's SQLite) for the pool shards it wants, at once, and records
+//!   `RepoEvent::Fanout { k }` (format 32.15) in an entry of its own when 1 plus the fewer either granted differs from
+//!   the committed k. A ledger that does not answer keeps k as committed. One k serves both warm sites. The reports
+//!   and the hysteresis live in the leader's isolate only, so a new leader starts from the committed k and at worst
+//!   waits one more `FANOUT_UP_FOR` to step.
+//! - **Use.** Every catch-up of the first shard reads k from the fold's `ranges`. Once a minute while it validates,
+//!   the first shard renews the network's lease on its site's ledger (`POST /pool/renew`) and keeps the slots it
+//!   answers, and its `/validate` forwards a push to the shard `push_validator` picks among the first shard and those
+//!   slots, at most k - 1, by rendezvous on the push id. A pool shard (`git#<site>#pool:<n>`) catches up before it
+//!   validates, like any shard, so it holds every commit the push could build on; if it cannot answer, the first
+//!   shard validates the push itself.
 //!
-//! No API call or cron: the reports ride the shard's own alarm and the commit is the leader's own entry.
+//! No API call or cron: the reports ride the shard's own validates, the grants are calls between this install's
+//! objects, and the commit is the leader's own entry.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -38,12 +44,12 @@ thread_local! {
     static REPORTS: RefCell<HashMap<String, LoadReports>> = RefCell::new(HashMap::new());
 }
 
-/// The leader's `/fanout`: `{"site": n, "load": NetworkLoad}`. Answers the committed k, and `stepped` when this report
-/// moved it.
+/// The leader's `/fanout`: `{"site": n, "load": NetworkLoad}`. Answers the committed k, `stepped` when this report
+/// moved it, and each warm site's grant when it asked the ledgers.
 pub async fn report(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
     let site = SiteId(body["site"].as_u64().ok_or("site")? as u8);
     let load: NetworkLoad = serde_json::from_value(body["load"].clone()).map_err(|e| e.to_string())?;
-    let (key, warm, k) = {
+    let (key, g) = {
         let core = h.core.borrow();
         let c = core.as_ref().ok_or("member not joined")?;
         // A follower answers `notLeader`, as `/read` does, so the caller's lookup follows the leader. An error here
@@ -52,24 +58,122 @@ pub async fn report(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
         if c.m.role() != Role::Leader {
             return Ok(not_leader(c.m.not_leader()));
         }
-        let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
-        let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
-        let warm = git::warm_sites(NetworkId(repo.0), c.join.record.home, &sites);
-        (c.join.me.do_name.to_string(), warm, c.m.group_fold().fold.fanout_k())
+        (c.join.me.do_name.to_string(), Grant::of(c)?)
     };
     let now = Timestamp(now_ms());
-    let next = REPORTS.with(|r| r.borrow_mut().entry(key).or_default().report(warm, site, load, k, now));
-    let Some(next) = next else { return Ok(json!({ "k": k })) };
-    commit(h, next).await?;
-    Ok(json!({ "k": next, "stepped": true }))
+    let step = REPORTS.with(|r| r.borrow_mut().entry(key).or_default().report(g.warm, site, load, g.k, now));
+    let Some(want) = git::pool_ask(g.k, step) else { return Ok(json!({ "k": g.k })) };
+    g.ask(h, want).await
 }
 
-/// Test installs: commit `k` now, with no load behind it.
+/// Test installs: ask the ledgers for `k` now, with no load behind it, and commit what both granted. With
+/// `pool_down` (ms), first make both warm sites' ledgers answer 503 for that long.
 #[cfg(feature = "test-faults")]
-pub async fn force(h: &Rc<Host<Repo>>, k: u8) -> Result<Value> {
-    let k = k.clamp(1, git::FANOUT_MAX);
-    commit(h, k).await?;
-    Ok(json!({ "k": k }))
+pub async fn force(h: &Rc<Host<Repo>>, k: u8, pool_down: Option<u64>) -> Result<Value> {
+    let g = {
+        let core = h.core.borrow();
+        let c = core.as_ref().ok_or("member not joined")?;
+        if c.m.role() != Role::Leader {
+            return Ok(not_leader(c.m.not_leader()));
+        }
+        Grant::of(c)?
+    };
+    if let Some(ms) = pool_down {
+        let site = crate::SiteEnv::read(&h.env)?;
+        let sites = if g.warm[0] == g.warm[1] { vec![g.warm[0]] } else { g.warm.to_vec() };
+        for s in sites {
+            pool_call(&h.env, &site.sites, s, "/pool/down", &json!({ "ms": ms })).await;
+        }
+    }
+    g.ask(h, k.clamp(1, git::FANOUT_MAX) - 1).await
+}
+
+/// What the leader asks both warm sites' pool ledgers with: the network, its owner, its two warm sites, and the
+/// committed k.
+struct Grant {
+    net: NetworkId,
+    owner: u64,
+    warm: [SiteId; 2],
+    k: u8,
+}
+
+impl Grant {
+    fn of(c: &crate::host::Core<Repo>) -> Result<Grant> {
+        let ChainId::Repo(repo) = c.join.chain else { return Err("not a repository chain".into()) };
+        let net = NetworkId(repo.0);
+        let sites: Vec<SiteId> = c.join.record.sites.iter().copied().collect();
+        let fold = &c.m.group_fold().fold;
+        Ok(Grant {
+            net,
+            owner: fold.authz_owner().map_or(0, |o| o.0.0 as u64),
+            warm: git::warm_sites(net, c.join.record.home, &sites),
+            k: fold.fanout_k(),
+        })
+    }
+
+    /// Asks both warm sites' ledgers for `want` pool shards at once and commits the k `graftyard_git::granted_k`
+    /// answers: up to 1 plus the fewer either granted, down only as `fanout` asked, and unchanged when a ledger does
+    /// not answer.
+    async fn ask(&self, h: &Rc<Host<Repo>>, want: u8) -> Result<Value> {
+        let site = crate::SiteEnv::read(&h.env)?;
+        let body = json!({ "network": self.net.0.0, "owner": self.owner, "want": want });
+        let ask = |s| pool_call(&h.env, &site.sites, s, "/pool/grant", &body);
+        let (a, b) = if self.warm[0] == self.warm[1] {
+            let a = ask(self.warm[0]).await;
+            (a.clone(), a)
+        } else {
+            futures_util::future::join(ask(self.warm[0]), ask(self.warm[1])).await
+        };
+        let n = |g: &Option<Vec<u16>>| g.as_ref().map(|s| s.len() as u8);
+        let next = git::granted_k(self.k, want + 1, [n(&a), n(&b)]);
+        if next != self.k {
+            commit(h, next).await?;
+        }
+        // A ledger that granted more than the k both granted gives the rest back, so no site holds pool shards the
+        // network does not serve from (hosted smoke r3: one site granted 6 and the other 0, and the 6 stayed leased).
+        let trim = json!({ "network": self.net.0.0, "owner": self.owner, "want": next - 1 });
+        let (mut a, mut b) = (a, b);
+        for (s, g) in [(self.warm[0], &mut a), (self.warm[1], &mut b)] {
+            if g.as_ref().is_some_and(|x| x.len() > usize::from(next - 1)) {
+                *g = pool_call(&h.env, &site.sites, s, "/pool/grant", &trim).await.or(g.take());
+            }
+        }
+        Ok(json!({ "k": next, "stepped": next != self.k, "want": want,
+                   "grants": [[self.warm[0].0, a], [self.warm[1].0, b]] }))
+    }
+}
+
+/// The object that keeps a site's `PoolLedger`: the site's first pool shard. Each network's first shard here is
+/// index 0 of a one-shard `count` (`crate::shard`), so the pool is `1..1 + HOT_POOL` and the ledger is shard 1.
+pub fn ledger_name(site: SiteId) -> String {
+    format!("git#{}#pool:1", site.0)
+}
+
+/// How long a ledger call may take before the caller counts the ledger unreachable [guess].
+const LEDGER_CALL: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// One call to `site`'s pool ledger: the slots it answered for the network, or `None` when it did not answer 200
+/// within `LEDGER_CALL`.
+pub async fn pool_call(
+    env: &Env,
+    sites: &graftyard_types::SiteTable,
+    site: SiteId,
+    path: &str,
+    body: &Value,
+) -> Option<Vec<u16>> {
+    let stub = stub(env, sites, site, &ledger_name(site)).ok()?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(wasm_bindgen::JsValue::from_str(&body.to_string())));
+    let req = Request::new_with_init(&format!("https://shard{path}"), &init).ok()?;
+    let call = async move {
+        let mut r = stub.fetch_with_request(req).await.ok()?;
+        if r.status_code() != 200 {
+            return None;
+        }
+        r.json::<Value>().await.ok()
+    };
+    let v = crate::host::within(LEDGER_CALL, call).await.flatten()?;
+    serde_json::from_value(v["slots"].clone()).ok()
 }
 
 /// What a member that does not lead answers `/fanout`: the `notLeader` shape `graftyard_lookup` follows.
@@ -94,7 +198,8 @@ async fn commit(h: &Rc<Host<Repo>>, k: u8) -> Result<()> {
 }
 
 /// The shard side: this site's combined `NetworkLoad` of `net`'s k shards, posted to the group's leader. `loads` are
-/// the k shards' own reports, the first shard's first.
+/// the k shards' own reports, the first shard's first. Answers the committed k and, when the leader asked this site's
+/// ledger, the slots it granted.
 pub async fn report_from_shard(
     env: &Env,
     sites: &graftyard_types::SiteTable,
@@ -102,18 +207,23 @@ pub async fn report_from_shard(
     net: NetworkId,
     record: &PlacementRecord,
     loads: &[NetworkLoad],
-) -> std::result::Result<u8, String> {
+) -> std::result::Result<(u8, Option<Vec<u16>>), String> {
     let body = json!({ "site": me.0, "load": git::combine(loads) });
     let b = graftyard_lookup::Bindings { env, sites };
     let (v, _) =
         graftyard_lookup::call(&b, ChainId::Repo(graftyard_types::RepoId(net.0)), record, "/fanout", &body).await?;
-    Ok(v["k"].as_u64().unwrap_or(1) as u8)
+    let mine = v["grants"].as_array().and_then(|g| {
+        g.iter()
+            .find(|x| x[0].as_u64() == Some(u64::from(me.0)))
+            .and_then(|x| serde_json::from_value(x[1].clone()).ok())
+    });
+    Ok((v["k"].as_u64().unwrap_or(1) as u8, mine))
 }
 
-/// The object a shard of `net` answers as on this site, by `GitCacheShard::shard` (`graftyard_git::object_name`).
-pub fn stub(env: &Env, sites: &graftyard_types::SiteTable, me: SiteId, name: &str) -> Result<Stub> {
-    let region = sites.get(me).ok_or("this site is not in GRAFTYARD_SITES")?.region;
-    env.durable_object(&format!("SHARD_{}", me.0))?.get_by_name_with_location_hint(name, region.hint())
+/// The shard object `name` on `site`'s shard class (`graftyard_git::object_name`); every site binds every site's.
+pub fn stub(env: &Env, sites: &graftyard_types::SiteTable, site: SiteId, name: &str) -> Result<Stub> {
+    let region = sites.get(site).ok_or("the site is not in GRAFTYARD_SITES")?.region;
+    env.durable_object(&format!("SHARD_{}", site.0))?.get_by_name_with_location_hint(name, region.hint())
 }
 
 #[cfg(test)]
@@ -247,6 +357,47 @@ mod tests {
         assert_eq!(dump_wait(&a, at + LEARNER_DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS), None, "due at its own interval");
     }
 
+    /// A merge's rows build no dump, so neither waits for one: on a learner or a voter, right after a rebuild and at a
+    /// state the dump does not hold, `{"rows": {"merge": id}}` and `{"rows": {"mergeN": n}}` answer their rows at
+    /// once, and the next whole-tier read still finds its rebuild where it was (`merge-p99`).
+    #[test]
+    fn a_merge_rows_read_never_waits_for_a_dump_rebuild() {
+        use crate::family::{DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS, dump_wait};
+        use crate::host::{ReadBody, fold_answer};
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let first = entry(1, 2, Digest([0; 32]));
+        let mut a = RepoFold::new(RepoId(DbId(61)), AccountId(DbId(1)));
+        a.apply_entry(&first);
+        let dump = json!({ "rows": true, "ranges": true, "packed": true });
+        let at = 50_000;
+        assert!(matches!(fold_answer::<Repo>(&a, &dump, at, DUMP_EVERY_MS), ReadBody::Json(_)), "the first rebuild");
+        a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
+        for every in [DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS] {
+            for q in [
+                json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true }),
+                json!({ "rows": { "mergeN": 3 }, "ranges": true, "packed": true }),
+            ] {
+                let ReadBody::Json(b) = fold_answer::<Repo>(&a, &q, at + 10, every) else {
+                    panic!("{q} waited for a dump rebuild at every {every}")
+                };
+                assert_eq!(b.to_vec(), serde_json::to_vec(&Repo::read_json(&a, &q)).unwrap(), "{q} answers its rows");
+            }
+        }
+        // A whole-tier read is still spaced, and the merges took no rebuild slot: its rebuild is due where it was.
+        assert_eq!(fold_answer::<Repo>(&a, &dump, at + 10, DUMP_EVERY_MS), ReadBody::Shed(DUMP_EVERY_MS - 10));
+        assert_eq!(dump_wait(&a, at + DUMP_EVERY_MS, DUMP_EVERY_MS), None);
+    }
+
     /// A packed dump is built once per state of the tiers and every read at that state, from any input, shares the
     /// same bytes, which are exactly `read_json`'s answer; an applied entry rebuilds it, another repository never gets
     /// it, and a narrow read is not a dump. A learner spaces its rebuilds by LEARNER_DUMP_EVERY_MS, a voter by
@@ -369,7 +520,8 @@ mod tests {
         use crate::family::follower_query;
         let tier = json!({ "rows": true, "ranges": true, "packed": true });
         let merge = json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true });
-        for q in [&tier, &merge] {
+        let merge_n = json!({ "rows": { "mergeN": 3 }, "ranges": true, "packed": true });
+        for q in [&tier, &merge, &merge_n] {
             assert!(follower_query(q, true), "{q}");
             assert!(!follower_query(q, false), "a loading metadata tier sends {q} to the leader");
         }

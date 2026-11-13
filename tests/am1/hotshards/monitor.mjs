@@ -6,7 +6,7 @@
 // Runs until tests/am1/raw/hotshards/STOP exists. Needs tests/am1/lf13/env-m3c.sh sourced, HOT_CHAIN and HOT_ID.
 //   node tests/am1/hotshards/monitor.mjs
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { bedGet, log, member, sleep } from "../hosted/lib.mjs";
+import { bedGet, log, member, sleep, voterNames } from "../hosted/lib.mjs";
 
 const CHAIN = process.env.HOT_CHAIN;
 const ID = process.env.HOT_ID;
@@ -19,9 +19,10 @@ mkdirSync("tests/am1/raw/hotshards", { recursive: true });
 
 while (!existsSync(STOP)) {
   const at = Date.now();
+  const names = await voterNames(CHAIN).catch(() => ({}));
   const members = await Promise.all([0, 1, 2].map(async (s) => {
     try {
-      const v = (await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v ?? {};
+      const v = (await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000, names[s])).v ?? {};
       return { site: s, role: v.role, applied: v.applied, logBytes: v.logBytes, logFirst: v.logFirst, unpromoted: v.unpromotedBytes,
         promotedTo: v.promotedTo, archivedTo: v.archivedTo, archiveSteps: v.archiveSteps, db: v.dbBytes, alarms: v.alarms?.slice(0, 2) };
     } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }

@@ -229,6 +229,14 @@ pub struct Room {
     pub busy: Vec<i64>,
 }
 
+/// `ShardHost::validate`'s answer: the pack's index (none for a detail-only call) and each update's detail, or the
+/// container's slots stayed full past an agent's wait (HTTP 429), to be retried after `retry_after_s`.
+#[derive(Debug)]
+pub enum Validated {
+    Done(Option<PackIndex>, Vec<crate::agent::RefDetail>),
+    Busy { retry_after_s: u32 },
+}
+
 #[derive(Debug, Deserialize)]
 struct ValidateOut {
     #[serde(default)]
@@ -422,55 +430,59 @@ impl ShardHost<'_> {
         Ok(r)
     }
 
-    /// `GitCacheShard::validate`: `index-pack --strict --fix-thin` into a quarantine and connectivity of `tips`
-    /// against the refs the leader just gave, which the container holds once `set_refs` ran. The tips ride in the
-    /// body ahead of the pack, because a 10,000-ref push has too many for a URL.
-    pub async fn validate(&self, network: NetworkId, pack: Vec<u8>, tips: &[String]) -> Result<PackIndex, StoreError> {
-        self.validate_detail(network, pack, tips, "", false).await.map(|(ix, _)| ix.expect("a pack has an index"))
-    }
-
-    /// `validate` with `detail` and `derived`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
-    /// notes the agent layer needs (`crate::agent::RefDetail`). With an empty pack, only the detail, read from the
-    /// repository's own objects (a REST ref write), and no index.
-    pub async fn validate_detail(
+    /// `GitCacheShard::validate`: `index-pack --strict --fix-thin` into a quarantine and connectivity of the tips
+    /// against the refs the leader just gave, which the container holds once `set_refs` ran. `body` is the caller's
+    /// body as it came, streamed to the container and never held here: its first `tipsn` bytes are the tips, one per
+    /// line, then `detailn` bytes of `"<new> <old> <ref>"` lines (`crate::agent::RefDetail`), then the pack. Buffered,
+    /// a burst of 512 pushes of 256 KiB, or 1 MiB packs at 4 a second, put the shard's isolate over its 128 MB (LM-1
+    /// round 6). An agent's validate (`agent`) may wait for one of the container's slots at most 2 s, and is then
+    /// `Validated::Busy`; a human's waits. `derived` marks the shard's own archive promotion, whose CPU the container
+    /// counts as derived work, outside `NetworkLoad`. An error carries the container's status when it answered
+    /// one, `None` when the call to it failed (`crate::validate_status`); a 429 is never an error but `Busy`.
+    pub async fn validate(
         &self,
         network: NetworkId,
-        pack: Vec<u8>,
-        tips: &[String],
-        detail: &str,
+        tipsn: usize,
+        detailn: usize,
+        agent: bool,
         derived: bool,
-    ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), StoreError> {
-        let mut head: Vec<u8> = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
-        if !tips.is_empty() {
-            head.push(b'\n');
+        body: Option<wasm_bindgen::JsValue>,
+    ) -> Result<Validated, (Option<u16>, StoreError)> {
+        let none = |e: StoreError| (None, e);
+        let mut path = format!("/validate?net={}&tipsn={tipsn}", network.0.0);
+        if detailn > 0 {
+            path.push_str(&format!("&detailn={detailn}"));
         }
-        let mut path = format!("/validate?net={}&tipsn={}", network.0.0, head.len());
-        // The shard's own archive promotion: the container counts it as derived work, outside `NetworkLoad`.
+        if agent {
+            path.push_str("&class=agent");
+        }
         if derived {
             path.push_str("&derived=1");
         }
-        if !detail.is_empty() {
-            path.push_str(&format!("&detailn={}", detail.len()));
-            head.extend_from_slice(detail.as_bytes());
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(body);
+        let req =
+            Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err).map_err(none)?;
+        let mut r = self.port().map_err(none)?.fetch_request(req).await.map_err(worker_err).map_err(none)?;
+        if r.status_code() == 429 {
+            let retry = r.headers().get("retry-after").ok().flatten().and_then(|v| v.trim().parse().ok());
+            return Ok(Validated::Busy { retry_after_s: retry.unwrap_or(1).max(1) });
         }
-        let empty = pack.is_empty();
-        head.extend_from_slice(&pack);
-        let mut r = self.call(Method::Post, &path, Some(head), &[]).await?;
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
-            return Err(StoreError(format!("validate: {} {t}", r.status_code())));
+            return Err((Some(r.status_code()), StoreError(format!("validate: {} {t}", r.status_code()))));
         }
-        let v: ValidateOut = r.json().await.map_err(worker_err)?;
-        if empty {
-            return Ok((None, v.detail));
+        let v: ValidateOut = r.json().await.map_err(worker_err).map_err(none)?;
+        if v.checksum.is_empty() {
+            return Ok(Validated::Done(None, v.detail));
         }
         let ix = PackIndex {
-            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
+            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| none(StoreError("checksum".into())))?,
             bytes: v.bytes,
             objects: v.objects,
             trailer: v.trailer.into(),
         };
-        Ok((Some(ix), v.detail))
+        Ok(Validated::Done(Some(ix), v.detail))
     }
 
     pub async fn init(&self, network: NetworkId, fresh: bool) -> Result<(), StoreError> {
@@ -689,16 +701,11 @@ impl ShardHost<'_> {
     }
 
     /// Whether a rehydrate of `network` is under way or was cut off on this shard: its saved place is kept from its
-    /// start to its end (`crate::catchup::Rehydrating`). One storage read; the container is not asked.
-    /// A place saved on the disk the cursor is saved for is a run that finished but was cut off before it dropped the
-    /// place, so it does not count.
+    /// start until its last catch-up reaches the head, or until the catch-up that finishes a cut-off one does
+    /// (`crate::catchup`). One storage read; the container is not asked.
     pub async fn rehydrating(&self, network: NetworkId) -> bool {
         type Saved = (String, serde_json::Value);
-        let s = self.state.storage();
-        let Some((disk, _)) = s.get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten() else {
-            return false;
-        };
-        s.get::<Saved>(&Self::cursor_key(network)).await.ok().flatten().is_none_or(|(d, _)| d != disk)
+        self.state.storage().get::<Saved>(&Self::rehydrating_key(network)).await.ok().flatten().is_some()
     }
 
     fn rehydrating_key(network: NetworkId) -> String {
@@ -750,12 +757,51 @@ impl ShardIo for Io<'_, '_> {
         let h: Have = r.json().await.map_err(worker_err)?;
         Ok(h.have.iter().filter_map(|s| Digest::parse_hex(s)).collect())
     }
-    async fn ingest(&self, sum: Digest, body: &[u8]) -> Result<Ingested, StoreError> {
-        let b = JsBody(js_sys::Uint8Array::from(body).into());
-        self.host
-            .ingest_body(self.network, sum, b)
-            .await?
-            .ok_or_else(|| StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex())))
+    /// One `/ingest-batch` call: per pack a `<sha256> <bytes>` line and its bytes, written straight into one JS array,
+    /// so the isolate holds no second copy of the batch in its own memory.
+    async fn ingest(&self, packs: &[(Digest, &[u8])]) -> Result<Vec<Ingested>, StoreError> {
+        #[derive(Deserialize)]
+        struct Out {
+            results: Vec<String>,
+        }
+        let heads: Vec<String> = packs.iter().map(|(s, b)| format!("{} {}\n", s.hex(), b.len())).collect();
+        let total: usize = packs.iter().zip(&heads).map(|((_, b), h)| h.len() + b.len()).sum();
+        let body = js_sys::Uint8Array::new_with_length(total as u32);
+        let mut at = 0u32;
+        for ((_, b), h) in packs.iter().zip(&heads) {
+            for part in [h.as_bytes(), b] {
+                body.subarray(at, at + part.len() as u32).copy_from(part);
+                at += part.len() as u32;
+            }
+        }
+        let path = format!("/ingest-batch?net={}", self.network.0.0);
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(body.into()));
+        let req = Request::new_with_init(&format!("http://container{path}"), &init).map_err(worker_err)?;
+        let mut r = self.host.port()?.fetch_request(req).await.map_err(worker_err)?;
+        // A container on the previous release's image (`git_prev`) has no `/ingest-batch`: one `/ingest` a pack.
+        if r.status_code() == 404 {
+            let mut out = Vec::with_capacity(packs.len());
+            for (sum, b) in packs {
+                let b = JsBody(js_sys::Uint8Array::from(*b).into());
+                out.push(self.host.ingest_body(self.network, *sum, b).await?.ok_or_else(|| {
+                    StoreError(format!("ingest {}: the bytes do not match their checksum", sum.hex()))
+                })?);
+            }
+            return Ok(out);
+        }
+        if r.status_code() != 200 {
+            return Err(StoreError(format!("{path}: {} {}", r.status_code(), r.text().await.unwrap_or_default())));
+        }
+        let o: Out = r.json().await.map_err(worker_err)?;
+        o.results
+            .iter()
+            .map(|a| match a.as_str() {
+                "done" => Ok(Ingested::Done),
+                "later" => Ok(Ingested::Later),
+                a => Err(StoreError(format!("{path}: answered {a:?}"))),
+            })
+            .collect()
     }
     /// From each bucket in turn, its object's body streamed into the container's `/ingest`, which checks the
     /// checksum as it writes: a copy that does not match is refused, and the next bucket's is tried.

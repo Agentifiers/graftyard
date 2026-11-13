@@ -8,13 +8,14 @@
 //!
 //! Sign-in reads two folds besides this chain's: the install's own `Authz` chain, whose `InstanceAuth` names the one
 //! method this install takes, and the account's `Account` row, so a suspended account cannot start a session.
-//! `UserRecord` (stars, watches, follows) is DESIGN's `Record` variant and is later work.
+//! M4-WP2 adds DESIGN's `Record(UserRecord)` (stars, watches, follows, thread subscriptions, and thread state) and the
+//! `Counts` consumer's cursor, format 0x14.3, in a trailing part of the fold (`UserRows`).
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use graftyard_raft::{Command, Enc, Fold, Format, Record, Scratch, TierSet};
-use graftyard_types::{AccountId, ChainId, CredentialShard, Digest, Timestamp, TokenShard};
+use graftyard_types::{AccountId, ChainId, CredentialShard, Digest, Index, RepoId, Timestamp, TokenShard};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 
@@ -33,6 +34,9 @@ pub const IDENTITY_FORMAT: Format = Format { family: 0x14, version: 1 };
 /// `AddKey`: an SSH key listed with its public key text, which `GET /user/keys` renders (BF-35). A release that reads
 /// only 0x14.1 cannot apply `KeyText`, so the edge sends it only once `FormatsEnable` enabled 0x14.2.
 pub const IDENTITY_FORMAT_V2: Format = Format { family: 0x14, version: 2 };
+/// M4-WP2: `SetRecord` with its `Record(UserRecord)` and the `Counts` consumer's `CountsCursor`. A release that reads
+/// only 0x14.2 cannot apply them, so the edge sends them only once `FormatsEnable` enabled 0x14.3.
+pub const IDENTITY_FORMAT_V3: Format = Format { family: 0x14, version: 3 };
 
 /// The audit log keeps this many entries in the fold; the archive keeps them all [guess].
 pub const AUDIT_KEEP: usize = 1_000;
@@ -120,6 +124,144 @@ pub enum IdentityEvent {
         fingerprint: Fingerprint,
         key: Box<str>,
     },
+    /// Format 0x14.3: DESIGN's `Record(UserRecord)`, a star, watch, follow, thread subscription, or thread state the
+    /// account set. The fold keeps each one with its entry's time and index (`UserRows`).
+    Record(UserRecord),
+    /// Format 0x14.3: the `Counts` consumer's cursor on this chain, moved only forward, after the watcher rows its
+    /// batch owed committed on their repositories [inference: SHARED puts a cursor on the chain a consumer reads].
+    CountsCursor(Index),
+}
+
+/// A notification thread: one issue or pull request of one repository, as GitHub's thread is [inference: DESIGN names
+/// `ThreadId` without fields]. Its REST id is `thread_id`'s decimal form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct ThreadId {
+    pub repo: RepoId,
+    pub number: u32,
+}
+
+impl ThreadId {
+    /// The REST `id` (a string of digits): the repository id times 2^24 plus the number, so a thread's id is stable and
+    /// distinct across repositories while numbers stay below 2^24 [inference].
+    pub fn rest_id(self) -> u64 {
+        ((self.repo.0.0 as u64) << 24) | u64::from(self.number & 0x00ff_ffff)
+    }
+
+    pub fn from_rest_id(id: u64) -> ThreadId {
+        ThreadId { repo: RepoId(graftyard_types::DbId((id >> 24) as i64)), number: (id & 0x00ff_ffff) as u32 }
+    }
+}
+
+/// DESIGN's `UserRecord`. These gate nothing; the `Counts` consumer copies stars, watches, and thread subscriptions
+/// into each repository's watcher index, and `Inbox` reads `Thread` for read and done state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserRecord {
+    Star { repo: RepoId, on: bool },
+    Watch { repo: RepoId, subscribed: bool, ignored: bool },
+    Follow { user: AccountId, on: bool },
+    Subscription { thread: ThreadId, subscribed: bool },
+    Thread { thread: ThreadId, read: bool, done: bool },
+}
+
+impl UserRecord {
+    /// The repository whose watcher index the record changes, for the `Counts` consumer.
+    pub fn repo(&self) -> Option<RepoId> {
+        match self {
+            UserRecord::Star { repo, .. } | UserRecord::Watch { repo, .. } => Some(*repo),
+            UserRecord::Subscription { thread, .. } => Some(thread.repo),
+            UserRecord::Follow { .. } | UserRecord::Thread { .. } => None,
+        }
+    }
+}
+
+/// When a record was set: the entry's time and index on the account's chain. `index` is the watcher rows' `src`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordAt {
+    pub at: Timestamp,
+    pub index: Index,
+}
+
+impl Default for RecordAt {
+    fn default() -> RecordAt {
+        RecordAt { at: Timestamp(0), index: Index(0) }
+    }
+}
+
+/// A repository the account watches or ignores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchRow {
+    pub subscribed: bool,
+    pub ignored: bool,
+    pub set: RecordAt,
+}
+
+/// A thread's state as the account set it: `read` and `done` as of `set.at`, which is GHES's `last_read_at`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRow {
+    pub read: bool,
+    pub done: bool,
+    pub set: RecordAt,
+}
+
+/// Format 0x14.3's rows: the account's `UserRecord`s, last write wins, and the `Counts` cursor.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserRows {
+    pub stars: BTreeMap<RepoId, RecordAt>,
+    pub watches: BTreeMap<RepoId, WatchRow>,
+    pub follows: BTreeMap<AccountId, RecordAt>,
+    pub subscriptions: BTreeMap<ThreadId, (bool, RecordAt)>,
+    pub threads: BTreeMap<ThreadId, ThreadRow>,
+    pub counts_cursor: Index,
+}
+
+impl UserRows {
+    /// Whether `r` would change nothing: a repeat is a no-op, so `decide` commits no entry for it.
+    fn holds(&self, r: &UserRecord) -> bool {
+        match *r {
+            UserRecord::Star { repo, on } => self.stars.contains_key(&repo) == on,
+            UserRecord::Watch { repo, subscribed, ignored } => match self.watches.get(&repo) {
+                Some(w) => (w.subscribed, w.ignored) == (subscribed, ignored),
+                None => !subscribed && !ignored,
+            },
+            UserRecord::Follow { user, on } => self.follows.contains_key(&user) == on,
+            UserRecord::Subscription { thread, subscribed } => {
+                self.subscriptions.get(&thread).is_some_and(|(s, _)| *s == subscribed)
+            }
+            UserRecord::Thread { thread, read, done } => {
+                self.threads.get(&thread).is_some_and(|t| (t.read, t.done) == (read, done))
+            }
+        }
+    }
+
+    fn write(&mut self, r: &UserRecord, set: RecordAt) {
+        match *r {
+            UserRecord::Star { repo, on: true } => {
+                self.stars.entry(repo).or_insert(set);
+            }
+            UserRecord::Star { repo, on: false } => {
+                self.stars.remove(&repo);
+            }
+            UserRecord::Watch { repo, subscribed, ignored } => {
+                if subscribed || ignored {
+                    self.watches.insert(repo, WatchRow { subscribed, ignored, set });
+                } else {
+                    self.watches.remove(&repo);
+                }
+            }
+            UserRecord::Follow { user, on: true } => {
+                self.follows.entry(user).or_insert(set);
+            }
+            UserRecord::Follow { user, on: false } => {
+                self.follows.remove(&user);
+            }
+            UserRecord::Subscription { thread, subscribed } => {
+                self.subscriptions.insert(thread, (subscribed, set));
+            }
+            UserRecord::Thread { thread, read, done } => {
+                self.threads.insert(thread, ThreadRow { read, done, set });
+            }
+        }
+    }
 }
 
 impl Record for IdentityEvent {
@@ -161,6 +303,14 @@ impl Record for IdentityEvent {
                 e.0.extend_from_slice(&fingerprint.0);
                 e.str(key);
             }
+            IdentityEvent::Record(r) => {
+                e.u8(4);
+                user_record(&mut e, r);
+            }
+            IdentityEvent::CountsCursor(i) => {
+                e.u8(7);
+                e.u64(i.0);
+            }
             IdentityEvent::Session(s) => {
                 e.u8(5);
                 match s {
@@ -175,6 +325,43 @@ impl Record for IdentityEvent {
                     }
                 }
             }
+        }
+    }
+}
+
+fn thread(e: &mut Enc, t: &ThreadId) {
+    enc::repo(e, t.repo);
+    e.u32(t.number);
+}
+
+fn user_record(e: &mut Enc, r: &UserRecord) {
+    match r {
+        UserRecord::Star { repo, on } => {
+            e.u8(0);
+            enc::repo(e, *repo);
+            e.u8(u8::from(*on));
+        }
+        UserRecord::Watch { repo, subscribed, ignored } => {
+            e.u8(1);
+            enc::repo(e, *repo);
+            e.u8(u8::from(*subscribed));
+            e.u8(u8::from(*ignored));
+        }
+        UserRecord::Follow { user, on } => {
+            e.u8(2);
+            enc::account(e, *user);
+            e.u8(u8::from(*on));
+        }
+        UserRecord::Subscription { thread: t, subscribed } => {
+            e.u8(3);
+            thread(e, t);
+            e.u8(u8::from(*subscribed));
+        }
+        UserRecord::Thread { thread: t, read, done } => {
+            e.u8(4);
+            thread(e, t);
+            e.u8(u8::from(*read));
+            e.u8(u8::from(*done));
         }
     }
 }
@@ -232,11 +419,17 @@ pub struct IdentityFold {
     pub more: IdentityMore,
 }
 
-/// Format 0x14.2's rows: each listed SSH key's public key text, by fingerprint.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Format 0x14.2's rows: each listed SSH key's public key text, by fingerprint. Then 0x14.3's `UserRows` as a
+/// trailing part of its own, so a fold with no record keeps 0x14.2's bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IdentityMore {
     pub key_text: BTreeMap<Fingerprint, Box<str>>,
+    pub more: UserRows,
 }
+
+tail_serde!(IdentityMore {
+    key_text: BTreeMap<Fingerprint, Box<str>>,
+} more: UserRows);
 
 tail_serde!(IdentityFold {
     account: Option<AccountId>,
@@ -254,8 +447,16 @@ impl IdentityFold {
         IdentityFold { account: Some(account), ..IdentityFold::default() }
     }
 
-    fn write(&mut self, ev: &IdentityEvent) {
+    /// The account's `UserRecord`s and the `Counts` cursor (format 0x14.3).
+    pub fn user(&self) -> &UserRows {
+        &self.more.more
+    }
+
+    fn write(&mut self, ev: &IdentityEvent, set: RecordAt) {
         match ev {
+            IdentityEvent::Record(r) => self.more.more.write(r, set),
+            // `decide` emits it only forward.
+            IdentityEvent::CountsCursor(i) => self.more.more.counts_cursor = *i,
             IdentityEvent::Created(c) => self.created = Some(c.clone()),
             IdentityEvent::Credential(CredentialEvent::Added { credential, title }) => {
                 self.credentials.insert(*credential, title.clone());
@@ -313,7 +514,7 @@ impl IdentityScratch<'_> {
 impl Scratch for IdentityScratch<'_> {
     type Event = IdentityEvent;
     fn apply(&mut self, ev: &IdentityEvent) {
-        self.fold.to_mut().write(ev);
+        self.fold.to_mut().write(ev, RecordAt::default());
     }
     /// A follower refuses a second `Created`, a credential listed twice, and a session started twice.
     fn check(&self, ev: &IdentityEvent) -> Result<(), Box<str>> {
@@ -340,7 +541,15 @@ impl Fold for IdentityFold {
         IdentityScratch { fold: Cow::Borrowed(self) }
     }
     fn apply(&mut self, ev: &IdentityEvent) {
-        self.write(ev);
+        self.write(ev, RecordAt::default());
+    }
+    /// Each event with its entry's time and index, which a `UserRecord` row keeps.
+    fn apply_entry(&mut self, e: &graftyard_raft::LogEntry<IdentityEvent>) {
+        if let graftyard_raft::EntryBody::Events(evs) = &e.body {
+            for ev in evs {
+                self.write(ev, RecordAt { at: e.at, index: e.index });
+            }
+        }
     }
 }
 
@@ -393,6 +602,15 @@ pub enum IdentityOp {
         fingerprint: Fingerprint,
         key: Box<str>,
         title: Box<str>,
+    },
+    // ---- format 0x14.3 ----
+    /// A star, watch, follow, thread subscription, or thread state, by the account itself. A repeat is a no-op. The
+    /// edge checks that the viewer can read the repository before it sends one [inference: GHES answers 404 for a
+    /// repository the viewer cannot see].
+    SetRecord(UserRecord),
+    /// The `Counts` consumer's cursor, moved only forward. Only the operator (a consumer) sends it.
+    CountsCursor {
+        through: Index,
     },
 }
 
@@ -452,6 +670,14 @@ impl Record for IdentityCmd {
                 e.0.extend_from_slice(&fingerprint.0);
                 e.str(key);
                 e.str(title);
+            }
+            IdentityOp::SetRecord(r) => {
+                e.u8(8);
+                user_record(&mut e, r);
+            }
+            IdentityOp::CountsCursor { through } => {
+                e.u8(9);
+                e.u64(through.0);
             }
         }
     }
@@ -542,6 +768,7 @@ impl Command for IdentityCmd {
     fn format(&self) -> Format {
         match self.op {
             IdentityOp::AddKey { .. } => IDENTITY_FORMAT_V2,
+            IdentityOp::SetRecord(_) | IdentityOp::CountsCursor { .. } => IDENTITY_FORMAT_V3,
             _ => IDENTITY_FORMAT,
         }
     }
@@ -655,6 +882,24 @@ impl Command for IdentityCmd {
                     evs.push(IdentityEvent::KeyText { fingerprint: *fingerprint, key: key.clone() });
                 }
                 Ok((evs, ()))
+            }
+            IdentityOp::SetRecord(r) => {
+                if self.cred.account != Some(account) {
+                    return Err(IdentityErr::Forbidden);
+                }
+                if f.user().holds(r) {
+                    return none();
+                }
+                one(IdentityEvent::Record(*r))
+            }
+            IdentityOp::CountsCursor { through } => {
+                if !self.cred.is_operator() {
+                    return Err(IdentityErr::Forbidden);
+                }
+                if *through <= f.user().counts_cursor {
+                    return none();
+                }
+                one(IdentityEvent::CountsCursor(*through))
             }
         }
     }

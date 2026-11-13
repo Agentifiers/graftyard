@@ -24,6 +24,8 @@ for s in $SMOKES; do
   echo "$(date -u +%FT%TZ) $name $repo $rid start $flags" >> "$ST"
   bash tests/am1/runs/a1.sh b0-29 "$repo" "$rid" $flags
   echo "$(date -u +%FT%TZ) $name $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-b0-29-$repo.log)" >> "$ST"
+  # The identity groups' own failed-call records, before their members idle out (LM-1 round 8).
+  node tests/fanout/idstats.mjs ${IDCHAINS:-tokens:2490 names:152 names:708 release} > "tests/fanout/raw/idstats-$TAG-$name.json" 2>&1
   python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
   echo "$(date -u +%FT%TZ) cost $(T0_FILE=${T0_FILE:-tests/fanout/raw/siteday-r2.t0} bash tests/fanout/cost.sh 2>/dev/null)" >> "$ST"
 done

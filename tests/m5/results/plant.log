@@ -1,0 +1,18 @@
+plant 0 (unknown keys: a signer outside the latest Keys is taken as a customer): caught by group::a_vendor_intent_resumes_after_keys_vendor_none_only_with_a_re_signed_undo, group::a_vendor_signed_intent_after_keys_vendor_none_is_refused, group::bf6_every_historical_entry_is_refused_after_keys_vendor_none, group::keys_take_the_next_generation_and_the_customer_key_old_and_new, group::the_codec_round_trips_every_entry_kind, group::the_halted_intents_undos_survive_keys_vendor_none
+plant 1 (wrong generations: any Keys generation commits): caught by group::keys_take_the_next_generation_and_the_customer_key_old_and_new
+plant 2 (intents past not_after commit): caught by group::an_intent_past_not_after_is_refused
+plant 3 (an intent naming a release with no ReleaseUploaded commits): caught by group::a_second_intent_and_one_naming_a_release_with_no_upload_are_refused
+plant 4 (a release that cannot read an enabled format is accepted): caught by group::a_release_or_undo_that_cannot_read_an_enabled_format_is_refused
+plant 5 (a second current intent commits): caught by group::a_replace_member_halts_the_current_intent_which_resumes_after_it, group::a_second_intent_and_one_naming_a_release_with_no_upload_are_refused
+plant 6 (the drain key drains a second site): caught by group::the_drain_key_cannot_drain_a_second_site
+plant 7 (an EdgeRoll drops an undo's version): caught by group::an_edge_roll_that_drops_an_undos_version_is_refused
+plant 8 (a stale prev commits): caught by group::an_entry_signed_before_a_step_commits_meets_409_and_commits_re_signed, group::bf6_every_historical_entry_is_refused_after_keys_vendor_none, group::every_entry_binds_the_install_and_the_last_digest
+plant 9 (an undo outside the live list commits): caught by group::a_vendor_intent_resumes_after_keys_vendor_none_only_with_a_re_signed_undo, group::an_undo_commits_only_byte_for_byte_from_the_current_intents_list
+plant 10 (an undo replays): caught by group::an_undo_commits_only_byte_for_byte_from_the_current_intents_list, group::the_halted_intents_undos_survive_keys_vendor_none
+plant 11 (the executor key signs a ReplaceMember of an undrained site): caught by group::the_executor_key_replaces_only_a_lost_site_and_pins_nothing
+plant 12 (the executor key signs intents): caught by group::each_kind_takes_only_its_signers
+plant 13 (a forged ReleaseUploaded: the record signature is not checked): caught by group::the_executor_key_replaces_only_a_lost_site_and_pins_nothing
+plant 14 (a vendor intent resumes after Keys { vendor: None } with no re-signed undo): caught by group::a_vendor_intent_resumes_after_keys_vendor_none_only_with_a_re_signed_undo
+plant 15 (FormatsEnable without the release-signing half): caught by group::a_release_or_undo_that_cannot_read_an_enabled_format_is_refused
+plant 16 (steps out of order): caught by group::steps_run_in_order_and_stop_while_halted
+exit 0

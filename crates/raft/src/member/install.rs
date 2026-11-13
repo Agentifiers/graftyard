@@ -49,6 +49,16 @@ pub(super) struct RemoteReads {
     serving: BTreeMap<ReadId, (SiteId, u64)>,
 }
 
+impl RemoteReads {
+    /// Batches numbered from `boot`'s high half: an answer the leader sent this member's previous boot, held for its
+    /// next call or late on the network, names a batch this boot never sends, so it grants no read. Numbered from 1
+    /// every boot, the old answer matched the new boot's first batch and granted it below a write acknowledged before
+    /// the read arrived (`crates/raft/tests/leadership.rs`, `a_read_index_answer_from_a_previous_boot_grants_nothing`).
+    pub(super) fn starting_at(boot: u64) -> RemoteReads {
+        RemoteReads { next_batch: boot & !0xFFFF_FFFF, ..RemoteReads::default() }
+    }
+}
+
 impl<C: Command> Member<C> {
     /// Whether this member is a learner: it never votes, campaigns, or leads.
     pub(super) fn is_learner(&self) -> bool {
