@@ -608,7 +608,12 @@ impl<F: Family> Routes<F> {
                 if let Some(nl) = nl {
                     return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }
-                let page = host::entries_page_bytes(local, q("bytes"));
+                let reads = self.host.reads_in_flight.get();
+                let page = host::entries_page_bytes(local, q("bytes"), reads);
+                if local && reads >= host::ENTRIES_BUSY_READS && q("bytes").is_some_and(|b| b as usize > page) {
+                    self.host.stats.borrow_mut().busy_pages += 1;
+                    console_log!("entries page capped at {page} B: {reads} reads in flight");
+                }
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX), page)?;
                 self.reply(json!({ "entries": e }))
             }
@@ -627,6 +632,19 @@ impl<F: Family> Routes<F> {
                         (true, false) => *m = Some(std::collections::VecDeque::new()),
                         (false, _) => *m = None,
                         _ => {}
+                    }
+                }
+                // `entry=max`, `entry=soft`, or `entry=<bytes>`: where the leader stops filling an entry
+                // (`Host::entry_soft`).
+                #[cfg(feature = "test-faults")]
+                if let Ok(e) = crate::registry::query(&url, "entry") {
+                    let soft = match e.as_str() {
+                        "max" => raft::ENTRY_MAX,
+                        n => n.parse().unwrap_or(raft::ENTRY_SOFT),
+                    };
+                    self.host.entry_soft.set(soft);
+                    if let Some(core) = self.host.core.borrow_mut().as_mut() {
+                        core.m.set_entry_soft(soft);
                     }
                 }
                 self.stats(
@@ -1320,6 +1338,8 @@ impl<F: Family> Routes<F> {
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
             });
+            let mut v = v;
+            v["busyPages"] = json!(s.busy_pages);
             if reset {
                 s.reset();
             }
@@ -1383,6 +1403,7 @@ impl<F: Family> Routes<F> {
         {
             v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
             v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
+            v["entrySoft"] = json!(self.host.entry_soft.get());
         }
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {

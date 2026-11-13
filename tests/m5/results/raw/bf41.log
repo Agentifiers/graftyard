@@ -1,0 +1,95 @@
+
+=== init (11:45:54)
+install 01M7ABN08M7193VHPXFB4METX1: wrote install.toml (customer key 0bf029a94637733ed87faeca19e4900e2ce43ca722f20f622eb5f5a304106273); created nothing
+
+=== sites add (product bundle workers/site/build) (11:45:54)
+  bucket graft-m5-bf41-a-packs: location ENAM
+  graft-m5-bf41-a: created container application graft-m5-bf41-a-gitshard
+  phase 1: deployed graft-m5-bf41-a binding [graft-m5-bf41-a]
+  phase 2: graft-m5-bf41-a unchanged, no new version
+  latency check: fewer than three sites, so no pair is measured yet
+recorded site 0 graft-m5-bf41-a (enam) bucket graft-m5-bf41-a-packs
+  bucket graft-m5-bf41-b-packs: location WEUR
+  graft-m5-bf41-b: created container application graft-m5-bf41-b-gitshard
+  phase 1: deployed graft-m5-bf41-b binding [graft-m5-bf41-b]
+  phase 2: deployed graft-m5-bf41-b binding [graft-m5-bf41-a, graft-m5-bf41-b]
+  latency check: fewer than three sites, so no pair is measured yet
+  phase 2: deployed graft-m5-bf41-a binding [graft-m5-bf41-a, graft-m5-bf41-b]
+recorded site 1 graft-m5-bf41-b (weur) bucket graft-m5-bf41-b-packs
+  bucket graft-m5-bf41-c-packs: location APAC
+  graft-m5-bf41-c: created container application graft-m5-bf41-c-gitshard
+  phase 1: deployed graft-m5-bf41-c binding [graft-m5-bf41-c]
+  phase 2: deployed graft-m5-bf41-c binding [graft-m5-bf41-a, graft-m5-bf41-b, graft-m5-bf41-c]
+  rtt 2 -> 0: 170 ms
+  rtt 2 -> 1: 225 ms
+  phase 2: deployed graft-m5-bf41-a binding [graft-m5-bf41-a, graft-m5-bf41-b, graft-m5-bf41-c]
+  phase 2: deployed graft-m5-bf41-b binding [graft-m5-bf41-a, graft-m5-bf41-b, graft-m5-bf41-c]
+  rtt 0 -> 1: 91 ms
+  rtt 0 -> 2: 217 ms
+recorded site 2 graft-m5-bf41-c (apac) bucket graft-m5-bf41-c-packs
+
+=== genesis: the matching one, and another key's (11:46:54)
+  graftyard-drain-0: public 17c36e2de90b3de2c249a26663794b61764d360cc8a8161292d4eacd9db3b637; --offline-keys: the private half is discarded
+  graftyard-executor-0: public d9b9e3b52e952c0932312c5cb1d4568a9576027a8efe093e1ccaa31fca61f0f0; --offline-keys: the private half is discarded
+wrote unsigned genesis genesis.unsigned (609 bytes): install 01M7ABN08M7193VHPXFB4METX1, 3 sites, system chains Tri on [0, 1, 2]
+not created: graft-front, the edge, graft-ops, and the Workflows script (no M1 bundle exists for them); each must bind every site when it is built
+install 01M7ABN08M7193VHPXFB4METX1
+account 1
+evaluation false
+customer key 0bf029a94637733ed87faeca19e4900e2ce43ca722f20f622eb5f5a304106273
+vendor key none (self-hosted)
+release key 99e7c915ddc2d4b10122dcae480aaf0f59e54783b97c17ccc3e7beeb5582bd11
+drain key 17c36e2de90b3de2c249a26663794b61764d360cc8a8161292d4eacd9db3b637
+executor key d9b9e3b52e952c0932312c5cb1d4568a9576027a8efe093e1ccaa31fca61f0f0
+site 0 graft-m5-bf41-a enam bucket graft-m5-bf41-a-packs
+site 1 graft-m5-bf41-b weur bucket graft-m5-bf41-b-packs
+site 2 graft-m5-bf41-c apac bucket graft-m5-bf41-c-packs
+Release: Tri on [0, 1, 2], home 0
+Names: Tri on [0, 1, 2], home 0
+Tokens: Tri on [0, 1, 2], home 0
+Ids: Tri on [0, 1, 2], home 0
+signed: wrote genesis.signed (705 bytes), digest 76ec7cec91ff2f5df63f483dda57bb494b05bce45fc2b6bc7c806c046f065b41
+  graftyard-drain-0: public 26805ea9ea554cd283b8125aa277caf4b2515cf2d1443067f0ec0f9389c66c38; --offline-keys: the private half is discarded
+  graftyard-executor-0: public 354938b3189b5e7a58fde0a3c6e1c56b7986755312d54efb01b50cbeb079082b; --offline-keys: the private half is discarded
+wrote unsigned genesis other.unsigned (609 bytes): install 01M7ABN08M7193VHPXFB4METX1, 3 sites, system chains Tri on [0, 1, 2]
+not created: graft-front, the edge, graft-ops, and the Workflows script (no M1 bundle exists for them); each must bind every site when it is built
+install 01M7ABN08M7193VHPXFB4METX1
+account 1
+evaluation false
+customer key 41306a378fc18aea8f477192ace900268fab2e2de0359d981a64a63977a54d87
+vendor key none (self-hosted)
+release key 99e7c915ddc2d4b10122dcae480aaf0f59e54783b97c17ccc3e7beeb5582bd11
+drain key 26805ea9ea554cd283b8125aa277caf4b2515cf2d1443067f0ec0f9389c66c38
+executor key 354938b3189b5e7a58fde0a3c6e1c56b7986755312d54efb01b50cbeb079082b
+site 0 graft-m5-bf41-a enam bucket graft-m5-bf41-a-packs
+site 1 graft-m5-bf41-b weur bucket graft-m5-bf41-b-packs
+site 2 graft-m5-bf41-c apac bucket graft-m5-bf41-c-packs
+Release: Tri on [0, 1, 2], home 0
+Names: Tri on [0, 1, 2], home 0
+Tokens: Tri on [0, 1, 2], home 0
+Ids: Tri on [0, 1, 2], home 0
+signed: wrote other.signed (705 bytes), digest 3b2e6728b5e39081f0f81753666e1456011faa0a062a14d92efdc70b6be99cb6
+
+=== edge (11:46:54)
+Uploaded graft-m5-bf41-edge (2.84 sec)
+Current Version ID: bac39eff-48f3-40f5-95e3-4cfe34b7bdee
+Uploaded graft-m5-bf41-edge2 (2.52 sec)
+Current Version ID: facc18db-9713-4f1c-9e5c-691149651a77
+
+=== 1. another key's genesis to the empty group, through the edge with this install's anchor (11:49:32)
+{"message":"not signed by the anchor's customer key, or signed by another key as well","refusal":"WrongKey","status":422}
+
+=== 2. the same, through the edge that accepts it: the members must refuse (11:49:32)
+{"message":"the Release group did not start: release: 0 of 3 joined ([Some((409, Object {\"refused\": Object {\"genesis\": String(\"WrongKey: not signed by the anchor's customer key, or signed by another key as well\")}})), Some((409, Object {\"refused\": Object {\"genesis\": String(\"WrongKey: not signed by the anchor's customer key, or signed by another key as well\")}})), Some((409, Object {\"refused\": Object {\"genesis\": String(\"WrongKey: not signed by the anchor's customer key, or signed by another key as well\")}}))]); release: no group","refusal":"","status":503}
+
+=== 3. the matching genesis (11:49:35)
+{"digest":"76ec7cec91ff2f5df63f483dda57bb494b05bce45fc2b6bc7c806c046f065b41","index":5,"status":201}
+
+=== 4. another key's genesis again, through the edge that accepts it (11:52:20)
+{"index":8,"prev":"76ec7cec91ff2f5df63f483dda57bb494b05bce45fc2b6bc7c806c046f065b41","status":409}
+
+=== 5. the matching genesis again: 409 naming its own digest, at the index it committed at (11:52:20)
+{"index":9,"prev":"76ec7cec91ff2f5df63f483dda57bb494b05bce45fc2b6bc7c806c046f065b41","status":409}
+
+run ok
+EXIT 0

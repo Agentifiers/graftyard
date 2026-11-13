@@ -12,6 +12,10 @@ A shared install for Milestone 4. The M4 web thread ([thread](https://ampcode.co
 | Announced (UTC) | Start (UTC) | Thread | What | Site a / b / c, edge | State |
 | --- | --- | --- | --- | --- | --- |
 | 2026-11-13 03:33Z | 03:34Z | build (`install-m3ef`) | site day 1 (product, `standard-4`), then the product edge with `--ops` | `bbe9dfae` / `20c39df1` / `48417c20`, edge `9fb34188` | done |
+| 2026-11-13 08:42Z | 08:54Z | M4 Actions | site day 2 (product, `standard-4`): `m4-actions` `aa1ac0d` (the `HookSequencer` class, migration v3, `HOOKSEQ_n` and `OPS` bindings, repository 32.16 read) merged with `m4-web` `8c57a4f` (`/ui/*` routes), image `sha256:099a022c…`, `--vars` site-vars.json, `--ops graft-m4a-ops`, `--var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev`. Every member resets once per site; no site is down for longer than its own deploy. Also `graft-m4a-ops` `ba230a3d` (`/unwrap`, `SECRETS_WRAP_KEY_A` = Secrets Store `graft-m4a-secrets-wrap-key-a` `91947aef…`) | `61050b5d` / `7ffa44fc` / `a7b298a5`, edge unchanged | done 08:56Z |
+| 2026-11-13 09:01Z | 09:01Z | M4 web | edge day 2 (product): built from `m4-actions` `aa1ac0d` (contains `m4-web` `8c57a4f`; `hooks.rs` sequencer routes), `deploy-edge.mjs` from `aa1ac0d` (adds `HOOKSEQ_n` → `HookSequencer`), `--anchor`, `--ops graft-m4a-ops`, `FORMATS_ENABLED` plus 32.16. Checked: `GET /repos/m3org/j4`, `/hooks`, and `/user` answer 200 | sites unchanged, edge `06a0aa62` | done |
+| 2026-11-13 09:15Z | 09:26Z | M4 Actions | site day 3 (product): `m4-actions` `83afa6d` (a `HookSequencer` fix) merged with `m4-web` `8c57a4f`, same image, flags, and variables as site day 2. Every member resets once per site | `b8353a13` / `2ea98d1c` / `f3fca206`, edge unchanged | done 09:27Z |
+| 2026-11-13 11:54Z | 12:05Z | M5-WP1 ([thread](https://ampcode.com/threads/T-01a1d3a3-4afd-70e6-b6e0-3f2cd759f4b5)) | site day 4 (product): `m5-wp1-m4a` `e6377c3` (`m5-wp1` cherry-picked onto `m4a-deploy` `23f14e1`: every `Release` entry, Release formats 0x30.1 and 0x30.2, the `release_at` table), same image, flags, and variables as site day 3. No migration, class, or binding change. Every member resets once per site. Then a separate test edge `graft-m4a-m5-edge` (deleted after) carries BF-42 and BF-45's entries; `graft-m4a-edge` is not redeployed. After this day the `Release` group holds entries past the genesis that only an `m5-wp1` build decodes, so every later site day must include `m5-wp1-m4a`. Checked after the deploy: `GET /api/v3/repos/m3org/j4`, `/api/v3/user`, and `j4.git/info/refs` answer 200 on `graft-m4a-edge`; the `Release` group then committed `Keys` generation 1 (executor and drain keys held in `~/.graft-m4a/m5`), one `ReleaseUploaded`, and a `SiteDay` intent left `IntentDone`, last digest `8b2f4278…` at index 68, nothing current (`tests/m5/results/m5-wp1.md`). `graft-m4a-m5-edge` deleted 12:09Z | `8b3debe1` / `06555a76` / `d0d31e7e`, edge unchanged | done 12:09Z |
 
 ## Resources
 
@@ -79,7 +83,7 @@ A new site format reaches the edge only after a site day, and then through the w
 The `OPS` binding and `FORMATS_ENABLED` are kept only if every deploy passes them again. Leave out `--test-faults`, because the product build goes to `/tmp/edge-prod-graft-m4a-edge`:
 
 ```
-FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18
+FORMATS=32.1,32.4,32.5,32.6,32.7,32.9,32.11,32.13,16.2,17.2,18.2,20.1,20.2,32.8,32.12,32.14,18.3,32.18,32.16
 node tests/m1/integ/deploy-edge.mjs ~/.graft-m4a/sites.json graft-m4a-edge \
   --anchor ~/.graft-m4a/install.toml --ops graft-m4a-ops --var FORMATS_ENABLED=$FORMATS
 ```

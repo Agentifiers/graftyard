@@ -76,7 +76,7 @@ impl World {
         self.identity.entry(account.0.0).or_insert_with(|| {
             let mut g = Group::reading(
                 ChainId::Identity(account),
-                vec![IDENTITY_FORMAT, IDENTITY_FORMAT_V2],
+                vec![IDENTITY_FORMAT, IDENTITY_FORMAT_V2, graftyard_identity::IDENTITY_FORMAT_V3],
                 IdentityFold::new(account),
             );
             g.elect(A);

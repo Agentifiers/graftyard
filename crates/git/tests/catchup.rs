@@ -7,7 +7,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use futures_executor::block_on;
-use graftyard_git::catchup::{Ingested, Rehydrating, Report, Saved, ShardIo, catch_up};
+use graftyard_git::catchup::{INGEST_BATCH_BYTES, Ingested, Rehydrating, Report, Saved, ShardIo, catch_up};
 use graftyard_git::group::RefsPage;
 use graftyard_git::{ChainLog, Head, IngestCursor, LogPacks, Marker, PackId, PackRef, Promoted, StoreError};
 use graftyard_types::{ChainId, DbId, Digest, Index, NetworkId, RepoId, SiteSet, Ulid};
@@ -53,6 +53,8 @@ struct Disk {
     markers: RefCell<Vec<(PackId, Marker)>>,
     inits: Cell<usize>,
     ingests: Cell<usize>,
+    /// Calls that ingested inline packs.
+    calls: Cell<usize>,
     fetched: Cell<usize>,
     /// The length of each `have` ask.
     asks: RefCell<Vec<usize>>,
@@ -116,11 +118,20 @@ impl ShardIo for Disk {
         self.asks.borrow_mut().push(sums.len());
         Ok(sums.iter().filter(|s| self.ingested.borrow().contains(s)).copied().collect())
     }
-    async fn ingest(&self, s: Digest, body: &[u8]) -> Result<Ingested, StoreError> {
+    async fn ingest(&self, packs: &[(Digest, &[u8])]) -> Result<Vec<Ingested>, StoreError> {
         self.tick()?;
-        self.ingests.set(self.ingests.get() + 1);
-        assert_eq!(sum(body), s);
-        Ok(self.take(s, body))
+        self.calls.set(self.calls.get() + 1);
+        let bytes: usize = packs.iter().map(|(_, b)| b.len()).sum();
+        assert!(packs.len() == 1 || bytes <= INGEST_BATCH_BYTES, "{} packs of {bytes} bytes in one call", packs.len());
+        // As the container does: each pack in turn, so a pack may build on an earlier one of the same call.
+        Ok(packs
+            .iter()
+            .map(|(s, b)| {
+                self.ingests.set(self.ingests.get() + 1);
+                assert_eq!(sum(b), *s);
+                self.take(*s, b)
+            })
+            .collect())
     }
     async fn ingest_stored(&self, id: PackId, checksum: Digest) -> Result<Ingested, StoreError> {
         self.tick()?;
@@ -219,6 +230,9 @@ struct Log {
     /// Entries answered in all.
     served: Cell<usize>,
     refs_page: usize,
+    /// The index the first refs page is read at, when it is older than the head: the chain moved while the pages were
+    /// read, so the rehydrate catches up from it.
+    first_refs_at: Cell<Option<u64>>,
 }
 
 impl Log {
@@ -252,7 +266,8 @@ impl ChainLog for Log {
         let more = rest.len() > self.refs_page;
         let refs: Vec<(String, String)> = rest.into_iter().take(self.refs_page).collect();
         let next = more.then(|| refs.last().unwrap().0.clone());
-        Ok((RefsPage { refs, next }, Index(self.head())))
+        let at = if after.is_none() { self.first_refs_at.get().unwrap_or(self.head()) } else { self.head() };
+        Ok((RefsPage { refs, next }, Index(at)))
     }
     async fn entries(&self, _c: ChainId, from: Index, to: Index) -> Result<Vec<LogPacks>, StoreError> {
         self.calls.set(self.calls.get() + 1);
@@ -341,6 +356,7 @@ fn bed(n: u64, pad: usize, stored_every: u64) -> Bed {
         calls: Cell::new(0),
         served: Cell::new(0),
         refs_page: 3,
+        first_refs_at: Cell::new(None),
     };
     Bed { disk, store: Store::default(), log }
 }
@@ -502,13 +518,49 @@ fn a_cut_off_rehydrate_resumes_and_never_starts_again_from_nothing() {
     }
 }
 
+/// A rehydrate's last step catches up from its first refs page to the head. Until that reaches the head the disk
+/// cannot serve, so the shard must still say it is rehydrating, and a push with another shard next is sent on at once:
+/// j9h's home shard dropped its place with the cursor, 33 s before its last catch-up of 338 entries ended, and 16 pushes
+/// each waited out the home's 15 s (`tests/am1/results/hot-shards-3.md`). A run cut off in that catch-up keeps the
+/// place, and the catch-up that finishes it drops it.
+#[test]
+fn a_rehydrate_is_marked_rehydrating_until_its_last_catch_up_reaches_the_head() {
+    let mut cut_in_last = 0;
+    for cut in 1..400 {
+        let b = bed(300, 1_000, 9);
+        b.promote(100);
+        b.log.first_refs_at.set(Some(250));
+        b.disk.cut_after.set(Some(cut));
+        let first = b.run();
+        if first.is_ok() {
+            assert!(b.store.rehydrating.borrow().is_none(), "cut {cut}: a finished rehydrate keeps its place");
+            break;
+        }
+        if b.store.cursor.borrow().is_none() {
+            continue;
+        }
+        // Cut off after the refs, in the catch-up from entry 251.
+        cut_in_last += 1;
+        assert!(b.store.rehydrating.borrow().is_some(), "cut {cut}: the place went before the disk reached the head");
+        b.disk.cut_after.set(None);
+        let r = b.run().unwrap_or_else(|e| panic!("cut {cut}: {}", e.0));
+        assert!(r.rehydrated.is_none(), "cut {cut}: the cursor is kept, so this is a catch-up");
+        assert!(b.store.rehydrating.borrow().is_none(), "cut {cut}: the finishing catch-up keeps the place");
+        assert_eq!(b.disk.inits.get(), 1);
+        b.assert_serves_head();
+    }
+    assert!(cut_in_last > 0, "no cut fell in the last catch-up");
+}
+
 /// Promotion keeps running while a shard rehydrates (on another site's shard), so a cut-off rehydrate resumes after
 /// the last `Promoted` has moved past where its tail got. It must not start its tail at the new promotion's end without
 /// that promotion's pack: the entries in between are never read, and the next tail pack fails "have bases no pack
 /// provides" on every call, as site a's shard did after the kill on graft-m3c (`tests/am1/results/hot-shards-2.md`).
 #[test]
 fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
-    for cut in [40, 60, 90] {
+    // Each cut falls in the tail: the marked phase is about 13 calls, and the tail about 67 (each stored pack alone,
+    // each run of inline packs between them one call).
+    for cut in [20, 40, 60] {
         let b = bed(400, 1_000, 9);
         b.promote(100);
         b.disk.cut_after.set(Some(cut));
@@ -533,9 +585,12 @@ fn a_rehydrate_resumed_after_a_new_promotion_loads_it_and_skips_nothing() {
 fn a_rehydrate_resumed_from_an_older_place_loads_the_marked_phase_again() {
     let b = bed(400, 1_000, 9);
     b.promote(100);
-    b.disk.cut_after.set(Some(40));
+    // Cut two calls into the tail: the marked phase is 12 calls (the promotion and 11 pushed stored packs below the
+    // tail), so the disk holds none of the entries the older release's place claims.
+    b.disk.cut_after.set(Some(14));
     assert!(b.run().is_err());
     let (disk, mut s) = b.store.rehydrating.borrow().clone().expect("a saved place");
+    assert!(s.marked, "cut in the tail");
     let got = s.tail.at(CHAIN).0;
     b.promote_range(101, got + 150);
     // The older release resumed at the new tail start and saved its tail past the entries it skipped.
@@ -618,5 +673,32 @@ fn a_rehydrate_loads_every_promotion_still_in_the_log_before_the_last_one() {
     assert_eq!(b.disk.inits.get(), 1);
     // Each stored pack fetched once: 33 pushed, 3 promoted.
     assert_eq!(b.disk.fetched.get(), 36);
+    b.assert_serves_head();
+}
+
+/// A rehydrate's tail sends each run of inline packs in calls of up to `INGEST_BATCH_BYTES`, not one call a pack, and a
+/// pack in the middle of a call whose base comes later in the log (here entry 150, which names an object of 151) is
+/// answered `Later` alone and sent again after the rest: the packs after it in the same call still go in.
+#[test]
+fn a_rehydrate_ingests_runs_of_inline_packs_a_call_at_a_time() {
+    let b = bed(400, 30_000, 0);
+    {
+        let mut es = b.log.entries.borrow_mut();
+        for (i, needs) in [(150usize, vec![149, 151]), (151, vec![149])] {
+            let p = Pack { brings: vec![i as u64], needs, pad: 30_000 };
+            es[i - 1].packs = vec![PackRef::Inline(bytes_of(&p))];
+        }
+    }
+    b.promote(100);
+    let r = b.run().unwrap_or_else(|e| panic!("{}", e.0));
+    let h = r.rehydrated.expect("a rehydrate");
+    assert_eq!(h.inline, 300);
+    // 300 packs of about 30 KB are 16 pages of 600 KB: one call a page (a page is under INGEST_BATCH_BYTES), and one
+    // more for entry 150 sent again. One call a pack would be 301.
+    let calls = b.disk.calls.get();
+    let one = bytes_of(&Pack { brings: vec![200], needs: vec![199], pad: 30_000 }).len();
+    let pages = 300usize.div_ceil(PAGE_BYTES / one);
+    assert!(calls <= pages + 1, "{calls} calls for 300 packs in {pages} pages");
+    assert_eq!(b.disk.ingests.get(), 1 + 300 + 1, "the promoted pack, each tail pack once, and entry 150 again");
     b.assert_serves_head();
 }
