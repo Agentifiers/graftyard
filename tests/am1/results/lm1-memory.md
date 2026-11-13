@@ -1178,3 +1178,19 @@ is not a green pre-f67 tree: it still holds `fa30bff9`, and its harsh sweep acke
 transfer and holds the only copy of entry 160 (this branch's dep reads let the leader append while an entry is in
 flight). From 43.6 s S2 campaigns, both other voters refuse S1's pre-votes as `Suspected` for 2 x SUSPECT, and S1 refuses
 theirs as `LogBehind`, so no member can win until 60.4 s. Sent to f67-liveness, which owns the fix. Not deployed.
+
+### Round 8d: the combined tree
+
+`lm1-memory` `6ebc48c9`: main a9d1645, which carries narrow-reads-2 and f67-liveness f53b6f8, plus the identity
+step-down fix `0c7cbc23`. Its tree equals `742165ca`, where the checks ran.
+
+- **Merge of narrow-reads-2** (`8c152210`): the edge takes main's per-request `Ctx` timing, which replaces this
+  branch's thread-local timing (`236eca5b`) and its test. The branch keeps a shard's 429 ending the validate tries
+  and a REST merge reading only its rows. Edge and step-down plants 26, 27, 29, 30, 41 to 43, 74 and 75: 9 of 9
+  caught.
+- **Full checks**: fmt, workspace clippy, wasm32 clippy (site and edge, with and without `test-faults`; ops),
+  `cargo test --workspace`, `check_design`, `check_names`, `check_links` and `go test` all pass (Rust 1.100).
+- **Long sweep** (2,000 seeds x 10,000 steps, every half): exit 0 in 563 s. The longest stretch with a healthy quorum,
+  requests waiting and none completing is 29,799 ms (seed 10921), under the 30 s bound.
+- **Porcupine**: `Ok` on `hist.jsonl` (150,828 operations), `hist.jsonl.gray` (2,042,240) and `hist.jsonl.live`
+  (2,601,072).
