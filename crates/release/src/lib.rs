@@ -12,16 +12,26 @@
 //! digest, which the next entry's `Bound.prev` names, is SHA-256 of the whole stored form, signatures included.
 
 mod codec;
+mod group;
 mod types;
 
 use ed25519_dalek::{SigningKey, VerifyingKey};
-use graftyard_types::{ChainId, Digest, MemberKind, Placement, PlacementName, SiteId, SystemChain};
+use graftyard_types::{
+    ChainId, Digest, MemberKind, Placement, PlacementName, ReleaseId, SiteId, SystemChain, Timestamp,
+};
+use group::hex32;
 use sha2::{Digest as _, Sha256};
 use smallvec::SmallVec;
 
 pub use codec::Malformed;
+pub use group::{
+    Accepted, Current, Drained, Pointers, ReleaseFold, STALE_MAX, Upload, ZERO_ACKS, formats_enable_message,
+    presign_undo, undo_entry,
+};
 pub use types::{
-    Bound, Genesis, InstallId, IntentId, KeyId, Keys, ReleaseEntry, RestoreFrom, RestoreSource, Signature,
+    Bound, DayTarget, Format, FormatSet, Genesis, ImageRef, InstallId, Intent, IntentId, IntentState, KeyId, Keys,
+    LeaveEvaluation, Mode, ReleaseEntry, ReleaseUploaded, RestoreFrom, RestoreSource, Scope, Script, SecretName,
+    Signature, SignedIntent, SiteMode, VersionId,
 };
 
 use codec::{Dec, Enc};
@@ -154,8 +164,8 @@ pub enum Refusal {
     WrongGroup(ChainId),
     #[error("bound to install {got}, this install is {want}")]
     WrongInstall { want: InstallId, got: InstallId },
-    /// A genesis binds no `prev` and no `parent`, and its body names the install its `Bound` names.
-    #[error("genesis bound wrongly: {0}")]
+    /// A genesis binds no `prev` and no `parent`; an undo binds a parent and no `prev`; nothing else binds a parent.
+    #[error("bound wrongly: {0}")]
     BadBound(&'static str),
     #[error("not signed by the anchor's customer key, or signed by another key as well")]
     WrongKey,
@@ -167,6 +177,43 @@ pub enum Refusal {
     KeysGeneration(u64),
     #[error("genesis refused: {0}")]
     BadGenesis(Box<str>),
+    /// 409: `prev` is not the digest of the last committed signed entry; the signer re-signs over this one.
+    #[error("stale prev: the last committed entry is {0:?}")]
+    StalePrev(Digest),
+    #[error("signed by key {0:?}, which the latest Keys does not hold")]
+    UnknownKey(KeyId),
+    #[error("{0} is not signed by the key or keys its kind takes")]
+    WrongSigner(&'static str),
+    #[error("Keys generation {got}, not the latest plus one ({want})")]
+    Generation { want: u64, got: u64 },
+    #[error("the intent expired at {not_after:?}")]
+    Expired { not_after: Timestamp },
+    #[error("release {} has no ReleaseUploaded", hex32(&.0.0))]
+    NoUpload(ReleaseId),
+    #[error("release {} cannot read enabled format {format}", hex32(&release.0))]
+    UnreadableFormat { release: ReleaseId, format: Format },
+    #[error("intent {0:?} is current; only a ReplaceMember commits over it")]
+    IntentCurrent(IntentId),
+    #[error("intent {0:?} is not the current intent")]
+    NotCurrent(IntentId),
+    #[error("a {0} commits only as a pre-signed undo of the current intent, byte for byte")]
+    NotAnUndo(&'static str),
+    #[error("this {0} undo has already committed")]
+    UndoUsed(&'static str),
+    #[error("the drain key cannot drain a second site while site {} is drained", .0.0)]
+    DrainGuard(SiteId),
+    #[error("an EdgeRoll that drops version {} an undo still names", hex32(&.0.0))]
+    DropsUndoVersion(ReleaseId),
+    #[error("site {} is neither SiteLost nor drained ZERO_ACKS", .0.0)]
+    NotLost(SiteId),
+    #[error("IntentStep {got}, the next step is {want}")]
+    WrongStep { want: u8, got: u8 },
+    #[error("{0}")]
+    BadState(&'static str),
+    #[error("bad release record: {0}")]
+    BadRecord(Box<str>),
+    #[error("{0}")]
+    Rejected(Box<str>),
 }
 
 impl Refusal {
@@ -183,6 +230,40 @@ impl Refusal {
             Refusal::KeysMismatch { .. } => "KeysMismatch",
             Refusal::KeysGeneration(_) => "KeysGeneration",
             Refusal::BadGenesis(_) => "BadGenesis",
+            Refusal::StalePrev(_) => "StalePrev",
+            Refusal::UnknownKey(_) => "UnknownKey",
+            Refusal::WrongSigner(_) => "WrongSigner",
+            Refusal::Generation { .. } => "Generation",
+            Refusal::Expired { .. } => "Expired",
+            Refusal::NoUpload(_) => "NoUpload",
+            Refusal::UnreadableFormat { .. } => "UnreadableFormat",
+            Refusal::IntentCurrent(_) => "IntentCurrent",
+            Refusal::NotCurrent(_) => "NotCurrent",
+            Refusal::NotAnUndo(_) => "NotAnUndo",
+            Refusal::UndoUsed(_) => "UndoUsed",
+            Refusal::DrainGuard(_) => "DrainGuard",
+            Refusal::DropsUndoVersion(_) => "DropsUndoVersion",
+            Refusal::NotLost(_) => "NotLost",
+            Refusal::WrongStep { .. } => "WrongStep",
+            Refusal::BadState(_) => "BadState",
+            Refusal::BadRecord(_) => "BadRecord",
+            Refusal::Rejected(_) => "Rejected",
+        }
+    }
+
+    /// The endpoint's status: 409 for a stale `prev` (a second genesis included), 422 for every other refusal.
+    pub fn status(&self) -> u16 {
+        match self {
+            Refusal::StalePrev(_) | Refusal::AlreadyInstalled(_) => 409,
+            _ => 422,
+        }
+    }
+
+    /// The digest a 409 names: the last committed entry, or the held genesis for a second one.
+    pub fn current(&self) -> Option<Digest> {
+        match self {
+            Refusal::StalePrev(d) | Refusal::AlreadyInstalled(d) => Some(*d),
+            _ => None,
         }
     }
 }
@@ -198,7 +279,7 @@ pub fn accept_genesis(anchor: &Anchor, bytes: &[u8]) -> Result<Genesis, Refusal>
     check_genesis(anchor, &entry)?;
     match entry.body {
         ReleaseEntry::Genesis(g) => Ok(*g),
-        ReleaseEntry::Keys(_) => unreachable!("check_genesis refused it"),
+        _ => unreachable!("check_genesis refused it"),
     }
 }
 
@@ -236,23 +317,28 @@ pub fn check_genesis(anchor: &Anchor, entry: &SignedEntry) -> Result<(), Refusal
     check_body(g)
 }
 
-/// What a genesis must say for the groups it places to come up: distinct keys, a sane site table, and one record per
-/// system chain that `Placement::from_record` builds, on active sites in distinct regions, `Solo` only under the
-/// `evaluation` flag.
-fn check_body(g: &Genesis) -> Result<(), Refusal> {
-    let k = &g.keys;
+/// Every key is an Ed25519 public key and holds one role, so a signature names its role.
+pub(crate) fn check_keys(k: &Keys) -> Result<(), String> {
     let mut all: Vec<KeyId> = [k.customer, k.release, k.drain, k.executor].into();
     all.extend(k.vendor);
     all.extend(k.agents_executor);
     all.extend(k.ring.iter().map(|(_, k)| *k));
     for (i, a) in all.iter().enumerate() {
         if VerifyingKey::from_bytes(&a.0).is_err() {
-            return Err(bad_genesis(format!("key {a:?} is not an Ed25519 public key")));
+            return Err(format!("key {a:?} is not an Ed25519 public key"));
         }
         if all[i + 1..].contains(a) {
-            return Err(bad_genesis(format!("key {a:?} holds two roles")));
+            return Err(format!("key {a:?} holds two roles"));
         }
     }
+    Ok(())
+}
+
+/// What a genesis must say for the groups it places to come up: distinct keys, a sane site table, and one record per
+/// system chain that `Placement::from_record` builds, on active sites in distinct regions, `Solo` only under the
+/// `evaluation` flag.
+fn check_body(g: &Genesis) -> Result<(), Refusal> {
+    check_keys(&g.keys).map_err(bad_genesis)?;
     if g.restore.is_some() {
         return Err(bad_genesis("a restore genesis is not built (Milestone 7)"));
     }
@@ -299,64 +385,6 @@ fn check_body(g: &Genesis) -> Result<(), Refusal> {
         }
     }
     Ok(())
-}
-
-/// What the `Release` group's fold holds for genesis acceptance: the accepted genesis, the latest committed `Keys`,
-/// and the digest the next signed entry must bind as `prev`. `Noop` and `Config` entries never reach it.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ReleaseFold {
-    pub genesis: Option<Genesis>,
-    pub keys: Option<Keys>,
-    pub last: Option<Digest>,
-}
-
-/// The one event an accepted entry commits: the entry's stored bytes, so every member applies and digests the same
-/// bytes. `Record::encode` for it is `bytes` itself.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Accepted {
-    pub bytes: Box<[u8]>,
-}
-
-impl Accepted {
-    pub fn entry(&self) -> SignedEntry {
-        SignedEntry::decode(&self.bytes).expect("an accepted entry decodes")
-    }
-
-    pub fn digest(&self) -> Digest {
-        Digest(Sha256::digest(&self.bytes).into())
-    }
-}
-
-impl ReleaseFold {
-    /// `decide` for a submitted entry. Pure: the fold and the anchor from the script's own version. Only a genesis is
-    /// built, so an installed group refuses every entry: a second genesis, or a replay of the first, with
-    /// `AlreadyInstalled`, and anything else with `NotGenesis` until Milestone 5 builds it.
-    pub fn decide(&self, anchor: &Anchor, bytes: &[u8]) -> Result<Accepted, Refusal> {
-        let entry = SignedEntry::decode(bytes).map_err(Refusal::Malformed)?;
-        if let Some(d) = self.last {
-            return Err(match entry.body {
-                ReleaseEntry::Genesis(_) => Refusal::AlreadyInstalled(d),
-                ref other => Refusal::NotGenesis(other.kind()),
-            });
-        }
-        check_genesis(anchor, &entry)?;
-        // Re-encode, so the stored bytes are canonical whatever the edge received; decode is strict, so they match.
-        Ok(Accepted { bytes: entry.encode().into_boxed_slice() })
-    }
-
-    /// A follower's check of the event before it applies it: the same rules, on the fold it holds.
-    pub fn check(&self, anchor: &Anchor, ev: &Accepted) -> Result<(), Refusal> {
-        self.decide(anchor, &ev.bytes).map(|_| ())
-    }
-
-    pub fn apply(&mut self, ev: &Accepted) {
-        let entry = ev.entry();
-        if let ReleaseEntry::Genesis(g) = entry.body {
-            self.keys = Some(g.keys.clone());
-            self.genesis = Some(*g);
-        }
-        self.last = Some(ev.digest());
-    }
 }
 
 #[cfg(test)]

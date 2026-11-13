@@ -614,7 +614,12 @@ impl<F: Family> Routes<F> {
                 if let Some(nl) = nl {
                     return self.reply(json!({ "error": host::call_error_json(&CallError::NotLeader(nl)) }));
                 }
-                let page = host::entries_page_bytes(local, q("bytes"));
+                let reads = self.host.reads_in_flight.get();
+                let page = host::entries_page_bytes(local, q("bytes"), reads);
+                if local && reads >= host::ENTRIES_BUSY_READS && q("bytes").is_some_and(|b| b as usize > page) {
+                    self.host.stats.borrow_mut().busy_pages += 1;
+                    console_log!("entries page capped at {page} B: {reads} reads in flight");
+                }
                 let e = self.host.entries_json(q("from").unwrap_or(1), q("to").unwrap_or(u64::MAX), page)?;
                 self.reply(json!({ "entries": e }))
             }
@@ -1339,6 +1344,8 @@ impl<F: Family> Routes<F> {
                 })),
                 "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
             });
+            let mut v = v;
+            v["busyPages"] = json!(s.busy_pages);
             if reset {
                 s.reset();
             }

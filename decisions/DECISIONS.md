@@ -2431,6 +2431,8 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Measured, 2026-11-13 (`m0-carried-7`).** The cap removes big-entry heavy turns: a 20 s smoke at 330 offered ran 85 commands per entry uncapped (CPU p999 98 ms, 11 `/commit` turns of 80 ms or more, commit p99 1,000 ms) against 42 capped (14 ms, 0, 276 ms). It does not pass B0-02: over two same-window A/Bs, 60 KB passed 4 of 8, 80 KB 7 of 8 and 5 of 8, and no cap 7 of 8. The failures were a lagging leader loop under the cap and near-follower calls held about 1 s while the leader was idle (`tests/m0/results/carried-7.md`). The cap stays, because it bounds the turn's CPU and stays under the body step; whether it is worth its rounds is the flip above, which the A/Bs neither met nor ruled out.
 
+**Amended, 2026-11-13 (`m0-entry-soft-packs`): the cap counts no Agent inline pack bytes.** The flip was met on journey 9. On `graft-m2b` (500 agents, standard-4, 8 learners, 180 s, one deploy), 60 KB put B0-29's commit p99 at 1,718 ms, against 702 ms with entries filled to `ENTRY_MAX`. Commands waited for an entry at p99 1,583 ms against 507 ms, while the round fell from 202 to 151 ms and the leader ran at about 9% CPU [measured, `tests/am1/results/lm1-memory.md`, round 9]. Agent packs of 10 to 70 KB go inline, so one push filled an entry, and admission's capacity shrank with the cap. Agent inline bytes already have their own per-entry bound, `AGENT_INLINE_ENTRY` (128 KiB), so the cap now counts an entry's other bytes, and the entry's full bytes stay within `ENTRY_MAX`. Human, MergeQueue and Bot packs still count, because no other rule bounds them. Admission's capacity estimate uses the same bytes. B0-02 has no packs, so its entries are unchanged. In the simulator on journey 9's mix, commit p99 was 365 ms capped against 245 ms at `ENTRY_MAX` before the change, and 245 ms against 245 ms after it (`entry_soft_does_not_slow_journey_9`, `crates/raft/tests/admission.rs`) [measured, simulator]. An entry can now reach about 60 KB plus 128 KiB, so it can cross the 64 KiB body step again. The long sweep (`RAFT_SEEDS=2000 RAFT_STEPS=10000`) passed with longest stretches of 16.0, 24.0 and 29.8 s, and Porcupine read Ok on all three histories, 6,000 segments each; plants 9 of 9 (`tests/m0carried/plant.py`). Pending: the hosted A/B on journey 9 decides this amendment, LM-1's m21 rows capped against `ENTRY_MAX` on this code.
+
 ### `narrow-reads-2`: API reads start with their identity and name reads at once, cached per isolate for `READ_CACHE`, 2026-11-12
 
 Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
@@ -2446,6 +2448,20 @@ Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
 **Evidence.** `workers/edge/src/rcache.rs` tests (TTL from the read's start, writes never read the cache, an older answer never wins, only passing answers are kept, a revoked row is never kept); `tests/nr2/plant.py` catches 12 of 12; `tests/nr2/stale.mjs` on the new edge: a new repository and a re-added member serve at once, a removed member stops within 1.8 to 2.3 s, a revoked PAT within 77 ms (its write at once), a revoked `ghs_` within 90 ms. Hosted B0-29 on `graft-m3c`, 500 agents, 8 learners [measured, `tests/am1/results/narrow-reads-2.md`]: `read:api` 99.8% served at p50/p99 1,515/4,865 ms before, 99.9% at 655/3,152 ms after on a run with no leader change (a first after run with a leader change mid-load: 96.8% at 749/3,303 ms). The sampled stages put `auth`, `resolve`, `authz`, and `logins` at 0 ms at p50 and the tier read at 611/2,589 ms (REST) and 629/2,163 ms (GraphQL). The gate is not met: the learners' answers set the p99 now.
 
 **Flip.** A revocation, removed grant, or rename that a client must see on API reads in under 10 s, which would bring back fresh reads for that kind of answer. Or a hosted run where the identity stages no longer show in the p99 even uncached, which would make the cache a cost with no return.
+
+### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
+
+Branch `f67-wide` (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Decision.** (10) A leader hands off, by `STEP_DOWN`, `home`, or a drained hand-off, to no member it refuses in pre-vote as `Suspected` (`may_lead_target`). (11) A `Suspected` bar whose every report arrived while the follower held that leader's transfer id ends once the follower accepts another leader's append; a report outside a transfer keeps it a full bar. The long sweep's live half runs at least 4,000 seeds from 10,000 (`sim.rs`, `LIVE_SEEDS_MIN`), whatever `RAFT_SEEDS` says.
+
+**Why.** Main passed the 30 s bound on live seeds 10,000 to 11,999, the window the long sweep ran, and failed it on 12,048 (33.0 s) and 12,073 (37.4 s); m0-carried-8 found four more in 12,000 to 15,999 (30.1 to 34.6 s) [measured, simulator]. In 12,073 a drained leader handed leadership back to a half-hung member it already refused as suspected, so the gray leader came back each time until check quorum moved it. With that fixed, 11,121 showed the other side: reports sent during each leader's own hand-off barred both healthy voters from each other for 31.3 s. The 2,000-seed window had hidden both, and the bound is absolute (operator: "gates pass as written").
+
+**Beat.** A relative gate, "no worse than main" (operator: refused). Setting no bar at all during a transfer, which left a half-hung leader free to win back. Dropping an emptied read-index batch from flight, which on main pushed 10,273, 11,401, and 12,761 past 30 s; it helps only narrow-reads-3's deferred reads, and stays there pending the agreed version with m0-carried-8.
+
+**Evidence.** `crates/raft/tests/leadership.rs` `a_leader_hands_off_to_no_member_it_suspects` and `a_hand_offs_suspect_bar_ends_when_another_leader_is_heard` (with its control); `sim.rs` `a_leader_hands_off_to_no_member_it_suspects_live` (seeds 12,048 and 12,073). Each fails without its fix. Live seeds 10,000 to 15,999 with both fixes: none over 30 s, worst 29.3 s (14,945). Long sweep (`RAFT_SEEDS=2000`, live half 4,000 seeds): HARSH 16,027 ms (11,895), gray 26,832 ms (10,676), live 27,601 ms (13,161); Porcupine Ok on all three histories (`tests/m0/results/f67.md`, "Rules 10 and 11, and the wider window").
+
+**Flip.** A live seed past 30 s in the 4,000-seed window again, or a gray leader that keeps clearing its bar by handing off, which would need the hand-off bar to count reports by target instead.
 
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
@@ -2691,6 +2707,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 
 **Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
 
+### A shard's repack searches deltas, waits for no lock but fsck waits for it, and a busy member serves 1 MB local pages (2026-11-13)
+
+**Decision.** `runRepack` runs `git repack -d --geometric=2` with git's default delta window, and the split commit-graph after it stays. `/fsck` waits for a running repack, as evict does. A member's local `/entries` page is at most `ENTRIES_BUSY_PAGE_BYTES` (1 MB) while `ENTRIES_BUSY_READS` (1) or more other reads are in flight, and up to `ENTRIES_LOCAL_PAGE_BYTES_MAX` (4 MB) on an idle member.
+
+**Why.** `--window=0` was added while a repack held the network's lock, and its 1 to 5 s delta search queued every validate. LM-1 round 7 took the repack out of the lock, so the search no longer delays anything, and a local B0-29-like A/B on the merged container showed the same CPU and validate p99 either way. Meanwhile `--window=0` kept every pushed version of a file whole: shards held 2.07 times the pushed bytes of real history and 13 times journey 9's. With the repack out of the lock, it could delete the packs it rolled up under a running fsck, and site c's fsck answered `ok: false` just after a rehydrate's repack. A 4 MB page built beside a busy member's other reads put site b's member near its 128 MB, and it trapped in F47's shape.
+
+**Beat.** Keeping `--window=0` with a nightly full repack, which still grows disk between nights and costs a second repack path. Taking the network's write lock for fsck, which would block every validate and fetch for the fsck's seconds. A page cap from the member's wasm memory, which only grows and so would cap every page after the first spike.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md` ("`--window=0` disk growth", "Site b's trap", the j9w fsck) and `tests/am1/results/hot-shards-4.md`. `TestRefsRepacksPastRepackAt` (deltas across packs), `TestRepackHoldsNoNetworkLock` (fsck waits, then answers ok), `only_a_local_entries_read_gets_a_larger_page`, and plants 56 to 58.
+
+**Flip.** A hosted run where the default-window repack's CPU, which is derived and outside `NetworkLoad`, starves validates on a standard-4; a member trap at a 1 MB page under load; or 1 MB pages that make a busy shard's catch-up fall behind journey 9's push rate.
+
 ### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
 
 **Decision.** A catch-up's and a rehydrate's inline packs go to the shard's container in one `POST /ingest-batch` per run of up to `INGEST_BATCH_BYTES` (4 MB, `crates/git/src/catchup.rs`), one answer per pack, `done` or `later`. The container concatenates the run's packs not already ingested into one pack and indexes it with one `index-pack --strict --fix-thin`. Each pack's objects are recorded under its own SHA-256 for `/promote`, found by their offsets in the joined pack. When the joined pack fails, the run is split in halves down to one pack, which is ingested as `/ingest` ingests it, so two packs that carry the same object (which `--strict` refuses in one pack) and a pack whose base is missing each end up on their own. A stored pack still streams alone from its bucket. A container whose image has no `/ingest-batch` (404) gets one `/ingest` a pack.
@@ -2868,3 +2896,53 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `crates/git/tests/agent_load.rs`: `b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share` now runs the leader's path (`LoadReports`, `pool_ask`, two `PoolLedger`s, `granted_k`) and checks distinct slots and each owner's share on each site every minute; `a_hostile_owner_with_three_hot_networks_is_held_to_its_share`, `another_owners_step_up_never_reduces_a_networks_held_shards`, `an_unrenewed_lease_expires_and_frees_its_shards`, `an_unreachable_ledger_keeps_k`; plants in `tests/am1/pool/plant.py`; the two-owner hosted smoke in `tests/am1/results/pool-grants.md`.
 
 **Flip.** A plan model with per-owner shares, which replaces `owner_share`. Also flips on a hosted run where a ledger round trip delays a step past `fanout`'s up window, or where a ledger's SQLite write rate on one pool shard shows in its validate latency.
+
+### M5-WP1: the `Release` group's rules, as built (2026-11-13)
+
+#### `decide`'s clock is the entry's own time
+
+**Decision.** `ReleaseFold::decide(anchor, at, bytes)` takes `at`, the time the leader stamped on the entry, and a follower's `check` takes the same stamp from the entry it verifies (the member's `release_at` table). `not_after` and a drain's 24 hours are judged against it, so the rules use no clock and the CLI, the member, and the tests run one function.
+
+**Why.** "`decide` is pure" (`design/DESIGN.md`, Shape, the `Command` trait). A wall clock read in `decide` would let a follower refuse an entry its leader accepted.
+
+**Beat.** Reading `Date.now()` in the member, which makes `decide` impure. Carrying the time in the signed body, which the signer controls.
+
+**Evidence.** `an_intent_past_not_after_is_refused` and `the_executor_key_replaces_only_a_lost_site_and_pins_nothing` (`crates/release/src/tests`); plants 2 and 11 in `tests/m5/plant.py`.
+
+**Flip.** A rule that needs time the leader cannot stamp, such as a deadline that must hold while no entry commits.
+
+#### `SignedIntent` carries no signature of its own
+
+**Decision.** `SignedIntent` drops `release_sig`, `key`, and `sig`. The entry's signature is the intent's, and the release's signature is on its `ReleaseUploaded` record, which an intent names by id.
+
+**Why.** A signed entry already carries its signers and binds the install and `prev`. A second signature inside the body signs fewer bytes and adds a check that can disagree with the first.
+
+**Beat.** Keeping the three fields and checking both, which doubles the signer rules.
+
+**Evidence.** `each_kind_takes_only_its_signers`; `design/DESIGN.md`, Shape, `SignedIntent`.
+
+**Flip.** An intent that must be relayed without its entry, such as one carried to a second install.
+
+#### Entries after genesis are format 0x30.2
+
+**Decision.** A `Release` member writes the genesis as 0x30.1 and every later entry as 0x30.2, and reads both. Tags 0 (`Genesis`) and 1 (`Keys`) are unchanged; tags 2 to 23 are new, in the design's order (`crates/release/src/tests/entry_tags.golden`).
+
+**Why.** A member built before M5-WP1 decodes only the genesis. A new format makes its refusal "unreadable format", not a wrong decode, and the existing installs' genesis bytes still re-sign byte for byte.
+
+**Beat.** Reusing 0x30.1 for the new tags, which an older member would misread as malformed.
+
+**Evidence.** `the_codec_round_trips_every_entry_kind`; graft-m4a's `genesis.unsigned`, signed again by this branch's `graftyard sign`, is byte-identical to its committed `genesis.signed` (digest `b40c10ed84bd…`).
+
+**Flip.** None expected: the wire format is append-only.
+
+#### An `EdgeRoll` undo pin names R or the release the edge runs
+
+**Decision.** An `EdgeRoll { release: R }`'s pre-signed undos may pin only R or the release the edge currently runs, and an `EdgeRoll` whose versions drop a version an undo of the current intent names is refused `DropsUndoVersion`.
+
+**Why.** The design says the roll may not drop an undo's version (`design/DESIGN.md`, Shape, "Release group") but not which versions an undo may name. Only these two are deployed during the roll, so a pin to any other release would point at a version no deployment holds.
+
+**Beat.** Accepting any uploaded release as the pin, which lets an undo name a version the roll already removed.
+
+**Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
+
+**Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.

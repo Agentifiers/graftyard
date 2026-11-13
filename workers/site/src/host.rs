@@ -117,13 +117,21 @@ pub const ENTRIES_PAGE_BYTES: usize = 600_000;
 /// 600 KB page held one entry, and a rehydrate's tail ran at one member read per pack, about 120 ms each
 /// (`tests/am1/results/hot-shards-2.md`). The shard holds two pages at once, so this bounds its memory too.
 pub const ENTRIES_LOCAL_PAGE_BYTES_MAX: usize = 4_000_000;
+/// The most a local page may hold while the member is serving other reads (`ENTRIES_BUSY_READS` or more in flight):
+/// a 4 MB page built beside them took site b's member near its 128 MB, and it trapped "memory access out of bounds"
+/// 3 s after a home-shard kill, F47's shape (`tests/am1/results/hot-shards-3.md`, "Site b's trap") [guess for 1 MB].
+pub const ENTRIES_BUSY_PAGE_BYTES: usize = 1_000_000;
+/// Reads in flight (`Host::reads_in_flight`) at which a local page drops to `ENTRIES_BUSY_PAGE_BYTES` [guess]: an idle
+/// member, such as one under a rehydrate with no pushes, serves the 4 MB page.
+pub const ENTRIES_BUSY_READS: u32 = 1;
 
 /// The page an `/entries` read gets: a local read (the site's own git cache shard) the `bytes` it asks for, within
-/// `ENTRIES_PAGE_BYTES..=ENTRIES_LOCAL_PAGE_BYTES_MAX`; a remote one, which crosses regions under the lookup's CALL,
-/// always `ENTRIES_PAGE_BYTES`.
-pub fn entries_page_bytes(local: bool, asked: Option<u64>) -> usize {
+/// `ENTRIES_PAGE_BYTES..=ENTRIES_LOCAL_PAGE_BYTES_MAX`, or at most `ENTRIES_BUSY_PAGE_BYTES` while `reads` other reads
+/// are in flight; a remote one, which crosses regions under the lookup's CALL, always `ENTRIES_PAGE_BYTES`.
+pub fn entries_page_bytes(local: bool, asked: Option<u64>, reads: u32) -> usize {
+    let max = if reads >= ENTRIES_BUSY_READS { ENTRIES_BUSY_PAGE_BYTES } else { ENTRIES_LOCAL_PAGE_BYTES_MAX };
     match asked {
-        Some(b) if local => b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize,
+        Some(b) if local => b.clamp(ENTRIES_PAGE_BYTES as u64, max as u64) as usize,
         _ => ENTRIES_PAGE_BYTES,
     }
 }
@@ -133,6 +141,7 @@ pub const SCHEMA: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS log (idx INTEGER PRIMARY KEY, term INTEGER NOT NULL, digest BLOB NOT NULL, row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS reg (k TEXT PRIMARY KEY, v TEXT NOT NULL)",
     crate::release::RELEASE_SCHEMA,
+    crate::release::RELEASE_AT_SCHEMA,
     "CREATE TABLE IF NOT EXISTS fold (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS id_block (id INTEGER PRIMARY KEY CHECK (id = 1), row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS group_config (id INTEGER PRIMARY KEY CHECK (id = 1), idx INTEGER NOT NULL, row BLOB NOT NULL)",
@@ -185,6 +194,8 @@ pub struct Stats {
     pub queue_ms: Vec<u32>,
     /// Reads shed past `crate::member::READS_MAX` or `HEAVY_READS`, or before a dump rebuild was due.
     pub shed_reads: u32,
+    /// Local `/entries` pages capped at `ENTRIES_BUSY_PAGE_BYTES` because other reads were in flight.
+    pub busy_pages: u32,
     /// Reads answered from another read of the same query granted in the same input (`shared_answer`).
     pub shared_reads: u32,
     /// A learner's whole-tier reads that waited for a dump rebuild and were granted again, instead of shed.
@@ -2998,15 +3009,20 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 #[cfg(test)]
 mod tests {
     /// The site's own shard gets the larger page it asks for, never past the local cap or under the standard page; a
-    /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL.
+    /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL. While the
+    /// member serves other reads the local page is at most 1 MB, and an idle member serves the full 4 MB.
     #[test]
     fn only_a_local_entries_read_gets_a_larger_page() {
-        use super::{ENTRIES_LOCAL_PAGE_BYTES_MAX as MAX, ENTRIES_PAGE_BYTES as STD, entries_page_bytes};
-        assert_eq!(entries_page_bytes(true, Some(2_000_000)), 2_000_000);
-        assert_eq!(entries_page_bytes(true, Some(u64::MAX)), MAX);
-        assert_eq!(entries_page_bytes(true, Some(1)), STD);
-        assert_eq!(entries_page_bytes(true, None), STD);
-        assert_eq!(entries_page_bytes(false, Some(2_000_000)), STD);
+        use super::entries_page_bytes as page;
+        use super::{ENTRIES_BUSY_PAGE_BYTES as BUSY, ENTRIES_LOCAL_PAGE_BYTES_MAX as MAX, ENTRIES_PAGE_BYTES as STD};
+        assert_eq!(page(true, Some(2_000_000), 0), 2_000_000);
+        assert_eq!(page(true, Some(u64::MAX), 0), MAX);
+        assert_eq!(page(true, Some(1), 0), STD);
+        assert_eq!(page(true, None, 0), STD);
+        assert_eq!(page(false, Some(2_000_000), 0), STD);
+        assert_eq!(page(true, Some(u64::MAX), 1), BUSY, "one read in flight already caps the page");
+        assert_eq!(page(true, Some(800_000), 5), 800_000, "a page under the busy cap is not raised");
+        assert_eq!(page(false, Some(u64::MAX), 5), STD);
     }
 
     use std::cell::Cell;
