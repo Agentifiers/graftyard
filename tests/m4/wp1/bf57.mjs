@@ -6,7 +6,10 @@
 //
 // Measures, from the receiver's log and the edge's replies:
 // - healthy first-attempt latency: arrival at the receiver minus the status's 201 (an upper bound on entry commit to
-//   attempt start, plus the request's one-way time), p99 over every healthy delivery;
+//   attempt start, plus the request's one-way time), p99 over every healthy delivery. The receiver stamps arrivals
+//   with Cloudflare's clock and this script stamps 201s with its own, so the offset between them (`skew`, the
+//   receiver's clock minus this one, measured as the median of 9 round trips to the receiver before and after the
+//   load) is taken off every arrival; the orb's clock ran 1.82 s behind Cloudflare's on 2026-11-13;
 // - the slow hook's deliveries in chain order (its sequence numbers strictly increase);
 // - the Webhooks cursor lag, from the commit of the first entry a cursor commit passes to that cursor's own commit,
 //   which each repository leader logs ("webhooks cursor <repo> read <i> lag <ms>ms"), read from Workers Logs over the
@@ -69,6 +72,21 @@ log(`slow hook ${slowHook}`);
 await sleep(process.env.KEEP_HOOKS ? 2_000 : 30_000); // let the pings drain
 await fetch(`${SINK}/clear`);
 
+/** The receiver's clock minus this one: for each round trip, its arrival stamp minus the midpoint of the request. */
+async function skew(tag) {
+  const marks = [];
+  for (let i = 0; i < 9; i++) {
+    const t0 = Date.now();
+    await fetch(`${SINK}/h/1`, { method: "POST", body: JSON.stringify({ description: `skew ${tag} ${i}` }) });
+    marks.push([`skew ${tag} ${i}`, (t0 + Date.now()) / 2]);
+  }
+  const d = await (await fetch(`${SINK}/dump`)).json();
+  const v = marks.map(([k, mid]) => d.find((x) => x.after === k)?.at - mid).filter(Number.isFinite).sort((a, b) => a - b);
+  return v[v.length >> 1];
+}
+const skewBefore = await skew("before");
+log(`clock skew before: ${skewBefore} ms`);
+
 // The load: RATE statuses a second, round robin over the repositories, each with its own sequence.
 const sent = new Map(); // `${repo}:${seq}` -> 201 time
 const seqs = new Map(repos.map((r) => [r.name, 0]));
@@ -111,7 +129,10 @@ for (let i = 0; i < 400; i++) {
   if (i % 6 === 0) log(`slow hook ${n} of ${slowWant}`);
   await sleep(10_000);
 }
-const dump = await (await fetch(`${SINK}/dump`)).json();
+const skewAfter = await skew("after");
+const SKEW = Math.round((skewBefore + skewAfter) / 2);
+log(`clock skew after: ${skewAfter} ms; taken off arrivals: ${SKEW} ms`);
+const dump = (await (await fetch(`${SINK}/dump`)).json()).filter((x) => !String(x.after).startsWith("skew ")).map((x) => ({ ...x, at: x.at - SKEW }));
 for (const x of dump) row(out, { kind: "arrival", ...x });
 // Cursor lag from the leaders' log lines, through the Workers observability API.
 const lags = [];
@@ -166,4 +187,4 @@ for (const r of repos) for (const h of r.hooks) {
   if (!f.every((v, i) => i === 0 || v > f[i - 1])) bad++;
 }
 log(`hooks out of order: ${bad}`);
-row(out, { kind: "summary", shed, committed: ok.length, lag1: lagMax(0, half), lag2: lagMax(half, end - t0), healthy: healthy.length, want, p50: p(0.5), p99: p(0.99), max: healthy.at(-1), slow: firstSeen.length, slowWant, inOrder, bad });
+row(out, { kind: "summary", skew: SKEW, shed, committed: ok.length, lag1: lagMax(0, half), lag2: lagMax(half, end - t0), healthy: healthy.length, want, p50: p(0.5), p99: p(0.99), max: healthy.at(-1), slow: firstSeen.length, slowWant, inOrder, bad });

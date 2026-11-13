@@ -2925,9 +2925,11 @@ async fn each_at_once<T, Fut: std::future::Future<Output = T>>(
     futures_util::future::join_all(chains.iter().copied().map(read)).await
 }
 
-/// How long past its time an alarm `arm_in` set may be before it counts as lost [guess: an alarm's own retries run
-/// within a few seconds].
-const ALARM_LATE_MS: u64 = 5_000;
+/// How long past its time an alarm `arm_in` set may be before it counts as lost [guess]. At 5 s, a leader whose alarm
+/// invocation was canceled still stalled its alarm-driven consumers 5.5 to 6.3 s three times in BF-57 run 6
+/// (graft-m4a), each from its last alarm to the first input after the 5 s; an alarm that runs reaches `alarm` well
+/// within a second of its time, and re-arming a live one only moves it.
+const ALARM_LATE_MS: u64 = 1_000;
 
 /// Whether `arm_in` sets the alarm for `at`, with `armed` the one it set last (0 for none) at `now`: when there is
 /// none, when `at` is sooner, or when the armed one is `ALARM_LATE_MS` overdue. A canceled alarm invocation never
