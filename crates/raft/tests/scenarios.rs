@@ -1234,3 +1234,52 @@ fn a_follower_marks_a_stall_only_from_a_late_resend_of_an_uncommitted_entry() {
     c.on(B, |m, now| m.step(now, late.from, late.msg));
     assert_eq!(c.m(B).state().stalled_since, None, "a delayed append past the commit marks nothing");
 }
+
+/// B0-02's large entries (`tests/m0/results/carried-6.md`): a backlog that queues behind the entry in flight splits into
+/// entries within ENTRY_SOFT, each command in admission order and exactly once, and every one commits.
+#[test]
+fn a_backlog_splits_into_entries_within_entry_soft_in_order() {
+    use graftyard_raft::{ENTRY_SOFT, encode_entry};
+    let mut c = Cluster::new(41);
+    c.elect(A);
+    let hold = admit(&mut c, A, 1_000, put("hold", "x"));
+    let first = c.m(A).log().len() as u64 + 1;
+    // 300 commands of about 1 KB, as B0-02's puts: about 300 KB queued behind `hold`, about four soft-capped entries.
+    let value = "v".repeat(1_000);
+    let tickets: Vec<_> =
+        (0..300u32).map(|i| admit(&mut c, A, 2_000 + u128::from(i), append("k", &format!("{i:03}{value}")))).collect();
+    for _ in 0..40 {
+        c.deliver_all();
+        c.advance(10);
+    }
+    assert!(!c.ticket_results(hold).is_empty());
+    let entries: Vec<_> =
+        c.m(A).log().iter().filter(|e| e.index.0 >= first && !e.requests.is_empty()).cloned().collect();
+    assert!(entries.len() >= 4, "{} entries for 300 KB", entries.len());
+    let mut seen = Vec::new();
+    for e in &entries {
+        // The entry's commands fit ENTRY_SOFT with room for one more neither way: a cap that never binds or one that
+        // splits early both fail here.
+        let len = encode_entry(e).len();
+        assert!(len <= ENTRY_SOFT + 2_000, "entry {} is {len} bytes", e.index.0);
+        if let EntryBody::Events(evs) = &e.body {
+            for ev in evs {
+                if let common::kv::KvEvent::Push { s, .. } = ev {
+                    seen.push(s[..3].parse::<u32>().unwrap());
+                }
+            }
+        }
+    }
+    assert!(
+        entries[..entries.len() - 1].iter().all(|e| encode_entry(e).len() > ENTRY_SOFT - 2_000),
+        "an entry split early"
+    );
+    assert_eq!(seen, (0..300).collect::<Vec<_>>(), "every command once, in admission order");
+    for t in tickets {
+        assert!(c.ticket_results(t).iter().any(|r| matches!(r, Resolution::Ticket { result: Ok(_), .. })));
+    }
+    // Every follower holds the same entries.
+    for s in [B, C] {
+        assert_eq!(c.m(s).log().len(), c.m(A).log().len());
+    }
+}
