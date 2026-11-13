@@ -243,6 +243,32 @@ Checks:
 - `tests/nr3/plant.py` mutants 15 to 18: no entries sent, a learner with a call out not pipelined, sent only when two or more are missing, a lossy learner pipelined. All caught.
 - `cargo test -p graftyard-raft`: all pass.
 
+### Gate 7 on f1ab1a61: far learners' wait for entries falls, and the gate still fails
+
+Site day from f1ab1a61 21:37 to 21:48Z (sites and edge exit 0); repo:65551, load from 22:02:12Z, 500 agents, 300 s.
+
+- **API:** 99.29% served (411 × 503), p50 835 ms, **p99 2,784 ms**; tier p99 2,688 ms; auth p99 74 ms; resolve p99 454 ms. **Fails on p99.**
+- **Commit:** p50 492 ms, p99 1,688 ms. Merges p99 2,053 ms. Agent push 1,251 of 1,252 ok, p99 5.2 s.
+- **Other:** no leader change; 0 stale in 150 probe rounds. Leader 61 MiB; learners 56 to 62 MiB.
+- **Leader egress:** calls to learners 14 to 26 each, 0.0 to 0.8 MB, as before. It held 962 to 1,095 AppendEntries per learner for that learner's next call, and they waited p99 241 to 389 ms there.
+
+The split against gate 6, p99 in ms:
+
+| Learner | hold (ii), gate6 → gate7 | apply (iii), gate6 → gate7 | total, gate6 → gate7 |
+| --- | --- | --- | --- |
+| l1 weur | 1,933 → 861 | 709 → 1,600 | 2,125 → 1,873 |
+| l4 weur | 4,451 → 404 | 504 → 1,280 | 4,613 → 1,582 |
+| l2 apac | 3,111 → **7,832** | 559 → 1,728 | 3,454 → **8,675** |
+| l5 apac | 2,692 → 1,210 | 461 → 1,359 | 2,872 → 2,186 |
+| l0, l3, l6, l7 enam | 0 to 993 → 0 to 1,530 | 1,048 to 1,326 → 1,301 to 1,842 | 1,414 to 1,625 → 1,408 to 2,046 |
+
+- **The change worked on three of four far learners.** Entries through the read index were already held, or came with the answer, in 63 to 80% of their batches, against 12 to 20% in gate 6.
+- **One apac learner, l2, got worse.** p50 hold 1,152 ms, and 6,799 of its 8,987 reads `late`. Its trace starts at the load and holds 7,065 entries, so its tail is not a restart. I have not traced why.
+- **Every learner's own apply is now p99 1.3 to 1.8 s.** It is the larger part on the near learners, and on the far learners once their hold fell. Their storage confirms are p99 0.97 to 1.4 s on enam and 0.02 to 0.34 s on weur and apac, so confirms do not explain the far learners' apply.
+- **Sweep and Porcupine on f1ab1a61's raft:** the widened long sweep exited 0. HARSH's longest stall was 15,735 ms, gray's 27,226 ms, and live's 28,340 ms (4,000 seeds), all under 30 s. Porcupine was Ok on all three histories. The totals equal gate 5's tree's to the message. That is expected: a voter is sent every entry as it is cut, so `append_for_read` finds nothing unsent for a voter, and the simulator models no learners. The kept test and the hosted runs cover the learner path.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate7.jsonl`, `run-gate7.status`, `fresh-gate7.jsonl`, `egress-gate7.txt`, `mem-gate7.json`. repo:65551 torn down.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

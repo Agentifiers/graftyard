@@ -21,11 +21,14 @@ const pct = (xs) => {
   const at = (p) => (s.length ? s[Math.min(s.length - 1, Math.floor(p * s.length))] : null);
   return { n: s.length, p50: at(0.5), p99: at(0.99), max: s.length ? s[s.length - 1] : null };
 };
+// RAW=path: every learner's and the leader's raw trace, as one JSON object, for a closer look after teardown.
+const raw = {};
 const SAME = 2; // ms: a ReadIndexRes and an append stepped from one response land in the same turn.
 for (const [site, name, tag] of learners) {
   try {
     const v = (await member(chain, site, "/stats", undefined, 30000, name)).v ?? {};
     const tr = v.trace ?? [];
+    raw[tag] = tr;
     const sent = new Map();
     // Per answered batch: [R, t1, t2, via] until applied.
     const open = [];
@@ -77,6 +80,7 @@ for (const [site, name, tag] of learners) {
 }
 try {
   const v = (await member(chain, leader, "/stats", undefined, 30000)).v ?? {};
+  raw[`f${leader}`] = v.trace ?? [];
   const held = new Map(), wait = new Map(), n = new Map();
   for (const [at, kind, peer, batch] of v.trace ?? []) {
     if (kind === 18) held.set(`${peer}/${batch}`, at);
@@ -92,3 +96,4 @@ try {
 } catch (e) {
   console.log("leader", String(e).slice(0, 80));
 }
+if (process.env.RAW) (await import("node:fs")).writeFileSync(process.env.RAW, JSON.stringify(raw));
