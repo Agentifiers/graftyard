@@ -1,0 +1,72 @@
+2026-11-13T23:09:42.944Z m3org/nr3-gate9 = 65553
+2026-11-13T23:09:42Z nr3-gate9 = 65553 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6555":137}
+2026-11-13T23:20:38.836Z repo:65553 leader 0: learners [{"addr":192,"doName":"repo:65553#3#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65553#3#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65553#3#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65553#3#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65553#3#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65553#3#l5","join":200,"sit config 916
+2026-11-13T23:20:41.173Z repo:65553 leader 0: k 1 at 916
+f0 {"role":true,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":4}
+f1 {"role":false,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":1}
+f2 {"role":false,"shed":0,"shared":0,"fr":2,"late":0,"refused":0,"waited":0,"builds":158,"heavy":0,"inflight":0,"read":2}
+l0 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l2 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l3 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l4 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l5 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l6 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l7 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+{"status":200,"ms":3526,"bytes":232562,"index":1183}
+2026-11-13T23:20:49Z b0-29 start
+2026-11-13T23:29:00Z b0-29 done 0
+f0 {"role":false,"shed":4,"shared":380,"fr":720,"late":256,"refused":0,"waited":3,"builds":11,"heavy":0,"inflight":0,"read":2092}
+f1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+f2 {"role":true,"shed":319,"shared":179,"fr":841,"late":612,"refused":0,"waited":3699,"builds":167,"heavy":0,"inflight":0,"read":2886}
+l0 {"role":false,"shed":1,"shared":1160,"fr":18793,"late":16991,"refused":0,"waited":54,"builds":60,"heavy":0,"inflight":0,"read":18793}
+l1 {"role":false,"shed":12,"shared":6920,"fr":18642,"late":9835,"refused":0,"waited":471,"builds":191,"heavy":0,"inflight":0,"read":18642}
+l2 {"role":false,"shed":7,"shared":6374,"fr":14102,"late":3137,"refused":0,"waited":303,"builds":231,"heavy":0,"inflight":0,"read":14102}
+l3 {"role":false,"shed":4,"shared":2301,"fr":10268,"late":7251,"refused":0,"waited":129,"builds":76,"heavy":0,"inflight":0,"read":10268}
+l4 {"role":false,"shed":2,"shared":6466,"fr":14465,"late":5788,"refused":0,"waited":326,"builds":192,"heavy":0,"inflight":0,"read":14465}
+l5 {"role":false,"shed":3,"shared":6123,"fr":12893,"late":4761,"refused":0,"waited":178,"builds":177,"heavy":0,"inflight":0,"read":12893}
+l6 {"role":false,"shed":2,"shared":2316,"fr":11510,"late":8355,"refused":0,"waited":191,"builds":73,"heavy":0,"inflight":0,"read":11510}
+l7 {"role":false,"shed":0,"shared":1033,"fr":15066,"late":13291,"refused":0,"waited":174,"builds":64,"heavy":0,"inflight":0,"read":15066}
+f0 {"stages":{"grant":{"max":1007,"n":1207,"p50":0,"p99":1000},"total":{"max":1007,"n":1207,"p50":0,"p99":1000},"waited":{"max":52,"n":1207,"p50":0,"p99":0},"waitedN":3},"builds":87,"buildMs":{"max":0,"n":86,"p50":0,"p99":0},"waited":3,"late":256,"shed":4}
+f1 {"stages":{"grant":{"max":null,"n":0,"p50":null,"p99":null},"total":{"max":null,"n":0,"p50":null,"p99":null},"waited":{"max":null,"n":0,"p50":null,"p99":null},"waitedN":0},"builds":0,"buildMs":{"max":null,"n":0,"p50":null,"p99":null},"waited":0,"late":0,"shed":0}
+f2 {"stages":{"grant":{"max":996,"n":492,"p50":0,"p99":985},"total":{"max":999,"n":492,"p50":485,"p99":989},"waited":{"max":999,"n":492,"p50":0,"p99":950},"waitedN":177},"builds":301,"buildMs":{"max":0,"n":222,"p50":0,"p99":0},"waited":3699,"late":612,"shed":319}
+l0 {"stages":{"grant":{"max":997,"n":1763,"p50":337,"p99":975},"total":{"max":997,"n":1763,"p50":338,"p99":975},"waited":{"max":373,"n":1763,"p50":0,"p99":52},"waitedN":54},"builds":375,"buildMs":{"max":0,"n":375,"p50":0,"p99":0},"waited":54,"late":16992,"shed":1}
+l1 {"stages":{"grant":{"max":1006,"n":8753,"p50":408,"p99":978},"total":{"max":1006,"n":8753,"p50":411,"p99":979},"waited":{"max":650,"n":8753,"p50":0,"p99":100},"waitedN":466},"builds":897,"buildMs":{"max":0,"n":897,"p50":0,"p99":0},"waited":471,"late":9835,"shed":12}
+l2 {"stages":{"grant":{"max":996,"n":10888,"p50":62,"p99":583},"total":{"max":996,"n":10888,"p50":62,"p99":597},"waited":{"max":477,"n":10888,"p50":0,"p99":91},"waitedN":303},"builds":1119,"buildMs":{"max":0,"n":1119,"p50":0,"p99":0},"waited":303,"late":3137,"shed":7}
+l3 {"stages":{"grant":{"max":1000,"n":2959,"p50":358,"p99":978},"total":{"max":1000,"n":2959,"p50":363,"p99":982},"waited":{"max":500,"n":2959,"p50":0,"p99":216},"waitedN":126},"builds":395,"buildMs":{"max":0,"n":395,"p50":0,"p99":0},"waited":129,"late":7251,"shed":4}
+l4 {"stages":{"grant":{"max":1016,"n":8619,"p50":386,"p99":976},"total":{"max":1016,"n":8619,"p50":389,"p99":977},"waited":{"max":497,"n":8619,"p50":0,"p99":97},"waitedN":326},"builds":1038,"buildMs":{"max":0,"n":1038,"p50":0,"p99":0},"waited":326,"late":5788,"shed":2}
+l5 {"stages":{"grant":{"max":982,"n":8124,"p50":316,"p99":749},"total":{"max":982,"n":8124,"p50":319,"p99":761},"waited":{"max":635,"n":8124,"p50":0,"p99":107},"waitedN":172},"builds":901,"buildMs":{"max":0,"n":901,"p50":0,"p99":0},"waited":178,"late":4761,"shed":3}
+l6 {"stages":{"grant":{"max":997,"n":3108,"p50":259,"p99":955},"total":{"max":998,"n":3108,"p50":261,"p99":955},"waited":{"max":608,"n":3108,"p50":0,"p99":76},"waitedN":189},"builds":407,"buildMs":{"max":0,"n":407,"p50":0,"p99":0},"waited":191,"late":8356,"shed":2}
+l7 {"stages":{"grant":{"max":996,"n":1697,"p50":236,"p99":969},"total":{"max":996,"n":1697,"p50":240,"p99":969},"waited":{"max":498,"n":1697,"p50":0,"p99":169},"waitedN":174},"builds":378,"buildMs":{"max":0,"n":378,"p50":0,"p99":0},"waited":174,"late":13292,"shed":0}
+f0 {"role":false,"entries":14360,"rtt":{"n":40,"p50":394,"p99":972,"max":972},"apply":{"n":40,"p50":0,"p99":485,"max":485},"unanswered":0}
+f1 {"role":false,"entries":0,"rtt":{"n":0,"p50":null,"p99":null,"max":null},"apply":{"n":0,"p50":null,"p99":null,"max":null},"unanswered":0}
+f2 {"role":true,"entries":35403,"rtt":{"n":27,"p50":316,"p99":843,"max":843},"apply":{"n":27,"p50":0,"p99":18,"max":18},"unanswered":1}
+l0 {"role":false,"entries":9024,"rtt":{"n":933,"p50":298,"p99":827,"max":972},"apply":{"n":931,"p50":17034,"p99":38011,"max":38565},"unanswered":0}
+l1 {"role":false,"entries":9836,"rtt":{"n":1227,"p50":232,"p99":775,"max":1045},"apply":{"n":1225,"p50":0,"p99":4574,"max":5436},"unanswered":0}
+l2 {"role":false,"entries":13901,"rtt":{"n":2631,"p50":11,"p99":594,"max":943},"apply":{"n":2629,"p50":0,"p99":32762,"max":35759},"unanswered":0}
+l3 {"role":false,"entries":8279,"rtt":{"n":930,"p50":256,"p99":881,"max":1025},"apply":{"n":855,"p50":25932,"p99":60891,"max":61435},"unanswered":1}
+l4 {"role":false,"entries":10073,"rtt":{"n":1296,"p50":219,"p99":733,"max":913},"apply":{"n":1294,"p50":0,"p99":4755,"max":5417},"unanswered":0}
+l5 {"role":false,"entries":10377,"rtt":{"n":1311,"p50":176,"p99":671,"max":957},"apply":{"n":1308,"p50":0,"p99":31880,"max":33070},"unanswered":0}
+l6 {"role":false,"entries":8966,"rtt":{"n":932,"p50":225,"p99":880,"max":1062},"apply":{"n":917,"p50":2553,"p99":48042,"max":48919},"unanswered":0}
+l7 {"role":false,"entries":9009,"rtt":{"n":934,"p50":234,"p99":873,"max":1066},"apply":{"n":908,"p50":3017,"p99":49468,"max":49835},"unanswered":0}
+egress {"leader":2,"calls":1342,"mb":93.1,"peers":{"0":{"calls":627,"mb":43.7,"ok":591,"late":18,"failed":18},"1":{"calls":586,"mb":42.4,"ok":580,"late":3,"failed":3},"192":{"calls":11,"mb":0.9,"ok":7,"late":2,"failed":2},"193":{"calls":16,"mb":0.3,"ok":14,"late":1,"failed":1},"194":{"calls":26,"mb":1.5,"ok":26,"late":0,"failed":0},"195":{"calls":9,"mb":0.8,"ok":3,"late":3,"failed":3},"196":{"calls":23,"mb":0.9,"ok":21,"late":1,"failed":1},"197":{"calls":29,"mb":1.3,"ok":25,"late":2,"failed":2},"198":{"calls":8,"mb":0.7,"ok":4,"late":2,"failed":2},"199":{"calls":7,"mb":0.6,"ok":3,"late":2,"failed":2}}}
+l0 0 {"role":false,"entries":9038,"from":1794612044294,"rtt":{"n":933,"p50":298,"p99":827,"max":972},"hold":{"n":933,"p50":14876,"p99":38011,"max":38565},"apply":{"n":933,"p50":0,"p99":13727,"max":16101},"total":{"n":933,"p50":17387,"p99":38374,"max":38911},"via":{"same":0,"own":606,"call":32,"before":295},"unapplied":0,"confirm":{"n":1573,"p50":23,"p99":82,"max":303},"stepped":{"n":1574,"p50":0,"p99":0,"max":0}}
+l1 1 {"role":false,"entries":9840,"from":1794612044289,"rtt":{"n":1225,"p50":232,"p99":775,"max":1045},"hold":{"n":1225,"p50":0,"p99":4574,"max":5436},"apply":{"n":1225,"p50":0,"p99":2267,"max":4264},"total":{"n":1225,"p50":553,"p99":4975,"max":5775},"via":{"same":7,"own":558,"call":1,"before":659},"unapplied":0,"confirm":{"n":1635,"p50":12,"p99":68,"max":896},"stepped":{"n":1635,"p50":0,"p99":0,"max":0}}
+l2 2 {"role":false,"entries":13910,"from":1794612044395,"rtt":{"n":2630,"p50":11,"p99":582,"max":943},"hold":{"n":2630,"p50":0,"p99":27849,"max":31883},"apply":{"n":2630,"p50":187,"p99":15941,"max":25221},"total":{"n":2630,"p50":225,"p99":33121,"max":36219},"via":{"same":1,"own":105,"call":118,"before":2406},"unapplied":0,"confirm":{"n":1537,"p50":5,"p99":67,"max":615},"stepped":{"n":1537,"p50":0,"p99":0,"max":0}}
+l3 0 {"role":false,"entries":8365,"from":1794612044287,"rtt":{"n":930,"p50":256,"p99":881,"max":1025},"hold":{"n":890,"p50":35822,"p99":60891,"max":61435},"apply":{"n":890,"p50":0,"p99":21707,"max":24922},"total":{"n":890,"p50":36227,"p99":61151,"max":61682},"via":{"same":2,"own":588,"call":33,"before":267},"unapplied":40,"confirm":{"n":1322,"p50":36,"p99":171,"max":364},"stepped":{"n":1322,"p50":0,"p99":0,"max":0}}
+l4 1 {"role":false,"entries":10091,"from":1794612044325,"rtt":{"n":1296,"p50":219,"p99":733,"max":913},"hold":{"n":1296,"p50":0,"p99":4713,"max":5417},"apply":{"n":1296,"p50":0,"p99":2958,"max":9863},"total":{"n":1296,"p50":430,"p99":5075,"max":10035},"via":{"same":4,"own":427,"call":0,"before":865},"unapplied":0,"confirm":{"n":1676,"p50":12,"p99":61,"max":340},"stepped":{"n":1676,"p50":0,"p99":0,"max":0}}
+l5 2 {"role":false,"entries":10389,"from":1794612044410,"rtt":{"n":1309,"p50":176,"p99":671,"max":957},"hold":{"n":1309,"p50":0,"p99":26757,"max":31589},"apply":{"n":1309,"p50":99,"p99":20703,"max":22922},"total":{"n":1309,"p50":461,"p99":32324,"max":33734},"via":{"same":0,"own":342,"call":88,"before":879},"unapplied":0,"confirm":{"n":1663,"p50":11,"p99":51,"max":161},"stepped":{"n":1663,"p50":0,"p99":0,"max":0}}
+l6 0 {"role":false,"entries":9047,"from":1794612044293,"rtt":{"n":929,"p50":225,"p99":880,"max":1062},"hold":{"n":929,"p50":2606,"p99":48042,"max":48919},"apply":{"n":929,"p50":0,"p99":1795,"max":3577},"total":{"n":929,"p50":2934,"p99":48406,"max":49237},"via":{"same":7,"own":557,"call":6,"before":359},"unapplied":0,"confirm":{"n":1540,"p50":24,"p99":105,"max":1670},"stepped":{"n":1540,"p50":0,"p99":0,"max":0}}
+l7 0 {"role":false,"entries":9091,"from":1794612044270,"rtt":{"n":934,"p50":234,"p99":873,"max":1066},"hold":{"n":926,"p50":3087,"p99":49468,"max":49835},"apply":{"n":926,"p50":0,"p99":1978,"max":6567},"total":{"n":926,"p50":3673,"p99":49882,"max":50221},"via":{"same":7,"own":550,"call":8,"before":361},"unapplied":8,"confirm":{"n":1534,"p50":23,"p99":161,"max":1913},"stepped":{"n":1534,"p50":0,"p99":0,"max":0}}
+leader f2 held for 192 {"held":849,"wait":{"n":847,"p50":0,"p99":0,"max":0}}
+leader f2 held for 193 {"held":798,"wait":{"n":796,"p50":0,"p99":100,"max":380}}
+leader f2 held for 194 {"held":663,"wait":{"n":659,"p50":17,"p99":200,"max":256}}
+leader f2 held for 195 {"held":612,"wait":{"n":610,"p50":0,"p99":0,"max":204}}
+leader f2 held for 196 {"held":744,"wait":{"n":743,"p50":0,"p99":230,"max":454}}
+leader f2 held for 197 {"held":804,"wait":{"n":802,"p50":0,"p99":257,"max":303}}
+leader f2 held for 198 {"held":791,"wait":{"n":791,"p50":0,"p99":0,"max":0}}
+leader f2 held for 199 {"held":787,"wait":{"n":787,"p50":0,"p99":0,"max":98}}
+2026-11-13T23:33:25Z fresh exit 0
+2026-11-13T23:33:31Z torn down 65553
+DONE

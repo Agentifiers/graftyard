@@ -289,6 +289,25 @@ A learner's call and its hedged copy (`HEDGE`, 500 ms), and its calls to the lea
 
 Rows: `tests/nr3/rows/a1-b0-29-gate8.jsonl`, `run-gate8.status`, `fresh-gate8.jsonl`, `egress-gate8.txt`, `mem-gate8.json`, `trace-gate8.json.gz`. repo:65552 torn down.
 
+### Gate 9 on c95216cc: re-sending on every read lost the leader
+
+Site day from c95216cc 22:56 to 23:07Z (sites and edge exit 0). The sweep on c95216cc passed: HARSH 15,735 ms, gray 27,226 ms, live 28,340 ms, Porcupine Ok ×3.
+
+gate9: repo:65553, load from 23:20:49Z.
+
+- **API:** **73.50% served** (12,023 × 503, 3,815 driver-capped), p50 1,560 ms, p99 3,518 ms. **Fails.**
+- **Commit:** p99 6,327 ms. Agent pushes: 1,185 of 1,241 ok, p99 19.2 s.
+- **Leader:** **2 leader changes**, from site 0 to site 2 at term 4. 0 stale in 130 probe rounds (20 failed with 503). Site 0's member peaked at **122 MiB**, against 61 to 70 MiB in gates 6 to 8; learners 57 to 64 MiB. No `exceededMemory` outcome was recorded.
+
+c95216cc's read append was a forced send from `next` on every read that found the learner without its entries. With a call in flight, that re-sent entries already on the wire, up to `APPEND_BYTES_MAX` per read and up to 8 learners × about 20 reads a second. I take that as the cause of the leader's memory and of the change [inference; the timing fits, and nothing else changed between gate8 and gate9].
+
+**The version that stays**: with calls in flight, the read's append follows them within `PIPELINE`, as f1ab1a61's did, so no entry is sent twice. With the pipeline empty after a refusal or failure, it goes from `next` at once, which is what gate8's apac learner lacked.
+
+- The kept test has the learner's tick call in flight, then a refusal of an older call. It asserts the first append follows the call in flight and the second starts from `next`. A lossy learner gets neither.
+- The test fails on both earlier builds. Plants 15 to 20 are all caught: none sent; f1ab1a61's nothing after a refusal; c95216cc's re-send on every read; none while a call is out; off by one; a lossy learner.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate9.jsonl`, `run-gate9.status`, `fresh-gate9.jsonl`, `mem-gate9.json`, `trace-gate9.json.gz`. repo:65553 torn down.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

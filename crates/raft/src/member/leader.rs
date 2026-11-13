@@ -1279,38 +1279,46 @@ impl<C: Command> Member<C> {
     }
 
     /// Before the answer to a learner's read-index batch at `index`: when it was not yet sent the entries through
-    /// `index`, an AppendEntries from the first entry it has not acknowledged (`next`), which leaves ahead of the
-    /// `ReadIndexRes`, in the same response while the learner calls this member (`design/DESIGN.md`, "Follower read").
-    /// Without it a far learner's entries trailed its answer by one or two more of its calls: p50 574 to 668 ms and
-    /// p99 1.9 to 4.5 s on weur and apac at 500 agents, against a read-index round trip of p99 476 to 639 ms. Sent
-    /// from `next`, not after the calls in flight: a learner's calls and their copies end in any order, and an append
-    /// held for one that overtook an earlier one on the far link was refused, which emptied the pipeline, and the
-    /// entries waited CALL_DEADLINE for a resend (p99 4.8 to 7.8 s on one apac learner a run). Not to a voter, which is
-    /// sent every entry as it is cut, nor on a lossy link (F67 rule 13); `tests/am1/results/narrow-reads-3.md`, "Where
-    /// a far learner's wait goes".
+    /// `index`, an AppendEntries that leaves ahead of the `ReadIndexRes`, in the same response while the learner calls
+    /// this member (`design/DESIGN.md`, "Follower read"). Without it a far learner's entries trailed its answer by one
+    /// or two more of its calls: p50 574 to 668 ms and p99 1.9 to 4.5 s on weur and apac at 500 agents, against a
+    /// read-index round trip of p99 476 to 639 ms. With calls in flight it follows them, within PIPELINE. With none,
+    /// because a refusal or failure emptied the pipeline, it goes from the first entry the learner has not
+    /// acknowledged: a far learner's calls end in any order, one that overtook another was refused, and with nothing
+    /// sent until CALL_DEADLINE's resend one apac learner a run waited p99 4.8 to 7.8 s for its entries. Re-sending
+    /// from that entry on every read instead took the leader to 122 MiB and lost its leadership. Not to a voter, which
+    /// is sent every entry as it is cut, nor on a lossy link (F67 rule 13); `tests/am1/results/narrow-reads-3.md`,
+    /// "Where a far learner's wait goes".
     pub(super) fn append_for_read(&mut self, peer: SiteId, index: Index) {
         if quorum::is_voter(self.log_config(), peer) || self.link_lossy(peer) {
             return;
         }
         let Some(lead) = self.lead.as_ref() else { return };
-        // Below the in-memory window a catch-up read from storage is out or due: `tick` sends it.
-        if lead.next.get(&peer).is_some_and(|n| *n <= self.base.index) {
+        let next = lead.next.get(&peer).copied().unwrap_or(self.last().next());
+        // A catch-up read from storage, or an install, is out or due: `tick` sends it.
+        if next <= self.base.index || self.install.as_ref().is_some_and(|s| Index(next.0 - 1) < s.through) {
             return;
         }
-        // The newest call's last entry, or with none since a refusal or failure emptied `pipe`, the acknowledged one.
-        let through = lead.pipe.get(&peer).and_then(|p| p.last()).map_or(lead.matched(peer), |p| p.1);
-        if through < index {
-            self.send_append(peer, true);
+        match lead.pipe.get(&peer).and_then(|p| p.last()) {
+            Some(&(_, through)) if through < index => self.append_to(peer, false, true),
+            Some(_) => {}
+            None if lead.matched(peer) < index => self.send_append(peer, true),
+            None => {}
         }
     }
 
     /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
     /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
     fn send_append(&mut self, peer: SiteId, force: bool) {
+        self.append_to(peer, force, false);
+    }
+
+    /// `send_append`, with `read` pipelining a learner as a voter (`append_for_read`).
+    fn append_to(&mut self, peer: SiteId, force: bool, read: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
-        let voter = quorum::is_voter(self.log_config(), peer);
+        let voter = read || quorum::is_voter(self.log_config(), peer);
         let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());

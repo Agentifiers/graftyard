@@ -1451,13 +1451,14 @@ fn a_voter_is_pipelined_unless_its_link_is_lossy() {
 }
 
 /// A learner's read-index answer is preceded by the entries it needs: when the leader answers a learner's batch at
-/// index i and has not sent it entries through i, an AppendEntries from the first entry the learner has not
-/// acknowledged through i, carrying a commit at or past i, leaves ahead of the `ReadIndexRes`, so both ride one
-/// response to the learner's call. Before, a learner got one call at a time, its entries trailed its answer by one or
-/// two more calls, and far learners waited p99 1.9 to 4.5 s for them. From the acknowledged entry, not after the calls
-/// in flight: those end in any order on the far link, and one refused out of order emptied the pipeline, which left
-/// the entries to CALL_DEADLINE's resend (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait goes").
-/// A learner whose link is lossy still gets one call at a time (F67 rule 13).
+/// index i and has not sent it entries through i, an AppendEntries through i, carrying a commit at or past i, leaves
+/// ahead of the `ReadIndexRes`, so both ride one response to the learner's call. Before, a learner got one call at a
+/// time, its entries trailed its answer by one or two more calls, and far learners waited p99 1.9 to 4.5 s for them.
+/// With a call in flight the append follows it, with no entry sent twice: re-sent from the acknowledged entry on every
+/// read, the leader reached 122 MiB. After a refusal emptied the pipeline it goes from the acknowledged entry at once:
+/// a far learner's calls end in any order, and waiting for CALL_DEADLINE's resend held one apac learner's entries p99
+/// 4.8 to 7.8 s (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait goes"). A learner whose link is
+/// lossy still gets one call at a time (F67 rule 13).
 #[test]
 fn a_learner_read_index_answer_follows_the_entries_it_needs() {
     use graftyard_raft::{GroupConfig, STEP_DOWN};
@@ -1465,8 +1466,9 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
         Member as MemberRef, MemberKind, Placement, PlacementChecks, Region, Rtt, Site, SiteTable, learner_addr,
     };
     // Per read, the first entry of an append ahead of the answer that carried entries through the read index and a
-    // commit at or past it, or None. The learner acknowledges no append; `fail` of its first calls failed with an
-    // error. Before the second read, the learner refuses an earlier call, as one that overtook another would be.
+    // commit at or past it, or None; with the tick's call's first entry and the entry after its last. The learner
+    // acknowledges no append; `fail` of its first calls failed with an error. Before the second read, a refusal of
+    // an older call empties the leader's pipeline to the learner.
     let before_answer = |fail: usize| {
         let mut c = Cluster::new(49);
         c.elect(A);
@@ -1531,20 +1533,27 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
             }
         }
         let early = early.expect("the tick's call to the learner");
-        // Entries commit while the learner's call is out, so it was sent none of them: two, then exactly one more.
+        // Entries commit while the learner's call is out, so it was sent none of them: exactly one, then two more.
         let mut out = Vec::new();
-        for (batch, n) in [(7u64, 2u128), (8, 1)] {
+        for (batch, n) in [(7u64, 1u128), (8, 2)] {
+            for i in 0..n {
+                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), "v"));
+                step(&mut c);
+            }
+            // A refusal of an older call comes back, as one that a later call overtook would: it empties the leader's
+            // pipeline to the learner while the newest call is still out, and is not the current probe, so the
+            // leader does not re-send for it.
             if batch == 8 {
-                // The tick's call, now older than the leader's newest, comes back refused: its `prev` was not held.
+                let piped = &early;
                 let res = graftyard_raft::AppendRes {
-                    term: early.term,
-                    boot: early.boot,
-                    round: early.round,
-                    sent_at: early.sent_at,
-                    prev_index: early.prev_index,
+                    term: piped.term,
+                    boot: piped.boot,
+                    round: 1,
+                    sent_at: piped.sent_at,
+                    prev_index: Index(1),
                     ok: false,
                     matched: Index(0),
-                    last: early.prev_index,
+                    last: Index(1),
                     promise: false,
                     refused: None,
                     stepped_down_at: None,
@@ -1553,10 +1562,6 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
                 };
                 c.on(A, |m, now| m.step(now, addr, Message::AppendRes(res)));
                 c.inbox.retain(|e| e.to != addr);
-            }
-            for i in 0..n {
-                admit(&mut c, A, 9_980 + u128::from(batch) * 10 + i, put(&format!("s{batch}{i}"), "v"));
-                step(&mut c);
             }
             let read_index = c.m(A).state().commit;
             c.on(A, |m, now| m.step(now, addr, Message::ReadIndex { batch }));
@@ -1574,17 +1579,13 @@ fn a_learner_read_index_answer_follows_the_entries_it_needs() {
                 _ => None,
             }));
         }
-        (early.prev_index.0 + 1, out)
+        (early.prev_index.0 + 1, out, early.entries.last().map_or(early.prev_index.0, |e| e.index.0) + 1)
     };
-    // The learner acknowledged nothing past the tick's call's first entry: the first append starts there, not after
-    // the call in flight, and after the refusal the next starts no later.
-    let (first, out) = before_answer(0);
-    assert_eq!(out[0], Some(first), "a learner on a clean link, with a call in flight");
-    assert!(
-        out[1].is_some_and(|f| f <= first),
-        "a learner on a clean link, after a refusal: {:?} from {first}",
-        out[1]
-    );
+    // With the tick's call in flight, the first append follows it; after the refusal emptied the pipeline, the second
+    // goes from the entry the learner has not acknowledged, the tick's call's first. A lossy learner gets neither.
+    let (first, out, after) = before_answer(0);
+    assert_eq!(out[0], Some(after), "a learner on a clean link, with a call in flight");
+    assert_eq!(out[1], Some(first), "a learner on a clean link, after a refusal");
     assert_eq!(before_answer(usize::from(STEP_DOWN.commit_fail_min)).1, [None, None], "a learner on a lossy link");
 }
 
