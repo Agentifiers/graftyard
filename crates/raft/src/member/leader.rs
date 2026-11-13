@@ -1278,37 +1278,39 @@ impl<C: Command> Member<C> {
         }
     }
 
-    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
-    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
-    fn send_append(&mut self, peer: SiteId, force: bool) {
-        self.append_to(peer, force, false);
-    }
-
-    /// Before the answer to `peer`'s read-index batch at `index`: the entries through `index` it was not sent yet, as
-    /// an AppendEntries that leaves ahead of the `ReadIndexRes`, in the same response when `peer` is a learner calling
-    /// this member (`design/DESIGN.md`, "Follower read"). Pipelined as a voter's would be, a learner too, within
-    /// PIPELINE and APPEND_BYTES_MAX and not on a lossy link. Without it a far learner's entries trailed its answer by
-    /// one or two more of its calls: p50 574 to 668 ms and p99 1.9 to 4.5 s on weur and apac at 500 agents, against a
-    /// read-index round trip of p99 476 to 639 ms (`tests/am1/results/narrow-reads-3.md`, "Where a far learner's wait
-    /// goes").
+    /// Before the answer to a learner's read-index batch at `index`: when it was not yet sent the entries through
+    /// `index`, an AppendEntries from the first entry it has not acknowledged (`next`), which leaves ahead of the
+    /// `ReadIndexRes`, in the same response while the learner calls this member (`design/DESIGN.md`, "Follower read").
+    /// Without it a far learner's entries trailed its answer by one or two more of its calls: p50 574 to 668 ms and
+    /// p99 1.9 to 4.5 s on weur and apac at 500 agents, against a read-index round trip of p99 476 to 639 ms. Sent
+    /// from `next`, not after the calls in flight: a learner's calls and their copies end in any order, and an append
+    /// held for one that overtook an earlier one on the far link was refused, which emptied the pipeline, and the
+    /// entries waited CALL_DEADLINE for a resend (p99 4.8 to 7.8 s on one apac learner a run). Not to a voter, which is
+    /// sent every entry as it is cut, nor on a lossy link (F67 rule 13); `tests/am1/results/narrow-reads-3.md`, "Where
+    /// a far learner's wait goes".
     pub(super) fn append_for_read(&mut self, peer: SiteId, index: Index) {
+        if quorum::is_voter(self.log_config(), peer) || self.link_lossy(peer) {
+            return;
+        }
         let Some(lead) = self.lead.as_ref() else { return };
-        let through = match lead.pipe.get(&peer).and_then(|p| p.last()) {
-            Some(&(_, t)) => t,
-            // A catch-up, an install, or a failed call's retry is out: `tick` sends after it.
-            None if lead.sent.contains_key(&peer) => return,
-            None => lead.matched(peer),
-        };
+        // Below the in-memory window a catch-up read from storage is out or due: `tick` sends it.
+        if lead.next.get(&peer).is_some_and(|n| *n <= self.base.index) {
+            return;
+        }
+        // The newest call's last entry, or with none since a refusal or failure emptied `pipe`, the acknowledged one.
+        let through = lead.pipe.get(&peer).and_then(|p| p.last()).map_or(lead.matched(peer), |p| p.1);
         if through < index {
-            self.append_to(peer, false, true);
+            self.send_append(peer, true);
         }
     }
 
-    fn append_to(&mut self, peer: SiteId, force: bool, read: bool) {
+    /// Sends AppendEntries to `peer`. With a call outstanding and no `force`, a voter whose link is not lossy is sent
+    /// only the entries after its outstanding calls, while fewer than PIPELINE are out (`Lead::pipe`).
+    fn send_append(&mut self, peer: SiteId, force: bool) {
         let (term, me, boot, now, commit) = (self.state.term, self.cfg.me, self.boot, self.now, self.state.commit);
         let last = self.last();
         let base = self.base.index;
-        let voter = read || quorum::is_voter(self.log_config(), peer);
+        let voter = quorum::is_voter(self.log_config(), peer);
         let lossy = self.link_lossy(peer);
         let Some(lead) = self.lead.as_mut() else { return };
         let next = *lead.next.entry(peer).or_insert(last.next());

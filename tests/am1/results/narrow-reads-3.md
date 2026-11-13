@@ -239,8 +239,8 @@ Design first: DESIGN "Follower read" and DECISIONS "A read-index answer follows 
 
 Checks:
 
-- Kept test `crates/raft/tests/scenarios.rs`, `a_learner_read_index_answer_follows_the_entries_it_needs`: a learner on a clean link that missed two entries, then one, gets an append through the read index with a commit at or past it ahead of each answer; a lossy learner gets none. It **fails without the change** (no such append).
-- `tests/nr3/plant.py` mutants 15 to 18: no entries sent, a learner with a call out not pipelined, sent only when two or more are missing, a lossy learner pipelined. All caught.
+- Kept test `crates/raft/tests/scenarios.rs`, `a_learner_read_index_answer_follows_the_entries_it_needs`: a learner on a clean link that missed two entries, then one, gets an append through the read index with a commit at or past it ahead of each answer; a lossy learner gets none. It **fails without the change** (no such append). Gate 8 below revised where that append starts.
+- `tests/nr3/plant.py` read-entries mutants, all caught (see gate 8 for the final set).
 - `cargo test -p graftyard-raft`: all pass.
 
 ### Gate 7 on f1ab1a61: far learners' wait for entries falls, and the gate still fails
@@ -268,6 +268,26 @@ The split against gate 6, p99 in ms:
 - **Sweep and Porcupine on f1ab1a61's raft:** the widened long sweep exited 0. HARSH's longest stall was 15,735 ms, gray's 27,226 ms, and live's 28,340 ms (4,000 seeds), all under 30 s. Porcupine was Ok on all three histories. The totals equal gate 5's tree's to the message. That is expected: a voter is sent every entry as it is cut, so `append_for_read` finds nothing unsent for a voter, and the simulator models no learners. The kept test and the hosted runs cover the learner path.
 
 Rows: `tests/nr3/rows/a1-b0-29-gate7.jsonl`, `run-gate7.status`, `fresh-gate7.jsonl`, `egress-gate7.txt`, `mem-gate7.json`. repo:65551 torn down.
+
+### Gate 8, and why one apac learner still waited
+
+Gate 8 ran on the same f1ab1a61 sites: repo:65552, load from 22:34:35Z.
+
+- **API:** 99.30% served (384 × 503, 24 driver-capped), p50 858 ms, **p99 3,064 ms**; tier p99 2,984 ms. **Fails.**
+- **Commit:** p99 2,835 ms.
+- **Other:** no leader change, 0 stale in 149 probe rounds. Leader 64 MiB, learners 56 to 61 MiB.
+- **The same shape as gate 7, on the other apac learner.** l5's hold reached p99 4,781 ms (5,753 `late` of 8,428 reads), while l2 dropped to 1,733 ms.
+
+`split.mjs` now keeps the raw traces (`RAW=`; `tests/nr3/rows/trace-gate8.json.gz`). In them, l5 had 455 holds over 500 ms, and 313 of those had an AppendEntries arrive behind a later one inside the hold. The far weur and apac learners had 75 to 192 such out-of-order arrivals each, against 20 to 78 on enam.
+
+A learner's call and its hedged copy (`HEDGE`, 500 ms), and its calls to the leader, end in any order on the far link. f1ab1a61 sent the read's entries after the calls in flight, as a voter's pipeline does. When an append that overtook an earlier one arrived first, the learner refused it, because its `prev` was not held. The refusal emptied the leader's pipeline to that learner, and the entries then waited for the next tick's resend after `CALL_DEADLINE` (1 s), sometimes more than once [measured: the arrivals; the chain from refusal to resend is read from `on_append_res` and `tick_leader`].
+
+**The fix** (DESIGN "Follower read", DECISIONS "A read-index answer follows the entries the asker needs", updated): the read's AppendEntries starts from the first entry the learner has not acknowledged (`next`, a forced send), not after the calls in flight. It also goes out right after a refusal emptied the pipeline. It is not sent to voters, or on a lossy link.
+
+- The kept test now also has the learner refuse its older call and checks that both appends start from the acknowledged entry. It **fails on f1ab1a61's version**.
+- Plants 15 to 19 are all caught: none sent; after the calls in flight; none while a call is out; off by one; a lossy learner.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate8.jsonl`, `run-gate8.status`, `fresh-gate8.jsonl`, `egress-gate8.txt`, `mem-gate8.json`, `trace-gate8.json.gz`. repo:65552 torn down.
 
 ## The bug the simulator found
 
