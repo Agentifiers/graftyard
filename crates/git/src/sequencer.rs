@@ -436,6 +436,44 @@ impl Sequencer {
         Some(Start { guid, hook: key.hook, attempt, redelivery: manual })
     }
 
+    /// The deliveries queued behind `s` on its queue, at most `max`, none a manual redelivery: what a host may send
+    /// after `s` in the same run, in order, while the queue's one slot is `s`'s. Empty unless `s` is the queue's
+    /// running attempt.
+    pub fn queued_after(&self, s: &Start, max: usize) -> Vec<Guid> {
+        let Some(key) = self.chain_queue(s) else { return Vec::new() };
+        let Some(q) = self.queues.get(&key) else { return Vec::new() };
+        if q.running.map(|r| r.attempt) != Some(s.attempt) {
+            return Vec::new();
+        }
+        q.items.iter().skip(1).take_while(|(_, manual)| !manual).take(max).map(|(g, _)| *g).collect()
+    }
+
+    /// After `prev`'s report, `guid` as the attempt the host already sent at `at` in the same run as `prev`
+    /// (`queued_after`). It takes `prev`'s slot, not a new one. `None` unless `guid` is now the queue's front and the
+    /// queue may run it (nothing running, no backoff, the hook still active); the host then leaves it to be sent
+    /// again under its GUID, which at-least-once allows.
+    pub fn next_in_run(&mut self, prev: &Start, guid: Guid, at: Timestamp) -> Option<Start> {
+        let key = self.chain_queue(prev)?;
+        if !self.targets.get(&key.hook).is_some_and(|t| t.active) {
+            return None;
+        }
+        let q = self.queues.get_mut(&key)?;
+        if q.running.is_some() || at < q.not_before || q.items.front() != Some(&(guid, false)) {
+            return None;
+        }
+        let attempt = self.next_attempt;
+        self.next_attempt += 1;
+        q.running = Some(Running { attempt, started: at });
+        self.by_attempt.insert(attempt, guid);
+        Some(Start { guid, hook: key.hook, attempt, redelivery: false })
+    }
+
+    /// The queue an automatic attempt `s` runs on; `None` for a manual redelivery, which runs alone.
+    fn chain_queue(&self, s: &Start) -> Option<QueueKey> {
+        let d = self.deliveries.get(&s.guid).filter(|_| !s.redelivery)?;
+        Some(QueueKey { chain: d.entry.map(|(c, _, _)| c), hook: d.hook })
+    }
+
     fn finish(&mut self, guid: Guid) {
         let Some(d) = self.deliveries.get_mut(&guid) else { return };
         if d.done {
@@ -757,6 +795,35 @@ mod tests {
         let d = s.delivery(&a[0].guid).unwrap();
         assert_eq!(d.attempts.len(), 2);
         assert!(d.done);
+    }
+
+    #[test]
+    fn a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot() {
+        let mut s = seq(&[(1, false), (2, false)]);
+        s.record(CHAIN, Index(4), vec![row(1, 1), row(2, 1), row(3, 1), row(4, 1), row(1, 2)], Timestamp(0));
+        let a = s.start(Timestamp(0)).into_iter().find(|x| x.hook == HookId(DbId(1))).unwrap();
+        let after = s.queued_after(&a, 2);
+        let idx = |s: &Sequencer, g: &Guid| s.delivery(g).unwrap().entry.unwrap().1;
+        assert_eq!(
+            after.iter().map(|g| idx(&s, g)).collect::<Vec<_>>(),
+            [Index(2), Index(3)],
+            "behind the head, at most 2"
+        );
+        // Not before its predecessor is reported: the queue's slot is still `a`'s.
+        assert!(s.next_in_run(&a, after[0], Timestamp(1)).is_none());
+        s.report(a.attempt, Timestamp(1), Some(200), false, None);
+        // Only the queue's front, in order.
+        assert!(s.next_in_run(&a, after[1], Timestamp(1)).is_none(), "entry 3 is not the front");
+        let b = s.next_in_run(&a, after[0], Timestamp(1)).expect("entry 2 is the front");
+        assert_eq!((b.guid, b.hook), (after[0], HookId(DbId(1))));
+        assert!(s.queued_after(&a, 2).is_empty(), "a reported attempt has no run behind it");
+        assert_eq!(s.in_flight().0, 2, "the run keeps hook 1's one slot; hook 2 has the other");
+        s.report(b.attempt, Timestamp(2), Some(200), false, None);
+        assert!(s.delivery(&after[0]).unwrap().done);
+        // A deleted hook's queue runs nothing more.
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(1)), rec(false)), (HookId(DbId(2)), rec(false))]);
+        s.set_chain_targets(CHAIN, &[(HookId(DbId(2)), rec(false))]);
+        assert!(s.next_in_run(&b, after[1], Timestamp(3)).is_none());
     }
 
     #[test]

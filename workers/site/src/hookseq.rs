@@ -625,8 +625,8 @@ impl DurableObject for HookSequencer {
         }
         let url = req.url()?;
         if req.method() == Method::Post && url.path() == "/lane" {
-            let r: Lane = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
-            return Response::from_json(&post(&r).await);
+            let run: Vec<Lane> = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
+            return Response::from_bytes(codec::to_bytes(&lane_run(&run).await));
         }
         self.load()?;
         match (req.method(), url.path()) {
@@ -897,69 +897,117 @@ impl HookSequencer {
         Ok(())
     }
 
-    /// One attempt: the request for the delivery's hook as it is now, POSTed with the 10 s deadline, then reported.
+    /// One attempt and its run: the request for the delivery's hook as it is now, and for up to `RUN_MAX` deliveries
+    /// queued behind it (`Sequencer::queued_after`), sent in order through the hook's lane in one call, then reported.
     /// Then, while the sequencer hands this queue its next attempt (`Sequencer::next_in_queue`), runs that one too in
     /// the same call: a queue busy with one event after another no longer waits a whole `start` round between its
-    /// attempts, which held healthy first attempts to a p99 of 6.8 s in BF-57's run 2.
+    /// attempts, which held healthy first attempts to a p99 of 6.8 s in BF-57's run 2, nor a lane round trip per
+    /// attempt, which held them to 2.1 s in run 14.
     /// A call chains for at most `CHAIN_FOR_MS`, so the alarm invocation that started it never holds it for long; a
     /// call cut short leaves its attempt to be re-sent under its GUID after `RESEND_AFTER_MS`.
     async fn attempt(&self, first: Start) -> Result<()> {
         let t0 = now_ms();
         let mut next = Some(first);
         while let Some(s) = next.take() {
-            self.attempt_one(&s).await?;
+            let last = self.attempt_run(s).await?;
             if now_ms() >= t0 + CHAIN_FOR_MS {
                 break;
             }
-            next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&s, Timestamp(now_ms()));
+            next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&last, Timestamp(now_ms()));
         }
         self.kick();
         Ok(())
     }
 
-    async fn attempt_one(&self, s: &Start) -> Result<()> {
-        self.ensure_body(&s.guid)?;
+    /// `s` and the run behind it, sent and reported; answers the last attempt reported.
+    async fn attempt_run(&self, s: Start) -> Result<Start> {
+        let behind = self.seq.borrow().as_ref().expect("loaded").queued_after(&s, RUN_MAX);
+        let mut guids = Vec::new();
+        let mut reqs = Vec::new();
+        let mut failed = None;
+        for g in std::iter::once(s.guid).chain(behind) {
+            match self.lane_request(&g, s.hook).await? {
+                Ok(r) => {
+                    guids.push(g);
+                    reqs.push(r);
+                }
+                // The head's failure is its report; a later one ends the run before it.
+                Err(e) => {
+                    if reqs.is_empty() {
+                        guids.push(g);
+                        failed = Some(e);
+                    }
+                    break;
+                }
+            }
+        }
+        let call_at = now_ms();
+        let results = match failed {
+            Some(e) => vec![Sent { at_ms: 0, ms: 0, status: None, timed_out: false, response: Some(e) }],
+            None => lane_post(&self.env, s.hook, &reqs).await,
+        };
+        let mut prev = s.clone();
+        let mut last = s;
+        for (k, (g, r)) in guids.iter().zip(results).enumerate() {
+            let sent_at = call_at + r.at_ms;
+            let cur = if k == 0 {
+                prev.clone()
+            } else {
+                // The run sent it after `prev`; it is recorded as that queue's attempt, or left to be sent again.
+                let Some(c) =
+                    self.seq.borrow_mut().as_mut().expect("loaded").next_in_run(&prev, *g, Timestamp(sent_at))
+                else {
+                    break;
+                };
+                c
+            };
+            self.seq.borrow_mut().as_mut().expect("loaded").report(
+                cur.attempt,
+                Timestamp(sent_at + r.ms),
+                r.status,
+                r.timed_out,
+                r.response.as_deref(),
+            );
+            console_log!(
+                "hookseq {} {} hook {} attempt {} {:?} {}ms",
+                self.owner().0.0,
+                cur.guid,
+                cur.hook.0.0,
+                cur.attempt,
+                r.status,
+                now_ms().saturating_sub(sent_at)
+            );
+            last = cur.clone();
+            prev = cur;
+        }
+        self.save_soon();
+        Ok(last)
+    }
+
+    /// The request for delivery `guid` to `hook` as the hook is now, signed; `Err` with the reason it cannot be sent
+    /// (the delivery or hook is gone, or the secret could not be unwrapped: never an unsigned attempt).
+    async fn lane_request(&self, guid: &Guid, hook: HookId) -> Result<std::result::Result<Lane, String>> {
+        self.ensure_body(guid)?;
         let built = {
             let g = self.seq.borrow();
             let seq = g.as_ref().expect("loaded");
-            match (seq.delivery(&s.guid), seq.target(s.hook)) {
+            match (seq.delivery(guid), seq.target(hook)) {
                 (Some(d), Some(t)) => Some((d.clone(), t.clone())),
                 _ => None,
             }
         };
-        let started = now_ms();
-        let (status, timed_out, response) = match built {
-            None => (None, false, Some("the delivery or its hook is gone".to_owned())),
-            Some((d, t)) => match self.secret(&t).await {
-                Err(e) => (None, false, Some(format!("the hook secret could not be unwrapped: {e}"))),
-                Ok(secret) => {
-                    let target = ("repository", d.repo.map_or(0, |r| r.0.0));
-                    let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
-                    let lane = Lane {
-                        url: r.url,
-                        headers: r.headers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
-                        body: r.body,
-                    };
-                    lane_post(&self.env, s.hook, &lane).await
-                }
-            },
+        let Some((d, t)) = built else { return Ok(Err("the delivery or its hook is gone".to_owned())) };
+        let secret = match self.secret(&t).await {
+            Ok(s) => s,
+            Err(e) => return Ok(Err(format!("the hook secret could not be unwrapped: {e}"))),
         };
-        {
-            let mut g = self.seq.borrow_mut();
-            let seq = g.as_mut().expect("loaded");
-            seq.report(s.attempt, Timestamp(now_ms()), status, timed_out, response.as_deref());
-        }
-        console_log!(
-            "hookseq {} {} hook {} attempt {} {:?} {}ms",
-            self.owner().0.0,
-            s.guid,
-            s.hook.0.0,
-            s.attempt,
-            status,
-            now_ms() - started
-        );
-        self.save_soon();
-        Ok(())
+        let target = ("repository", d.repo.map_or(0, |r| r.0.0));
+        let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
+        Ok(Ok(Lane {
+            url: r.url,
+            headers: r.headers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            body: r.body,
+        }))
     }
 
     /// Writes what changed within `REPORT_SAVE_MS`, in one transaction with every other report of the window.
@@ -1137,9 +1185,45 @@ struct Lane {
     body: Vec<u8>,
 }
 
-/// `post` through `hook`'s lane on this site. A lane that does not answer within the attempt deadline and a margin
-/// counts as a failed attempt.
-async fn lane_post(env: &Env, hook: HookId, r: &Lane) -> (Option<u16>, bool, Option<String>) {
+/// One request's result from a lane: when it was sent (ms after the lane was called) and how long it took.
+#[derive(Serialize, Deserialize)]
+struct Sent {
+    at_ms: u64,
+    ms: u64,
+    status: Option<u16>,
+    timed_out: bool,
+    response: Option<String>,
+}
+
+/// The deliveries one lane call sends after its head at most [guess].
+const RUN_MAX: usize = 8;
+/// A lane starts no request of a run past this long after the run began [guess], so one call lasts at most this and
+/// one attempt deadline.
+const RUN_FOR_MS: u64 = 2_000;
+
+/// A lane's run: the requests in order, one at a time, stopping at the first that is not answered 2xx (a hook with
+/// `retry` holds its queue on a failure, and a run must not pass it) and at `RUN_FOR_MS`.
+async fn lane_run(run: &[Lane]) -> Vec<Sent> {
+    let t0 = now_ms();
+    let mut out = Vec::new();
+    for r in run {
+        if !out.is_empty() && now_ms() >= t0 + RUN_FOR_MS {
+            break;
+        }
+        let at = now_ms();
+        let (status, timed_out, response) = post(r).await;
+        let ok = status.is_some_and(|s| (200..300).contains(&s));
+        out.push(Sent { at_ms: at - t0, ms: now_ms() - at, status, timed_out, response });
+        if !ok {
+            break;
+        }
+    }
+    out
+}
+
+/// `lane_run` through `hook`'s lane on this site. A lane that does not answer in time counts as one failed (timed
+/// out) attempt of the run's head; the rest stay queued.
+async fn lane_post(env: &Env, hook: HookId, run: &[Lane]) -> Vec<Sent> {
     let call = async {
         let site = SiteEnv::read(env)?;
         let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
@@ -1147,14 +1231,17 @@ async fn lane_post(env: &Env, hook: HookId, r: &Lane) -> (Option<u16>, bool, Opt
             .durable_object(&format!("HOOKSEQ_{}", site.id.0))?
             .get_by_name_with_location_hint(&format!("{LANE_PREFIX}{}", hook.0.0), region.hint())?;
         let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(r)[..]).into()));
+        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(run)[..]).into()));
         let mut res = stub.fetch_with_request(Request::new_with_init("https://hookseq/lane", &init)?).await?;
-        res.json::<(Option<u16>, bool, Option<String>)>().await
+        codec::from_bytes::<Vec<Sent>>(&res.bytes().await?).map_err(|e| Error::RustError(e.to_string()))
     };
-    let deadline = std::time::Duration::from_millis(ATTEMPT_DEADLINE_MS + 5_000);
+    let deadline = std::time::Duration::from_millis(ATTEMPT_DEADLINE_MS + RUN_FOR_MS + 5_000);
+    let failed =
+        |timed_out: bool, response: Option<String>| vec![Sent { at_ms: 0, ms: 0, status: None, timed_out, response }];
     match crate::host::within(deadline, call).await {
-        Some(Ok(r)) => r,
-        Some(Err(e)) => (None, false, Some(format!("the delivery lane failed: {e}"))),
-        None => (None, true, None),
+        Some(Ok(r)) if !r.is_empty() => r,
+        Some(Ok(_)) => failed(false, Some("the delivery lane sent nothing".into())),
+        Some(Err(e)) => failed(false, Some(format!("the delivery lane failed: {e}"))),
+        None => failed(true, None),
     }
 }
