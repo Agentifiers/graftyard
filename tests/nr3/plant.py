@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
+(`crates/lookup`), the edge's read spread and hedge (`crates/lookup`), and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -65,6 +65,24 @@ MUTANTS = [
     ('genesis: an unreadable view drops the binding', LOOKUP,
      '    let Some(view) = view else { return false };',
      '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
+    # The edge's read spread (`crates/lookup`: `spread_order`, `race`).
+    ('spread: the slower of the two learners goes first', LOOKUP,
+     '        if speed(&out[second].do_name) < speed(&out[0].do_name) {',
+     '        if speed(&out[second].do_name) > speed(&out[0].do_name) {', LK),
+    ('spread: a follower may go before a learner', LOOKUP,
+     '    let mut out = rotated(learners);\n    if out.len() > 1 {',
+     '    let mut out = rotated(learners);\n    out.extend(rotated(voters.iter().filter(|(s, _)| Some(*s) != leader).cloned().collect()));\n    if out.len() > 1 {', LK),
+    ('race: every member is asked at once (no hedge wait)', LOOKUP,
+     '        if asked < n && timer.is_none() {', '        while asked < n {', LK),
+    ('race: the hedge also reaches followers', LOOKUP,
+     '            timer = (asked < n.min(hedged)).then(|| Box::pin(hedge()));',
+     '            timer = (asked < n).then(|| Box::pin(hedge()));', LK),
+    ('race: an answer with no value waits for the hedge', LOOKUP,
+     '        got.push((i, r));\n        timer = None;', '        got.push((i, r));', LK),
+    ('race: the first answer wins even with no value', LOOKUP,
+     '        if usable(&r) {\n            return Ok((i, r));', '        if true {\n            return Ok((i, r));', LK),
+    ('race: answers with no value are returned in arrival order', LOOKUP,
+     '    got.sort_by_key(|(i, _)| *i);\n    Err(got)', '    Err(got)', LK),
     # Liveness (F67 rule 12).
     ('raft: an emptied read-index batch stays in flight', INSTALL,
      '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),

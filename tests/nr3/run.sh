@@ -18,10 +18,16 @@ node tests/am1/rest/a1.mjs b0-35 --repo "$NAME" --chain "repo:$rid" --run "${TAG
   --api-reads 0 --ref-reads 0 --as-admin > tests/am1/raw/runs/nr-setup-$NAME.log 2>&1
 grep -o '"step":"open PRs"[^}]*}' tests/am1/raw/a1-b0-35-${TAG}s.jsonl >> "$ST"
 for i in 1 2 3 4 5 6 7 8 9 10; do
+  # A fresh group may sit as three followers holding term 2 after setup (tests/m0/results/f67.md, "The idle shape"):
+  # one ordinary request resumes it, as a client's would; learners.mjs's /status polls do not.
+  node -e "const {api,tokens}=await import('./tests/am1/hosted/lib.mjs'); await api('GET','/api/v3/repos/m3org/$NAME',tokens.admin)" --input-type=module
   node tests/fanout/learners.mjs "repo:$rid" "${LEARNERS:-enam:4000,weur:2000,apac:2000}" >> "$ST" 2>&1 && break
   echo "$(date -u +%FT%TZ) learners try $i failed" >> "$ST"; sleep 20
 done
 node tests/fanout/k.mjs "repo:$rid" >> "$ST" 2>&1
+# ENTRY=max|soft|<bytes>: a diagnostic A/B of the leader's entry cap (test-faults `/stats?entry=`, `Host::entry_soft`),
+# set on every voter so a moved leader keeps it. Not a gate row.
+[ -n "${ENTRY:-}" ] && for s in 0 1 2; do node -e "const {member}=await import('./tests/am1/hosted/lib.mjs'); const v=(await member('repo:$rid',$s,'/stats?entry=$ENTRY')).v; console.log('entry $ENTRY site $s', v?.entrySoft)" --input-type=module >> "$ST" 2>&1; done
 node tests/ld/lstats.mjs "repo:$rid" >> "$ST" 2>&1
 node tests/ld/dumpsize.mjs "repo:$rid" 0 2>&1 | head -1 >> "$ST"
 echo "$(date -u +%FT%TZ) b0-29 start" >> "$ST"
