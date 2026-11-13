@@ -11,7 +11,7 @@ what=${1:?down or up}
 tree=${DEPLOY_TREE:-/tmp/m4a-deploy}
 IMG=registry.cloudflare.com/<cf-account-id>/graft-m1-site-gitshard-git@sha256:099a022c23a31d2ca50ccb745a1b002cbe8af1f4c571fff713bc1a8b698a1440
 args=(~/.graft-m4a/sites.json --anchor ~/.graft-m4a/install.toml --image "$IMG" --vars ~/.graft-m4a/site-vars.json
-  --skip-build --ops graft-m4a-ops --var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev --only 0)
+  --skip-build --ops graft-m4a-ops --var GRAFTYARD_HOST=graft-m4a-edge.<workers-subdomain>.workers.dev --var GRAFTYARD_ACTIVITY=1 --only 0)
 cd "$tree"
 case "$what" in
   down) node workers/site/deploy.mjs "${args[@]}" --down 0 ;;
