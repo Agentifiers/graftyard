@@ -1,4 +1,4 @@
-# B0-02: a pipeline to each voter, and a loop-lag step-down (2026-11-13)
+# B0-02: a pipeline to each voter, a loop-lag step-down, and entries and calls sized from the data (2026-11-13)
 
 The operator's decisions on `carried-7.md` (C20): check the near-follower gaps of `m0c7b-ab11`, `ab02`, `ab14` and
 `ab16` for the far path's own limits; build (b'), AppendEntries pipelined to a voter, if the far path waited on one call
@@ -8,12 +8,83 @@ containers, a new group per run, no window selection. Branch `m0-carried-8`; ins
 
 ## Verdict
 
-**B0-02: fails, 12 of 16, on the final tree.** The gate ran on `m0-carried-8` rebased onto main `84d29c2` (F67 rules
-10 to 13): 7 of 8 at 300 and 5 of 8 at 330. The widened live sweep passes on the same tree (below). An earlier 16 of
-16 on `15ac8bd` plus rule 12 alone is kept as diagnosis; the operator ruled it is not the gate, because rule 12 landed
-only with rule 13.
+**B0-02: passes, 16 of 16, on the final tree, with one open item** (`a034334` on main `84d29c2`): 8 of 8 at 300 offered and 8 of 8 at 330,
+commit p99 249 to 579 ms, worst 579. The tree adds two fixes to the 12-of-16 tree below, both by operator decision:
+`ENTRY_SOFT` at 100,000 bytes, and `APPEND_BYTES_MAX` at 100,000 bytes with pipelining stopped only on a lossy link.
+On the same tree, the long sweep (live half 4,000 seeds from 10000 at an absolute 30 s), Porcupine, `long_liveness`,
+plants (15 of 16; the miss is below) and the full checks pass. Heavy turns did not come back with the larger
+entries. Open: in r300-3 a `LOOP_LAG` trip at the run's start moved leadership to weur, and from there the apac voter
+was lossy and fell 215 entries behind; `APPEND_BYTES_MAX` was sized on the enam to apac link only.
 
-## Gate on the final tree (`0c26736` on main `84d29c2`)
+## Gate on the final tree (`a034334` on main `84d29c2`)
+
+Site day 15:44 to 15:54Z, `SHARD_INSTANCE=standard-4`, image `sha256:15f6ed1b…`; runs 15:55 to 16:30Z, each on a new
+group, `arrival=mem`, rates alternating run by run, no window selection. 0 failed commands. CPU from
+`durableObjectsInvocationsAdaptiveGroups`, heavy turns from Workers observability, both for the leader's object over
+the run's minute (`tests/m0carried/gate8.py`).
+
+| Run | Throughput | Commit p99 (ms) | Leader confirm p99 (ms) | Commands per entry | CPU p999 (ms) | 80 ms+ `/commit` turns | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| r300-1 | 280 | 291 | 42 | 38.5 | 25.2 | 0 | Pass |
+| r300-2 | 280 | 385 | 53 | 47.7 | 26.2 | 1 | Pass |
+| r300-3 | 260 | 554 | 107 | 46.4 | 32.0 | 1 | Pass |
+| r300-4 | 275 | 341 | 62 | 41.7 | 30.5 | 3 | Pass |
+| r300-5 | 279 | 579 | 176 | 49.7 | 43.9 | 4 | Pass |
+| r300-6 | 280 | 427 | 106 | 44.2 | 49.3 | 1 | Pass |
+| r300-7 | 280 | 526 | 60 | 54.5 | 23.3 | 0 | Pass |
+| r300-8 | 278 | 350 | 71 | 38.4 | 26.9 | 1 | Pass |
+| r330-1 | 307 | 520 | 74 | 57.4 | 26.5 | 0 | Pass |
+| r330-2 | 307 | 559 | 87 | 61.7 | 31.2 | 3 | Pass |
+| r330-3 | 308 | 490 | 88 | 49.9 | 30.4 | 4 | Pass |
+| r330-4 | 308 | 332 | 62 | 39.8 | 25.6 | 1 | Pass |
+| r330-5 | 307 | 354 | 54 | 44.7 | 23.8 | 2 | Pass |
+| r330-6 | 307 | 493 | 125 | 46.6 | 36.4 | 3 | Pass |
+| r330-7 | 308 | 459 | 125 | 47.3 | 35.2 | 4 | Pass |
+| r330-8 | 307 | 454 | 75 | 50.1 | 27.6 | 0 | Pass |
+
+- **Heavy turns.** 28 `/commit` turns of 80 ms CPU or more over 16 runs (0 to 4 a run), against 24 on the 60 KB tree
+  (`m0c8f`, 0 to 6 a run). CPU p999 was 23 to 49 ms, median 30, against 15 to 56 ms, median 27, on the 60 KB tree
+  (one outlier there at 850 ms, r300-1). `carried-7`'s uncapped smoke at 85 commands an entry had 11 heavy turns in
+  20 s and CPU p999 98 ms; at 38 to 62 commands an entry here, neither came back. No run's heavy turns tracked its
+  commit p99: the two worst runs had 4 (r300-5, 579 ms) and 1 (r300-3, 554 ms).
+- **Confirm p99 by entry size**, over all 16 runs: 0 to 40 KB 76 ms (n 1,300), 40 to 60 KB 102 ms (4,086), 60 to
+  80 KB 117 ms (891), 80 to 100 KB 108 ms (160), 100 to 130 KB 131 ms (70). The 60 KB tree, for comparison: 78, 76
+  and 128 ms up to 80 KB, and no larger entries. `carried-6` had 168 ms at 80 to 100 KB and 300 ms at 100 to 130 KB on
+  standard-2 shards [measured]. Per-run bins are in `raw-carried-8/gate8-m0c8h.jsonl`.
+- **r300-3: a `LOOP_LAG` step-down in the run's first second.** Site 0's first confirms read 300, 200, 259 and 205 ms;
+  two whole ticks within 2 s tripped `LoopLag` 64 s before the run's end, and leadership moved to site 1 (weur), which
+  led the rest of the run: 260 commands/s, commit p99 554 ms, 1 failed command. From weur the far voter (apac, RTT
+  255 ms) was the slow link all run: 31 of its bodies took 530 to 1,798 ms to arrive at 45 to 102 KB, and 6 of the 32 calls the
+  leader's `peers` ring kept (the run's last 10 s) missed `CALL_DEADLINE` and answered late, 1.0 to 2.3 s. That share
+  (19%) passes `commit_errors`, so the link counted as lossy and the leader sent it one call at a time, as rule 13
+  intends; the near voter (enam, RTT 98 ms) made every quorum. The apac voter ended the run 215 entries behind (178
+  against 393), catching up one call at a time. `APPEND_BYTES_MAX` was sized on enam to apac; weur to apac is slower
+  at the same sizes [measured]. The run passed, but a run that loses its near voter while led from weur would commit
+  on that link.
+- **Shape 3** did not recur: no run's first sixth stood out apart from r300-3's step-down.
+
+Raw: `raw-carried-8/` (bench rows and gzipped `/stats` for `m0c8h-*`, and the gate8 reports for `m0c8h` and `m0c8f`).
+
+## Simulator and checks on the final tree
+
+- Long sweep, `RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half 4,000 seeds from 10000 at the absolute 30 s bound: passed.
+  Longest stretches 15.7 s (harsh, seed 11431), 27.2 s (gray, 11551), 24.3 s (live, 10361). Porcupine `-seg 2000`: Ok
+  on all three histories (6,000, 6,000, 12,000 segments).
+- `long_liveness` (60 seeds) and every raft suite: pass.
+- Plants, `tests/m0carried/plant8.py`: 15 of 16 caught. Missed: "the entry cap back at 60 KB". No simulator test
+  separates 60 from 100 KB: the load net's storage confirms at once and its links cost 0.3 ms a KB, so its round does
+  not grow with the entry the way a Durable Object's confirm and the far body do; a B0-02-shaped run at 330/s gave
+  240 ms at both. The hosted gates are the evidence (12 of 16 at 60 KB, 16 of 16 at 100 KB).
+- Kept tests added: `a_far_voter_behind_catches_up_in_calls_that_answer_in_time` (14 entries behind, 0 misses; fails
+  at 1.5 MB); `a_voter_is_pipelined_unless_its_link_is_lossy` (one miss keeps PIPELINE calls, a lossy link gets 1);
+  `a_lagging_follower_catches_up_in_calls_under_the_byte_cap` now asserts that every call starting behind the
+  leader's last entry carries one, with entries four times `APPEND_BYTES_MAX` (fails if a call over the bound may
+  carry none).
+- Full checks: fmt, workspace clippy, wasm32 clippy for site and edge with and without `test-faults` and for ops,
+  `cargo test --workspace` (78 suites), `go test ./...`, and the three `scripts/check_*.py`: pass.
+
+## Earlier gate on main `84d29c2` before the two fixes (12 of 16)
+
 
 Site day 13:30 to 13:41Z, `SHARD_INSTANCE=standard-4`, image `sha256:15f6ed1b…`; runs 13:43 to 14:15Z, each on a new
 group, `arrival=mem`, rates alternating run by run, no window selection. 0 failed commands in all 16 runs.
@@ -65,7 +136,7 @@ clamped leader (clamp share 0.02 to 0.03).
 
 Raw: `raw-carried-8/` (bench rows and gzipped `/stats` for `m0c8f-*`, `m0c8g-*` and the smoke `m0c8-smoke`).
 
-## Simulator on the final tree
+### Simulator on that tree
 
 - Long sweep, `RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half 4,000 seeds from 10000 at the absolute 30 s bound:
   passed. Longest stretches 16.4 s (harsh, seed 10100), 25.7 s (gray, 11247), 23.0 s (live, 10249). Porcupine
@@ -153,5 +224,5 @@ tripped it.
 ## Cost
 
 `graft-m3d` from 11:05 to 12:00Z cost $3.06 and from 13:25 to 14:40Z $2.94
-(`INSTALL=graft-m3d python3 tests/fanout/m2bcost.py`): two site days and 32 runs. The total for this thread's B0-02
-work is about $25 of the $55 cap.
+(`INSTALL=graft-m3d python3 tests/fanout/m2bcost.py`): two site days and 32 runs. From 15:40 to 16:50Z, the final
+site day and gate, $3.00. The total for this thread's B0-02 work is about $28 of the $55 cap.
