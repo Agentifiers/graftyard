@@ -2988,3 +2988,7 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `tests/m0/results/carried-8.md`, "LOOP_LAG" [measured]. `two_clamped_confirms_trip_loop_lag` (`crates/raft/tests/leadership.rs`); `leaders_leave_a_lagging_loop` (`crates/raft/tests/liveness.rs`), whose sick leader's confirms stay under `confirm_p99_ms`, moves 12 of 12 groups by `STEP_DOWN` in 1.4 to 3.3 s with it; without it 11 of 12 never moved in the fault's minute and one moved at 37 s. The simulator's `LoopLag` gray fault runs in the gray and live sweeps.
 
 **Flip.** A hosted leader that trips `LoopLag` with no lag in its trace, or a run where the transfer costs more than the lag it ends.
+
+#### The gate on the final tree, 2026-11-13
+
+**Measured, not a decision.** On main `84d29c2` (F67 rules 10 to 13) plus the pipeline and `LOOP_LAG`, B0-02's gate passed 7 of 8 at 300 and 5 of 8 at 330 (`tests/m0/results/carried-8.md`). The near-gap shape did not recur (no near call of 400 ms or more outside r330-6) and no leader was clamped, so neither rule above is reversed. Two misses meet the `ENTRY_SOFT` flip ("capped entries do not lower commit p99") at 330: one 60 KB entry per round at a round p50 of 169 to 174 ms holds the group to 322 to 331 commands/s. One miss is a far follower whose catch-up calls of 319 to 717 KB missed `CALL_DEADLINE`, so `failed_to` turned off its pipeline and every later call carried the backlog; with a slow near follower, `CommitErrors` moved leadership to the far site. The next step is the operator's (C20).

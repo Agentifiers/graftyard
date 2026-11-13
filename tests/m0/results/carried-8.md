@@ -8,12 +8,77 @@ containers, a new group per run, no window selection. Branch `m0-carried-8`; ins
 
 ## Verdict
 
-**B0-02: not yet recorded as passed.** The 16-run gate below passed 16 of 16 on sites built from `m0-carried-8`
-(`15ac8bd`) plus F67 rule 12 alone. The operator ruled it diagnosis, not the gate: rule 12 lands on main only together
-with rule 13 (narrow-reads-3), so the tree that ships differs from the tree that ran. The gate reruns, the same way, on
-`m0-carried-8` rebased onto main with rules 12 and 13.
+**B0-02: fails, 12 of 16, on the final tree.** The gate ran on `m0-carried-8` rebased onto main `84d29c2` (F67 rules
+10 to 13): 7 of 8 at 300 and 5 of 8 at 330. The widened live sweep passes on the same tree (below). An earlier 16 of
+16 on `15ac8bd` plus rule 12 alone is kept as diagnosis; the operator ruled it is not the gate, because rule 12 landed
+only with rule 13.
 
-## Diagnostic gate on `15ac8bd` plus rule 12
+## Gate on the final tree (`0c26736` on main `84d29c2`)
+
+Site day 13:30 to 13:41Z, `SHARD_INSTANCE=standard-4`, image `sha256:15f6ed1b…`; runs 13:43 to 14:15Z, each on a new
+group, `arrival=mem`, rates alternating run by run, no window selection. 0 failed commands in all 16 runs.
+
+| Run | Throughput | Commit p99 (ms) | Leader confirm p99 (ms) | Commands per entry | Round p50 (ms) | Near entries at the cap | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| r300-1 | 280 | 425 | 89 | 49.7 | 168 | 40% | Pass |
+| r300-2 | 280 | 564 | 58 | 41.6 | 138 | 8% | Pass |
+| r300-3 | 280 | 319 | 39 | 43.8 | 149 | 6% | Pass |
+| r300-4 | 280 | 452 | 68 | 41.4 | 137 | 6% | Pass |
+| r300-5 | 280 | 328 | 37 | 44.2 | 148 | 8% | Pass |
+| r300-6 | 278 | 261 | 96 | 32.5 | 109 | 1% | Pass |
+| r300-7 | 280 | 377 | 84 | 45.3 | 152 | 13% | Pass |
+| r300-8 | 280 | **605** | 122 | 44.8 | 149 | 15% | Between |
+| r330-1 | 301 | **646** | 58 | 54.5 | 169 | 82% | Between |
+| r330-2 | 302 | 339 | 63 | 47.5 | 145 | 22% | Pass |
+| r330-3 | 308 | 343 | 34 | 46.9 | 144 | 23% | Pass |
+| r330-4 | 300 | **1,495** | 147 | 55.3 | 174 | 91% | Fail |
+| r330-5 | 308 | 393 | 60 | 50.4 | 154 | 39% | Pass |
+| r330-6 | 247 | **1,635** | 67 | 50.3 | 339 | 31% | Fail |
+| r330-7 | 308 | 374 | 77 | 44.6 | 136 | 19% | Pass |
+| r330-8 | 308 | 583 | 87 | 54.4 | 165 | 79% | Pass |
+
+"Near entries at the cap" is the share of the leader's AppendEntries to the near follower of 58 KB or more, which is
+`ENTRY_SOFT` full. No run had a near call of 400 ms or more except r330-6, and no run tripped `LOOP_LAG` or had a
+clamped leader (clamp share 0.02 to 0.03).
+
+### Three failure shapes
+
+1. **Capacity under the cap (r330-4, r330-1; and r330-8 at 583, the diagnostic r330-4 at 593).** With one entry in
+   flight, a group commits at most one `ENTRY_SOFT` entry per round: about 56 commands of 1 KB per round. At a round p50
+   of 165 to 174 ms (near RTT 95 to 108 ms) that is 322 to 339 commands/s, against 300 to 308 offered, a utilization of
+   0.91 to 0.93. Entries then fill to the cap (79 to 91%) and the queue grows: in r330-4 the queue p90 per sixth of the
+   run went 311, 608, 986, 369, 688, 914 ms. Over all 32 runs on this code, every run at a utilization of 0.91 or more
+   had commit p99 of 583 ms or more, and every run at 0.85 or less had 452 ms or less, apart from r300-8 (605) and
+   r300-2 (564) in shape 3. This is the cost the cap decision's flip names ("capped entries do not lower commit p99"), met at 330 on a slow
+   near round [measured].
+2. **A far follower that falls behind and stays behind (r330-6).** The far follower's 40 to 60 KB calls took 300 to
+   670 ms, longer than four entry intervals, so the pipeline filled (4 calls out) and the next call carried several
+   entries. Calls of 216 and 304 KB took 808 and 892 ms, and from 585 KB up they missed `CALL_DEADLINE` (1 s) and
+   answered late. 12 far calls of 319 to 717 KB carrying 7 to 14 entries each missed it. A missed call turns off pipelining
+   to that voter for the `STEP_DOWN` window (`failed_to`), so each next call carried the whole backlog and missed again.
+   When the near follower then slowed (6 calls of 400 ms or more), `CommitErrors` tripped `STEP_DOWN` 46 s into the run
+   and moved leadership to the far site, where the round p50 was 339 ms and throughput fell to 247 commands/s [measured].
+   The transfer is unguarded by rule 13, which covers only `/transfer` and drain.
+3. **One slow stretch at low utilization (r300-8 at 605).** Commit p99 in the first sixth of r300-8 was 691 ms and 350
+   to 453 ms after it; the leader's confirms ran 122 to 172 ms in its first 5 s. r300-2 (564, passing) had the same kind
+   of stretch in its third sixth (652 ms). Neither had a slow near call or a clamped leader [measured; cause not found].
+
+Raw: `raw-carried-8/` (bench rows and gzipped `/stats` for `m0c8f-*`, `m0c8g-*` and the smoke `m0c8-smoke`).
+
+## Simulator on the final tree
+
+- Long sweep, `RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half 4,000 seeds from 10000 at the absolute 30 s bound:
+  passed. Longest stretches 16.4 s (harsh, seed 10100), 25.7 s (gray, 11247), 23.0 s (live, 10249). Porcupine
+  `-seg 2000`: Ok on all three histories (6,000, 6,000, 12,000 segments).
+- `long_liveness` (60 seeds) and every raft suite: pass.
+- Plants, `tests/m0carried/plant8.py`: 11 of 11 caught. Two earlier mutants were dropped as equivalent: "a failed call
+  leaves the pipe" (the retry is a forced call, which clears it) and "a forced call keeps the pipe" (each lost call's
+  failure report clears it). "Pipelining to a voter with a failed call in the window" replaced them; the new kept test
+  `a_voter_with_a_failed_call_gets_one_call_at_a_time` catches it.
+- Full checks: fmt, workspace clippy, wasm32 clippy for site and edge with and without `test-faults` and for ops,
+  `cargo test --workspace` (78 suites), `go test ./...`, and the three `scripts/check_*.py`: pass.
+
+## Diagnostic gate on `15ac8bd` plus rule 12 (not the gate)
 
 Site day 11:10 to 11:19Z, `SHARD_INSTANCE=standard-4`, image `sha256:15f6ed1b…`; runs 11:21 to 11:52Z, each on a new
 group, `arrival=mem`, rates alternating run by run. 0 failed commands in all 16 runs, no leader change, no STEP_DOWN,
@@ -74,7 +139,7 @@ passing (`m0c6-ab04`, at 600 ms). Three in 5 s gave the same false positive and 
 A peer-stamped lag was rejected because its worst 5 s median reached 1,290 ms in a passing run. No gate run above
 tripped it.
 
-## Simulator, on `15ac8bd` plus rule 12
+## Simulator, on `15ac8bd` plus rule 12 (diagnostic tree)
 
 - Long sweep, `RAFT_SEEDS=2000 RAFT_STEPS=10000`, live half 4,000 seeds from 10000: passed, with longest stretches
   16.4 s (harsh, seed 10100), 25.7 s (gray, 11247) and 27.3 s (live, 10256). Porcupine `-seg 2000`: Ok on all three
@@ -87,5 +152,6 @@ tripped it.
 
 ## Cost
 
-`graft-m3d` from 11:05 to 12:00Z cost $3.06 (`INSTALL=graft-m3d python3 tests/fanout/m2bcost.py`): one site day and
-the 16 runs. The total for this thread's B0-02 work is about $22 of the $55 cap.
+`graft-m3d` from 11:05 to 12:00Z cost $3.06 and from 13:25 to 14:40Z $2.94
+(`INSTALL=graft-m3d python3 tests/fanout/m2bcost.py`): two site days and 32 runs. The total for this thread's B0-02
+work is about $25 of the $55 cap.
