@@ -553,7 +553,7 @@ async fn commit_killable(
         // The hedge's sends and misses, in the reply's `x-graft-trace` (BF-33 shows the kill fired).
         let mut t = trace.into_inner();
         t.insert(0, json!({ "killOn": step, "chain": chain.to_string() }));
-        crate::api::trace(t);
+        crate::api::trace(c, t);
         return r.map_err(|e| crate::api::unavailable(&format!("{e:?}")));
     }
     commit_system(c, chain, cmd).await

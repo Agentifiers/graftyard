@@ -96,6 +96,15 @@ fn gate(index: bool, leading: bool, me: SiteId, servable: bool, heavy: bool, rea
     Gate::Serve
 }
 
+/// `/stats?summary=1`'s form of a sample array: its count and nearest-rank p50, p99, and max, in the samples' order of
+/// size, not arrival.
+fn percentiles(xs: &[u32]) -> Value {
+    let mut s = xs.to_vec();
+    s.sort_unstable();
+    let at = |p: f64| s.get(((p * s.len() as f64) as usize).min(s.len().saturating_sub(1))).copied();
+    json!({ "n": s.len(), "p50": at(0.5), "p99": at(0.99), "max": s.last() })
+}
+
 /// Whether a granted read whose answer's rebuild is due in `ms` waits for it and is granted again, rather than shed:
 /// only a read-index read, only if the rebuild comes before `until`, its FOLLOWER_WAIT deadline, and for a whole-tier
 /// dump only on a learner. A voter's dump read is shed, so the edge's next member or a 503 answers it at once; a narrow
@@ -620,7 +629,23 @@ impl<F: Family> Routes<F> {
                         _ => {}
                     }
                 }
-                self.stats(crate::registry::query(&url, "reset").is_ok())
+                // `entry=max`, `entry=soft`, or `entry=<bytes>`: where the leader stops filling an entry
+                // (`Host::entry_soft`).
+                #[cfg(feature = "test-faults")]
+                if let Ok(e) = crate::registry::query(&url, "entry") {
+                    let soft = match e.as_str() {
+                        "max" => raft::ENTRY_MAX,
+                        n => n.parse().unwrap_or(raft::ENTRY_SOFT),
+                    };
+                    self.host.entry_soft.set(soft);
+                    if let Some(core) = self.host.core.borrow_mut().as_mut() {
+                        core.m.set_entry_soft(soft);
+                    }
+                }
+                self.stats(
+                    crate::registry::query(&url, "reset").is_ok(),
+                    crate::registry::query(&url, "summary").is_ok(),
+                )
             }
             (Method::Post, p) if F::route_paths().contains(&p) => {
                 let body: Value = req.json().await?;
@@ -1269,8 +1294,50 @@ impl<F: Family> Routes<F> {
         Response::from_json(&rows)
     }
 
-    fn stats(&self, reset: bool) -> Result<Response> {
+    fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
+        // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
+        // `/stats` serialized megabytes, and its wasm instance was rebuilt right after (LM-1 round 6, B0-29).
+        if summary {
+            let deps: serde_json::Map<String, Value> =
+                s.deps_ms.iter().map(|(k, xs)| (k.clone(), percentiles(xs))).collect();
+            let append: serde_json::Map<String, Value> =
+                s.append_ms.iter().map(|(k, xs)| (k.to_string(), percentiles(xs))).collect();
+            let v = json!({
+                "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
+                "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
+                "summary": true,
+                "commitMs": percentiles(&s.commit_ms),
+                "queueMs": percentiles(&s.queue_ms),
+                "roundMs": percentiles(&s.round_ms),
+                "confirmMs": percentiles(&s.confirm_ms),
+                "depsMs": deps,
+                "appendMs": append,
+                "applyMs": percentiles(&s.apply_ms),
+                "depFails": s.dep_fails,
+                "entries": s.entries,
+                "commands": s.commands,
+                "inbound": s.inbound,
+                "inboundMs": now_ms().saturating_sub(s.inbound_since),
+                "failedCalls": s.failed_calls,
+                "shedReads": s.shed_reads,
+                "waitedReads": s.waited_reads,
+                "dumpBuilds": crate::family::dump_builds(),
+                "testMerges": { "shard": s.test_merges, "asked": s.test_merge_asks, "shed": s.test_merge_shed },
+                // Round 7's memory instruments: the isolate's wasm memory (it only grows), the leader's queued
+                // commands and agent bytes, and the commands this host holds a copy of until they resolve.
+                "wasmMemMb": crate::load::wasm_mem_mb(),
+                "admission": self.host.core.borrow().as_ref().and_then(|c| c.m.admission()).map(|a| json!({
+                    "queued": a.queued, "agentQueued": a.agent_queued, "agentBytes": a.agent_bytes, "hot": a.hot,
+                    "pressure": a.pressure,
+                })),
+                "admitted": self.host.core.borrow().as_ref().map(|c| c.admitted.len()),
+            });
+            if reset {
+                s.reset();
+            }
+            return Response::from_json(&v);
+        }
         let mut v = json!({
             "site": SiteEnv::read(&self.host.env).map(|s| s.id.0).ok(),
             "role": self.host.core.borrow().as_ref().map(|c| matches!(c.m.role(), Role::Leader)),
@@ -1329,31 +1396,11 @@ impl<F: Family> Routes<F> {
         {
             v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
             v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
+            v["entrySoft"] = json!(self.host.entry_soft.get());
         }
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
-            s.commit_ms.clear();
-            s.round_ms.clear();
-            s.apply_ms.clear();
-            s.apply_steps.clear();
-            s.confirm_ms.clear();
-            s.append_ms.clear();
-            s.raft_in.clear();
-            s.deps_ms.clear();
-            s.dep_fails.clear();
-            s.queue_ms.clear();
-            s.entries = 0;
-            s.commands = 0;
-            s.failed_calls = 0;
-            s.test_merge_asks = 0;
-            s.test_merge_shed = 0;
-            s.peers.clear();
-            s.calls.clear();
-            s.trace.clear();
-            s.hops.clear();
-            s.apply_ms.clear();
-            s.inbound.clear();
-            s.inbound_since = now_ms();
+            s.reset();
         }
         Response::from_json(&v)
     }
@@ -2287,7 +2334,16 @@ mod tests {
     use graftyard_types::SiteId;
     use serde_json::json;
 
-    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, read_wait, site_field};
+    use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+
+    /// The summary's p50 and p99 are nearest-rank over the sorted samples, the same rule as `a1.mjs`'s `pct`, so a
+    /// row judged from `?summary=1` matches one judged from the raw arrays; samples arrive out of order.
+    #[test]
+    fn a_summary_ranks_the_sorted_samples() {
+        let xs: Vec<u32> = (1..=200).rev().collect();
+        assert_eq!(percentiles(&xs), json!({ "n": 200, "p50": 101, "p99": 199, "max": 200 }));
+        assert_eq!(percentiles(&[]), json!({ "n": 0, "p50": null, "p99": null, "max": null }));
+    }
 
     /// A voter's address and a learner's, for `gate`.
     const V: SiteId = SiteId(1);

@@ -247,6 +247,47 @@ mod tests {
         assert_eq!(dump_wait(&a, at + LEARNER_DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS), None, "due at its own interval");
     }
 
+    /// A merge's rows build no dump, so neither waits for one: on a learner or a voter, right after a rebuild and at a
+    /// state the dump does not hold, `{"rows": {"merge": id}}` and `{"rows": {"mergeN": n}}` answer their rows at
+    /// once, and the next whole-tier read still finds its rebuild where it was (`merge-p99`).
+    #[test]
+    fn a_merge_rows_read_never_waits_for_a_dump_rebuild() {
+        use crate::family::{DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS, dump_wait};
+        use crate::host::{ReadBody, fold_answer};
+        let entry = |i: u64, k: u8, prev: Digest| LogEntry {
+            term: graftyard_raft::Term(1),
+            index: Index(i),
+            prev,
+            format: REPO_FORMAT_FANOUT,
+            tiers: TierSet::CORE,
+            at: Timestamp(i),
+            requests: SmallVec::new(),
+            extend: None,
+            body: EntryBody::Events(vec![RepoEvent::Fanout { k }]),
+        };
+        let first = entry(1, 2, Digest([0; 32]));
+        let mut a = RepoFold::new(RepoId(DbId(61)), AccountId(DbId(1)));
+        a.apply_entry(&first);
+        let dump = json!({ "rows": true, "ranges": true, "packed": true });
+        let at = 50_000;
+        assert!(matches!(fold_answer::<Repo>(&a, &dump, at, DUMP_EVERY_MS), ReadBody::Json(_)), "the first rebuild");
+        a.apply_entry(&entry(2, 5, graftyard_raft::digest(&first)));
+        for every in [DUMP_EVERY_MS, LEARNER_DUMP_EVERY_MS] {
+            for q in [
+                json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true }),
+                json!({ "rows": { "mergeN": 3 }, "ranges": true, "packed": true }),
+            ] {
+                let ReadBody::Json(b) = fold_answer::<Repo>(&a, &q, at + 10, every) else {
+                    panic!("{q} waited for a dump rebuild at every {every}")
+                };
+                assert_eq!(b.to_vec(), serde_json::to_vec(&Repo::read_json(&a, &q)).unwrap(), "{q} answers its rows");
+            }
+        }
+        // A whole-tier read is still spaced, and the merges took no rebuild slot: its rebuild is due where it was.
+        assert_eq!(fold_answer::<Repo>(&a, &dump, at + 10, DUMP_EVERY_MS), ReadBody::Shed(DUMP_EVERY_MS - 10));
+        assert_eq!(dump_wait(&a, at + DUMP_EVERY_MS, DUMP_EVERY_MS), None);
+    }
+
     /// A packed dump is built once per state of the tiers and every read at that state, from any input, shares the
     /// same bytes, which are exactly `read_json`'s answer; an applied entry rebuilds it, another repository never gets
     /// it, and a narrow read is not a dump. A learner spaces its rebuilds by LEARNER_DUMP_EVERY_MS, a voter by
@@ -369,7 +410,8 @@ mod tests {
         use crate::family::follower_query;
         let tier = json!({ "rows": true, "ranges": true, "packed": true });
         let merge = json!({ "rows": { "merge": 7 }, "ranges": true, "packed": true });
-        for q in [&tier, &merge] {
+        let merge_n = json!({ "rows": { "mergeN": 3 }, "ranges": true, "packed": true });
+        for q in [&tier, &merge, &merge_n] {
             assert!(follower_query(q, true), "{q}");
             assert!(!follower_query(q, false), "a loading metadata tier sends {q} to the leader");
         }

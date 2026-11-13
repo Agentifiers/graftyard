@@ -7,7 +7,8 @@
 //	                                 so the object can tell a new disk (an emptied container) from the one its
 //	                                 IngestCursor describes; region is CLOUDFLARE_REGION, for the start-time check
 //	POST /init?net=N[&fresh=1]       git init --bare --ref-format=reftable; fresh deletes the repository first
-//	POST /validate?net=N[&tips=a,b]  body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
+//	POST /validate?net=N[&tips=a,b][&class=agent]
+//	                                 body: a pushed pack, possibly thin. index-pack --strict --fix-thin into a
 //	     [&tipsn=K][&derived=1]      quarantine with the repository as alternate, then every tip must be connected
 //	                                 against the repository's refs. With tipsn, the body's first K bytes are the tips,
 //	                                 one per line, and the pack follows (a 10,000-ref push has too many for a URL).
@@ -21,6 +22,9 @@
 //	                                 changes against its merge base with HEAD and against the old tip, whether it is a
 //	                                 fast-forward, and refs/notes/ai's changed entries. With an empty pack, only
 //	                                 "detail", read from the repository's own objects (a REST ref write).
+//	                                 At most min(16, max(4, 2*NumCPU)) validates run at once; humans (the default) wait without
+//	                                 a deadline and queued humans go before agents (FIFO within each lane). Agents wait
+//	                                 up to 2s, with at most 8*slots queued, or get 429 and Retry-After whole seconds.
 //	                                 derived=1 is the shard's own archive-promotion validate: its CPU is derived
 //	                                 and it does not count in the queue depth
 //	POST /ingest?net=N&sha256=H      body: a committed pack. A pack /validate kept aside under H moves in without a
@@ -70,12 +74,14 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -86,6 +92,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -311,6 +318,12 @@ func handleEvict(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer l.Unlock()
+	// A repack holds no network lock (startRepack), so evict also refuses while one runs.
+	if !repacking.TryLock() {
+		fail(w, 409, "network %s is in use", net)
+		return
+	}
+	defer repacking.Unlock()
 	rp := repo(net)
 	freed := dirBytes(rp)
 	if err := os.RemoveAll(rp); err != nil {
@@ -418,7 +431,9 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	l.Lock()
 	defer l.Unlock()
 	if r.URL.Query().Get("fresh") == "1" {
+		repacking.Lock() // a repack holds no network lock (startRepack)
 		os.RemoveAll(rp)
+		repacking.Unlock()
 	}
 	if _, err := os.Stat(rp); err == nil {
 		jsonOut(w, map[string]any{"created": false})
@@ -437,22 +452,171 @@ func handleInit(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"created": true})
 }
 
+const agentQueuePerSlot = 8
+
+var (
+	validateSlots        = min(16, max(4, 2*runtime.NumCPU()))
+	agentValidateWait    = 2 * time.Second
+	validateAdmission    = newValidateGate(validateSlots)
+	errValidateQueueFull = errors.New("validate queue full")
+)
+
+// validateWaiter is granted by closing ready. granted and started are protected by validateGate.mu so a waiter whose
+// deadline races with a grant can tell whether it owns a slot.
+type validateWaiter struct {
+	ready   chan struct{}
+	granted bool
+	started time.Time
+}
+
+// validateGate admits the index-pack work in two FIFO lanes. A released slot always goes to the oldest human waiter,
+// if there is one, before the oldest agent waiter.
+type validateGate struct {
+	mu      sync.Mutex
+	slots   int
+	running int
+	humans  []*validateWaiter
+	agents  []*validateWaiter
+	average float64
+}
+
+func newValidateGate(slots int) *validateGate {
+	return &validateGate{slots: slots, average: 0.5}
+}
+
+// acquire returns a release function for a granted slot. Agents use wait as their deadline; humans have no deadline.
+// A refusal includes a positive Retry-After value. Context cancellation is not a queue-full refusal.
+func (g *validateGate) acquire(ctx context.Context, agent bool, wait time.Duration) (func(), int, error) {
+	g.mu.Lock()
+	if g.running < g.slots {
+		g.running++
+		started := time.Now()
+		g.mu.Unlock()
+		return func() { g.release(started) }, 0, nil
+	}
+	if agent && len(g.agents) >= agentQueuePerSlot*g.slots {
+		retry := g.retryAfterLocked()
+		g.mu.Unlock()
+		return nil, retry, errValidateQueueFull
+	}
+	w := &validateWaiter{ready: make(chan struct{})}
+	if agent {
+		g.agents = append(g.agents, w)
+	} else {
+		g.humans = append(g.humans, w)
+	}
+	g.mu.Unlock()
+
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	if agent {
+		timer = time.NewTimer(wait)
+		deadline = timer.C
+	}
+	finish := func(err error) (func(), int, error) {
+		if timer != nil {
+			timer.Stop()
+		}
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		if w.granted {
+			// The grant won the race with the deadline or cancellation. Use it; the returned release will
+			// put it back even if the caller's context has since ended.
+			return func() { g.release(w.started) }, 0, nil
+		}
+		if agent {
+			for i, queued := range g.agents {
+				if queued == w {
+					g.agents = append(g.agents[:i], g.agents[i+1:]...)
+					break
+				}
+			}
+			if err != errValidateQueueFull {
+				return nil, 0, err
+			}
+			return nil, g.retryAfterLocked(), errValidateQueueFull
+		}
+		for i, queued := range g.humans {
+			if queued == w {
+				g.humans = append(g.humans[:i], g.humans[i+1:]...)
+				break
+			}
+		}
+		return nil, 0, err
+	}
+
+	select {
+	case <-w.ready:
+		if timer != nil {
+			timer.Stop()
+		}
+		return func() { g.release(w.started) }, 0, nil
+	case <-ctx.Done():
+		return finish(ctx.Err())
+	case <-deadline:
+		return finish(errValidateQueueFull)
+	}
+}
+
+func (g *validateGate) release(started time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.average += 0.1 * (time.Since(started).Seconds() - g.average)
+	g.running--
+	w := (*validateWaiter)(nil)
+	if len(g.humans) > 0 {
+		w = g.humans[0]
+		g.humans = g.humans[1:]
+	} else if len(g.agents) > 0 {
+		w = g.agents[0]
+		g.agents = g.agents[1:]
+	} else {
+		return
+	}
+	w.granted = true
+	w.started = time.Now()
+	// The released slot was transferred directly to this waiter.
+	g.running++
+	close(w.ready)
+}
+
+// retryAfterLocked estimates the wait for one more agent, including the queued agents already ahead of it.
+func (g *validateGate) retryAfterLocked() int {
+	n := int(math.Ceil(float64(len(g.agents)+1) / float64(g.slots) * g.average))
+	return min(60, max(1, n))
+}
+
 func handleValidate(w http.ResponseWriter, r *http.Request) {
 	net, rp, ok := netParam(w, r, true)
 	if !ok {
 		return
 	}
-	derivedValidate := r.URL.Query().Get("derived") == "1"
+	query := r.URL.Query()
+	agent := query.Get("class") == "agent"
+	derivedValidate := query.Get("derived") == "1"
 	var validateEnv []string
 	if derivedValidate {
 		validateEnv = []string{derivedEnv}
+	} else {
+		validating.Add(1) // waiting for admission or running: the queue
+		defer validating.Add(-1)
 	}
+	release, retryAfter, err := validateAdmission.acquire(r.Context(), agent, agentValidateWait)
+	if err != nil {
+		if err == errValidateQueueFull {
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			fail(w, http.StatusTooManyRequests, "validate queue full; retry after %d s", retryAfter)
+		}
+		return
+	}
+	defer release()
+
 	var tips []string
-	if t := r.URL.Query().Get("tips"); t != "" {
+	if t := query.Get("tips"); t != "" {
 		tips = strings.Split(t, ",")
 	}
 	body := io.Reader(r.Body)
-	if k := r.URL.Query().Get("tipsn"); k != "" {
+	if k := query.Get("tipsn"); k != "" {
 		var n int64
 		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
 			fail(w, 400, "bad tipsn")
@@ -467,7 +631,7 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 	}
 	// detailn: the next K bytes are "<new> <old> <ref>" lines, the updates /validate reports detail for.
 	var updates []update
-	if k := r.URL.Query().Get("detailn"); k != "" {
+	if k := query.Get("detailn"); k != "" {
 		var n int64
 		if _, err := fmt.Sscan(k, &n); err != nil || n < 0 || n > 64<<20 {
 			fail(w, 400, "bad detailn")
@@ -491,17 +655,27 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The pack is spooled before the network's lock: a body streamed from the edge can take seconds, and while a
+	// validate held the lock shared through it, a waiting writer (a catch-up's /ingest) held every new ls-refs and
+	// validate behind it (LM-1 round 6: the home shard's ls-refs walls rose from 2.7 to 12 s within a minute at 0.65
+	// vCPU; `TestValidateBodyHoldsNoLock`).
+	file, sum, n, err := spool(filepath.Join(data, "spool"), body)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.Remove(file)
 	// Shared: a validate writes only its own quarantine and reads the repository's objects and refs, so validates of
 	// one network run side by side, and only the writers (ingest, refs, repack, init, evict), which take the lock
 	// alone, wait for them. The one shared write, setting the quarantine aside under the pack's SHA-256, takes
 	// `aside` (finishValidate).
-	if !derivedValidate {
-		validating.Add(1) // waiting or running: the queue
-		defer validating.Add(-1)
-	}
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
+	if _, err := os.Stat(rp); err != nil {
+		fail(w, 404, "no repository for network %s", net)
+		return
+	}
 	sweepValidated(rp)
 	q, err := os.MkdirTemp(filepath.Join(rp, "graft"), "incoming-")
 	if err != nil {
@@ -517,11 +691,6 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 			os.RemoveAll(q)
 		}
 	}()
-	file, sum, n, err := spool(q, body)
-	if err != nil {
-		fail(w, 500, "%v", err)
-		return
-	}
 	if n == 0 && len(updates) > 0 {
 		// A REST ref write or a push of deletes by an agent: detail only, read from the repository's own objects.
 		d, err := details(rp, validateEnv, updates)
@@ -577,7 +746,6 @@ func handleValidate(w http.ResponseWriter, r *http.Request) {
 		out["detail"] = d
 	}
 	// Kept aside under the pack's SHA-256 until /ingest names it.
-	os.Remove(file)
 	if err := finishValidate(net, rp, q, sum); err != nil {
 		fail(w, 500, "%v", err)
 		return
@@ -636,36 +804,73 @@ func cgroupCPU() (usec int64, cpus float64, ok bool) {
 	return usec, cpus, true
 }
 
-// sampleDerived adds CPU used by running derived git processes and their waited-for children to the running total.
+// procCPU is one process's parent and its CPU in µs: its own (utime, stime) plus its waited-for children's (cutime,
+// cstime), from /proc/<pid>/stat. A zombie still answers.
+func procCPU(pid int) (ppid int, usec int64, ok bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, 0, false
+	}
+	end := bytes.LastIndexByte(b, ')')
+	if end < 0 {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(b[end+1:]))
+	if len(fields) < 15 {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscan(fields[1], &ppid); err != nil {
+		return 0, 0, false
+	}
+	for _, field := range fields[11:15] { // utime, stime, cutime, cstime (fields 14-17).
+		var ticks int64
+		if _, err := fmt.Sscan(field, &ticks); err != nil {
+			return 0, 0, false
+		}
+		usec += ticks * 10_000 // 100 clock ticks a second.
+	}
+	return ppid, usec, true
+}
+
+// sampleDerived adds the CPU of running derived git processes to the running total: each one's own and its reaped
+// children's, plus every live descendant's own and reaped children's. A child's CPU reaches its parent's cutime only
+// once it is waited for, so counting the parent alone left a running repack's `pack-objects` in /load's busy
+// fraction, which read about 0.99 at the end of every rehydrate (tests/am1/results/hot-shards-2.md, A31). A reaped
+// child's time moves into its parent's cutime as it leaves the live set, so the sum never counts it twice.
 func sampleDerived() int64 {
 	derived.Lock()
 	defer derived.Unlock()
-	for pid, counted := range derived.procs {
-		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		if err != nil {
-			continue // The process may have exited.
-		}
-		end := bytes.LastIndexByte(b, ')')
-		if end < 0 {
-			continue
-		}
-		fields := strings.Fields(string(b[end+1:]))
-		if len(fields) < 15 {
-			continue
-		}
-		var usec int64
-		valid := true
-		for _, field := range fields[11:15] { // utime, stime, cutime, cstime (fields 14-17).
-			var ticks int64
-			if _, err := fmt.Sscan(field, &ticks); err != nil {
-				valid = false
-				break
+	if len(derived.procs) == 0 {
+		return derived.total
+	}
+	kids := map[int][]int{}
+	cpu := map[int]int64{}
+	if ents, err := os.ReadDir("/proc"); err == nil {
+		for _, e := range ents {
+			var pid int
+			if _, err := fmt.Sscan(e.Name(), &pid); err != nil {
+				continue
 			}
-			usec += ticks * 10_000 // 100 clock ticks a second.
+			if ppid, usec, ok := procCPU(pid); ok {
+				kids[ppid] = append(kids[ppid], pid)
+				cpu[pid] = usec
+			}
 		}
-		if valid && usec > counted {
+	}
+	for root, counted := range derived.procs {
+		own, ok := cpu[root]
+		if !ok {
+			continue // Exited: gitWithMeter counts the rest from its rusage.
+		}
+		usec := own
+		for todo := append([]int{}, kids[root]...); len(todo) > 0; {
+			p := todo[len(todo)-1]
+			todo = append(todo[:len(todo)-1], kids[p]...)
+			usec += cpu[p]
+		}
+		if usec > counted {
 			derived.total += usec - counted
-			derived.procs[pid] = usec
+			derived.procs[root] = usec
 		}
 	}
 	return derived.total
@@ -1335,19 +1540,20 @@ func handleRefs(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	l := lock(net)
-	l.Lock()
-	defer l.Unlock()
 	q := r.URL.Query()
 	put := r.Method == http.MethodPut
 	// A PUT with neither flag is the whole set in one body, as before.
 	start, done := !put || q.Get("start") == "1" || (q.Get("start") == "" && q.Get("done") == ""),
 		!put || q.Get("done") == "1" || (q.Get("start") == "" && q.Get("done") == "")
+	// The body is read before the lock, which every upload and validate of the network waits on while it is held.
 	want, order, err := readRefLines(r.Body, !put)
 	if err != nil {
 		fail(w, 400, "%v", err)
 		return
 	}
+	l := lock(net)
+	l.Lock()
+	defer l.Unlock()
 	var dels, ups []string
 	if put && start {
 		have, err := listRefs(rp, []string{derivedEnv})
@@ -1411,26 +1617,40 @@ func packCount(rp string) int {
 
 // startRepack runs `git repack -d --geometric=2` on the repository in the background when it holds more than repackAt
 // packs and no repack runs on this shard, and says whether it started one. /refs is the last step of every catch-up
-// and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls small packs into larger
-// ones and keeps every object, so the objects /promote names stay. It holds the network's lock alone while it runs
-// (0.75 s for 2,000 packs the first time, about 10 ms after), so no merge, upload, or ingest reads a pack it deletes.
+// and rehydrate, so this is the shard's repack after a catch-up. A geometric repack rolls whole packs into larger ones
+// and keeps every object in them, reachable or not, so the objects /promote names stay, a pack ingested meanwhile is
+// left alone, and a ref written meanwhile loses nothing. It takes no network lock: readers keep the packs they opened
+// (unlinked files stay mapped) and git looks a missing pack's objects up again in the new one. Held alone, it stopped
+// every upload, validate, and ingest of the network for its whole run, seconds once the packs reach 100 MB (LM-1
+// round 7, `TestRepackHoldsNoNetworkLock`). Only evict and a fresh init, which delete the repository, wait for it.
 func startRepack(net, rp string) bool {
 	if packCount(rp) <= repackAt || !repacking.TryLock() {
 		return false
 	}
 	go func() {
 		defer repacking.Unlock()
-		l := lock(net)
-		l.Lock()
-		defer l.Unlock()
 		if _, err := os.Stat(rp); err != nil {
 			return
 		}
-		if _, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2"); err != nil {
+		if err := runRepack(rp); err != nil {
 			fmt.Fprintf(os.Stderr, "repack %s: %v\n", net, err)
+		}
+		// A commit-graph over every ref's history: validate's two `--not --all` walks read each ref's tip from the
+		// packs without one, so their CPU grew with the refs, 7.8 to 14.9 ms a call, and the shard's CPU climbed
+		// within every B0-29 run until it saturated a vCPU (tests/am1/results/hot-shards-3.md).
+		if _, err := git(rp, []string{derivedEnv}, nil, "commit-graph", "write", "--reachable", "--split", "--no-progress"); err != nil {
+			fmt.Fprintf(os.Stderr, "commit-graph %s: %v\n", net, err)
 		}
 	}()
 	return true
+}
+
+// runRepack is the repack itself; tests slow it down. --window=0: no delta search. Once a geometric roll reached the
+// big pack it searched deltas for 1 to 5 s, and every validate, fetch and ingest queued behind it (push p99 3.7 s
+// locally, 7 to 38 s hosted); pushes' objects are already as small as their own packs made them.
+var runRepack = func(rp string) error {
+	_, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2", "--window=0")
+	return err
 }
 
 func handlePromote(w http.ResponseWriter, r *http.Request) {
@@ -1505,11 +1725,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 	if !ok {
 		return
 	}
-	l := lock(net)
-	l.RLock()
-	defer l.RUnlock()
 	// The client's Git-Protocol header, which the object forwards; git 2.26 and later ask for version 2.
 	proto := r.Header.Get("git-protocol")
+	// The body is read before the network's lock, as /validate's is.
 	var body []byte
 	if !advertise {
 		in := io.Reader(r.Body)
@@ -1528,6 +1746,9 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		}
 		body = b
 	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
 	var sessions []string
 	if strings.Contains(proto, "version=2") {
 		sessions = sessionPrefixes(body)
@@ -1837,7 +2058,25 @@ func handleFsck(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, res)
 }
 
+func raiseOpenFileLimit() {
+	var limit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limit); err != nil {
+		fmt.Fprintf(os.Stderr, "get RLIMIT_NOFILE: %v\n", err)
+		return
+	}
+	raised := syscall.Rlimit{Cur: 1 << 20, Max: 1 << 20}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &raised); err == nil {
+		return
+	}
+	// An unprivileged process cannot raise Max; it can still raise Cur to the limit it already has.
+	raised = syscall.Rlimit{Cur: limit.Max, Max: limit.Max}
+	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &raised); err != nil {
+		fmt.Fprintf(os.Stderr, "raise RLIMIT_NOFILE: %v\n", err)
+	}
+}
+
 func main() {
+	raiseOpenFileLimit()
 	go sampleCPU()
 	if err := http.ListenAndServe(":8080", mux()); err != nil {
 		fmt.Fprintln(os.Stderr, err)

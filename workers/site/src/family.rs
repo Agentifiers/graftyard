@@ -502,7 +502,7 @@ pub fn dump_wait(fold: &git::repo::RepoFold, now: u64, every: u64) -> Option<u64
 pub fn follower_query(q: &Value, meta_loaded: bool) -> bool {
     match q.get("rows") {
         Some(Value::Bool(true)) => meta_loaded,
-        Some(r) if r.get("merge").is_some() => meta_loaded,
+        Some(r) if graftyard_api::hosted::MergeOf::of_query(r).is_some() => meta_loaded,
         Some(r) if r.get("api").is_some() => meta_loaded,
         Some(r) => r.get("access").is_some() || r.get("agent").is_some(),
         None => false,
@@ -599,27 +599,20 @@ impl Family for Repo {
             f.applied_at = f.applied_at.max(e.at);
         }
         let fold = &m.group_fold().fold;
-        // An install's input applies through the snapshot, whose entries this member never holds: entries waiting
-        // from before it are past what the ring serves. `crate::load::finish_install` restarted the ring there.
-        if to > from && m.entry_at(to).is_none() {
-            f.pending.clear();
-        }
-        for i in from.0 + 1..=to.0 {
-            let Some(e) = m.entry_at(raft::Index(i)) else { continue };
-            let evs: Vec<git::repo::RepoEvent> = match &e.body {
-                raft::EntryBody::Events(evs) => evs.clone(),
-                _ => Vec::new(),
-            };
-            f.pending.push((e.index, e.at, evs));
-        }
-        // A member nobody polls keeps at most FEED_RING's count waiting; older entries are past what the ring keeps.
-        let over = f.pending.len().saturating_sub(git::feed::FEED_RING.0);
-        f.pending.drain(..over);
-        if let Some(owner) = f.owner.clone() {
+        // Until a poll read the owner, nothing is kept: that poll starts the ring at the member's applied entry
+        // (`crate::feed::Feed::owner_read`). An install's entries are not in the log; `crate::load::finish_install`
+        // restarted the ring there.
+        let crate::feed::Feed { owner, ring, .. } = &mut *f;
+        if let Some(owner) = owner.as_ref() {
             let empty = graftyard_fold::MemStore::default();
             let meta: &dyn graftyard_fold::Read = if fold.meta.loaded() { &fold.meta } else { &empty };
-            for (i, at, evs) in std::mem::take(&mut f.pending) {
-                f.ring.feed(repo, &owner, &fold.core, meta, (i, at, &evs));
+            for i in from.0 + 1..=to.0 {
+                let Some(e) = m.entry_at(raft::Index(i)) else { continue };
+                let evs: &[git::repo::RepoEvent] = match &e.body {
+                    raft::EntryBody::Events(evs) => evs,
+                    _ => &[],
+                };
+                ring.feed(repo, owner, &fold.core, meta, (e.index, e.at, evs));
             }
         }
         if to > from || (gap, !out.install.is_empty()) != (false, false) || was != (f.gap, f.installing) {
@@ -957,7 +950,11 @@ impl Family for Repo {
         if q.get("rows").and_then(|r| r.get("api")).is_some() {
             return narrow_wait(fold, q, now);
         }
-        (q.get("packed").and_then(Value::as_bool) == Some(true)).then(|| dump_wait(fold, now, every)).flatten()
+        // Only a whole-tier dump is spaced: a merge's rows (`{"rows": {"merge": id}}`) carry `packed` too, but build
+        // no dump, and spaced as one they waited out a rebuild they never made and took its slot (`merge-p99`).
+        let dump =
+            q.get("rows").is_some_and(Value::is_boolean) && q.get("packed").and_then(Value::as_bool) == Some(true);
+        dump.then(|| dump_wait(fold, now, every)).flatten()
     }
     fn read_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[u8]>> {
         dump_bytes(fold, q).or_else(|| narrow_bytes(fold, q))
@@ -976,9 +973,9 @@ impl Family for Repo {
         if let Some(base) = q.get("mergequeue") {
             return crate::merge_queue::read_json(fold, base);
         }
-        if let Some(id) = q.get("rows").and_then(|r| r.get("merge")).and_then(Value::as_i64) {
+        if let Some(of) = q.get("rows").and_then(graftyard_api::hosted::MergeOf::of_query) {
             let meta: Option<&dyn graftyard_fold::Read> = fold.meta.loaded().then_some(&fold.meta);
-            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, DbId(id));
+            let mut t = graftyard_api::hosted::TierRows::merge_rows(&fold.core, meta, of);
             t.index = graftyard_fold::meta(&*fold.core).applied.0;
             return serde_json::to_value(t).unwrap_or(Value::Null);
         }

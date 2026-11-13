@@ -365,6 +365,10 @@ fn b0_33_at_measured_capacity_every_agent_command_is_admitted() {
     assert!(m.agent_per_s >= 240.0, "{:.1}/s", m.agent_per_s);
     assert_eq!(m.refused, 0);
     assert!(m.human_p99 <= 1_000 && m.mq_p99 <= 1_000);
+    // Capacity is what entries of ENTRY_SOFT carry, not ENTRY_MAX: at most ENTRY_SOFT over the 200-byte command floor,
+    // every 50 ms round floor, a second.
+    let bound = graftyard_raft::ENTRY_SOFT as f32 / 200.0 * 1000.0 / 50.0;
+    assert!(cap <= bound, "capacity {cap:.0}/s above the ENTRY_SOFT bound {bound:.0}/s");
 }
 
 #[test]
@@ -373,8 +377,9 @@ fn a_bot_flood_cannot_take_the_agent_floor() {
     l.set_capacity(Some(300.0));
     let t0 = l.now + 100;
     let mut ops = Vec::new();
-    // Bot: 200 commands/s of 299,000 bytes, 60 MB/s, so five fill an entry to within a few KB of ENTRY_MAX; agents:
-    // 100 commands/s of 10 KB (a long key, not an inline pack), which fit only ahead of Bot.
+    // Bot: 200 commands/s of 299,000 bytes, 60 MB/s, each over ENTRY_SOFT, so one fills an entry alone; agents:
+    // 100 commands/s of 4 KB (a long key, not an inline pack), which fit only ahead of Bot. At 4 KB, ENTRY_SOFT holds
+    // more than the floor's share of a round, so what the test measures is Bot against the floor, not the byte cap.
     for (i, t) in (t0..t0 + 20_000).step_by(5).enumerate() {
         ops.push(op(t, AdmitClass::Bot, None, Kind::Side, format!("bot/{i}"), 299_000));
     }
@@ -384,7 +389,7 @@ fn a_bot_flood_cannot_take_the_agent_floor() {
             AdmitClass::Agent,
             Some(i as u64 % 50),
             Kind::Side,
-            format!("ag/{i}/{}", "k".repeat(10_000)),
+            format!("ag/{i}/{}", "k".repeat(4_000)),
             0,
         ));
     }
