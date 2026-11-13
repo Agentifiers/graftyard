@@ -1511,3 +1511,40 @@ until `LOAD_STALE` of later ledger calls, and `PoolLedger::settle` shifts every 
 `LEDGER_GAP`, so on a test install with a stream of short-lived networks of one owner the lease never lapses while
 other networks keep calling. DESIGN's lease text says leases "lapse past LOAD_STALE unless renewed"; here they were
 renewed by nobody and still held for over an hour (11:36Z to 13:11Z).
+
+### Round 11: m23, the ENTRY_SOFT 100 KB A/B on m0-carried-8 (2026-11-13)
+
+**Deploy.** Worktree `e3ba3b58`: origin/m0-carried-8 `c8c7943` (base main 84d29c2: ENTRY_SOFT 100,000 bytes, Agent
+inline packs not counted; APPEND_BYTES_MAX 100 KB past an AppendEntries' first entry; AppendEntries pipelined 4 per
+voter, off on a lossy link; LOOP_LAG step-down) merged with `lm1-memory` `d2320985` (main e1fee025, the pool lease
+heartbeat, and this branch's queue split). Sites `172052f9`, `b0ff9cd5`, `22907958`; edge `a8257c11`;
+`SHARD_INSTANCE=standard-4`; image `sha256:f6d2ef408c76…`. Before it, fmt, wasm32 test-faults clippy for the site,
+`graftyard-site --lib` and `graftyard-raft` tests passed on the merged tree; m0-carried-8 ran the long sweep,
+Porcupine and full checks on `c8c7943`.
+
+**A/B (diagnosis, not a row).** B0-29's shape, 500 agents, 180 s, k 4 granted, learners enam 4,000, weur 2,000,
+apac 2,000. The 60 KB arm pins `/stats?entry=60000` on every member (test-faults `set_entry_soft`).
+
+| Arm | Commit p50 / p99 (ms) | Queue p99 | Slot p99 | Post p99 | Round p50 / p99 | Confirm p99 | Far follower append p50 / p99 | Commands per entry | Agent push p99 |
+|---|---|---|---|---|---|---|---|---|---|
+| As built, 100 KB (131319) | 518 / 869 | 639 | 538 | 360 | 220 / 419 | 227 | 335 / 593 | 4.84 (3,163 / 654) | 7.5 s |
+| Pinned 60 KB (131321) | 437 / 912 | 708 | 687 | 260 | 178 / 332 | 77 | 232 / 447 | 3.97 (3,171 / 799) | 7.8 s |
+
+Both arms held their leader at term 2 (10 and 26 `/suspect`), 0 feed polls on the leader, 752 / 753 and 728 / 728
+agent pushes ok, merge:only p99 1,484 and 1,294 ms, API p99 2,566 and 2,760 ms at 99.99 and 99.8% served.
+
+**Reading [measured on one deploy, one run per arm].** The 100 KB cap packs 22% more commands into each entry (4.84
+against 3.97) and its p99 commit is 43 ms lower, within run-to-run spread; its p50 is 81 ms higher. Larger entries
+make the round longer (p50 220 against 178 ms, p99 419 against 332) and the leader's storage confirm much longer
+(p99 227 against 77 ms), and the slot wait shorter (p99 538 against 687). Neither arm meets B0-29's 600 ms line.
+In both, a command's queue is mostly the wait for the entry ahead of it to commit (`queue:slot`), not its own entry's
+cut and dependency reads (`queue:post`, p50 2 to 7 ms): with one entry in flight, commit p99 is about one round wait
+plus one round. So the lever for 600 ms is the round's tail (the near follower's AppendEntries and the leader's
+confirm), not the dependency reads.
+
+**Fresh repositories.** Two of four creates on m23 failed in setup: 131316's create answered 503 "0 of 3 joined"
+with "RepoId(DbId(131316)) has no RepoOwner row" from each member, and 131317's and 131320's `main` was missing from
+ls-refs for seconds after the 201 (`a1.mjs` stopped with "the repository has no main"). `a1.mjs` now waits up to
+120 s for `main` and logs the wait; 131321's appeared after 1,704 ms. Not yet traced.
+
+Cost after round 11: $86.98 of $150 (containers $29.23); every shard torn down.

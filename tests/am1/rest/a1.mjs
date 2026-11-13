@@ -430,8 +430,13 @@ async function git(path, tok, body, headers = {}, repo = R) {
 const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${prefix}\n`), Buffer.from("0000")]),
   { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
 const tip = async (ref) => (await lsRefs(admin, ref)).text.match(new RegExp(`([0-9a-f]{40}) ${ref}\\n`))?.[1] ?? null;
+// A fresh repository's `main` (auto_init) was missing from ls-refs for seconds after its 201 on m23 (2 of 4 creates):
+// wait up to 120 s and log the wait, so it is measured rather than a failed run.
+const mainSince = Date.now();
 let main = await tip("refs/heads/main");
+while (!main && Date.now() - mainSince < 120_000) { await sleep(2_000); main = await tip("refs/heads/main"); }
 if (!main) throw new Error("the repository has no main");
+if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.now() - mainSince} ms`);
 
 /** One push of `bytes` to `ref` from `from` (old tip or null); returns [result, ms, new tip]. */
 const pushed = new Map(); // commit id -> ack time, for feed latency
