@@ -2729,3 +2729,53 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
 
 **Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
+
+### M5-WP1: the `Release` group's rules, as built (2026-11-13)
+
+#### `decide`'s clock is the entry's own time
+
+**Decision.** `ReleaseFold::decide(anchor, at, bytes)` takes `at`, the time the leader stamped on the entry, and a follower's `check` takes the same stamp from the entry it verifies (the member's `release_at` table). `not_after` and a drain's 24 hours are judged against it, so the rules use no clock and the CLI, the member, and the tests run one function.
+
+**Why.** "`decide` is pure" (`design/DESIGN.md`, Shape, the `Command` trait). A wall clock read in `decide` would let a follower refuse an entry its leader accepted.
+
+**Beat.** Reading `Date.now()` in the member, which makes `decide` impure. Carrying the time in the signed body, which the signer controls.
+
+**Evidence.** `an_intent_past_not_after_is_refused` and `the_executor_key_replaces_only_a_lost_site_and_pins_nothing` (`crates/release/src/tests`); plants 2 and 11 in `tests/m5/plant.py`.
+
+**Flip.** A rule that needs time the leader cannot stamp, such as a deadline that must hold while no entry commits.
+
+#### `SignedIntent` carries no signature of its own
+
+**Decision.** `SignedIntent` drops `release_sig`, `key`, and `sig`. The entry's signature is the intent's, and the release's signature is on its `ReleaseUploaded` record, which an intent names by id.
+
+**Why.** A signed entry already carries its signers and binds the install and `prev`. A second signature inside the body signs fewer bytes and adds a check that can disagree with the first.
+
+**Beat.** Keeping the three fields and checking both, which doubles the signer rules.
+
+**Evidence.** `each_kind_takes_only_its_signers`; `design/DESIGN.md`, Shape, `SignedIntent`.
+
+**Flip.** An intent that must be relayed without its entry, such as one carried to a second install.
+
+#### Entries after genesis are format 0x30.2
+
+**Decision.** A `Release` member writes the genesis as 0x30.1 and every later entry as 0x30.2, and reads both. Tags 0 (`Genesis`) and 1 (`Keys`) are unchanged; tags 2 to 23 are new, in the design's order (`crates/release/src/tests/entry_tags.golden`).
+
+**Why.** A member built before M5-WP1 decodes only the genesis. A new format makes its refusal "unreadable format", not a wrong decode, and the existing installs' genesis bytes still re-sign byte for byte.
+
+**Beat.** Reusing 0x30.1 for the new tags, which an older member would misread as malformed.
+
+**Evidence.** `the_codec_round_trips_every_entry_kind`; graft-m4a's `genesis.unsigned`, signed again by this branch's `graftyard sign`, is byte-identical to its committed `genesis.signed` (digest `b40c10ed84bd…`).
+
+**Flip.** None expected: the wire format is append-only.
+
+#### An `EdgeRoll` undo pin names R or the release the edge runs
+
+**Decision.** An `EdgeRoll { release: R }`'s pre-signed undos may pin only R or the release the edge currently runs, and an `EdgeRoll` whose versions drop a version an undo of the current intent names is refused `DropsUndoVersion`.
+
+**Why.** The design says the roll may not drop an undo's version (`design/DESIGN.md`, Shape, "Release group") but not which versions an undo may name. Only these two are deployed during the roll, so a pin to any other release would point at a version no deployment holds.
+
+**Beat.** Accepting any uploaded release as the pin, which lets an undo name a version the roll already removed.
+
+**Evidence.** `an_edge_roll_that_drops_an_undos_version_is_refused`; plant 7 in `tests/m5/plant.py`.
+
+**Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
