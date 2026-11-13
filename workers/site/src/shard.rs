@@ -289,7 +289,8 @@ impl Jobs {
     }
 
     /// Waits for a catch-up that started after this call arrived, at most `wait` when given: `Err` with the reply to
-    /// send, 503 `warming` past the wait, 422 when the catch-up failed.
+    /// send, 503 `warming` past the wait, and 503 when the catch-up failed too: a failed catch-up is this shard's, not
+    /// the pack's, so the caller tries another site's shard (`graftyard_git::validate_status`).
     async fn wait(&self, wait: Option<std::time::Duration>) -> std::result::Result<(), Result<Response>> {
         let (tx, rx) = futures_channel::oneshot::channel();
         RUNS.with(|r| r.borrow_mut().entry(self.key()).or_default().waiters.push(tx));
@@ -314,7 +315,7 @@ impl Jobs {
             },
             None => next.await,
         };
-        r.map_err(|e| Response::error(e, 422))
+        r.map_err(|e| Response::error(e, graftyard_git::validate_status(None)))
     }
 
     /// Ends once no catch-up of the network runs here.
@@ -608,17 +609,22 @@ impl DurableObject for GitShard {
                 // `detailn` (AM1's agent pushes and REST ref writes): the next bytes are the updates the git cache
                 // reports detail for. A default push sends none, and its reply is the `PackIndex` alone, as before.
                 let d: usize = q(&url, "detailn").and_then(|v| v.parse().ok()).unwrap_or(0);
+                // Only the container's own 422 is the pack's answer; a call to it that broke (a kill mid-push) is
+                // this shard's, a 503 the edge moves past (`graftyard_git::validate_status`).
+                let failed = |(status, e): (Option<u16>, StoreError)| {
+                    Response::error(e.0, graftyard_git::validate_status(status))
+                };
                 if d == 0 {
                     return match host.validate_detail(net, rest.to_vec(), &tips, "", derived).await {
                         Ok((Some(ix), _)) => Response::from_json(&ix),
                         Ok((None, _)) => Response::error("validate gave no index", 422),
-                        Err(e) => Response::error(e.0, 422),
+                        Err(e) => failed(e),
                     };
                 }
                 let detail = String::from_utf8_lossy(&rest[..d.min(rest.len())]).into_owned();
                 match host.validate_detail(net, rest[d.min(rest.len())..].to_vec(), &tips, &detail, derived).await {
                     Ok((ix, detail)) => Response::from_json(&serde_json::json!({ "index": ix, "detail": detail })),
-                    Err(e) => Response::error(e.0, 422),
+                    Err(e) => failed(e),
                 }
             }
             "/info-refs" | "/upload-pack" => {

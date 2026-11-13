@@ -631,36 +631,73 @@ func cgroupCPU() (usec int64, cpus float64, ok bool) {
 	return usec, cpus, true
 }
 
-// sampleDerived adds CPU used by running derived git processes and their waited-for children to the running total.
+// procCPU is one process's parent and its CPU in µs: its own (utime, stime) plus its waited-for children's (cutime,
+// cstime), from /proc/<pid>/stat. A zombie still answers.
+func procCPU(pid int) (ppid int, usec int64, ok bool) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, 0, false
+	}
+	end := bytes.LastIndexByte(b, ')')
+	if end < 0 {
+		return 0, 0, false
+	}
+	fields := strings.Fields(string(b[end+1:]))
+	if len(fields) < 15 {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscan(fields[1], &ppid); err != nil {
+		return 0, 0, false
+	}
+	for _, field := range fields[11:15] { // utime, stime, cutime, cstime (fields 14-17).
+		var ticks int64
+		if _, err := fmt.Sscan(field, &ticks); err != nil {
+			return 0, 0, false
+		}
+		usec += ticks * 10_000 // 100 clock ticks a second.
+	}
+	return ppid, usec, true
+}
+
+// sampleDerived adds the CPU of running derived git processes to the running total: each one's own and its reaped
+// children's, plus every live descendant's own and reaped children's. A child's CPU reaches its parent's cutime only
+// once it is waited for, so counting the parent alone left a running repack's `pack-objects` in /load's busy
+// fraction, which read about 0.99 at the end of every rehydrate (tests/am1/results/hot-shards-2.md, A31). A reaped
+// child's time moves into its parent's cutime as it leaves the live set, so the sum never counts it twice.
 func sampleDerived() int64 {
 	derived.Lock()
 	defer derived.Unlock()
-	for pid, counted := range derived.procs {
-		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-		if err != nil {
-			continue // The process may have exited.
-		}
-		end := bytes.LastIndexByte(b, ')')
-		if end < 0 {
-			continue
-		}
-		fields := strings.Fields(string(b[end+1:]))
-		if len(fields) < 15 {
-			continue
-		}
-		var usec int64
-		valid := true
-		for _, field := range fields[11:15] { // utime, stime, cutime, cstime (fields 14-17).
-			var ticks int64
-			if _, err := fmt.Sscan(field, &ticks); err != nil {
-				valid = false
-				break
+	if len(derived.procs) == 0 {
+		return derived.total
+	}
+	kids := map[int][]int{}
+	cpu := map[int]int64{}
+	if ents, err := os.ReadDir("/proc"); err == nil {
+		for _, e := range ents {
+			var pid int
+			if _, err := fmt.Sscan(e.Name(), &pid); err != nil {
+				continue
 			}
-			usec += ticks * 10_000 // 100 clock ticks a second.
+			if ppid, usec, ok := procCPU(pid); ok {
+				kids[ppid] = append(kids[ppid], pid)
+				cpu[pid] = usec
+			}
 		}
-		if valid && usec > counted {
+	}
+	for root, counted := range derived.procs {
+		own, ok := cpu[root]
+		if !ok {
+			continue // Exited: gitWithMeter counts the rest from its rusage.
+		}
+		usec := own
+		for todo := append([]int{}, kids[root]...); len(todo) > 0; {
+			p := todo[len(todo)-1]
+			todo = append(todo[:len(todo)-1], kids[p]...)
+			usec += cpu[p]
+		}
+		if usec > counted {
 			derived.total += usec - counted
-			derived.procs[pid] = usec
+			derived.procs[root] = usec
 		}
 	}
 	return derived.total

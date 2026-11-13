@@ -500,6 +500,17 @@ fn unauthorized(rid: RequestId, body: &str) -> Result<Response> {
     Ok(Response::ok(body)?.with_status(401).with_headers(h))
 }
 
+/// A push no git cache shard could check: 503 with `Retry-After: 2`, before any byte of a git result, so git prints
+/// the HTTP error and the push can be sent again. Its pack may already be in the buckets; the sweeper deletes it.
+fn shard_unavailable(rid: RequestId, why: &str) -> Result<Response> {
+    let h = headers(rid)?;
+    h.set("retry-after", "2")?;
+    h.set("content-type", "text/plain; charset=utf-8")?;
+    Ok(Response::ok(format!("git cache: no shard could check the pack ({why}); retry\n"))?
+        .with_status(503)
+        .with_headers(h))
+}
+
 /// `Unsupported` (`design/DESIGN.md`, Shape, the write path): 503 with `Retry-After`, a retryable error, never a
 /// refusal, and before any byte of a git result, so git prints the HTTP error and nothing it could read as a ref's fate.
 fn unsupported(rid: RequestId, family: u16, version: u16) -> Result<Response> {
@@ -944,7 +955,7 @@ async fn receive_pack(
         let validate = async {
             let (ix, d) = validate(c, repo, pack, &tips, &detail).await?;
             *detail_out.borrow_mut() = d;
-            ix.ok_or_else(|| "validate gave no index".to_owned())
+            ix.ok_or_else(|| ValidateError::Invalid("validate gave no index".to_owned()))
         };
         match store.place_teed(stage, validate).await {
             Ok((d, ix)) => {
@@ -952,7 +963,10 @@ async fn receive_pack(
                 index = Some(ix);
                 got = detail_out.into_inner();
             }
-            Err(TeeError::Invalid(e)) => return refuse(Refusal::unpack_failed(&e)),
+            Err(TeeError::Invalid(ValidateError::Invalid(e))) => return refuse(Refusal::unpack_failed(&e)),
+            // No shard could check the pack: a retryable error before any byte of a git result, so the client sends
+            // the push again rather than reading a refusal (`unsupported` answers the same way).
+            Err(TeeError::Invalid(ValidateError::Unavailable(e))) => return shard_unavailable(c.rid, &e),
             Err(TeeError::Place(e)) => return text(c.rid, 503, &format!("pack store: {e}\n")),
         }
     }
@@ -1121,14 +1135,16 @@ fn shard_url(url: &str, i: usize, n: usize) -> String {
 /// `detail` (the `"<new> <old> <ref>"` lines of an agent push, `graftyard_git::agent::detail_lines`), the shard also
 /// answers each update's new commits and changed paths; with an empty pack it answers only those, and no index.
 /// Without `detail` the call is the one a default push has always made. A 422 is the pack's answer and ends the
-/// tries; a 503 `warming`, another status, or a failed call moves to the next site.
+/// tries; a 503 `warming`, another status, or a failed call moves to the next site. When every site's shard failed
+/// that way, the error is `Unavailable`, which a push answers 503 `Retry-After` so git and the client retry it, not
+/// `unpacker error`: 23 pushes in flight at a home-shard kill were refused that way (`tests/am1/results/hot-shards-2.md`).
 pub(crate) async fn validate(
     c: &Ctx<'_>,
     repo: &Repo,
     pack: &[u8],
     tips: &[String],
     detail: &str,
-) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), String> {
+) -> std::result::Result<(Option<PackIndex>, Vec<graftyard_git::agent::RefDetail>), ValidateError> {
     let mut head = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
     if !tips.is_empty() || detail.is_empty() {
         head.push(b'\n');
@@ -1144,19 +1160,51 @@ pub(crate) async fn validate(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let mut last = String::new();
+    let mut tries = Vec::new();
     let sites = shard_order(repo, pinned);
     for (i, site) in sites.iter().copied().enumerate() {
         let r = validate_on(c, repo, site, &shard_url(&url, i, sites.len()), &head, detail).await;
-        mark_shard(repo, site, !matches!(r, Ok(Ok(_)) | Ok(Err((422, _)))));
+        let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
+        mark_shard(repo, site, !matches!(r, Ok(_) | Err((422, _))));
         match r {
-            Ok(Ok(r)) => return Ok(r),
-            Ok(Err((422, e))) => return Err(e),
-            Ok(Err((status, e))) => last = format!("site {}'s shard answered {status}: {e}", site.0),
-            Err(e) => last = format!("site {}'s shard: {e}", site.0),
+            Ok(r) => return Ok(r),
+            // The pack's own answer, the same on every shard: no other site is tried.
+            Err((422, e)) => {
+                tries.push((site, 422, e));
+                break;
+            }
+            Err((status, e)) => tries.push((site, status, e)),
         }
     }
-    Err(last)
+    Err(validate_failed(tries))
+}
+
+/// Why a validate on the network's shards failed: the pack's own answer (`Invalid`), or no shard could answer it.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ValidateError {
+    Invalid(String),
+    Unavailable(String),
+}
+
+impl std::fmt::Display for ValidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ValidateError::Invalid(e) | ValidateError::Unavailable(e) => f.write_str(e),
+        }
+    }
+}
+
+/// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
+/// answered 200: `Invalid` with the 422's body when a shard answered the pack 422, else `Unavailable` naming the last.
+fn validate_failed(tries: Vec<(SiteId, u16, String)>) -> ValidateError {
+    if let Some((_, _, e)) = tries.iter().find(|(_, s, _)| *s == 422) {
+        return ValidateError::Invalid(e.clone());
+    }
+    let last = tries.last().map(|(site, status, e)| match status {
+        0 => format!("site {}'s shard: {e}", site.0),
+        s => format!("site {}'s shard answered {s}: {e}", site.0),
+    });
+    ValidateError::Unavailable(last.unwrap_or_else(|| "no shard to try".into()))
 }
 
 /// A read on the network's shards (`upload-pack`, `info-refs`) in `shard_order`: the first with
@@ -1251,7 +1299,7 @@ pub(crate) async fn push_init(
     ensure_group(c, repo).await?;
     // A default push's validate: no agent detail, so the shard answers only the pack's index.
     let check = async {
-        let (ix, _) = validate(c, repo, &init.pack, &tips, "").await?;
+        let (ix, _) = validate(c, repo, &init.pack, &tips, "").await.map_err(|e| e.to_string())?;
         ix.ok_or_else(|| "validate gave no index".to_owned())
     };
     let (d, _) = store.place_teed(stage, check).await.map_err(|e| e.to_string())?;
@@ -2166,7 +2214,7 @@ mod tests {
 
     use graftyard_types::{PlacementName, PlacementRecord, SiteId, Timestamp};
 
-    use super::{gunzip, shard_url, validate_sites, warm_first};
+    use super::{ValidateError, gunzip, shard_url, validate_failed, validate_sites, warm_first};
 
     fn record(name: PlacementName, sites: &[u8], home: u8) -> PlacementRecord {
         PlacementRecord {
@@ -2190,6 +2238,29 @@ mod tests {
         assert_eq!(ids(validate_sites(&record(PlacementName::Us2w, &[3, 4, 1], 4), None)), [4, 3]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Solo, &[5], 5), None)), [5]);
         assert_eq!(ids(validate_sites(&record(PlacementName::Tri, &[0, 1, 2], 0), Some(SiteId(1)))), [1]);
+    }
+
+    /// Only a shard's 422 is the pack's answer and refuses the push. Every shard warming, broken, or unreachable is
+    /// `Unavailable`, which a push answers 503 so it is sent again: at a home-shard kill the in-flight pushes' shard
+    /// answers were 5xx and failed calls, and each was refused `unpacker error`.
+    #[test]
+    fn only_a_shards_422_refuses_a_push_and_shards_that_all_fail_are_unavailable() {
+        let t = |s: u8, st: u16, e: &str| (SiteId(s), st, e.to_owned());
+        assert_eq!(
+            validate_failed(vec![t(0, 422, "index-pack: bad")]),
+            ValidateError::Invalid("index-pack: bad".into())
+        );
+        // A 422 after earlier sites failed is still the pack's answer.
+        assert_eq!(
+            validate_failed(vec![t(0, 503, "warming"), t(1, 0, "reset"), t(2, 422, "connectivity")]),
+            ValidateError::Invalid("connectivity".into())
+        );
+        let u =
+            validate_failed(vec![t(0, 0, "The container has not been started"), t(1, 503, "warming"), t(2, 500, "x")]);
+        assert_eq!(u, ValidateError::Unavailable("site 2's shard answered 500: x".into()));
+        let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
+        assert_eq!(u, ValidateError::Unavailable("site 1's shard: Network connection lost".into()));
+        assert!(matches!(validate_failed(vec![]), ValidateError::Unavailable(_)));
     }
 
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try

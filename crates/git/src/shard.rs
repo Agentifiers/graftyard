@@ -446,6 +446,20 @@ pub fn promote_moves_on(status: u16) -> bool {
     status != 422
 }
 
+/// The status a shard answers a `/validate` (or `/promote`) that did not succeed. `container` is what the container
+/// answered the call itself, `None` when the shard never got an answer from it: its catch-up failed, the container
+/// was not running, or the call to it broke. Only the container's own 4xx is the pack's or the request's answer (a
+/// pack `index-pack` refuses, a tip it does not connect, a malformed body), the same on every shard, which ends a
+/// caller's tries and refuses the push, as 422. A 5xx or no answer is this shard's state, answered 503 so the
+/// caller tries the next site's shard: at a home-shard kill, 23 pushes in flight were refused `unpacker error`
+/// because a broken catch-up and a lost container call both answered 422 (`tests/am1/results/hot-shards-2.md`).
+pub fn validate_status(container: Option<u16>) -> u16 {
+    match container {
+        Some(s) if (400..500).contains(&s) => 422,
+        _ => 503,
+    }
+}
+
 /// Whether a shard answers a call 503 `warming` at once rather than waiting out the call's `wait` on its catch-up.
 /// `follows`: the caller has another site's shard to try after this one (`next=1`; never on its last try, which
 /// waits, so a call never runs out of shards that would serve it). `rehydrating`: a rehydrate of the network is under

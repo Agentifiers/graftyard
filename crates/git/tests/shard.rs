@@ -260,6 +260,20 @@ fn a_promotion_tries_its_own_site_then_the_other_full_sites() {
     assert!(!promote_moves_on(422));
 }
 
+/// A shard answers a failed validate 422 only for the container's own 4xx, the pack's or the request's answer, the
+/// same on every shard. A container 5xx or no answer at all (its catch-up failed, a kill broke the call) is 503, which
+/// the edge and the archive move past to the next site's shard rather than refusing the push.
+#[test]
+fn a_shard_answers_422_only_for_the_containers_own_refusal() {
+    assert_eq!(validate_status(Some(422)), 422);
+    assert_eq!(validate_status(Some(409)), 422);
+    assert_eq!(validate_status(Some(400)), 422);
+    assert_eq!(validate_status(Some(500)), 503);
+    assert_eq!(validate_status(Some(503)), 503);
+    assert_eq!(validate_status(None), 503);
+    assert!(promote_moves_on(validate_status(None)) && !promote_moves_on(validate_status(Some(422))));
+}
+
 /// A shard answers `warming` at once only when the caller has another shard to try and a rehydrate runs here, or when
 /// it is a cold pool shard asked to validate a forwarded push. A caller's last try waits even on a rehydrating shard,
 /// and a shard that is only catching up (no rehydrate) lets every caller wait.

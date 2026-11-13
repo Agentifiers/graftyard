@@ -426,12 +426,16 @@ impl ShardHost<'_> {
     /// against the refs the leader just gave, which the container holds once `set_refs` ran. The tips ride in the
     /// body ahead of the pack, because a 10,000-ref push has too many for a URL.
     pub async fn validate(&self, network: NetworkId, pack: Vec<u8>, tips: &[String]) -> Result<PackIndex, StoreError> {
-        self.validate_detail(network, pack, tips, "", false).await.map(|(ix, _)| ix.expect("a pack has an index"))
+        self.validate_detail(network, pack, tips, "", false)
+            .await
+            .map(|(ix, _)| ix.expect("a pack has an index"))
+            .map_err(|(_, e)| e)
     }
 
     /// `validate` with `detail` and `derived`: the `"<new> <old> <ref>"` lines of the updates whose new commits, changed paths, and
     /// notes the agent layer needs (`crate::agent::RefDetail`). With an empty pack, only the detail, read from the
-    /// repository's own objects (a REST ref write), and no index.
+    /// repository's own objects (a REST ref write), and no index. An error carries the container's status when it
+    /// answered one, `None` when the call to it failed (`crate::validate_status`).
     pub async fn validate_detail(
         &self,
         network: NetworkId,
@@ -439,7 +443,8 @@ impl ShardHost<'_> {
         tips: &[String],
         detail: &str,
         derived: bool,
-    ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), StoreError> {
+    ) -> Result<(Option<PackIndex>, Vec<crate::agent::RefDetail>), (Option<u16>, StoreError)> {
+        let none = |e: StoreError| (None, e);
         let mut head: Vec<u8> = if tips.is_empty() { Vec::new() } else { tips.join("\n").into_bytes() };
         if !tips.is_empty() {
             head.push(b'\n');
@@ -455,17 +460,17 @@ impl ShardHost<'_> {
         }
         let empty = pack.is_empty();
         head.extend_from_slice(&pack);
-        let mut r = self.call(Method::Post, &path, Some(head), &[]).await?;
+        let mut r = self.call(Method::Post, &path, Some(head), &[]).await.map_err(none)?;
         if r.status_code() >= 300 {
             let t = r.text().await.unwrap_or_default();
-            return Err(StoreError(format!("validate: {} {t}", r.status_code())));
+            return Err((Some(r.status_code()), StoreError(format!("validate: {} {t}", r.status_code()))));
         }
-        let v: ValidateOut = r.json().await.map_err(worker_err)?;
+        let v: ValidateOut = r.json().await.map_err(worker_err).map_err(none)?;
         if empty {
             return Ok((None, v.detail));
         }
         let ix = PackIndex {
-            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| StoreError("checksum".into()))?,
+            checksum: Digest::parse_hex(&v.checksum).ok_or_else(|| none(StoreError("checksum".into())))?,
             bytes: v.bytes,
             objects: v.objects,
             trailer: v.trailer.into(),
