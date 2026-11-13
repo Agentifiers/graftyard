@@ -48,6 +48,11 @@ graft-m3f is shared by merge-p99 and rehydrate-batch. A site day resets every me
 | Start (UTC) | Thread | What | Site a / b / c, edge | State |
 | --- | --- | --- | --- | --- |
 | 2026-11-13 03:07Z | build (`install-m3ef`) | install, site day 1, edge with `--ops` | `f57962a1` / `570157a3` / `104d71b3`, edge `1d56c278` | done |
+| 2026-11-13 04:46Z | merge-p99 | site day from `merge-p99` `8752c1e`, image `15f6ed1b`, `--vars`; edge day | `7593896a` / `765b16f8` / `3087928b`, edge `3206b6f0` | done (04:58Z) |
+| 2026-11-13 05:30Z | merge-p99 | edge day from `merge-p99` `2f5f25d` | sites unchanged, edge `386e7b2e` | done |
+| 2026-11-13 05:33Z | rehydrate-batch | site day and edge day from `rb-deploy` `f810040` (`rehydrate-batch` + `merge-p99` `2f5f25d`), image `6c2a6461`, `--vars`. The orb's service supervisor reran it, so members reset about 05:34, 05:36 and 05:37Z | `825e04ba` / `056f7fcf` / `1b922273`, edge `0bac3f72` | done (05:38Z) |
+| 2026-11-13 06:01Z | rehydrate-batch | two site-only redeploys of the same build, 06:01:39Z and 06:04:56Z (resume tries) | `0176381f` / `1edbdf20` / `d94dcac3`, edge `0bac3f72` | done (06:05:47Z) |
+| 2026-11-13 06:29Z | rehydrate-batch | site day and edge day from `rb-deploy` `0b645c4` (`rehydrate-batch` `c5b2130`, test-faults shard abort, + `merge-p99` `2f5f25d`), image `6c2a6461`, `--vars` | to follow | planned |
 
 ## Point the drivers at it
 
