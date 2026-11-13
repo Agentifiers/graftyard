@@ -1350,3 +1350,21 @@ work and is the p99 of one-second busy fractions over a 2-vCPU container. That t
 standard-2 shard's client validates over 75% for 3 minutes is consistent with the 25.2 agent commands/s and 4.2
 pushes/s offered. The 64 s push tails then come from the kill and the `warming` answers, not from CPU-bound shards.
 The reports' loads are not logged, so this is not measured.
+
+**B0-35** (131294, 500 agents, 600 s, 500 open PRs, 500 clients polling `mergeable` every 5 s, base moving 10 times a
+minute, standard-2 shards, 03:45 to 03:55Z) [measured]:
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Test-merge vCPU within `TEST_MERGE_BUDGET` (fail over budget) | 0.146 vCPU used of 0.25 budgeted, no overrun; 1,224 computed, 24,966 shed, waits p50 10 s, p99 20 s, max 23.5 s | pass |
+| Actions dispatch p99 at most 10 s (fail over 30 s) | not in this driver's output: it starts no workflow runs | not measured |
+| Zero computes from list fields | 0 list computes of 158,129 list asks; 665 computes from 57,798 single-PR GETs | pass |
+
+`mergeable` answered `UNKNOWN` to 57,798 of 58,992 polls (98.0%), `MERGEABLE` to 1,176, 503 to 18; that is the lazy
+design's answer while a merge waits, so it is not a gate line, but 20 s waits behind a 0.25 vCPU budget make it what
+clients see. Commit p99 657 ms (p50 360), term 2 throughout, 102.6 req/s, 0 feed polls, 11 failed calls, no
+`STEP_DOWN` in the window. Longest leaderless stretch with requests waiting: 0 s. Agent pushes 2,393 of 2,499 ok
+(55 `admission full`, 38 `warming` refusals), p99 78.5 s; merge:only p99 16.4 s.
+
+The instruments this row lacked before (test-merge vCPU and list-field computes) come from merge-budget-3 and -4's
+`BudgetStats`; they are measured here.
