@@ -30,6 +30,8 @@ SHARD_W = ('cargo', ['-p', 'graftyard-git', '--test', 'shard'], 'a_shard_answers
 EDGE_N = ('cargo', ['-p', 'graftyard-edge', '--lib'], 'every_shard_try')
 SITEHOST = 'workers/site/src/host.rs'
 GOMIDX = ('go', [], 'Midx')
+GOBATCH = ('go', [], 'IngestBatch')
+CATCHUP_B = ('cargo', ['-p', 'graftyard-git', '--test', 'catchup'], 'a_rehydrate_ingests_runs')
 SITE_P = ('cargo', ['-p', 'graftyard-site', '--lib'], 'local_entries')
 GODER = ('go', [], 'Derived')
 GOREPACK = ('go', [], 'RefsRepacks')
@@ -133,7 +135,9 @@ MUTANTS = [
      '    if state.marked && gap {', '    if false && gap {', CATCHUP),
     ('a place an older release saved is trusted to have loaded up to its tail cursor', CU,
      '        None => true,', '        None => tail_start(p.as_ref()) > Index(state.tail.at(*c).0 + 1),', CATCHUP),
-    ('ingest never writes a multi-pack-index', GO, '\tmidxAfterIngest(net, rp)\n', '', GOMIDX),
+    ('ingest never writes a multi-pack-index', GO,
+     '\tmidxAfterIngest(net, rp)\n\tjsonOut(w, map[string]any{"ingested": true', '\tjsonOut(w, map[string]any{"ingested": true',
+     GOMIDX),
     ('the multi-pack-index is written once and never again', GO, '\t*n = 0\n\tif _, err := git(rp',
      '\t*n = -1 << 30\n\tif _, err := git(rp', GOMIDX),
     # hot-shards-3
@@ -170,6 +174,23 @@ MUTANTS = [
     ('an idle group keeps waking its shards', SHARD,
      '    last.is_none_or(|(at, was)| applied > was && now >= at.saturating_add(KEEP_WARM_MS))',
      '    let _ = applied;\n    last.is_none_or(|(at, _)| now >= at.saturating_add(KEEP_WARM_MS))', SHARD_K),
+    # rehydrate-batch (tests/am1/results/rehydrate-batch.md)
+    ('each inline pack is still one ingest call', CU,
+     '                        if !batch.is_empty() && bytes + b.len() > INGEST_BATCH_BYTES {',
+     '                        if !batch.is_empty() {', CATCHUP_B),
+    ('a batch whose packs answer Later is not retried from the pack that did', CU,
+     '                    Ingested::Later => retry.push(left[i + k]),', '                    Ingested::Later => retry.push(left[i]),',
+     CATCHUP_B),
+    ('a batch never splits: two packs carrying one object fail the call', GO,
+     '\t\tmid := len(run) / 2\n', '\t\treturn fmt.Errorf("batch of %d: %v", len(run), err)\n\t\tmid := len(run) / 2\n',
+     GOBATCH),
+    ('a batch records every object under its first pack', GO, '\t\tif k < len(run) {\n\t\t\tobjs[k]',
+     '\t\tif k = 0; k < len(run) {\n\t\t\tobjs[k]', GOBATCH),
+    ('a batch records the thin bases --fix-thin appended as the last pack\'s', GO,
+     '\t\tif k < len(run) {\n\t\t\tobjs[k]', '\t\tif k = min(k, len(run)-1); k < len(run) {\n\t\t\tobjs[k]', GOBATCH),
+    ('a pack whose base is missing fails the batch instead of answering later', GO,
+     '\t\t\tif unresolved(err) {\n\t\t\t\tresults[run[0]] = "later"',
+     '\t\t\tif false && unresolved(err) {\n\t\t\t\tresults[run[0]] = "later"', GOBATCH),
 ]
 
 

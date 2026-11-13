@@ -32,6 +32,9 @@
 //	                                 --fix-thin into the repository. 409 when a thin pack's bases are not there yet
 //	                                 or an object its objects name is not here yet, 422 on a checksum mismatch.
 //	                                 Idempotent per H
+//	POST /ingest-batch?net=N         body: per pack, "<sha256> <bytes>\n" and its bytes. Each ingested as /ingest
+//	                                 does, in order; {"results": ["done"|"later", ...]}, "later" for /ingest's 409.
+//	                                 422 for the call on a checksum mismatch or another index-pack failure
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
 //	                                 first page deletes every ref it does not list, done=1 on the last sets HEAD;
 //	                                 neither is one page that is the whole set. Refs naming objects not here are
@@ -73,7 +76,9 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha1"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1163,6 +1168,262 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"ingested": true, "bytes": n})
 }
 
+// handleIngestBatch is /ingest for many packs in one call: a catch-up's or rehydrate's run of inline packs from one
+// log page. Hosted, a rehydrate's tail cost 66 to 72 ms a pack, about 10 ms of it index-pack and most of the rest one
+// object-to-container round trip per pack (tests/am1/results/hot-shards-2.md). The body is, per pack, a line
+// "<sha256> <bytes>\n" and then the pack's bytes. The answer is {"results": [...]}, one per pack in order: "done"
+// (ingested now or before) or "later" (/ingest's 409: a base or a named object is not here yet; the caller sends it
+// again after the rest). A checksum mismatch, or a pack that fails on its own for another reason, answers 422 for the
+// call; the packs before it stay ingested.
+//
+// The packs not already here go into one pack, ingested with one index-pack (ingestRun), and each pack's objects are
+// recorded under its own SHA-256 for /promote, found by their offsets.
+func handleIngestBatch(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	os.MkdirAll(filepath.Join(data, "spool"), 0o755)
+	dir, err := os.MkdirTemp(filepath.Join(data, "spool"), "batch-")
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	var packs []batchPack
+	br := bufio.NewReaderSize(r.Body, 1<<16)
+	for i := 0; ; i++ {
+		head, err := br.ReadString('\n')
+		if err == io.EOF && head == "" {
+			break
+		}
+		var p batchPack
+		var size int64
+		if _, err := fmt.Sscanf(head, "%64s %d\n", &p.sum, &size); err != nil || !sumRe.MatchString(p.sum) || size < 32 {
+			fail(w, 400, "pack %d: bad header %q", i, head)
+			return
+		}
+		file, sum, n, err := spool(dir, io.LimitReader(br, size))
+		if err != nil || n != size {
+			fail(w, 400, "pack %d: %d of %d bytes: %v", i, n, size, err)
+			return
+		}
+		if sum != p.sum {
+			fail(w, 422, "pack %d: checksum %s, want %s", i, sum, p.sum)
+			return
+		}
+		p.file = file
+		packs = append(packs, p)
+	}
+	results := make([]string, len(packs))
+	var run []int
+	l := lock(net)
+	l.Lock()
+	defer l.Unlock()
+	for i, p := range packs {
+		if _, err := os.Stat(filepath.Join(rp, "graft", p.sum+".objs")); err == nil {
+			results[i] = "done"
+			continue
+		}
+		// A pack /validate kept aside moves in on its own, with no second index-pack.
+		name, adopted, err := adopt(rp, p.sum)
+		if adopted {
+			if err == nil {
+				err = record(rp, p.sum, name, filepath.Join(rp, "objects"))
+			}
+			if err != nil {
+				fail(w, 500, "pack %d: %v", i, err)
+				return
+			}
+			results[i] = "done"
+			continue
+		}
+		run = append(run, i)
+	}
+	if err := ingestRun(net, rp, dir, packs, run, results); err != nil {
+		fail(w, 422, "%v", err)
+		return
+	}
+	jsonOut(w, map[string]any{"results": results})
+}
+
+// One pack of an /ingest-batch call, spooled to file.
+type batchPack struct{ sum, file string }
+
+// ingestRun ingests packs[run...] in order, setting each one's result. All of them go into one pack, indexed once with
+// index-pack --strict --fix-thin. When that fails, the run is split in two and each half ingested in turn, down to one
+// pack, which is ingested as /ingest ingests it. Two packs of one run can carry the same object, which --strict refuses
+// in one pack ("appears twice"): the split puts them in two packs, as one /ingest each would. A pack whose bases are
+// in a later pack, or not here at all, splits the same way and ends "later" on its own. The caller holds the
+// network's lock alone.
+func ingestRun(net, rp, dir string, packs []batchPack, run []int, results []string) error {
+	if len(run) == 0 {
+		return nil
+	}
+	if len(run) == 1 {
+		p := packs[run[0]]
+		name, err := indexPack(rp, []string{derivedEnv}, p.file)
+		if err != nil {
+			if unresolved(err) {
+				results[run[0]] = "later"
+				return nil
+			}
+			return fmt.Errorf("pack %d (%s): %v", run[0], p.sum, err)
+		}
+		if err := record(rp, p.sum, name, filepath.Join(rp, "objects")); err != nil {
+			return err
+		}
+		midxAfterIngest(net, rp)
+		results[run[0]] = "done"
+		return nil
+	}
+	files := make([]string, len(run))
+	for k, i := range run {
+		files[k] = packs[i].file
+	}
+	joined := filepath.Join(dir, fmt.Sprintf("joined-%d-%d.pack", run[0], len(run)))
+	ends, err := concatPacks(joined, files)
+	if err != nil {
+		return err
+	}
+	name, err := indexPack(rp, []string{derivedEnv}, joined)
+	os.Remove(joined)
+	if err != nil {
+		mid := len(run) / 2
+		if err := ingestRun(net, rp, dir, packs, run[:mid], results); err != nil {
+			return err
+		}
+		return ingestRun(net, rp, dir, packs, run[mid:], results)
+	}
+	// Each object by its offset: the k-th pack's entries end at ends[k]. Objects past the last end are thin bases
+	// --fix-thin appended, which the repository already held; no pack of the run brought them.
+	entries, err := idxEntries(filepath.Join(rp, "objects", "pack", "pack-"+name+".idx"), []string{derivedEnv})
+	if err != nil {
+		return err
+	}
+	objs := make([][]string, len(run))
+	for _, e := range entries {
+		k := sort.Search(len(ends), func(k int) bool { return e.offset < ends[k] })
+		if k < len(run) {
+			objs[k] = append(objs[k], e.oid)
+		}
+	}
+	for k, i := range run {
+		if err := writeObjs(rp, packs[i].sum, objs[k]); err != nil {
+			return err
+		}
+		results[i] = "done"
+	}
+	midxAfterIngest(net, rp)
+	return nil
+}
+
+// concatPacks writes one pack holding every entry of files, in order, and answers the offset each file's entries end
+// at. An entry is copied as it is: an OFS_DELTA's offset is relative to its own entry, so it stays right, and a
+// REF_DELTA names its base by id, which an earlier file of the run, or the repository, provides.
+func concatPacks(out string, files []string) ([]int64, error) {
+	f, err := os.Create(out)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	h := sha1.New()
+	wr := bufio.NewWriterSize(io.MultiWriter(f, h), 1<<16)
+	var count uint32
+	for _, p := range files {
+		hd, err := packHeader(p)
+		if err != nil {
+			return nil, err
+		}
+		count += hd
+	}
+	head := make([]byte, 12)
+	copy(head, "PACK")
+	binary.BigEndian.PutUint32(head[4:], 2)
+	binary.BigEndian.PutUint32(head[8:], count)
+	wr.Write(head)
+	at := int64(12)
+	ends := make([]int64, len(files))
+	for k, p := range files {
+		src, err := os.Open(p)
+		if err != nil {
+			return nil, err
+		}
+		st, _ := src.Stat()
+		n, err := io.Copy(wr, io.NewSectionReader(src, 12, st.Size()-32))
+		src.Close()
+		if err != nil {
+			return nil, err
+		}
+		at += n
+		ends[k] = at
+	}
+	if err := wr.Flush(); err != nil {
+		return nil, err
+	}
+	if _, err := f.Write(h.Sum(nil)); err != nil {
+		return nil, err
+	}
+	return ends, f.Close()
+}
+
+// packHeader checks a pack file's header and answers its object count.
+func packHeader(file string) (uint32, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	b := make([]byte, 12)
+	if _, err := io.ReadFull(f, b); err != nil || string(b[:4]) != "PACK" {
+		return 0, fmt.Errorf("%s is not a pack", filepath.Base(file))
+	}
+	if v := binary.BigEndian.Uint32(b[4:]); v != 2 && v != 3 {
+		return 0, fmt.Errorf("%s: pack version %d", filepath.Base(file), v)
+	}
+	return binary.BigEndian.Uint32(b[8:]), nil
+}
+
+type idxEntry struct {
+	offset int64
+	oid    string
+}
+
+// idxEntries lists an .idx's objects with their offsets, with git show-index.
+func idxEntries(idx string, env []string) ([]idxEntry, error) {
+	f, err := os.Open(idx)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	out, err := git(data, env, f, "show-index")
+	if err != nil {
+		return nil, err
+	}
+	var es []idxEntry
+	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		var e idxEntry
+		if f := strings.Fields(l); len(f) >= 2 {
+			if _, err := fmt.Sscan(f[0], &e.offset); err != nil {
+				return nil, fmt.Errorf("show-index printed %q", l)
+			}
+			e.oid = f[1]
+			es = append(es, e)
+		}
+	}
+	return es, nil
+}
+
+// writeObjs records the objects a pack brought under its SHA-256, as record does.
+func writeObjs(r, sum string, objs []string) error {
+	os.MkdirAll(filepath.Join(r, "graft"), 0o755)
+	tmp := filepath.Join(r, "graft", sum+".tmp")
+	if err := os.WriteFile(tmp, []byte(strings.Join(objs, "\n")+"\n"), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(r, "graft", sum+".objs"))
+}
+
 // MIDX_EVERY: a rehydrate ingests thousands of packs and repacks only at its end (/refs), and each index-pack looked
 // up every object it named in every pack: per-pack ingest grew linearly with the count, 10 s per 1,000 packs at 1,000
 // to 42 s at 3,000, one CPU (tests/am1/results/hot-shards-2.md). A multi-pack-index over them, rewritten every
@@ -1834,6 +2095,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/init", handleInit)
 	m.HandleFunc("/validate", handleValidate)
 	m.HandleFunc("/ingest", handleIngest)
+	m.HandleFunc("/ingest-batch", handleIngestBatch)
 	m.HandleFunc("/refs", handleRefs)
 	m.HandleFunc("/promote", handlePromote)
 	m.HandleFunc("/have", handleHave)

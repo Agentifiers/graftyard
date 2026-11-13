@@ -128,9 +128,9 @@ impl<C> Admission<C> {
 
     /// Commands a second: entries a second at the measured round, times the commands of the current byte mix one
     /// entry holds. `fixed` is the host's override (`Member::set_admit_capacity`).
-    fn capacity(&self, fixed: Option<f32>) -> f32 {
+    fn capacity(&self, fixed: Option<f32>, soft: usize) -> f32 {
         fixed.unwrap_or_else(|| {
-            let per_entry = ENTRY_MAX as f32 / self.cmd_bytes.max(CMD_BYTES_MIN);
+            let per_entry = (soft as f32 / self.cmd_bytes.max(CMD_BYTES_MIN)).max(1.0);
             per_entry * 1000.0 / self.round_ms.max(ROUND_MIN_MS)
         })
     }
@@ -622,12 +622,18 @@ impl<C: Command> Member<C> {
         self.admit_capacity = cap;
     }
 
+    /// The host's byte limit for filling an entry past its first command, ENTRY_SOFT by default. Test installs set
+    /// ENTRY_MAX to run B0-02's uncapped arm in the same window (`tests/m0/results/carried-7.md`).
+    pub fn set_entry_soft(&mut self, bytes: usize) {
+        self.entry_soft = bytes.min(ENTRY_MAX);
+    }
+
     /// What admission sees now, as leader: capacity, queued agent commands and bytes, whether the group is hot and
     /// under pressure. `None` on a follower.
     pub fn admission(&self) -> Option<AdmissionView> {
         let lead = self.lead.as_ref()?;
         let ad = &lead.admission;
-        let cap = ad.capacity(self.admit_capacity);
+        let cap = ad.capacity(self.admit_capacity, self.entry_soft);
         Some(AdmissionView {
             capacity: cap,
             agent_queued: ad.agent().len(),
@@ -670,7 +676,7 @@ impl<C: Command> Member<C> {
         let ad = &lead.admission;
         let class = self.demoted(a);
         let agent = class == AdmitClass::Agent;
-        let cap = ad.capacity(self.admit_capacity);
+        let cap = ad.capacity(self.admit_capacity, self.entry_soft);
         let full = || AdmitError::Full { retry_after_s: retry_after_s(ad.agent().len(), cap) };
         if agent && !a.placement_ok && a.inline > INLINE_MAX_HOT {
             return Err(full());
@@ -888,7 +894,7 @@ impl<C: Command> Member<C> {
     /// so `tick` cuts again once it refills.
     fn cut_fresh(&mut self) -> Option<Vec<Queued<C>>> {
         let lead = self.lead.as_mut().expect("leading");
-        let batch = Self::cut(lead, self.now, self.admit_capacity);
+        let batch = Self::cut(lead, self.now, self.admit_capacity, self.entry_soft);
         if batch.is_empty() {
             return None;
         }
@@ -995,16 +1001,17 @@ impl<C: Command> Member<C> {
 
     /// The next entry's commands, by admission: Human and MergeQueue, then Agent up to AGENT_FLOOR of capacity over
     /// the time since the last cut, then Bot, then Agent while the AGENT_SHARE bucket holds a token. All within
-    /// ENTRY_MAX bytes; the first command of an entry always goes. An entry's Agent inline pack bytes stay within
-    /// AGENT_INLINE_ENTRY because admission stages any agent pack that would take the queued ones past it.
-    fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>) -> Vec<Queued<C>> {
+    /// `soft` bytes (ENTRY_SOFT unless the host set it); the first command of an entry always goes, up to ENTRY_MAX. An
+    /// entry's Agent inline pack bytes stay within AGENT_INLINE_ENTRY because admission stages any agent pack that would
+    /// take the queued ones past it.
+    fn cut(lead: &mut Lead<C>, now: Timestamp, fixed: Option<f32>, soft: usize) -> Vec<Queued<C>> {
         let ad = &mut lead.admission;
-        let cap = ad.capacity(fixed);
+        let cap = ad.capacity(fixed, soft);
         ad.refill(now, cap);
         let mut batch: Vec<Queued<C>> = Vec::new();
         let mut bytes = 0;
         let fits = |q: Option<&Queued<C>>, batch: &[Queued<C>], bytes: usize| {
-            q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= ENTRY_MAX)
+            q.is_some_and(|q| batch.is_empty() || bytes + q.bytes <= soft)
         };
         for class in [AdmitClass::Human, AdmitClass::MergeQueue] {
             while fits(ad.lanes[class.lane()].front(), &batch, bytes) {
@@ -1050,7 +1057,7 @@ impl<C: Command> Member<C> {
             ad.agent_bytes -= q.bytes;
             ad.agent_inline -= q.agent_inline;
         }
-        let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity));
+        let retry_after_s = retry_after_s(ad.agent().len(), ad.capacity(self.admit_capacity, self.entry_soft));
         let now = self.now;
         for q in &old {
             if let Some(a) = ad.seq_actor.get(&q.seq).copied() {

@@ -714,6 +714,8 @@ pub struct Member<C: Command> {
     remote: install::RemoteReads,
     /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
     admit_capacity: Option<f32>,
+    /// Where `cut` stops filling an entry past its first command (`set_entry_soft`).
+    entry_soft: usize,
     /// The last `DepsWanted` id. Never reset by a new leadership, so a late answer to an earlier leadership's read
     /// cannot decide a later batch; it starts from the boot value, so neither can one from before a restart.
     next_deps: u64,
@@ -836,6 +838,7 @@ impl<C: Command> Member<C> {
             install: None,
             remote: install::RemoteReads::default(),
             admit_capacity: None,
+            entry_soft: crate::ENTRY_SOFT,
             // The top bit clear leaves 2^63 ids before a wrap.
             next_deps: boot >> 1,
         })
