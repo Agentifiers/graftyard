@@ -83,6 +83,11 @@ pub(crate) struct Timing {
     start: std::cell::Cell<f64>,
     last: std::cell::Cell<f64>,
     phases: std::cell::RefCell<Vec<(&'static str, f64)>>,
+    /// Test installs: the commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
+    /// (`x-graft-shard-timing`). Per request, as the stages are: kept per isolate, a concurrent request took them, and
+    /// 66 of 68 merges in LM-1's m19 smokes answered no shard timing (`merge-p99`).
+    trace: std::cell::RefCell<Vec<Value>>,
+    shard: std::cell::RefCell<String>,
 }
 
 impl Timing {
@@ -91,6 +96,8 @@ impl Timing {
         self.start.set(now);
         self.last.set(now);
         self.phases.borrow_mut().clear();
+        self.trace.borrow_mut().clear();
+        self.shard.borrow_mut().clear();
     }
     /// Closes the phase that ends now.
     pub(crate) fn mark(&self, name: &'static str) {
@@ -117,35 +124,6 @@ impl Timing {
     }
 }
 
-/// Test installs: a commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
-/// (`x-graft-shard-timing`).
-mod timing {
-    #[cfg(feature = "test-faults")]
-    use std::cell::RefCell;
-    #[cfg(feature = "test-faults")]
-    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
-    #[cfg(feature = "test-faults")]
-    pub fn trace(t: Vec<serde_json::Value>) {
-        TRACE.with(|x| *x.borrow_mut() = t);
-    }
-    #[cfg(not(feature = "test-faults"))]
-    pub fn trace(_: Vec<serde_json::Value>) {}
-    #[cfg(feature = "test-faults")]
-    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
-    #[cfg(feature = "test-faults")]
-    pub fn note(t: String) {
-        NOTE.with(|n| *n.borrow_mut() = t);
-    }
-    #[cfg(feature = "test-faults")]
-    pub fn take_note() -> String {
-        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
-    }
-    #[cfg(feature = "test-faults")]
-    pub fn take_trace() -> String {
-        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
-    }
-}
-
 /// `f`, with its own wall time recorded as stage `name` of `c`'s request.
 pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static str, f: F) -> F::Output {
     let since = js_sys::Date::now();
@@ -158,9 +136,8 @@ pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static st
 const TIMING_SAMPLE: f64 = 100.0;
 
 /// A commit's hedge steps for this request's `x-graft-trace` (test installs only).
-#[cfg(feature = "test-faults")]
-pub(crate) fn trace(t: Vec<Value>) {
-    timing::trace(t);
+pub(crate) fn trace(c: &Ctx<'_>, t: Vec<Value>) {
+    *c.timing.trace.borrow_mut() = t;
 }
 
 pub(crate) fn unavailable(why: &str) -> Reply {
@@ -215,8 +192,8 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     #[cfg(feature = "test-faults")]
     let r = r
         .with("server-timing", c.timing.header())
-        .with("x-graft-trace", timing::take_trace())
-        .with("x-graft-shard-timing", timing::take_note())
+        .with("x-graft-trace", Value::from(c.timing.trace.take()).to_string())
+        .with("x-graft-shard-timing", c.timing.shard.take())
         .with("x-graft-colo", colo);
     frame(&i, r, s, &m)
 }
@@ -966,7 +943,7 @@ async fn merge_plan(
     c.timing.mark("merge_plan");
     #[cfg(feature = "test-faults")]
     if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
-        timing::note(t);
+        *c.timing.shard.borrow_mut() = t;
     }
     Ok(a.merge_plan(req))
 }
@@ -1053,8 +1030,8 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     }
     c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
-    let trace = std::cell::RefCell::new(Vec::new());
-    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
+    let trace_steps = std::cell::RefCell::new(Vec::new());
+    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace_steps) };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -1066,7 +1043,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     )
     .await;
     c.timing.mark("commit");
-    timing::trace(trace.into_inner());
+    trace(c, trace_steps.into_inner());
     Ok(match r {
         Ok(done) => {
             if let Some(e) = done.pointer("/refused/err") {
@@ -1407,14 +1384,13 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
     let tail = segs.as_slice();
     let method = req.method();
-    // A `GET` is read-class (`Ctx::read_class`), and its token and `o/r` are read at once: neither needs the other.
+    // A `GET` is read-class (`Ctx::read_class`). Any request reads its token and `o/r` at once, as `timed` stages:
+    // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
     let find = async {
         match &at {
-            graftyard_wire::RepoPath::Name { owner, name } if method == Method::Get => {
-                Some(resolve(c, owner, name).await)
-            }
-            _ => None,
+            graftyard_wire::RepoPath::Name { owner, name } => Some(resolve(c, owner, name).await),
+            graftyard_wire::RepoPath::Id(_) => None,
         }
     };
     let (who, found) =
@@ -1443,12 +1419,12 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         }
         _ => Rows::All,
     };
-    let rd = match at {
-        graftyard_wire::RepoPath::Name { owner, name } => match found {
-            Some(found) => read_found(c, found, owner, name, who.as_ref(), rows()).await?,
-            None => read_found(c, resolve(c, owner, name).await?, owner, name, who.as_ref(), rows()).await?,
-        },
-        graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
+    let rd = match (at, found) {
+        (graftyard_wire::RepoPath::Name { owner, name }, Some(found)) => {
+            read_found(c, found, owner, name, who.as_ref(), rows()).await?
+        }
+        (graftyard_wire::RepoPath::Name { .. }, None) => unreachable!("a name is resolved beside the token"),
+        (graftyard_wire::RepoPath::Id(id), _) => match repo_name(c, id).await {
             Some((owner, name, repo, a)) => {
                 read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), rows(), Gate::Readers).await?
             }

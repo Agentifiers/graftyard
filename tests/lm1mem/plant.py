@@ -223,6 +223,16 @@ MUTANTS = [
     ('round 8: misses are deduped forever, so a follower that keeps failing never trips', 'crates/raft/src/member/health.rs',
      'sent_at >= *l && sent_at < after(*l, CALL_DEADLINE)', 'sent_at >= *l',
      ['cargo', '-p', 'graftyard-raft', '--test', 'leadership', 'one_follower_stall']),
+    ('merge-p99: a merge\'s rows read is spaced as a dump rebuild again', FAM,
+     'let dump = q.get("rows").is_some_and(Value::is_boolean) && q.get("packed")', 'let dump = q.get("packed")',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_merge_rows_read']),
+    ('merge-p99: a whole-tier dump is no longer spaced', FAM,
+     'let dump = q.get("rows").is_some_and(Value::is_boolean) && q.get("packed")',
+     'let dump = q.get("rows").is_some_and(|r| !r.is_boolean()) && q.get("packed")',
+     ['cargo', '-p', 'graftyard-site', '--lib', 'a_merge_rows_read']),
+    ('merge-p99: mergeSplit counts tier and authz in series, so the untimed gap reads short', 'tests/am1/rest/a1.mjs',
+     '- Math.max(d.tier ?? 0, d.authz ?? 0) -', '- (d.tier ?? 0) - (d.authz ?? 0) -',
+     ['node', 'tests/am1/rest/a1.mjs', '--selftest']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
