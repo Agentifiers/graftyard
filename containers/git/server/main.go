@@ -61,6 +61,39 @@
 //	                                 running. CPU excludes derived work (ingest, refs, repack, promotion packs, init,
 //	                                 and derived validates): fanout steps k from it, and that work runs on every
 //	                                 shard whatever k is
+//
+// The web app's read-only routes (ui.go), each under the network's lock shared, forwarded unchanged by the shard
+// object (which may add wait, next, and repo; they are ignored). C, B, and H are full commit ids; a path P is
+// slash-separated names, never starting with '-', holding no NUL and no "." or ".." name. A commit in an answer is a
+// CommitSummary: {"sha","message","date" (committer, %cI),"author": {"login": null,"name","email","avatar_url": null}}.
+// 404 when the commit, ref, or path does not exist, 400 for a malformed request.
+//
+//	GET  /ui/resolve?net=N&splat=S   S is "<ref or sha>/<path...>": the longest '/'-prefix that is a branch, then a
+//	                                 tag, then a full or abbreviated (7+ hex) commit id; the rest is the path.
+//	                                 {"ref","path","kind": "branch"|"tag"|"commit","sha" (tags peeled),"type":
+//	                                 "dir"|"file"|null (no such path; "" is "dir"),"default_branch"}
+//	GET  /ui/tree?net=N&commit=C&path=P  directory P ("" the root): {"latest": the newest commit touching P (C for
+//	                                 the root),"count": commits touching P (at most 100000),"entries": [{"name",
+//	                                 "path","type": "dir"|"file","commit": the newest commit touching it}]}, dirs
+//	                                 first, then files, by name case-insensitively. One history walk of at most 5000
+//	                                 commits; an entry it does not reach gets latest. Over 1000 entries, the first
+//	                                 1000 and "truncated": true
+//	GET  /ui/blame?net=N&commit=C&path=P  {"path","lines","ranges": [{"start","end" (1-based, inclusive),"commit"}],
+//	                                 "oldest","newest" (the ranges' oldest and newest dates)}. 422 for a file over
+//	                                 1 MiB or 20000 lines, binary, or a submodule
+//	GET  /ui/diff?net=N&base=B&head=H  `git diff -M B...H`: {"files": [{"filename","previous_filename" (renamed or
+//	                                 copied only),"status": "added"|"removed"|"modified"|"renamed"|"copied"|
+//	                                 "changed" (mode or type only),"additions","deletions","changes","sha" (head's
+//	                                 blob, the old one when removed),"patch" (from the first "@@"; none when binary
+//	                                 or empty)}],"truncated"}. At most 3000 files and 5 MiB of patches: past either,
+//	                                 later files lose their patch (or are dropped) and truncated is true. 422 when B
+//	                                 and H share no history
+//	GET  /ui/compare?net=N&base=B&head=H  {"merge_base": oid or null,"ahead_by": commits H has and B not,
+//	                                 "behind_by": commits B has and H not}
+//	GET  /ui/readme?net=N&commit=C&path=P  directory P's README, as GitHub picks it (README.md, .markdown, .rst,
+//	                                 .txt, README, then the first other README.* by name, all case-insensitive):
+//	                                 {"name","path","sha","size","text"}. 404 when there is none, 422 over 1 MiB or
+//	                                 binary
 package main
 
 import (
@@ -1606,6 +1639,12 @@ func mux() *http.ServeMux {
 	m.HandleFunc("/repos", handleRepos)
 	m.HandleFunc("/evict", handleEvict)
 	m.HandleFunc("/load", handleLoad)
+	m.HandleFunc("GET /ui/resolve", handleUIResolve)
+	m.HandleFunc("GET /ui/tree", handleUITree)
+	m.HandleFunc("GET /ui/blame", handleUIBlame)
+	m.HandleFunc("GET /ui/diff", handleUIDiff)
+	m.HandleFunc("GET /ui/compare", handleUICompare)
+	m.HandleFunc("GET /ui/readme", handleUIReadme)
 	return m
 }
 

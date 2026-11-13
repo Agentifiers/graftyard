@@ -63,6 +63,8 @@ const WARMING_ALARM_MS: u64 = 30_000;
 const ALARM_HOLDS: std::time::Duration = std::time::Duration::from_secs(600);
 /// Storage key: a catch-up is running or was cut off, with the record it reads the group through.
 const WARMING_KEY: &str = "warming";
+/// The container's read-only routes for the web app (`containers/git/server/ui.go`), forwarded as `/ui/<route>`.
+const UI_ROUTES: [&str; 6] = ["resolve", "tree", "blame", "diff", "compare", "readme"];
 
 /// The shard container's instance type when the site sets no `SHARD_INSTANCE`: the 50-developer tier's
 /// (`design/DESIGN.md`, Shape, `HOT_POOL`). A site day sets the tier's size, `standard-4` at 2,000 developers, which
@@ -769,6 +771,20 @@ impl DurableObject for GitShard {
                     .collect::<Vec<_>>()
                     .join("&");
                 host.archive(net, &q).await.map_err(se)
+            }
+            // The web app's private reads (`design/SHARED.md`, "Frontend and native app", the `/_t/ui/*` API): a
+            // tree, blame, diff, compare, README, or ref resolution of a commit the cache holds once it caught up.
+            p if p.strip_prefix("/ui/").is_some_and(|r| UI_ROUTES.contains(&r)) => {
+                if let Err(r) = caught_up().await {
+                    return r;
+                }
+                let q: String = url
+                    .query_pairs()
+                    .filter(|(k, _)| !matches!(&**k, "repo" | "wait" | "next"))
+                    .map(|(k, v)| format!("{k}={}", js_sys::encode_uri_component(&v)))
+                    .collect::<Vec<_>>()
+                    .join("&");
+                host.ui(net, &p[4..], &q).await.map_err(se)
             }
             _ => Response::error("not found", 404),
         }
