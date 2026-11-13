@@ -20,6 +20,7 @@ A shared install for Milestone 4. The M4 web thread ([thread](https://ampcode.co
 | 2026-11-13 12:42Z | 12:43Z | M4 web | edge day 4 (product): `m4-web` `a3315fa` (favicon from `ASSETS`, a missing asset answers 404) merged as above | sites unchanged, edge `f588de76` | done |
 | 2026-11-13 13:08Z | 13:08Z | M4 web | edge day 5 (product): `m4-web` `3a88585` (the shell's document `GET` seeds a private repository from the session cookie) | sites unchanged, edge `d9956ab8` | done |
 | 2026-11-13 13:23Z | 13:23Z | M4 web | edge day 6 (product): `m4-web` `91464e1` (web build: review threads without a listed review, the agent card's missing fields). BF-38 ran against this edge | sites unchanged, edge `3911b234` | done |
+| 2026-11-13 13:44Z | 13:56Z | M4 Actions | site day 5 (product): `m4a-deploy` `994231a` = `m4-actions` `1be2f12` (a `HookSequencer` fix for BF-57: delivery bodies in their own table, only pending ones in memory, a report chains its queue's next attempt) merged onto `m5-wp1-m4a` `830029f` and `m4-web` `8c57a4f`; same image, flags, and variables as site day 4. No migration, class, or binding change. Every member resets once per site | | announced |
 
 ## Resources
 
