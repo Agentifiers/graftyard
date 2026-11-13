@@ -1,0 +1,83 @@
+{
+  "row": "b0-01 (M1-WP2 Rust host)",
+  "run": "m0c6g-r300-8",
+  "body": "stream",
+  "arrival": "mem",
+  "bytes": 1024,
+  "chain": "repo:5690000",
+  "at": "2026-11-13T02:30:55.319Z",
+  "seconds": 64.388,
+  "edgeColo": "DFW",
+  "leader": 0,
+  "rtt": {
+    "1": 92,
+    "2": 171
+  },
+  "commands": 18000,
+  "failed": 0,
+  "throughputPerS": 280,
+  "entries": 487,
+  "commandsPerEntry": 37,
+  "commitMs": {
+    "p50": 191,
+    "p99": 279,
+    "max": 389,
+    "n": 18000
+  },
+  "roundMs": {
+    "p50": 124,
+    "p99": 164,
+    "n": 487
+  },
+  "leaderConfirmMs": {
+    "p50": 33,
+    "p90": 36,
+    "p99": 45,
+    "n": 487
+  },
+  "appendMs": {
+    "1": {
+      "p50": 124,
+      "p99": 164,
+      "n": 487
+    },
+    "2": {
+      "p50": 268,
+      "p99": 533,
+      "n": 209
+    }
+  },
+  "clientMs": {
+    "p50": 289,
+    "p99": 413
+  },
+  "failedCalls": 0,
+  "alarms": [],
+  "verdict": "Pass",
+  "status": [
+    {
+      "site": 0,
+      "role": "leader",
+      "term": 2,
+      "last": 490,
+      "commit": 490,
+      "restores": 1
+    },
+    {
+      "site": 1,
+      "role": "follower",
+      "term": 2,
+      "last": 490,
+      "commit": 489,
+      "restores": 1
+    },
+    {
+      "site": 2,
+      "role": "follower",
+      "term": 2,
+      "last": 490,
+      "commit": 490,
+      "restores": 1
+    }
+  ]
+}

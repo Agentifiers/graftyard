@@ -591,6 +591,11 @@ pub struct Host<F: Family> {
     /// before `m0-carried-4`, instead of a stream (`/stats?body=array`). A reset object streams again.
     #[cfg(feature = "test-faults")]
     pub array_body: Cell<bool>,
+    /// Test installs, B0-02 (`tests/m0/results/carried-6.md`): BF-14's `arrival` rows kept in memory instead of
+    /// written to SQLite (`/stats?arrival=mem`), so no write a production member does not make sits before the
+    /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
+    #[cfg(feature = "test-faults")]
+    pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
     /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the
     /// follower ran it, so its appends still renew the followers' promises while it commits nothing: the
     /// simulator's `HalfHung` on one member (`/sever` with `half`).
@@ -1180,6 +1185,8 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             array_body: Cell::new(false),
             #[cfg(feature = "test-faults")]
+            arrivals_mem: RefCell::new(None),
+            #[cfg(feature = "test-faults")]
             half_hung_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
@@ -1456,9 +1463,11 @@ impl<F: Family> Host<F> {
         self.queue.borrow_mut().extend(stmts);
         let defer = !early.is_empty() && wrote;
         // The leader's AppendEntries leave now. Each `send` issues its fetch in a microtask, before the deferred
-        // transaction's macrotask, so the output gate does not hold the round behind the leader's own write (Raft
-        // dissertation 10.2.1, and Milestone 0's prototype). The leader counts its own copy only once its `SelfAck`
-        // comes back after `sync()`.
+        // transaction's macrotask, so the output gate does not hold the round behind this input's own write (Raft
+        // dissertation 10.2.1, and Milestone 0's prototype). It does hold it behind an earlier input's transaction
+        // that has not confirmed: the gate waits for "all previous writes" (Durable Objects storage API docs,
+        // `allowUnconfirmed`; `tests/m0/results/carried-6.md`). The leader counts its own copy only once its
+        // `SelfAck` comes back after `sync()`.
         for e in early {
             self.send(e);
         }

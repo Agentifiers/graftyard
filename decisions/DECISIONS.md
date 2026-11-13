@@ -1085,6 +1085,8 @@ M1-WP2 hosted the Raft core on Durable Objects, M1-WP3 built leadership and heal
 
 **Flip.** The re-measure on the changed crate staying over 600 ms, which shows the leader's write was not the cause; or a lost-entry case the digest match does not cover.
 
+**Amendment, 2026-11-13 (`m0-carried-6`).** Sending first keeps a round clear of the sending input's own write, not of an earlier one. The output gate holds a send "until all previous writes have been confirmed flushed to disk" (https://developers.cloudflare.com/durable-objects/api/storage-api/, `allowUnconfirmed`), and SQL has no `allowUnconfirmed`. So an AppendEntries issued while an earlier entry's transaction is unconfirmed waits for it. On `graft-m3d` such sends were late by about what was left of that confirm, p50 256 to 342 ms with over 150 ms left. All of them went to the far follower, whose answer arrives after the near one has appended the next entry [measured, `tests/m0/results/carried-6.md`]. The decision stands. How the host keeps sends clear of earlier writes is open (`decisions/OPEN-QUESTIONS.md`).
+
 #### Member-call retries are the Raft core's resends
 
 **Decision.** The host sends each member-to-member message once and never retries it. A commit-path call that fails is resent by the core at once at most `COMMIT_RETRIES` (2) times in a row and then on `tick` after each `CALL_DEADLINE`; votes are resent on `tick`; a campaign, or a new leader whose term's `Noop` reaches no quorum, gives up after CALL_DEADLINE x (1 + COMMIT_RETRIES), 3 s. `COMMIT_RETRIES` keeps its meaning: how many resends of a commit-path call before it counts as failed. An edge's re-send under the same request id is separate.

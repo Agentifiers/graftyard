@@ -86,6 +86,7 @@ Sources: "Open questions and risks" in `design/DESIGN.md` and `design/AGENT-LAYE
 | C17 | From a third-walk report: does a `workers.dev` route work as `graft-runners`' webhook URL, or does the runner account need its own zone? | `design/DESIGN.md`, Shape (`graft-runners`); `design/SHARED.md`, "Actions" (Hosted runners) | The `workflow_job` webhook that prompts a demand read. The 5-minute sweep works either way | No gate row. M4-WP4 builds the route |
 | C18 | From a third-walk report: which CPU architecture do Sandboxes run, and can arm or larger hosted labels be offered [guess: Linux x64 only]? | `design/SHARED.md`, "Actions" (Hosted runners, label table) | The hosted label table | No gate row. M4-WP4 builds the label table |
 | C19 | Found in M0-WP1: does a `durable_object`-policy container keep starting in its object's region? The `default` policy is refused on this account and will not be offered (operator, 2026-10-27; `decisions/DECISIONS.md`, "Git cache shards run under the `durable_object` scheduling policy"), and `durable_object` takes no `regions` constraint. Milestone 0 measured 90 of 90 starts in the hinted region and no restart across a new version [measured, `tests/m0/results/container-placement.json` and `container-survival.json`], but the docs say an object and its container are "not guaranteed to run in the same location" [doc] | `design/DESIGN.md`, Shape ("Git cache shards (derived)") and "Open questions and risks" | Each site carrying its own networks after a region loss, and the start check that replaces a misplaced container | M0-WP1 (B0-38), rerun at M1-WP5 on real shards |
+| C20 | Found in `m0-carried-6`: how does the leader keep its AppendEntries clear of earlier unconfirmed writes, and what keeps a leader's event loop behind on some placements? The output gate holds a send until all previous writes confirm (https://developers.cloudflare.com/durable-objects/api/storage-api/), so a far-follower send issued during the previous entry's confirm waited for it (p50 256 to 342 ms late with over 150 ms left); and 2 of 16 B0-02 gate runs, both with the leader in ORD, had 46 to 53% of the leader's trace on one clamped millisecond phase, commit p99 1,000 and 1,226 ms [measured, `tests/m0/results/carried-6.md`] | `design/DESIGN.md`, Scale ("Commit on `Tri`"); `decisions/DECISIONS.md`, "The leader sends AppendEntries before its own append is durable" | B0-02 (8 of 8 at 300 and at 330) | An operator decision between holding sends in the host, issuing every send before a turn's writes, and a loop-lag placement rule or an F-number; then B0-02 rerun |
 
 ## Git and storage
 
@@ -215,9 +216,9 @@ One occurrence is not a claim and has no row: `design/SHARED.md`, "Read this fir
 | Group | Rows |
 | --- | --- |
 | Foundation and protocol | 51 |
-| Cloudflare platform facts | 19 |
+| Cloudflare platform facts | 20 |
 | Git and storage | 7 |
 | Release and operations | 14 |
 | Agents | 26 |
 | Costs | 9 |
-| Total | 126 |
+| Total | 127 |
