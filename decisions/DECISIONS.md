@@ -2144,6 +2144,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
+
+Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
+
+**Decision.** The shard streams `/validate`'s body to the container (or to the pool shard) unread; the edge names the pack's trailer in the URL so the shard picks the fan-out shard without the body. The container runs at most min(16, max(4, 2 x vCPU)) validates; a human's waits for a slot, ahead of every agent's, and an agent's waits at most 2 s, with at most 8 per slot queued, then gets 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. The container raises `RLIMIT_NOFILE` at start.
+
+**Why.** B0-32's burst (512 validates of 256 KiB at 23:52:08Z) all failed on the first shard with "Promise will never complete" and its isolate's `exceededMemory`; B0-31's 1 MiB packs put the first shard over its 128 MB 725 times in one minute (1,713 of 2,500 agent pushes `unpacker error`); B0-34's container refused 480 agent pushes with "too many open files". A streamed body is held by the runtime, not the isolate's heap, and a slot cap bounds the files and processes one container opens.
+
+**Beat.** A per-network in-flight cap in the Durable Object alone: it bounds memory but not the container's files when k shards share a pool container. Refusing agent pushes at the edge on a guessed rate: the container knows its own queue.
+
+**Evidence.** `containers/git/server/gate_test.go` (human first, no slot leak on a deadline race, refusal at once past 8 per slot, a refused request reads no body); `a_validate_url_names_the_packs_trailer_and_its_class` and `a_busy_git_cache_refuses_in_the_admission_shape` in `workers/edge`; `tests/lm1mem/plant.py` round 6 plants.
+
+**Flip.** A hosted row where agents are refused `admission full` while the container's `/load` shows idle slots, or one where 16 validates at once exceed a `standard-2` container's memory.
+
 ### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
 
 Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
@@ -2199,6 +2213,8 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 **Why.** The lock, not git CPU, held one network to about 2 pushes/s, so raising k alone would have paid for pool shards to work around a serialization the container did not need. A validate's writes are private to its quarantine, so sharing the lock costs no correctness, and the race tests and `git fsck --strict` show none. With the lock gone, one `standard-2` shard validates about 9 times journey 9's offered rate, which keeps k = 1 consistent with the cost model. Picking by the pack's trailer gives every re-send the same shard.
 
 **Beat.** Raising k to spread validates across pool shards with the lock kept, which buys shards for queueing rather than CPU and would move the $0 line. A per-ref lock, which still serializes pushes to one ref's neighbours and adds lock bookkeeping that the quarantine already makes unnecessary. Picking only among caught-up shards, which needs every first shard to track each pool shard's cursor.
+
+**Amended 2026-11-12 (LM-1 round 7).** The shared lock is taken only after the request body is read, and the geometric repack takes no network lock (it keeps every object of the packs it rolls, and git re-reads a pack it lost), with evict and a fresh init waiting on the repack instead. Held across a streamed body or a repack, the lock let one waiting writer queue every later reader of the network behind it: hosted, the home shard's ls-refs walls rose from 2.7 to 12 s in a minute at 0.65 vCPU. The flip is unchanged.
 
 **Evidence.** `tests/am1/results/fanout.md` [measured]. Container bench (`tests/fanout/bench.py`, 30 KB thin packs): about 16 validates/s for one network before, at any concurrency; after, 38.7/s on 1 vCPU at 4 in flight, 39.0/s at 8, and 58.2/s on 4 vCPUs at 8; the writer path (validate, ingest, `POST /refs`) stays at 13.0/s before and after. Hosted before, about 2.7/s, bounded by each validate's own catch-up, which `CatchUps::fresh` now shares. Hosted on `graft-m2b`: 100 agents at k = 1 pushed 142 of 142 with commit p99 885 ms (933 ms before); 500 agents with k forced to 4 sent validates to pool shards at p50 456 ms (first shard p50 1.1 s), against a p90 of 17.7 s before, but pushed no more, because the read gate failed first. In-band stepping was not shown: 27 of 29 `/fanout` reports in B0-34 hit a follower that answered an error, and k stayed 1; `105c228` makes a follower answer `notLeader` but is not deployed. Race tests `TestConcurrentValidatesOfOneNetwork` and `TestFinishValidateOfTheSamePackAtOnce` under `-race`; 22 of 22 plants caught.
 
@@ -2354,6 +2370,34 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Flip.** A route whose selection the recorder cannot see, which would answer different bytes from the whole-tier reply. A member whose narrow builds at journey 9 cost more CPU than a shared dump did, which would bring back the dump on learners for that route. Or a GraphQL client that sends `filterBy` or login qualifiers at journey 9's rate, which still read the whole tiers.
 
+### `m0-carried-7`: sends stay as built, and an entry stops at `ENTRY_SOFT`, 2026-11-13
+
+#### The far follower's held sends get no host change
+
+**Decision.** The host keeps its send order. It does not issue a turn's sends before that turn's writes (option b), and it does not pipeline a second entry to the far follower (b'). This closes C20's send half.
+
+**Why.** All 58 far-follower sends that `m0-carried-6` found held past an earlier entry's confirm were issued in turns that only handled an `AppendRes` and wrote nothing, so moving that turn's writes after its sends changes none of them. The near follower makes the quorum, so the far hold moved commit in no measured run, and pipelining would add Raft risk for no gate gain (operator, 2026-11-13).
+
+**Beat.** (b), sends before writes in every turn, which `m0-carried-6` proposed before the turns were counted. (b'), a second entry in flight to the far follower.
+
+**Evidence.** `tests/m0/results/carried-7.md`, "Held sends" [measured, `tests/m0carried/held.py` over the `carried-6` gate traces].
+
+**Flip.** A run where the far follower makes the quorum and its held sends set commit p99.
+
+#### An entry stops at `ENTRY_SOFT` bytes past its first command
+
+**Decision.** The leader fills an `Events` entry only while it stays within `ENTRY_SOFT` (60,000 encoded bytes) past its first command; `ENTRY_MAX` (1.5 MB) still bounds one command alone, and admission's capacity counts entries of `ENTRY_SOFT`. This reverses "Entry batching gets no command or byte cap" (`m0-carried-2`).
+
+**Why.** A Durable Object member's storage confirm grows with the entry. Over 48 one-minute B0-02 runs, confirm p99 was 95 to 132 ms for entries of 20 to 80 KB, 168 ms at 80 to 100 KB, 300 ms at 100 to 130 KB and 315 ms at 130 to 200 KB. With the leader's loop behind, 5 to 15% of confirms under 80 KB took 150 ms or more, against 26 to 65% above. The two `m0-carried-6` gate runs that failed had 210 entries of about 86 commands each, against 350 to 558 entries in passing runs, per-request CPU p999 of 112 and 117 ms against 16 to 39 ms, and 26 and 35 `/commit` turns of 80 ms or more against 1 to 4. They did the same work as passing runs: the same commands, and no reads, catch-ups or dumps. The operator approved about 80 KB from that table. At 80 KB the same-window A/B passed 7 of 8 capped and 7 of 8 uncapped, and the capped failure ran its entries pinned at 81 KB. Over those 31 runs a follower's AppendEntries body stepped just past 64 KiB: 0 to 2% of bodies up to 66 KiB took 60 ms or more to arrive, against 10 to 40% at 68 to 83 KiB, while the bare-object control with no write saw none at 80 KB. So the cap keeps an entry and its envelope under 64 KiB.
+
+**Beat.** No cap, which `m0-carried-2` chose from the near round trip alone. A command-count cap, which does not bound bytes. 80 KB, which sits on the body step. A loop-lag step-down (C20's other half), held until the cap's A/B.
+
+**Evidence.** `tests/m0/results/carried-6.md` (confirm by entry size); `tests/m0/results/carried-7.md` (the A/B and gate) [measured]. `a_backlog_splits_into_entries_within_entry_soft_in_order` in `crates/raft/tests/scenarios.rs` fails without the cap.
+
+**Flip.** A hosted A/B at the same rate where capped entries do not lower commit p99 or the count of heavy `/commit` turns, or confirm p99 that stops growing with entry size.
+
+**Measured, 2026-11-13 (`m0-carried-7`).** The cap removes big-entry heavy turns: a 20 s smoke at 330 offered ran 85 commands per entry uncapped (CPU p999 98 ms, 11 `/commit` turns of 80 ms or more, commit p99 1,000 ms) against 42 capped (14 ms, 0, 276 ms). It does not pass B0-02: over two same-window A/Bs, 60 KB passed 4 of 8, 80 KB 7 of 8 and 5 of 8, and no cap 7 of 8. The failures were a lagging leader loop under the cap and near-follower calls held about 1 s while the leader was idle (`tests/m0/results/carried-7.md`). The cap stays, because it bounds the turn's CPU and stays under the body step; whether it is worth its rounds is the flip above, which the A/Bs neither met nor ruled out.
+
 ### `narrow-reads-2`: API reads start with their identity and name reads at once, cached per isolate for `READ_CACHE`, 2026-11-12
 
 Branch `narrow-reads-2` (`tests/am1/results/narrow-reads-2.md`; F65).
@@ -2455,6 +2499,8 @@ Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/
 **Evidence.** `tests/m0/results/carried-2.md`, "What sets the tail" [measured rounds and RTTs; the fixed-point argument is inference].
 
 **Flip.** A run where a capped entry lowers commit p99 at the same near RTT and rate.
+
+**Reversed, 2026-11-13 (`m0-carried-7`).** Entry size also sets the storage confirm, which this entry did not measure, and two `m0-carried-6` gate runs failed on 210 entries of about 86 commands. See "An entry stops at `ENTRY_SOFT` bytes past its first command".
 
 ### `merge-budget-2`: the budget holds under concurrency, GETs compute, and list fields are counted, 2026-11-12
 
@@ -2578,6 +2624,18 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 
 **Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
 
+### Dependency reads overlap the entry in flight, 2026-11-12
+
+**Decision.** The leader may freeze the next entry's command set while one entry is in flight, once that entry has been in flight its mean round less one mean dependency read, and ask for the batch's dependency reads then (`crates/raft/src/member/leader.rs`, `cut_early`). The batch is decided only after the entry in flight committed and applied, on that fold, with exactly the chains `deps()` names on it: a chain the applied entry newly names is read then, and a read chain it no longer names is dropped (`decide_held`). A command admitted after the read was asked waits for the entry after. Dependency ids are unique per member, not per leadership, a transfer drops the held reads, and id blocks and recorded entries still go first. `Out::deps_used` names the entry each read decided, for the host's `deps_log`. DESIGN's write path now says a revocation or suspension "binds every command whose entry's read arrived after it" instead of "every command decided after it".
+
+**Why.** B0-29 needs leader commit p99 at most 600 ms at 500 agents, and the last hosted split had commit p99 930 to 1,163 ms with `queueMs` p99 599 to 872, `depsMs` 239 to 432, and `roundMs` 304 to 356 (leader `/stats`). With the read started only after the entry in flight committed, a command waited one round, its entry's read, and its own round. Overlapping the read with the round in flight takes min(round, read) off that path while keeping one entry in flight and `decide` on the fold plus the entry's earlier commands and the reads made once for it through `fresh`.
+
+**Beat.** Caching dependency folds across entries, which the write path's "read once per entry through `fresh`" forbids and which would break BF-2, BF-15, and BF-27. Cutting the next batch as soon as the entry in flight is appended, which holds out every command admitted during the round and gives back the wait it saves [inference]. Deciding the batch when its reads arrive, on the fold before the entry in flight applied, which breaks "one entry in flight" (the planted bug fails four of the new tests).
+
+**Evidence.** `crates/raft/tests/deps.rs`: seven tests, each failing on one planted bug (deciding when the reads arrive, passing stale extra reads, no re-read for a changed chain, ids reset per leadership, a post-cut command joining the early batch, a transfer keeping its reads, two entries in flight). The simulator now sends half its puts with a dependency the host answers 0 to 400 ms late, checks one entry in flight per leader and that every command an entry decided on reads was admitted before those reads were asked, and the 2,000-seed sweep and Porcupine pass on its histories [measured, simulator]. The latency gain on Cloudflare is unmeasured: the hosted B0-29 rerun decides it.
+
+**Flip.** A hosted B0-29 rerun where commit p99 does not fall by about min(round, read) p99, or where two reads in flight per group drive the `Authz` leader's dep read p99 up by more than it saves, which would return to reading after commit; or a revocation that must bind commands admitted before it within less than one round, which the narrowed wording no longer promises.
+
 ### A metadata split runs in band on the parent leader, keeps every commit on the parent, and reads the child narrowly (2026-11-12)
 
 This supersedes "A metadata split commits on the parent, and the parent keeps the feed" where the two differ. Branch `b030-split` builds it for B0-30's rerun (`build/BUILD-PLAN.md`, M7-WP4).
@@ -2603,6 +2661,30 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/am1/results/hot-shards.md`: in-memory tests in `crates/git/tests/catchup.rs`, `crates/api/tests/surfaces.rs` (`an_oversized_tier_read_stops_at_its_byte_budget`), and `containers/git/server/load_test.go`, with the planted bugs of `tests/am1/hotshards/plant.py`; the hosted run on `graft-m3c` there.
 
 **Flip.** A Workers runtime that lets a Durable Object run past its last request without `waitUntil` or an alarm, which would let the catch-up stay in its caller; or a hosted run where two pages of `ENTRIES_PAGE_BYTES` with a pack in flight still pass the isolate's 128 MB.
+
+### A push no git cache shard could check is retryable, and a hot network's shards are kept caught up (2026-11-13)
+
+**Decision.** A shard answers a failed `/validate` 422 only for its container's own 4xx (the pack's answer, the same on every shard), and 503 for a broken catch-up, a stopped container or a lost call (`graftyard_git::validate_status`). The edge answers a push no shard checked 503 `Retry-After: 2` before any byte of a git result. A leader catches up every Full site's first shard of its network at once and every `KEEP_WARM_MS` (15 s) while it applies entries. The archive's promotion runs in a stateless invocation of the site script, not in the leader member. Repacks search no deltas and write a commit-graph.
+
+**Why.** At `hot-shards-2`'s home-shard kill, 23 pushes in flight were refused `unpacker error`, which git reports as a failed push and a client does not retry. At `hot-shards-3`'s, the same pushes got 503, but each waited 137 s, because the other sites' shards were caught up only by pushes and sat 1,100 and 1,900 entries behind. A leader member that drove the promotion's shard calls charged each to its newest request, one the shard's own `/entries` reads had made, and failed "Subrequest depth" (merge-budget-4's trace `8c049c94`). B0-29's push p99 climbed within each run because validate's `--not --all` walks read every ref's tip from the packs, and a repack's delta search held the network's lock for seconds.
+
+**Beat.** Retrying inside the edge on 5xx, which would hold a push past its 180 s on a shard that is rehydrating. Keeping only the leader's own site warm, the old rule, cheaper by two catch-up calls each 15 s. A once-a-day full repack to drop pack count, which does not remove the per-tip read. A pool shard check on every forward rather than a 30 s skip, which pays a call a push.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md`: A31's run (k stayed 1 through three cold rehydrates), j9g on standard-4 (push p99 4.70 s, 16 in-flight 503s, fsck clean on three shards, 0 depth errors), and the local B0-29-like runs (CPU 19.5 to 25.3 CPU-s/min down to 12.9 to 16.3; validate p99 up to 1,948 ms down to under 140 ms). Plants 38 to 46.
+
+**Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
+
+### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
+
+**Decision.** A catch-up's and a rehydrate's inline packs go to the shard's container in one `POST /ingest-batch` per run of up to `INGEST_BATCH_BYTES` (4 MB, `crates/git/src/catchup.rs`), one answer per pack, `done` or `later`. The container concatenates the run's packs not already ingested into one pack and indexes it with one `index-pack --strict --fix-thin`. Each pack's objects are recorded under its own SHA-256 for `/promote`, found by their offsets in the joined pack. When the joined pack fails, the run is split in halves down to one pack, which is ingested as `/ingest` ingests it, so two packs that carry the same object (which `--strict` refuses in one pack) and a pack whose base is missing each end up on their own. A stored pack still streams alone from its bucket. A container whose image has no `/ingest-batch` (404) gets one `/ingest` a pack.
+
+**Why.** After the multi-pack-index, a 2.05 GB cold rehydrate still took 20 to 22 min hosted, its tail 66 to 72 ms a pack against about 10 ms of `index-pack` locally (`tests/am1/results/hot-shards-2.md`). The difference is one shard-object-to-container call per pack plus `index-pack`'s per-run setup. One `index-pack` per batch removes both for small packs: locally, on one CPU, 9,000 packs of 20 KB took 4.9 s in 4 MB batches, from 94.3 s one call a pack.
+
+**Beat.** A dedupe pass that rewrites a pack without its duplicate objects, which would need a pack parser in the container and changes the bytes a pack's SHA-256 names. One call carrying many packs but one `index-pack` each, which saves the round trip but not `index-pack`'s setup. Larger `/entries` pages, which raise the shard's held memory.
+
+**Evidence.** `tests/am1/results/rehydrate-batch.md`: `containers/git/server/batch_test.go`, `crates/git/tests/catchup.rs` (`a_rehydrate_ingests_runs_of_inline_packs_a_call_at_a_time`), the planted bugs in `tests/am1/hotshards/plant.py`, the local benchmark `tests/am1/hotshards/bench/batchserve.py`, and the hosted cold rehydrates on `graft-m3f`.
+
+**Flip.** A hosted run where the split path dominates (many batches that fail whole), or where one batch's body pushes the shard object past its memory.
 
 ### The web app is TanStack Start with ReUI and HugeIcons, started on a mocked API (2026-11-08)
 
@@ -2639,3 +2721,115 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/m0/results/m0-wp12.md`, L0-12 feed.
 
 **Flip.** Agents that act on an overlap within 3 s, where a 1 s batch costs them conflicts.
+
+#### LM-1 round 7: a member's ring starts at its first poll, and nothing is kept for it before
+
+**Decision.** A member keeps no entry for its activity-feed ring until a poll reads the owner's `Authz`. That poll starts a ring that never served at the member's applied entry with the leases live there (`Ring::start`, as `Ring::skip` does for an install), so a cursor from before gets 410; a ring that already serves is left as it is. `lease::rows` decodes the rows its scan returns instead of reading each again.
+
+**Why.** Two costs of the old waiting list, both measured. Fed one by one at the first poll, each waiting entry rebuilt the live-lease set from SQL in one synchronous turn: on L0-12 (`repo:131273`, 08:00:38Z on 2026-11-12) each of the 8 learners spent 15 to 46 s of CPU on its first poll, with about 1,070 entries and 500 leases waiting, and the voters sharing their isolates then answered "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39. And the list held a clone of every applied entry's events, inline packs included, up to FEED_RING's 10,000 entries, on every member no poll reached: the leader and the followers. At 500 agents (`repo:131276`, 180 s) the leader's wasm memory grew from 2 to 67 MB and a follower's from 2 to 40 MB, in step with the 4.2 agent pushes a second of 90 KB [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Feeding the backlog in slices with an await between them, which keeps both costs and only spreads the CPU. Bounding the list by bytes, which still holds packs on members that never serve.
+
+**Evidence.** `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
+
+**Flip.** A client that must see the events of entries applied before a member's first poll, which needs that member to have read the owner's `Authz` at join.
+
+#### LM-1 round 7: a REST merge reads only its rows, as `mergePullRequest` does
+
+**Decision.** `PUT /pulls/{n}/merge` reads the rows its plan needs by pull request number (`{"rows": {"mergeN": n}}`, `TierRows::merge_rows` with `MergeOf::Number`): the access rows, the pull request's `issue`, `pull`, and `pull_head`, and its base's `ref`. A follower or learner serves it by read-index once its metadata tier is loaded, as it serves `mergePullRequest`'s `{"merge": id}`. A member built before `mergeN` answers it with both whole tiers.
+
+**Why.** BM-2 cut 4 narrowed only the GraphQL merge; the REST route kept reading both whole tiers. At journey 9 that is about a 1 MB packed dump parsed at the edge on every merge, and at 500 agents (`repo:131276`, 180 s) REST merges took 1.2 to 4.4 s at the edge (p99 4.4 s, against B0-29's 2 s), while the shard's merge plan took 68 to 1,232 ms [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Leaving the REST route on the whole tiers until `narrow-reads` serves every route narrowly, which keeps B0-29's merge line failing until then.
+
+**Evidence.** `a_merge_plans_from_its_rows_as_from_both_tiers` (`crates/api/tests/surfaces.rs`) and `a_follower_serves_only_the_designs_reads` (`workers/site/src/fanout.rs`); plants 69 to 71 in `tests/lm1mem/plant.py`.
+
+**Flip.** A REST merge reply that renders rows beyond these, which would need them added to `merge_rows`.
+
+#### LM-1 round 7: a merge waits for a catch-up in flight only after it misses a commit
+
+**Decision.** `merge_then_catch_up` merges first, waits for a catch-up in flight only when the container answers that a commit is missing, merges again, and catches up itself only if that misses too. It amends the BM-2 rule that the first merge plan awaits the catch-ups in flight ("BM-2 latency: repack the shards…", and `bm2-repack`): the wait was meant for a new leadership's `warm` catch-up, which the merge still waits for when it lacks a commit.
+
+**Why.** Under journey 9 a validate's catch-up runs on the shard nearly all the time, so every merge waited for one first. At 500 agents (`repo:131278`, 180 s, after the REST merge read only its rows) the shard's merge waited 64 to 2,151 ms of its 175 to 2,750 ms, for commits it already held (no merge caught up), and REST merge p99 was 6.2 s against B0-29's 2 s [measured, `tests/am1/results/lm1-memory.md`, round 7, the `mergeSteps` shard timings].
+
+**Beat.** Keeping the wait and making catch-ups shorter, which leaves every merge behind whatever catch-up is running.
+
+**Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
+
+**Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.
+
+### `merge-p99`: a merge's rows wait for no dump rebuild, and a REST write resolves its name beside its token, 2026-11-13
+
+Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line (`merge:only` p99 at most 2 s at 500 agents).
+
+#### A merge's rows read is never spaced as a dump rebuild
+
+**Decision.** `Repo::heavy_wait` spaces only a whole-tier dump (`{"rows": true, "packed": true}`) by `DUMP_EVERY_MS` or `LEARNER_DUMP_EVERY_MS`. A merge's rows (`{"rows": {"merge": id}}`, `{"rows": {"mergeN": n}}`), which the edge also sends with `packed`, are answered at once from `read_json` and take no rebuild slot.
+
+**Why.** The check keyed on `packed` alone, so a merge's few rows waited for, or were shed behind, a dump rebuild it never made, and each one let through claimed the slot the next whole-tier read needed. In LM-1's m19 smokes on `graft-m2b` the REST merge's tier read was its largest stage, p90 955 ms (250 agents) and 1,030 ms (500), max 2.2 and 1.4 s, and 1,715 ms p90 and 2.8 s max on the m19 B0-29 row [measured, `mergeSteps`], while the dep-free stages (`auth`, `merge_plan`, `commit`) stayed near 50, 150 to 400, and 500 to 700 ms. The spacing is the cause by the code path; no member log isolates it [inference].
+
+**Beat.** A shorter `LEARNER_DUMP_EVERY_MS`, which spends learner CPU on dumps to shorten a wait merges should never have had.
+
+**Evidence.** `a_merge_rows_read_never_waits_for_a_dump_rebuild` (`workers/site/src/fanout.rs`) fails on the old check; plants in `tests/lm1mem/plant.py`.
+
+**Flip.** A merge rows answer large enough that rebuilding it per read costs a member what a dump did.
+
+#### A REST write reads its token and `o/r` at once
+
+**Decision.** `rest_repo` resolves the repository name beside `authenticate` for every method, as it did for `GET` only. A write still reads both fresh (`read_class` stays false).
+
+**Why.** A write resolved after its token, outside every timed stage: 135 to 705 ms of each m19 REST merge was untimed (`total` less `auth`, the longer of `tier` and `authz`, `merge_plan`, and `commit`) [measured]. Running it beside the token takes that serial step off every REST write [inference until the hosted split shows the gap gone].
+
+**Beat.** Keeping the order for writes, which buys nothing: neither read needs the other's answer.
+
+**Evidence.** The edge's per-request `server-timing` (`resolve` is now a stage of every REST request) and `a1.mjs`'s `mergeSplit`.
+
+**Flip.** A write path that must authenticate before it may learn whether a repository exists, which `resolve` does not reveal to the caller.
+
+#### Test timing headers are per request
+
+**Decision.** A test install's `x-graft-trace` and `x-graft-shard-timing` live in the request's `Timing`, not in isolate-wide thread-locals.
+
+**Why.** 54 of 58 merges in the m19 smokes and 68 of 70 on the m19 B0-29 row carried no shard timing [measured], so the shard's share of a merge was not measured. Concurrent requests in one isolate taking each other's notes fits: any request's reply cleared the isolate's note [inference from code].
+
+**Beat.** Nothing; LM-1 round 7 moved `server-timing` into the request for the same reason (`236eca5b`).
+
+**Evidence.** The hosted `mergeSplit` carries `shard:*` stages for each merge.
+
+**Flip.** A note that must outlive its request, such as a shard timing reported after the reply, which would need its own channel.
+
+#### A merge's rows are read on the leader
+
+**Decision.** `tier_rows` sends a merge's rows (`MergeOf`) to the repository's leader by `call_opt`; whole-tier reads keep `read_spread`. It amends "F65 follow-up" and "LM-1 round 7: a REST merge reads only its rows", which sent merge rows to followers and learners.
+
+**Why.** With the rebuild spacing gone, the merge's tier read still ran p50 224 to 300 ms and p99 1.0 to 1.4 s on `graft-m3f` at 500 agents [measured, `tests/am1/results/merge-p99.md`]: a learner or follower answers only after a read-index round to the leader, from as far as apac, and after it has applied that index. The leader answers from its lease in its own turn. The F65 move was for 200 API reads a second; merges are 10 a minute, and the merge's commit goes to the same leader right after.
+
+**Beat.** Keeping merge rows on learners and placing one near the leader, which still waits for a read-index round and costs a learner.
+
+**Evidence.** The hosted `mergeSplit` `tier` stage before and after.
+
+**Flip.** Merges at a rate whose reads show in the leader's `/read` share, or a leader shedding them (`READS_MAX`), which would move them back to followers.
+
+#### A REST merge reads ahead on its cached repository
+
+**Decision.** `PUT pulls/{n}/merge` takes its isolate's cached login, `Placement`, and `Authz` (`resolve_cached`, entries at most `READ_CACHE` old), and while its own fresh `resolve` runs, reads its merge rows and the owner's `Authz` fresh for that repository. It keeps them only if the resolve answers the same repository, owner, and placement record (`kept_ahead`), and reads again otherwise. Every read it keeps is a fresh one started after the request arrived; only which repository to read is a guess.
+
+**Why.** After the two fixes above, the write's fresh `resolve` was the merge's longest serial stage, p50 381 to 452 ms and p99 861 to 884 ms on `graft-m3f`, and the tier and `Authz` reads waited for it [measured, `tests/am1/results/merge-p99.md`]. Run beside it, the two smokes' merges would have run p99 1.6 and 2.0 s [inference from the same stages].
+
+**Beat.** Reading a write's `o/r` from the cache outright, which lets a renamed or moved repository take another's merge for up to `READ_CACHE`, against SHARED's write path that reads identity fresh.
+
+**Evidence.** `a_write_keeps_its_ahead_reads_only_for_the_repository_it_resolved` (`workers/edge/src/api.rs`); plants in `tests/lm1mem/plant.py`; the hosted `mergeSplit`'s `tier_ahead` and `authz_ahead` stages.
+
+**Flip.** Guesses that miss often enough that the wasted reads show on the leader, or a repository renamed so often that merges pay the second read.
+
+#### A REST merge reads the owner's `Authz` on its leader
+
+**Decision.** For `PUT pulls/{n}/merge` (`api::rest_merge`, `Ctx::leader_reads`), the owner's `Authz` reads, both the fresh name lookup in `resolve` and the fold read ahead or in `read_repo`, go to the `Authz` group's leader by `call_opt`. Every other request keeps `read_spread`. It amends "F65 follow-up: the edge reads an owner's `Authz` by read-index" for this one route, as "A merge's rows are read on the leader" amends F65.
+
+**Why.** With the rows on the repository's leader and read ahead, a REST merge's longest serial stages were `resolve` (p50 398 to 531 ms, p99 784 to 1,033 ms) and `authz_ahead` (p50 451 to 489 ms), both `Authz` reads by read-index through far members, while the rows read on a leader took 30 to 47 ms. The 600 s B0-29 row on `graft-m3f` missed at p99 2,517 ms [measured, `tests/am1/results/merge-p99.md`]. The 123/s that overloaded the `Authz` leader were API reads; merges add about 20 reads a minute [inference].
+
+**Beat.** Caching the `Authz` fold for writes, which SHARED's write path rules out (the fold names who may merge), and a learner near the edge, which still waits a read-index round.
+
+**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`. On the 600 s B0-29 row at 500 agents on `graft-m3f`, `resolve` went from p50 530 / p99 1,033 ms to 118 / 306 ms and `authz_ahead` from p50 463 to 50 ms, and `merge:only` p99 from 2,517 to 1,571 ms, with no leader change [measured, `tests/am1/results/merge-p99.md`].
+
+**Flip.** An `Authz` leader whose `/read` share or `READS_MAX` sheds show merge reads, or merges at a rate near the API reads that moved off it.

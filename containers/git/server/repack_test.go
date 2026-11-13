@@ -70,6 +70,14 @@ func TestRefsRepacksPastRepackAt(t *testing.T) {
 	if got := run(t, repo("7"), "", "rev-parse", "refs/heads/main"); got != tip {
 		t.Fatalf("main %s, want %s", got, tip)
 	}
+	// The repack leaves a commit-graph that holds the tip, so validate's `--not --all` walks read refs from it, not
+	// from the packs; it verifies against the repository.
+	if out := run(t, repo("7"), "", "commit-graph", "verify", "--no-progress"); strings.Contains(out, "error") {
+		t.Fatalf("commit-graph verify: %s", out)
+	}
+	if _, err := os.Stat(filepath.Join(repo("7"), "objects", "info", "commit-graphs", "commit-graph-chain")); err != nil {
+		t.Fatalf("no commit-graph after the repack: %v", err)
+	}
 }
 
 func putRefs(t *testing.T, url, tip string) {

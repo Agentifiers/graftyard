@@ -1,7 +1,11 @@
 // R20 on a test install with no `Release` group: creates every `Tokens` shard's group through the edge's bed-token
-// `/_bed/precreate?from=F&count=16`, AT_ONCE ranges at a time, the same ranges `graftyard install` posts to
-// `/api/graftyard/v1/release/tokens` on a product install. Idempotent: rerun to retry failed ranges.
+// `/_bed/precreate?from=F&count=N`, AT_ONCE ranges at a time, the ranges `graftyard install` posts to
+// `/api/graftyard/v1/release/tokens` on a product install. Idempotent: rerun to retry failed ranges, or pass
+// ONLY=<from>,<from>,... to retry just the starts a run's `done` row listed as failed.
 //   node tests/m3/hosted/precreate.mjs <out.jsonl> [AT_ONCE]
+// Ranges are PRECREATE_RANGE shards (default 8, at most the edge's 16). A 16-shard range outlasted the edge's 300 s about a
+// third of the time while three installs precreated in one account, and answered `fetch failed`; 8-shard ranges did
+// not (tests/am1/results/install-m3e.md, "Tokens shards").
 // The bed token is read from ~/.graft-wp6/bed.token (or BED_TOKEN_FILE) and sent as a header only. With
 // R20_GENESIS=<genesis.signed>, an install that holds a `Release` group is driven through the product route itself,
 // `POST /api/graftyard/v1/release/tokens`, with the signed genesis as the body, as `graftyard install` does.
@@ -12,15 +16,18 @@ const GENESIS = process.env.R20_GENESIS ? readFileSync(process.env.R20_GENESIS) 
 const TOKEN = GENESIS ? "" : readFileSync(process.env.BED_TOKEN_FILE ?? `${process.env.HOME}/.graft-wp6/bed.token`, "utf8").trim();
 const [out, atOnce = "8"] = process.argv.slice(2);
 if (!out) throw new Error("usage: precreate.mjs <out.jsonl> [AT_ONCE]");
-const SHARDS = 3072, RANGE = 16;
+const SHARDS = 3072, RANGE = Number(process.env.PRECREATE_RANGE ?? 8);
+// The edge clamps `count` to 16 (RANGE_MAX), so a larger range would leave its tail uncreated.
+if (!(RANGE >= 1 && RANGE <= 16)) throw new Error(`PRECREATE_RANGE ${RANGE} is not 1 to 16`);
+const starts = process.env.ONLY
+  ? process.env.ONLY.split(",").map(Number)
+  : Array.from({ length: Math.ceil(SHARDS / RANGE) }, (_, i) => i * RANGE);
 
-let next = 0;
 const failed = [];
 async function worker() {
   for (;;) {
-    const from = next;
-    next += RANGE;
-    if (from >= SHARDS) return;
+    const from = starts.shift();
+    if (from === undefined) return;
     const t0 = Date.now();
     let row;
     try {

@@ -80,6 +80,15 @@ export async function statuses(chain, n = 3) {
     try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000)).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
   }));
 }
+/** Each site's current voter object of a chain, from a member's committed config: a voter replaced since the group
+ * was made has a later generation's name, and a call by site alone reaches the first generation's object. */
+export async function voterNames(chain) {
+  for (const st of await statuses(chain)) {
+    const vs = st.config?.config?.normal?.voters;
+    if (st.role === "leader" && vs) return Object.fromEntries(vs.map((v) => [v.site, v.do_name]));
+  }
+  return {};
+}
 export async function leaderOf(chain) {
   for (let i = 0; i < 20; i++) {
     const st = await statuses(chain);

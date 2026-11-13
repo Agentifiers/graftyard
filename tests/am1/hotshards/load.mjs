@@ -11,7 +11,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { deflateSync } from "node:zlib";
-import { EDGE, log, member, row, sleep, tokens } from "../hosted/lib.mjs";
+import { EDGE, log, member, row, sleep, tokens, voterNames } from "../hosted/lib.mjs";
 
 const R = process.env.HOT_REPO;
 const CHAIN = process.env.HOT_CHAIN;
@@ -122,7 +122,8 @@ async function push(k) {
 // During the seed, each member's archive cap is raised (test-faults `archiveCap`, per isolate) so promote-ahead
 // (log above the last Promoted past max/32) and archiving hold off until the backlog is built; `MODE=uncap` clears it.
 async function cap(max) {
-  return Promise.all([0, 1, 2].map((s) => member(CHAIN, s, "/bench_seed", { archiveCap: max ? { max, range: 2 << 20 } : {} }, 25_000)
+  const names = await voterNames(CHAIN).catch(() => ({}));
+  return Promise.all([0, 1, 2].map((s) => member(CHAIN, s, "/bench_seed", { archiveCap: max ? { max, range: 2 << 20 } : {} }, 25_000, names[s])
     .then((r) => r.v?.archiveCap ?? r.v).catch((e) => String(e).slice(0, 60))));
 }
 if (MODE === "uncap") {
@@ -132,8 +133,9 @@ if (MODE === "uncap") {
 
 async function unpromoted() {
   const out = [];
+  const names = await voterNames(CHAIN).catch(() => ({}));
   for (const s of [0, 1, 2]) {
-    try { out.push((await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v?.unpromotedBytes ?? 0); }
+    try { out.push((await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000, names[s])).v?.unpromotedBytes ?? 0); }
     catch { out.push(0); }
   }
   return Math.min(...out);

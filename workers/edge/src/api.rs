@@ -20,7 +20,7 @@
 //!   `dequeuePullRequest` commit a `QueueOp`. All are format 32.4, sent only once `FormatsEnable` enabled it.
 
 use graftyard_api::exec::Request as Gql;
-use graftyard_api::hosted::{HostedDir, Render, TierRows, What, WireReply};
+use graftyard_api::hosted::{HostedDir, MergeOf, Render, TierRows, What, WireReply};
 use graftyard_api::view::{Repo as View, RepoRef};
 use graftyard_api::{graphql, lfs, release, rest};
 use graftyard_fold::MemStore;
@@ -83,6 +83,11 @@ pub(crate) struct Timing {
     start: std::cell::Cell<f64>,
     last: std::cell::Cell<f64>,
     phases: std::cell::RefCell<Vec<(&'static str, f64)>>,
+    /// Test installs: the commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
+    /// (`x-graft-shard-timing`). Per request, as the stages are: kept per isolate, a concurrent request took them, and
+    /// 66 of 68 merges in LM-1's m19 smokes answered no shard timing (`merge-p99`).
+    trace: std::cell::RefCell<Vec<Value>>,
+    shard: std::cell::RefCell<String>,
 }
 
 impl Timing {
@@ -91,6 +96,8 @@ impl Timing {
         self.start.set(now);
         self.last.set(now);
         self.phases.borrow_mut().clear();
+        self.trace.borrow_mut().clear();
+        self.shard.borrow_mut().clear();
     }
     /// Closes the phase that ends now.
     pub(crate) fn mark(&self, name: &'static str) {
@@ -121,35 +128,6 @@ impl Timing {
     }
 }
 
-/// Test installs: a commit's hedge steps (`x-graft-trace`) and the shard's timing of its merge plan
-/// (`x-graft-shard-timing`).
-mod timing {
-    #[cfg(feature = "test-faults")]
-    use std::cell::RefCell;
-    #[cfg(feature = "test-faults")]
-    thread_local! { static TRACE: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) }; }
-    #[cfg(feature = "test-faults")]
-    pub fn trace(t: Vec<serde_json::Value>) {
-        TRACE.with(|x| *x.borrow_mut() = t);
-    }
-    #[cfg(not(feature = "test-faults"))]
-    pub fn trace(_: Vec<serde_json::Value>) {}
-    #[cfg(feature = "test-faults")]
-    thread_local! { static NOTE: RefCell<String> = const { RefCell::new(String::new()) }; }
-    #[cfg(feature = "test-faults")]
-    pub fn note(t: String) {
-        NOTE.with(|n| *n.borrow_mut() = t);
-    }
-    #[cfg(feature = "test-faults")]
-    pub fn take_note() -> String {
-        NOTE.with(|n| std::mem::take(&mut *n.borrow_mut()))
-    }
-    #[cfg(feature = "test-faults")]
-    pub fn take_trace() -> String {
-        TRACE.with(|x| serde_json::Value::from(std::mem::take(&mut *x.borrow_mut())).to_string())
-    }
-}
-
 /// `f`, with its own wall time recorded as stage `name` of `c`'s request.
 pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static str, f: F) -> F::Output {
     let since = js_sys::Date::now();
@@ -162,9 +140,8 @@ pub(crate) async fn timed<F: std::future::Future>(c: &Ctx<'_>, name: &'static st
 const TIMING_SAMPLE: f64 = 100.0;
 
 /// A commit's hedge steps for this request's `x-graft-trace` (test installs only).
-#[cfg(feature = "test-faults")]
-pub(crate) fn trace(t: Vec<Value>) {
-    timing::trace(t);
+pub(crate) fn trace(c: &Ctx<'_>, t: Vec<Value>) {
+    *c.timing.trace.borrow_mut() = t;
 }
 
 pub(crate) fn unavailable(why: &str) -> Reply {
@@ -219,8 +196,8 @@ pub async fn serve(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>)
     #[cfg(feature = "test-faults")]
     let r = r
         .with("server-timing", c.timing.header())
-        .with("x-graft-trace", timing::take_trace())
-        .with("x-graft-shard-timing", timing::take_note())
+        .with("x-graft-trace", Value::from(c.timing.trace.take()).to_string())
+        .with("x-graft-shard-timing", c.timing.shard.take())
         .with("x-graft-colo", colo);
     frame(&i, r, s, &m)
 }
@@ -381,7 +358,7 @@ async fn read_repo(
 ) -> Result<std::result::Result<Read, Reply>> {
     let merge = match &rows {
         Rows::All | Rows::Core | Rows::Api(_) => None,
-        Rows::Merge(id, _) => Some(*id),
+        Rows::Merge(of, _) => Some(*of),
     };
     let core_only = matches!(rows, Rows::Core);
     let at = RepoRef { id: repo.id, owner: owner.to_owned(), owner_id: repo.owner, name: name.to_owned() };
@@ -474,13 +451,13 @@ pub(crate) fn served_meta<'a>(
 }
 
 /// Which tier rows `read_repo` reads: both whole tiers; both, served with an empty metadata view while that tier
-/// loads (`Core`); a merge's rows (`TierRows::merge_rows`) for the pull request with this database id, with the
-/// leader's answer if the caller already read it; or only the rows one API read's reply renders
+/// loads (`Core`); a merge's rows (`TierRows::merge_rows`) for the pull request it names, with the leader's answer
+/// if the caller already read it; or only the rows one API read's reply renders
 /// (`graftyard_api::narrow`), else both whole tiers when the member answers that the route needs them.
 enum Rows {
     All,
     Core,
-    Merge(i64, Option<Result<std::result::Result<Value, Reply>>>),
+    Merge(MergeOf, Option<Result<std::result::Result<Value, Reply>>>),
     Api(graftyard_api::narrow::Route),
 }
 
@@ -538,7 +515,7 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 }
 
 /// The repository's `{"rows": true}` read, on a follower by read-index first and then the leader
-/// (`graftyard_lookup::read_spread`), creating its group on first use; `{"rows": {"merge": id}}`
+/// (`graftyard_lookup::read_spread`), creating its group on first use; `{"rows": {"merge": id}}` (`MergeOf::query`)
 /// for a merge's rows only, which a member built before it answers with every row. A leader that kept shedding the
 /// read (`graftyard_lookup::OVERLOADED`) answers 503 with `Retry-After: 1`. Identical reads are not shared across
 /// requests: a Workers isolate refuses a promise resolved from another request's context, and every such read
@@ -546,15 +523,25 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
 pub(crate) async fn tier_rows(
     c: &Ctx<'_>,
     repo: &Repo,
-    merge: Option<i64>,
+    merge: Option<MergeOf>,
 ) -> Result<std::result::Result<Value, Reply>> {
     let chain = ChainId::Repo(repo.id);
     let b = c.bindings();
     let q = tier_rows_query(merge);
-    let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+    // A merge's few rows are read on the leader its commit goes to next, from its lease: through a learner or
+    // follower they waited out a read-index round from a far region or a member behind, p99 1.0 to 1.4 s at 500
+    // agents, for 10 merges a minute (`merge-p99`). Whole-tier reads stay off the leader.
+    let read = || async {
+        let r = match merge {
+            Some(_) => graftyard_lookup::call_opt(&b, chain, &repo.record, "/read", q.to_string().as_bytes()).await,
+            None => graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await,
+        };
+        r.map(|o| o.map(|(v, _, _)| v))
+    };
+    let mut v = read().await;
     if let Ok(None) = v {
         ensure_group(c, repo).await.map_err(Error::RustError)?;
-        v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
+        v = read().await;
     }
     Ok(match v {
         Ok(Some(v)) => Ok(v),
@@ -572,8 +559,8 @@ pub(crate) fn read_failed(why: &str, e: &str) -> Reply {
 
 /// `tier_rows`'s query. `ranges` too: a member built before the `rows` read answers its small ranges reply instead of
 /// every ref. `packed`: the whole tiers as one JSON string (`TierRows::packed`), which `TierRows::from_value` reads.
-fn tier_rows_query(merge: Option<i64>) -> Value {
-    let rows = merge.map_or(json!(true), |id| json!({ "merge": id }));
+fn tier_rows_query(merge: Option<MergeOf>) -> Value {
+    let rows = merge.map_or(json!(true), MergeOf::query);
     json!({ "q": { "rows": rows, "ranges": true, "packed": true } })
 }
 
@@ -984,7 +971,7 @@ async fn merge_plan(
     c.timing.mark("merge_plan");
     #[cfg(feature = "test-faults")]
     if let Ok(Some(t)) = r.headers().get("x-graft-timing") {
-        timing::note(t);
+        *c.timing.shard.borrow_mut() = t;
     }
     Ok(a.merge_plan(req))
 }
@@ -1071,8 +1058,8 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     }
     c.timing.mark("plan");
     // `rd` came from the group's leader, so the group exists: no create probe before the commit.
-    let trace = std::cell::RefCell::new(Vec::new());
-    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace) };
+    let trace_steps = std::cell::RefCell::new(Vec::new());
+    let hooks = graftyard_lookup::Hooks { first: None, trace: cfg!(feature = "test-faults").then_some(&trace_steps) };
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
         ChainId::Repo(rd.repo.id),
@@ -1084,7 +1071,7 @@ async fn commit_merge(c: &Ctx<'_>, rd: &Read, cmd: MergeCmd, what: What) -> Resu
     )
     .await;
     c.timing.mark("commit");
-    timing::trace(trace.into_inner());
+    trace(c, trace_steps.into_inner());
     Ok(match r {
         Ok(done) => {
             if let Some(e) = done.pointer("/refused/err") {
@@ -1208,7 +1195,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
                 };
                 let rows = async {
                     match merging {
-                        Some(_) => Some(tier_rows(c, &repo, merging).await),
+                        Some(id) => Some(tier_rows(c, &repo, Some(MergeOf::Id(graftyard_types::DbId(id)))).await),
                         None => None,
                     }
                 };
@@ -1233,7 +1220,7 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
         }
         Some(Ok((owner, name, repo, a, rows))) => {
             let rows = match merging {
-                Some(id) => Rows::Merge(id, rows),
+                Some(id) => Rows::Merge(MergeOf::Id(graftyard_types::DbId(id)), rows),
                 // A query reads only the rows its reply renders (`graftyard_api::narrow`); a mutation plans on both
                 // whole tiers.
                 None if !gq.is_mutation().unwrap_or(true) => Rows::Api(graftyard_api::narrow::Route::Graphql {
@@ -1341,6 +1328,29 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     }
 }
 
+/// The pull request a REST merge (`PUT pulls/{n}/merge`) names; `None` for every other request.
+fn rest_merge(method: &Method, tail: &[&str]) -> Option<MergeOf> {
+    match (method, tail) {
+        (Method::Put, ["pulls", n, "merge"]) => {
+            n.parse().ok().map(|n| MergeOf::Number(graftyard_git::issues::IssueNumber(n)))
+        }
+        _ => None,
+    }
+}
+
+/// The reads a REST write made ahead for its `guess` (`resolve_cached`), kept only when its own fresh `resolve`
+/// answered the same repository, owner, and placement record; a failed `Authz` read is dropped and read again.
+fn kept_ahead<T, A, E>(
+    found: &Option<std::result::Result<Option<Repo>, String>>,
+    guess: Option<&Repo>,
+    ahead: Option<(T, std::result::Result<Option<A>, E>)>,
+) -> Option<(T, Option<A>)> {
+    match (found, guess, ahead) {
+        (Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r == g => Some((rows, authz.ok().flatten())),
+        _ => None,
+    }
+}
+
 /// The database id of the pull request a `mergePullRequest` names, when the request is that one mutation.
 fn merge_pull_id(gq: &Gql<'_>) -> Option<i64> {
     let roots = gq.roots().ok()?;
@@ -1425,18 +1435,35 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     let Some((at, segs)) = graftyard_wire::repo_path(p) else { return Ok(Reply::not_found()) };
     let tail = segs.as_slice();
     let method = req.method();
-    // A `GET` is read-class (`Ctx::read_class`), and its token and `o/r` are read at once: neither needs the other.
+    // A `GET` is read-class (`Ctx::read_class`). Any request reads its token and `o/r` at once, as `timed` stages:
+    // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
+    let merge_of = rest_merge(&method, tail);
+    c.leader_reads.set(merge_of.is_some());
     let find = async {
         match &at {
-            graftyard_wire::RepoPath::Name { owner, name } if method == Method::Get => {
-                Some(resolve(c, owner, name).await)
-            }
-            _ => None,
+            graftyard_wire::RepoPath::Name { owner, name } => Some(resolve(c, owner, name).await),
+            graftyard_wire::RepoPath::Id(_) => None,
         }
     };
-    let (who, found) =
-        futures_util::future::join(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find)).await;
+    // A REST merge reads its rows and the owner's `Authz`, both fresh, for the repository this isolate last resolved
+    // the name to, while its own fresh `resolve` runs; it keeps them only if that `resolve` names the same repository
+    // and record, and reads again otherwise. Serial, the resolve was a REST merge's third stage at 500 agents, p50 452
+    // and p99 861 ms (`merge-p99`).
+    let guess = match (&at, merge_of) {
+        (graftyard_wire::RepoPath::Name { owner, name }, Some(of)) => {
+            crate::resolve_cached(owner, name).map(|g| (g, of))
+        }
+        _ => None,
+    };
+    let ahead = async {
+        let (g, of) = guess.as_ref()?;
+        let rows = timed(c, "tier_ahead", tier_rows(c, g, Some(*of)));
+        let authz = timed(c, "authz_ahead", crate::authz_read_as(c, g.owner, &g.record, false));
+        Some(futures_util::future::join(rows, authz).await)
+    };
+    let (who, found, ahead) =
+        futures_util::future::join3(timed(c, "auth", authenticate(c, req)), timed(c, "resolve", find), ahead).await;
     let who = who?;
     let found = found.transpose()?;
     // A credential the edge refuses (revoked, lapsed, unknown) is 401, as on GitHub, not an anonymous caller whom the
@@ -1444,6 +1471,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if who.is_none() && crate::token_of(req)?.is_some() {
         return Ok(Reply::error(401, "Bad credentials", "rest"));
     }
+    let ahead = kept_ahead(&found, guess.as_ref().map(|(g, _)| g), ahead)
+        .map(|(rows, authz)| (guess.as_ref().expect("kept only with a guess").1, rows, authz));
     let agent_accept = req.headers().get("accept")?;
     // A `GET` that `graftyard_api::narrow::rest_get` serves reads only the rows its reply renders.
     if method == Method::Get
@@ -1453,14 +1482,21 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     {
         return Ok(r);
     }
-    let rd = match at {
-        graftyard_wire::RepoPath::Name { owner, name } => match found {
-            Some(found) => read_found(c, found, owner, name, who.as_ref(), Rows::All).await?,
-            None => read(c, owner, name, who.as_ref()).await?,
-        },
-        graftyard_wire::RepoPath::Id(id) => match repo_name(c, id).await {
+    // A merge reads only the rows it plans from (`TierRows::merge_rows`), as `mergePullRequest` does: read whole,
+    // each one parsed a 1 MB dump at journey 9, and REST merges ran 1.2 to 4.4 s at 500 agents (LM-1 round 7).
+    let rows = || merge_of.map_or(Rows::All, |of| Rows::Merge(of, None));
+    let rd = match (at, found) {
+        (graftyard_wire::RepoPath::Name { owner, name }, Some(Ok(Some(repo)))) if ahead.is_some() => {
+            let (of, v, authz) = ahead.expect("checked");
+            read_repo(c, repo, owner, name, who.as_ref(), authz, Rows::Merge(of, Some(v)), Gate::Readers).await?
+        }
+        (graftyard_wire::RepoPath::Name { owner, name }, Some(found)) => {
+            read_found(c, found, owner, name, who.as_ref(), rows()).await?
+        }
+        (graftyard_wire::RepoPath::Name { .. }, None) => unreachable!("a name is resolved beside the token"),
+        (graftyard_wire::RepoPath::Id(id), _) => match repo_name(c, id).await {
             Some((owner, name, repo, a)) => {
-                read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), Rows::All, Gate::Readers).await?
+                read_repo(c, repo, &owner, &name, who.as_ref(), Some(a), rows(), Gate::Readers).await?
             }
             None => return Ok(Reply::not_found()),
         },
@@ -1999,8 +2035,66 @@ mod tests {
     fn the_tier_read_asks_for_packed_rows() {
         let q = super::tier_rows_query(None);
         assert_eq!(q, serde_json::json!({ "q": { "rows": true, "ranges": true, "packed": true } }));
-        let q = super::tier_rows_query(Some(7));
+        use graftyard_api::hosted::MergeOf;
+        let q = super::tier_rows_query(Some(MergeOf::Id(graftyard_types::DbId(7))));
         assert_eq!(q["q"]["rows"], serde_json::json!({ "merge": 7 }));
+        // REST's merge names the pull request by number, which the member reads apart from an id.
+        let q = super::tier_rows_query(Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3))));
+        assert_eq!(q["q"]["rows"], serde_json::json!({ "mergeN": 3 }));
+        assert_eq!(MergeOf::of_query(&q["q"]["rows"]), Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3))));
+    }
+
+    /// A REST merge keeps the rows and `Authz` it read ahead for its cached guess only when its fresh `resolve` names
+    /// the same repository under the same placement record: a moved placement, another repository under the name, a
+    /// failed or empty resolve, or no guess reads again (`merge-p99`).
+    #[test]
+    fn a_write_keeps_its_ahead_reads_only_for_the_repository_it_resolved() {
+        use graftyard_types::{AccountId, DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
+        let record = |home: u8, generation: u32| PlacementRecord {
+            name: PlacementName::Tri,
+            sites: [0, 1, 2].iter().map(|&s| SiteId(s)).collect(),
+            home: SiteId(home),
+            generation,
+            moving_from: None,
+            at: Timestamp(1),
+        };
+        let repo = |id: i64, rec| crate::Repo { id: RepoId(DbId(id)), owner: AccountId(DbId(9)), record: rec };
+        let g = repo(7, record(0, 1));
+        let ahead = || Some(("rows", Ok::<_, ()>(Some("authz"))));
+        let found = |r: crate::Repo| Some(Ok(Some(r)));
+        assert_eq!(super::kept_ahead(&found(g.clone()), Some(&g), ahead()), Some(("rows", Some("authz"))));
+        let failed = Some(("rows", Err::<Option<&str>, _>(())));
+        assert_eq!(super::kept_ahead(&found(g.clone()), Some(&g), failed), Some(("rows", None)), "Authz read again");
+        for (why, f) in [
+            ("another repository under the name", found(repo(8, record(0, 1)))),
+            ("the placement moved", found(repo(7, record(1, 2)))),
+            ("no such repository now", Some(Ok(None))),
+            ("the resolve failed", Some(Err("x".into()))),
+        ] {
+            assert_eq!(super::kept_ahead(&f, Some(&g), ahead()), None, "{why}");
+        }
+        assert_eq!(super::kept_ahead(&found(g.clone()), None, ahead()), None, "no guess");
+        assert_eq!(super::kept_ahead::<&str, &str, ()>(&found(g.clone()), Some(&g), None), None, "nothing read ahead");
+    }
+
+    /// Only `PUT pulls/{n}/merge` is a REST merge, whose `Authz` and rows are read on leaders: a `GET` of the same
+    /// path, another pull request route, or a number that does not parse reads as any other request (`merge-p99`).
+    #[test]
+    fn only_a_rest_merge_reads_on_leaders() {
+        use graftyard_api::hosted::MergeOf;
+        use worker::Method;
+        let n3 = Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3)));
+        assert_eq!(super::rest_merge(&Method::Put, &["pulls", "3", "merge"]), n3);
+        for (m, tail) in [
+            (Method::Get, &["pulls", "3", "merge"][..]),
+            (Method::Post, &["pulls", "3", "merge"][..]),
+            (Method::Put, &["pulls", "x", "merge"][..]),
+            (Method::Put, &["pulls", "3"][..]),
+            (Method::Put, &["issues", "3", "merge"][..]),
+            (Method::Put, &["pulls", "3", "merge", "x"][..]),
+        ] {
+            assert_eq!(super::rest_merge(&m, tail), None, "{m:?} {tail:?}");
+        }
     }
 
     /// A read every member shed is 503 with `Retry-After: 1`; any other failed read is 503 with `Retry-After: 5`;

@@ -373,13 +373,12 @@ impl DurableObject for GitShard {
         match path.as_str() {
             "/validate" => {
                 host.catch_up(net, &[chain], &bs, &log).await.map_err(se)?;
-                let body = req.bytes().await?;
                 let n: usize = q(&url, "tipsn").and_then(|v| v.parse().ok()).unwrap_or(0);
-                let tips: Vec<String> =
-                    String::from_utf8_lossy(&body[..n.min(body.len())]).split_whitespace().map(str::to_owned).collect();
-                match host.validate(net, body[n.min(body.len())..].to_vec(), &tips).await {
-                    Ok(ix) => Response::from_json(&ix),
-                    Err(e) => Response::error(e.0, 422),
+                let body = req.inner().body().map(Into::into);
+                match host.validate(net, n, 0, false, false, body).await {
+                    Ok(graftyard_git::host::Validated::Done(Some(ix), _)) => Response::from_json(&ix),
+                    Ok(_) => Response::error("validate gave no index", 422),
+                    Err((status, e)) => Response::error(e.0, graftyard_git::validate_status(status)),
                 }
             }
             "/info-refs" | "/upload-pack" => {

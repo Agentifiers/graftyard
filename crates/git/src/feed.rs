@@ -510,6 +510,17 @@ impl Ring {
         self.first = Some(Index(to.0 + 1));
     }
 
+    /// The member's first poll read its owner's `Authz`, with the member applied through `to`: a ring that never
+    /// served starts there with its live leases, as `skip` does for an install, so a cursor from before gets 410. A
+    /// ring that already serves is left as it is. Before that poll the member keeps no entry for the ring (LM-1 round
+    /// 7): feeding a backlog cost each of L0-12's 8 learners 15 to 46 s of CPU on its first poll, and keeping one held
+    /// a clone of every applied entry's events, inline packs included, on voters that are never polled.
+    pub fn start(&mut self, repo: RepoId, owner: &dyn AuthzRead, core: &dyn Read, (to, at): (Index, Timestamp)) {
+        if self.first.is_none() {
+            self.skip(repo, owner, core, (to, at));
+        }
+    }
+
     /// The events past `after` that a poll with `filter` returns.
     pub fn past(&self, after: Index, filter: &[&str]) -> Vec<(Index, Timestamp, ActivityEvent)> {
         self.events.iter().filter(|(i, _, e)| *i > after && e.matches(filter)).cloned().collect()

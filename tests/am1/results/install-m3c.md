@@ -52,6 +52,7 @@ Later site and edge days were run by other branches, each recorded in its own re
 
 - `LF13_ENV=tests/am1/lf13/env-m3c.sh bash tests/fanout/lf13.sh` runs LF-13, both modes, 3 runs each.
 - Redeploy the sites with `node workers/site/deploy.mjs ~/.graft-m3c/sites.json --test-faults --anchor ~/.graft-m3c/install.toml --image <the image above>`. Every new version resets the members: a site day.
+- Shard size: the operator approved `standard-4` shard containers on test installs (2026-11-13). graft-m3c runs `standard-2` (the default) unless a site day set `SHARD_INSTANCE`. From its next site day it runs `standard-4`: pass `--vars <file>` with `{"SHARD_INSTANCE": "standard-4"}` (as `tests/am1/mb4/siteday.sh` does), then tear the running shards down so they restart at the new size.
 - Cost: `INSTALL=graft-m3c python3 tests/fanout/m2bcost.py <from> <to>`, from `~/.graft-m3c/t0`.
 
 ## Proof it works
