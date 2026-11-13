@@ -183,6 +183,22 @@ export function overlapMs(heldId, ttlS, grantedId) {
 const sha1 = (b) => createHash("sha1").update(b).digest();
 const obj = (type, body) => sha1(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body]));
 const TYPE = { commit: 1, tree: 2, blob: 3 };
+/** merge:only's time by stage (`merge-p99`): each `server-timing` and `x-graft-shard-timing` stage's n, p50, p99
+ * and max over the merges that carried it, and `gap`, what `total` leaves after `auth`, the longer of `tier` and
+ * `authz` (they run at once), `merge_plan`, and `commit`: an untimed stage. Nearest rank, as the run's other p99s. */
+export function mergeSplit(steps) {
+  const by = {};
+  const add = (k, v) => (by[k] ??= []).push(v);
+  for (const m of steps) {
+    const d = Object.fromEntries([...(m.timing ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)].map((x) => [x[1], Number(x[2])]));
+    for (const [k, v] of Object.entries(d)) add(k, v);
+    for (const x of (m.shard ?? "").matchAll(/([a-z_]+);dur=(\d+)/g)) add(`shard:${x[1]}`, Number(x[2]));
+    if (d.total !== undefined) add("gap", d.total - (d.auth ?? 0) - Math.max(d.tier ?? 0, d.authz ?? 0) - (d.merge_plan ?? 0) - (d.commit ?? 0));
+  }
+  const at = (xs, q) => { const s = [...xs].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+  return Object.fromEntries(Object.entries(by).map(([k, xs]) => [k, { n: xs.length, p50: at(xs, 0.5), p99: at(xs, 0.99), max: Math.max(...xs) }]));
+}
+
 function entryHeader(type, size) {
   const out = [];
   let b = (TYPE[type] << 4) | (size & 15);
@@ -294,8 +310,15 @@ if (opt.selftest) {
     const enc = (ms) => { let o = ""; for (let k = 0; k < 10; k++) { o = CROCKFORD[ms % 32] + o; ms = Math.floor(ms / 32); } return `${o}0000000000000000`; };
     const lease = ulidMs(held) === 1469918176385 && overlapMs(held, 60, enc(1469918176385 + 59_700)) === 300
       && overlapMs(held, 60, enc(1469918176385 + 60_001)) === -1;
-    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease }));
-    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease
+    // merge:only's split: `tier` and `authz` overlap, so the gap counts the longer; a merge with no shard timing
+    // adds no shard stage.
+    const sp = mergeSplit([
+      { timing: "resolve;dur=0, auth;dur=50, authz;dur=200, tier;dur=900, merge_plan;dur=150, plan;dur=0, commit;dur=500, total;dur=1900", shard: "merge;dur=80, waited;dur=0, catchup;dur=0" },
+      { timing: "auth;dur=40, authz;dur=600, tier;dur=100, merge_plan;dur=100, commit;dur=400, total;dur=1140", shard: "" },
+    ]);
+    const split = sp.gap.n === 2 && sp.gap.max === 300 && sp.tier.max === 900 && sp["shard:merge"].n === 1 && sp.total.p99 === 1900;
+    console.log(JSON.stringify({ packs: ok, ok: r, hex, full: n, band, budgetWindow: win, lease, split }));
+    if (!ok || r !== "ok" || hex !== "ok" || n !== "full" || band !== "ok" || !win || !lease || !split
       || why !== "refused pack N bytes over INLINE_MAX_HOT N" || unp !== "refused unpacker error: validate: shard N after N ms") process.exit(1);
   } finally { rmSync(dir, { recursive: true, force: true }); }
   process.exit(0);
@@ -809,7 +832,7 @@ const v = {
     reqPerS: lstats.inboundMs ? +(Object.values(lstats.inbound ?? {}).reduce((a, b) => a + b, 0) / (lstats.inboundMs / 1000)).toFixed(1) : null,
     feedPollsOnLeader: lstats.inbound?.["/feed"] ?? 0, inbound: lstats.inbound, inboundMs: lstats.inboundMs, failedCalls: lstats.failedCalls },
   feedMembers: after.map((s) => ({ site: s.site, role: s.role, feed: s.feed })),
-  ...(mergeSteps.length ? { mergeSteps } : {}),
+  ...(mergeSteps.length ? { mergeSplit: mergeSplit(mergeSteps), mergeSteps } : {}),
   ...(plan.leases ? { leases: {
     overlap: { samples: overlaps.length, over0: overlaps.filter(([o]) => o > 0).length, over500: overlaps.filter(([o]) => o > 500).length,
       maxMs: overlaps.length ? Math.max(...overlaps.map(([o]) => o)) : null, p50: pct(overlaps.map(([o]) => o), 0.5),

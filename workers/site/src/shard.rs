@@ -31,8 +31,10 @@ use worker::*;
 use crate::{SiteEnv, now_ms};
 
 thread_local! {
-    /// Per (shard object, network): the catch-up running in the background, which a caller that stops waiting leaves
-    /// running, and the callers waiting for it.
+    /// Per (shard object instance, network): the catch-up running in the background, which a caller that stops waiting
+    /// leaves running, and the callers waiting for it. Keyed by instance, not object: a reset object (`ctx.abort()`)
+    /// can come back in the same isolate, where its old run's future never ends, and keyed by the object id every
+    /// catch-up after the reset waited on that run (`tests/am1/results/rehydrate-batch.md`, "Resume, hosted").
     static RUNS: std::cell::RefCell<std::collections::HashMap<(String, i64), Run>> = Default::default();
     /// Per (shard object, network), the log index the latest catch-up reached, for `x-graft-cursor`.
     static CURSORS: std::cell::RefCell<std::collections::HashMap<(String, i64), u64>> = Default::default();
@@ -90,6 +92,8 @@ pub struct GitShard {
     /// TEST_MERGE_BUDGET of each network whose test merges run here, in this object's memory
     /// (`graftyard_git::prsync::Budgets`).
     budgets: std::cell::RefCell<graftyard_git::prsync::Budgets>,
+    /// This object instance's key in `RUNS`, `CURSORS` and `REPORTS`: the object id and a number drawn when it starts.
+    run_key: String,
 }
 
 struct GroupLog<'a> {
@@ -117,6 +121,7 @@ impl GroupLog<'_> {
         let local_path = format!("{path}&local=1&bytes={}", crate::host::ENTRIES_LOCAL_PAGE_BYTES_MAX);
         let b = Bindings { env: self.env, sites: self.sites };
         let me = Some(self.me);
+        graftyard_lookup::learn_voters(&b, self.chain, &self.record).await;
         let local = graftyard_lookup::known_voters(self.chain)
             .into_iter()
             .map(|t| (t.site, t.do_name))
@@ -396,7 +401,9 @@ impl DurableObject for GitShard {
                 }
             });
         }
+        let run_key = format!("{}:{}", state.id(), (worker::js_sys::Math::random() * 1e15) as u64);
         GitShard {
+            run_key,
             state: std::rc::Rc::new(state),
             env,
             budgets: std::cell::RefCell::new(graftyard_git::prsync::Budgets::new(vcpu)),
@@ -429,8 +436,7 @@ impl DurableObject for GitShard {
                 Some(n) => Some(host.rehydrating(n).await),
                 None => None,
             };
-            let cursor =
-                net.and_then(|n| CURSORS.with(|m| m.borrow().get(&(self.state.id().to_string(), n.0.0)).copied()));
+            let cursor = net.and_then(|n| CURSORS.with(|m| m.borrow().get(&(self.run_key.clone(), n.0.0)).copied()));
             return Response::from_json(&json!({
                 "running": running,
                 "alarm": self.state.storage().get_alarm().await?,
@@ -444,6 +450,15 @@ impl DurableObject for GitShard {
         // `fanout`: this container's `NetworkLoad`, which the network's first shard reads from each pool shard.
         if path == "/load" {
             return Response::from_json(&host.load().await.map_err(se)?);
+        }
+        // Test installs: resets this object (`ctx.abort()`) as an isolate reset does, while its container keeps running
+        // on the same disk, so a catch-up it cuts off resumes from its saved place when the alarm restarts it. A site
+        // redeploy did not cut one: the busy object stayed on its version until its run ended
+        // (`tests/am1/results/rehydrate-batch.md`).
+        #[cfg(feature = "test-faults")]
+        if path == "/abort" {
+            crate::host::abort(&self.state, "graftyard shard abort");
+            return Response::from_json(&json!({ "aborted": true }));
         }
         if path == "/teardown" {
             host.destroy().await.map_err(se)?;
@@ -498,7 +513,7 @@ impl DurableObject for GitShard {
                 crate::member::owner_record(&self.env, owner).await.map_err(Error::RustError)?
             }
         };
-        let obj = self.state.id().to_string();
+        let obj = self.run_key.clone();
         let log = GroupLog { env: &self.env, sites: &site.sites, me: site.id, chain, record };
         // A new leadership's `warm` (`crate::prsync`) is the one caller no client asked for: it catches up a running
         // shard and starts no stopped one, and it never counts as the shard's last request.
@@ -823,7 +838,7 @@ impl DurableObject for GitShard {
         if let Some((net, record)) = s.get::<(i64, PlacementRecord)>(WARMING_KEY).await.ok().flatten() {
             s.set_alarm(std::time::Duration::from_millis(WARMING_ALARM_MS)).await?;
             let net = NetworkId(DbId(net));
-            let obj = self.state.id().to_string();
+            let obj = self.run_key.clone();
             let jobs = Jobs { state: self.state.clone(), env: self.env.clone(), obj, net, record };
             jobs.start();
             crate::host::within(ALARM_HOLDS, jobs.idle()).await;
