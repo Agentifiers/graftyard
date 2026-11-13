@@ -698,6 +698,8 @@ pub struct Member<C: Command> {
     remote: install::RemoteReads,
     /// A fixed admission capacity in commands a second (`set_admit_capacity`); measured when `None`.
     admit_capacity: Option<f32>,
+    /// Where `cut` stops filling an entry past its first command (`set_entry_soft`).
+    entry_soft: usize,
 }
 
 impl<C: Command> Member<C> {
@@ -815,6 +817,7 @@ impl<C: Command> Member<C> {
             install: None,
             remote: install::RemoteReads::default(),
             admit_capacity: None,
+            entry_soft: crate::ENTRY_SOFT,
         })
     }
 

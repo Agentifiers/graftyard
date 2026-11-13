@@ -2354,6 +2354,32 @@ Branch `narrow-reads` served journey 9's API reads from narrow member reads (`te
 
 **Flip.** A route whose selection the recorder cannot see, which would answer different bytes from the whole-tier reply. A member whose narrow builds at journey 9 cost more CPU than a shared dump did, which would bring back the dump on learners for that route. Or a GraphQL client that sends `filterBy` or login qualifiers at journey 9's rate, which still read the whole tiers.
 
+### `m0-carried-7`: sends stay as built, and an entry stops at `ENTRY_SOFT`, 2026-11-13
+
+#### The far follower's held sends get no host change
+
+**Decision.** The host keeps its send order. It does not issue a turn's sends before that turn's writes (option b), and it does not pipeline a second entry to the far follower (b'). This closes C20's send half.
+
+**Why.** All 58 far-follower sends that `m0-carried-6` found held past an earlier entry's confirm were issued in turns that only handled an `AppendRes` and wrote nothing, so moving that turn's writes after its sends changes none of them. The near follower makes the quorum, so the far hold moved commit in no measured run, and pipelining would add Raft risk for no gate gain (operator, 2026-11-13).
+
+**Beat.** (b), sends before writes in every turn, which `m0-carried-6` proposed before the turns were counted. (b'), a second entry in flight to the far follower.
+
+**Evidence.** `tests/m0/results/carried-7.md`, "Held sends" [measured, `tests/m0carried/held.py` over the `carried-6` gate traces].
+
+**Flip.** A run where the far follower makes the quorum and its held sends set commit p99.
+
+#### An entry stops at `ENTRY_SOFT` bytes past its first command
+
+**Decision.** The leader fills an `Events` entry only while it stays within `ENTRY_SOFT` (80,000 encoded bytes) past its first command; `ENTRY_MAX` (1.5 MB) still bounds one command alone, and admission's capacity counts entries of `ENTRY_SOFT`. This reverses "Entry batching gets no command or byte cap" (`m0-carried-2`).
+
+**Why.** A Durable Object member's storage confirm grows with the entry. Over 48 one-minute B0-02 runs, confirm p99 was 95 to 132 ms for entries of 20 to 80 KB, 168 ms at 80 to 100 KB, 300 ms at 100 to 130 KB and 315 ms at 130 to 200 KB. With the leader's loop behind, 5 to 15% of confirms under 80 KB took 150 ms or more, against 26 to 65% above. The two `m0-carried-6` gate runs that failed had 210 entries of about 86 commands each, against 350 to 558 entries in passing runs, per-request CPU p999 of 112 and 117 ms against 16 to 39 ms, and 26 and 35 `/commit` turns of 80 ms or more against 1 to 4. They did the same work as passing runs: the same commands, and no reads, catch-ups or dumps. So the cap sits at the knee of the confirm table.
+
+**Beat.** No cap, which `m0-carried-2` chose from the near round trip alone. A command-count cap, which does not bound bytes. A loop-lag step-down (C20's other half), held until the cap's A/B.
+
+**Evidence.** `tests/m0/results/carried-6.md` (confirm by entry size); `tests/m0/results/carried-7.md` (the A/B and gate) [measured]. `a_backlog_splits_into_entries_within_entry_soft_in_order` in `crates/raft/tests/scenarios.rs` fails without the cap.
+
+**Flip.** A hosted A/B at the same rate where capped entries do not lower commit p99 or the count of heavy `/commit` turns, or confirm p99 that stops growing with entry size.
+
 ### `m0-carried-4`: a member call streams its request body, 2026-11-12
 
 **Decision.** A member-to-member call sends its encoded envelope through a `FixedLengthStream` of its length (`workers/site/src/host.rs`, `call_peer`), not as one `Uint8Array` body.
@@ -2423,6 +2449,8 @@ Branch `m0-carried-2` traced B0-02's misses on the Rust host (`tests/m0/results/
 **Evidence.** `tests/m0/results/carried-2.md`, "What sets the tail" [measured rounds and RTTs; the fixed-point argument is inference].
 
 **Flip.** A run where a capped entry lowers commit p99 at the same near RTT and rate.
+
+**Reversed, 2026-11-13 (`m0-carried-7`).** Entry size also sets the storage confirm, which this entry did not measure, and two `m0-carried-6` gate runs failed on 210 entries of about 86 commands. See "An entry stops at `ENTRY_SOFT` bytes past its first command".
 
 ### `merge-budget-2`: the budget holds under concurrency, GETs compute, and list fields are counted, 2026-11-12
 

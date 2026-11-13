@@ -365,6 +365,10 @@ fn b0_33_at_measured_capacity_every_agent_command_is_admitted() {
     assert!(m.agent_per_s >= 240.0, "{:.1}/s", m.agent_per_s);
     assert_eq!(m.refused, 0);
     assert!(m.human_p99 <= 1_000 && m.mq_p99 <= 1_000);
+    // Capacity is what entries of ENTRY_SOFT carry, not ENTRY_MAX: at most ENTRY_SOFT over the 200-byte command floor,
+    // every 50 ms round floor, a second.
+    let bound = graftyard_raft::ENTRY_SOFT as f32 / 200.0 * 1000.0 / 50.0;
+    assert!(cap <= bound, "capacity {cap:.0}/s above the ENTRY_SOFT bound {bound:.0}/s");
 }
 
 #[test]

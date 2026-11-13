@@ -4,7 +4,7 @@
 //   node tests/m1/wp2/run.ts bf12  --run NAME [--kills 10000] [--groups 10] [--down-every 25]
 //   node tests/m1/wp2/run.ts bf13  --run NAME [--rounds 400] [--groups 8] [--early]
 //   node tests/m1/wp2/run.ts bench --run NAME [--seconds 60] [--rate 100] [--bytes 1024] [--near-ms MS]
-//                                  [--chain repo:N] [--body array|stream] [--arrival sql|mem]   # reuse a group; B0-02's A/B switches
+//                                  [--chain repo:N] [--body array|stream] [--arrival sql|mem] [--entry soft|max]   # reuse a group; B0-02's A/B switches
 //   node tests/m1/wp2/run.ts audit --run NAME      # BF-12 audit of every group's three members
 //
 // BF-12: each group appends unique tokens `i,` to one register, one command per kill. Kill modes alternate
@@ -19,7 +19,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, options
   run: { type: "string" }, kills: { type: "string", default: "10000" }, groups: { type: "string" },
   "down-every": { type: "string", default: "25" }, rounds: { type: "string", default: "400" },
   seconds: { type: "string", default: "60" }, rate: { type: "string", default: "100" }, bytes: { type: "string", default: "1024" },
-  early: { type: "boolean", default: false }, "near-ms": { type: "string" }, body: { type: "string" }, chain: { type: "string" }, arrival: { type: "string" },
+  early: { type: "boolean", default: false }, "near-ms": { type: "string" }, body: { type: "string" }, chain: { type: "string" }, arrival: { type: "string" }, entry: { type: "string" },
 } });
 const row = positionals[0];
 if (!opt.run || !row) throw new Error("usage: node tests/m1/wp2/run.ts bf12|bf13|bench|audit --run NAME");
@@ -250,7 +250,7 @@ async function bf13Report(): Promise<void> {
 
 async function bench(): Promise<void> {
   const chain = opt.chain ?? (await groups(1, base()))[0];
-  await edge("/stats", { chain, reset: true, body: opt.body, arrival: opt.arrival });
+  await edge("/stats", { chain, reset: true, body: opt.body, arrival: opt.arrival, entry: opt.entry ?? "soft" });
   const seconds = Number(opt.seconds), rate = Number(opt.rate);
   // As M0's raft-bench.ts: 20 callers x 5 workers x 1 op/s = 100 commands/s, each call about 15 s.
   const WORKERS = 5, CHUNK_S = 15, callers = Math.ceil(rate / WORKERS);
@@ -276,7 +276,7 @@ async function bench(): Promise<void> {
     .catch(() => null);
   const lat: number[] = leader.r.commitMs, round: number[] = leader.r.roundMs;
   const s = {
-    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, body: opt.body ?? "stream", arrival: opt.arrival ?? "sql", bytes: Number(opt.bytes), chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site, rtt,
+    row: "b0-01 (M1-WP2 Rust host)", run: opt.run, body: opt.body ?? "stream", arrival: opt.arrival ?? "sql", entry: opt.entry ?? "soft", bytes: Number(opt.bytes), chain, at: new Date().toISOString(), seconds: wallS, edgeColo: colo, leader: leader.site, rtt,
     commands: done, failed, throughputPerS: Math.round(done / wallS), entries: leader.r.entries,
     commandsPerEntry: Math.round((leader.r.commands / leader.r.entries) * 10) / 10,
     commitMs: { p50: pct(lat, 0.5), p99: pct(lat, 0.99), max: pct(lat, 1), n: lat.length },

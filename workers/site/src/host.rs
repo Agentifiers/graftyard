@@ -596,6 +596,10 @@ pub struct Host<F: Family> {
     /// leader's next AppendEntries. `/arrivals` serves them either way. A reset object writes rows again.
     #[cfg(feature = "test-faults")]
     pub arrivals_mem: RefCell<Option<VecDeque<Value>>>,
+    /// Test installs, B0-02's cap A/B (`tests/m0/results/carried-7.md`): where the leader stops filling an entry
+    /// (`/stats?entry=max` for ENTRY_MAX, `entry=soft` for ENTRY_SOFT). A reset object caps at ENTRY_SOFT again.
+    #[cfg(feature = "test-faults")]
+    pub entry_soft: Cell<usize>,
     /// Test installs (F67): until this time (epoch ms) every answer to this member's AppendEntries is lost after the
     /// follower ran it, so its appends still renew the followers' promises while it commits nothing: the
     /// simulator's `HalfHung` on one member (`/sever` with `half`).
@@ -1187,6 +1191,8 @@ impl<F: Family> Host<F> {
             #[cfg(feature = "test-faults")]
             arrivals_mem: RefCell::new(None),
             #[cfg(feature = "test-faults")]
+            entry_soft: Cell::new(raft::ENTRY_SOFT),
+            #[cfg(feature = "test-faults")]
             half_hung_until: Cell::new(0),
             #[cfg(feature = "test-faults")]
             hop: Cell::new(2),
@@ -1282,6 +1288,8 @@ impl<F: Family> Host<F> {
         let (applied, stmts) = (store.applied, store.stmts);
         self.queue.borrow_mut().extend(stmts);
         self.flush().map_err(err)?;
+        #[cfg(feature = "test-faults")]
+        m.set_entry_soft(self.entry_soft.get());
         *self.core.borrow_mut() = Some(Core {
             m,
             join,
