@@ -2270,11 +2270,11 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         if let Some(rest) = path.strip_prefix(ui::PREFIX) {
             return ui::serve(&c, &mut req, host, rest).await;
         }
-        if path.starts_with("/assets/")
-            && req.method() == Method::Get
-            && let Some(r) = ui::asset(&c, req.clone()?).await?
-        {
-            return Ok(r);
+        if (path.starts_with("/assets/") || path == "/favicon.ico") && req.method() == Method::Get {
+            return match ui::asset(&c, req.clone()?).await? {
+                Some(r) => Ok(r),
+                None => text(c.rid, 404, "Not Found\n"),
+            };
         }
         let page = match endpoint {
             Some(graftyard_wire::Endpoint::Web(_)) => true,

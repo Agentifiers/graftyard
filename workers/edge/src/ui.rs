@@ -351,15 +351,18 @@ pub fn wants_shell(req: &Request) -> Result<bool> {
     Ok(req.method() == Method::Get && req.headers().get("accept")?.is_some_and(|a| a.contains("text/html")))
 }
 
-/// `/assets/*` from the `ASSETS` binding, immutable; `None` when the build has no such file.
+/// `/assets/*` (immutable) and `/favicon.ico` from the `ASSETS` binding; `None` when the build has no such file.
 pub async fn asset(c: &Ctx<'_>, req: Request) -> Result<Option<Response>> {
     let Ok(assets) = c.env.assets("ASSETS") else { return Ok(None) };
+    let hashed = req.path().starts_with("/assets/");
     let r = assets.fetch_request(req).await?;
     if r.status_code() != 200 {
         return Ok(None);
     }
     let h = r.headers().clone();
-    h.set("cache-control", "public, max-age=31536000, immutable")?;
+    // A content-hashed file never changes; the favicon has no hash.
+    let immutable = hashed;
+    h.set("cache-control", if immutable { "public, max-age=31536000, immutable" } else { "public, max-age=3600" })?;
     Ok(Some(r.with_headers(h)))
 }
 
