@@ -85,6 +85,7 @@ pub fn tier_of(e: &RepoEvent) -> TierSet {
         RepoEvent::PathSet(_) => TierSet::METADATA,
         RepoEvent::Fanout { .. } => TierSet::CORE,
         RepoEvent::Hook { .. } | RepoEvent::HookCursor(_) => TierSet::CORE,
+        RepoEvent::Watchers(_) => TierSet::METADATA,
     }
 }
 
@@ -191,6 +192,13 @@ pub const METADATA: Schema = Schema {
         t("agent_task_meta", &["session"]),
         // AM1-WP4: each agent ref's `PathSet` (`crate::agent::PathSet`).
         t("path_set", &["ref"]),
+        // M4-WP2, 32.19: the watcher index the `Counts` consumer writes (`crate::watch`), with the stargazer and
+        // subscriber orders, each thread's explicit subscriptions, and the counts.
+        t("watcher", &["account"]),
+        t("stargazer", &["starred_at", "account"]),
+        t("subscriber", &["account"]),
+        t("thread_sub", &["n", "account"]),
+        t("watch_count", &[]),
     ],
 };
 
@@ -803,7 +811,7 @@ impl RepoTiers {
                     put_rec(w, "consumer_cursor", key, through);
                 }
             }
-            RepoEvent::Provenance { .. } => {}
+            RepoEvent::Provenance { .. } | RepoEvent::Watchers(_) => {}
             RepoEvent::AgentMeta { n, meta } => put_rec(w, "agent_meta", vec![n_key(*n)], meta),
             RepoEvent::AgentGate(g) => {
                 mark(w, "agent_gate", vec![n_key(g.pr), sha_key(&g.head), int(g.satisfied_by.0.0.0)])
@@ -1131,6 +1139,7 @@ impl RepoTiers {
                 crate::task::write_updated_meta(w, session, *pr, summary.as_deref())
             }
             RepoEvent::PathSet(p) => put_rec(w, "path_set", vec![ref_key(&p.refname)], p),
+            RepoEvent::Watchers(us) => us.iter().for_each(|u| crate::watch::write_meta(w, u)),
             _ => {}
         }
     }

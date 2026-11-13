@@ -1645,11 +1645,12 @@ func startRepack(net, rp string) bool {
 	return true
 }
 
-// runRepack is the repack itself; tests slow it down. --window=0: no delta search. Once a geometric roll reached the
-// big pack it searched deltas for 1 to 5 s, and every validate, fetch and ingest queued behind it (push p99 3.7 s
-// locally, 7 to 38 s hosted); pushes' objects are already as small as their own packs made them.
+// runRepack is the repack itself; tests slow it down. It searches deltas with git's default window: each push's pack
+// deltas only within itself, so without a search the objects of a file changed by many pushes stay whole, and a shard
+// held 2.07 times the pushed bytes of real history and 13 times journey 9's (`tests/am1/results/hot-shards-3.md`,
+// "--window=0 disk growth"). The search holds no lock (startRepack), so it no longer queues validates.
 var runRepack = func(rp string) error {
-	_, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2", "--window=0")
+	_, err := git(rp, []string{derivedEnv}, nil, "repack", "-d", "-q", "--geometric=2")
 	return err
 }
 
@@ -2048,6 +2049,10 @@ func handleFsck(w http.ResponseWriter, r *http.Request) {
 	l := lock(net)
 	l.RLock()
 	defer l.RUnlock()
+	// A repack holds no network lock (startRepack) and deletes the packs it rolled up as it ends, so fsck waits for it,
+	// as evict does: just after a rehydrate's repack, site c's fsck answered ok false (`tests/am1/results/hot-shards-3.md`).
+	repacking.Lock()
+	defer repacking.Unlock()
 	out, err := git(rp, nil, nil, "fsck", "--strict", "--no-progress", "--no-dangling")
 	refs, _ := listRefs(rp, nil)
 	count, _ := git(rp, nil, nil, "count-objects", "-v")

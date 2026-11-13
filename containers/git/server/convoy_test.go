@@ -202,7 +202,28 @@ func TestRepackHoldsNoNetworkLock(t *testing.T) {
 		close(release)
 		t.Fatal("a validate or ingest waited on a running repack")
 	}
+	// fsck waits for the repack, which deletes the packs it rolled up as it ends: one that ran alongside answered ok
+	// false on site c just after a rehydrate's repack (tests/am1/results/hot-shards-3.md).
+	fsck := make(chan map[string]any, 1)
+	go func() {
+		_, v := call(t, s, "POST", "/fsck?net=7")
+		fsck <- v
+	}()
+	select {
+	case v := <-fsck:
+		close(release)
+		t.Fatalf("fsck answered while a repack ran: %v", v["ok"])
+	case <-time.After(300 * time.Millisecond):
+	}
 	close(release)
+	select {
+	case v := <-fsck:
+		if v["ok"] != true {
+			t.Fatalf("fsck after the repack: %v %v", v["out"], v["err"])
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("fsck never answered after the repack ended")
+	}
 	repacking.Lock() // the repack has finished
 	repacking.Unlock()
 	if n := packCount(repo("7")); n > 8 {
