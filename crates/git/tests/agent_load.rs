@@ -109,68 +109,82 @@ fn a_hot_networks_clone_cache_entries_go_to_both_warm_sites() {
     }
 }
 
-/// B0-34 in memory: the monorepo under journey 9 (2.68 vCPU on one network [measured, B0-34]) and a tip moving 10
-/// times a minute, then one warm site killed (the other site's load then carries both), then a second owner's network
-/// turning hot, then a hostile owner making three of its networks hot. `fanout` runs each minute on the two warm
-/// sites' `NetworkLoad`, and pool grants are held to each owner's share. The run checks k at most FANOUT_MAX, the
-/// monorepo's k never reduced by another owner, every owner within its share, and no call but these pure ones.
+/// B0-34 in memory, through the leader's hosted path: the monorepo under journey 9 (2.68 vCPU on one network
+/// [measured, B0-34]) and a tip moving 10 times a minute, then one warm site killed (the other site's load then carries
+/// both), then a second owner's network turning hot, then a hostile owner making three of its networks hot. Each minute
+/// each network's leader folds both warm sites' `NetworkLoad` into `LoadReports`, asks both sites' `PoolLedger`s for
+/// `pool_ask`'s shards, and commits `granted_k`, as `workers/site/src/fanout.rs` does. The run checks k at most
+/// FANOUT_MAX, the monorepo's k never reduced by another owner, every owner within its share on each site, no pool
+/// shard held by two networks, and no call but these pure ones.
 #[test]
 fn b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share() {
+    use graftyard_git::{LoadReports, PoolLedger, granted_k, pool_ask, shards_for};
     struct N {
         id: NetworkId,
         owner: u64,
         vcpu: f32,
         k: u8,
-        f: Fanout,
+        r: LoadReports,
     }
+    let (s0, s1) = (SiteId(0), SiteId(1));
     // The monorepo at 20 vCPU, past journey 9's 2.68, so k climbs to its owner's share.
-    let mut nets = vec![N { id: net(1), owner: 1, vcpu: 20.0, k: 1, f: Fanout::default() }];
+    let mut nets = vec![N { id: net(1), owner: 1, vcpu: 20.0, k: 1, r: LoadReports::default() }];
     let share = |o: u64| if o == 1 { 6 } else { 2 };
+    let mut ledgers = [PoolLedger::default(), PoolLedger::default()];
     let mut mono_k = Vec::new();
     let mut max_k = 0;
     let mut denied = 0;
     let mut site_dead = false;
     for m in 0..=180u64 {
         if m == 40 {
-            site_dead = true; // one warm site killed: the other already holds k (the larger load sizes both)
+            site_dead = true; // one warm site's containers killed: the other already holds k (the larger load sizes both)
         }
         if m == 60 {
-            nets.push(N { id: net(2), owner: 2, vcpu: 5.0, k: 1, f: Fanout::default() });
+            nets.push(N { id: net(2), owner: 2, vcpu: 5.0, k: 1, r: LoadReports::default() });
         }
         if m == 100 {
             for i in 0..3 {
-                nets.push(N { id: net(30 + i), owner: 3, vcpu: 30.0, k: 1, f: Fanout::default() });
+                nets.push(N { id: net(30 + i), owner: 3, vcpu: 30.0, k: 1, r: LoadReports::default() });
             }
         }
         let now = Timestamp(m * MIN);
-        let mut asks = Vec::new();
         for n in nets.iter_mut() {
             let cpu = (n.vcpu / (f32::from(n.k) * SHARD_VCPU)).min(1.0);
-            let a = load(cpu);
-            let b = if site_dead { load(0.0) } else { load(cpu * 0.9) };
-            let want = fanout([&a, &b], n.k, now, &mut n.f);
-            asks.push((n.id, n.owner, n.k - 1, want - 1));
-        }
-        let g = pool_grants(&asks, share);
-        for ((n, got), ask) in nets.iter_mut().zip(&g).zip(&asks) {
-            if *got < ask.3 {
+            n.r.report([s0, s1], s1, if site_dead { load(0.0) } else { load(cpu * 0.9) }, n.k, now);
+            let step = n.r.report([s0, s1], s0, load(cpu), n.k, Timestamp(now.0 + 1));
+            let Some(want) = pool_ask(n.k, step) else { continue };
+            let g = ledgers.each_mut().map(|l| Some(l.ask(n.id, n.owner, want, now, share).len() as u8));
+            let next = granted_k(n.k, want + 1, g);
+            if next < want + 1 {
                 denied += 1;
             }
-            n.k = 1 + got;
+            n.k = next;
             max_k = max_k.max(n.k);
         }
-        let mut by_owner = std::collections::BTreeMap::<u64, u16>::new();
-        for n in &nets {
-            *by_owner.entry(n.owner).or_default() += u16::from(n.k - 1);
+        for (site, l) in [s0, s1].into_iter().zip(&ledgers) {
+            let mut by_owner = BTreeMap::<u64, u16>::new();
+            let mut slots = Vec::new();
+            for n in &nets {
+                let held: Vec<u16> =
+                    l.leases.iter().filter(|x| x.network == n.id).flat_map(|x| x.slots.clone()).collect();
+                // Each network serves from its first shard and the slots it holds, at most k - 1 of them.
+                assert!(shards_for(n.id, site, 25, &held).len() <= usize::from(n.k).max(1 + held.len()));
+                *by_owner.entry(n.owner).or_default() += held.len() as u16;
+                slots.extend(held);
+            }
+            assert!(by_owner.iter().all(|(o, v)| *v <= share(*o)), "an owner past its share at {m} min: {by_owner:?}");
+            let n = slots.len();
+            slots.sort();
+            slots.dedup();
+            assert_eq!(slots.len(), n, "a pool shard held by two networks at {m} min on {site:?}");
+            assert!(n <= usize::from(HOT_POOL));
         }
-        assert!(by_owner.iter().all(|(o, v)| *v <= share(*o)), "an owner past its share at {m} min: {by_owner:?}");
-        assert!(by_owner.values().sum::<u16>() <= HOT_POOL);
         mono_k.push(nets[0].k);
     }
     // Any step down of the monorepo while its load stays above FANOUT_DOWN would be another owner's doing.
     let reduced = mono_k.windows(2).filter(|w| w[1] < w[0]).count();
     println!(
-        "B0-34 in memory: monorepo k by 10 min {:?}; max k {max_k}; {denied} network-minutes held below the asked k by the pool or an owner's share; monorepo k \
+        "B0-34 in memory: monorepo k by 10 min {:?}; max k {max_k}; {denied} asks granted below the wanted k by the pool or an owner's share; monorepo k \\
          reduced after the hostile owner {reduced} times",
         mono_k.iter().step_by(10).collect::<Vec<_>>()
     );
@@ -178,6 +192,115 @@ fn b0_34_k_is_set_in_band_and_the_hostile_owner_is_held_to_its_pool_share() {
     assert!(mono_k[30] > 1, "the monorepo stepped up in band");
     assert_eq!(*mono_k.last().unwrap(), 7, "the monorepo reached 1 + its owner's share of 6");
     assert_eq!(reduced, 0, "another owner never reduced the monorepo's k");
+    assert!(denied > 0, "the hostile owner was held below what it asked");
+    let hostile: u16 = nets[3..].iter().map(|n| u16::from(n.k - 1)).sum();
+    assert!(hostile <= 2, "the hostile owner's three networks hold {hostile} pool shards, past its share of 2");
+}
+
+/// A site's pool ledger, the code behind `POST /pool/grant`: a hostile owner with three hot networks gets its share
+/// and no more, whichever order the asks come in, and the shards it holds are distinct from every other network's.
+#[test]
+fn a_hostile_owner_with_three_hot_networks_is_held_to_its_share() {
+    use graftyard_git::PoolLedger;
+    let share = |o: u64| if o == 3 { 2 } else { 6 };
+    let t = Timestamp(0);
+    let mut l = PoolLedger::default();
+    let mut hostile = Vec::new();
+    for i in 0..3 {
+        hostile.extend(l.ask(net(30 + i), 3, 7, t, share));
+    }
+    assert_eq!(hostile.len(), 2, "three asks of 7 from one owner: {hostile:?}");
+    // Another owner then gets what is left, 5 of 7, none of the hostile owner's.
+    let other = l.ask(net(1), 1, 7, t, share);
+    assert_eq!(other.len(), 5);
+    assert!(other.iter().all(|s| !hostile.contains(s)), "{other:?} {hostile:?}");
+    // Asking again, at every minute, never grows the hostile owner past its share.
+    for m in 1..5 {
+        let held: usize = (0..3).map(|i| l.ask(net(30 + i), 3, 7, Timestamp(m * MIN), share).len()).sum();
+        assert_eq!(held, 2);
+        assert_eq!(l.ask(net(1), 1, 7, Timestamp(m * MIN), share).len(), 5);
+    }
+    // With the default share, HOT_POOL - 1, no owner holds the whole pool.
+    let mut l = PoolLedger::default();
+    let total: usize = (0..3).map(|i| l.ask(net(40 + i), 9, 7, t, graftyard_git::owner_share).len()).sum();
+    assert_eq!(total, usize::from(HOT_POOL) - 1);
+}
+
+/// Another owner's step up, however large and however often, never takes a pool shard from a network that holds it,
+/// and the network keeps the same shards while it renews.
+#[test]
+fn another_owners_step_up_never_reduces_a_networks_held_shards() {
+    use graftyard_git::PoolLedger;
+    let share = |_| 6;
+    let mut l = PoolLedger::default();
+    let mono = l.ask(net(1), 1, 4, Timestamp(0), share);
+    assert_eq!(mono.len(), 4);
+    for m in 1..=10u64 {
+        let other = l.ask(net(2), 2, 7, Timestamp(m * MIN), share);
+        assert_eq!(other.len(), 3, "only the free slots");
+        assert!(other.iter().all(|s| !mono.contains(s)));
+        assert_eq!(l.ask(net(1), 1, 4, Timestamp(m * MIN + 1), share), mono, "the same slots, renewed");
+    }
+    // A step down releases slots, which the other owner may then take; a step up afterwards gets only free ones.
+    let two = l.ask(net(1), 1, 2, Timestamp(11 * MIN), share);
+    assert_eq!(two, mono[..2]);
+    assert_eq!(l.ask(net(2), 2, 7, Timestamp(11 * MIN), share).len(), 5);
+    assert_eq!(l.ask(net(1), 1, 4, Timestamp(11 * MIN), share), two, "nothing free: it keeps its 2");
+}
+
+/// A lease expires unless renewed within LOAD_STALE, so a network that cools frees its shards with no release call,
+/// and a first shard's renewal keeps a lease alive without growing it. A ledger that answered no call for a while
+/// (down, or unreachable) does not count that time against any lease.
+#[test]
+fn an_unrenewed_lease_expires_and_frees_its_shards() {
+    use graftyard_git::{LEDGER_GAP, LOAD_STALE, PoolLedger};
+    let share = |_| 6;
+    let stale = LOAD_STALE.as_millis() as u64;
+    let mut l = PoolLedger::default();
+    assert_eq!(l.ask(net(1), 1, 6, Timestamp(0), share).len(), 6);
+    // Another network renews each minute, so the ledger is in use; network 1 stops asking at minute 0.
+    let mut t = 0;
+    while t < stale {
+        t += MIN;
+        let got = l.ask(net(2), 2, 6, Timestamp(t), share).len();
+        assert_eq!(got, if t < stale { 1 } else { 6 }, "at {t} ms");
+    }
+    assert_eq!(l.renew(net(1), Timestamp(t)), Vec::<u16>::new(), "expired: nothing to renew");
+    // A first shard's renewals keep a lease alive with no leader ask, and never grow it.
+    let mut l = PoolLedger::default();
+    let held = l.ask(net(1), 1, 3, Timestamp(0), share);
+    for m in 1..=10 {
+        assert_eq!(l.renew(net(1), Timestamp(m * MIN)), held);
+        assert_eq!(l.ask(net(2), 2, 6, Timestamp(m * MIN), share).len(), 4);
+    }
+    // The ledger then answers nothing for an hour (LEDGER_GAP passed): no lease expires on the gap alone.
+    let back = 10 * MIN + 3_600_000;
+    assert!(3_600_000 > LEDGER_GAP.as_millis() as u64);
+    assert_eq!(l.renew(net(1), Timestamp(back)), held);
+    assert_eq!(l.ask(net(2), 2, 6, Timestamp(back), share).len(), 4);
+}
+
+/// The leader's step from two warm sites' grants: up to 1 plus the fewer either granted, never past what it asked;
+/// down only as `fanout` asked; and with either ledger unreachable, k stays where it was, up or down.
+#[test]
+fn an_unreachable_ledger_keeps_k() {
+    use graftyard_git::{granted_k, pool_ask};
+    assert_eq!(granted_k(3, 6, [Some(5), Some(2)]), 3, "the fewer grant bounds the step up");
+    assert_eq!(granted_k(3, 6, [Some(5), Some(4)]), 5);
+    assert_eq!(granted_k(3, 5, [Some(7), Some(7)]), 5, "never past the ask");
+    assert_eq!(granted_k(5, 6, [Some(1), Some(7)]), 5, "a short grant never steps down");
+    assert_eq!(granted_k(5, 4, [Some(3), Some(3)]), 4, "fanout's step down");
+    for (k, want) in [(1, 2), (4, 8), (4, 3), (6, 1)] {
+        for g in [[None, Some(7)], [Some(7), None], [None, None]] {
+            assert_eq!(granted_k(k, want, g), k, "k {k} want {want} {g:?}");
+        }
+    }
+    // A cool network never asks a ledger; a held k renews, and a step asks for its pool shards.
+    assert_eq!(pool_ask(1, None), None);
+    assert_eq!(pool_ask(1, Some(2)), Some(1));
+    assert_eq!(pool_ask(4, None), Some(3));
+    assert_eq!(pool_ask(4, Some(3)), Some(2));
+    assert_eq!(pool_ask(2, Some(1)), Some(0), "a step to 1 releases the leases");
 }
 
 /// B0-35 in memory: 500 open PRs, the base moving 10 times a minute, head pushes every 2 min per PR (4.17/s), each
@@ -401,34 +524,33 @@ fn the_leader_folds_minute_reports_into_one_k_for_both_warm_sites() {
     assert!(m * MIN >= quiet + FANOUT_DOWN_FOR.as_millis() as u64, "not before an hour: {m}");
 }
 
-/// The edge's validator: at k = 1 every push goes to the network's first shard under its M1 name; at k = 4 pushes
-/// spread over all four by push id, each push id always to the same one, the pool ones named `pool:<n>` from the hot
-/// pool, and no network's first shard changes with k.
+/// The first shard's validator: with no pool shards every push goes to the network's first shard under its M1 name;
+/// with three granted slots pushes spread over all four by push id, each push id always to the same one, the pool ones
+/// named `pool:<n>` for the granted slots, and no network's first shard changes with k.
 #[test]
 fn pushes_spread_over_the_k_shards_by_push_id() {
     use graftyard_git::{object_name, push_validator, shards_for};
     let (n, count) = (net(131171), 2u16);
     for p in 0..200u32 {
         let id = p.to_be_bytes();
-        let v = push_validator(n, S0, count, 1, &id);
+        let v = push_validator(n, S0, count, &[], &id);
         assert_eq!(object_name(n, v, count), "git#0#net:131171");
     }
-    let ks = shards_for(n, S0, count, 4);
+    let pool = [4u16, 0, 6];
+    let ks = shards_for(n, S0, count, &pool);
     let mut hits = BTreeMap::<u16, u32>::new();
     for p in 0..4000u32 {
         let id = p.to_be_bytes();
-        let v = push_validator(n, S0, count, 4, &id);
-        assert_eq!(v, push_validator(n, S0, count, 4, &id), "a push id always picks one shard");
+        let v = push_validator(n, S0, count, &pool, &id);
+        assert_eq!(v, push_validator(n, S0, count, &pool, &id), "a push id always picks one shard");
         assert!(ks.contains(&v));
         *hits.entry(v.shard).or_default() += 1;
     }
     assert_eq!(hits.len(), 4, "all four shards validate");
     assert!(hits.values().all(|h| (700..1300).contains(h)), "about even: {hits:?}");
-    assert_eq!(shards_for(n, S0, count, 4)[0], shards_for(n, S0, count, 1)[0]);
-    for s in &ks[1..] {
-        assert!(object_name(n, *s, count).starts_with("git#0#pool:"), "{s:?}");
-        assert!((count..count + HOT_POOL).contains(&s.shard));
-    }
+    assert_eq!(shards_for(n, S0, count, &pool)[0], shards_for(n, S0, count, &[])[0]);
+    let names: Vec<String> = ks[1..].iter().map(|s| object_name(n, *s, count)).collect();
+    assert_eq!(names, ["git#0#pool:6", "git#0#pool:2", "git#0#pool:8"], "slot p is shard count + p");
 }
 
 /// A site's report of its k shards: the most loaded one's CPU, not their sum or mean, and their queues summed.
