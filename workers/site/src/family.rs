@@ -721,11 +721,13 @@ impl Family for Repo {
             "/fanout" => Some(crate::fanout::report(host, body).await),
             // The operator's replay of a chain `PrSync` parked (`design/SHARED.md`, "Event fan-out", Isolation).
             "/prsync" if body["replay"] == json!(true) => Some(crate::prsync::replay(host).await),
-            // Test installs: commit k at once, with no load behind it, to drive fan-out without saturating a shard.
+            // Test installs: ask the warm sites' pool ledgers for k at once, with no load behind it, and commit what
+            // both granted, to drive fan-out without saturating a shard; `pool_down` (ms) first takes both ledgers down.
             #[cfg(feature = "test-faults")]
-            "/bench_seed" if body.get("fanout").is_some() => {
-                Some(crate::fanout::force(host, body["fanout"].as_u64().unwrap_or(1) as u8).await)
-            }
+            "/bench_seed" if body.get("fanout").is_some() => Some(
+                crate::fanout::force(host, body["fanout"].as_u64().unwrap_or(1) as u8, body["pool_down"].as_u64())
+                    .await,
+            ),
             "/snapshot_commit" => Some(crate::snap::commit(host, body).await),
             "/fold" => Some((|| {
                 let core = host.core.borrow();

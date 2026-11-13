@@ -58,17 +58,21 @@ fn network_key(network: NetworkId) -> Vec<u8> {
     format!("network:{}", network.0.0).into_bytes()
 }
 
-/// The shards that serve `network` on `site`. The first is its rendezvous shard among `0..count`; the other `k - 1`
-/// come from the site's hot pool, `count..count + HOT_POOL`, by rendezvous, so `count` never changes and no other
-/// network moves when k does. `k` is clamped to `1..=min(FANOUT_MAX, 1 + HOT_POOL)`.
-pub fn shards_for(network: NetworkId, site: SiteId, count: u16, k: u8) -> ArrayVec<GitCacheShard, 8> {
+/// The shards that serve `network` on `site`. The first is its rendezvous shard among `0..count`, so `count` never
+/// changes and no other network moves when k does. The others are the pool shards the site's `PoolLedger` granted the
+/// network: `pool` holds pool slots, `0..HOT_POOL`, and slot `p` is shard `count + p`. A granted slot belongs to one
+/// network, so two hot networks never share a pool shard. At most `FANOUT_MAX - 1` slots are used, and a slot outside
+/// the pool or named twice is skipped.
+pub fn shards_for(network: NetworkId, site: SiteId, count: u16, pool: &[u16]) -> ArrayVec<GitCacheShard, 8> {
     assert!(count > 0, "a site has at least one shard");
     let key = network_key(network);
-    let k = k.clamp(1, FANOUT_MAX.min(1 + HOT_POOL as u8)) as usize;
     let mut out = ArrayVec::new();
     out.push(GitCacheShard { site, shard: by_weight(&key, 0..count)[0] });
-    for s in by_weight(&key, count..count + HOT_POOL).into_iter().take(k - 1) {
-        out.push(GitCacheShard { site, shard: s });
+    for p in pool {
+        let s = GitCacheShard { site, shard: count + p };
+        if *p < HOT_POOL && out.len() < usize::from(FANOUT_MAX) && !out.contains(&s) {
+            out.push(s);
+        }
     }
     out
 }
@@ -193,6 +197,120 @@ pub fn pool_grants(asks: &[(NetworkId, u64, u8, u8)], share: impl Fn(u64) -> u16
     out
 }
 
+/// An owner's share of a site's pool: with no plan field, `HOT_POOL - 1`, so no owner holds the whole pool [guess,
+/// B0-34's monorepo share].
+pub fn owner_share(_owner: u64) -> u16 {
+    HOT_POOL - 1
+}
+
+/// A pool ledger with no call for longer than this was out of reach, not idle by choice: a hot network's leader and
+/// first shard each call it at least once a minute [guess, the report interval plus slack].
+pub const LEDGER_GAP: Duration = Duration::from_secs(90);
+
+/// One network's lease on a site's pool: the pool slots (`0..HOT_POOL`) it holds, its owner, and when its leader last
+/// asked, by the ledger's clock.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolLease {
+    pub network: NetworkId,
+    pub owner: u64,
+    pub slots: Vec<u16>,
+    pub at: Timestamp,
+}
+
+/// A site's pool ledger, kept in the SQLite of the site's first pool shard (shard `count`): every live lease and when
+/// the ledger last answered an ask. Pure: the shard object feeds it its clock and stores it after each ask.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoolLedger {
+    pub leases: Vec<PoolLease>,
+    pub seen: Option<Timestamp>,
+}
+
+impl PoolLedger {
+    /// Drops leases not renewed within LOAD_STALE of the ledger's own answering time. A gap of more than LEDGER_GAP
+    /// with no call (the ledger was down or unreachable, or no network was hot) does not count against any lease, so
+    /// an outage of the ledger never frees a network's slots; a network that cooled meanwhile frees them within
+    /// LOAD_STALE of calls after the gap instead.
+    fn settle(&mut self, now: Timestamp) {
+        let gap = self.seen.map_or(0, |s| now.0.saturating_sub(s.0));
+        if gap > LEDGER_GAP.as_millis() as u64 {
+            for l in &mut self.leases {
+                l.at = Timestamp((l.at.0 + gap).min(now.0));
+            }
+        }
+        self.leases.retain(|l| now.0 < l.at.0 + LOAD_STALE.as_millis() as u64);
+    }
+
+    /// `network`'s ask for `want` pool shards (its wanted k - 1) at `now`, which also renews its lease. Every other
+    /// live lease is kept whole, so another owner's ask never reduces it; `network` then keeps what it holds and grows
+    /// toward `want` within its owner's `share` and the free slots (`pool_grants`, with this network last). New slots
+    /// are the free ones in rendezvous order of the network. A network the ledger holds no lease for asks from zero,
+    /// whatever its leader holds, so one whose lease expired never takes slots back from others. `want` 0 releases
+    /// the lease. Returns the slots `network` now holds.
+    pub fn ask(
+        &mut self,
+        network: NetworkId,
+        owner: u64,
+        want: u8,
+        now: Timestamp,
+        share: impl Fn(u64) -> u16,
+    ) -> Vec<u16> {
+        self.settle(now);
+        self.seen = Some(now);
+        let mine = self.leases.iter().position(|l| l.network == network).map(|i| self.leases.remove(i));
+        let held = mine.as_ref().map_or(Vec::new(), |l| l.slots.clone());
+        let mut asks: Vec<(NetworkId, u64, u8, u8)> =
+            self.leases.iter().map(|l| (l.network, l.owner, l.slots.len() as u8, l.slots.len() as u8)).collect();
+        asks.push((network, owner, held.len() as u8, want.min(FANOUT_MAX - 1)));
+        let g = usize::from(*pool_grants(&asks, share).last().expect("one ask"));
+        let mut slots: Vec<u16> = held.into_iter().take(g).collect();
+        let taken: Vec<u16> =
+            self.leases.iter().flat_map(|l| l.slots.iter().copied()).chain(slots.iter().copied()).collect();
+        let free = by_weight(&network_key(network), 0..HOT_POOL).into_iter().filter(|s| !taken.contains(s));
+        slots.extend(free.take(g - slots.len()));
+        if !slots.is_empty() {
+            self.leases.push(PoolLease { network, owner, slots: slots.clone(), at: now });
+        }
+        slots
+    }
+
+    /// The network's first shard on this site, once a minute while it serves pushes: renews `network`'s lease as it
+    /// is, never growing it, and answers the slots it holds. So a network in use keeps its slots while its leader
+    /// cannot reach this ledger, and one nobody pushes to stops renewing and expires.
+    pub fn renew(&mut self, network: NetworkId, now: Timestamp) -> Vec<u16> {
+        self.settle(now);
+        self.seen = Some(now);
+        match self.leases.iter_mut().find(|l| l.network == network) {
+            Some(l) => {
+                l.at = now;
+                l.slots.clone()
+            }
+            None => Vec::new(),
+        }
+    }
+}
+
+/// The pool shards a network's leader asks both warm sites' ledgers for after a load report: the k `fanout` wants
+/// (`step`, else the committed `k`) less the first shard. `None` when k is 1 and stays 1, so a cool network never
+/// calls a ledger. An ask at the committed k renews the network's leases, and one below it releases slots.
+pub fn pool_ask(k: u8, step: Option<u8>) -> Option<u8> {
+    let want = step.unwrap_or(k).clamp(1, FANOUT_MAX);
+    (want > 1 || k > 1).then_some(want - 1)
+}
+
+/// The k a network's leader commits after asking both warm sites' ledgers for `want` - 1 pool shards. A step up goes
+/// to 1 plus the fewer pool shards either granted, so it never passes what both granted, and never below `k`. A step
+/// down is `fanout`'s alone: a grant short of `k` - 1 (a new warm site's ledger whose pool other networks already
+/// hold) keeps `k`, and that site serves with what it holds until slots free. `None` is a ledger that did not answer:
+/// then k stays, with no step up and no step down, so a failure never takes a network's shards away.
+pub fn granted_k(k: u8, want: u8, grants: [Option<u8>; 2]) -> u8 {
+    let (k, want) = (k.clamp(1, FANOUT_MAX), want.clamp(1, FANOUT_MAX));
+    match grants {
+        [Some(a), Some(b)] if want > k => (1 + a.min(b)).clamp(k, want),
+        [Some(_), Some(_)] => want,
+        _ => k,
+    }
+}
+
 /// A hot network's clone-cache entry goes to both warm sites' buckets: the bucket bindings, `BUCKET_<site>`, in the
 /// network's `warm_sites` order.
 pub fn clone_cache_buckets(network: NetworkId, home: SiteId, sites: &[SiteId], hot: bool) -> Vec<SiteId> {
@@ -214,17 +332,17 @@ pub fn validator(push: &[u8], caught_up: &[GitCacheShard]) -> Option<GitCacheSha
 }
 
 /// The shard of `network`'s k on `site` that validates push `push`: rendezvous on the push id among
-/// `shards_for(network, site, count, k)`, so one push always lands on the same shard and pushes spread evenly. The
+/// `shards_for(network, site, count, pool)`, so one push always lands on the same shard and pushes spread evenly. The
 /// caller falls back to the first shard when the chosen one is not caught up.
-pub fn push_validator(network: NetworkId, site: SiteId, count: u16, k: u8, push: &[u8]) -> GitCacheShard {
-    let ks = shards_for(network, site, count, k);
+pub fn push_validator(network: NetworkId, site: SiteId, count: u16, pool: &[u16], push: &[u8]) -> GitCacheShard {
+    let ks = shards_for(network, site, count, pool);
     validator(push, &ks).unwrap_or(ks[0])
 }
 
 /// The shard object a shard of `network` answers as. A network's first shard keeps the per-network name every site
 /// script and edge has used since M1 (`git#<site>#net:<repo>`), so no network moves when fan-out ships; a hot-pool
-/// shard is shared by the networks rendezvous gives it, `git#<site>#pool:<n>`, and keeps each one's repository and
-/// `IngestCursor` side by side.
+/// shard, `git#<site>#pool:<n>`, serves the one network the site's `PoolLedger` leased it to, and keeps the repository
+/// and `IngestCursor` of each network that held it before side by side.
 pub fn object_name(network: NetworkId, s: GitCacheShard, count: u16) -> String {
     if s.shard < count {
         format!("git#{}#net:{}", s.site.0, network.0.0)
