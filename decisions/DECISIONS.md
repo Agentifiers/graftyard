@@ -2144,6 +2144,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
+
+Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
+
+**Decision.** The shard streams `/validate`'s body to the container (or to the pool shard) unread; the edge names the pack's trailer in the URL so the shard picks the fan-out shard without the body. The container runs at most min(16, max(4, 2 x vCPU)) validates; a human's waits for a slot, ahead of every agent's, and an agent's waits at most 2 s, with at most 8 per slot queued, then gets 429 with `Retry-After`, which the edge answers `ng <ref> agent admission full, retry after <n>s`. The container raises `RLIMIT_NOFILE` at start.
+
+**Why.** B0-32's burst (512 validates of 256 KiB at 23:52:08Z) all failed on the first shard with "Promise will never complete" and its isolate's `exceededMemory`; B0-31's 1 MiB packs put the first shard over its 128 MB 725 times in one minute (1,713 of 2,500 agent pushes `unpacker error`); B0-34's container refused 480 agent pushes with "too many open files". A streamed body is held by the runtime, not the isolate's heap, and a slot cap bounds the files and processes one container opens.
+
+**Beat.** A per-network in-flight cap in the Durable Object alone: it bounds memory but not the container's files when k shards share a pool container. Refusing agent pushes at the edge on a guessed rate: the container knows its own queue.
+
+**Evidence.** `containers/git/server/gate_test.go` (human first, no slot leak on a deadline race, refusal at once past 8 per slot, a refused request reads no body); `a_validate_url_names_the_packs_trailer_and_its_class` and `a_busy_git_cache_refuses_in_the_admission_shape` in `workers/edge`; `tests/lm1mem/plant.py` round 6 plants.
+
+**Flip.** A hosted row where agents are refused `admission full` while the container's `/load` shows idle slots, or one where 16 validates at once exceed a `standard-2` container's memory.
+
 ### F65 follow-up: a read the members shed is 503, never the leader's; learners take reads first, 2026-11-11
 
 Round 3 of `lm1-memory` moved API tier reads and the read gate's rows to followers, but every row still failed: when both followers shed a read, `read_spread` sent it to the leader by `call_opt` and retried an `overloaded` leader up to four times, so the leader still took about a third of read invocations and stepped down on `CommitErrors` and `Confirm` (`tests/am1/results/lm1-memory.md`, section 10).
@@ -2199,6 +2213,8 @@ Branch `lm1-memory` found what took repository members past 128 MB at 500 agents
 **Why.** The lock, not git CPU, held one network to about 2 pushes/s, so raising k alone would have paid for pool shards to work around a serialization the container did not need. A validate's writes are private to its quarantine, so sharing the lock costs no correctness, and the race tests and `git fsck --strict` show none. With the lock gone, one `standard-2` shard validates about 9 times journey 9's offered rate, which keeps k = 1 consistent with the cost model. Picking by the pack's trailer gives every re-send the same shard.
 
 **Beat.** Raising k to spread validates across pool shards with the lock kept, which buys shards for queueing rather than CPU and would move the $0 line. A per-ref lock, which still serializes pushes to one ref's neighbours and adds lock bookkeeping that the quarantine already makes unnecessary. Picking only among caught-up shards, which needs every first shard to track each pool shard's cursor.
+
+**Amended 2026-11-12 (LM-1 round 7).** The shared lock is taken only after the request body is read, and the geometric repack takes no network lock (it keeps every object of the packs it rolls, and git re-reads a pack it lost), with evict and a fresh init waiting on the repack instead. Held across a streamed body or a repack, the lock let one waiting writer queue every later reader of the network behind it: hosted, the home shard's ls-refs walls rose from 2.7 to 12 s in a minute at 0.65 vCPU. The flip is unchanged.
 
 **Evidence.** `tests/am1/results/fanout.md` [measured]. Container bench (`tests/fanout/bench.py`, 30 KB thin packs): about 16 validates/s for one network before, at any concurrency; after, 38.7/s on 1 vCPU at 4 in flight, 39.0/s at 8, and 58.2/s on 4 vCPUs at 8; the writer path (validate, ingest, `POST /refs`) stays at 13.0/s before and after. Hosted before, about 2.7/s, bounded by each validate's own catch-up, which `CatchUps::fresh` now shares. Hosted on `graft-m2b`: 100 agents at k = 1 pushed 142 of 142 with commit p99 885 ms (933 ms before); 500 agents with k forced to 4 sent validates to pool shards at p50 456 ms (first shard p50 1.1 s), against a p90 of 17.7 s before, but pushed no more, because the read gate failed first. In-band stepping was not shown: 27 of 29 `/fanout` reports in B0-34 hit a follower that answered an error, and k stayed 1; `105c228` makes a follower answer `notLeader` but is not deployed. Race tests `TestConcurrentValidatesOfOneNetwork` and `TestFinishValidateOfTheSamePackAtOnce` under `-race`; 22 of 22 plants caught.
 
@@ -2562,6 +2578,18 @@ B0-30 ran on `graft-m1` with pushes off from simulated day 1.34 and failed on it
 
 **Flip.** None that restores a substitution without a new operator decision. The rerun's result decides B0-30.
 
+### Dependency reads overlap the entry in flight, 2026-11-12
+
+**Decision.** The leader may freeze the next entry's command set while one entry is in flight, once that entry has been in flight its mean round less one mean dependency read, and ask for the batch's dependency reads then (`crates/raft/src/member/leader.rs`, `cut_early`). The batch is decided only after the entry in flight committed and applied, on that fold, with exactly the chains `deps()` names on it: a chain the applied entry newly names is read then, and a read chain it no longer names is dropped (`decide_held`). A command admitted after the read was asked waits for the entry after. Dependency ids are unique per member, not per leadership, a transfer drops the held reads, and id blocks and recorded entries still go first. `Out::deps_used` names the entry each read decided, for the host's `deps_log`. DESIGN's write path now says a revocation or suspension "binds every command whose entry's read arrived after it" instead of "every command decided after it".
+
+**Why.** B0-29 needs leader commit p99 at most 600 ms at 500 agents, and the last hosted split had commit p99 930 to 1,163 ms with `queueMs` p99 599 to 872, `depsMs` 239 to 432, and `roundMs` 304 to 356 (leader `/stats`). With the read started only after the entry in flight committed, a command waited one round, its entry's read, and its own round. Overlapping the read with the round in flight takes min(round, read) off that path while keeping one entry in flight and `decide` on the fold plus the entry's earlier commands and the reads made once for it through `fresh`.
+
+**Beat.** Caching dependency folds across entries, which the write path's "read once per entry through `fresh`" forbids and which would break BF-2, BF-15, and BF-27. Cutting the next batch as soon as the entry in flight is appended, which holds out every command admitted during the round and gives back the wait it saves [inference]. Deciding the batch when its reads arrive, on the fold before the entry in flight applied, which breaks "one entry in flight" (the planted bug fails four of the new tests).
+
+**Evidence.** `crates/raft/tests/deps.rs`: seven tests, each failing on one planted bug (deciding when the reads arrive, passing stale extra reads, no re-read for a changed chain, ids reset per leadership, a post-cut command joining the early batch, a transfer keeping its reads, two entries in flight). The simulator now sends half its puts with a dependency the host answers 0 to 400 ms late, checks one entry in flight per leader and that every command an entry decided on reads was admitted before those reads were asked, and the 2,000-seed sweep and Porcupine pass on its histories [measured, simulator]. The latency gain on Cloudflare is unmeasured: the hosted B0-29 rerun decides it.
+
+**Flip.** A hosted B0-29 rerun where commit p99 does not fall by about min(round, read) p99, or where two reads in flight per group drive the `Authz` leader's dep read p99 up by more than it saves, which would return to reading after commit; or a revocation that must bind commands admitted before it within less than one round, which the narrowed wording no longer promises.
+
 ### A metadata split runs in band on the parent leader, keeps every commit on the parent, and reads the child narrowly (2026-11-12)
 
 This supersedes "A metadata split commits on the parent, and the parent keeps the feed" where the two differ. Branch `b030-split` builds it for B0-30's rerun (`build/BUILD-PLAN.md`, M7-WP4).
@@ -2635,3 +2663,39 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 **Evidence.** `tests/m0/results/m0-wp12.md`, L0-12 feed.
 
 **Flip.** Agents that act on an overlap within 3 s, where a 1 s batch costs them conflicts.
+
+#### LM-1 round 7: a member's ring starts at its first poll, and nothing is kept for it before
+
+**Decision.** A member keeps no entry for its activity-feed ring until a poll reads the owner's `Authz`. That poll starts a ring that never served at the member's applied entry with the leases live there (`Ring::start`, as `Ring::skip` does for an install), so a cursor from before gets 410; a ring that already serves is left as it is. `lease::rows` decodes the rows its scan returns instead of reading each again.
+
+**Why.** Two costs of the old waiting list, both measured. Fed one by one at the first poll, each waiting entry rebuilt the live-lease set from SQL in one synchronous turn: on L0-12 (`repo:131273`, 08:00:38Z on 2026-11-12) each of the 8 learners spent 15 to 46 s of CPU on its first poll, with about 1,070 entries and 500 leases waiting, and the voters sharing their isolates then answered "Requests queued for too long" at 13 to 36% CPU, and `STEP_DOWN` moved the leader at 08:01:39. And the list held a clone of every applied entry's events, inline packs included, up to FEED_RING's 10,000 entries, on every member no poll reached: the leader and the followers. At 500 agents (`repo:131276`, 180 s) the leader's wasm memory grew from 2 to 67 MB and a follower's from 2 to 40 MB, in step with the 4.2 agent pushes a second of 90 KB [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Feeding the backlog in slices with an await between them, which keeps both costs and only spreads the CPU. Bounding the list by bytes, which still holds packs on members that never serve.
+
+**Evidence.** `a_first_poll_starts_the_ring_at_the_applied_entry_and_a_serving_ring_keeps_its_events` (`crates/git/tests/lease_gates.rs`); plants 66 to 68 in `tests/lm1mem/plant.py`.
+
+**Flip.** A client that must see the events of entries applied before a member's first poll, which needs that member to have read the owner's `Authz` at join.
+
+#### LM-1 round 7: a REST merge reads only its rows, as `mergePullRequest` does
+
+**Decision.** `PUT /pulls/{n}/merge` reads the rows its plan needs by pull request number (`{"rows": {"mergeN": n}}`, `TierRows::merge_rows` with `MergeOf::Number`): the access rows, the pull request's `issue`, `pull`, and `pull_head`, and its base's `ref`. A follower or learner serves it by read-index once its metadata tier is loaded, as it serves `mergePullRequest`'s `{"merge": id}`. A member built before `mergeN` answers it with both whole tiers.
+
+**Why.** BM-2 cut 4 narrowed only the GraphQL merge; the REST route kept reading both whole tiers. At journey 9 that is about a 1 MB packed dump parsed at the edge on every merge, and at 500 agents (`repo:131276`, 180 s) REST merges took 1.2 to 4.4 s at the edge (p99 4.4 s, against B0-29's 2 s), while the shard's merge plan took 68 to 1,232 ms [measured, `tests/am1/results/lm1-memory.md`, round 7].
+
+**Beat.** Leaving the REST route on the whole tiers until `narrow-reads` serves every route narrowly, which keeps B0-29's merge line failing until then.
+
+**Evidence.** `a_merge_plans_from_its_rows_as_from_both_tiers` (`crates/api/tests/surfaces.rs`) and `a_follower_serves_only_the_designs_reads` (`workers/site/src/fanout.rs`); plants 69 to 71 in `tests/lm1mem/plant.py`.
+
+**Flip.** A REST merge reply that renders rows beyond these, which would need them added to `merge_rows`.
+
+#### LM-1 round 7: a merge waits for a catch-up in flight only after it misses a commit
+
+**Decision.** `merge_then_catch_up` merges first, waits for a catch-up in flight only when the container answers that a commit is missing, merges again, and catches up itself only if that misses too. It amends the BM-2 rule that the first merge plan awaits the catch-ups in flight ("BM-2 latency: repack the shards…", and `bm2-repack`): the wait was meant for a new leadership's `warm` catch-up, which the merge still waits for when it lacks a commit.
+
+**Why.** Under journey 9 a validate's catch-up runs on the shard nearly all the time, so every merge waited for one first. At 500 agents (`repo:131278`, 180 s, after the REST merge read only its rows) the shard's merge waited 64 to 2,151 ms of its 175 to 2,750 ms, for commits it already held (no merge caught up), and REST merge p99 was 6.2 s against B0-29's 2 s [measured, `tests/am1/results/lm1-memory.md`, round 7, the `mergeSteps` shard timings].
+
+**Beat.** Keeping the wait and making catch-ups shorter, which leaves every merge behind whatever catch-up is running.
+
+**Evidence.** `a_merge_waits_for_the_catch_up_in_flight_instead_of_racing_it` (`crates/git/src/merge_cache.rs`): a merge whose commits are present answers in one poll while a catch-up runs, and one that misses still waits and does not catch up a second time; plants 72 and 73 in `tests/lm1mem/plant.py`.
+
+**Flip.** Merges that miss on their first try often enough that the extra container call shows in merge latency.

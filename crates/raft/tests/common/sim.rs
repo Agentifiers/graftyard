@@ -7,7 +7,10 @@
 //! ends, 2 to 22 ms after the input (or a gray site's slow confirm). The leader's AppendEntries (`Out::early`) leave
 //! at once, and half the mid-input crashes land after they left, so a follower may hold an entry its leader lost.
 //! The clock advances in steps of 1 to 50 ms. Clients are edges: they mint one request id per operation and re-send it after `NotLeader`,
-//! a timeout, or a lost member, and hedge only with `campaign` (the `suspect` report) to a member.
+//! a timeout, or a lost member, and hedge only with `campaign` (the `suspect` report) to a member. Half the puts
+//! depend on another chain (`KvCmd::PutDep`), whose read the host answers 0 to 400 ms after the member asks, sometimes
+//! twice; a put is never refused for the wrong dependency set, and every command an entry decided on reads was
+//! admitted no later than the first of those reads was asked for.
 //!
 //! After every step `check` asserts the invariants.
 
@@ -23,7 +26,7 @@ use graftyard_raft::{
 use graftyard_types::{ChainId, DbId, PlacementName, PlacementRecord, Region, ReleaseId, RepoId, SiteId, Timestamp};
 
 use super::history::{Ack, HOp, HOut, Row};
-use super::kv::{KV_FORMAT, Kv, KvCmd, KvEvent};
+use super::kv::{KV_FORMAT, Kv, KvCmd, KvErr, KvEvent};
 
 pub const SITES: [SiteId; 3] = [SiteId(0), SiteId(1), SiteId(2)];
 pub const CHAIN: ChainId = ChainId::Repo(RepoId(DbId(42)));
@@ -341,6 +344,11 @@ pub struct Stats {
     /// Checks that found a member with entries compacted out of memory, and `Out::catchup` reads served.
     pub compacted: u64,
     pub catchups: u64,
+    /// `DepsWanted` asked while the asking leader had an entry of its term in flight (an early cut), entries decided
+    /// on reads, and those whose batch read again after the entry in flight applied (a re-read).
+    pub early_asks: u64,
+    pub deps_entries: u64,
+    pub rereads: u64,
     /// Gets a follower answered by read-index, and those it shed (503, no report).
     pub spread_reads: u64,
     pub shed: u64,
@@ -404,6 +412,12 @@ pub struct Sim {
     pub confirm_log: Vec<(Timestamp, SiteId, u64, bool)>,
     /// `Out::catchup` requests not yet served, with the generation of the member that asked.
     catchups: Vec<(SiteId, u64, graftyard_raft::Catchup)>,
+    /// Dependency reads the host owes: when it answers, the site and generation that asked, and the ask.
+    dep_reads: Vec<(Timestamp, SiteId, u64, graftyard_raft::DepsWanted)>,
+    /// When each `DepsWanted` was asked for, by (site, id).
+    deps_asked: BTreeMap<(SiteId, u64), Timestamp>,
+    /// When each request was first admitted, by (site, ticket term, ticket boot, request id).
+    admitted_at: BTreeMap<(SiteId, Term, u64, RequestId), Timestamp>,
     /// Per site, the host's own record of its storage confirms: (the disk's last index once a confirm that appended
     /// ended, the site's clock then), for `Ack::self_synced_at`. Reset on restart.
     synced: [Vec<(u64, u64)>; 3],
@@ -464,6 +478,9 @@ impl Sim {
             record_confirms: false,
             confirm_log: Vec::new(),
             catchups: Vec::new(),
+            dep_reads: Vec::new(),
+            deps_asked: BTreeMap::new(),
+            admitted_at: BTreeMap::new(),
             synced: [vec![(0, 0)], vec![(0, 0)], vec![(0, 0)]],
             edge: Edge::default(),
             reported: BTreeMap::new(),
@@ -653,8 +670,64 @@ impl Sim {
         }
         let g = self.generation[i];
         self.catchups.extend(std::mem::take(&mut out.catchup).into_iter().map(|c| (s, g, c)));
+        self.deps_out(s, &mut out);
         let res = self.deliver_out(s, out);
         Some((reply, res))
+    }
+
+    /// The host's side of dependency reads: each ask is answered later, after the input's output gate, and each entry
+    /// decided on reads is checked to hold only commands admitted no later than the first of those reads was asked.
+    fn deps_out(&mut self, s: SiteId, out: &mut Out<KvCmd>) {
+        let i = s.0 as usize;
+        for want in std::mem::take(&mut out.deps) {
+            self.deps_asked.insert((s, want.id), self.now);
+            let m = self.member(s).expect("up");
+            let flight = m.last_index() > m.state().commit
+                && m.entry_at(m.last_index()).is_some_and(|e| e.term == m.term() && !matches!(e.body, EntryBody::Noop));
+            self.stats.early_asks += u64::from(flight);
+            let copies = if self.rng.chance(50) { 2 } else { 1 };
+            for _ in 0..copies {
+                let at = Timestamp(self.now.max(self.gate[i]).0 + self.rng.below(400));
+                self.dep_reads.push((at, s, self.generation[i], want.clone()));
+            }
+        }
+        let seed = self.seed;
+        for used in std::mem::take(&mut out.deps_used) {
+            self.stats.deps_entries += 1;
+            self.stats.rereads += u64::from(used.ids.len() > 1);
+            let asked = used
+                .ids
+                .iter()
+                .map(|id| *self.deps_asked.get(&(s, *id)).unwrap_or_else(|| panic!("seed {seed}: {id} never asked")))
+                .min()
+                .expect("an entry decided on reads names one");
+            let m = self.member(s).expect("up");
+            let e = m.entry_at(used.index).expect("the decided entry is held");
+            for (rid, _) in &e.requests {
+                let at = self.admitted_at.get(&(s, e.term, m.boot(), *rid)).copied();
+                assert!(
+                    at.is_some_and(|t| t <= asked),
+                    "seed {seed}: {s:?} entry {:?} decided {rid:?}, admitted at {at:?}, on reads asked at {asked:?}",
+                    used.index
+                );
+            }
+        }
+    }
+
+    /// Answers the dependency reads due now with each chain's fold, which no test revokes.
+    fn answer_deps(&mut self) {
+        let now = self.now;
+        let (due, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.dep_reads).into_iter().partition(|d| d.0 <= now);
+        self.dep_reads = keep;
+        for (_, s, g, want) in due {
+            if g != self.generation[s.0 as usize] {
+                continue;
+            }
+            let deps: Vec<_> = want.chains.iter().map(|c| (*c, Kv::default())).collect();
+            if let Some((_, res)) = self.call(s, |m, t| m.deps_read(t, want.id, deps)) {
+                self.handle(s, res);
+            }
+        }
     }
 
     /// A follower behind the window: the host reads the entries from its disk. Entries whose confirm is still
@@ -717,6 +790,7 @@ impl Sim {
         self.generation[s.0 as usize] += 1;
         self.gate[s.0 as usize] = Timestamp(0);
         self.pending_calls.retain(|_, pc| pc.caller != s);
+        self.dep_reads.retain(|d| d.1 != s);
         let now = self.now;
         self.flights.retain(|f| f.env.from != s || f.left <= now);
         // A confirm that ended by now is durable even if `host_events` has not reported it yet.
@@ -878,6 +952,7 @@ impl Sim {
             }
         }
         self.host_events();
+        self.answer_deps();
         // Messages due now, in a seeded order.
         let mut due = Vec::new();
         let mut i = 0;
@@ -1290,6 +1365,8 @@ impl Sim {
                 let Some((r, res)) = self.call(to, |m, now| m.commit(now, rid, cmd)) else { return };
                 match r {
                     Ok(Admitted { ticket, .. }) => {
+                        let now = self.now;
+                        self.admitted_at.entry((to, ticket.term, ticket.boot, rid)).or_insert(now);
                         let o = self.ops[c].as_mut().expect("op");
                         o.wait = Some(Wait::Ticket(ticket));
                         o.term = o.term.max(ticket.term);
@@ -1488,8 +1565,9 @@ impl Sim {
             self.ack_evidence(s, a);
             self.check_committed_at(s, a.index.0, "Acked");
         }
-        if let Err(CommitError::Refused { index, .. }) = &result {
+        if let Err(CommitError::Refused { index, err }) = &result {
             self.check_committed_at(s, index.0, "refusal");
+            assert_eq!(*err, KvErr::Stale, "seed {}: a put decided without exactly its dependency", self.seed);
         }
         if std::env::var("RAFT_TRACE").is_ok() {
             eprintln!("{} ticket {ticket:?} at {s:?}: {:?}", self.now.0, result.as_ref().map(|a| a.index));
@@ -1668,6 +1746,15 @@ impl Sim {
             }
             let commit = m.state().commit.0;
             assert!(commit <= m.last_index().0, "seed {seed}: {s:?} commit {commit} past its log");
+            if m.role() == Role::Leader {
+                // One entry in flight: past its `Noop`s, a leader holds at most one uncommitted entry of its term.
+                let flight = m
+                    .log()
+                    .iter()
+                    .filter(|e| e.index.0 > commit && e.term == m.term() && !matches!(e.body, EntryBody::Noop))
+                    .count();
+                assert!(flight <= 1, "seed {seed}: {s:?} has {flight} entries in flight");
+            }
             self.stats.max_commit = self.stats.max_commit.max(commit);
             let base = m.log_base();
             assert!(base.index <= m.state().applied, "seed {seed}: {s:?} compacted past applied");
@@ -1779,6 +1866,10 @@ fn check_chain(seed: u64, s: SiteId, m: &Member<KvCmd>, from: u64) {
 pub fn command(op: &HOp) -> Option<KvCmd> {
     match op {
         HOp::Get { .. } => None,
+        // Half the puts depend on another chain; the value's counter picks which, so a re-send sends the same command.
+        HOp::Put { key, value } if value.ends_with(['1', '3', '5', '7', '9']) => {
+            Some(KvCmd::PutDep { key: key.clone(), value: value.clone() })
+        }
         HOp::Put { key, value } => Some(KvCmd::Put { key: key.clone(), value: value.clone() }),
         HOp::Cas { key, expect, value } => {
             Some(KvCmd::Cas { key: key.clone(), expect: expect.clone(), value: value.clone() })

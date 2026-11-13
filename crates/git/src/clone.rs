@@ -118,6 +118,13 @@ impl CloneKey {
         Some(CloneKey { network, wants: Digest(h.finalize().into()), depth, filter, caps, tags })
     }
 
+    /// Whether `of` reads `tags` for this request: only a cacheable fetch that asks for `include-tag`. Every other
+    /// request, an `ls-refs` above all, needs no tag read, which went to the group's leader 33 times a second on LM-1's
+    /// rows (round 7) and was thrown away.
+    pub fn needs_tags(network: NetworkId, req: &V2Request) -> bool {
+        CloneKey::of(network, req, Digest([0; 32])).is_some_and(|k| k.tags.is_some())
+    }
+
     /// SHA-256 of the key's fields, which `R2Key::CloneCache` names.
     pub fn digest(&self) -> Digest {
         let mut h = Sha256::new();
@@ -208,6 +215,18 @@ mod tests {
         let mut ls = fetch(&[]);
         ls.command = "ls-refs".into();
         assert_eq!(CloneKey::of(NET, &ls, Digest([0; 32])), None);
+    }
+
+    #[test]
+    fn only_a_cacheable_include_tag_fetch_needs_the_tags() {
+        let w = want('a');
+        assert!(CloneKey::needs_tags(NET, &fetch(&[w.as_str(), "include-tag", "done"])));
+        assert!(!CloneKey::needs_tags(NET, &fetch(&[w.as_str(), "done"])), "no include-tag");
+        let have = format!("have {}", "c".repeat(40));
+        assert!(!CloneKey::needs_tags(NET, &fetch(&[w.as_str(), "include-tag", have.as_str(), "done"])), "uncacheable");
+        let mut ls = fetch(&["include-tag"]);
+        ls.command = "ls-refs".into();
+        assert!(!CloneKey::needs_tags(NET, &ls), "ls-refs");
     }
 
     #[test]

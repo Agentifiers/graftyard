@@ -68,6 +68,9 @@ struct Totals {
     records_committed: u64,
     compacted: u64,
     catchups: u64,
+    early_asks: u64,
+    deps_entries: u64,
+    rereads: u64,
     /// The liveness monitor's longest stretch (F67): ms, seed, and when it began.
     stuck: (u64, u64, u64),
 }
@@ -111,6 +114,9 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         records_committed: 0,
         compacted: 0,
         catchups: 0,
+        early_asks: 0,
+        deps_entries: 0,
+        rereads: 0,
         stuck: (0, 0, 0),
     };
     // The gray half of the long sweep writes next to the HARSH half's file, as `<path>.gray`.
@@ -175,6 +181,9 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.records_committed += s.records_committed;
         t.compacted += s.compacted;
         t.catchups += s.catchups;
+        t.early_asks += s.early_asks;
+        t.deps_entries += s.deps_entries;
+        t.rereads += s.rereads;
         // BF-14: a missed receipt is hedged only by `suspect`; no command reaches a second member.
         assert_eq!(s.forwarded, 0, "seed {seed}: a command was forwarded");
     }
@@ -186,7 +195,8 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
          partitions {} hedges {} messages {} dropped {} duplicated {} leaders {} | missed receipts {} suspect {} \
          forwarded {} call failures {} step-downs {} holds {} gray faults {} write failures {} | leader writes lost \
          after their AppendEntries left {} (a follower stored one the leader then lacked: {}) | id blocks recorded {} \
-         committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {}",
+         committed {} | recorded entries {} committed {} | compacted members seen {} catch-up reads {} | entries \
+         decided on reads {} early asks {} re-reads {}",
         t.seeds,
         t.steps,
         t.ops,
@@ -218,7 +228,10 @@ fn sweep_with(seeds: std::ops::Range<u64>, steps: u64, mix: impl Fn(u64) -> (Fau
         t.records,
         t.records_committed,
         t.compacted,
-        t.catchups
+        t.catchups,
+        t.deps_entries,
+        t.early_asks,
+        t.rereads
     );
     eprintln!(
         "longest stretch with a healthy quorum, requests waiting, and none completing (ms, seed, from): {:?}",
@@ -248,6 +261,8 @@ fn harsh_network_keeps_every_invariant() {
     assert!(t.records_committed > SEEDS, "only {} recorded entries committed", t.records_committed);
     // Members compact their in-memory log, and followers behind the window are caught up from storage.
     assert!(t.compacted > 0 && t.catchups > SEEDS, "compacted {} catch-ups {}", t.compacted, t.catchups);
+    // Dependency reads overlap the entry in flight, and a recorded entry moving the dependency forces a re-read.
+    assert!(t.early_asks > SEEDS && t.rereads > 0, "early asks {} re-reads {}", t.early_asks, t.rereads);
 }
 
 /// HARSH plus gray faults on one site at a time: calls failing 30%, storage confirms 30% at 1 s, or writes failing 30%.
