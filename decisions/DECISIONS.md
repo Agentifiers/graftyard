@@ -2691,6 +2691,18 @@ This supersedes "A metadata split commits on the parent, and the parent keeps th
 
 **Flip.** A hosted kill where in-flight pushes still wait past the edge's waits with every site warm, which would mean the retry belongs in the edge; a repository whose disk grows past `DISK_USE_PCT` from `--window=0`'s lost deltas; or a Workers runtime that charges an object's calls to the request that started them, which would let the promotion run in the member again.
 
+### A shard's repack searches deltas, waits for no lock but fsck waits for it, and a busy member serves 1 MB local pages (2026-11-13)
+
+**Decision.** `runRepack` runs `git repack -d --geometric=2` with git's default delta window, and the split commit-graph after it stays. `/fsck` waits for a running repack, as evict does. A member's local `/entries` page is at most `ENTRIES_BUSY_PAGE_BYTES` (1 MB) while `ENTRIES_BUSY_READS` (1) or more other reads are in flight, and up to `ENTRIES_LOCAL_PAGE_BYTES_MAX` (4 MB) on an idle member.
+
+**Why.** `--window=0` was added while a repack held the network's lock, and its 1 to 5 s delta search queued every validate. LM-1 round 7 took the repack out of the lock, so the search no longer delays anything, and a local B0-29-like A/B on the merged container showed the same CPU and validate p99 either way. Meanwhile `--window=0` kept every pushed version of a file whole: shards held 2.07 times the pushed bytes of real history and 13 times journey 9's. With the repack out of the lock, it could delete the packs it rolled up under a running fsck, and site c's fsck answered `ok: false` just after a rehydrate's repack. A 4 MB page built beside a busy member's other reads put site b's member near its 128 MB, and it trapped in F47's shape.
+
+**Beat.** Keeping `--window=0` with a nightly full repack, which still grows disk between nights and costs a second repack path. Taking the network's write lock for fsck, which would block every validate and fetch for the fsck's seconds. A page cap from the member's wasm memory, which only grows and so would cap every page after the first spike.
+
+**Evidence.** `tests/am1/results/hot-shards-3.md` ("`--window=0` disk growth", "Site b's trap", the j9w fsck) and `tests/am1/results/hot-shards-4.md`. `TestRefsRepacksPastRepackAt` (deltas across packs), `TestRepackHoldsNoNetworkLock` (fsck waits, then answers ok), `only_a_local_entries_read_gets_a_larger_page`, and plants 56 to 58.
+
+**Flip.** A hosted run where the default-window repack's CPU, which is derived and outside `NetworkLoad`, starves validates on a standard-4; a member trap at a 1 MB page under load; or 1 MB pages that make a busy shard's catch-up fall behind journey 9's push rate.
+
 ### A shard ingests a run of inline packs in one call, as one `index-pack` split on failure (2026-11-13)
 
 **Decision.** A catch-up's and a rehydrate's inline packs go to the shard's container in one `POST /ingest-batch` per run of up to `INGEST_BATCH_BYTES` (4 MB, `crates/git/src/catchup.rs`), one answer per pack, `done` or `later`. The container concatenates the run's packs not already ingested into one pack and indexes it with one `index-pack --strict --fix-thin`. Each pack's objects are recorded under its own SHA-256 for `/promote`, found by their offsets in the joined pack. When the joined pack fails, the run is split in halves down to one pack, which is ingested as `/ingest` ingests it, so two packs that carry the same object (which `--strict` refuses in one pack) and a pack whose base is missing each end up on their own. A stored pack still streams alone from its bucket. A container whose image has no `/ingest-batch` (404) gets one `/ingest` a pack.
