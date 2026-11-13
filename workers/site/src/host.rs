@@ -444,6 +444,10 @@ const PEER_MSG_MAX: usize = 200;
 pub struct PeerCalls {
     /// Answered within CALL_DEADLINE.
     pub ok: u32,
+    /// Every call to this peer that ended, and their encoded bytes: a leader's egress per member (narrow-reads-3,
+    /// learners pipelined).
+    pub sent: u32,
+    pub sent_bytes: u64,
     pub failed: BTreeMap<&'static str, u32>,
     pub late: u32,
     pub late_ms_max: u32,
@@ -2208,6 +2212,8 @@ impl<F: Family> Host<F> {
             }
         }
         let p = s.peers.entry(c.to).or_default();
+        p.sent += 1;
+        p.sent_bytes += c.bytes as u64;
         let tag = match &end {
             End::Ok => {
                 p.ok += 1;
