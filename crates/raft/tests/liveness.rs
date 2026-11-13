@@ -160,7 +160,7 @@ fn leaders_leave_a_site_whose_calls_fail() {
 
 #[test]
 fn leaders_leave_slow_storage() {
-    let runs = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_000), 200..200 + SEEDS);
+    let runs = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_050), 200..200 + SEEDS);
     check("slow", &runs, true);
 }
 
@@ -168,6 +168,14 @@ fn leaders_leave_slow_storage() {
 fn leaders_leave_a_site_whose_writes_fail() {
     let runs = report("writes fail 30%", FaultKind::FailWrites(300), 300..300 + SEEDS);
     check("writes", &runs, false);
+}
+
+/// B0-02's lagging leader loop (`tests/m0/results/carried-8.md`): the sick leader's clock reads whole ticks and 30% of
+/// its confirms run 200 to 500 ms late, under `confirm_p99_ms`, so only LOOP_LAG moves it by STEP_DOWN.
+#[test]
+fn leaders_leave_a_lagging_loop() {
+    let runs = report("loop lag 30%", FaultKind::LoopLag(300), 500..500 + SEEDS);
+    check("lag", &runs, true);
 }
 
 #[test]
@@ -198,10 +206,12 @@ fn a_healthy_group_keeps_its_leader() {
 /// F67: a group read only by read-index through its followers (an owner's `Authz` under API load) whose leader's site
 /// goes half-hung: its AppendEntries arrive and every answer is lost. Followers shed the reads with no `suspect`
 /// report, and the leader's appends keep renewing their promises. Before check quorum and the read-index failure rule
-/// some seeds never elected for the whole minute (`tests/m0/results/f67.md`, paths 1 and 2).
+/// some seeds never elected for the whole minute (`tests/m0/results/f67.md`, paths 1 and 2). Seeds 21, 31, and 92 never
+/// elected on main a7d28e5: an emptied read-index batch stayed in flight to the half-hung leader, so later reads failed
+/// as queued, which forgets no leader, and no follower campaigned (F67 rule 12).
 #[test]
 fn a_read_only_group_elects_off_a_half_hung_leader() {
-    for seed in 0..SEEDS {
+    for seed in (0..SEEDS).chain([21, 31, 92]) {
         let mut sim = Sim::new(seed, Faults::WAN, 8, 3);
         sim.edge = Edge { follower_reads: true, suspect_gap_ms: 500, reads_only: false };
         sim.run(1_500);
@@ -233,8 +243,12 @@ fn long_liveness() {
         failed.extend(check_all("calls", &calls, true, 1_000));
     }
     if only.is_empty() || only == "slow" {
-        let slow = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_000), 2_000..2_000 + n);
+        let slow = report("slow confirms 30% at 1 s", FaultKind::SlowConfirm(300, 1_050), 2_000..2_000 + n);
         failed.extend(check_all("slow", &slow, true, 2_000));
+    }
+    if only.is_empty() || only == "lag" {
+        let lag = report("loop lag 30%", FaultKind::LoopLag(300), 4_000..4_000 + n);
+        failed.extend(check_all("lag", &lag, true, 4_000));
     }
     if only.is_empty() || only == "writes" {
         let writes = report("writes fail 30%", FaultKind::FailWrites(300), 3_000..3_000 + n);

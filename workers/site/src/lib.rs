@@ -10,6 +10,7 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
+mod activity;
 mod archive;
 mod audit;
 #[cfg(feature = "test-faults")]
@@ -21,7 +22,9 @@ mod fanout;
 mod faults;
 mod feed;
 mod fold_audit;
+mod hookseq;
 mod host;
+mod inbox;
 mod load;
 mod lookup;
 mod member;
@@ -31,14 +34,18 @@ mod prsync;
 mod register;
 mod registry;
 mod release;
+mod search;
 mod shard;
 mod snap;
 mod split;
 mod sweep;
 mod tier;
 
+pub use hookseq::HookSequencer;
+pub use inbox::Inbox;
 pub use member::Member;
 pub use registry::Registry;
+pub use search::SearchShard;
 pub use shard::GitShard;
 
 /// The site this script is and the install's site table, from the script's own version. The system chains' records
@@ -113,6 +120,9 @@ impl SiteEnv {
 /// refused.
 #[event(fetch)]
 async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
+    if site_down(&env) {
+        return Response::error("site down", 503);
+    }
     if req.method() == Method::Post && req.path() == prsync::FIRST_PATH {
         return prsync::first_handled(req, env, &ctx).await;
     }
@@ -126,6 +136,9 @@ async fn fetch(req: Request, env: Env, ctx: Context) -> Result<Response> {
 /// script's logs.
 #[event(scheduled)]
 async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
+    if site_down(&env) {
+        return;
+    }
     match sweep::run(&env).await {
         Ok(r) => console_log!("sweep {r}"),
         Err(e) => console_error!("sweep failed: {e}"),
@@ -140,7 +153,19 @@ async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
 /// `crate::merge_queue`). A `MergeQueue` message carries `mergeQueue`; every other is a `PrSync` batch.
 #[event(queue)]
 async fn queue(batch: MessageBatch<serde_json::Value>, env: Env, _ctx: Context) -> Result<()> {
+    if site_down(&env) {
+        batch.retry_all();
+        return Ok(());
+    }
     prsync::consume(batch, env).await
+}
+
+/// `GRAFTYARD_SITE_DOWN=1`: the operator's whole-site stop. Every class of this script answers 503 to every call and
+/// does no alarm work, and the script's own fetch, queue, and cron handlers do nothing, as if the site were lost; the
+/// objects keep their storage. It is set and cleared only by a site day (`workers/site/deploy.mjs --vars`), the
+/// production deploy path, so no request path reaches it. BF-58 kills the site holding a `HookSequencer` with it.
+pub(crate) fn site_down(env: &Env) -> bool {
+    env.var("GRAFTYARD_SITE_DOWN").is_ok_and(|v| v.to_string() == "1")
 }
 
 pub(crate) fn now_ms() -> u64 {

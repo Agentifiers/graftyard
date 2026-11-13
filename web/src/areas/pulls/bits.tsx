@@ -133,24 +133,30 @@ export function PickerSection<T>({
   onToggle,
   children,
   disabled,
+  failed,
+  onOpenChange,
 }: {
   title: string;
   label: string;
-  items: T[];
+  // Undefined while the candidates load; the caller loads them when the picker opens.
+  items: T[] | undefined;
   keyOf: (t: T) => string;
   render: (t: T) => ReactNode;
   selected: (t: T) => boolean;
   onToggle: (t: T, on: boolean) => void;
   children: ReactNode;
   disabled?: boolean;
+  // The candidates could not be read: the picker says so, the section still renders.
+  failed?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [q, setQ] = useState("");
-  const shown = items.filter((t) => keyOf(t).toLowerCase().includes(q.toLowerCase()));
+  const shown = (items ?? []).filter((t) => keyOf(t).toLowerCase().includes(q.toLowerCase()));
   return (
     <section className="flex flex-col gap-1.5 border-b pb-3 last:border-b-0" data-sidebar={title}>
       <div className="flex items-center justify-between">
         <h3 className="text-muted-foreground text-xs font-semibold">{title}</h3>
-        <Popover>
+        <Popover onOpenChange={(open) => onOpenChange?.(open)}>
           <PopoverTrigger
             disabled={disabled}
             render={
@@ -194,8 +200,15 @@ export function PickerSection<T>({
                 );
               })}
               {shown.length === 0 && (
-                <li role="presentation" className="text-muted-foreground px-1.5 py-2 text-xs">
-                  Nothing matches.
+                <li
+                  role="presentation"
+                  className={cn(
+                    "px-1.5 py-2 text-xs",
+                    failed ? "text-destructive" : "text-muted-foreground",
+                  )}
+                  data-picker-state={failed ? "failed" : items ? "empty" : "loading"}
+                >
+                  {failed ? "Could not load the list." : items ? "Nothing matches." : "Loading…"}
                 </li>
               )}
             </ul>

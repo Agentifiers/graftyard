@@ -20,6 +20,8 @@ pub(super) struct Transfer {
     pub(super) to: SiteId,
     /// Started by `STEP_DOWN`: a leadership that ends while it runs sets `stepped_down_at`.
     pub(super) step_down: bool,
+    /// A `/transfer` or drain hand-off: abandoned once its target's link would refuse it (F67 rule 13).
+    guarded: bool,
     started: Timestamp,
     /// Rounds above this carry the transfer id.
     first_round: u64,
@@ -37,7 +39,7 @@ impl<C: Command> Member<C> {
     /// `to` wins `term + 1` (this member then follows), or is abandoned after one LEASE.
     pub fn transfer(&mut self, now: Timestamp, to: SiteId) -> Ready<C, Result<TransferId, TransferError>> {
         self.begin(now);
-        let r = self.start_transfer(to, false);
+        let r = self.start_transfer(to, false, true);
         self.finish(r)
     }
 
@@ -59,7 +61,15 @@ impl<C: Command> Member<C> {
             && self.suspected.get(&s).is_none_or(|u| self.now >= *u)
     }
 
-    pub(super) fn start_transfer(&mut self, to: SiteId, step_down: bool) -> Result<TransferId, TransferError> {
+    /// `guarded`: a `/transfer` or drain hand-off, which F67 rule 13 holds to a target whose link from this leader does
+    /// not lose answers while another's does not. `STEP_DOWN` picks its target by its own measure or by probes, and the
+    /// move `home` by HOME_CALLS answered with none failed, so neither is guarded.
+    pub(super) fn start_transfer(
+        &mut self,
+        to: SiteId,
+        step_down: bool,
+        guarded: bool,
+    ) -> Result<TransferId, TransferError> {
         let Some(lead) = &self.lead else { return Err(TransferError::NotLeader(self.not_leader())) };
         if !lead.ready() {
             return Err(TransferError::NotLeader(self.not_leader()));
@@ -70,6 +80,11 @@ impl<C: Command> Member<C> {
         if !self.may_lead_target(to) || self.quarantined(to) {
             return Err(TransferError::Target(to));
         }
+        // On a half-hung target the hand-off won the transfer vote and led with its answers lost, or this leader served
+        // nothing for the transfer's LEASE (F67 rule 13).
+        if guarded && self.link_refused(to) {
+            return Err(TransferError::Target(to));
+        }
         let id = TransferId(self.rand());
         self.state.transfer = Some(id);
         self.dirty = true;
@@ -78,6 +93,7 @@ impl<C: Command> Member<C> {
             id,
             to,
             step_down,
+            guarded,
             started: self.now,
             first_round: lead.round(),
             caught_up: None,
@@ -110,7 +126,10 @@ impl<C: Command> Member<C> {
         let Some(lead) = &self.lead else { return };
         let Some(t) = &lead.transfer else { return };
         let now = self.now;
-        if now >= after(t.started, LEASE) {
+        // A `/transfer` or drain hand-off stops once its target's link would refuse it, as it would not have started
+        // (F67 rule 13): a target that went half-hung after it began held the group for the whole LEASE, and the
+        // hand-off's reports barred this leader after it.
+        if now >= after(t.started, LEASE) || (t.guarded && self.link_refused(t.to)) {
             self.abandon_transfer();
             return;
         }

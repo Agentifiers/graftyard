@@ -407,6 +407,15 @@ export type UiPaths = {
       responses: { 200: Json<NotificationSettings>; 422: Invalid };
     };
   };
+  // Sets the viewer's password (at least 8 characters). No page uses it yet.
+  "/settings/password": {
+    parameters: NoParams;
+    put: {
+      parameters: NoParams;
+      requestBody: Body<{ password: string }>;
+      responses: { 204: Empty; 422: Invalid };
+    };
+  };
   "/login/session": {
     parameters: NoParams;
     post: {

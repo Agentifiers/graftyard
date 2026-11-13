@@ -203,7 +203,7 @@ pub(crate) struct Read {
     pub(crate) repo: Repo,
     pub(crate) at: RepoRef,
     pub(crate) core: MemStore,
-    meta: MemStore,
+    pub(crate) meta: MemStore,
     pub(crate) dir: HostedDir,
     /// The leader's applied index the tiers were read at, which `GET /repos/{o}/{r}`'s ETag names.
     pub(crate) index: u64,
@@ -314,7 +314,7 @@ pub(crate) async fn read_for_invitee(
 /// Which callers `read_repo` serves: those `authorize_read` allows, or anyone, for a route that checks the caller
 /// against the repository's invitations itself.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Gate {
+pub(crate) enum Gate {
     Readers,
     Invitees,
 }
@@ -342,7 +342,7 @@ pub(crate) fn readable(c: &Ctx<'_>, rd: &Read, viewer: &Principal) -> bool {
 /// With `Rows::Merge`, only the rows a `mergePullRequest` plans from are read (`TierRows::merge_rows`), or taken as
 /// the caller already read them, and `dir.logins` is left for the caller to read alongside the merge plan.
 #[expect(clippy::too_many_arguments, reason = "each caller supplies a different subset of what it already read")]
-async fn read_repo(
+pub(crate) async fn read_repo(
     c: &Ctx<'_>,
     repo: Repo,
     owner: &str,
@@ -446,7 +446,7 @@ pub(crate) fn served_meta<'a>(
 /// loads (`Core`); a merge's rows (`TierRows::merge_rows`) for the pull request it names, with the leader's answer
 /// if the caller already read it; or only the rows one API read's reply renders
 /// (`graftyard_api::narrow`), else both whole tiers when the member answers that the route needs them.
-enum Rows {
+pub(crate) enum Rows {
     All,
     Core,
     Merge(MergeOf, Option<Result<std::result::Result<Value, Reply>>>),
@@ -488,7 +488,7 @@ async fn read_logins(c: &Ctx<'_>, rd: &Read) -> std::collections::BTreeMap<i64, 
             named
         }
     };
-    let mut out = account_logins(c, &named).await;
+    let mut out = account_logins(c, &named, LOGIN_SHARDS_MAX).await;
     out.insert(rd.repo.owner.0.0, rd.at.owner.clone());
     for (id, l) in logins(c) {
         out.entry(id).or_insert(l);
@@ -598,6 +598,13 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
     let method = req.method();
     let url = req.url()?;
     let query = url.query().unwrap_or("").to_owned();
+    // M4-WP2 (`crate::activity`): only once 32.19 and 0x14.3 are enabled; before that every path falls through.
+    if let Endpoint::Rest(p) = e {
+        let segs: Vec<&str> = p.trim_end_matches('/').split('/').skip(1).collect();
+        if let Some(r) = crate::activity::route(c, req, host, &segs, &query).await? {
+            return Ok(r);
+        }
+    }
     match e {
         Endpoint::Status => Ok(rest::status()),
         Endpoint::Rest("" | "/") => Ok(rest::root(host)),
@@ -1115,7 +1122,12 @@ async fn delete_ref(c: &Ctx<'_>, rd: &Read, who: &Principal, u: graftyard_git::r
 async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Reply> {
     let session = req.headers().get("x-graftyard-agent-session")?;
     let body: Value = req.json().await.unwrap_or(Value::Null);
-    let q = body["query"].as_str().unwrap_or("").to_owned();
+    // A persisted document by hash (the web app's); a request that carries its own `query` is unchanged.
+    let q = match crate::ui::persisted(&body) {
+        Ok(Some(text)) => text,
+        Ok(None) => body["query"].as_str().unwrap_or("").to_owned(),
+        Err(reply) => return Ok(reply),
+    };
     let vars = body["variables"].as_object().cloned();
     let gq = match Gql::parse(&q, vars.clone(), body["operationName"].as_str().map(str::to_owned)) {
         Ok(r) => r,
@@ -1350,10 +1362,10 @@ async fn repo_name(c: &Ctx<'_>, id: i64) -> Option<(String, String, Repo, AuthzF
 }
 
 /// `repo_name` of a repository already found by id.
-async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, AuthzFold)> {
+pub(crate) async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, AuthzFold)> {
     // The owner's login and `Authz` at once: each needs only the owner and its record.
     let owner = std::iter::once(repo.owner).collect();
-    let (mut known, a) = futures_util::future::join(account_logins(c, &owner), authz(c, &repo)).await;
+    let (mut known, a) = futures_util::future::join(account_logins(c, &owner, LOGIN_SHARDS_MAX), authz(c, &repo)).await;
     let login = known.remove(&repo.owner.0.0).or_else(|| logins(c).remove(&repo.owner.0.0))?;
     let a = a?;
     let name = a.id_name(repo.id)?.as_str().to_owned();
@@ -1365,11 +1377,12 @@ async fn repo_named(c: &Ctx<'_>, repo: Repo) -> Option<(String, String, Repo, Au
 const LOGIN_SHARDS_MAX: usize = graftyard_api::narrow::LOGIN_SHARDS_MAX;
 
 /// The logins of `accounts`, from each one's `AccountLogin` row (F50): one read-class `fresh` read per distinct
-/// `account_shard`, all at once. A shard that fails to answer, or whose members predate the row, names none of its
-/// accounts, which then render as `ghost`.
-async fn account_logins(
+/// `account_shard`, at most `shards` of them, all at once. A shard that fails to answer, or whose members predate the
+/// row, names none of its accounts, which then render as `ghost`.
+pub(crate) async fn account_logins(
     c: &Ctx<'_>,
     accounts: &std::collections::BTreeSet<graftyard_types::AccountId>,
+    shards: usize,
 ) -> std::collections::BTreeMap<i64, String> {
     // A read-class request may use a login up to `READ_CACHE` old (`crate::rcache`); an account with no login row
     // is read again.
@@ -1384,7 +1397,7 @@ async fn account_logins(
             None => by_shard.entry(graftyard_identity::account_shard(*a)).or_default().push(a.0.0),
         }
     }
-    let reads = by_shard.into_iter().take(LOGIN_SHARDS_MAX).map(|(shard, ids)| async move {
+    let reads = by_shard.into_iter().take(shards).map(|(shard, ids)| async move {
         crate::system_read(c, ChainId::Names(shard), json!({ "accountLogins": ids })).await
     });
     for v in futures_util::future::join_all(reads).await.into_iter().flatten() {
@@ -1499,6 +1512,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         return Ok(r);
     }
     if let Some(r) = crate::hooks::repo_route(c, req, &rd, who.as_ref(), tail, host).await? {
+        return Ok(r);
+    }
+    if let Some(r) = crate::activity::repo_route(c, req, &rd, who.as_ref(), tail, query, host).await? {
         return Ok(r);
     }
     // The trust view (AM1-WP5): a reply changes only under `AGENT_MEDIA_TYPE`, and only then does the edge read the

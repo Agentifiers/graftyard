@@ -102,11 +102,30 @@ impl SearchShard {
 
     /// The site the object lives on: the domain's first admitted site not in `lost`, in site order, skipping one more
     /// site for each generation after the first, so a rebuild lands on the domain's next site. `None` when the domain
-    /// has no site left.
+    /// has no site left. An install with no site of a jurisdiction domain's jurisdiction binds its shards on the
+    /// domain's regions instead (`weur` and `eeur` for `Eu`, `enam` and `wnam` for `Us`): the object is still created
+    /// under the jurisdiction, which alone decides where it runs and stores, and the site only names the script whose
+    /// class it is [inference: `graft-m4a` has no `eu` site, and BF-68 ran there].
     pub fn site(&self, sites: &SiteTable, lost: &[SiteId]) -> Option<SiteId> {
-        let ok: Vec<SiteId> =
-            sites.0.iter().filter(|s| self.domain.admits(s) && !lost.contains(&s.id)).map(|s| s.id).collect();
+        use graftyard_types::Region;
+        let live = |s: &&graftyard_types::Site| !s.spare && !lost.contains(&s.id);
+        let mut ok: Vec<SiteId> = sites.0.iter().filter(live).filter(|s| self.domain.admits(s)).map(|s| s.id).collect();
+        if ok.is_empty() && self.domain.jurisdiction().is_some() && !sites.0.iter().any(|s| self.domain.admits(s)) {
+            let regions: &[Region] =
+                if self.domain == Domain::Eu { &[Region::Weur, Region::Eeur] } else { &[Region::Enam, Region::Wnam] };
+            ok = sites.0.iter().filter(live).filter(|s| regions.contains(&s.region)).map(|s| s.id).collect();
+        }
         (!ok.is_empty()).then(|| ok[self.generation.saturating_sub(1) as usize % ok.len()])
+    }
+
+    /// The name's parts back: `search#<domain>#<shard>#<generation>`.
+    pub fn parse(name: &str) -> Option<SearchShard> {
+        let mut p = name.strip_prefix("search#")?.split('#');
+        let d = p.next()?;
+        let domain = Domain::ALL.into_iter().find(|x| x.name() == d)?;
+        let shard = p.next()?.parse().ok()?;
+        let generation = p.next()?.parse().ok()?;
+        p.next().is_none().then_some(SearchShard { domain, shard, generation })
     }
 }
 

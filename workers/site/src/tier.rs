@@ -422,8 +422,10 @@ impl Inner {
                 return None;
             }
         };
-        let mut r = match cursor.raw().next()? {
-            Ok(r) => r,
+        // Read to the end: a cursor stopped after its row holds the table, and a fold audit's closing `DROP TABLE` of
+        // its scratch tables then fails with SQLITE_LOCKED (as the log cursor did, d6e350d).
+        let mut r = match cursor.raw().collect::<worker::Result<Vec<_>>>() {
+            Ok(mut rows) => rows.pop()?,
             Err(e) => {
                 self.refused("a fold row", table, e);
                 return None;

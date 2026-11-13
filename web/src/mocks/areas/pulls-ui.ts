@@ -6,6 +6,7 @@ import { db } from "./core-db";
 import {
   addEvent,
   afterReview,
+  commitsOf,
   eventBase,
   extra,
   makeComment,
@@ -41,6 +42,23 @@ export const handlers = [
     const state = db.state(params.owner, params.repo);
     if (!state) return response.untyped(notFound());
     return response(200).json(state.pulls.map((pr) => summary(state, pr)));
+  }),
+
+  // The edge serves the diff and the commits here, from the git cache, not REST's
+  // paginated pulls/{n}/files and pulls/{n}/commits.
+  ui.get("/repos/{owner}/{repo}/pulls/{pull_number}/files", async ({ params, response }) => {
+    const fault = await gate("files");
+    if (fault) return response.untyped(fault);
+    const files = db.state(params.owner, params.repo)?.files.get(Number(params.pull_number));
+    return files ? response(200).json(files) : response.untyped(notFound());
+  }),
+
+  ui.get("/repos/{owner}/{repo}/pulls/{pull_number}/commits", async ({ params, response }) => {
+    const fault = await gate("pulls-commits");
+    if (fault) return response.untyped(fault);
+    const ctx = find(params);
+    if (!ctx) return response.untyped(notFound());
+    return response(200).json(commitsOf(ctx.state, ctx.pr));
   }),
 
   ui.get("/repos/{owner}/{repo}/pulls/{pull_number}/events", async ({ params, response }) => {

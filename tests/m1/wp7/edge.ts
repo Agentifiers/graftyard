@@ -35,7 +35,7 @@ const CALL_DEADLINE = 1_000;
 const COMMIT_HOLD = 1_000;
 const OP_DEADLINE = 60_000;
 const HINTS = ["enam", "weur", "apac"] as const;
-const KINDS: Record<string, string[]> = { Tri: ["f", "f", "f"] };
+const KINDS: Record<string, string[]> = { Tri: ["f", "f", "f"], Na3: ["f", "f", "f"], Us2w: ["f", "f", "w"], Eu2w: ["f", "f", "w"], Apac2w: ["f", "f", "w"] };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Per isolate: each chain's voters from its newest config, the leader its replies named, and owner records. */
@@ -158,16 +158,16 @@ class Edge {
     return JSON.parse(this.env.GENESIS).placements;
   }
 
-  /** The chain's record from its source. `authz:<owner>` reads the owner's row on `Names`. */
+  /** The chain's record from its source. `authz:<owner>` and `identity:<owner>` read the owner's row on `Names`. */
   async record(chain: string, tr: Trace): Promise<Record_ | null> {
     const g = this.genesis();
     if (chain.startsWith("names:")) return g.names;
     if (chain.startsWith("tokens:")) return g.tokens;
     if (chain === "ids") return g.ids;
-    if (chain.startsWith("authz:")) {
+    if (chain.startsWith("authz:") || chain.startsWith("identity:")) {
       const cached = this.fresh ? undefined : records.get(chain);
       if (cached) return cached;
-      const owner = Number(chain.slice(6));
+      const owner = Number(chain.slice(chain.indexOf(":") + 1));
       const names = `names:${await accountShard(owner)}`;
       const r = await this.read(names, { placement: owner }, tr);
       const rec = r.ok ? (r.value?.placement ?? null) : null;
