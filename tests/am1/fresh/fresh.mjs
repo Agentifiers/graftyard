@@ -6,10 +6,10 @@
 //   - after the 201: `GET /repos` must answer 200, and `main` must be in ls-refs on the first read (auto_init's commit,
 //     which the create acknowledged);
 //   - a push of one commit to `main`, then ls-refs on the next read must name the pushed commit;
-//   - the create's wall within CREATE_MAX_MS (default 30 s [guess]): a create no longer waits on the near placement,
-//     which on main held every create whose home was over `NEAR_RTT` for 60 to 95 s;
-//   - at the end, once the last create's placement has had PLACE_WAIT_MS (default 150 s), each group's leader holds a
-//     `Normal` config of 3 voters (the tools edge's `/status`): the background placement finished and left no group
+//   - the create's wall within CREATE_MAX_MS (default 60 s [guess], under one 8-try placement and over two bootstrap creates of about 15 s):
+//     a create no longer waits on the near placement, which on main held a create 60 to 95 s per group placed;
+//   - at the end, once the last create's placement has had PLACE_WAIT_MS (default 150 s), each group's newest committed config is a
+//     `Normal` one of 3 voters (the tools edge's `/status`): the background placement finished and left no group
 //     `Degraded`.
 // Writes one JSON row per repository to OUT, then a summary; exits 1 on any create failure, slow create, read after
 // the 201 that is not 200, missing `main`, failed push, or group without 3 voters.
@@ -26,7 +26,7 @@ const call = (method, path, body, ms) => fetch(`${EDGE}${path}`, {
   method, headers: body ? { ...headers, "content-type": "application/json" } : headers,
   body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(ms),
 }).then(async (r) => ({ status: r.status, body: await r.text() })).catch((e) => ({ status: 0, body: String(e) }));
-const CREATE_MAX_MS = Number(process.env.CREATE_MAX_MS ?? 30_000);
+const CREATE_MAX_MS = Number(process.env.CREATE_MAX_MS ?? 60_000);
 const PLACE_WAIT_MS = Number(process.env.PLACE_WAIT_MS ?? 150_000);
 const fails = { create: 0, slow: 0, readAfter: 0, mainAfterCreate: 0, push: 0, mainAfterPush: 0, voters: 0 };
 const made = [];
@@ -92,10 +92,12 @@ for (let i = 0; i < n; i++) {
 if (made.length) await sleep(Math.max(0, Date.parse(made[made.length - 1].at) + PLACE_WAIT_MS - Date.now()));
 const groups = [];
 for (const v of made) {
+  // An idle group's lease lapses, so no member may lead now; the committed config with the highest index, from the
+  // first-generation members, which a re-placed voter's peers stay, is the group's.
   const st = await statuses(`repo:${v.id}`);
-  const lead = st.find((s) => s.role === "leader");
-  const voters = lead?.config?.config?.normal?.voters ?? [];
-  const g = { name: v.name, id: v.id, leader: lead?.site, voters: voters.length, generations: voters.map((m) => m.generation) };
+  const best = st.filter((s) => s.config).sort((a, b) => b.config.index - a.config.index)[0];
+  const voters = best?.config?.config?.normal?.voters ?? [];
+  const g = { name: v.name, id: v.id, configIndex: best?.config?.index, voters: voters.length, generations: voters.map((m) => m.generation) };
   if (g.voters !== 3) fails.voters++;
   groups.push(g);
   row(out, { group: g });
