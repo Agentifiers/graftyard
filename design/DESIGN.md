@@ -408,20 +408,20 @@ pub struct ImportItem { pub event: Event, pub legacy: i64, pub created: Timestam
 pub async fn transfer(g: &Leader, to: SiteId) -> Result<(), TransferError>;
 pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) /* self, drained, quarantined */ }
 /// Edge to a follower on another site after a receipt from the leader misses CALL_DEADLINE. A report names `about`, the
-/// member that missed or answered `NotLeader` naming no leader, and counts only if that is the leader this follower
-/// promised in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from the
-/// new one [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2]. Reports from two colos within 10 s stop its
-/// promises to a leader still renewing, until 2 x the SUSPECT window or a higher term. For the same window, which a
-/// higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back (M0-WP2: a 24 s move
-/// without it). A follower whose promise has lapsed campaigns on one report, or once its read-index batch is unanswered
-/// for 3 s, when it also names no leader; a withheld leader's appends do not count as one seen. Campaigns are
-/// request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and two voters up
-/// and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`], because a leader whose entry,
-/// read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`; pre-vote
-/// denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not refused as
-/// suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to, not for that
-/// leader, and an edge answered `NotLeader` naming no leader also reports to that member, so a deposed leader holding
-/// the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
+/// member that missed or answered `NotLeader` naming no leader, and counts only if this follower promised and heard
+/// that leader in this term, even once forgotten; else late reports on a transfer's old leader withheld promises from
+/// the new one, and on an unheard target barred it (F67) [measured, simulator, `tests/m1/results/m1-wp3.md`, bug 2].
+/// Two colos' reports in 10 s stop its promises to a renewing leader until 2 x SUSPECT's window or a higher term. For
+/// that window, which a higher term does not end, its pre-vote refuses that leader, so a gray leader cannot win back
+/// (M0-WP2: a 24 s move without it). A follower whose promise has lapsed campaigns on one report, or once its read-index
+/// batch is unanswered for 3 s, when it also names no leader; a withheld leader's appends do not count as one seen.
+/// Campaigns are request-driven, never alarm-driven: an idle group is never woken, and one with a request waiting and
+/// two voters up and linked completes one within 30 s [measured, simulator, `tests/m0/results/f67.md`]: a leader whose
+/// entry, read, or transfer no quorum answered for ELECTION_AFTER stops leading (F67). Only `home` gets `/campaign`;
+/// pre-vote denies a higher site id with an equal log [inference, wire-fix]. Only a voter that may lead and was not
+/// refused as suspected denies a rival as contending. A promise bars votes for a rival of the leader it was given to,
+/// not for that leader, and an edge answered `NotLeader` naming none also reports to that member, so a deposed leader
+/// with the newest log can win the next term while its followers' promises run. Idle groups stalled 11 s without it.
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones
 /// Only `Leader`, `Won`, and `Resumed` move an edge's receipt; `MayNotLead` is a drained or `no_lead_until` member.
@@ -537,10 +537,10 @@ pub struct DurableAck { pub site: SiteId, pub durable: Index, pub at: Timestamp 
 /// over its fold at k and checks each `expect` against that running state, then rolls the transaction back. Each
 /// refusal carries the refuser's release. Only when the refuser runs an older release than the leader and the entry is
 /// uncommitted does the leader truncate its uncommitted tail, transfer (to the refuser when it qualifies), and persist
-/// `no_lead_until`. If both followers on the leader's own release refuse one uncommitted entry, the leader treats it as
-/// its own defect, truncates the uncommitted tail, and alarms. On any other refusal (same or newer release, or a
-/// committed entry) the leader keeps leading, adds the refuser to `cannot_follow` for that group, alarms, and
-/// `graft-ops` halts the site day. A member truncates an undecodable uncommitted tail at boot.
+/// `no_lead_until`. If both followers on its own release refuse one uncommitted entry, it is the leader's own defect:
+/// it alarms and truncates the tail as a new `lead_seq`, so a delayed older round cannot replace what commits there
+/// (F67). On any other refusal (same or newer release, or a committed entry) the leader keeps leading, adds the refuser
+/// to `cannot_follow`, alarms, and `graft-ops` halts the site day. A member truncates an undecodable tail at boot.
 pub fn verify(e: &LogEntry, fold: &FoldView) -> Result<(), Refusal>;
 
 // ---- Merge queue ----
@@ -1503,7 +1503,7 @@ Numbers are [guess] unless they cite a limit.
 
 Latency [guess, Milestone 0, except where measured]:
 
-- Commit on `Tri` is one round to the nearest follower plus up to one round of waiting for the entry in flight. Milestone 0 measured that round, enam to weur through bindings, at p50 107 to 189 ms and p99 283 to 473 ms under 100 commands/s, against an idle ping of p50 135 ms and p99 151 to 216 ms, and commit at p50 172 to 370 ms and p99 399 to 690 ms over 15 runs. Neither SQLite commit added measurable time, because the leader sends before it writes [measured] (`tests/m0/results/m0-wp2.md`, B0-01). A Rust host that held each round for the leader's own write measured p99 645 to 791 ms in six one-minute runs against 433 to 481 ms for Milestone 0's final code [measured, `tests/m1/results/m1-wp2.md`, "On Durable Objects"], so the leader sends first. Sending first is not enough on its own: a SQLite write that starts while a member call's request body is still in flight held that body over 150 ms (up to 1,079 ms) in 1.3% of calls of 250 to 400 KB, against 0.2% with no write and 0.05% at 150 KB, and the same call whose body went through a `FixedLengthStream` stalled no more than the call with no write, so a member call streams its body [measured, bare-object control, `tests/m0/results/carried-4.md`]. The design's earlier 80 ms for the call was a guess.
+- Commit on `Tri` is one round to the nearest follower plus up to one round of waiting for the entry in flight. Milestone 0 measured that round, enam to weur through bindings, at p50 107 to 189 ms and p99 283 to 473 ms under 100 commands/s, against an idle ping of p50 135 ms and p99 151 to 216 ms, and commit at p50 172 to 370 ms and p99 399 to 690 ms over 15 runs. Neither SQLite commit added measurable time, because the leader sends before it writes [measured] (`tests/m0/results/m0-wp2.md`, B0-01). Sending first keeps a round clear of that input's own write only: the output gate holds a send "until all previous writes have been confirmed flushed to disk" (https://developers.cloudflare.com/durable-objects/api/storage-api/, `allowUnconfirmed`; SQL has no such option), so an AppendEntries issued while an earlier entry's transaction is unconfirmed waits for it, and was late by about what was left of that confirm (p50 342 ms with over 150 ms left) [measured, `tests/m0/results/carried-6.md`]. A Rust host that held each round for the leader's own write measured p99 645 to 791 ms in six one-minute runs against 433 to 481 ms for Milestone 0's final code [measured, `tests/m1/results/m1-wp2.md`, "On Durable Objects"], so the leader sends first. Sending first is not enough on its own: a SQLite write that starts while a member call's request body is still in flight held that body over 150 ms (up to 1,079 ms) in 1.3% of calls of 250 to 400 KB, against 0.2% with no write and 0.05% at 150 KB, and the same call whose body went through a `FixedLengthStream` stalled no more than the call with no write, so a member call streams its body [measured, bare-object control, `tests/m0/results/carried-4.md`]. The design's earlier 80 ms for the call was a guess.
 - Push p50 is about 300 ms beyond pack transfer: token, `Authz`, commit, and report.
 - Fresh reads on a held lease cost one DO call in the leader's region, plus the client's distance to it. Learner reads add up to 50 ms of read-index wait plus one round trip to the leader. Milestone 0 measured 16 learners serving 16,000 reads/s with the leader at 171 to 180 req/s, with learner read p99 at 683 to 743 ms: p50 39 to 108 ms on the leader's site, 135 to 208 ms on weur, and 245 to 451 ms on apac [measured] (`tests/m0/results/m0-wp2.md`, B0-18). The operator accepted that latency on 2026-10-28, and the learner gate is 1 s (`decisions/DECISIONS.md`, "Measured latency is accepted, and the build continues"). Preferred-site transfer keeps leaders near owners.
 - The account-separated option adds one site Worker hop to every member call (Milestone 0 bounds it at 20 ms p50).
