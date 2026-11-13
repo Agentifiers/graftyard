@@ -629,6 +629,19 @@ impl<F: Family> Routes<F> {
                         _ => {}
                     }
                 }
+                // `entry=max`, `entry=soft`, or `entry=<bytes>`: where the leader stops filling an entry
+                // (`Host::entry_soft`).
+                #[cfg(feature = "test-faults")]
+                if let Ok(e) = crate::registry::query(&url, "entry") {
+                    let soft = match e.as_str() {
+                        "max" => raft::ENTRY_MAX,
+                        n => n.parse().unwrap_or(raft::ENTRY_SOFT),
+                    };
+                    self.host.entry_soft.set(soft);
+                    if let Some(core) = self.host.core.borrow_mut().as_mut() {
+                        core.m.set_entry_soft(soft);
+                    }
+                }
                 self.stats(
                     crate::registry::query(&url, "reset").is_ok(),
                     crate::registry::query(&url, "summary").is_ok(),
@@ -1383,6 +1396,7 @@ impl<F: Family> Routes<F> {
         {
             v["body"] = json!(if self.host.array_body.get() { "array" } else { "stream" });
             v["arrival"] = json!(if self.host.arrivals_mem.borrow().is_some() { "mem" } else { "sql" });
+            v["entrySoft"] = json!(self.host.entry_soft.get());
         }
         v["dumpBuilds"] = json!(crate::family::dump_builds());
         if reset {
