@@ -1368,3 +1368,49 @@ clients see. Commit p99 657 ms (p50 360), term 2 throughout, 102.6 req/s, 0 feed
 
 The instruments this row lacked before (test-merge vCPU and list-field computes) come from merge-budget-3 and -4's
 `BudgetStats`; they are measured here.
+
+**L0-12, A1 replay** (131295, 500 agents, 600 s, a lease per agent, a leader kill every 60 s, standard-2 shards,
+04:27:36 to 04:37:36Z) [measured]: **fail** on member clock offsets, and only part of the row runs.
+
+The driver runs the A1 replay with leases and leader kills. It does not run the 30-minute blackholed stall, the idle
+lease with a late overlapping Exclusive acquire, or the 100 conflicting pushes and REST writes per actor kind, so
+those lines are not measured.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| No two holders hold overlapping Exclusive leases longer than `DRIFT` (500 ms) | 155 samples, 0 overlapping at all (max -6,422 ms, that is 6.4 s apart) | pass |
+| Measured member clock offsets under 500 ms | spread between members 3,211 ms (119 samples, each widened by half its round trip); max offset from the orb 8,035 ms | fail as measured (see below) |
+| 500 long-pollers see each event within 3 s at p99 outside leader kills (fail over 2 s) | 3,097 ms p99 outside the 10 kills (18,896 events), p50 1,199; 3,121 ms overall | miss of the 3 s line; fail by the 2 s line |
+| Leases across the stall; late acquire; refusal counts per actor kind | not run | not measured |
+
+- Leader: 10 kills, term 2 → 5 (most kills resume `led_term`); 2 `STEP_DOWN`s in the window, `repo:131295#1#f1` at
+  04:33:15 by `CommitErrors` to site 2, and `#1#f0` at 04:36:58 (hold). Leaders by `/commit`: site a to 04:33,
+  then c, then a from 04:36.
+- **Longest leaderless stretch with requests waiting: 8.7 s**, from 04:27:39.1Z, the first seconds of load; then 3.5 s
+  at 04:37:03.7Z. The kills themselves show no gap over 1.7 s.
+- Agent pushes 2,418 of 2,490 ok (70 × 503 "access rows did not answer … shed the read: overloaded"), p99 17.8 s;
+  human pushes 263 ok, 22 `stale:race`, 4 `stale`; merge:only p99 300.8 s.
+- Lease renewals: 667 × 200, 686 × 404, 106 × 503; acquires 471 × 201, 39 × 503. The 404 renewals mean a lease the
+  agent held was gone when it renewed; whether the kills or expiry under 14 s renewal latency did it is not traced.
+- The clock spread: the samples are each member's `/status` `now` against the orb, widened by half the round trip;
+  with round trips of seconds under load, the widening alone can exceed 500 ms, so this measures the probe as much as
+  the clocks [inference]. A probe that reads all three members' clocks from one isolate would settle it.
+
+Design contradiction, quoted: L0-12's pass line is "within FEED_BATCH plus 2 s (3 s) at p99 outside leader kills",
+and its fail line is "feed p99 over 2 s" (`build/BUILD-PLAN.md`, L0-12). A p99 between 2 and 3 s passes one and
+fails the other; this run's 3.10 s misses both.
+
+### Round 8 summary (rows m19, standard-2)
+
+| Row | Verdict | Longest leaderless stretch with requests waiting |
+|---|---|---|
+| B0-29 | miss, not a fail: commit p99 796 ms (≤ 600), merge:only 4.26 s (≤ 2 s), API p99 3.6 s at 98.2% (≤ 2 s, ≥ 99%); 0 stale, leader held | 0 s |
+| B0-32 | fail: burst 0 of 500 within 5 s, 29 `warming` refusals, merge p99 19.9 s, 56 `suspect` on identity followers | 0 s |
+| B0-31 | invalid: the leader returned to its enam `home` 10 s after the apac transfer | 0 s |
+| B0-33 | fail: 50.8 agent commands/s (≥ 140), commit p99 3.9 s, term 2 → 16, 919 `suspect` | 21.1 s |
+| B0-34 | partial run, fail: human push p99 65 s (≤ 3 s), TTFB p99 3.7 s (≤ 1 s), k stayed 1 | 0 s |
+| B0-35 | pass on the measured lines: 0.146 of 0.25 vCPU, 0 list computes; dispatch not measured | 0 s |
+| L0-12 | fail: clock spread 3.2 s (≤ 0.5 s), feed p99 3.1 s; 0 lease overlaps | 8.7 s |
+
+F67: no leaderless stretch over 30 s with requests waiting in any row (worst 21.1 s, B0-33 at 5,000 agents).
+Cost through the rows: $47.90 of $150 (containers $10.59). Shards are torn down after each row.
