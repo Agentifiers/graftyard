@@ -178,7 +178,7 @@ async fn resolve(c: &Ctx<'_>, owner: &str, repo: &str) -> Result<std::result::Re
     // 240 reads/s on the `Authz` leader at 500 agents once the permission reads had moved (`design/DESIGN.md`,
     // "Follower read").
     let q = json!({ "q": { "repo": name.as_str() } });
-    let v = match graftyard_lookup::read_spread(&b, authz, &record, &q).await {
+    let v = match authz_get(c, &b, authz, &record, &q).await {
         Ok(Some((v, _, _))) => v,
         // An owner whose `Authz` chain was never created holds no repository.
         Ok(None) => return Ok(Ok(None)),
@@ -458,14 +458,30 @@ pub(crate) async fn authz_read_as(
 ) -> std::result::Result<Option<graftyard_identity::AuthzFold>, String> {
     let read = async {
         let q = json!({ "q": { "dep": true } });
-        let Some((v, _, _)) = graftyard_lookup::read_spread(&c.bindings(), ChainId::Authz(owner), record, &q).await?
-        else {
+        let Some((v, _, _)) = authz_get(c, &c.bindings(), ChainId::Authz(owner), record, &q).await? else {
             return Ok(None);
         };
         let bytes = v["value"].as_str().and_then(graftyard_lookup::unhex).ok_or("authz dep: not hex")?;
         graftyard_raft::codec::from_bytes(&bytes).map(Some).map_err(|e| e.to_string())
     };
     rcache::through(&rcache::AUTHZ, owner, now(), cached, read).await
+}
+
+/// One read of an owner's `Authz` group: on its leader for a REST merge (`Ctx::leader_reads`), else by read-index on
+/// its learners and followers. Through them a merge's reads ran p50 451 to 489 ms at 500 agents, against 30 to 47 ms
+/// for its rows on the repository's leader (`merge-p99`).
+async fn authz_get(
+    c: &Ctx<'_>,
+    b: &graftyard_lookup::Bindings<'_>,
+    chain: ChainId,
+    record: &PlacementRecord,
+    q: &serde_json::Value,
+) -> std::result::Result<Option<(serde_json::Value, graftyard_lookup::Step, graftyard_lookup::Target)>, String> {
+    if c.leader_reads.get() {
+        graftyard_lookup::call_opt(b, chain, record, "/read", q.to_string().as_bytes()).await
+    } else {
+        graftyard_lookup::read_spread(b, chain, record, q).await
+    }
 }
 
 /// `authz_read`, `None` when it cannot be read.
@@ -849,6 +865,9 @@ struct Ctx<'a> {
     /// login reads may use `rcache` entries up to `READ_CACHE` old. False for every other request, which reads them
     /// as before.
     read_class: std::cell::Cell<bool>,
+    /// A REST merge (`api::rest_merge`): its owner's `Authz` reads, the name lookup and the fold, go to the `Authz`
+    /// group's leader by `call_opt`, as its rows go to the repository's (`merge-p99`). False for every other request.
+    leader_reads: std::cell::Cell<bool>,
     /// This request's stages, for `server-timing` and the sampled log (`api::Timing`).
     timing: api::Timing,
 }
@@ -2143,6 +2162,7 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
         token_fields: std::cell::RefCell::new(None),
         agent_session: req.headers().has("x-graftyard-agent-session")?,
         read_class: std::cell::Cell::new(false),
+        leader_reads: std::cell::Cell::new(false),
         timing: api::Timing::default(),
         #[cfg(feature = "test-faults")]
         kill: req.headers().get("x-graft-kill")?,

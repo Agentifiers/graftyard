@@ -1310,6 +1310,16 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     }
 }
 
+/// The pull request a REST merge (`PUT pulls/{n}/merge`) names; `None` for every other request.
+fn rest_merge(method: &Method, tail: &[&str]) -> Option<MergeOf> {
+    match (method, tail) {
+        (Method::Put, ["pulls", n, "merge"]) => {
+            n.parse().ok().map(|n| MergeOf::Number(graftyard_git::issues::IssueNumber(n)))
+        }
+        _ => None,
+    }
+}
+
 /// The reads a REST write made ahead for its `guess` (`resolve_cached`), kept only when its own fresh `resolve`
 /// answered the same repository, owner, and placement record; a failed `Authz` read is dropped and read again.
 fn kept_ahead<T, A, E>(
@@ -1410,6 +1420,8 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // A `GET` is read-class (`Ctx::read_class`). Any request reads its token and `o/r` at once, as `timed` stages:
     // neither needs the other. A write used to resolve after its token, untimed (`merge-p99`).
     c.read_class.set(method == Method::Get);
+    let merge_of = rest_merge(&method, tail);
+    c.leader_reads.set(merge_of.is_some());
     let find = async {
         match &at {
             graftyard_wire::RepoPath::Name { owner, name } => Some(resolve(c, owner, name).await),
@@ -1420,12 +1432,6 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     // the name to, while its own fresh `resolve` runs; it keeps them only if that `resolve` names the same repository
     // and record, and reads again otherwise. Serial, the resolve was a REST merge's third stage at 500 agents, p50 452
     // and p99 861 ms (`merge-p99`).
-    let merge_of = match (&method, tail) {
-        (Method::Put, ["pulls", n, "merge"]) => {
-            n.parse().ok().map(|n| MergeOf::Number(graftyard_git::issues::IssueNumber(n)))
-        }
-        _ => None,
-    };
     let guess = match (&at, merge_of) {
         (graftyard_wire::RepoPath::Name { owner, name }, Some(of)) => {
             crate::resolve_cached(owner, name).map(|g| (g, of))
@@ -1460,12 +1466,7 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     }
     // A merge reads only the rows it plans from (`TierRows::merge_rows`), as `mergePullRequest` does: read whole,
     // each one parsed a 1 MB dump at journey 9, and REST merges ran 1.2 to 4.4 s at 500 agents (LM-1 round 7).
-    let rows = || match (&method, tail) {
-        (Method::Put, ["pulls", n, "merge"]) => {
-            n.parse().map_or(Rows::All, |n| Rows::Merge(MergeOf::Number(graftyard_git::issues::IssueNumber(n)), None))
-        }
-        _ => Rows::All,
-    };
+    let rows = || merge_of.map_or(Rows::All, |of| Rows::Merge(of, None));
     let rd = match (at, found) {
         (graftyard_wire::RepoPath::Name { owner, name }, Some(Ok(Some(repo)))) if ahead.is_some() => {
             let (of, v, authz) = ahead.expect("checked");
@@ -2056,6 +2057,26 @@ mod tests {
         }
         assert_eq!(super::kept_ahead(&found(g.clone()), None, ahead()), None, "no guess");
         assert_eq!(super::kept_ahead::<&str, &str, ()>(&found(g.clone()), Some(&g), None), None, "nothing read ahead");
+    }
+
+    /// Only `PUT pulls/{n}/merge` is a REST merge, whose `Authz` and rows are read on leaders: a `GET` of the same
+    /// path, another pull request route, or a number that does not parse reads as any other request (`merge-p99`).
+    #[test]
+    fn only_a_rest_merge_reads_on_leaders() {
+        use graftyard_api::hosted::MergeOf;
+        use worker::Method;
+        let n3 = Some(MergeOf::Number(graftyard_git::issues::IssueNumber(3)));
+        assert_eq!(super::rest_merge(&Method::Put, &["pulls", "3", "merge"]), n3);
+        for (m, tail) in [
+            (Method::Get, &["pulls", "3", "merge"][..]),
+            (Method::Post, &["pulls", "3", "merge"][..]),
+            (Method::Put, &["pulls", "x", "merge"][..]),
+            (Method::Put, &["pulls", "3"][..]),
+            (Method::Put, &["issues", "3", "merge"][..]),
+            (Method::Put, &["pulls", "3", "merge", "x"][..]),
+        ] {
+            assert_eq!(super::rest_merge(&m, tail), None, "{m:?} {tail:?}");
+        }
     }
 
     /// A read every member shed is 503 with `Retry-After: 1`; any other failed read is 503 with `Retry-After: 5`;

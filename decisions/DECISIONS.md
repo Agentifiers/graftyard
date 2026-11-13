@@ -2751,3 +2751,15 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `a_write_keeps_its_ahead_reads_only_for_the_repository_it_resolved` (`workers/edge/src/api.rs`); plants in `tests/lm1mem/plant.py`; the hosted `mergeSplit`'s `tier_ahead` and `authz_ahead` stages.
 
 **Flip.** Guesses that miss often enough that the wasted reads show on the leader, or a repository renamed so often that merges pay the second read.
+
+#### A REST merge reads the owner's `Authz` on its leader
+
+**Decision.** For `PUT pulls/{n}/merge` (`api::rest_merge`, `Ctx::leader_reads`), the owner's `Authz` reads, both the fresh name lookup in `resolve` and the fold read ahead or in `read_repo`, go to the `Authz` group's leader by `call_opt`. Every other request keeps `read_spread`. It amends "F65 follow-up: the edge reads an owner's `Authz` by read-index" for this one route, as "A merge's rows are read on the leader" amends F65.
+
+**Why.** With the rows on the repository's leader and read ahead, a REST merge's longest serial stages were `resolve` (p50 398 to 531 ms, p99 784 to 1,033 ms) and `authz_ahead` (p50 451 to 489 ms), both `Authz` reads by read-index through far members, while the rows read on a leader took 30 to 47 ms. The 600 s B0-29 row on `graft-m3f` missed at p99 2,517 ms [measured, `tests/am1/results/merge-p99.md`]. The 123/s that overloaded the `Authz` leader were API reads; merges add about 20 reads a minute [inference].
+
+**Beat.** Caching the `Authz` fold for writes, which SHARED's write path rules out (the fold names who may merge), and a learner near the edge, which still waits a read-index round.
+
+**Evidence.** `only_a_rest_merge_reads_on_leaders` (`workers/edge/src/api.rs`); plant 81 in `tests/lm1mem/plant.py`; the hosted `mergeSplit` `resolve` and `authz_ahead` stages.
+
+**Flip.** An `Authz` leader whose `/read` share or `READS_MAX` sheds show merge reads, or merges at a rate near the API reads that moved off it.

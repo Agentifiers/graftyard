@@ -241,6 +241,10 @@ MUTANTS = [
      '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r == g =>',
      '(Some(Ok(Some(r))), Some(g), Some((rows, authz))) if r.id == g.id =>',
      ['cargo', '-p', 'graftyard-edge', '--lib', 'a_write_keeps']),
+    ('merge-p99: a REST merge path read on followers matches any PUT under pulls', API,
+     '(Method::Put, ["pulls", n, "merge"]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
+     '(Method::Put, ["pulls", n, ..]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'only_a_rest_merge']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
