@@ -220,10 +220,12 @@ async fn round(
             (site, res.recorded)
         }
     };
-    // A store that holds nothing of the chain, or holds it only to before the committed `read` (one the consumer left
-    // for another site's and came back to), is filled from the committed `replay_from`.
-    let replay = held.is_none_or(|h| h < committed.read);
-    let start = consumer_start(committed, if replay { None } else { held });
+    // A store that holds nothing of the chain is filled from the committed `replay_from`; one that holds it only to
+    // before the committed `read` (one the consumer left for another site's and came back to) continues past what it
+    // holds, or from `replay_from` if that is later (`consumer_start`). Either batch is a replay: the store takes it
+    // even though it holds the chain only to before `from`.
+    let start = consumer_start(committed, held);
+    let replay = held.is_none_or(|h| h < start);
     let through = Index(applied.0.min(start.0 + BATCH_ENTRIES));
     let (rows, hooks, through) = if through > start || replay {
         let dir = match dir_cached {

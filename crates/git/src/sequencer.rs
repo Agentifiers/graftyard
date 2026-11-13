@@ -597,12 +597,18 @@ impl Sequencer {
     }
 }
 
-/// Where the consumer starts reading `chain`: past what the store holds, or, for a store that holds nothing of the
-/// chain (a new or a rebuilt one), from the committed `replay_from`.
+/// Where the consumer starts reading `chain`: past what the store holds; for a store that holds nothing of the chain
+/// (a new or a rebuilt one), from the committed `replay_from`; and for one that holds it only to before the committed
+/// `read` (the consumer recorded the rest in another site's store and came back), past what it holds or from
+/// `replay_from`, whichever is later, since every entry before `replay_from` is finished. Starting from `replay_from`
+/// every time instead never caught up once a batch was cut short of `read`: graft-m4a's j4 then moved one entry per
+/// slow-hook attempt (BF-57 run 4). The consumer sends a batch as a replay when it starts past what the store holds.
 pub fn consumer_start(cursor: HookCursor, recorded: Option<Index>) -> Index {
+    let from_replay = Index(cursor.replay_from.0.saturating_sub(1).min(cursor.read.0));
     match recorded {
-        Some(r) => r.max(cursor.read),
-        None => Index(cursor.replay_from.0.saturating_sub(1).min(cursor.read.0)),
+        Some(r) if r >= cursor.read => r,
+        Some(r) => r.max(from_replay),
+        None => from_replay,
     }
 }
 
@@ -888,6 +894,12 @@ mod tests {
         let g: BTreeSet<Guid> = fresh.deliveries.keys().copied().collect();
         assert!(g.iter().all(|x| s.deliveries.contains_key(x)));
         assert_eq!(consumer_start(cur, Some(Index(4))), Index(4));
+        // A store the consumer comes back to holds the chain to 50 while the committed cursor reads 100 with entry 10
+        // the oldest unfinished: it continues past 50, not from 9 again, and one that holds less than 9 starts at 9.
+        let back = HookCursor { read: Index(100), replay_from: Index(10) };
+        assert_eq!(consumer_start(back, Some(Index(50))), Index(50));
+        assert_eq!(consumer_start(back, Some(Index(5))), Index(9));
+        assert_eq!(consumer_start(back, Some(Index(120))), Index(120));
     }
 
     #[test]
