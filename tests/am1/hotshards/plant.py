@@ -129,7 +129,7 @@ MUTANTS = [
     ('a remote /entries read gets the large page too', SITEHOST, '        Some(b) if local =>', '        Some(b) =>',
      SITE_P),
     ('a local /entries read is not capped', SITEHOST,
-     'b.clamp(ENTRIES_PAGE_BYTES as u64, ENTRIES_LOCAL_PAGE_BYTES_MAX as u64) as usize',
+     'b.clamp(ENTRIES_PAGE_BYTES as u64, max as u64) as usize',
      'b.max(ENTRIES_PAGE_BYTES as u64) as usize', SITE_P),
     ('a resumed rehydrate never loads a promotion recorded after its marked phase', CU,
      '    if state.marked && gap {', '    if false && gap {', CATCHUP),
