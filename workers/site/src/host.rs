@@ -1463,9 +1463,11 @@ impl<F: Family> Host<F> {
         self.queue.borrow_mut().extend(stmts);
         let defer = !early.is_empty() && wrote;
         // The leader's AppendEntries leave now. Each `send` issues its fetch in a microtask, before the deferred
-        // transaction's macrotask, so the output gate does not hold the round behind the leader's own write (Raft
-        // dissertation 10.2.1, and Milestone 0's prototype). The leader counts its own copy only once its `SelfAck`
-        // comes back after `sync()`.
+        // transaction's macrotask, so the output gate does not hold the round behind this input's own write (Raft
+        // dissertation 10.2.1, and Milestone 0's prototype). It does hold it behind an earlier input's transaction
+        // that has not confirmed: the gate waits for "all previous writes" (Durable Objects storage API docs,
+        // `allowUnconfirmed`; `tests/m0/results/carried-6.md`). The leader counts its own copy only once its
+        // `SelfAck` comes back after `sync()`.
         for e in early {
             self.send(e);
         }
