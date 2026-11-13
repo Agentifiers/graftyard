@@ -733,8 +733,6 @@ dependencies = [
 name = "graftyard-lookup"
 version = "0.1.0"
 dependencies = [
- "futures-channel",
- "futures-executor",
  "futures-util",
  "graftyard-raft",
  "graftyard-release",

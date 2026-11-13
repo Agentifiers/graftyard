@@ -4,6 +4,8 @@ Branch `narrow-reads-3`, from main 20147db. Decision record `decisions/DECISIONS
 
 ## Summary
 
+**Final tree (main 84d29c2 merged), later the same day: the gate is still not met.** Six 500-agent runs, none with a leader change, none passing; the three-in-a-row count has not started. Main's ENTRY_SOFT puts B0-29's commit p99 at 2.9 s (949 ms with `ENTRY_MAX`), and far learners' `late` answers keep API p99 at 2.5 to 3.1 s. An edge hedge was tried and reverted: it served fewer reads. See "The final tree's gate runs". The earlier runs below are on the pre-merge tree.
+
 The learners' narrow tier read is fixed. At 500 agents with 8 learners, its share of API latency at the edge fell from p99 2,879 ms to 1,669 ms, and the learners' `late` answers fell from 96 to 3,399 per learner to 17 to 263. Every learner read now waits for at most one read-index round, never a second one.
 
 **The B0-29 API gate is not met on a run with no leader change.** The best clean run, after run 4, served 99.9% at p50 559 ms and **p99 3,279 ms**, against 2 s. The p99 there is no longer the tier read. It is cold edge isolates whose identity, name, and `Release` genesis reads take 2 to 4 s before the tier read starts. The fix for that changes how an edge isolate learns the system chains' records, which is a design question and is asked below. After run 2 met the gate's p99 within 112 ms (2,112 ms, 99.97% served) on a run with the same build, so the gate is near but not reliably met.
@@ -66,6 +68,79 @@ What was not changed, and why:
 - **Serve a cached answer the read-index covers instead of waiting.** Done: this is the floor rule above.
 - **Remove `NARROW_EVERY_MS`.** Lowered to 100 ms. The build is cheap, but builds are 1,300 to 2,000 per learner per 300 s already. With no spacing, a learner rebuilds every query on every entry it applies, and the hosted run should show the build's share first. It shows 0 ms, so a later change can drop the spacing. The p99 is not there.
 - **No learners added** (operator).
+
+## The final tree's gate runs
+
+These runs are on the final raft tree. narrow-reads-3 has main 84d29c2 merged in (F67 rules 10 to 13, ENTRY_SOFT, hot-shards-4).
+
+- **Site day** 13:23 to 13:34Z (dc5b200): sites and edge exited 0, and the edge carries `GRAFTYARD_GENESIS_SIGNED`.
+- **`tests/nr2/stale.mjs`:** 6 of 6.
+- **Widened long sweep:** exited 0. HARSH max 16,027 ms, gray 26,832 ms, live max 22,348 ms over 4,000 seeds (seed 11507). Porcupine was Ok on all three histories.
+- **Setup:** `SHARD_INSTANCE=standard-4`. Each run uses a fresh 500-PR repository, 8 learners (enam 4,000, weur 2,000, apac 2,000), and 500 agents for 300 s.
+
+| Run | Edge | Entry cap | Repository, load from | Served | API p50 / p99 | `tier` p99 | Leader commit p50 / p99 | Agent push p99 | Leader change |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gate1 | dc5b200 | soft (60 KB) | 65543, 13:56:01Z | 99.84% | 733 / **2,617** | 2,557 | 626 / 2,902 | 5,489 | none |
+| gate2 | dc5b200 | soft | 65544, 14:17:48Z | 98.77% | 884 / **3,146** | 3,043 | 721 / 2,893 | 5,692 | none |
+| abmax, diagnostic | dc5b200 | `ENTRY_MAX` | 65545, 14:49:38Z | 99.74% | 807 / 2,519 | 2,436 | 471 / 949 | 5,235 | none |
+| gate3 | 8c54adb (hedge) | soft | 65546, 17:09:34Z | 81.9% (98.73% of answered) | 885 / **6,982** | 1,965 | 9,651 / 18,559 | 45,399 | none |
+| gate4 | 8c54adb (hedge) | soft | 65547, 17:33:30Z | **98.69%** | 811 / **1,988** | 1,806 | 3,504 / 21,306 | 59,521 | none |
+| abmax2, diagnostic | 8c54adb (hedge) | `ENTRY_MAX` | 65548, 17:58Z | 97.11% | 956 / 2,306 | 2,056 | 538 / 2,267 | 7,337 | none |
+
+**No run passes, so the three-in-a-row count has not started.**
+
+- Gates 1 and 2 fail on p99.
+- Gate 3 fails on p99 and served share.
+- Gate 4 meets the p99 (1,988 ms) but serves 98.69%, under 99%.
+
+The read-your-write probe found 0 stale answers in every run (150, 150, 150, 119, 82, and 85 rounds).
+
+Rows: `tests/nr3/rows/a1-b0-29-{gate1,gate2,abmax,gate3,gate4,abmax2}.jsonl`, with each run's `run-*.status` and `fresh-*.jsonl`. Gate 3's driver-capped share is the commit-path collapse described below. Of the reads that were answered, 98.73% were served at a `server-timing` p99 of 2,233 ms.
+
+### The entry cap sets B0-29's commit line, not its API line
+
+| | Pre-merge tree (2c9329b) | Final tree, ENTRY_SOFT (gate1, gate2) | Final tree, `ENTRY_MAX` (abmax) |
+| --- | --- | --- | --- |
+| Commit p99 | 820 to 1,166 ms | 2,902 and 2,893 ms | 949 ms |
+| Queue p99 | 513 to 791 ms | about 2.7 s | 580 ms |
+| `/outcome` calls on the leader | 1 to 42 | 951 and 1,051 | 15 |
+
+`ENTRY_MAX` was set with test-faults `/stats?entry=max` on all three voters. So on this install, main's 60 KB ENTRY_SOFT pushes B0-29's commit p99 past its 1 s fail line. The API p99 barely moved with the cap lifted (2,519 ms). The cap is main's design and B0-29's commit line belongs to LM-1, so I sent the data to LM-1 and m0-carried-8 instead of changing it.
+
+### The tier read's tail, and a hedge that did not work
+
+The edge's 1-in-100 sampled stages over gate1, gate2, and abmax (985 answers):
+
+- the tier read's p50 is 747 ms and its p99 2,629 ms;
+- in 22% of answers, more than 900 ms of the tier read is outside the member's grant and build. That is a first learner that answered `late` after `FOLLOWER_WAIT` (1 s), followed by the next member's whole read;
+- learners on the leader's site answered `late` to 3 to 9% of their reads, and weur and apac learners to 19 to 49%. A far learner's apply wait after the leader's `ReadIndexRes` reaches 1.4 to 2.1 s at p99.
+
+A replay of those samples put the tier p99 near 1.9 s with a hedge: the faster of two random learners first (by a per-isolate moving average), and the next learner beside it after 400 ms. I built it as 8c54adb, design first, with 7 plants, all caught; full checks passed with 827 tests. Then I ran it hosted.
+
+**It is reverted.** The paired comparison holds the commit path still with `ENTRY_MAX` on both sides (abmax against abmax2):
+
+| | abmax, no hedge | abmax2, hedge |
+| --- | --- | --- |
+| API p99 | 2,519 ms | 2,306 ms |
+| Served | 99.74% | 97.11% |
+| Learner reads in 300 s, each | 7,900 to 12,400 | 17,000 to 22,000 |
+| Learner `late`, each | 239 to 4,621 | 1,835 to 9,968 |
+| Learner shed, each | 1 to 10 | 19 to 450 |
+| Commit p99 | 949 ms | 2,267 ms |
+
+The replay assumed a second learner answers as fast as the first did without the extra load. Hosted, the learners' read-index path and apply wait are the bottleneck: twice the reads made far more of them `late`, and the 503s rose from 0.26% to 2.9%. The commit p99 also rose, which fits extra read-index rounds on the leader [inference]. The two hedged runs with ENTRY_SOFT (gate3, gate4) collapsed further: commit p99 18.6 and 21.3 s, agent push p99 45 to 60 s, and gate 3's driver capped. ENTRY_SOFT's queue and the hedge's load together are a plausible cause; I have not separated them.
+
+Members stayed small through all of it. Leaders peaked at 70 to 80 MiB and learners at 58 to 84 MiB. There was no `exceededMemory` and no leader change. The only other outcomes were 1,988 `exception` on site a in abmax and 1 in gate4.
+
+**Where the gate stands on this tree.**
+
+- The read side is about 2.5 to 3.1 s at p99 without the hedge. That is set by far learners' `late` answers.
+- The commit side is past its fail line with ENTRY_SOFT.
+
+Without adding learners, the next cut is the far learners' apply wait: the leader's AppendEntries reach weur and apac after its `ReadIndexRes` does. Two options, both changes to Raft or the member, so I am not making them without a decision:
+
+- a learner answers from the commit index carried on the `ReadIndexRes`'s own envelope;
+- the leader sends the entries a far learner lacks with its `ReadIndexRes`.
 
 ## The bug the simulator found
 
@@ -152,7 +227,7 @@ In each, site 1's original voter (`#1#f1`) stayed at commit 1, while a re-placed
 
 ## Cost
 
-Hosted spend on `graft-m3e` from 04:17Z to 07:10Z is **$4.64**, containers $0.54 included (`INSTALL=graft-m3e python3 tests/fanout/m2bcost.py 2026-11-13T04:17:00Z 2026-11-13T07:10:00Z`). That is under the $25 cap. Every shard container is torn down (`teardown.py --all-nets --pools`).
+Hosted spend on `graft-m3e` from 04:17Z to 18:10Z, the whole thread on the $40 cap, is **$10.19**, containers about $0.9 included. Every repository from the final-tree runs (65543 to 65548) is torn down. The sites and edge on `graft-m3e` still run 8c54adb, the reverted hedge, until the next site day. Earlier, hosted spend from 04:17Z to 07:10Z was **$4.64**, containers $0.54 included (`INSTALL=graft-m3e python3 tests/fanout/m2bcost.py 2026-11-13T04:17:00Z 2026-11-13T07:10:00Z`). That is under the $25 cap. Every shard container is torn down (`teardown.py --all-nets --pools`).
 
 No design cost moves:
 

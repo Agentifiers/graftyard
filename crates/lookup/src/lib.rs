@@ -381,48 +381,14 @@ pub const FOLLOWER_CALL: Duration = Duration::from_millis(2_000);
 /// sheds waits at most about three FOLLOWER_WAITs before its 503.
 const SPREAD_TRIES: usize = 3;
 
-/// How long `read_spread` waits for a usable answer from the members it asked before it asks the next one beside them
-/// [inference]: a learner's answer took 0.75 s at the edge at the median of a 500-agent run, and one in five was
-/// `late` after FOLLOWER_WAIT and asked again 0.9 to 1.5 s in, so a second member asked at 0.4 s answers a slow read
-/// first; replayed over that run's samples it put the tier read's p99 near 1.9 s at about two calls a read
-/// (`tests/am1/results/narrow-reads-3.md`, "The tier read's tail").
-pub const SPREAD_HEDGE: Duration = Duration::from_millis(400);
-
-thread_local! {
-    /// Per member object, a moving average of its time to a usable read-index answer from this isolate, in ms; an
-    /// answer that was not usable counts as FOLLOWER_CALL, and a call dropped unanswered counts as its time so far.
-    static SPEED: RefCell<HashMap<String, f32>> = RefCell::new(HashMap::new());
-}
-
-/// `SPEED` entries kept per isolate before it starts again: about a thousand groups' learners and followers.
-const SPEED_MAX: usize = 4_096;
-
-fn speed_of(do_name: &str) -> f32 {
-    SPEED.with(|s| s.borrow().get(do_name).copied().unwrap_or(0.0))
-}
-
-fn note_speed(do_name: &str, ms: f32) {
-    SPEED.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.len() >= SPEED_MAX && !s.contains_key(do_name) {
-            s.clear();
-        }
-        let e = s.entry(do_name.to_string()).or_insert(ms);
-        *e = 0.8 * *e + 0.2 * ms;
-    });
-}
-
 /// The members a read-index read goes to, in order: the cached config's learners, rotated by `pick`, then its
 /// followers (the voters, else the record's bootstrap members, without the cached leader), rotated by `pick` too, at
 /// most SPREAD_TRIES. With no leader cached every voter is a candidate: a member that leads serves the read itself.
-/// Of the learners, a second one is picked at random too, and of the two the one `speed` rates faster goes first (two
-/// random choices, so no one learner draws every read); a member this isolate has not timed rates 0 and is tried.
 fn spread_order(
     learners: Vec<(SiteId, String)>,
     voters: Vec<(SiteId, String)>,
     leader: Option<SiteId>,
     pick: usize,
-    speed: impl Fn(&str) -> f32,
 ) -> Vec<Target> {
     let rotated = |v: Vec<(SiteId, String)>| {
         let mut out: Vec<Target> = v.into_iter().map(|(site, do_name)| Target { site, do_name }).collect();
@@ -433,63 +399,9 @@ fn spread_order(
         out
     };
     let mut out = rotated(learners);
-    if out.len() > 1 {
-        let second = 1 + (pick / out.len()) % (out.len() - 1);
-        if speed(&out[second].do_name) < speed(&out[0].do_name) {
-            let t = out.remove(second);
-            out.insert(0, t);
-        }
-    }
     out.extend(rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect()));
     out.truncate(SPREAD_TRIES);
     out
-}
-
-/// One read raced over `n` members, in order: the first is asked at once, and the next once `hedge` passes with no
-/// usable answer from those asked, or at once when one of them answers with no usable value. Only the first `hedged`
-/// are asked on a hedge (learners: a voter's reads delay its AppendEntries replies); a later one only after an answer
-/// with no value. The first usable answer is the read's, with its member's position, and the others in flight are
-/// dropped; with none, every answer, by position. Any member's value is one the read may use, so the race picks none
-/// that waiting would not.
-async fn race<R, A: Future<Output = R>, T: Future<Output = ()>>(
-    n: usize,
-    hedged: usize,
-    mut ask: impl FnMut(usize) -> A,
-    mut hedge: impl FnMut() -> T,
-    usable: impl Fn(&R) -> bool,
-) -> std::result::Result<(usize, R), Vec<(usize, R)>> {
-    use futures_util::FutureExt;
-    use futures_util::stream::{FuturesUnordered, StreamExt};
-    let mut flying = FuturesUnordered::new();
-    let mut asked = 0;
-    let mut timer: Option<std::pin::Pin<Box<T>>> = None;
-    let mut got = Vec::new();
-    loop {
-        if asked < n && timer.is_none() {
-            let i = asked;
-            asked += 1;
-            flying.push(ask(i).map(move |r| (i, r)));
-            timer = (asked < n.min(hedged)).then(|| Box::pin(hedge()));
-        }
-        let next = match timer.as_mut() {
-            Some(t) => match select(flying.next(), t).await {
-                Either::Left((r, _)) => r,
-                Either::Right(_) => {
-                    timer = None;
-                    continue;
-                }
-            },
-            None => flying.next().await,
-        };
-        let Some((i, r)) = next else { break };
-        if usable(&r) {
-            return Ok((i, r));
-        }
-        got.push((i, r));
-        timer = None;
-    }
-    got.sort_by_key(|(i, _)| *i);
-    Err(got)
 }
 
 /// What `read_spread` does with the answers it got, in order.
@@ -531,8 +443,7 @@ fn follower_answer_usable(r: Option<(u16, &Value)>) -> bool {
 }
 
 /// A read off the leader (`design/DESIGN.md`, "Follower read"): `body` (`{"q": ..}`) goes with `"index": true` to
-/// the members `spread_order` names, learners first, until one answers with a value, the next asked beside the
-/// earlier ones once SPREAD_HEDGE passes (`race`). If none did and one shed it,
+/// the members `spread_order` names, learners first, until one answers with a value. If none did and one shed it,
 /// the read fails with an error naming OVERLOADED, which the caller answers 503 with `Retry-After`, and the leader is
 /// never asked; only if none shed it does it go to the leader by `call_opt` (`spread_verdict`). A member's answer
 /// holds every entry acknowledged before the read arrived: it waited for the leader's confirmed commit index.
@@ -553,44 +464,22 @@ pub async fn read_spread(
     let mut indexed = body.clone();
     indexed["index"] = json!(true);
     let bytes = indexed.to_string();
-    let learners = known.learners.len();
-    let order = spread_order(known.learners, voters, known.leader, pick, speed_of);
-    let ask = |i: usize| {
-        let t = order[i].clone();
-        let bytes = bytes.as_bytes();
-        async move {
-            // Times the call even when the race drops it unanswered: its time so far is a floor on its answer's.
-            struct Timed(String, u64, bool);
-            impl Drop for Timed {
-                fn drop(&mut self) {
-                    if !self.2 {
-                        note_speed(&self.0, now_ms().saturating_sub(self.1) as f32);
-                    }
-                }
-            }
-            let mut timed = Timed(t.do_name.clone(), now_ms(), false);
-            let r = post_within(b, t.site, &t.do_name, "/read", bytes, FOLLOWER_CALL).await;
-            if let Some((_, v)) = &r {
-                learn_config(chain, v);
-            }
-            let usable = follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
-            let ms = now_ms().saturating_sub(timed.1) as f32;
-            note_speed(&t.do_name, if usable { ms } else { ms.max(FOLLOWER_CALL.as_millis() as f32) });
-            timed.2 = true;
-            r
+    let mut answers = Vec::new();
+    for t in spread_order(known.learners, voters, known.leader, pick) {
+        let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
+        if let Some((_, v)) = &r {
+            learn_config(chain, v);
         }
-    };
-    let usable = |r: &Option<(u16, Value)>| follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
-    let answers = match race(order.len(), learners, ask, || Delay::from(SPREAD_HEDGE), usable).await {
-        Ok((i, r)) => {
-            let v = r.map(|(_, v)| v).unwrap_or_default();
+        let usable = follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
+        answers.push(r);
+        if usable {
+            let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
             learn_leader(chain, &v);
-            refresh_config(b, chain, &order[i], &v).await;
-            return Ok(Some((v, Step::Cached, order[i].clone())));
+            refresh_config(b, chain, &t, &v).await;
+            return Ok(Some((v, Step::Cached, t)));
         }
-        Err(answers) => answers,
-    };
-    let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|(_, r)| r.as_ref().map(|(s, v)| (*s, v))).collect();
+    }
+    let seen: Vec<Option<(u16, &Value)>> = answers.iter().map(|r| r.as_ref().map(|(s, v)| (*s, v))).collect();
     match spread_verdict(&seen) {
         Spread::Use(_) => unreachable!("a usable answer returned above"),
         Spread::Shed => Err(format!("{chain}: every member asked shed the read: {OVERLOADED}")),
@@ -1476,175 +1365,18 @@ mod tests {
         let names = |t: Vec<Target>| t.into_iter().map(|t| t.do_name).collect::<Vec<_>>();
         let all = v(&[(0, "a"), (1, "b"), (2, "c")]);
         let none = Vec::new;
-        let flat = |_: &str| 0.0;
-        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 0, flat)), ["a", "c"]);
-        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 1, flat)), ["c", "a"]);
-        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 4, flat)), ["a", "c"]);
-        assert_eq!(names(spread_order(none(), all.clone(), None, 2, flat)), ["c", "a", "b"]);
-        assert_eq!(spread_order(none(), Vec::new(), Some(SiteId(1)), 3, flat), Vec::new());
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 0)), ["a", "c"]);
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 1)), ["c", "a"]);
+        assert_eq!(names(spread_order(none(), all.clone(), Some(SiteId(1)), 4)), ["a", "c"]);
+        assert_eq!(names(spread_order(none(), all.clone(), None, 2)), ["c", "a", "b"]);
+        assert_eq!(spread_order(none(), Vec::new(), Some(SiteId(1)), 3), Vec::new());
         // Learners (on sites 1 and 2, beside voters) come before any follower, rotated on their own.
         let learners = v(&[(1, "l0"), (2, "l1")]);
-        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 0, flat)), ["l0", "l1", "b"]);
-        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 1, flat)), ["l1", "l0", "c"]);
+        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 0)), ["l0", "l1", "b"]);
+        assert_eq!(names(spread_order(learners.clone(), all.clone(), Some(SiteId(0)), 1)), ["l1", "l0", "c"]);
         // Four learners: three asked, no follower.
         let four = v(&[(0, "l0"), (1, "l1"), (2, "l2"), (0, "l3")]);
-        assert_eq!(names(spread_order(four.clone(), all.clone(), Some(SiteId(0)), 3, flat)), ["l3", "l0", "l1"]);
-        // Of the rotated first learner and a second random one, the faster goes first; the rest keep their order and
-        // followers never move ahead of a learner. `pick` 3 + 4 × 1: rotation 3, second pick 1 + 1 % 3 = position 2.
-        let slow_l3 = |n: &str| if n == "l3" { 900.0 } else { 100.0 };
-        assert_eq!(names(spread_order(four.clone(), all.clone(), Some(SiteId(0)), 7, slow_l3)), ["l1", "l3", "l0"]);
-        // A slower second pick, or a tie, leaves the rotation as it was.
-        let slow_l1 = |n: &str| if n == "l1" { 900.0 } else { 100.0 };
-        assert_eq!(names(spread_order(four.clone(), all.clone(), Some(SiteId(0)), 7, slow_l1)), ["l3", "l0", "l1"]);
-        // An untimed member (0) beats a timed one, so a new learner is tried.
-        let timed_l3 = |n: &str| if n == "l3" { 50.0 } else { 0.0 };
-        assert_eq!(names(spread_order(four, all.clone(), Some(SiteId(0)), 7, timed_l3)), ["l1", "l3", "l0"]);
-        // One learner: no second pick, so a follower never goes before it however slow it is.
-        let one = v(&[(2, "l0")]);
-        assert_eq!(
-            names(spread_order(one, all, Some(SiteId(0)), 5, |n: &str| if n == "l0" { 2e3 } else { 1.0 })),
-            ["l0", "c", "b"]
-        );
-    }
-
-    /// A test `race`: each member's answer and the hedge timer are channels the test fires; `asked` records who was
-    /// asked, in order.
-    type RaceOut = Option<std::result::Result<(usize, u32), Vec<(usize, u32)>>>;
-
-    struct Race {
-        pool: futures_executor::LocalPool,
-        asked: std::rc::Rc<RefCell<Vec<usize>>>,
-        answers: Vec<Option<futures_channel::oneshot::Sender<u32>>>,
-        hedges: std::rc::Rc<RefCell<Vec<futures_channel::oneshot::Sender<()>>>>,
-        out: std::rc::Rc<RefCell<RaceOut>>,
-    }
-
-    /// Answers are `u32`s: usable when even, and `u32::MAX` for a call that failed.
-    fn start_race(n: usize) -> Race {
-        start_race_hedged(n, n)
-    }
-
-    fn start_race_hedged(n: usize, hedged: usize) -> Race {
-        use futures_util::task::LocalSpawnExt;
-        let pool = futures_executor::LocalPool::new();
-        let asked = std::rc::Rc::new(RefCell::new(Vec::new()));
-        let hedges = std::rc::Rc::new(RefCell::new(Vec::new()));
-        let out = std::rc::Rc::new(RefCell::new(None));
-        let (mut txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| futures_channel::oneshot::channel::<u32>()).unzip();
-        let mut rxs: Vec<_> = rxs.into_iter().map(Some).collect();
-        let (a, h, o) = (asked.clone(), hedges.clone(), out.clone());
-        pool.spawner()
-            .spawn_local(async move {
-                let ask = |i: usize| {
-                    a.borrow_mut().push(i);
-                    let rx = rxs[i].take().expect("each member asked once");
-                    async move { rx.await.unwrap_or(u32::MAX) }
-                };
-                let hedge = || {
-                    let (tx, rx) = futures_channel::oneshot::channel::<()>();
-                    h.borrow_mut().push(tx);
-                    async move {
-                        let _ = rx.await;
-                    }
-                };
-                *o.borrow_mut() = Some(race(n, hedged, ask, hedge, |r: &u32| r.is_multiple_of(2)).await);
-            })
-            .unwrap();
-        let mut r = Race { pool, asked, answers: txs.drain(..).map(Some).collect(), hedges, out };
-        r.pool.run_until_stalled();
-        r
-    }
-
-    impl Race {
-        fn answer(&mut self, i: usize, v: u32) {
-            if let Some(tx) = self.answers[i].take() {
-                let _ = tx.send(v);
-            }
-            self.pool.run_until_stalled();
-        }
-        /// Fires the newest hedge timer.
-        fn hedge(&mut self) {
-            let tx = self.hedges.borrow_mut().pop().expect("a hedge timer is running");
-            let _ = tx.send(());
-            self.pool.run_until_stalled();
-        }
-        fn asked(&self) -> Vec<usize> {
-            self.asked.borrow().clone()
-        }
-        fn out(&self) -> RaceOut {
-            self.out.borrow().clone()
-        }
-    }
-
-    /// The first member is asked alone; the next only once the hedge passes with no usable answer; the third only on
-    /// the next hedge. The first usable answer wins whichever member it came from, and is the read's.
-    #[test]
-    fn a_slow_member_is_hedged_and_the_first_value_wins() {
-        let mut r = start_race(3);
-        assert_eq!(r.asked(), [0], "one member at first");
-        assert_eq!(r.out(), None);
-        r.hedge();
-        assert_eq!(r.asked(), [0, 1], "the second once the hedge passed");
-        // The first member, asked earlier, answers first: its value is used though the second was asked.
-        r.answer(0, 10);
-        assert_eq!(r.out(), Some(Ok((0, 10))));
-        assert_eq!(r.asked(), [0, 1], "no third member after a value");
-
-        let mut r = start_race(3);
-        r.hedge();
-        r.answer(1, 4);
-        assert_eq!(r.out(), Some(Ok((1, 4))), "the hedged member's value, while the first still waits");
-        assert_eq!(r.asked(), [0, 1]);
-    }
-
-    /// An answer with no value moves the read to the next member at once, without waiting out the hedge; with no value
-    /// from anyone, the read waits for every member asked and returns all answers by position for `spread_verdict`.
-    #[test]
-    fn an_unusable_answer_asks_the_next_at_once_and_none_usable_keeps_them_all() {
-        let mut r = start_race(3);
-        r.answer(0, 1);
-        assert_eq!(r.asked(), [0, 1], "asked at once after a shed");
-        r.hedge();
-        assert_eq!(r.asked(), [0, 1, 2]);
-        r.answer(2, 3);
-        assert_eq!(r.out(), None, "member 1 is still in flight");
-        r.answer(1, u32::MAX);
-        assert_eq!(r.out(), Some(Err(vec![(0, 1), (1, u32::MAX), (2, 3)])), "every answer, by position");
-        // A late value after unusable answers is still used.
-        let mut r = start_race(2);
-        r.answer(0, 7);
-        r.answer(1, 8);
-        assert_eq!(r.out(), Some(Ok((1, 8))));
-        // Never more members than offered, however many hedges pass.
-        let mut r = start_race(2);
-        r.hedge();
-        assert!(r.hedges.borrow().is_empty(), "no timer once every member was asked");
-        assert_eq!(r.asked(), [0, 1]);
-        r.answer(1, 5);
-        r.answer(0, 9);
-        assert_eq!(r.out(), Some(Err(vec![(0, 9), (1, 5)])));
-        // No member at all: nothing asked, and no answers.
-        let r = start_race(0);
-        assert_eq!((r.asked(), r.out()), (vec![], Some(Err(vec![]))));
-    }
-
-    /// A hedge reaches only the first `hedged` members (the learners): a follower is asked only after an answer with no
-    /// value, so hedging never doubles a voter's reads.
-    #[test]
-    fn a_hedge_never_reaches_a_follower() {
-        let mut r = start_race_hedged(3, 2);
-        r.hedge();
-        assert_eq!(r.asked(), [0, 1]);
-        assert!(r.hedges.borrow().is_empty(), "no timer toward the follower");
-        r.answer(1, 3);
-        assert_eq!(r.asked(), [0, 1, 2], "the follower once a learner answered with no value");
-        r.answer(2, 6);
-        assert_eq!(r.out(), Some(Ok((2, 6))));
-        // No learners: one member at a time, as before the race.
-        let mut r = start_race_hedged(2, 0);
-        assert!(r.hedges.borrow().is_empty());
-        r.answer(0, 1);
-        assert_eq!(r.asked(), [0, 1]);
+        assert_eq!(names(spread_order(four, all, Some(SiteId(0)), 3)), ["l3", "l0", "l1"]);
     }
 
     /// When no member asked answers a value: if any shed it (`overloaded`, `busy`, a 5xx, no answer), the read is

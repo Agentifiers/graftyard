@@ -2493,21 +2493,19 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). Approved b
 
 **Flip.** An entry that moves system placements often enough that isolates pay the view read on most misses, or a deploy path that cannot read the committed genesis.
 
-### The edge picks the faster of two learners and hedges a slow learner read after 400 ms, 2026-11-13
+### Not adopted: the edge hedging a slow learner read, 2026-11-13
 
-Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The tier read's tail"; F65).
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The final tree's gate runs"; F65).
 
-**Decision.** `read_spread` orders a read's learners by rotation as before, then compares the first with a second picked at random and asks the faster first, by the isolate's moving average of each member's time to a usable answer (`SPEED`; an untimed member rates 0, an answer with no value counts as `FOLLOWER_CALL`). It asks one member, and once `SPREAD_HEDGE` (400 ms) passes with no value it asks the next learner beside it and takes the first value either returns (`race`). A follower is asked only after an answer with no value, never on a hedge. The 503 rule is unchanged: with no value from anyone asked, any shed answers 503 and only all-declined goes to the leader.
+**Decision.** `read_spread` stays one member at a time, learners rotated. A hedge that asked the faster of two random learners first and the next learner after 400 ms was built, tested, and run hosted (8c54adb), then reverted.
 
-**Why.** On the final tree (main 84d29c2 merged), two 500-agent runs failed the gate at API p99 2,617 and 3,146 ms, and a diagnostic run with the entry cap at `ENTRY_MAX` at 2,519 ms, so the entry cap is not what sets it. The edge's sampled stages over the three runs (985 answers): the tier read's p50 was 747 ms and its p99 2,629 ms, and 22% of answers spent over 900 ms outside the member's grant and build. That is a first learner that answered `late` after `FOLLOWER_WAIT`, then the next member's full read. Learners on the leader's site answered `late` to 3 to 9% of their reads, and weur and apac learners to 19 to 49%, because the leader's AppendEntries reach them after its `ReadIndexRes` and their apply wait reaches 1.4 to 2.1 s at p99 [measured]. Replaying the run's samples, the faster of two random learners with a 400 ms hedge gives a tier p99 of about 1.9 s at about two calls a read; a hedge alone gives about 2.2 s; the faster-of-two choice alone gives about 2.6 s [inference, `tests/am1/results/narrow-reads-3.md`].
+**Why.** On the final tree (main 84d29c2 merged), 22% of tier reads spent 0.9 to 1.5 s on a first learner that answered `late` before the next began, and a replay of the sampled stages put the hedged tier p99 near 1.9 s [inference]. Hosted, with `ENTRY_MAX` on both sides to hold the commit path still, the hedge took API p99 from 2,519 to 2,306 ms but served 97.11% against 99.74%: each learner took 17,000 to 22,000 reads in 300 s against 7,900 to 12,400, and answered `late` to 1,835 to 9,968 of them against 239 to 4,621, so the extra reads turned into the misses they were meant to cover [measured]. With ENTRY_SOFT the two hedged runs served 81.9% (driver-capped behind a commit p99 of 18.6 s) and 98.69% at API p99 1,988 ms [measured].
 
-**Safety.** Every member's value already holds every entry acknowledged before the read arrived (its floor), so using whichever value arrives first returns nothing a single member could not. A raced call that loses is dropped by the edge; the member still answers it, which costs it a cached narrow answer.
+**Beat.** Kept for the decision: no learners added (operator).
 
-**Beat.** Adding learners (operator: no). Shortening `FOLLOWER_WAIT` alone: a `late` answer arrives sooner, but the next member still starts from zero. Asking near learners only: it would send the whole load to three learners on the leader's site and leave the far ones idle. Hedging to followers: a voter's reads delay its AppendEntries replies and confirms.
+**Evidence.** Rows `tests/nr3/rows/a1-b0-29-{abmax,abmax2,gate3,gate4}.jsonl`.
 
-**Evidence.** `crates/lookup` tests: the faster of two goes first and a slower or tied pick changes nothing, an untimed member is tried, one learner never yields to a follower; the race asks one member, hedges on the timer, takes the first value from any member, asks on at once after an answer with no value, never hedges to a follower, and returns every answer by position when none is usable. `tests/nr3/plant.py` adds plants for each. Hosted rows are in the results file.
-
-**Flip.** Learners' calls a read rising past about 2.5, or a learner's CPU past about 50% at journey 9, which would raise `SPREAD_HEDGE`. A tier p99 under about 1.2 s without the hedge, for example once far learners' apply wait falls, which would make it unneeded.
+**Flip.** Learners with spare read capacity at journey 9, so that a second read is not answered `late`: for example, far learners whose apply wait falls under about 300 ms at p99.
 
 ### F67 reopened: no hand-off to a suspected member, a hand-off's bar ends with it, and a 4,000-seed live window, 2026-11-13
 

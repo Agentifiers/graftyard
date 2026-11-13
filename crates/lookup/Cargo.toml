@@ -8,13 +8,9 @@ publish.workspace = true
 # The group lookup rule over Durable Object bindings, for every Worker that calls a group: site members (dependency
 # reads, id-block leases, bootstrap checks), the git edge, and the release endpoint.
 [dependencies]
-futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+futures-util = { version = "0.3", default-features = false }
 graftyard-raft = { path = "../raft" }
 graftyard-release = { path = "../release" }
 graftyard-types.workspace = true
 serde_json.workspace = true
 worker.workspace = true
-
-[dev-dependencies]
-futures-channel = "0.3"
-futures-executor = "0.3"
