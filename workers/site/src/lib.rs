@@ -10,6 +10,7 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
+mod activity;
 mod archive;
 mod audit;
 #[cfg(feature = "test-faults")]
@@ -23,6 +24,7 @@ mod feed;
 mod fold_audit;
 mod hookseq;
 mod host;
+mod inbox;
 mod load;
 mod lookup;
 mod member;
@@ -32,14 +34,17 @@ mod prsync;
 mod register;
 mod registry;
 mod release;
+mod search;
 mod shard;
 mod snap;
 mod sweep;
 mod tier;
 
 pub use hookseq::HookSequencer;
+pub use inbox::InboxObject as Inbox;
 pub use member::Member;
 pub use registry::Registry;
+pub use search::SearchShard;
 pub use shard::GitShard;
 
 /// The site this script is and the install's site table, from the script's own version. The system chains' records
