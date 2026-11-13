@@ -52,7 +52,7 @@ As far as `20147db` goes, nothing M4 needs is test-faults only. The UI's REST an
 
 - `tests/m3/hosted/setup.ts` seeds `identity:` chains through `/_bed/identity`, so the seed ran while the edge was still its first, test-faults build. Seeding more users or orgs needs a test-faults edge for the duration (an edge day), or a product path such as sign-up.
 - `tests/fanout/teardown.py` stops a shard through `/_bed/kill`, so on this install a shard container stops only through its own 6 h inactivity timeout or a site day. A `standard-4` shard bills about 4 vCPU, 12 GiB, and 20 GB while it runs. The Containers API refused a direct instance delete (`NOT_ENABLED`).
-- `precreate.mjs`'s `/_bed/precreate` path is gone, but its `R20_GENESIS` mode uses the product route, and that mode was used here.
+- `precreate.mjs`'s `/_bed/precreate` path is gone, but its `R20_GENESIS` mode uses the product route: `GRAFT_EDGE=https://graft-m4a-edge.<workers-subdomain>.workers.dev R20_GENESIS=~/.graft-m4a/genesis.signed node tests/m3/hosted/precreate.mjs <out.jsonl> 8` (8-group ranges by default).
 
 ## Point the drivers at it
 
