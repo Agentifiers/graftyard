@@ -32,6 +32,7 @@ use serde_json::{Value, json};
 use smallvec::SmallVec;
 
 const OWNER: AccountId = AccountId(DbId(100));
+const CHAIN: ChainId = ChainId::Actions(OWNER, 3);
 const REPO: RepoId = RepoId(DbId(7));
 /// A poll is held this long [inference: under the runner's 100 s HTTP timeout, measured].
 const POLL_HOLD: Duration = Duration::from_secs(50);
@@ -124,7 +125,7 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
     let method = req.method().to_string();
     let url = req.url().to_string();
     let path = url.split('?').next().unwrap_or("").to_string();
-    let grant = bearer(&req).and_then(|t| runsvc::verify_token(&t, &h.key.public(), now()));
+    let grant = bearer(&req).and_then(|t| runsvc::verify_token(&t, &h.key.public(), now())).map(|(_, g)| g);
     // The live-log socket first: an upgrade request has no body, and reading one would wait for the client to hang up.
     if method == "GET" && path.starts_with("/_services/logrelay/") {
         h.log(json!({"method": method, "path": path, "note": "live log socket", "grant": grant}));
@@ -215,14 +216,15 @@ fn handle(h: &Host, mut req: tiny_http::Request) {
 fn token(h: &Host, f: &BTreeMap<String, String>) -> (u16, Value) {
     let bad = (400, json!({"error": "invalid_client"}));
     let Some(a) = f.get("client_assertion") else { return bad };
-    let Some(runner) = runsvc::assertion_runner(a) else { return bad };
+    let Some(at) = runsvc::assertion_runner(a) else { return bad };
+    let runner = at.runner;
     let key = h.w.with(move |w| w.fold().runners.get(&runner).map(|r| r.key.clone()));
     let Some(key) = key else { return bad };
-    if runsvc::verify_assertion(a, runner, &key, &h.urls.token(), now()).is_err() {
+    if runsvc::verify_assertion(a, at, &key, &h.urls.token(), now()).is_err() {
         return bad;
     }
     let exp = now().0 / 1000 + runsvc::RUNNER_TOKEN_TTL_S;
-    let t = runsvc::sign_token(&h.key, Grant::Runner { runner }, exp, None);
+    let t = runsvc::sign_token(&h.key, at.chain(), Grant::Runner { runner }, exp, None);
     (200, json!({"access_token": t, "token_type": "bearer", "expires_in": runsvc::RUNNER_TOKEN_TTL_S}))
 }
 
@@ -287,6 +289,7 @@ fn acquire(h: &Host, runner: RunnerId, b: &Value) -> (u16, Value) {
     let orch = runsvc::orch_id(run.run.id.0.0, job, run.run.attempt);
     let job_token = runsvc::sign_token(
         &h.key,
+        CHAIN,
         Grant::Job { job, attempt: run.run.attempt },
         n.0 / 1000 + runsvc::JOB_TOKEN_TTL_S,
         Some(orch),
@@ -414,7 +417,8 @@ fn register(w: &mut World, urls: &Urls, out: &str) -> RunnerId {
     let Some(Ok(ActionsOut::Runner(rid))) = w.cmd(ActionsActor::Admin(OWNER), ActionsOp::PutRunner(rec)) else {
         panic!("runner not registered")
     };
-    let jit = runsvc::jit_config(urls, rid, &name, &format!("{}/owner/repo", urls.server), &key);
+    let at = runsvc::RunnerAt { owner: OWNER, shard: 3, runner: rid };
+    let jit = runsvc::jit_config(urls, at, &name, &format!("{}/owner/repo", urls.server), &key);
     std::fs::write(format!("{out}/jitconfig.txt.tmp"), jit).unwrap();
     std::fs::rename(format!("{out}/jitconfig.txt.tmp"), format!("{out}/jitconfig.txt")).unwrap();
     rid
@@ -426,7 +430,7 @@ fn main() {
     std::fs::create_dir_all(&out).unwrap();
     let urls = Urls::new(&format!("http://127.0.0.1:{port}"));
     let t = now();
-    let mut shard = Group::new(ChainId::Actions(OWNER, 3), vec![ACTIONS_FORMAT], ActionsFold::default(), t);
+    let mut shard = Group::new(CHAIN, vec![ACTIONS_FORMAT], ActionsFold::default(), t);
     shard.id_block(t, IdBlock::whole(0, 9).unwrap());
     let mut w = World {
         shard,

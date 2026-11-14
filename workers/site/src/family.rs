@@ -229,6 +229,8 @@ pub enum Kind {
     Identity,
     Repo,
     Release,
+    /// An owner's Actions shard (`crate::actions`).
+    Actions,
     /// Test installs only: a `repo:` chain joined with no owner hosts the test register, for M1-WP2's rows and the
     /// linearizability run.
     #[cfg(feature = "test-faults")]
@@ -249,7 +251,8 @@ impl Kind {
             #[cfg(not(feature = "test-faults"))]
             ChainId::Repo(_) => Some(Kind::Repo),
             ChainId::Identity(_) => Some(Kind::Identity),
-            ChainId::Network(_) | ChainId::Actions(..) | ChainId::RepoMeta(_) => None,
+            ChainId::Actions(..) => Some(Kind::Actions),
+            ChainId::Network(_) | ChainId::RepoMeta(_) => None,
         }
     }
 }
@@ -1322,11 +1325,11 @@ impl Family for Register {
 
 /// The identity folds are stored whole, in the crate's codec, in one `fold` row written with the entries' apply.
 /// Per-table rows come with the folds' own storage layout (`design/SHARED.md`, "Folds").
-fn store_blob<T: Serialize>(fold: &T, stmts: &mut Vec<Stmt>) {
+pub(crate) fn store_blob<T: Serialize>(fold: &T, stmts: &mut Vec<Stmt>) {
     stmts.push(("INSERT OR REPLACE INTO fold (id, row) VALUES (1, ?)", vec![codec::to_bytes(fold).into()]));
 }
 
-fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>> {
+pub(crate) fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>> {
     match crate::host::rows(sql, "SELECT row FROM fold WHERE id = 1", vec![])?.first() {
         Some(r) => Ok(Some(
             codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| crate::host::err(format!("fold row: {e}")))?,
@@ -1336,7 +1339,7 @@ fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>>
 }
 
 /// 401 for a credential refusal, 403 for a permission refusal, 422 for the rest.
-fn refusal(e: &impl Debug, status: u16) -> Value {
+pub(crate) fn refusal(e: &impl Debug, status: u16) -> Value {
     json!({ "err": format!("{e:?}"), "status": status })
 }
 

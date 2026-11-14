@@ -7,17 +7,19 @@
 //!   `.credentials`, `.credentials_rsaparams`) for a key pair the caller generated, with `useV2Flow`, `serverUrlV2`
 //!   ending in `/`, and `IsHostedServer` false through a `gitHubUrl` on the install (SHARED, JIT configs).
 //! - **The runner's OAuth exchange.** `verify_assertion` checks the RS256 (or PS256, for a FIPS runner) client
-//!   assertion against `RunnerRecord.key`, with `iss = sub = clientId` and `aud` the token URL. The client id is the
-//!   runner id's UUID form (`client_id`), so the exchange finds its record with no lookup table.
+//!   assertion against `RunnerRecord.key`, with `iss = sub = clientId` and `aud` the token URL. The client id holds
+//!   the owner, the registration shard, and the runner id in GUID form (`client_id`), so the edge finds the shard
+//!   that holds the record with no lookup table.
 //! - **Tokens.** Both the runner token and the job token are Graftyard's EdDSA JWS (`sign_token`, `verify_token`),
-//!   three parts as the runner needs [measured], under a key only the run service holds. The runner token names the
-//!   runner (`Credential::RunnerJwt`), the job token the job and attempt (`RuntimeToken`), and its `orch_id` the run.
+//!   three parts as the runner needs [measured], under a key only the run service holds. Each names the Actions shard
+//!   its calls go to; the runner token names the runner (`Credential::RunnerJwt`), the job token the job and attempt
+//!   (`RuntimeToken`), and its `orch_id` the run.
 //! - **The job message** (`job_message`) from the run, the job's spec, and the URLs, in the runner's JSON forms.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD as B64S, URL_SAFE_NO_PAD as B64};
 use ed25519_dalek::{Signer as _, SigningKey, Verifier as _, VerifyingKey};
-use graftyard_types::{DbId, Timestamp};
+use graftyard_types::{AccountId, ChainId, DbId, Timestamp};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::traits::{PrivateKeyParts, PublicKeyParts};
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -34,26 +36,53 @@ pub const JOB_TOKEN_TTL_S: u64 = 6 * 3_600 + 600;
 /// An assertion's window: the runner signs `nbf` to `nbf + 300` [measured].
 const ASSERTION_SKEW_S: u64 = 300;
 
-/// The runner id's OAuth client id: a UUID whose last 12 hex digits are the id, so the exchange recovers it.
-pub fn client_id(r: RunnerId) -> String {
-    format!("00000000-0000-4000-8000-{:012x}", r.0.0)
+/// The shard a runner registered on, `actions:<owner>.<shard>`, and the runner id: what its OAuth client id holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunnerAt {
+    pub owner: AccountId,
+    pub shard: u8,
+    pub runner: RunnerId,
 }
 
-pub fn runner_of_client(c: &str) -> Option<RunnerId> {
-    let tail = c.strip_prefix("00000000-0000-4000-8000-")?;
-    (tail.len() == 12).then(|| i64::from_str_radix(tail, 16).ok()).flatten().map(|n| RunnerId(DbId(n)))
+impl RunnerAt {
+    pub fn chain(self) -> ChainId {
+        ChainId::Actions(self.owner, self.shard)
+    }
 }
 
-/// A job's GUID in the job message (`jobId`, `timeline.id`, `plan.planId`): the id in a fixed UUID form, so the
-/// runner's later calls name it.
+/// A runner's OAuth client id: GUID form ("D") of 32 hex digits, the owner id (14, ids are below 2^53), the shard
+/// (2), and the runner id (16), so the exchange finds the record's shard from the assertion alone. The runner keeps
+/// it as a string and never checks a GUID version [measured, `OAuthCredential.cs`].
+pub fn client_id(at: RunnerAt) -> String {
+    let h = format!("{:014x}{:02x}{:016x}", at.owner.0.0, at.shard, at.runner.0.0);
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+pub fn runner_of_client(c: &str) -> Option<RunnerAt> {
+    let h: String = c.split('-').collect();
+    if h.len() != 32 || c.len() != 36 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| i64::from_str_radix(&h[r], 16).ok();
+    Some(RunnerAt {
+        owner: AccountId(DbId(n(0..14)?)),
+        shard: u8::from_str_radix(&h[14..16], 16).ok()?,
+        runner: RunnerId(DbId(n(16..32)?)),
+    })
+}
+
+/// A job's GUID in the job message (`jobId`, `timeline.id`, `plan.planId`): the id in a fixed UUID form, its 15 hex
+/// digits after the `8` variant nibble (ids are below 2^53), so the runner's later calls name it.
 pub fn job_guid(kind: u8, id: i64) -> String {
-    format!("00000000-0000-4{kind:03x}-8000-{id:012x}")
+    let h = format!("{id:015x}");
+    format!("00000000-0000-4{kind:03x}-8{}-{}", &h[..3], &h[3..])
 }
 
 pub fn job_of_guid(g: &str) -> Option<JobId> {
-    let (head, tail) = g.rsplit_once('-')?;
-    (head == "00000000-0000-4001-8000" && tail.len() == 12)
-        .then(|| i64::from_str_radix(tail, 16).ok())
+    let rest = g.strip_prefix("00000000-0000-4001-8")?;
+    let (a, b) = rest.split_once('-')?;
+    (a.len() == 3 && b.len() == 12)
+        .then(|| i64::from_str_radix(&format!("{a}{b}"), 16).ok())
         .flatten()
         .map(|n| JobId(DbId(n)))
 }
@@ -116,14 +145,14 @@ fn rsa_params(k: &RsaPrivateKey) -> Value {
 
 /// The `--jitconfig` value for runner `id`, registered to `scope_url` (the org or repository on the install, which
 /// the runner's `gitHubUrl` names), with the private key the caller generated and whose public half is the record's.
-pub fn jit_config(urls: &Urls, id: RunnerId, name: &str, scope_url: &str, key: &RsaPrivateKey) -> String {
+pub fn jit_config(urls: &Urls, at: RunnerAt, name: &str, scope_url: &str, key: &RsaPrivateKey) -> String {
     let runner = json!({
-        "agentId": id.0.0, "agentName": name, "poolId": 1, "poolName": "Default", "ephemeral": true,
+        "agentId": at.runner.0.0, "agentName": name, "poolId": 1, "poolName": "Default", "ephemeral": true,
         "disableUpdate": true, "gitHubUrl": scope_url, "workFolder": "_work", "useV2Flow": true,
         "serverUrlV2": urls.broker(),
     });
     let creds = json!({"scheme": "OAuth", "data": {
-        "clientId": client_id(id), "authorizationUrl": urls.token(), "requireFipsCryptography": "False"}});
+        "clientId": client_id(at), "authorizationUrl": urls.token(), "requireFipsCryptography": "False"}});
     let enc = |v: &Value| B64S.encode(v.to_string());
     let files =
         json!({".runner": enc(&runner), ".credentials": enc(&creds), ".credentials_rsaparams": enc(&rsa_params(key))});
@@ -156,7 +185,7 @@ struct AssertionClaims {
 }
 
 /// The runner the assertion's `iss` names; the caller then reads its record and calls `verify_assertion`.
-pub fn assertion_runner(jwt: &str) -> Option<RunnerId> {
+pub fn assertion_runner(jwt: &str) -> Option<RunnerAt> {
     let p = jwt.split('.').nth(1)?;
     let c: AssertionClaims = serde_json::from_slice(&B64.decode(p).ok()?).ok()?;
     runner_of_client(&c.iss)
@@ -165,7 +194,7 @@ pub fn assertion_runner(jwt: &str) -> Option<RunnerId> {
 /// Checks a runner's client assertion for runner `id`, whose record holds `key` (SPKI DER), at `now`.
 pub fn verify_assertion(
     jwt: &str,
-    id: RunnerId,
+    id: RunnerAt,
     key: &[u8],
     token_url: &str,
     now: Timestamp,
@@ -218,6 +247,8 @@ pub enum Grant {
 
 #[derive(Serialize, Deserialize)]
 struct TokenClaims {
+    /// The Actions shard the token's calls go to.
+    chain: ChainId,
     #[serde(flatten)]
     grant: Grant,
     exp: u64,
@@ -236,16 +267,16 @@ impl ServiceKey {
 
 /// A three-part EdDSA JWS for `grant` until `exp` (seconds). `orch_id` is the job token's, which the runner reads
 /// for its logs [measured].
-pub fn sign_token(key: &ServiceKey, grant: Grant, exp: u64, orch_id: Option<String>) -> String {
+pub fn sign_token(key: &ServiceKey, chain: ChainId, grant: Grant, exp: u64, orch_id: Option<String>) -> String {
     let h = B64.encode(br#"{"typ":"JWT","alg":"EdDSA"}"#);
-    let p = B64.encode(serde_json::to_vec(&TokenClaims { grant, exp, orch_id }).expect("claims"));
+    let p = B64.encode(serde_json::to_vec(&TokenClaims { chain, grant, exp, orch_id }).expect("claims"));
     let signed = format!("{h}.{p}");
     let s = B64.encode(SigningKey::from_bytes(&key.0).sign(signed.as_bytes()).to_bytes());
     format!("{signed}.{s}")
 }
 
-/// The grant a bearer token carries, if `public` signed it and it has not expired at `now`.
-pub fn verify_token(token: &str, public: &[u8; 32], now: Timestamp) -> Option<Grant> {
+/// The shard and grant a bearer token carries, if `public` signed it and it has not expired at `now`.
+pub fn verify_token(token: &str, public: &[u8; 32], now: Timestamp) -> Option<(ChainId, Grant)> {
     let (signed, s) = token.rsplit_once('.')?;
     let p = signed.split('.').nth(1)?;
     let sig: [u8; 64] = B64.decode(s).ok()?.try_into().ok()?;
@@ -254,7 +285,7 @@ pub fn verify_token(token: &str, public: &[u8; 32], now: Timestamp) -> Option<Gr
         .verify(signed.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig))
         .ok()?;
     let c: TokenClaims = serde_json::from_slice(&B64.decode(p).ok()?).ok()?;
-    (c.exp > now.0 / 1000).then_some(c.grant)
+    (c.exp > now.0 / 1000).then_some((c.chain, c.grant))
 }
 
 // ---- runner messages and the job message
@@ -479,7 +510,7 @@ mod tests {
         let key = RsaPrivateKey::new(&mut Rng(0x9e37_79b9_7f4a_7c15), 1024).unwrap();
         let other = RsaPrivateKey::new(&mut Rng(0x2545_f491_4f6c_dd1d), 1024).unwrap();
         let der = key.to_public_key().to_public_key_der().unwrap().as_bytes().to_vec();
-        let id = RunnerId(DbId(589_824));
+        let id = RunnerAt { owner: AccountId(DbId(100)), shard: 3, runner: RunnerId(DbId(589_824)) };
         let url = "https://h/_services/oauth/token";
         let now = Timestamp(1_800_000_000_000);
         let t = now.0 / 1000;
@@ -488,7 +519,11 @@ mod tests {
         assert_eq!(verify_assertion(&good, id, &der, url, now), Ok(()));
         let cases = [
             (assertion(&other, &client_id(id), url, t), AssertionError::Signature),
-            (assertion(&key, &client_id(RunnerId(DbId(589_825))), url, t), AssertionError::Claims),
+            (
+                assertion(&key, &client_id(RunnerAt { runner: RunnerId(DbId(589_825)), ..id }), url, t),
+                AssertionError::Claims,
+            ),
+            (assertion(&key, &client_id(RunnerAt { shard: 4, ..id }), url, t), AssertionError::Claims),
             (assertion(&key, &client_id(id), "https://h/other", t), AssertionError::Claims),
             (assertion(&key, &client_id(id), url, t - 900), AssertionError::Window),
             (assertion(&key, &client_id(id), url, t + 600), AssertionError::Window),
@@ -504,13 +539,14 @@ mod tests {
     fn tokens_carry_their_grant_until_they_expire_and_only_under_their_key() {
         let k = ServiceKey([7; 32]);
         let g = Grant::Job { job: JobId(DbId(5)), attempt: 2 };
-        let t = sign_token(&k, g, 2_000, Some("p.5.2".into()));
+        let chain = ChainId::Actions(AccountId(DbId(100)), 3);
+        let t = sign_token(&k, chain, g, 2_000, Some("p.5.2".into()));
         assert_eq!(t.split('.').count(), 3, "the runner parses the job token as a JWT");
-        assert_eq!(verify_token(&t, &k.public(), Timestamp(1_999_000)), Some(g));
+        assert_eq!(verify_token(&t, &k.public(), Timestamp(1_999_000)), Some((chain, g)));
         assert_eq!(verify_token(&t, &k.public(), Timestamp(2_000_000)), None, "expired at exp");
         assert_eq!(verify_token(&t, &ServiceKey([8; 32]).public(), Timestamp(0)), None);
         // Another job's claims under this token's signature.
-        let other = sign_token(&k, Grant::Job { job: JobId(DbId(6)), attempt: 2 }, 2_000, None);
+        let other = sign_token(&k, chain, Grant::Job { job: JobId(DbId(6)), attempt: 2 }, 2_000, None);
         let mut parts: Vec<&str> = t.split('.').collect();
         parts[1] = other.split('.').nth(1).unwrap();
         assert_eq!(verify_token(&parts.join("."), &k.public(), Timestamp(0)), None);
@@ -518,10 +554,16 @@ mod tests {
 
     #[test]
     fn ids_round_trip_through_the_runner_guids() {
-        let r = RunnerId(DbId(0xA_0000_0001));
-        assert_eq!(runner_of_client(&client_id(r)), Some(r));
-        let j = JobId(DbId(589_826));
+        // The largest ids there are: cell 255's last block (ids are below 2^53).
+        let top = DbId::pack(255, DbId::MAX_BLOCK, u16::MAX).unwrap();
+        let r = RunnerAt { owner: AccountId(top), shard: 15, runner: RunnerId(DbId(top.0 - 1)) };
+        let g = client_id(r);
+        assert_eq!((g.len(), g.matches('-').count()), (36, 4), "GUID form D");
+        assert_eq!(runner_of_client(&g), Some(r));
+        assert_eq!(runner_of_client(&g.replace('-', "")), None);
+        let j = JobId(top);
         assert_eq!(job_of_guid(&job_guid(1, j.0.0)), Some(j));
+        assert_eq!(job_of_guid(&job_guid(1, 589_826)), Some(JobId(DbId(589_826))));
         assert_eq!(job_of_guid(&job_guid(2, j.0.0)), None, "a plan GUID is not a job's");
         assert_eq!(conclusion("succeededWithIssues"), Some(Conclusion::Success));
         assert_eq!(conclusion("abandoned"), Some(Conclusion::Failure));

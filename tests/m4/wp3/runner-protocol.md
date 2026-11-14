@@ -60,6 +60,7 @@ A broker message with body `{"jobId", "timeout": "00:00:30"}`. The runner cancel
 
 - A trailing `/` on `serverUrlV2`, `run_service_url`, `SystemVssConnection.url`, and `results_endpoint`.
 - `source` in every error body, or the runner treats the error as generic.
+- A `clientId` the runner keeps as a string: it never checks a GUID version, so Graftyard's packs the owner, the registration shard, and the runner id (`runsvc::client_id`) [measured: the matrix run after the change].
 - A JWT-shaped job token whose `orch_id` holds no spaces: the runner puts it in its `User-Agent`, and a space throws `FormatException` before the first renew [measured].
 - `{"ok": true}` from the metadata and step-update calls.
 - `Retry-After` of at least 10 s to slow a runner at all; DESIGN's `Retry-After: 15` and SHARED's re-poll in 15 to 30 s are consistent with this.
