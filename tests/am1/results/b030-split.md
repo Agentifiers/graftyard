@@ -254,6 +254,18 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
   - A version that promoted ahead first until the log passed the cap reached 653,086 B at 2x, and failed (plant 40).
   - On e9418153's rule the log passes the cap (plant 38).
 
+- **Third resume, from 23:03:27Z (simulated day 2.005), site day 78cf4070 (DONE 23:01:18Z).** The tree changes a
+  third time, at day 2.005, for the hysteresis band. The resume started with the log at 2.077 GB, over the trigger and
+  under the cap. Leader readings on site 0, 23:05:42Z to 23:22:57Z (20 readings, about 56 s apart, four drain cycles):
+  - log 1.884 to 2.026 GB at every reading, under `LOG_MAX_BYTES` (2.147 GB). Each cycle archives from about 2.01 to
+    1.89 GB (the floor is 1.879 GB), idles while it promotes ahead, and starts again past the trigger (2.013 GB);
+  - applied 112.7 a minute, archived 139.4 a minute and promoted 135.5 a minute over the window. The 1.5x rule did not
+    apply, because the log was never over its cap;
+  - unpromoted tail 61 to 218 MB. It rises during each archive run, when archiving goes first, and drops to 61 to
+    75 MB after the promotions that follow. It does not grow from cycle to cycle;
+  - archive steps 41 to 46 entries, 7 to 10 s apart (Workers Logs, site a);
+  - `SQLITE_FULL` 0, no StepDown since 12:49:02Z, no leaderless gap, no watcher alert.
+
 ## Cost
 
 | Window | DO and Workers | Containers |
