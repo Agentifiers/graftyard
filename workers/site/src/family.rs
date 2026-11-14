@@ -568,8 +568,9 @@ impl Family for Repo {
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
     /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it. 32.16 is
     /// M4-WP1's hook commands, which the edge sends once `FormatsEnable` enabled it, and the `Webhooks` consumer's
-    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.22 is a review
-    /// comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
+    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.21 is
+    /// M4-WP3's `RunChecksCmd`, which only `RunOwner` sends, from a release whose Actions leaders run it. 32.22 is a
+    /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -591,6 +592,7 @@ impl Family for Repo {
             git::hooks::REPO_FORMAT_HOOKS,
             git::watch::REPO_FORMAT_WATCH,
             git::issue_ops::call::REPO_FORMAT_REVIEWS,
+            git::run_checks::REPO_FORMAT_ACTIONS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
