@@ -8,7 +8,7 @@ import json,sys,bisect,collections
 D=json.load(open(f"tests/nr3/raw/trace-{sys.argv[1]}.json"))
 def pct(xs,q):
     xs=sorted(xs); return xs[min(len(xs)-1,int(q*len(xs)))] if xs else None
-f=D["f0"]; T0,T1=f[0][0],f[-1][0]
+f=next(v for k,v in D.items() if k.startswith("f")); T0,T1=f[0][0],f[-1][0]  # the leader, whichever site
 taken=collections.defaultdict(list)
 for at,kind,peer,batch,index,ms in f:
     if kind==5: taken[(peer,batch)].append(at)
@@ -110,3 +110,16 @@ if any(arr.values()):
         a=addr[s]; out=[x[0]-x[1] for x in arr.get(a,[])]; body=[x[2] for x in arr.get(a,[])]
         back=[at-index for at,kind,peer,batch,index,ms in D[s] if kind==21 and index]
         print(s,"%s/%s/%s | %s/%s | %s/%s/%s"%(pct(out,.5),pct(out,.9),pct(out,.99),pct(body,.5),pct(body,.99),pct(back,.5),pct(back,.9),pct(back,.99)))
+# The commit path's AppendEntries legs, for LM-1 (the operator after site day 13): the leader's calls to each voter
+# follower. out = the follower's handler start minus the leader's send (CallArrived 20 on the follower's trace `v<site>`,
+# from split.mjs); back = the leader's arrival minus the follower's handler return (AnswerArrived 21 on the leader's).
+vs=sorted(k for k in D if k.startswith("v"))
+if any(r[1] in (20,21) for r in f):
+    lead=int(next(k for k in D if k.startswith("f"))[1:])
+    print("commit path wire split, leader -> voter: out p50/p90/p99 | body p50/p99 | back p50/p90/p99")
+    for k in vs:
+        site=int(k[1:])
+        rows=[(at-index,ms) for at,kind,peer,batch,index,ms in D[k] if kind==20 and peer==lead and T0<=at<=T1]
+        back=[at-index for at,kind,peer,batch,index,ms in f if kind==21 and peer==site and index]
+        out=[r[0] for r in rows]; body=[r[1] for r in rows]
+        print(k,"%s/%s/%s | %s/%s | %s/%s/%s"%(pct(out,.5),pct(out,.9),pct(out,.99),pct(body,.5),pct(body,.99),pct(back,.5),pct(back,.9),pct(back,.99)))

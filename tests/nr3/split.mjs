@@ -106,4 +106,16 @@ try {
 } catch (e) {
   console.log("leader", String(e).slice(0, 80));
 }
-if (process.env.RAW) (await import("node:fs")).writeFileSync(process.env.RAW, JSON.stringify(raw));
+// The followers' traces too (`v<site>`), for the commit path's AppendEntries legs in legs.py's wire split.
+if (process.env.RAW) {
+  const { voterNames } = await import("../am1/hosted/lib.mjs");
+  const names = await voterNames(chain).catch(() => ({}));
+  for (const s of st.map((s) => s.site).filter((s) => s !== leader)) {
+    try {
+      raw[`v${s}`] = (await member(chain, s, "/stats", undefined, 30000, names[s])).v?.trace ?? [];
+    } catch (e) {
+      console.log(`v${s}`, String(e).slice(0, 80));
+    }
+  }
+  (await import("node:fs")).writeFileSync(process.env.RAW, JSON.stringify(raw));
+}
