@@ -337,8 +337,19 @@ fn parent(h: &Rc<Host<Repo>>, repo: RepoId, key: String) {
     if RUNNING.with(|r| r.borrow().contains(&key)) {
         return;
     }
-    if CHECKED.with(|c| c.borrow().get(&key).is_some_and(|at| now_ms() < at + CHECK_EVERY_MS)) {
+    // A split under way is armed for its next check here, inside the alarm invocation, which sets that alarm again
+    // before it returns (`Host::alarm`). An alarm armed only from the task below, after the invocation ended, can be
+    // lost: smoke 3's parent sat 21 minutes with its child restored, until a request woke it
+    // (`tests/am1/results/b030-split.md`, "Smoke 3").
+    let checked = CHECKED.with(|c| c.borrow().get(&key).copied());
+    if let Some(at) = checked.filter(|at| now_ms() < at + CHECK_EVERY_MS) {
+        if leader_due(h) {
+            h.arm_in((at + CHECK_EVERY_MS - now_ms()) as i64 + 1);
+        }
         return;
+    }
+    if leader_due(h) {
+        h.arm_in(CHECK_EVERY_MS as i64 + 1);
     }
     RUNNING.with(|r| r.borrow_mut().insert(key.clone()));
     let w = Rc::downgrade(h);
@@ -362,7 +373,7 @@ fn parent(h: &Rc<Host<Repo>>, repo: RepoId, key: String) {
         // A split under way checks again on its own: a leader that serves nothing arms no alarm, and smoke 2's
         // parent waited on a child restored at 05:39Z with no alarm after 05:36Z (`tests/am1/results/b030-split.md`).
         if leader_due(&h) {
-            h.arm_in(CHECK_EVERY_MS as i64);
+            h.arm_in(CHECK_EVERY_MS as i64 + 1);
         }
     });
 }
