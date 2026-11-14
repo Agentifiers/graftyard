@@ -1,0 +1,15 @@
+2026-11-14T14:59:42Z
+4f9380ad
+a1.mjs b0-34 --repo b034-mono --chain repo:131296 --seconds 900 --kill-shard-at 300 --b034 tests/fanout/raw/b034-m28.json
+file:///home/user/workspace/repo/tests/am1/rest/a1.mjs:442
+if (!main) throw new Error("the repository has no main");
+                 ^
+
+Error: the repository has no main
+    at file:///home/user/workspace/repo/tests/am1/rest/a1.mjs:442:18
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v26.12.0
+exit 1
+2026-11-14T15:01:55Z
+DONE

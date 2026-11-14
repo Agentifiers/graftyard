@@ -2258,3 +2258,29 @@ double decode.
 
 **Cost** $122.56 at 14:54Z (containers $47.72). Sweep "sweep ok" after both runs. B0-34 started at 14:55Z on the same
 deploy with memguard and terms on `repo:131296`.
+
+### Round 17b: B0-34 not run on m28; the 5 GB monorepo's git cache did not warm in 15 minutes (2026-11-14)
+
+`tests/fanout/b034.sh m28` on the m28 deploy (round 17), b034-mono = repo:131296 (5.02 GB of torvalds/linux, round 10's
+seed, kept). The seeds were already done (`seed … exit 0` for all five networks). `learners.mjs` and `k.mjs` hit "no
+leader" at 14:59Z (the group was idle; site 0 led term 2 from 14:59:57Z), and `a1.mjs b0-34` then exited 1 at
+15:01:55Z: "the repository has no main" after its 120 s wait for `refs/heads/main` in ls-refs. The group had `main`
+(the leader's `/read {"refs"}` at index 292 listed `refs/heads/main` and `refs/heads/b034-parts`); what failed was the
+edge's ls-refs, which the git cache answers.
+
+The cache was cold: every row since round 16 tears its shards down, so b034-mono's started fresh. The site's warm
+calls logged "shard warm 131296 site 0/1/2: no answer in 25 s" (5 of 8 warms) at 14:59–15:02Z. Then
+`tests/fanout/warmmono.mjs` polled ls-refs every 75 s from 15:12:24Z for 15 minutes: 12 of 12 answers were
+`503 git cache: 503 {"warming":true}`, each after 64.3–66.9 s (`tests/fanout/raw/warmmono-b034m28.jsonl`). So a shard
+rehydrating the 5 GB network did not finish in at least 28 minutes (14:59:42Z to 15:27:18Z). The row as written needs
+the monorepo's shards warm before its window: a warm step in `b034.sh` that waits on `/catchup` until it answers, with
+its own time limit, or shards that are not torn down between this row's tries. Not done here: the budget is held back
+for teardown, and B0-34 is git CPU, so it is better run on the next deploy with main a4ddca4f.
+
+The three shard containers the warm started were torn down (`teardown.py --sweep`: torn_down 3, then "no shard
+container running"). **Cost** $123.02 at 15:29Z (containers $48.07).
+
+**B0-33 holds** until the voter memory fix is on main, then reruns as written (round 17's run 1 does not count).
+**JS heap.** No instrument added: the site exposes only `wasmMemMb` (the wasm linear memory), and the Workers runtime's
+`process` documents no `memoryUsage()`; Cloudflare documents only DevTools snapshots and production heap profiles.
+m3f's run covers the JS side.
