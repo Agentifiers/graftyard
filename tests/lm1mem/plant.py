@@ -318,6 +318,16 @@ MUTANTS = [
      '        self.idle.extend(lapsed);', '        drop(lapsed);', ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'a_lapsed_lease']),
     ('pool-warm: a pool warm starts no stopped shard', 'crates/git/src/shard.rs',
      '        Caller::PoolWarm => Serve::Run { touch: false },', '        Caller::PoolWarm => Serve::Skip,', ['cargo', '-p', 'graftyard-git', '--test', 'shard', 'only_a_clients_call']),
+    # m30: a step waiting on cold slots keeps them (a forced k 4 trimmed its grants to k - 1 = 0 and never stepped).
+    ('pool-keep: a waiting step trims its slots to the k served', 'crates/git/src/shard.rs',
+     '    if next < granted { served.max(granted - 1) } else { served }', '    served',
+     ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'a_waiting_step']),
+    ('pool-keep: a waiting step keeps every slot the ledgers granted, not the ones it would serve from', 'crates/git/src/shard.rs',
+     '    if next < granted { served.max(granted - 1) } else { served }', '    if next < granted { served.max(want) } else { served }',
+     ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'a_waiting_step']),
+    ('pool-keep: a granted step keeps k, one too many', 'crates/git/src/shard.rs',
+     '    let served = if reserve { want.min(next) } else { next.saturating_sub(1) };', '    let served = if reserve { want.min(next) } else { next };',
+     ['cargo', '-p', 'graftyard-git', '--test', 'agent_load', 'a_waiting_step']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',

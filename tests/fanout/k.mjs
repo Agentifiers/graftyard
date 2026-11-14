@@ -11,9 +11,16 @@ const names = (await import("node:fs")).readFileSync(`${process.env.M3_STATE}/am
 const name = names.find(([, i]) => `repo:${i}` === chain)?.[0];
 if (name) await api("GET", `/api/v3/repos/m3org/${name}/branches/main`, tokens.admin);
 const leader = await leaderOf(chain);
+// A step commits only to caught-up pool slots (pool-warm): the first ask leases and warms them, so the ask repeats
+// every 10 s until k is reached or FORCE_S (default 180) pass.
 if (k !== undefined) {
-  const r = await member(chain, leader, "/bench_seed", { fanout: Number(k) }, 20_000);
-  log(`${chain} leader ${leader}: set k ${k}: ${JSON.stringify(r.v ?? r.status).slice(0, 200)}`);
+  const until = Date.now() + Number(process.env.FORCE_S ?? 180) * 1000;
+  for (;;) {
+    const r = await member(chain, leader, "/bench_seed", { fanout: Number(k) }, 20_000);
+    log(`${chain} leader ${leader}: set k ${k}: ${JSON.stringify(r.v ?? r.status).slice(0, 200)}`);
+    if (r.v?.k === Number(k) || Date.now() > until) break;
+    await new Promise((res) => setTimeout(res, 10_000));
+  }
 }
 const v = await member(chain, leader, "/read", { q: { ranges: true } }, 20_000);
 log(`${chain} leader ${leader}: k ${JSON.stringify(v.v?.value?.fanout ?? v.v ?? v.status).slice(0, 200)} at ${v.v?.index}`);
