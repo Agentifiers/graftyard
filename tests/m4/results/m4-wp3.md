@@ -6,7 +6,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 
 | Row | In memory | Hosted (graft-m4a) |
 | --- | --- | --- |
-| BF-4 | Pass | Not run |
+| BF-4 | Pass, also with the real runner killed | Not run |
 | BF-37 | Parser and filter built (`merge_group`, `pull_request` `enqueued`/`dequeued`); trigger not wired | Not run |
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
@@ -32,7 +32,7 @@ Three real `Member<ActionsCmd>`s of one owner's shard and three real `Member<Rep
 - **One runner at a time.** Two runners matched to one job in one entry: the second is refused `Stale`. A runner whose labels lack the job's is refused, and a second run for one trigger is refused `Duplicate`.
 - **The abort path.** A repository deleted mid-run answers `Gone`, and `RunOwner` cancels the run's unfinished jobs.
 
-`cargo test -p graftyard-actions`: 19 unit tests, 6 gate tests, and the parser's differential test pass.
+`cargo test -p graftyard-actions`: 24 unit tests, 6 gate tests, and the parser's differential test pass.
 
 ### Plants: `tests/m4/wp3/plant.py`
 
@@ -58,6 +58,14 @@ Three real `Member<ActionsCmd>`s of one owner's shard and three real `Member<Rep
 | 17 | every job's check row is version 1 | caught |
 
 The first run missed four plants. Each miss led to a fix: the stall test in `shard.rs`, a `notify` job behind `report` with lint finishing last, the cursor test, and the abort-path test. One plant was dropped: "a completed run takes another status" cannot happen, because a completed run's jobs take no event, so the guard was removed instead.
+
+## The run service with an unmodified runner: `crates/actions/examples/runsvc_host.rs`
+
+The run service's pure half is `crates/actions/src/runsvc.rs` (JIT config, the OAuth assertion, job tokens, the job message, steps, cancellation) and `crates/actions/src/relay.rs` (LogRelay's tail and its viewer messages). The example host runs them in memory on three real `Member<ActionsCmd>`s behind the run service's HTTP and WebSocket routes, and `tests/m4/wp3/run-host.sh` drives `actions/runner` 2.338.2, unmodified, against it.
+
+- **A matrix completes** (`tests/m4/wp3/run/ci.yml`, 2 jobs, ephemeral runners): both jobs `Completed Success`, step logs PUT to the blob route, and 15 live-log frames arrived over `FeedStreamUrl` [measured].
+- **BF-4 with the real runner** (`long.yml`, `sleep 1200`): the runner tree was killed with `kill -9` at 09:28:15Z. Its last `renewjob` had answered `lockedUntil` 09:37:56Z, and the leader's `ExpireLeases` alarm completed the job `Failure` at 09:37:56.766Z, 10 minutes after that renew, inside the row's 10 [measured]. After the kill the only commit was the alarm's.
+- **Found:** a job token's `orch_id` must hold no spaces, because the runner sends it in its `User-Agent` (`tests/m4/wp3/runner-protocol.md`).
 
 ## The parser: `crates/actions/src/workflow`
 

@@ -1,0 +1,10 @@
+name: long
+on: push
+jobs:
+  long:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: |
+          echo start-long-step
+          sleep 1200
+          echo should-not-print

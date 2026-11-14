@@ -54,13 +54,13 @@ A broker message with body `{"jobId", "timeout": "00:00:30"}`. The runner cancel
 - Started only when `variables["system.github.results_endpoint"]` is set. Without it the job still succeeds, and its step output goes nowhere [measured, `--results-url none`]. All uploads are best effort.
 - Twirp: `POST {results_endpoint}twirp/results.services.receiver.Receiver/<Method>`, job token, snake_case JSON. `GetStepLogsSignedBlobURL` and `GetJobLogsSignedBlobURL` answer `{logs_url, blob_storage_type, soft_size_limit}`; `CreateStepLogsMetadata` and `CreateJobLogsMetadata` must answer `{"ok": true}`, or the worker throws. `twirp/github.actions.results.api.v1.WorkflowStepUpdateService/WorkflowStepsUpdate` carries step status (3 in progress, 6 completed) and conclusion (2 success, 3 failure, 4 cancelled, 7 skipped), and also needs `{"ok": true}` [measured].
 - A blob `logs_url` is PUT with no Authorization header and `Content-Type: text/plain` [measured: one PUT per log]. A multi-block log appends `&comp=appendblock` and, on the last block, `&seal=true`, so the signed URL must already hold a `?` [doc]. Azure headers are sent only when `blob_storage_type` is `BLOB_STORAGE_TYPE_AZURE`.
-- **Live log** [doc]: `SystemVssConnection.data["FeedStreamUrl"]` names a WebSocket, which the runner opens with `Authorization: Bearer <job token>` (30 s connect, 3 retries). Each batch is one text message of `{"Count", "Value": [lines], "StepId", "StartLine"}`, in 1,024-byte frames (`Runner.Common/ResultsServer.cs:56-296`). Delivery is best effort.
+- **Live log** [measured, `tests/m4/wp3/run-host.sh`]: `SystemVssConnection.data["FeedStreamUrl"]` names a WebSocket, which the runner opens with `Authorization: Bearer <job token>` (30 s connect, 3 retries). Each batch is one text message of `{"count", "value": [lines], "stepId", "startLine"}`, keys in camelCase, in 1,024-byte frames (`Runner.Common/ResultsServer.cs:56-296`). Delivery is best effort.
 
 ## What a server must get exact
 
 - A trailing `/` on `serverUrlV2`, `run_service_url`, `SystemVssConnection.url`, and `results_endpoint`.
 - `source` in every error body, or the runner treats the error as generic.
-- A JWT-shaped job token.
+- A JWT-shaped job token whose `orch_id` holds no spaces: the runner puts it in its `User-Agent`, and a space throws `FormatException` before the first renew [measured].
 - `{"ok": true}` from the metadata and step-update calls.
 - `Retry-After` of at least 10 s to slow a runner at all; DESIGN's `Retry-After: 15` and SHARED's re-poll in 15 to 30 s are consistent with this.
 - The lease: the runner renews every 60 s and stops on a kill, so a 10-minute lease without a renew ends the job (BF-4) with no help from the runner.

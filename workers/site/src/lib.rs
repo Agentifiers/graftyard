@@ -26,6 +26,7 @@ mod hookseq;
 mod host;
 mod inbox;
 mod load;
+mod logrelay;
 mod lookup;
 mod member;
 mod merge_queue;
@@ -42,6 +43,7 @@ mod tier;
 
 pub use hookseq::HookSequencer;
 pub use inbox::Inbox;
+pub use logrelay::LogRelay;
 pub use member::Member;
 pub use registry::Registry;
 pub use search::SearchShard;

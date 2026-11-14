@@ -5,7 +5,9 @@
 pub mod ids;
 pub mod job;
 pub mod labels;
+pub mod relay;
 pub mod run_owner;
+pub mod runsvc;
 pub mod shard;
 pub mod workflow;
 

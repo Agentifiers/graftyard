@@ -73,14 +73,14 @@ const wrangler = (args) =>
 // A site binds every site's `GitShard` class, its own first: Cloudflare attaches the container config to the first
 // binding of the class, which must be the script's own. Another site's binding is how the archive alarm promotes on
 // that site's shard while its own rehydrates (workers/site/src/archive.rs, `SiteHost::promote`).
-// `HookSequencer` (v3), `SearchShard`, and `Inbox` (v4) are new to scripts that exist, so phase 1 binds only a site's
-// own; phase 2, once every site has the class, binds every site's.
-const NEW_CLASSES = ["HOOKSEQ", "SEARCH", "INBOX"];
+// `HookSequencer` (v3), `SearchShard`, and `Inbox` (v4), and `LogRelay` (v5) are new to scripts that exist, so phase 1
+// binds only a site's own; phase 2, once every site has the class, binds every site's.
+const NEW_CLASSES = ["HOOKSEQ", "SEARCH", "INBOX", "LOGRELAY"];
 function bindings(self, targets, phase1 = false) {
   const own = targets.filter((s) => s.id === self.id);
   const order = [...own, ...targets.filter((s) => s.id !== self.id)];
   return [["MEMBER", "Member"], ["REGISTRY", "Registry"], ["SHARD", "GitShard"], ["HOOKSEQ", "HookSequencer"],
-    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"]].flatMap(([b, cls]) =>
+    ["SEARCH", "SearchShard"], ["INBOX", "Inbox"], ["LOGRELAY", "LogRelay"]].flatMap(([b, cls]) =>
     order.filter((s) => !(phase1 && NEW_CLASSES.includes(b) && s.id !== self.id)).map((s) => ({
       name: `${b}_${s.id}`,
       class_name: cls,
@@ -130,12 +130,14 @@ function config(site, targets, own = true, phase1 = false) {
     // The pack sweeper (workers/site/src/sweep.rs). Each site sweeps the networks it is home for.
     triggers: { crons: [SWEEP_CRON] },
     // v2 adds the git cache shard class to scripts that v1 created with members and registries only; v3 the owners'
-    // webhook delivery stores (M4-WP1); v4 the search shards and the accounts' `Inbox` objects (M4-WP2).
+    // webhook delivery stores (M4-WP1); v4 the search shards and the accounts' `Inbox` objects (M4-WP2); v5 the
+    // Actions jobs' live-log relays (M4-WP3).
     migrations: [
       { tag: "v1", new_sqlite_classes: ["Member", "Registry"] },
       { tag: "v2", new_sqlite_classes: ["GitShard"] },
       { tag: "v3", new_sqlite_classes: ["HookSequencer"] },
       { tag: "v4", new_sqlite_classes: ["SearchShard", "Inbox"] },
+      { tag: "v5", new_sqlite_classes: ["LogRelay"] },
     ],
     observability: { enabled: true },
   };
