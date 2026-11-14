@@ -58,6 +58,8 @@ struct Inner {
     reads: std::cell::Cell<u64>,
     #[cfg(feature = "test-faults")]
     held_unloaded: bool,
+    /// The accounts this tier's rows name, kept by `apply` once built (`named`): derived, in memory only.
+    named: graftyard_api::hosted::NamedIndex,
 }
 
 /// A handle on one tier's tables. Clones share the tables and the write buffer, so the fold, the snapshot writer, and
@@ -286,7 +288,22 @@ impl TierSql {
             reads: std::cell::Cell::new(0),
             #[cfg(feature = "test-faults")]
             held_unloaded: false,
+            named: Default::default(),
         })))
+    }
+
+    /// The accounts this tier's rows name (`graftyard_api::hosted::accounts`, this tier's half). Built from the rows
+    /// the first time after the handle opens or the tier changed other than by `apply` (an install, a metadata load
+    /// from another index), then kept by `apply` (`Store::wrote`), so a narrow read at a later state reads no row for
+    /// it. Never stored: a restarted or installed member builds it again from its own rows.
+    pub fn named(&self) -> Vec<graftyard_types::AccountId> {
+        let applied = graftyard_fold::meta(self).applied;
+        if !self.0.borrow().named.current(applied) {
+            let tier = self.0.borrow().tier;
+            let built = graftyard_api::hosted::NamedIndex::build(self, tier, applied);
+            self.0.borrow_mut().named = built;
+        }
+        self.0.borrow().named.accounts().collect()
     }
 
     /// The cause of a read SQLite refused, if one was: the member must not use what it read since.
@@ -537,6 +554,14 @@ impl Store for TierSql {
     fn delete(&mut self, table: &str, key: &[Val]) {
         let mut inner = self.0.borrow_mut();
         inner.open.insert((table.to_owned(), key.to_vec()), None);
+    }
+
+    fn wrote(&mut self, table: &str, key: &[Val], old: Option<&Stored>, new: Option<&Stored>) {
+        self.0.borrow_mut().named.wrote(table, key, old, new);
+    }
+
+    fn applied(&mut self, index: Index) {
+        self.0.borrow_mut().named.applied(index);
     }
 
     /// The table's rows with every buffered write on top: enough stored rows that buffered deletes cannot leave fewer

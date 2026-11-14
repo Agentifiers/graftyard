@@ -3373,3 +3373,19 @@ Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (
 
 **Flip.** A REST list sorted by `updated` or `comments` on a repository whose `issue` rows alone cost more than 20% of a learner's CPU at journey 9's rate: then the sort index above.
 
+### `narrow-builds` (2): the accounts a tier names are a derived index `apply` keeps in memory, never stored, 2026-11-14
+
+Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"; F65).
+
+**Decision.** Each member keeps, per tier, a count of the rows naming each account (`hosted::NamedIndex`): issue authors, assignees, comment authors, reviewers, status creators, release authors, asset uploaders, lock owners, and mergers, the rows `hosted::accounts` scans. `apply` moves it through `Store::wrote` (each row's old and new value, before the write) and `Store::applied` (the entry finished), and it counts as current only when it followed every entry to the tier's `applied`. Otherwise it is built from the rows at the next narrow read: after a start, an install, a metadata load from another index, or a lost write. A narrow answer's `named` is the union of the two tiers' indexes. It is never stored. The scan stays for the edge's whole-tier read and the hook sequencer.
+
+**How existing members get it.** Derived and never persisted, the third of the operator's options. A member built on this release builds the index from the rows it already holds on its first narrow read, whatever release wrote them, and a member restored from a snapshot taken before this change does the same. The other two options were refused by the fold rules. A stored table is a fold schema change: it enters `fold_digest` and snapshots, so it ships as a lazy refold under the two-release rule ("Schema change is a refold, never a migration"), and members on the previous release would digest differently until every site rolled. A table rebuilt from the log at boot or restore is a stored table with a refold. Nothing a reply depends on is outside the rows, so SHARED's new rule on derived indexes applies.
+
+**Why.** A narrow build's `named` re-ran `hosted::accounts` whenever the tiers' state changed, which at B0-29's write rate was nearly every build: about 1,500 of a build's 2,605 storage reads at 500 PRs [measured, `tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"].
+
+**What it beat.** The fold table the operator named, which needs the format and refold above for an answer the rows already hold. A per-state cache of the scan, which is what `NAMED` was, misses on nearly every entry.
+
+**Evidence.** `crates/api/tests/narrow.rs`: the index kept through every entry of `big()` equals the scan of the tiers at each entry; an account leaves with its last naming row and stays while another names it; an index that skipped an entry is not current; a member restored from snapshot frames that hold no index answers the same `named` and the same narrow answers as one that applied the log; `pulls/250` at 500 PRs reads at most 40 storage statements with the kept index, where the scan read over 1,500 rows. `tests/nr3/plant.py` 42 to 47 catch 6 of 6 (see the results file). The index costs about 40 bytes per named account per member.
+
+**Flip.** A narrow read that needs the index before its tier is loaded, or a first-read build measured over 50 ms of a member's CPU: then store it as a fold table under the two-release rule.
+

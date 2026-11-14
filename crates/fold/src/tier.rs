@@ -171,13 +171,15 @@ impl Read for Writer<'_> {
 
 impl Rows for Writer<'_> {
     fn put(&mut self, table: &str, key: Key, cols: Vec<Val>) {
-        self.before_change(table, &key);
+        let old = self.before_change(table, &key);
         let row = Stored { written: self.index, cols };
         add(&mut self.meta.sum, &row_hash(table, &key, &row));
+        self.store.wrote(table, &key, old.as_ref(), Some(&row));
         self.store.put(table, key, row);
     }
     fn delete(&mut self, table: &str, key: &[Val]) {
-        if self.before_change(table, key).is_some() {
+        if let Some(old) = self.before_change(table, key) {
+            self.store.wrote(table, key, Some(&old), None);
             self.store.delete(table, key);
         }
     }
@@ -245,6 +247,7 @@ pub fn apply<T: Tiered>(t: &T, store: &mut dyn Store, tier: Tier, e: &LogEntry<T
     if let Some(old) = e.index.0.checked_sub(DIGESTS_KEEP) {
         store.delete(DIGESTS, &[Val::Int(old as i64)]);
     }
+    store.applied(e.index);
     Ok(())
 }
 
@@ -276,6 +279,8 @@ pub fn seed(store: &mut dyn Store, schema: &Schema, table: &str, written: Index,
         }
         let row = Stored { written, cols };
         add(&mut m.sum, &row_hash(table, &key, &row));
+        let old = store.get(table, &key);
+        store.wrote(table, &key, old.as_ref(), Some(&row));
         store.put(table, key, row);
     }
     save_meta(store, &m);

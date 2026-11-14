@@ -947,3 +947,183 @@ fn a_page_of_a_wide_repository_reads_its_page_not_every_item() {
         assert!(rows <= 900, "{what}: {rows} rows for a 30-item page");
     }
 }
+
+/// `named` from the tiers' derived index (`hosted::NamedIndex`), as a member keeps it: built from the rows once, then
+/// moved by every row `apply` writes.
+fn indexed(core: &MemStore, meta: &MemStore, at: Index) -> std::collections::BTreeSet<AccountId> {
+    use graftyard_api::hosted::NamedIndex;
+    use graftyard_types::Tier;
+    let (c, m) = (NamedIndex::build(core, Tier::Core, at), NamedIndex::build(meta, Tier::Metadata, at));
+    c.accounts().chain(m.accounts()).collect()
+}
+
+/// A member keeps each tier's `NamedIndex` through `Store::wrote` and `Store::applied`: a store that does what
+/// `TierSql` does for them.
+#[derive(Clone, Debug, Default)]
+struct Kept {
+    rows: MemStore,
+    named: graftyard_api::hosted::NamedIndex,
+}
+
+impl graftyard_fold::Store for Kept {
+    fn get(&self, t: &str, k: &[graftyard_fold::Val]) -> Option<graftyard_fold::Stored> {
+        graftyard_fold::Store::get(&self.rows, t, k)
+    }
+    fn put(&mut self, t: &str, k: graftyard_fold::Key, r: graftyard_fold::Stored) {
+        self.rows.put(t, k, r)
+    }
+    fn delete(&mut self, t: &str, k: &[graftyard_fold::Val]) {
+        self.rows.delete(t, k)
+    }
+    fn scan(&self, t: &str, f: &[graftyard_fold::Val], l: usize) -> Vec<(graftyard_fold::Key, graftyard_fold::Stored)> {
+        graftyard_fold::Store::scan(&self.rows, t, f, l)
+    }
+    fn wrote(
+        &mut self,
+        t: &str,
+        k: &[graftyard_fold::Val],
+        o: Option<&graftyard_fold::Stored>,
+        n: Option<&graftyard_fold::Stored>,
+    ) {
+        self.named.wrote(t, k, o, n)
+    }
+    fn applied(&mut self, i: Index) {
+        self.named.applied(i)
+    }
+}
+
+/// The accounts every naming row of `big()` names, written out by hand: authors, the assignee, the reviewer a review
+/// request names (not a naming row), status creators, and the merger.
+#[test]
+fn named_is_every_account_the_tiers_name_and_the_kept_index_follows_apply() {
+    use graftyard_types::Tier;
+    let c = big();
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let whole = graftyard_api::hosted::accounts(&m.core, &m.meta);
+    // Authors are WRITER and READER, comments READER, statuses WRITER, the merges OWNER; the review request's
+    // account is named by no naming row.
+    let want: std::collections::BTreeSet<AccountId> = [OWNER, WRITER, READER].map(|a| AccountId(DbId(a))).into();
+    assert_eq!(whole, want);
+    assert!(!whole.contains(&AccountId(DbId(unnamed()))));
+    assert_eq!(indexed(&m.core, &m.meta, at), whole);
+    // Kept through apply from the empty tiers: after every entry it equals the scan of the tiers at that entry.
+    let (mut core, mut meta) = (Kept::default(), Kept::default());
+    core.named = graftyard_api::hosted::NamedIndex::build(&core.rows, Tier::Core, Index(0));
+    meta.named = graftyard_api::hosted::NamedIndex::build(&meta.rows, Tier::Metadata, Index(0));
+    let t = tiers();
+    let mut seen = std::collections::BTreeSet::new();
+    for e in &c.log {
+        graftyard_fold::apply(&t, &mut core, Tier::Core, e).unwrap();
+        graftyard_fold::apply(&t, &mut meta, Tier::Metadata, e).unwrap();
+        assert!(core.named.current(e.index) && meta.named.current(e.index), "kept through entry {:?}", e.index);
+        let kept: std::collections::BTreeSet<AccountId> = core.named.accounts().chain(meta.named.accounts()).collect();
+        assert_eq!(kept, graftyard_api::hosted::accounts(&core.rows, &meta.rows), "at entry {:?}", e.index);
+        seen.extend(kept);
+    }
+    assert_eq!(seen, want);
+    // A tier changed other than by apply (an install swaps the tables) stands at another index: not current.
+    let mut later = meta.named.clone();
+    later.applied(Index(at.0 + 5));
+    assert!(!later.current(at) && !later.current(Index(at.0 + 5)), "an index skipped over is not current");
+}
+
+/// The last row naming an account takes it out of `named`, and a row naming it again brings it back: WRITER is
+/// named only by its comment here.
+#[test]
+fn an_account_leaves_named_when_its_last_row_goes() {
+    use graftyard_types::Tier;
+    let mut c = Chain::new(1);
+    c.push("refs/heads/main", oid(1));
+    c.commit(OWNER, IssueOp::Settings(settings())).unwrap();
+    let open =
+        IssueOp::OpenIssue { title: "t".into(), body: "b".into(), labels: SmallVec::new(), assignees: SmallVec::new() };
+    c.commit(READER, open).unwrap();
+    let mut meta = Kept { rows: c.members[0].meta.clone(), ..Kept::default() };
+    meta.named = graftyard_api::hosted::NamedIndex::build(&meta.rows, Tier::Metadata, Index(c.log_len));
+    let applied = |c: &Chain, meta: &mut Kept| {
+        let e = c.log.last().unwrap().clone();
+        graftyard_fold::apply(&tiers(), meta, Tier::Metadata, &e).unwrap();
+        assert!(meta.named.current(e.index));
+        let kept: std::collections::BTreeSet<AccountId> = meta.named.accounts().collect();
+        assert_eq!(kept, graftyard_api::hosted::accounts(&MemStore::default(), &c.members[0].meta));
+        kept.contains(&AccountId(DbId(WRITER)))
+    };
+    let on = CommentTarget::Issue(IssueNumber(1));
+    let id = match c.commit(WRITER, IssueOp::Comment { on: on.clone(), body: "x".into(), reply_to: None }).unwrap() {
+        IssueOut::Id(id) => graftyard_git::issues::CommentId(id),
+        o => panic!("{o:?}"),
+    };
+    assert!(applied(&c, &mut meta), "the comment names its author");
+    let second = match c.commit(WRITER, IssueOp::Comment { on, body: "y".into(), reply_to: None }).unwrap() {
+        IssueOut::Id(id) => graftyard_git::issues::CommentId(id),
+        o => panic!("{o:?}"),
+    };
+    assert!(applied(&c, &mut meta));
+    c.commit(WRITER, IssueOp::DeleteComment { id }).unwrap();
+    assert!(applied(&c, &mut meta), "a second comment still names the author");
+    c.commit(WRITER, IssueOp::DeleteComment { id: second }).unwrap();
+    assert!(!applied(&c, &mut meta), "the author left with their last comment");
+}
+
+/// A member restored from a snapshot taken before the index existed holds only the snapshot's rows and builds the
+/// index from them: its `named`, and the narrow answer's login picks, equal a member's that applied the log.
+#[test]
+fn a_member_restored_from_an_older_snapshot_answers_the_same_named() {
+    use graftyard_fold::SnapshotJob;
+    use graftyard_types::{ChainId, ReleaseId, Tier};
+    let c = big();
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let schema = |t| <graftyard_git::tiers::RepoTiers as graftyard_fold::Tiered>::schema(t);
+    let fmt = graftyard_raft::Format { family: 0x20, version: 3 };
+    let mut restored = [MemStore::default(), MemStore::default()];
+    for (i, (tier, src)) in [(Tier::Core, &m.core), (Tier::Metadata, &m.meta)].into_iter().enumerate() {
+        let mut live = src.clone();
+        let mut job =
+            SnapshotJob::begin(&mut live, schema(tier), ChainId::Repo(REPO), ReleaseId([1; 32]), fmt).unwrap();
+        let mut frames = Vec::new();
+        while let Some(f) = job.next(&live, 64) {
+            frames.push(f);
+        }
+        graftyard_fold::restore(&mut restored[i], &schema(tier), &frames, (ChainId::Repo(REPO), at)).unwrap();
+        assert_eq!(graftyard_fold::fold_digest(&restored[i], tier), graftyard_fold::fold_digest(src, tier));
+        assert!(graftyard_fold::Store::get(&restored[i], "named", &[]).is_none(), "no stored index rides the snapshot");
+    }
+    let [core, meta] = &restored;
+    assert_eq!(indexed(core, meta, at), indexed(&m.core, &m.meta, at));
+    assert_eq!(indexed(core, meta, at), graftyard_api::hosted::accounts(&m.core, &m.meta));
+    for route in [rest_route(&["issues"], "per_page=5"), rest_route(&["pulls", "2"], "")] {
+        let ask = |core: &MemStore, meta: &MemStore| {
+            let named = || indexed(core, meta, at);
+            let spec = Spec { at: Dir::new(WRITER).home(), route: route.clone() };
+            answer(core, Some(meta), 9, &serde_json::to_value(spec).unwrap(), &named)
+        };
+        assert_eq!(ask(core, meta), ask(&m.core, &m.meta), "the restored member's narrow answer");
+    }
+}
+
+/// `named` from the kept index reads no row: a narrow build of `pulls/{n}` at 500 PRs reads its object only, where
+/// the scan read every issue, comment, and pull request head (over 1,500 rows; 1,512 point reads on main).
+#[test]
+fn named_from_the_kept_index_reads_no_row() {
+    use graftyard_types::Tier;
+    let c = wide(500);
+    let m = &c.members[0];
+    let at = Index(c.log_len);
+    let (ci, mi) = (
+        graftyard_api::hosted::NamedIndex::build(&m.core, Tier::Core, at),
+        graftyard_api::hosted::NamedIndex::build(&m.meta, Tier::Metadata, at),
+    );
+    let reads = std::cell::Cell::new((0, 0));
+    let (core, meta) = (Counted { inner: &m.core, reads: &reads }, Counted { inner: &m.meta, reads: &reads });
+    let named = || ci.accounts().chain(mi.accounts()).collect();
+    let spec = Spec { at: Dir::new(WRITER).home(), route: rest_route(&["pulls", "250"], "") };
+    let kept = answer(&core, Some(&meta), 9, &serde_json::to_value(spec.clone()).unwrap(), &named);
+    let (stmts, _) = reads.get();
+    assert!(stmts <= 40, "pulls/250 with the kept index: {stmts} storage reads");
+    let ((_, _), (_, scanned_rows)) = build_reads(&c, spec.route.clone());
+    assert!(scanned_rows >= 1_500, "the scan this replaces read {scanned_rows} rows");
+    let scanned = || graftyard_api::hosted::accounts(&m.core, &m.meta);
+    assert_eq!(kept, answer(&m.core, Some(&m.meta), 9, &serde_json::to_value(spec).unwrap(), &scanned));
+}

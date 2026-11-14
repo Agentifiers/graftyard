@@ -301,14 +301,13 @@ pub fn dump_builds() -> u64 {
     BUILDS.with(std::cell::Cell::get)
 }
 
-/// The bytes this isolate's read caches hold, shared by every repository in it: packed dumps, narrow answers, and
-/// named accounts at 8 bytes each (`/stats` `memSplit`).
+/// The bytes this isolate's read caches hold, shared by every repository in it: packed dumps and narrow answers
+/// (`/stats` `memSplit`).
 pub fn cache_bytes() -> serde_json::Value {
     let dumps = DUMPS.with(|d| d.borrow().values().map(|(_, b)| b.len()).sum::<usize>());
     let narrow = NARROW
         .with(|n| n.borrow().values().flat_map(|v| v.iter()).map(|(t, _, _, b)| t.len() + b.len()).sum::<usize>());
-    let named = NAMED.with(|n| n.borrow().values().map(|(_, v)| 8 * v.len()).sum::<usize>());
-    json!({ "dumps": dumps, "narrow": narrow, "named": named })
+    json!({ "dumps": dumps, "narrow": narrow })
 }
 
 /// The answer to a packed whole-tier read of `fold` (`{"rows": true, "packed": true}`), as serialized JSON bytes: the
@@ -444,36 +443,15 @@ pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value, floor: u64) -> Option
     Some(bytes)
 }
 
-/// The accounts one repository's whole tiers name, at one `DumpKey`.
-type Named = (DumpKey, std::rc::Rc<std::collections::BTreeSet<AccountId>>);
-
-thread_local! {
-    /// Every account each repository's whole tiers name, at one `DumpKey` (`named_accounts`).
-    static NAMED: std::cell::RefCell<std::collections::HashMap<RepoId, Named>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-}
-
-/// Every account `fold`'s whole tiers name (`graftyard_api::hosted::accounts`), which a narrow API answer
-/// needs to tell the edge the logins a whole-tier read knew; built once per state of the tiers, as the dump is.
+/// Every account `fold`'s whole tiers name (`graftyard_api::hosted::accounts`), which a narrow API answer needs to
+/// tell the edge the logins a whole-tier read knew: each tier's derived index, kept by `apply` (`TierSql::named`).
+/// A fold over other stores (the unit tests' `MemStore`) scans.
 fn named_accounts(fold: &git::repo::RepoFold) -> std::collections::BTreeSet<AccountId> {
-    let key = dump_key(fold);
-    let hit = fold
-        .repo
-        .and_then(|repo| NAMED.with(|n| n.borrow().get(&repo).filter(|(k, _)| *k == key).map(|(_, v)| v.clone())));
-    if let Some(v) = hit {
-        return (*v).clone();
+    let sql = |t: &dyn graftyard_fold::TierStore| t.as_any().downcast_ref::<crate::tier::TierSql>().map(|h| h.named());
+    match (sql(&*fold.core), sql(&*fold.meta)) {
+        (Some(c), Some(m)) => c.into_iter().chain(m).collect(),
+        _ => graftyard_api::hosted::accounts(&fold.core, &fold.meta),
     }
-    let v = graftyard_api::hosted::accounts(&fold.core, &fold.meta);
-    if let Some(repo) = fold.repo {
-        NAMED.with(|n| {
-            let mut n = n.borrow_mut();
-            if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {
-                n.clear();
-            }
-            n.insert(repo, (key, std::rc::Rc::new(v.clone())));
-        });
-    }
-    v
 }
 
 /// How often a learner rebuilds its packed dump at most [guess]: a learner never votes, so a rebuild delays no

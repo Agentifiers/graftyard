@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), the edge's herding guard (`crates/lookup`), and narrow-builds' selections from `issue_order` keys
-(`crates/api`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), the edge's herding guard (`crates/lookup`), narrow-builds' selections from `issue_order` keys
+(`crates/api`), and the accounts index `apply` keeps (`hosted::NamedIndex`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -30,6 +30,8 @@ VIEW = 'crates/api/src/view.rs'
 GQL = 'crates/api/src/gql.rs'
 REST = 'crates/api/src/rest.rs'
 NARROW = ('graftyard-api', '--test', 'narrow')
+HOSTED = 'crates/api/src/hosted.rs'
+FTIER = 'crates/fold/src/tier.rs'
 RAFT = ('graftyard-raft', '--test', 'leadership')
 LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
@@ -152,6 +154,19 @@ MUTANTS = [
      '        let more = all.len() >= page.end();\n        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n)', NARROW),
     ('rest: labels page before filtering', REST,
      '        if want.is_empty() {\n            let opens = state.opens();', '        if true {\n            let opens = state.opens();', NARROW),
+    # narrow-builds (2): the accounts a tier names, kept by `apply` (`hosted::NamedIndex`).
+    ('named: an index that skipped entries counts as current (stale after an install)', HOSTED,
+     '        self.at = self.at.filter(|a| a.0 + 1 == index.0).map(|_| index);', '        self.at = Some(index);', NARROW),
+    ('named: a deleted row does not uncount its account', HOSTED,
+     '        self.add(old.and_then(|o| row_account(table, key, &o.cols)), -1);\n', '', NARROW),
+    ('named: an account counted to zero stays named', HOSTED,
+     '        if *n == 0 {\n            self.counts.remove(&a);\n        }\n', '', NARROW),
+    ('named: a merger is not named (pull_head counted in no tier)', HOSTED,
+     '        (Core, "pull_head"),\n', '        (Metadata, "pull_head"),\n', NARROW),
+    ('named: apply does not tell the store of a row it writes', FTIER,
+     '        self.store.wrote(table, &key, old.as_ref(), Some(&row));\n', '', NARROW),
+    ('named: a comment names no account', HOSTED,
+     '        "comment" => rec::<CommentRow>(cols).author,', '        "comment" => rec::<CommentRow>(cols).author.filter(|_| false),', NARROW),
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')
