@@ -57,7 +57,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { parseArgs } from "node:util";
-import { clockSpread } from "./clock.mjs";
+import { clockSpread, dateBounds, driverOffset } from "./clock.mjs";
 
 const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict: true, options: {
   dry: { type: "boolean" }, selftest: { type: "boolean" }, seconds: { type: "string" }, agents: { type: "string" },
@@ -330,7 +330,14 @@ if (opt.selftest) {
     const skew = clockSpread([cs(5, 0, 0, 50), cs(5, 1, 900, 50)]);
     const clock = JSON.stringify(idle) === JSON.stringify({ upperMs: 240, lowerMs: 0, rounds: 1, kept: 4, rejected: 1 })
       && JSON.stringify(apac) === JSON.stringify({ upperMs: 380, lowerMs: 0, rounds: 2, kept: 4, rejected: 1 })
-      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null;
+      && skew.upperMs === 950 && skew.lowerMs === 850 && clockSpread([cs(6, 0, 0, 50)]).upperMs === null
+      // The driver offset (clock.mjs `dateBounds`): Cloudflare 1,700 ms ahead of this orb. A probe at orb 10,000 to
+      // 10,100 reads Date 11,000 (offset in [900, 2,000]); one at 10,350 to 10,450 reads 12,000 ([1,550, 2,650]); one
+      // at 10,200 to 10,280 reads 11,000 ([720, 1,800]). Together: [1,550, 1,800], which holds the true 1,700. A probe
+      // whose Date is two seconds off from the others empties the intersection.
+      && JSON.stringify(dateBounds([{ s: 10_000, e: 10_100, date: 11_000 }, { s: 10_350, e: 10_450, date: 12_000 },
+        { s: 10_200, e: 10_280, date: 11_000 }])) === JSON.stringify({ lo: 1550, hi: 1800, offsetMs: 1675, n: 3 })
+      && dateBounds([{ s: 10_000, e: 10_100, date: 11_000 }, { s: 10_000, e: 10_100, date: 13_000 }]) === null;
     // merge:only's split: `tier` and `authz` overlap, so the gap counts the longer; a merge with no shard timing
     // adds no shard stage.
     const sp = mergeSplit([
@@ -380,7 +387,7 @@ if (opt.dry) {
 // ---- the live run ----
 
 if (!opt.repo || !opt.chain) throw new Error("--repo NAME and --chain repo:ID are required for a live run");
-const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens } = await import("../hosted/lib.mjs");
+const { api, bedGet, BED, ghs, log, member, row: writeRow, sleep, state, statuses, tokens, voterAt } = await import("../hosted/lib.mjs");
 const RUN = opt.run ?? Date.now().toString(36);
 const R = `m3org/${opt.repo}`;
 const CHAIN = opt.chain;
@@ -424,12 +431,16 @@ const auth = (tok) => ({ authorization: `Basic ${Buffer.from(`x:${tok}`).toStrin
 const placeFailing = () => plan.placeFailAt !== undefined && Date.now() >= t0 + plan.placeFailAt * 1000;
 const half = (k) => (plan.placeFailAt === undefined ? k : `${k}${placeFailing() ? "@fail" : "@up"}`);
 const failHeaders = () => (placeFailing() ? { "x-graft-place-fail": "1", "x-bed-token": BED } : {});
+// Past the edge's own worst case, so every push ends in the edge's answer and none in the driver's timeout: three
+// shards' validate waits (15 + 60 + 60 s) then the commit. At 120 s, B0-32's burst pushes still in their third
+// shard's wait were cut and counted as lost (lm1-rows-m3f.md, B0-32).
+const GIT_TIMEOUT_MS = 200_000;
 async function git(path, tok, body, headers = {}, repo = R) {
   const t = Date.now();
   try {
-    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(120_000) });
+    const r = await fetch(`${EDGE}/${repo}.git/${path}`, { method: "POST", body, headers: { ...auth(tok), "user-agent": "git/2.56.0", ...failHeaders(), ...headers }, signal: AbortSignal.timeout(GIT_TIMEOUT_MS) });
     return { status: r.status, text: Buffer.from(await r.arrayBuffer()).toString("latin1"), ms: Date.now() - t, headers: r.headers };
-  } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t }; }
+  } catch (e) { return { status: 0, text: String(e).slice(0, 80), ms: Date.now() - t, err: { name: e?.name, cause: e?.cause?.code ?? String(e?.cause ?? "").slice(0, 80) } }; }
 }
 const lsRefs = (tok, prefix) => git("git-upload-pack", tok, Buffer.concat([pkt("command=ls-refs\n"), Buffer.from("0001"), pkt(`ref-prefix ${prefix}\n`), Buffer.from("0000")]),
   { "content-type": "application/x-git-upload-pack-request", "git-protocol": "version=2" });
@@ -444,6 +455,7 @@ if (Date.now() - mainSince > 1_000) log(`main appeared in ls-refs after ${Date.n
 
 /** One push of `bytes` to `ref` from `from` (old tip or null); returns [result, ms, new tip]. */
 const pushed = new Map(); // commit id -> ack time, for feed latency
+const recentAgent = []; // [ok, ms] of the latest agent pushes, for B0-32's warm-up
 async function push(tok, ref, from, path, bytes, extra = {}) {
   const { pack, commit } = onePack(path, bytes, from ?? main, `a1 ${ref}`, Math.floor(Date.now() / 1000));
   const r = await git("git-receive-pack", tok, receiveBody(ref, from, commit, pack), { "content-type": "application/x-git-receive-pack-request", ...extra });
@@ -451,7 +463,7 @@ async function push(tok, ref, from, path, bytes, extra = {}) {
   // and every row passes `scan`).
   const res = r.status === 200 ? pushResult(r.text) : `http ${r.status} ${String(r.text ?? "").replace(/[0-9a-f]{12,}/g, "H").replace(/\d+/g, "N").slice(0, 160).trim()}`;
   if (res === "ok") pushed.set(commit, Date.now());
-  return [res, r.ms, res === "ok" ? commit : from];
+  return [res, r.ms, res === "ok" ? commit : from, r.err];
 }
 const size = () => plan.packFixed ?? (Math.random() < plan.bigShare ? plan.bigBytes : plan.packMin + Math.floor(Math.random() * (plan.packMax - plan.packMin)));
 
@@ -629,6 +641,7 @@ const jobs = [
       a.tip = nu;
       if (kill) kills.push(s);
       note(half(kill ? "push:killed" : "push:agent"), ms, res);
+      if (!kill) { recentAgent.push([res === "ok", ms]); if (recentAgent.length > 200) recentAgent.splice(0, 100); }
       await sleep(Math.max(0, Math.min(end - Date.now(), plan.pushEvery * 1000 - (Date.now() - s))));
     }
   })()),
@@ -713,16 +726,43 @@ const jobs = [
   }),
   (async () => { while (Date.now() < end) { await sleep(Math.min(40 * 60_000, end - Date.now())); if (Date.now() < end) await refreshApp(); } })(),
 ];
+// B0-32's burst "rides a hot group": the journey 9 load runs until the leader reports `hot` and the network's shards
+// are warm, then the burst fires and the row runs `seconds - burst.at` past it. Warm is the last WARM_PUSHES agent
+// pushes all acknowledged within 5 s, which a cold pool shard's `warming` refusals and 15 s home waits fail (m3fr1:
+// a 5-minute-old group's pool shards rehydrated during the burst).
+const WARM_PUSHES = 30, WARM_MAX_S = 900;
 if (plan.burst) jobs.push((async () => {
   await sleep(Math.max(0, t0 + plan.burst.at * 1000 - Date.now()));
+  const w0 = Date.now();
+  // The load runs while `Date.now() < end`: hold `end` past the warm-up's longest wait, or the load stops at
+  // `seconds` and the group cools while the warm-up waits (m3fr2: load ended at 180 s, `hot` false from then on).
+  end = w0 + (WARM_MAX_S + seconds) * 1000;
+  let hot = false, warm = false, polls = 0;
+  while (Date.now() - w0 < WARM_MAX_S * 1000) {
+    const l = (await statuses(CHAIN)).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
+    hot = !!l?.admission?.hot;
+    warm = recentAgent.length >= WARM_PUSHES && recentAgent.slice(-WARM_PUSHES).every(([ok, ms]) => ok && ms <= 5_000);
+    polls++;
+    if (hot && warm) break;
+    await sleep(2_000);
+  }
+  writeRow(OUT, { step: "burst warm-up", seconds: Math.round((Date.now() - w0) / 1000) + plan.burst.at, hot, warm, polls,
+    lastAgentMs: recentAgent.slice(-WARM_PUSHES).map(([, ms]) => ms) });
+  log(`burst warm-up: hot ${hot}, warm ${warm} after ${Math.round((Date.now() - w0) / 1000) + plan.burst.at} s`);
+  end = Date.now() + (seconds - plan.burst.at) * 1000;
   const s = Date.now();
+  // Client-side record of every burst push, so one with no edge event still shows when it was sent and how it ended.
+  const sent = [];
   const r = await Promise.all(Array.from({ length: plan.burst.pushes }, (_, k) => sleep((k * 1000) / plan.burst.pushes).then(async () => {
     const a = agents[k % agents.length];
-    const [res, ms] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
+    const at = Date.now();
+    const [res, ms, , err] = await push(app, `${a.ref}-b`, null, `a1/${a.group}/${a.i}/burst.txt`, randomBytes(plan.burst.bytes));
     note("push:burst", ms, res);
+    sent.push({ k, sentAt: new Date(at).toISOString(), ms, res: String(res).slice(0, 120), ...(err ? { err } : {}) });
     return [res, Date.now() - s];
   })));
-  writeRow(OUT, { step: "burst", pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}) });
+  writeRow(OUT, { step: "burst", hot, warm, pushes: plan.burst.pushes, within5s: r.filter(([x, t]) => x === "ok" && t <= 5_000).length, results: r.reduce((m, [x]) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
+    unacked: sent.filter((x) => x.res !== "ok" && !String(x.res).startsWith("full")) });
 })());
 // L0-12's overlap probe. Pair k's holder takes `a1p/<RUN>/<k>/**` Exclusive for PROBE_TTL_S and never renews it;
 // from 2 s before its end the other task asks for the same scope every PROBE_EVERY_MS until it gets a 201, which is
@@ -764,20 +804,30 @@ if (plan.leases) for (let k = 0; k < PROBE_PAIRS; k++) {
 const clockSamples = [];
 let clockRound = 0;
 // L0-12's clock line: `clockSpread` in clock.mjs.
+// The driver's clock against the edge's `Date` (clock.mjs `driverOffset`), before the window and after it: each
+// member offset is judged against Cloudflare's clock, not this orb's (m3fr3: the orb read 1.5 to 2.0 s behind).
+const driverClock = {};
 if (plan.leases) jobs.push((async () => {
+  driverClock.before = await driverOffset(`${EDGE}/api/v3/meta`);
   await sleep(Math.max(0, t0 - Date.now()));
   while (Date.now() < end) {
     clockRound++;
     await Promise.all([0, 1, 2].map(async (site) => {
       const s = Date.now();
       try {
-        const v = (await member(CHAIN, site, "/status", undefined, 5_000)).v;
+        // The site's current voter object: by site alone a replaced voter's first-generation object answers.
+        // `?clock=1` (leader-clock-check): the member's clock before and after one awaited macrotask, and its last
+        // appended entry's `at` lag at send and one macrotask later; older builds answer plain `/status`.
+        const v = (await member(CHAIN, site, "/status?clock=1", undefined, 5_000, voterAt(CHAIN, site))).v;
         const e = Date.now();
-        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s });
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s, term: v.term, role: v.role,
+          before: v.clockBefore != null ? v.clockBefore - (s + e) / 2 : null, tick: v.clockAfter != null ? v.clockAfter - v.clockBefore : null,
+          lease: v.leaseClock ?? null });
       } catch { /* a member mid-kill */ }
     }));
     await sleep(15_000);
   }
+  driverClock.after = await driverOffset(`${EDGE}/api/v3/meta`);
 })());
 if (opt["kill-shard-at"]) jobs.push((async () => {
   await sleep(Math.max(0, t0 + Number(opt["kill-shard-at"]) * 1000 - Date.now()));
@@ -857,31 +907,80 @@ const seen = []; // [poller, ref, ms after its push's ack, seen at]
 const kills = [];
 const KILL_WINDOW_MS = 15_000;
 if (plan.pollers) {
-  const cfg = (await statuses(CHAIN)).find((s) => s.config)?.config?.config?.normal;
-  const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
-  const followers = (await statuses(CHAIN)).filter((s) => s.role === "follower").map((s) => ({ site: s.site, name: undefined }));
-  const serve = learners.length ? learners : followers;
-  writeRow(OUT, { step: "feed members", learners: learners.length, followers: followers.length });
+  // The members a poll may go to, as the edge's `feed_members` lists them (workers/edge/src/agents.rs): learners
+  // first, then the voters that do not lead, re-read every 60 s and at once when a voter answers `notServing` (it
+  // leads now).
+  let members = [], membersAt = 0;
+  const readMembers = async () => {
+    const st = await statuses(CHAIN);
+    const cfg = st.find((s) => s.config)?.config?.config?.normal;
+    const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name, learner: true }));
+    const voters = (cfg?.voters ?? []).filter((v) => !st.some((s) => s.site === v.site && s.role === "leader"))
+      .map((v) => ({ site: v.site, name: v.do_name, learner: false }));
+    members = [...learners, ...voters];
+    membersAt = Date.now();
+    return { learners: learners.length, followers: voters.length };
+  };
+  writeRow(OUT, { step: "feed members", ...(await readMembers()) });
+  // One poll as the edge's `activity` routes it: members in order (this poller's learner first, so 500 pollers
+  // spread over the learners as the edge's isolates' members do), up to three that answer; the first `hold` is the
+  // answer; a full member answers 429; if every one tried refused as lagging and the least lagged is a learner, that
+  // learner holds the poll with `lagging_ok`; otherwise 429. `learner_answers` is set on followers once a learner
+  // answered `notServing`, as the edge sets it.
+  const poll = async (k, cursor) => {
+    if (Date.now() - membersAt > 60_000) await readMembers();
+    const ls = members.filter((m) => m.learner), vs = members.filter((m) => !m.learner);
+    const order = [...ls.slice(k % Math.max(1, ls.length)), ...ls.slice(0, k % Math.max(1, ls.length)), ...vs];
+    const body = (extra) => ({ cursor, wait_s: 25, paths: [`a1/${k % 50}/**`], token: `a1-${RUN}-${k}`, ip: `a1ip-${k}`, ...extra });
+    const answers = [], tried = [];
+    let learnerAnswered = false;
+    for (const m of order) {
+      if (answers.length >= 3) break;
+      let r;
+      try { r = await member(CHAIN, m.site, "/feed", body({ learner_answers: learnerAnswered && !m.learner }), 40_000, m.name); } catch { continue; }
+      const v = r.v ?? {};
+      tried.push(v.admit ?? `status ${r.status}`);
+      if (r.status !== 200 || !v.admit) continue;
+      if (v.admit === "hold") return { v, m, tried };
+      if (v.admit === "gone" || v.admit === "tooMany") return { v, m, tried };
+      if (v.admit === "full") answers.push({ a: "full", m, lag: 0 });
+      else if (v.admit === "lagging") answers.push({ a: "lagging", m, lag: v.lagMs ?? Number.MAX_SAFE_INTEGER });
+      else if (v.admit === "notServing" && m.learner) learnerAnswered = true;
+      else if (v.admit === "notServing") membersAt = 0;
+    }
+    if (answers.some((x) => x.a === "full")) return { v: { admit: "429" }, tried };
+    const lag = answers.filter((x) => x.a === "lagging");
+    const least = lag.sort((a, b) => a.lag - b.lag)[0];
+    if (least && lag.length === answers.length && least.m.learner) {
+      try {
+        const r = await member(CHAIN, least.m.site, "/feed", body({ learner_answers: false, lagging_ok: true }), 40_000, least.m.name);
+        if (r.v?.admit === "hold") return { v: r.v, m: least.m, tried: [...tried, "laggingOk"] };
+      } catch { /* 429 below */ }
+    }
+    return { v: { admit: "429" }, tried };
+  };
   for (let k = 0; k < plan.pollers; k++) {
     jobs.push((async () => {
       await sleep(Math.max(0, t0 - Date.now()) + (k % 500) * 4);
-      let cursor = null;
-      const m = serve[k % serve.length];
+      let cursor = null, misses = {};
       while (Date.now() < end) {
         const s = Date.now();
         try {
-          const r = await member(CHAIN, m.site, "/feed", { cursor, wait_s: 25, paths: [`a1/${k % 50}/**`], learner_answers: !!learners.length,
-            token: `a1-${RUN}-${k}`, ip: `a1ip-${k}` }, 40_000, m.name);
-          const v = r.v ?? {};
-          note("feed", Date.now() - s, v.admit ?? `status ${r.status}`);
+          const { v, m, tried } = await poll(k, cursor);
+          note("feed", Date.now() - s, v.admit);
+          // Polls since this poller last held: what an event seen late waited on. Each 429 counts the members tried.
+          const missed = misses;
+          if (v.admit === "hold") misses = {};
+          else for (const t of ["429", ...tried]) misses[t] = (misses[t] ?? 0) + 1;
           if (v.cursor) cursor = v.cursor;
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
-            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now()]);
+            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now(), m?.site, missed]);
           }
-          if (v.admit && v.admit !== "hold") await sleep(1000);
-        } catch (e) { note("feed", Date.now() - s, "error"); await sleep(1000); }
+          // A 429 carries Retry-After FEED_BATCH_ALL (10 s); a client that honours it waits that long.
+          if (v.admit === "429") await sleep(10_000);
+        } catch (e) { note("feed", Date.now() - s, "error"); misses.error = (misses.error ?? 0) + 1; await sleep(1000); }
       }
     })());
   }
@@ -914,8 +1013,17 @@ log(`${row} run ${RUN}: ${plan.agents} agents, ${seconds} s from ${new Date(t0).
 let lateStats = null;
 // Only with `?summary=1` (percentiles, no raw arrays): the raw read of a loaded leader reset its wasm instance and
 // moved the leader (B0-29, 131261, 23:44:20Z), so the late read runs only on a release that answers summaries.
+// B0-31 gates commit p99 with buckets up on its own: the leader's stats at `placeFailAt`, then reset, so the end read
+// holds only the placement-failing half.
+let upStats = null;
+if (leader !== undefined && plan.placeFailAt !== undefined) jobs.push((async () => {
+  await sleep(Math.max(0, t0 + plan.placeFailAt * 1000 - Date.now()));
+  upStats = (await member(CHAIN, leader, "/stats?summary=1&reset=1", undefined, 15_000).catch(() => ({}))).v ?? null;
+  log(`buckets-up half: commit ${JSON.stringify(upStats?.commitMs ?? null)}`);
+})());
 if (leader !== undefined) jobs.push((async () => {
-  await sleep(Math.max(0, end - 20_000 - Date.now()));
+  // `end` can move later (B0-32's warm-up), so wait on it as it stands.
+  while (Date.now() < end - 20_000) await sleep(Math.min(5_000, end - 20_000 - Date.now()));
   lateStats = (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v ?? null;
 })());
 jobs.push((async () => {
@@ -932,7 +1040,19 @@ const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 // Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).
 const endStats = (leader !== undefined ? (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
+// The leader's failed calls by peer (B0-32 m3fr2: 1,032 `failedCalls`, no target named): the full `/stats` `peers`
+// (per peer ok, sent, failed and late by cause, newest errors), read once after the window so a raw read's reset
+// cannot fall inside it, and before teardown, so the leader object has not restarted yet. Written as its own row.
+if (leader !== undefined) {
+  const full = (await member(CHAIN, leader, "/stats", undefined, 30_000).catch((e) => ({ v: { error: String(e).slice(0, 120) } }))).v ?? {};
+  writeRow(OUT, { step: "leader peers", site: leader, failedCalls: full.failedCalls, peers: full.peers ?? null, error: full.error });
+  log(`leader peers: failedCalls ${full.failedCalls} ${JSON.stringify(Object.fromEntries(Object.entries(full.peers ?? {}).map(([p, c]) => [p, { ok: c.ok, failed: c.failed, late: c.late, lateFailed: c.lateFailed }]))).slice(0, 600)}`);
+}
 const lstats = endStats.commitMs?.n ? endStats : (lateStats ?? endStats);
+function driverMs() {
+  const xs = [driverClock.before, driverClock.after].filter(Boolean).map((d) => d.offsetMs);
+  return xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null;
+}
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
 const ps = (x) => (Array.isArray(x) || x == null ? { n: x?.length, p50: pct(x, 0.5), p99: pct(x, 0.99) } : { n: x.n, p50: x.p50, p99: x.p99 });
@@ -942,9 +1062,15 @@ const v = {
   row, run: RUN, seconds, agents: plan.agents, offered: offered(plan), byKind: sum,
   feed: { events: seen.length, p50: pct(feedLat, 0.5), p99: pct(feedLat, 0.99), max: feedLat.length ? Math.max(...feedLat) : null,
     ...(kills.length ? { outsideKills: (() => { const xs = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k)).map((x) => x[2]);
-      return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}) },
+      return { kills: kills.length, events: xs.length, p50: pct(xs, 0.5), p99: pct(xs, 0.99) }; })() } : {}),
+    // The slowest 1% outside kills: which member served them and what the poller's misses were before the hold.
+    slow: (() => { const out = seen.filter(([, , ms, at]) => !kills.some((k) => at - ms < k + KILL_WINDOW_MS && at >= k));
+      const cut = pct(out.map((x) => x[2]), 0.99) ?? Infinity;
+      return out.filter((x) => x[2] >= cut).slice(0, 200).map(([k, , ms, at, site, miss]) => ({ k, ms, at, site, miss })); })() },
   leader: { statsFrom, before: leader, after: after.find((s) => s.role === "leader")?.site, terms: after.map((s) => [s.site, s.role, s.term]),
     commitMs: ps(lstats.commitMs),
+    // B0-31: `commitMs` above is then the placement-failing half alone, and this the buckets-up half.
+    ...(plan.placeFailAt !== undefined ? { commitMsByHalf: { up: ps(upStats?.commitMs), fail: ps(lstats.commitMs) } } : {}),
     // Round 5's commit split: admission to append (`queueMs`, which holds the entry's dep reads), the dep reads by
     // chain kind (`depsMs`), append to apply (`roundMs`: storage confirm and quorum), and the confirm alone.
     // Round 10 adds each follower's AppendEntries call time (`append:<site>`) and append to apply (`apply`), so the
@@ -974,8 +1100,14 @@ const v = {
     // on a real overlap adds the members' clock spread (clock.mjs's upper bound).
     overlapBoundMs: overlaps.length && clockSpread(clockSamples).upperMs != null
       ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
-    clock: { samples: clockSamples.length, ...clockSpread(clockSamples),
-      maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
+    clock: { samples: clockSamples.length, ...clockSpread(clockSamples), raw: clockSamples.map((c) => [c.round, c.site, Math.round(c.offset), c.rtt, c.term, c.role,
+      c.before == null ? null : Math.round(c.before), c.tick, c.lease]),
+      // The gate line: each member's offset less the driver's (the mean of its before and after readings, or the
+      // one that answered), so it is the member against Cloudflare's clock. `maxAbsOffsetRawMs` is against this orb.
+      driver: driverClock, driverOffsetMs: driverMs(),
+      maxAbsOffsetMs: clockSamples.length && driverMs() != null
+        ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset - driverMs())))) : null,
+      maxAbsOffsetRawMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   // Every plan, not only `openPrs`: B0-31's agents' test merges go through the same budget (m3fr4 wrote none).
   testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,
@@ -984,6 +1116,22 @@ const v = {
 };
 writeRow(OUT, v);
 log(JSON.stringify(v).slice(0, 4000));
+// L0-12: the replay's tasks hold every requester's TASKS_OPEN_PER_REQUESTER (100) open slots, m3-ci's own included,
+// so the row's stall and refusal parts after it could create no task (rows m22: 422 "The requester has too many open
+// tasks", which the stall's lease acquires then read as "An App token must name its session"). Cancel them, ten at a
+// time; cancelling a task releases its leases in the same command.
+if (plan.leases) {
+  const open = [...agents, ...probers].filter((a) => a.task);
+  const answers = {};
+  for (let b = 0; b < open.length; b += 10) {
+    await Promise.all(open.slice(b, b + 10).map(async (a) => {
+      const r = await api("POST", `${V1}/tasks/${a.task}/cancel`, app, {});
+      answers[r.status] = (answers[r.status] ?? 0) + 1;
+    }));
+  }
+  writeRow(OUT, { step: "tasks cancelled", n: open.length, answers });
+  log(`tasks cancelled ${open.length}: ${JSON.stringify(answers)}`);
+}
 // Pushes and polls cut off at the row's end can hold sockets open for minutes, which stalled `rows.sh` on B0-29 and
 // B0-31 (`tests/am1/results/lm1-memory.md`, section 10): the row is written, so end here.
 process.exit(0);

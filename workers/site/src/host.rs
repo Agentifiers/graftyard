@@ -184,6 +184,12 @@ pub struct Stats {
     /// (`Elect`), at most ELECT_MAX. Kept apart from `trace`, which a leader's appends fill in seconds.
     #[cfg(feature = "test-faults")]
     pub elections: VecDeque<[u64; 6]>,
+    /// Test installs: the most counted bytes this member held at once since `/stats?high=1` last read them
+    /// (`Host::mark_mem`), and the total its last `mem high` log line named.
+    #[cfg(feature = "test-faults")]
+    pub mem_high: MemHigh,
+    #[cfg(feature = "test-faults")]
+    pub mem_logged: usize,
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
@@ -390,6 +396,29 @@ pub enum Trace {
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
 #[cfg(feature = "test-faults")]
 const TRACE_MAX: usize = 60_000;
+
+/// Test installs: the counted bytes at their peak (`Host::mark_mem`): call bodies in flight, read answers streaming,
+/// learner holds and the log, their sum, when, and the isolate's wasm memory then. L0-12 m3fr3's new leaders stopped
+/// answering `/stats` in the seconds before each memory reset, so a 2 s sampler saw none of those seconds.
+#[cfg(feature = "test-faults")]
+#[derive(Default, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemHigh {
+    pub at: u64,
+    pub total: usize,
+    pub calls: usize,
+    pub answers: usize,
+    pub held: usize,
+    pub log: usize,
+    pub wasm_mb: f64,
+}
+
+/// A `mem high` log line once the counted bytes pass this, and again each MEM_LOG_STEP higher: Workers Logs keep
+/// what a reset isolate's `/stats` loses.
+#[cfg(feature = "test-faults")]
+const MEM_LOG_FROM: usize = 16 << 20;
+#[cfg(feature = "test-faults")]
+const MEM_LOG_STEP: usize = 8 << 20;
 
 /// Election trace rows kept per member: L0-12's ten kills, each a few dozen rows, many times over.
 #[cfg(feature = "test-faults")]
@@ -1489,6 +1518,29 @@ impl<F: Family> Host<F> {
         self.trace_at(now_ms(), kind, peer, batch, index, ms);
     }
 
+    /// Test installs: takes the counted bytes now into `Stats::mem_high` when they are the most since it was read,
+    /// and logs `mem high` each MEM_LOG_STEP past MEM_LOG_FROM. Called where they grow: a call body or read answer
+    /// counted, a message held for a learner, an input stepped.
+    #[cfg(feature = "test-faults")]
+    pub fn mark_mem(&self) {
+        let log = self.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.m.log_bytes())).unwrap_or(0);
+        let held = self.callers.try_borrow().map(|c| c.held_total()).unwrap_or(0);
+        let (calls, answers) = (self.call_bytes.get(), self.answers.try_borrow().map(|a| a.bytes()).unwrap_or(0));
+        let total = calls + answers + held + log;
+        let Ok(mut s) = self.stats.try_borrow_mut() else { return };
+        if total > s.mem_high.total {
+            s.mem_high =
+                MemHigh { at: now_ms(), total, calls, answers, held, log, wasm_mb: crate::load::wasm_mem_mb() };
+        }
+        if total < MEM_LOG_FROM {
+            s.mem_logged = 0;
+        } else if total >= s.mem_logged + MEM_LOG_STEP {
+            s.mem_logged = total;
+            let h = MemHigh { at: now_ms(), total, calls, answers, held, log, wasm_mb: crate::load::wasm_mem_mb() };
+            console_log!("mem high {}", serde_json::to_string(&h).unwrap_or_default());
+        }
+    }
+
     /// Test installs: one `Stats::trace` entry, timed `at`.
     #[cfg(feature = "test-faults")]
     pub fn trace_at(&self, at: u64, kind: Trace, peer: u8, batch: u64, index: u64, ms: u64) {
@@ -1784,6 +1836,10 @@ impl<F: Family> Host<F> {
         #[cfg(feature = "test-faults")]
         let lease_at = core.m.role() == Role::Leader && ready_appended_events;
         drop(guard);
+        #[cfg(feature = "test-faults")]
+        if wrote {
+            self.mark_mem();
+        }
         #[cfg(feature = "test-faults")]
         if lease_at {
             let sent = now_ms().saturating_sub(t) as u32;
@@ -2325,6 +2381,8 @@ impl<F: Family> Host<F> {
             if let Some((to, round, last, commit)) = held {
                 self.trace(Trace::AppendHeld, to, round, last, commit);
             }
+            #[cfg(feature = "test-faults")]
+            self.mark_mem();
             return;
         };
         self.call(e);
@@ -2337,6 +2395,8 @@ impl<F: Family> Host<F> {
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
             let _counted = Counted::new(&h.call_bytes, body.len());
+            #[cfg(feature = "test-faults")]
+            h.mark_mem();
             let call = Call::of(&e, body.len());
             let traced = call.append.filter(|_| call.entries > 0);
             if let Some((round, _, last)) = traced {
