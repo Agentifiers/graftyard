@@ -8,8 +8,15 @@ is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
 
     python3 tests/nr3/plant.py          # every mutant
     python3 tests/nr3/plant.py 0 3      # by number
+    python3 tests/nr3/plant.py --check  # residue only: exit 1 if a mutant is left in the tree (the pre-commit hook)
+
+A mutant reached a commit twice on 2026-11-14 when a run was killed mid-mutant, which no `finally` survives. So the
+original bytes go to a journal (`tests/nr3/raw/.plant-journal`) before each mutation and leave it only once restored;
+a run, and `--check`, first restores any journal a killed run left. SIGTERM and SIGINT restore and exit. After the
+run, and in `--check`, every mutant's original text must be in its file exactly once and `git diff` of the planted
+files must be what it was before the run; otherwise the runner exits 1 and names the residue.
 """
-import os, subprocess, sys
+import json, os, signal, subprocess, sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 INSTALL = 'crates/raft/src/member/install.rs'
@@ -120,6 +127,35 @@ MUTANTS = [
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')
+JOURNAL = os.path.join(ROOT, 'tests', 'nr3', 'raw', '.plant-journal')
+
+
+def recover():
+    """Restores the file a killed run left mutated, from its journal."""
+    if not os.path.exists(JOURNAL):
+        return
+    j = json.load(open(JOURNAL))
+    open(os.path.join(ROOT, j['file']), 'wb').write(bytes.fromhex(j['orig']))
+    os.remove(JOURNAL)
+    print(f'restored {j["file"]} from a killed run\'s journal', flush=True)
+
+
+def planted_diff():
+    files = sorted({m[1] for m in MUTANTS})
+    return subprocess.run(['git', 'diff', '--', *files], cwd=ROOT, capture_output=True, text=True).stdout
+
+
+def residue():
+    """Mutants left in the tree: a mutant's original text missing from its file, or not exactly once."""
+    out = []
+    for i, (name, f, old, new, t) in enumerate(MUTANTS):
+        if open(os.path.join(ROOT, f)).read().count(old) != 1:
+            out.append(f'{i:2} {name} ({f})')
+    return out
+
+
+def stop(signum, frame):
+    raise KeyboardInterrupt(f'signal {signum}')
 
 
 def run(t):
@@ -131,29 +167,51 @@ def run(t):
 
 
 def main():
+    recover()
+    if sys.argv[1:] == ['--check']:
+        left = residue()
+        for r in left:
+            print(f'RESIDUE {r}')
+        sys.exit(1 if left else 0)
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    before = planted_diff()
     pick = [int(a) for a in sys.argv[1:]] or range(len(MUTANTS))
     caught = 0
-    for i in pick:
-        name, f, old, new, t = MUTANTS[i]
-        p = os.path.join(ROOT, f)
-        orig = open(p, 'rb').read()
-        s = orig.decode()
-        if s.count(old) != 1:
-            print(f'{i:2} NOT FOUND  {name}', flush=True)
-            continue
-        open(p, 'w').write(s.replace(old, new))
-        try:
-            code, out, broke = run(t)
-        finally:
-            open(p, 'wb').write(orig)
-        if broke:
-            print(f'{i:2} DID NOT COMPILE  {name}', flush=True)
-        elif code != 0:
-            caught += 1
-            fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
-            print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
-        else:
-            print(f'{i:2} MISSED  {name}', flush=True)
+    try:
+        for i in pick:
+            name, f, old, new, t = MUTANTS[i]
+            p = os.path.join(ROOT, f)
+            orig = open(p, 'rb').read()
+            s = orig.decode()
+            if s.count(old) != 1:
+                print(f'{i:2} NOT FOUND  {name}', flush=True)
+                continue
+            with open(JOURNAL + '.tmp', 'w') as j:
+                json.dump({'file': f, 'orig': orig.hex()}, j)
+            os.replace(JOURNAL + '.tmp', JOURNAL)
+            try:
+                open(p, 'w').write(s.replace(old, new))
+                code, out, broke = run(t)
+            finally:
+                open(p, 'wb').write(orig)
+                os.remove(JOURNAL)
+            if broke:
+                print(f'{i:2} DID NOT COMPILE  {name}', flush=True)
+            elif code != 0:
+                caught += 1
+                fails = [l.split()[1] for l in out.splitlines() if l.startswith('---- ')]
+                print(f'{i:2} CAUGHT  {name}  [{", ".join(fails[:3])}]', flush=True)
+            else:
+                print(f'{i:2} MISSED  {name}', flush=True)
+    finally:
+        left, after = residue(), planted_diff()
+        for r in left:
+            print(f'RESIDUE {r}', flush=True)
+        if after != before:
+            print('RESIDUE: git diff of the planted files changed during the run', flush=True)
+        if left or after != before:
+            sys.exit(1)
     print(f'{caught} of {len(pick)} caught')
 
 
