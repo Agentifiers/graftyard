@@ -2284,3 +2284,40 @@ container running"). **Cost** $123.02 at 15:29Z (containers $48.07).
 **JS heap.** No instrument added: the site exposes only `wasmMemMb` (the wasm linear memory), and the Workers runtime's
 `process` documents no `memoryUsage()`; Cloudflare documents only DevTools snapshots and production heap profiles.
 m3f's run covers the JS side.
+
+### Round 18: B0-35 on m29 (main a4ddca4f's prsync-first-once) (2026-11-14)
+
+**Deploy m29.** lm1-memory 3e707c2d = main 04f8b3a6 (a4ddca4f's prsync-first-once: every `PrSync` attempt ends at
+FIRST_FOR, 25 s, with a 10 s commit reserve; a test merge whose turn comes past TURN_WAIT_MS, 10 s, is shed and counted
+in `late`) plus this branch's instruments and B0-34's warm step. Sites a fcfe84d5, b eae6468a, c aec148bf, edge
+f32e1fab; image `sha256:ca9da2c7` (new: main changed `containers/`); standard-4, test-faults. Full checks34 pass
+(check_names and check_links only on `.worktrees/`, clean in a fresh worktree); no `crates/raft` change since the last
+sweep.
+
+**Run** `rows.sh m29r35`, repo `fm29r35-b035` (131338), run `mwgm9uwu`, 600 s from 16:33:41Z, learners 8/8 caught
+up in 2.7 s, k 4, 500 open PRs and 500 pollers. Memguard never fired: voter peaks 64.3 / 37.5 / 25.6 MiB.
+
+| B0-35 line (`build/BUILD-PLAN.md`) | m29 | verdict |
+|---|---|---|
+| Test-merge vCPU within `TEST_MERGE_BUDGET` | 0.373 of 1.0 vCPU, no overrun | pass |
+| Zero computes from list fields | 0 of 101,146 list asks; 5,045 computes from 54,628 single-PR GETs | pass |
+| Actions dispatch p99 ≤ 10 s | not measured (no dispatch caller before Milestone 4) | open |
+
+**The parent's three checks.**
+
+- **"first handled" under 27 s: yes.** 44 `prsync 131338 … first handled` lines (all on site a, the leader's site),
+  p50 15,488 ms, p99 and max 16,524 ms, 0 over 27 s. All 41 `/prsync/first` invocations in the window ended `ok`.
+- **No `/prsync/first` exceededMemory: none.** No `exceeded` message on any site in the window (round 16d had 14
+  invocations that exceeded memory).
+- **`testMerges.late` and `mergeable`:** 3,440 merges shed `late` (all of `shed`), against 5,166 computed. The wait
+  histogram tops out at 15,902 ms (round 16d: max 265 s, 3,143 over 120 s): 4,338 merges in the 10–20 s bucket, 671
+  below it. `mergeable` answered `UNKNOWN` to 55,096 of 58,303 answered polls (94.5%) and `MERGEABLE` to 3,207 (5.5%);
+  round 16d: 98.3% `UNKNOWN`, 949 `MERGEABLE`. So shedding late merges moved `MERGEABLE` answers up 3.4 times, while
+  UNKNOWN stays the common answer: the line still has more merges than the 1.0 vCPU computes in time.
+
+**Other numbers.** Commit p50 / p99 446 / 1,195 ms (queue p99 815, round 532, confirm 124); 2,495 entries carried 14,544
+commands (5.8 an entry); term 2 throughout, site 0 leader, 139.3 req/s on it. Agent pushes 2,478 / 2,500 ok. API reads
+111,614 of 113,511 200 (98.3%; 1,184 driver cap, 713 503), p99 3,744 ms. `merge:only` p99 2,116 ms (51 of 58 ok).
+
+**Raw.** `tests/am1/raw/a1-b0-35-mwgm9uwu.jsonl`, `tests/fanout/raw/memguard-m29r35.jsonl`, `terms-m29r35.jsonl`,
+`rows-m29r35.status`. **Cost** $125.69 at 16:49Z (containers $48.25). Sweep "sweep ok".
