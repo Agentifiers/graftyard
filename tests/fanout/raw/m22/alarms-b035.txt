@@ -1,0 +1,4 @@
+14:49:14.027 a 0d7bfff6 member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 6, 3), (SiteId(2), 6, 3)] }, to: Some(SiteId(1)) }
+15:02:02.674 a c1b3baa2 member alarm: StepDown { why: CommitErrors { calls: [(SiteId(1), 48, 42), (SiteId(2), 47, 3)] }, to: None }
+15:04:20.969 b 19e129c7 member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 5, 3), (SiteId(2), 5, 3)] }, to: Some(SiteId(0)) }
+15:03:47.319 c 1aeabd14 member alarm: StepDown { why: CommitErrors { calls: [(SiteId(0), 6, 3), (SiteId(1), 4, 3)] }, to: Some(SiteId(0)) }

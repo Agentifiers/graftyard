@@ -1512,6 +1512,43 @@ until `LOAD_STALE` of later ledger calls, and `PoolLedger::settle` shifts every 
 other networks keep calling. DESIGN's lease text says leases "lapse past LOAD_STALE unless renewed"; here they were
 renewed by nobody and still held for over an hour (11:36Z to 13:11Z).
 
+### Round 10b: rows m22 at k 4 on main 84d29c2 (2026-11-13)
+
+**Deploy m22.** `lm1-memory` `24dec508` (main 84d29c2: F67 rules 10 to 13; not yet c0f521b). Sites `9e2b7b32`,
+`2611f7ee`, `cd860099`; edge `f9d34dec` (from `565bdb01`); `SHARD_INSTANCE=standard-4`; image
+`sha256:f6d2ef408c76…`. Every row got k 4 (`rows.sh` checks the grant), learners enam 4,000, weur 2,000, apac 2,000,
+one fresh repository per row, run in order 13:55Z to 15:58Z. Raw data: `tests/fanout/raw/m22/` (the a1 rows and logs,
+`rows-m22.status`, the site day's logs, and each churned row's `member alarm` step-downs from Workers Logs,
+`alarms-*.txt`).
+
+| Row (m22, k 4) | Repo | Leader: terms | Commit p50 / p99 (ms) | Agent pushes ok | Leader `/suspect` | Other |
+|---|---|---|---|---|---|---|
+| B0-29, 600 s | 131310 | held, term 2 | 512 / 1,158 | 2,497 / 2,500, p99 7.8 s | 36 | merge:only p99 2,503 ms; API p99 2,863 ms, 99.7% served |
+| B0-32, 180 s | 131311 | held, term 2 | 378 / 1,265 | 641 / 757 | 18 | burst 390 / 500 ok, p99 105 s |
+| B0-31, 600 s | 131312 | apac held, term 3 (rehome) | 30,044 / 30,899 | 879 / 2,500 (1,620 `full`) | 11 | round p99 401 ms; the queue sets the commit |
+| B0-33, 300 s, 5,000 agents | 131313 | term 2 to 10, site 2 last | 30,003 / 30,523 | 224 / 12,498 (8,595 `full`) | 28,868 | round p99 741 ms |
+| B0-35, 600 s | 131314 | term 2 to 23, site 0 last | 6,277 / 17,684 | 1,109 / 2,500 | 9,551 | 118 commit samples; API 45,485 of 117,223 served |
+| L0-12, 600 s | 131315 | term 2 to 7, site 2 last | 26,153 / 31,020 | 1,692 / 2,490 (634 `full`) | 857 | 10 leader kills; feed p99 outside them 2,444 ms |
+
+Every row fails its gate line; the commit line alone fails each (B0-29's 1,158 ms is past its 1 s fail value).
+
+**Step-downs (Workers Logs, `member alarm: StepDown`).** In B0-33, three, all `Confirm`: 14:40:05Z site a (p99
+1,245 ms, 6 slow of 20, to site 1), then site c twice (14:40:31Z p99 2,502 ms; 14:42:44Z p99 1,000 ms; to none). In
+B0-35, four, all `CommitErrors` (14:49:14Z site a, 3 of 6 calls failed to each follower; 15:02:02Z site a, 42 of 48 to
+site 1; 15:03:47Z site c; 15:04:20Z site b). In L0-12, seven: five `CommitErrors` and two `Confirm` on site a
+(15:49:57Z p99 911 ms; 15:55:19Z p99 1,622 ms). The terms climbed far past the step-downs (B0-35 reached term 23
+after four), so most terms were elections that did not seat a leader.
+
+**Reading (with the parent's churn reviewer, 2026-11-14).** Not F67 rules 10 to 13. The climb is load-driven and older
+than them: it reproduces in the simulator on both a7d28e5 and 84d29c2 when confirms are slow on every member. A
+STEP_DOWN hands leadership to a follower whose confirms are just as slow, which then holds; after that,
+`/suspect`-driven elections that cannot win still raise the term, because a voter adopts a candidate's term before
+it checks the candidate's log. The raft side is with B0-02's thread. This branch's lever is the leader's confirm time
+(`confirmSplit`, round 12). On dd046f2 (round 12) B0-33 moved its leader once, on the same `Confirm` step-down, and
+the term did not climb. `tests/fanout/terms.mjs` now also logs each member's promise (`promiseUntil` less its `now`),
+so a follower withholding its vote before an election shows up, and it reads each site's current voter by name: a
+call by site alone reached the first generation's object after fresh-repo's background placement replaced a voter.
+
 ### Round 11: m23, the ENTRY_SOFT 100 KB A/B on m0-carried-8 (2026-11-13)
 
 **Deploy.** Worktree `e3ba3b58`: origin/m0-carried-8 `c8c7943` (base main 84d29c2: ENTRY_SOFT 100,000 bytes, Agent
