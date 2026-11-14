@@ -3407,6 +3407,42 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.
 
+### `memory-budgets` (1): a leader keeps resolved tickets by bytes and age, 2026-11-14
+
+**Decision.** `Lead::done`, the resolved tickets a leader keeps for a late `outcome`, holds at most DONE_KEEP (4,096) of them, DONE_BYTES (8 MB) of the bytes their commands carry that no event stores (`encoded_len` less `stored_len`), and none older than OUTCOME_KEEP (15 s). `outcome` for a ticket pruned from there answers `NotLeader` naming the same leader; the edge then asks `outcome_by_request`, which answers a committed command from its `request` row through `outcome::replay`, so `Acked` is still built only inside `outcome`.
+
+**Why.** An issue or merge command's outcome keeps a copy of its reply render, about 10 KB of the owner's Authz fold as hex plus logins, and nothing counted it. With a render shaped like m3org's, 8,192 issue commands left 60.6 MB more of a leader's live heap than the same commands without renders, flat from 4,096 on [measured, native allocator]. On B0-33 run 2 site 0's wasm heap climbed from 9.7 to 95.9 MiB in about 90 s and stayed there to its reset, while memSplit's counted buffers stayed under 10 MB [measured, LM-1 round 17, memguard]. That the renders are that heap is an inference: wasm32 values are smaller than native ones.
+
+**Beat.** Dropping the render from the outcome: the edge renders the reply from it, so the reply bytes would change. A lower DONE_KEEP: a burst of small commands would lose outcomes an edge still asks for, while big ones would still fill the heap.
+
+**Evidence.** `thousands_of_rendered_issue_outcomes_hold_about_done_bytes_of_the_leaders_heap` (`crates/git/tests/done_memory.rs`): 11.3 MB held by the renders here against 60.6 MB on main (its bound is DONE_BYTES times a `Value`'s 1.5 overhead). `a_late_outcome_after_its_ticket_was_pruned_is_answered_from_the_request_row` (`crates/raft/tests/scenarios.rs`) asks once past OUTCOME_KEEP and once past DONE_BYTES, and gets `NotLeader` naming the leader, then the committed index from the row; it fails with the age and byte rules removed. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** An edge asking `outcome` for a ticket more than 15 s after it resolved, or `outcome_by_request` answering `unknown` for a committed command.
+
+### `memory-budgets` (2): a leader bounds the AppendEntries bytes alive on its calls, 2026-11-14
+
+**Decision.** A leader counts the entries' bytes on each AppendEntries call it sent, from the send until the call's answer, an error, or the host's new `call_ended(to, round)` input, which the host sends when it stops awaiting the call (answered, failed, or LATE_LIMIT past its deadline) and when a message held for a learner leaves in that learner's own response. It sends a call only while the peer stays within PEER_OUT_MAX (2 MB), the learners together within LEARNERS_OUT_MAX (4 MB), and every peer within OUT_MAX (8 MB). A voter with no call alive always gets one. An unreported call stops counting after OUT_KEEP (12 s). Rounds never repeat within a boot, so an earlier leadership's calls stay keyed apart. No wire enum changes.
+
+**Why.** Nothing bounded the sum. The host awaits a missed call for LATE_LIMIT (10 s) while the core resends it at once and on each tick and pipelines up to PIPELINE more. m3f's new leader sent each voter 10.7 to 11.2 MB in its first minute against an 8 MB log, and B0-33's new leaders held 58.3 MB of call bodies and 42.9 MB of messages for learners before their isolates reset [measured, LM-1 round 17 and m3fr3].
+
+**Beat.** A shorter LATE_LIMIT: late answers are what let a far voter catch up (F43). Fewer resends: a missed call must still be retried at once for commit latency.
+
+**Evidence.** `a_silent_follower_holds_at_most_peer_out_max_of_the_leaders_calls`: with 1 MB entries and one silent voter, at most 1.0 MB alive to it against 10.0 MB without the budget, while the other voter commits all 40. `a_new_leader_catching_up_silent_learners_stays_within_out_max`: a new leader catching up 8 learners that answer 3 s late keeps 3.0 MB alive to them against 24.0 MB without it. `a_silent_follower_costs_the_commit_rate_nothing`: 400 commands commit in the step they are admitted, with one voter silent as with none. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** A hosted run where a healthy voter or learner falls behind with its peer's bytes at PEER_OUT_MAX, or a leader that held a call back past OUT_MAX while a quorum was answering.
+
+### `memory-budgets` (3): a member sheds reads past ANSWER_BYTES_MAX of distinct answer bytes in flight, 2026-11-14
+
+**Decision.** Every member, leader, follower, or learner, counts the distinct bytes of read answers still streaming out of it, an answer that many reads share (`family::dump_bytes`, `shared_answer`) counted once by the address of its shared bytes. While they reach ANSWER_BYTES_MAX (16 MB), any new read is shed `overloaded`, which the edge takes to the next member without `suspect`.
+
+**Why.** READS_MAX (256) and HEAVY_READS (16) cap reads by count, not by bytes. A new leader had 22.9 MB of answers in flight one second after it won and reset 18 s later, and B0-33's leaders 26 to 30.5 MB [measured, m3fr3 and LM-1 round 17]. Counting a shared answer per read would shed a learner streaming one 1 MB dump to 16 readers, which `learner-dumps` showed costs 74% of reads.
+
+**Beat.** A lower READS_MAX: narrow reads of a few KB would shed long before any memory mattered. Counting per read: see above.
+
+**Evidence.** `distinct_answer_bytes_past_the_cap_shed_and_a_shared_answer_counts_once` (`workers/site/src/member.rs`): 40 reads of one 1 MB dump count 1 MB and serve; 15 more distinct answers reach 16 MB and shed a learner's read and the leader's; the cap lifts as they finish.
+
+**Flip.** A hosted run whose reads shed at ANSWER_BYTES_MAX with the isolate's memory well under the limit, or an isolate reset with answers under it.
+
 ### `prsync-first-once`: a `PrSync` attempt ends at `FIRST_FOR`, and a test merge shed after waiting `TURN_WAIT_MS` in line, 2026-11-14
 
 #### An attempt ends at `FIRST_FOR` in the invocation that runs it, and the leader waits for its answer

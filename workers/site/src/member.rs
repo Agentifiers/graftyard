@@ -57,6 +57,11 @@ const ARRIVALS_MEM_MAX: usize = 40_000;
 /// (`tests/am1/results/lm1-memory.md`, "Rows"). The leader takes about 300 req/s at journey 9, mostly reads of
 /// 1 s or less, so 256 leaves room for a second's worth.
 pub const READS_MAX: u32 = 256;
+/// Distinct bytes of read answers a voter or learner streams at once, a shared answer counted once
+/// (`host::Answers`) [guess]: past it any new read is shed `overloaded`. A new leader had 22.9 MB of answers in flight
+/// one second after it won and reset 18 s later, and B0-33's leaders 26 to 30.5 MB, under the isolate's 128 MiB
+/// (`tests/m0/results/memory-budgets.md`).
+pub const ANSWER_BYTES_MAX: usize = 16_000_000;
 
 /// A whole-tier read: `{"rows": true}`, not a narrow `{"rows": {"access" | "agent" | "merge": ..}}` one.
 fn heavy_read(q: &Value) -> bool {
@@ -85,12 +90,26 @@ enum Gate {
 /// learner's reads at one state share one copy (`family::dump_bytes`), while a learner never votes, so its reads
 /// delay no AppendEntries reply or confirm of the group's. At HEAVY_READS, learners shed 58 to 72% of journey 9's
 /// whole-tier reads at 10% CPU and 65 MB (`tests/am1/results/learner-dumps.md`).
-fn gate(index: bool, leading: bool, me: SiteId, servable: bool, heavy: bool, reads: u32, heavies: u32) -> Gate {
+/// `answers`, the distinct answer bytes streaming, sheds any read past ANSWER_BYTES_MAX.
+#[allow(clippy::too_many_arguments)]
+fn gate(
+    index: bool,
+    leading: bool,
+    me: SiteId,
+    servable: bool,
+    heavy: bool,
+    reads: u32,
+    heavies: u32,
+    answers: usize,
+) -> Gate {
     let learner = graftyard_types::learner_slot(me).is_some();
     if index && !leading && !servable {
         return Gate::NotLeader;
     }
-    if reads >= READS_MAX || (heavy && (leading || index) && !learner && heavies >= HEAVY_READS) {
+    if reads >= READS_MAX
+        || answers >= ANSWER_BYTES_MAX
+        || (heavy && (leading || index) && !learner && heavies >= HEAVY_READS)
+    {
         return Gate::Shed;
     }
     Gate::Serve
@@ -1053,7 +1072,7 @@ impl<F: Family> Routes<F> {
             format!(r#","index":{index},"stages":[{},{}],"meta":{}}}"#, stages[0], stages[1], self.meta()).into_bytes();
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
-        let counted = host::Counted::new(&self.host.answer_bytes, value.len());
+        let counted = host::Answers::hold(&self.host.answers, &value);
         Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
             .with_headers(headers))
     }
@@ -1102,6 +1121,16 @@ impl<F: Family> Routes<F> {
             Ok(mut back) => {
                 let mut out = self.host.callers.borrow_mut().take(from);
                 out.append(&mut back);
+                // AppendEntries held for this caller, or built for it while stepping its call, leave in this response,
+                // not as calls: their bytes stop counting now (`raft::Member::call_ended`).
+                let boot = self.host.core.borrow().as_ref().map(|c| c.m.boot());
+                for e in &out {
+                    if let raft::Message::Append(a) = &e.msg
+                        && Some(a.boot) == boot
+                    {
+                        let _ = self.host.input(|m, t| m.call_ended(t, from, a.round));
+                    }
+                }
                 for e in &out {
                     match &e.msg {
                         raft::Message::ReadIndexRes { batch, index } => {
@@ -1320,7 +1349,8 @@ impl<F: Family> Routes<F> {
         };
         let learner = graftyard_types::learner_slot(me).is_some();
         let (reads, heavies) = (self.host.reads_in_flight.get(), self.host.heavy_reads.get());
-        match gate(index, leading, me, servable, heavy, reads, heavies) {
+        let answers = self.host.answers.borrow().bytes();
+        match gate(index, leading, me, servable, heavy, reads, heavies, answers) {
             Gate::Serve => {}
             Gate::NotLeader => {
                 self.host.stats.borrow_mut().follower_refused += 1;
@@ -1514,7 +1544,8 @@ impl<F: Family> Routes<F> {
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
                 "calls": self.host.call_bytes.get(),
-                "answers": self.host.answer_bytes.get(),
+                "callsOut": core.as_ref().map(|c| c.m.calls_out_bytes()),
+                "answers": self.host.answers.borrow().bytes(),
                 "stmts": stmts,
                 "stmtBytes": stmt_bytes,
                 "admitted": core.as_ref().map(|c| c.admitted.len()),
@@ -2630,6 +2661,7 @@ mod tests {
     use serde_json::json;
 
     use super::{Gate, HEAVY_READS, InFlight, READS_MAX, gate, heavy_read, percentiles, read_wait, site_field};
+    use crate::host;
 
     /// A member is removed once its latest committed config no longer names it: a replaced voter (B0-32 m3fr2's
     /// `#1#f1` after its site's `#2#f1` joined), and a `Degraded` config's lost voter. Its replacement, the other
@@ -2685,20 +2717,20 @@ mod tests {
             assert!(!heavy_read(&narrow), "{narrow}");
         }
         // (index, leading, servable, heavy, reads, heavies)
-        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS - 1, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, true, HEAVY_READS, HEAVY_READS, 0), Gate::Shed);
         assert_eq!(
-            gate(false, false, V, true, true, HEAVY_READS, HEAVY_READS),
+            gate(false, false, V, true, true, HEAVY_READS, HEAVY_READS, 0),
             Gate::Serve,
             "a plain follower read answers NotLeader"
         );
-        assert_eq!(gate(false, true, V, false, false, HEAVY_READS * 4, HEAVY_READS * 4), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, false, READS_MAX - 1, 0), Gate::Serve);
-        assert_eq!(gate(false, true, V, false, false, READS_MAX, 0), Gate::Shed, "a narrow read past READS_MAX");
-        assert_eq!(gate(false, false, V, false, false, READS_MAX, 0), Gate::Shed, "on a follower too");
+        assert_eq!(gate(false, true, V, false, false, HEAVY_READS * 4, HEAVY_READS * 4, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX - 1, 0, 0), Gate::Serve);
+        assert_eq!(gate(false, true, V, false, false, READS_MAX, 0, 0), Gate::Shed, "a narrow read past READS_MAX");
+        assert_eq!(gate(false, false, V, false, false, READS_MAX, 0, 0), Gate::Shed, "on a follower too");
         let n = std::rc::Rc::new(std::cell::Cell::new(0));
         let held: Vec<_> = (0..READS_MAX).map(|_| InFlight::new(&n)).collect();
-        assert_eq!(gate(false, true, V, false, false, n.get(), 0), Gate::Shed);
+        assert_eq!(gate(false, true, V, false, false, n.get(), 0, 0), Gate::Shed);
         drop(held);
         assert_eq!(n.get(), 0);
     }
@@ -2709,12 +2741,12 @@ mod tests {
     /// leader's index answers `overloaded`, never a value and never a 5xx the edge would report with `suspect`.
     #[test]
     fn a_follower_serves_only_its_reads_under_the_caps_and_never_stale() {
-        assert_eq!(gate(true, false, V, true, true, 0, 0), Gate::Serve);
-        assert_eq!(gate(true, false, V, false, false, 0, 0), Gate::NotLeader);
-        assert_eq!(gate(true, false, V, false, true, READS_MAX, HEAVY_READS), Gate::NotLeader);
-        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "HEAVY_READS on a follower");
-        assert_eq!(gate(true, false, V, true, false, READS_MAX, 0), Gate::Shed, "READS_MAX on a follower");
-        assert_eq!(gate(true, true, V, false, false, 0, 0), Gate::Serve, "a leader serves every read-index read");
+        assert_eq!(gate(true, false, V, true, true, 0, 0, 0), Gate::Serve);
+        assert_eq!(gate(true, false, V, false, false, 0, 0, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, false, true, READS_MAX, HEAVY_READS, 0), Gate::NotLeader);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS, 0), Gate::Shed, "HEAVY_READS on a follower");
+        assert_eq!(gate(true, false, V, true, false, READS_MAX, 0, 0), Gate::Shed, "READS_MAX on a follower");
+        assert_eq!(gate(true, true, V, false, false, 0, 0, 0), Gate::Serve, "a leader serves every read-index read");
         let (wait, late) = read_wait(true);
         assert_eq!(wait, super::FOLLOWER_WAIT);
         assert!(late.get("overloaded").is_some() && late.get("value").is_none(), "{late}");
@@ -2731,14 +2763,14 @@ mod tests {
     fn a_learner_serves_whole_tier_reads_past_the_heavy_cap_and_waits_for_a_due_rebuild() {
         use super::waits_for_rebuild;
         // (index, leading, me, servable, heavy, reads, heavies): V a voter's address, L a learner's
-        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a learner past HEAVY_READS");
-        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS * 8), Gate::Serve);
-        assert_eq!(gate(true, false, L, true, true, READS_MAX, 0), Gate::Shed, "READS_MAX on a learner");
-        assert_eq!(gate(true, false, L, true, false, READS_MAX, 0), Gate::Shed);
-        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS), Gate::Shed, "a follower keeps HEAVY_READS");
-        assert_eq!(gate(false, true, V, false, true, 0, HEAVY_READS), Gate::Shed, "the leader keeps HEAVY_READS");
-        assert_eq!(gate(true, false, L, false, true, 0, 0), Gate::NotLeader, "a learner's leader-only read");
-        assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS), Gate::Serve, "a plain read answers NotLeader");
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS, 0), Gate::Serve, "a learner past HEAVY_READS");
+        assert_eq!(gate(true, false, L, true, true, 0, HEAVY_READS * 8, 0), Gate::Serve);
+        assert_eq!(gate(true, false, L, true, true, READS_MAX, 0, 0), Gate::Shed, "READS_MAX on a learner");
+        assert_eq!(gate(true, false, L, true, false, READS_MAX, 0, 0), Gate::Shed);
+        assert_eq!(gate(true, false, V, true, true, 0, HEAVY_READS, 0), Gate::Shed, "a follower keeps HEAVY_READS");
+        assert_eq!(gate(false, true, V, false, true, 0, HEAVY_READS, 0), Gate::Shed, "the leader keeps HEAVY_READS");
+        assert_eq!(gate(true, false, L, false, true, 0, 0, 0), Gate::NotLeader, "a learner's leader-only read");
+        assert_eq!(gate(false, false, L, true, true, 0, HEAVY_READS, 0), Gate::Serve, "a plain read answers NotLeader");
         // (learner, index, now, ms until the rebuild, deadline)
         assert!(waits_for_rebuild(true, false, true, 1_000, 499, 1_500));
         assert!(!waits_for_rebuild(true, false, true, 1_000, 500, 1_500), "a rebuild at the deadline is too late");
@@ -2774,6 +2806,30 @@ mod tests {
         assert_eq!(n.get(), 1);
         drop(cut);
         assert_eq!(n.get(), 0);
+    }
+
+    /// ANSWER_BYTES_MAX counts the distinct bytes of answers still streaming: one answer shared by many reads counts
+    /// once, so a learner streaming one dump to READS_MAX - 1 readers is not shed, while distinct answers past it shed
+    /// every read, voter or learner, until enough of them finish. Counted per read instead, 20 reads of one 1 MB dump
+    /// would shed at 16; uncapped, a new leader held 22.9 MB of answers a second after it won and reset 18 s later.
+    #[test]
+    fn distinct_answer_bytes_past_the_cap_shed_and_a_shared_answer_counts_once() {
+        use super::ANSWER_BYTES_MAX;
+        let answers = std::rc::Rc::new(std::cell::RefCell::new(host::Answers::default()));
+        let dump: std::rc::Rc<[u8]> = vec![7u8; 1_000_000].into();
+        let shared: Vec<_> = (0..40).map(|_| host::Answers::hold(&answers, &dump)).collect();
+        assert_eq!(answers.borrow().bytes(), 1_000_000, "one dump, however many reads stream it");
+        let at = |a: usize| gate(true, false, L, true, true, 40, 40, a);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Serve);
+        let distinct: Vec<std::rc::Rc<[u8]>> = (0..15).map(|i| vec![i as u8; 1_000_000].into()).collect();
+        let held: Vec<_> = distinct.iter().map(|d| host::Answers::hold(&answers, d)).collect();
+        assert_eq!(answers.borrow().bytes(), ANSWER_BYTES_MAX);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Shed, "16 MB of distinct answers sheds a learner's read");
+        assert_eq!(gate(false, true, V, false, false, 0, 0, answers.borrow().bytes()), Gate::Shed, "and the leader's");
+        drop(held);
+        assert_eq!(at(answers.borrow().bytes()), Gate::Serve, "the cap lifts as answers finish");
+        drop(shared);
+        assert_eq!(answers.borrow().bytes(), 0);
     }
 
     /// A site id past `u8` is refused, never truncated onto another site.
