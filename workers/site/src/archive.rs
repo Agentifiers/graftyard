@@ -99,9 +99,11 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
             }
             // The drain stopped at its budget with work left: the next run starts at once.
             Ok(_) => h.arm_in(BUSY_MS),
+            // A failed run is retried on its own a minute on: an idle leader arms no other alarm.
             Err(e) => {
                 SUMMED.with(|s| s.borrow_mut().insert(key, now_ms()));
                 note(&h, format!("archive: {e}"));
+                h.arm_in(SUM_EVERY_MS as i64);
             }
         }
     });

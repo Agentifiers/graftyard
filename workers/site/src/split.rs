@@ -350,7 +350,7 @@ fn parent(h: &Rc<Host<Repo>>, repo: RepoId, key: String) {
         RUNNING.with(|r| r.borrow_mut().remove(&key));
         let Some(h) = w.upgrade() else { return };
         match r {
-            Ok(true) => h.arm_in(BUSY_MS),
+            Ok(true) => return h.arm_in(BUSY_MS),
             Ok(false) => {
                 CHECKED.with(|c| c.borrow_mut().insert(key, now_ms()));
             }
@@ -358,6 +358,11 @@ fn parent(h: &Rc<Host<Repo>>, repo: RepoId, key: String) {
                 CHECKED.with(|c| c.borrow_mut().insert(key, now_ms()));
                 note(&h, format!("split: {e}"));
             }
+        }
+        // A split under way checks again on its own: a leader that serves nothing arms no alarm, and smoke 2's
+        // parent waited on a child restored at 05:39Z with no alarm after 05:36Z (`tests/am1/results/b030-split.md`).
+        if leader_due(&h) {
+            h.arm_in(CHECK_EVERY_MS as i64);
         }
     });
 }
