@@ -387,7 +387,8 @@ impl DurableObject for Member {
                 _ => Response::error("member not joined", 409),
             };
         };
-        each!(&h, x => Routes { host: x.clone() }.fetch(req, url).await)
+        let path = url.path().to_owned();
+        crate::inv::run(&path, async move { each!(&h, x => Routes { host: x.clone() }.fetch(req, url).await) }).await
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -558,6 +559,7 @@ impl<F: Family> Routes<F> {
                     let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
                     self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
                 }
+                crate::inv::add(|c| c.decoded += body.len() as u64);
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
                 #[cfg(feature = "test-faults")]

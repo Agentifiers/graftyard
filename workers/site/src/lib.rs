@@ -27,6 +27,7 @@ mod fold_audit;
 mod hookseq;
 mod host;
 mod inbox;
+mod inv;
 mod load;
 mod logrelay;
 mod lookup;

@@ -323,6 +323,7 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     if let Some(repo) = fold.repo
         && let Some(b) = DUMPS.with(|d| d.borrow().get(&repo).filter(|(at, _)| *at == key).map(|(_, b)| b.clone()))
     {
+        crate::inv::add(|c| c.hits += 1);
         return Some(b);
     }
     let mut budget = Budget::READ;
@@ -334,6 +335,7 @@ pub fn dump_bytes(fold: &git::repo::RepoFold, q: &Value) -> Option<std::rc::Rc<[
     // `packed`: one JSON string, not a `Value` tree of 18 times its size (`TierRows::packed`).
     let bytes: std::rc::Rc<[u8]> = serde_json::to_vec(&rows.packed()).unwrap_or_else(|_| b"null".to_vec()).into();
     BUILDS.with(|b| b.set(b.get() + 1));
+    crate::inv::add(|c| c.dumps += 1);
     if let Some(repo) = fold.repo {
         DUMPS.with(|d| {
             let mut d = d.borrow_mut();
@@ -385,7 +387,7 @@ thread_local! {
 fn narrow_hit(repo: RepoId, text: &str, floor: u64, loaded: bool) -> Option<std::rc::Rc<[u8]>> {
     NARROW.with(|n| {
         n.borrow().get(&repo).and_then(|v| {
-            v.iter().find(|(t, at, l, _)| t == text && *at >= floor && *l == loaded).map(|(_, _, _, b)| b.clone())
+            v.iter().find(|(t, _, l, _)| t == text && *l == loaded).map(|(_, _, _, b)| b.clone())
         })
     })
 }
@@ -421,12 +423,15 @@ pub fn narrow_bytes(fold: &git::repo::RepoFold, q: &Value, floor: u64) -> Option
     q.get("rows")?.get("api")?;
     let (repo, text, loaded) = (fold.repo?, q.to_string(), fold.meta.loaded());
     if let Some(b) = narrow_hit(repo, &text, floor, loaded) {
+        crate::inv::add(|c| c.hits += 1);
         return Some(b);
     }
     let at = graftyard_fold::meta(&*fold.core).applied.0;
     let bytes: std::rc::Rc<[u8]> =
         serde_json::to_vec(&<Repo as Family>::read_json(fold, q)).unwrap_or_else(|_| b"null".to_vec()).into();
     NARROW_BUILDS.with(|b| b.set(b.get() + 1));
+    let gql = q.pointer("/rows/api/route/graphql").is_some();
+    crate::inv::add(|c| if gql { c.gql += 1 } else { c.rest += 1 });
     NARROW.with(|n| {
         let mut n = n.borrow_mut();
         if n.len() >= DUMPS_MAX && !n.contains_key(&repo) {

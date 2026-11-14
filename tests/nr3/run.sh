@@ -38,7 +38,12 @@ echo "$(date -u +%FT%TZ) b0-29 start" >> "$ST"
 # starts after its PR opens and the learners' catch-up (its "b0-29 run TAG:" line).
 [ -n "${FRESH:-}" ] && (until grep -q "b0-29 run $TAG:" tests/am1/raw/runs/nr-$TAG.log 2>/dev/null; do sleep 5; done; sleep 60; REPO="$NAME" ROUNDS="$FRESH" node tests/nr3/fresh.mjs > tests/nr3/raw/fresh-$TAG.jsonl 2>&1; echo "$(date -u +%FT%TZ) fresh exit $?" >> "$ST") &
 node tests/am1/rest/a1.mjs b0-29 --repo "$NAME" --chain "repo:$rid" --run "$TAG" --seconds "${SECONDS_:-600}" --open-prs "${OPEN_PRS:-500}" --as-admin \
-  > tests/am1/raw/runs/nr-$TAG.log 2>&1
+  > tests/am1/raw/runs/nr-$TAG.log 2>&1 &
+A1=$!
+# WATCH_MIB=n: stop the run once any voter's analytics memory peak passes n MiB, and with SPEND_FROM and SPEND_CAP
+# once the install's spend passes it (tests/nr3/watch.py, which reads both from the environment).
+[ -n "${WATCH_MIB:-}" ] && python3 tests/nr3/watch.py "$rid" "$(date -u +%FT%TZ)" "$A1" "$WATCH_MIB" > tests/nr3/raw/watch-$TAG.jsonl 2>&1 &
+wait "$A1"
 echo "$(date -u +%FT%TZ) b0-29 done $?" >> "$ST"
 touch tests/nr3/raw/.lmem-$TAG.done
 grep -hE '"step":"(open PRs|learners caught up)"' tests/am1/raw/a1-b0-29-$TAG.jsonl >> "$ST" 2>/dev/null

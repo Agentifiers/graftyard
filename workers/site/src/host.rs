@@ -40,7 +40,6 @@ use serde_json::{Value, json};
 use worker::js_sys;
 use worker::wasm_bindgen::closure::Closure;
 use worker::wasm_bindgen::{JsCast, JsValue};
-use worker::wasm_bindgen_futures::spawn_local;
 use worker::*;
 
 use crate::family::{Err as FErr, Family, Out as FOut, Stmt};
@@ -1680,6 +1679,7 @@ impl<F: Family> Host<F> {
             self.fail_lost(&why);
             return Err(err(format!("fold storage lost: {why}")));
         }
+        crate::inv::add(|c| c.steps += 1);
         if applied > applied0 {
             self.trace(Trace::Applied, 0, 0, applied.0, 0);
             let events: usize = (applied0.0 + 1..=applied.0)
@@ -1689,6 +1689,10 @@ impl<F: Family> Host<F> {
                     _ => 0,
                 })
                 .sum();
+            crate::inv::add(|c| {
+                c.applied += (applied.0 - applied0.0) as u32;
+                c.events += events as u32;
+            });
             let mut s = self.stats.borrow_mut();
             if s.apply_steps.len() < SAMPLES_MAX {
                 let ms = now_ms().saturating_sub(t) as u32;
@@ -1726,7 +1730,7 @@ impl<F: Family> Host<F> {
         if lease_at {
             let sent = now_ms().saturating_sub(t) as u32;
             let h = self.clone();
-            spawn_local(async move {
+            crate::inv::spawn(async move {
                 Delay::from(Duration::ZERO).await;
                 let next = now_ms().saturating_sub(t) as u32;
                 let mut s = h.stats.borrow_mut();
@@ -1758,7 +1762,7 @@ impl<F: Family> Host<F> {
         }
         for (key, to) in archived {
             let h = self.clone();
-            spawn_local(async move { h.truncate(&key, to).await });
+            crate::inv::spawn(async move { h.truncate(&key, to).await });
         }
         Ok((r, out))
     }
@@ -1886,7 +1890,7 @@ impl<F: Family> Host<F> {
         }
         let h = self.clone();
         let deferred = now_ms();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             Delay::from(Duration::ZERO).await;
             if h.dying.get() {
                 return;
@@ -1928,6 +1932,19 @@ impl<F: Family> Host<F> {
     /// writes in order, so one `sync()` covers every input queued so far.
     fn flush(self: &Rc<Self>) -> std::result::Result<(), String> {
         let stmts = std::mem::take(&mut *self.queue.borrow_mut());
+        #[cfg(feature = "test-faults")]
+        {
+            let val = |v: &SqlStorageValue| match v {
+                SqlStorageValue::String(t) => t.len(),
+                SqlStorageValue::Blob(b) => b.len(),
+                _ => 8,
+            };
+            let bytes: usize = stmts.iter().map(|(_, a)| a.iter().map(val).sum::<usize>()).sum();
+            crate::inv::add(|c| {
+                c.rows += stmts.len() as u32;
+                c.row_bytes += bytes as u64;
+            });
+        }
         commit_tx(&self.state.storage(), stmts)?;
         if let Some(r) = self.requests.borrow().as_ref() {
             r.flushed();
@@ -1951,8 +1968,11 @@ impl<F: Family> Host<F> {
         if !pending.is_empty() {
             let h = self.clone();
             let began = now_ms();
-            spawn_local(async move {
-                if h.state.storage().sync().await.is_err() || h.dying.get() {
+            crate::inv::sync_began();
+            crate::inv::spawn(async move {
+                let synced = h.state.storage().sync().await;
+                crate::inv::sync_ended(now_ms().saturating_sub(began));
+                if synced.is_err() || h.dying.get() {
                     return;
                 }
                 let applied = h.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.applied.0)).unwrap_or(0);
@@ -2094,6 +2114,7 @@ impl<F: Family> Host<F> {
                                     });
                                     if hit {
                                         self.stats.borrow_mut().shared_reads += 1;
+                                        crate::inv::add(|c| c.hits += 1);
                                     }
                                     // A read whose answer is not built yet keeps its own grant, for `answer_after`.
                                     let body = match body {
@@ -2186,7 +2207,7 @@ impl<F: Family> Host<F> {
             for (cmd, a) in marks {
                 let env = self.env.clone();
                 let h = self.clone();
-                spawn_local(async move {
+                crate::inv::spawn(async move {
                     let failed = F::after_ok(env, chain, cmd, a).await;
                     h.stats.borrow_mut().marker_failures += failed as u32;
                 });
@@ -2272,7 +2293,7 @@ impl<F: Family> Host<F> {
     fn call(self: &Rc<Self>, e: Envelope<F>) {
         let h = self.clone();
         let queued = now_ms();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
             let _counted = Counted::new(&h.call_bytes, body.len());
             let call = Call::of(&e, body.len());
@@ -2514,7 +2535,7 @@ impl<F: Family> Host<F> {
             init.with_method(Method::Post).with_body(Some(stream.readable().into()));
             // A write or close refused (the call failed and its body was dropped) surfaces as the fetch's own error.
             let (wrote, closed) = (writer.write_with_chunk(&chunk), writer.close());
-            spawn_local(async move {
+            crate::inv::spawn(async move {
                 let _ = wasm_bindgen_futures::JsFuture::from(wrote).await;
                 let _ = wasm_bindgen_futures::JsFuture::from(closed).await;
             });
@@ -2545,6 +2566,7 @@ impl<F: Family> Host<F> {
             return Err(PeerErr::new(CallFail::Status, format!("{status} {text}")));
         }
         let b = res.bytes().await.map_err(|x| PeerErr::new(CallFail::Body, x))?;
+        crate::inv::add(|c| c.decoded += b.len() as u64);
         codec::from_bytes::<Vec<Envelope<F>>>(&b).map_err(|x| PeerErr::new(CallFail::Decode, x))
     }
 
@@ -2561,7 +2583,7 @@ impl<F: Family> Host<F> {
     /// a leader held for this learner reaches it in either one.
     fn hedge(self: &Rc<Self>, to: SiteId, body: Vec<u8>, hop: u64, answered: Rc<Cell<bool>>) {
         let h = self.clone();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             Delay::from(HEDGE).await;
             if answered.get() || h.dying.get() {
                 return;
@@ -2665,7 +2687,7 @@ impl<F: Family> Host<F> {
     fn read_deps(self: &Rc<Self>, want: raft::DepsWanted) {
         let h = self.clone();
         let emitted = now_ms();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             // `depsMs.spawn`: from the release that emitted the `DepsWanted` to this task's start, the isolate's own
             // queueing ahead of the reads (round 6: dep reads took 118 ms p50 under load against 28 ms idle).
             {
@@ -2766,7 +2788,7 @@ impl<F: Family> Host<F> {
             return;
         }
         let h = self.clone();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             let r = h.lease_once().await;
             if let Err(e) = &r {
                 console_error!("id block lease failed: {e}");
@@ -2840,7 +2862,7 @@ impl<F: Family> Host<F> {
         // The loop holds the host only between timers: after `ctx.abort()` the object's timers never fire, and a loop
         // that held it across one kept the whole reset member in the isolate's memory (F47).
         let w = Rc::downgrade(self);
-        spawn_local(async move {
+        crate::inv::detached(async move {
             loop {
                 let due = now_ms() + TICK.as_millis() as u64;
                 Delay::from(TICK).await;
@@ -2920,7 +2942,7 @@ impl<F: Family> Host<F> {
         }
         self.alarm_at.set(at);
         let h = self.clone();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             // Unconfirmed, so arming never holds a reply behind the output gate; a lost alarm is re-armed by the next
             // served request.
             let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
@@ -3019,7 +3041,7 @@ impl<F: Family> Host<F> {
     fn die(self: &Rc<Self>, fault: Option<Fault>, delay: Duration) {
         self.dying.set(true);
         let h = self.clone();
-        spawn_local(async move {
+        crate::inv::spawn(async move {
             if let Some(f) = fault {
                 if f.down_ms > 0 {
                     let _ = h.state.storage().sql().exec(

@@ -379,6 +379,7 @@ impl Inner {
 
     /// The query a stored read runs: on test installs, once after `fail_next_read`, one SQLite refuses.
     fn query(&self, q: String) -> String {
+        crate::inv::add(|c| c.sql_reads += 1);
         #[cfg(feature = "test-faults")]
         if self.held_unloaded {
             self.reads.set(self.reads.get() + 1);
