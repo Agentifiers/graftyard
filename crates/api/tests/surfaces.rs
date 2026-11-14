@@ -1925,6 +1925,14 @@ fn rest_writes_of_review_comments_and_check_runs_render_ghes_shapes() {
     assert_eq!(e.status, 404);
     let e = render_err(&render(What::CheckRunCreated { id: 1 }), &IssueErr::Forbidden);
     assert_eq!(e.status, 403);
+    // An Actions secret or variable write: a new name is 201 with a JSON body (go-gh decodes every non-204 reply, so
+    // an empty 201 fails `gh secret set`), an update is 204, and a variable create on a taken name is 409, which
+    // `gh variable set` answers with a PATCH.
+    let wire = render_ok(&render(What::ActionsConfig), &ack(IssueOut::Created), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body), (201, Some(json!({}))));
+    let wire = render_ok(&render(What::ActionsConfig), &ack(IssueOut::Done), &m.core, &m.meta);
+    assert_eq!((wire.status, wire.body), (204, None));
+    assert_eq!(render_err(&render(What::ActionsConfig), &IssueErr::Exists).status, 409);
 }
 
 /// A pull request's `commits`, `additions`, `deletions`, and `changed_files` are the git cache's counts for its (base

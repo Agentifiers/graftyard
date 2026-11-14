@@ -444,7 +444,7 @@ pub enum What {
     CheckRunCreated {
         id: i64,
     },
-    /// An Actions secret or variable write (M4-WP3, format 32.23): 201 for a new name (`IssueOut::Created`), else 204,
+    /// An Actions secret or variable write (M4-WP3, format 32.23): 201 `{}` for a new name (`IssueOut::Created`), else 204,
     /// GitHub's codes for `PUT .../secrets/{name}`, `POST .../variables`, and `PATCH`/`DELETE` [doc: GHES 3.22 REST,
     /// "Actions secrets" and "Actions variables"]. A variable create on a taken name is 409, which `gh variable set`
     /// takes as "PATCH instead" [measured: cli/cli `pkg/cmd/variable/set/http.go`].
@@ -565,8 +565,10 @@ pub fn render_ok(render: &Render, acked: &Acked<IssueOut>, core: &dyn Read, meta
         What::Hook { created } => WireReply::of(&crate::webhooks::saved(acked, &r, *created)),
         What::ReviewCommentCreated { n } => WireReply::of(&crate::rest::review_comment_created(acked, &r, *n)),
         What::CheckRunCreated { id } => WireReply::of(&crate::rest::check_run_created(acked, &r, *id)),
+        // GitHub's 201 carries `{}`, and go-gh decodes every non-204 body, so an empty one fails `gh secret set`
+        // [measured: gh 2.102.1, "unexpected end of JSON input"].
         What::ActionsConfig => WireReply::of(&match acked.out {
-            IssueOut::Created => Reply::empty(201),
+            IssueOut::Created => Reply::json(201, serde_json::json!({})),
             _ => Reply::empty(204),
         }),
     }

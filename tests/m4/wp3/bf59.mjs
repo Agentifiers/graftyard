@@ -92,7 +92,7 @@ if (phase === "set") {
     seen[k] = m ? [m[1], Number(m[2])] : null;
   }
   const varOk = text.includes(`var ${values.var}`);
-  const ok = ["repo", "env", "org"].every((k) => JSON.stringify(seen[k]) === JSON.stringify(want[k])) && varOk && job.s.Completed?.conclusion === "Succeeded";
+  const ok = ["repo", "env", "org"].every((k) => JSON.stringify(seen[k]) === JSON.stringify(want[k])) && varOk && job.s.Completed?.conclusion === "Success";
   result(`job-${tag ?? "plain"}`, { job: job.id, conclusion: job.s.Completed?.conclusion, fork, want, seen, varOk, ok, logStatus: logs.status, dir });
   log(`job ${job.id} (${tag ?? "plain"}): ${ok ? "PASS" : "FAIL"} seen ${JSON.stringify(seen)} want ${JSON.stringify(want)} var ${varOk}`);
   if (!ok) process.exit(1);

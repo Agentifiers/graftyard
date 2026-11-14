@@ -295,6 +295,7 @@ pub async fn org_route(c: &Ctx<'_>, req: &mut Request, segs: &[&str]) -> Result<
     let a = f.actions();
     let cred = who.credential_shard();
     let done = |r: std::result::Result<(), Reply>, ok: u16| match r {
+        Ok(()) if ok == 201 => Reply::json(201, json!({})),
         Ok(()) => Reply::empty(ok),
         Err(r) => r,
     };
