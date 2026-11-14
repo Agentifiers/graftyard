@@ -1843,3 +1843,42 @@ tier's `m_path_set` rows) together with one log row, not `Promoted`, `Archived`,
 leaderless. B0-33 stops here, as the parent ordered, until the admission pricing is settled.
 
 **Cost.** $112.17 at 07:25Z (containers $46.15).
+
+### Round 15b: what the 10.8 KB is, the hold, and the plan for the four rows (2026-11-14)
+
+**Hold.** The parent held B0-29 and B0-35 until the admission pricing fix merges. `rows-m26r` was stopped in setup
+(repo 131331 made, no a1 run, no learners). `teardown.py --sweep` at 07:38Z tore down 3 containers (131330 sites 1
+and 2, 131331 site 0), all 200, then "sweep: no shard container running".
+
+**Command bytes by kind [measured, local, real codec].** A scratch test (deleted) encoded each B0-33 / B0-29 side
+command as `RepoCmd::encoded_len`, what admission prices, with the `Render` the edge builds (`commit_issue_in`,
+`workers/edge/src/api.rs`) over the install's real owner fold: `authz:7100001` (m3org) read through
+`/_bed/identity` `{"dep": true}`, 4,987 codec bytes (`names` 209 repos 3,778, `members` 94 at 472, `more` 719),
+which `HostedDir`'s `authz_hex` sends as 9,974 bytes of hex. Actor: an installation token's claims (8 permissions).
+
+| kind | priced total | `render` | of it `dir.authz` hex | rest of the command |
+|---|---|---|---|---|
+| comment (GraphQL `addComment`) | 10,973 | 10,426 | 9,974 | 551 |
+| label add (REST) | 10,806 | 10,272 | 9,974 | 538 |
+| task edit / stand-in (REST) | 10,888 | 10,277 | 9,974 | 615 |
+| lease renew | 10,820 | 10,262 | 9,974 | 562 |
+| lease acquire | 10,892 | 10,261 | 9,974 | 635 |
+| agent push (40 KB inline pack) | 405 less the pack | none | none | 405 |
+
+With 20 logins instead of 2 each IssueCall grows by 370 bytes; with no `authz` each is 834 to 1,001 bytes. So
+**92% of every issue command's priced bytes is the owner's `Authz` fold in hex**, `render` is 94 to 95% of it, and the
+part that reaches the log is 538 to 635 bytes; an agent push prices at about 405 bytes. This matches m26c's
+`admittedBytes` (agent p50 10,842, p99 11,495: IssueCalls; the pushes are the low tail) and its confirms (p50 1,910
+bytes an entry of 7.6 commands). The fold grows with the owner: `names` is one entry a repository, so every repository
+m3org adds (209 now, mostly test repos) adds about 18 bytes of codec and 36 of hex to every issue command it prices.
+Merges carry the same `Render` (`MergeCall.render`, `commit_merge`). Two places a fix could go, for B0-02's call: price
+admission by the bytes the entry stores (`decide`'s events), or keep `render` out of `encoded_len` (it never reaches
+the log); sending `authz` once per entry, or only the parts a reply reads, is the edge-side alternative.
+
+**The four rows, priced [from measured row deltas].** Gate rows are one run each (BUILD-PLAN B0-29: "one 600 s run").
+On m22 at k 4 (standard-4): B0-29 $1.90 (600 s), B0-33 $1.17, B0-35 $2.46; m26c's B0-33 with learners $1.37; m19's
+B0-34 $1.98. B0-34's seeds are done and kept (`plan.txt.m3org_b034-mono.done`, the git/git networks' `.done`), so it
+needs no seed. Plan on the fixed main: one site day (about $1), smokes at 250 and 500 (about $2), B0-29 on the
+500-PR shape (about $3 with the opens), B0-33 (about $1.5), B0-35 (about $2.5), B0-34 last at 900 s on b034-mono
+(about $3 to $5 with the warm pool and the kill), plus idle drift (about $0.35 an hour). Total about $13 to $16 over
+$112.26 now (07:41Z, containers $46.21), so about $125 to $128 of the $150 cap, with room for one rerun.
