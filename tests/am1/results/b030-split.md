@@ -120,9 +120,65 @@ holds a follower's call past the deadline, and missed deadlines on both follower
 and the next entry starts after that row (`decisions/DECISIONS.md`, "One `MetaSlim` entry looks at no more than 128
 KiB of rows"). Test: `a_slim_entry_stops_at_its_bytes_and_the_next_takes_the_rest`. Plants 25 and 26 are both caught.
 
-## Smoke 3: split and slim at `SLIM_BYTES`, no keeper
+## Smoke 3: split and slim at `SLIM_BYTES`, no keeper, `repo:1048589`, 2026-11-14
 
-Not run yet.
+`m3org/b030-s4` was seeded to 211.8 MB: 70,000 comment rows of about 1.8 KB, half of smoke 2's. It used the same driver
+as smoke 2, with no keeper, on the `409a6ca` site day (`SLIM_BYTES` in). Raw data is in
+`tests/am1/raw/b030split-smoke3.{log,jsonl}`.
+
+The first attempt, on `m3org/b030-s3` (`repo:1048588`), seeded nothing. `seed.mjs` resumed from smoke 2's finished
+files, which had one name for every repository, and the run split a 1.4 MB group. That log is kept as
+`b030split-smoke3-unseeded.log`. Two seed fixes followed: resume files per repository (`225f703`), and abandoning a
+snapshot that began before the seed's hold, which refused site 1's seed for 18 minutes (`d12e685`).
+
+| Check | Result |
+|---|---|
+| Leader elected with no request, after `splitAt` | 1 s, site 1 |
+| `MetaSeed` | index 9 (seed at 5), 08:13:28Z |
+| Child restore | 70,000 rows (128 MB) per member in 16 to 61 s; last member 08:16:36Z |
+| Parent stall before `MetaDropped` | **21 min**: no alarm ran the parent's split check after 08:16Z. My `/bench_seed` call woke it at 08:35Z, and `MetaDropped` committed at index 12 |
+| Slim pass | 08:35:36 to 08:47:11Z |
+| Leader cut for 15 s, at 08:38:40Z (site 0, after a hand-off) | A new leader on site 1 within 5 s; the longest gap was 5 s |
+| Parent member SQLite | 211.8 MB before, 5.75 MB after on all three members |
+| Sampled comment bodies after vs before | 100 of 100 equal |
+| `SQLITE_FULL` | 0 |
+| Cost, 07:31 to 08:50Z (both attempts and the site day's idle) | $1.78 DO and Workers, $0.40 containers |
+
+**StepDowns** over the whole smoke window (08:12 to 08:48Z, sites a to c):
+
+| Phase | Count | Kind and target |
+|---|---|---|
+| Slim pass (08:35:36 to 08:47:11Z) | 1 | `CommitErrors`, `to: None`, at 08:38:46Z on site a, with 3 of 23 calls failed to each follower. It came 6 s into the 15 s `/sever` of that leader, so it is the cut's expected result, not the slim's |
+| The rest (seed, restore, the idle wait) | 0 | |
+
+Smoke 2 had 11 `CommitErrors` StepDowns while slimming, 10 with `to: None`, and none caused by the cut.
+
+Follower `/raft` call times while slimming (Workers Logs), by 60 s sample:
+
+| Window | Calls | p50 | p90 | Over 1 s |
+|---|---|---|---|---|
+| 08:36Z, sites b and c | 194 | 0.48 s | 1.21 s | 22 |
+| 08:42Z, sites a and c | 96 | 0.48 s | 0.58 s | 5 |
+| 08:45Z, sites a and c | 113 | 0.71 s | 3.16 s | 55 |
+| 08:30Z, sites a and c, before the slim (control) | 119 | 3.10 s | 3.17 s | 80 |
+
+Sites a and c ran slow calls before the slim started, about 3.1 s each. That was the stray campaign below, and the
+idle period showed it most. So the call times are not clean evidence for `SLIM_BYTES` alone. The StepDown count is the
+measure here, and the slim tripped none.
+
+Two problems:
+
+1. **The parent stalled 21 minutes.** `12f53da` arms the next check from the background task after the run ends. In
+   this window no alarm ran after 08:16Z [inference: the arm from a task that outlived its invocation was lost, the
+   case main's `05cf1647` describes for `arm_in`]. Fix (`7c495d9`): a split under way arms its next check inside the
+   alarm invocation itself, which sets it again before returning. It ships in the rerun's site day.
+2. **A voter campaigned every 10 s without end.** On `repo:1048588`, site b's member is at applied 1 while its
+   leader is at 14. It never learned the split, but kept its test `splitAt`, so it saw split work due, and campaigned
+   354 times, each a `/raft` call to the other two members. I cleared `splitAt` on `repo:1048587` and `repo:1048588`.
+   `keep_led` should not campaign at a group whose leader answers other members' appends. That member is a lagging
+   follower, which its own catch-up should fix. This case only arises on a test install with `splitAt` set below the
+   size [inference], and B0-30's rerun sets none.
+
 
 ## B0-30 rerun
 
