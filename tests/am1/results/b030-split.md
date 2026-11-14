@@ -223,10 +223,16 @@ keepHome (`B030_HOME=none`). Drivers: `tests/am1/b030split/rerun.sh` (seed, load
   The rule asks for 1.5x, so this stops as the operator set (no third hosted fix). The log line shows two pauses of 64
   and 66 s, each right after a promotion. Over the other 276 s the drain archived 1,020 entries, 222 a minute, 1.96x
   applied.
-  - Inference: those pauses are `SUM_EVERY_MS` (60 s). A step whose view finds the log above the last archive at or under
-    the cap returns `Idle`, and the next sum waits a minute. The watcher's `logBytes` reads above the cap at those
-    moments, so the two measures differ by about 40 MB. That is not verified.
-
+  - Checked from the leader readings and the step log, with no hosted spend. The pauses are `SUM_EVERY_MS` (60 s), but
+    the two measures do not differ. At the readings, the rows members held between `truncatedTo` and `archivedTo` were 1
+    to 33 (0.3 to 10.6 MB). At the two stalls the step's own total, reconstructed from the reading before it and the
+    steps since, was about 5 MB and 8 MB under the cap, and the unpromoted tail was at or under `cap / PROMOTE_AHEAD`.
+    So the step's `Idle` was right by its own rule. The mechanism is that `ARCHIVE_SLACK` applies per step, not per
+    run. A step that starts over the cap targets the cap less the slack, but it archives at most 8 objects (about
+    17 MB). The next step to start under the cap targets the cap, finds nothing due, and ends the run. The sum then
+    waits 60 s, in which about 120 entries (38 to 40 MB) arrive. So the log swings between about 8 MB under the cap
+    and 40 MB over it, and never reaches the slack. The earlier note that the watcher read 40 MB higher at the stalls
+    was wrong: the watcher's later readings include that minute's growth.
   Bodies 100/100, `SQLITE_FULL` 0, no leaderless gap, no StepDown from 18:27Z.
 
 ## Cost
