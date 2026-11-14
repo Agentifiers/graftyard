@@ -1614,9 +1614,9 @@ own `claude/a1-<run>-i` refs, not those heads, so the PRs were idle fold rows an
 ran; those runs also held k 1.
 
 **B0-29's window (agreed with narrow-reads-3, 2026-11-14).** The row's 600 s load window, and every line judged in
-it (commit, merge, `Stale`, leader load, API p99 and served share), starts only after setup has finished: the 500 PR
-opens (their transient 503s, about 160 per setup on graft-m3e, are setup's and counted only in its "open PRs" row),
-then learners and k, which `rows.sh` and `smoke.sh` place after `mkrepos.mjs` and before `a1.mjs`'s window. `a1.mjs`
-also waits, before the window, up to 120 s for every learner to apply the leader's commit index, and logs the wait
-and the leader's `wasmMemMb` ("learners caught up"), so a learner's join and catch-up (28 to 73 MiB of leader
-high-water on graft-m3e) never falls inside the window.
+it (commit, merge, `Stale`, leader load, API p99 and served share), starts only after setup has finished. In order: `mkrepos.mjs`; learners and k (`rows.sh` and `smoke.sh` place
+them before `a1.mjs` starts, so the learners join a near-empty log and follow the PR opens as they commit); the 500
+PR opens inside `a1.mjs` (their transient 503s, about 160 per setup on graft-m3e, are setup's and counted only in its
+"open PRs" row); then a wait of up to 120 s for every learner to apply the leader's commit index, logged with the
+leader's `wasmMemMb` ("learners caught up"). So no learner joins or catches up inside the window (28 to 73 MiB of
+leader high-water on graft-m3e).
