@@ -1833,3 +1833,62 @@ fn after_a_failed_call_the_next_call_starts_from_what_the_voter_holds() {
     c.sync(A);
     assert_eq!(c.m(C).digests(), c.m(A).digests());
 }
+
+/// `Lead::done` keeps resolved tickets by count, by the bytes their commands carry that no event stores (DONE_BYTES),
+/// and for OUTCOME_KEEP. An edge whose `outcome` comes after its ticket was pruned gets `NotLeader` naming the same
+/// leader, asks `outcome_by_request`, and gets the committed outcome from the `request` row, `Acked` built inside
+/// `outcome::replay`. Kept by count alone, 4,096 issue outcomes with their reply renders held about 60 MB of a
+/// leader's heap (`tests/m0/results/memory-budgets.md`).
+#[test]
+fn a_late_outcome_after_its_ticket_was_pruned_is_answered_from_the_request_row() {
+    let w = |k: &str, render: usize| KvCmd::Write {
+        key: k.into(),
+        expect: None,
+        value: "v".into(),
+        actor: None,
+        push: false,
+        pack: 0,
+        render,
+    };
+    let rid = |i: u128| RequestId(graftyard_raft::Ulid(i));
+    let late = |c: &Cluster, t: graftyard_raft::Ticket, i: u128, cmd: &KvCmd, index: Index| {
+        match c.m(A).outcome(t) {
+            Some(Err(CommitError::NotLeader(nl))) => assert_eq!(nl.leader, Some(A), "names the same leader"),
+            other => panic!("a pruned ticket answers NotLeader, got {other:?}"),
+        }
+        match c.m(A).outcome_by_request(rid(i), cmd).unwrap() {
+            ByRequest::Done(a) => assert_eq!((a.index, a.out), (index, true), "the committed outcome, from its row"),
+            _ => panic!("expected Done from the request row"),
+        }
+    };
+    let mut c = Cluster::new(91);
+    c.elect(A);
+    c.sync(A);
+
+    // By age: one small command, answered at once, then asked again past OUTCOME_KEEP.
+    let small = w("aged", 0);
+    let t = admit(&mut c, A, 500, small.clone());
+    c.deliver_all();
+    let index = c.m(A).outcome(t).expect("resolved").expect("committed").index;
+    let keep = graftyard_raft::OUTCOME_KEEP.as_millis() as u64;
+    c.run(keep - 1_000, 500, |_| true);
+    assert!(matches!(c.m(A).outcome(t), Some(Ok(_))), "kept inside OUTCOME_KEEP");
+    c.run(2_000, 500, |_| true);
+    assert_eq!(c.m(A).role(), Role::Leader);
+    late(&c, t, 500, &small, index);
+
+    // By bytes: 100 commands each carrying 100 KB no event stores, 10 MB against DONE_BYTES, resolved together.
+    let big: Vec<_> = (0..100u128).map(|i| (600 + i, w(&format!("b{i}"), 100_000))).collect();
+    let tickets: Vec<_> = big.iter().map(|(i, cmd)| admit(&mut c, A, *i, cmd.clone())).collect();
+    c.deliver_all();
+    c.advance(graftyard_raft::CALL_DEADLINE.as_millis() as u64 + 1);
+    c.deliver_all();
+    let newest = c.m(A).outcome(*tickets.last().unwrap()).expect("resolved");
+    assert!(newest.is_ok(), "the newest outcome is kept");
+    let kept = tickets.iter().filter(|t| matches!(c.m(A).outcome(**t), Some(Ok(_)))).count();
+    assert!(kept <= graftyard_raft::DONE_BYTES / 100_000, "{kept} outcomes of 100 KB kept, past DONE_BYTES");
+    assert!(kept >= graftyard_raft::DONE_BYTES / 100_000 - 2, "only {kept} kept");
+    let first = &big[0];
+    let index = c.m(A).group_fold().request(rid(first.0)).expect("its row").index;
+    late(&c, tickets[0], first.0, &first.1, index);
+}

@@ -33,7 +33,7 @@ mod log;
 mod transfer;
 
 pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
-pub use leader::{APPEND_BYTES_MAX, PIPELINE};
+pub use leader::{APPEND_BYTES_MAX, DONE_BYTES, OUTCOME_KEEP, PIPELINE};
 pub use log::{FoldView, verify};
 
 /// Who this member is and what it was built from. The host reads `record` from the record's source itself (the

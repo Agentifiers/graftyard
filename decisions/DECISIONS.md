@@ -3333,6 +3333,18 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.
 
+### `memory-budgets` (1): a leader keeps resolved tickets by bytes and age, 2026-11-14
+
+**Decision.** `Lead::done`, the resolved tickets a leader keeps for a late `outcome`, holds at most DONE_KEEP (4,096) of them, DONE_BYTES (8 MB) of the bytes their commands carry that no event stores (`encoded_len` less `stored_len`), and none older than OUTCOME_KEEP (15 s). `outcome` for a ticket pruned from there answers `NotLeader` naming the same leader; the edge then asks `outcome_by_request`, which answers a committed command from its `request` row through `outcome::replay`, so `Acked` is still built only inside `outcome`.
+
+**Why.** An issue or merge command's outcome keeps a copy of its reply render, about 10 KB of the owner's Authz fold as hex plus logins, and nothing counted it. With a render shaped like m3org's, 8,192 issue commands left 60.6 MB more of a leader's live heap than the same commands without renders, flat from 4,096 on [measured, native allocator]. On B0-33 run 2 site 0's wasm heap climbed from 9.7 to 95.9 MiB in about 90 s and stayed there to its reset, while memSplit's counted buffers stayed under 10 MB [measured, LM-1 round 17, memguard]. That the renders are that heap is an inference: wasm32 values are smaller than native ones.
+
+**Beat.** Dropping the render from the outcome: the edge renders the reply from it, so the reply bytes would change. A lower DONE_KEEP: a burst of small commands would lose outcomes an edge still asks for, while big ones would still fill the heap.
+
+**Evidence.** `thousands_of_rendered_issue_outcomes_hold_about_done_bytes_of_the_leaders_heap` (`crates/git/tests/done_memory.rs`): 11.3 MB held by the renders here against 60.6 MB on main (its bound is DONE_BYTES times a `Value`'s 1.5 overhead). `a_late_outcome_after_its_ticket_was_pruned_is_answered_from_the_request_row` (`crates/raft/tests/scenarios.rs`) asks once past OUTCOME_KEEP and once past DONE_BYTES, and gets `NotLeader` naming the leader, then the committed index from the row; it fails with the age and byte rules removed. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** An edge asking `outcome` for a ticket more than 15 s after it resolved, or `outcome_by_request` answering `unknown` for a committed command.
+
 ### `prsync-first-once`: a `PrSync` attempt ends at `FIRST_FOR`, and a test merge shed after waiting `TURN_WAIT_MS` in line, 2026-11-14
 
 #### An attempt ends at `FIRST_FOR` in the invocation that runs it, and the leader waits for its answer
