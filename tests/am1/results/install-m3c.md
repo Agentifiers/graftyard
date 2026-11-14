@@ -46,6 +46,10 @@ Edge `graft-m3c-edge`: `0543a640-ccee-403f-8a60-5e592c864a72` (the build), then 
 
 Later site and edge days were run by other branches, each recorded in its own result file (`lf4-rest*.md`, `merge-budget*.md`, `learner-dumps.md`, `hot-shards.md`, `narrow-reads.md`, `idle-shards.md`); some of them deployed other shard images (`sha256:5f4f7f93…`, `sha256:7e0c4772…`). Read from the Cloudflare API at 23:35Z on 2026-11-12, the live versions were site a / b / c `bd507f40` / `f13e120e` / `80a331a6` (22:39Z), edge `3dd873b0` (23:15Z, `OPS = graft-m3c-ops`, formats through 32.18), ops `ee85c0b0`, tools edge `a3b633da`. Check the API before relying on a version.
 
+Site day `fresh-repo`, 2026-11-13 21:57Z to 22:05Z (`tests/am1/results/fresh-repo.md`): sites a / b / c `e6f4e36f` / `2562e7c3` / `9dc135f2` (via phase 1 `fe47b7cd` / `5b6b7ef1` / `433b3a5f`), edge `73114b50`, from `fresh-repo` `d9e7b0d`, test-faults, `--anchor`, image `sha256:f6d2ef40…` (hot-shards-4's), `SHARD_INSTANCE=standard-4`, `--ops graft-m3c-ops`, formats through 32.18 (`tests/am1/fresh/siteday.sh`). Before it the live versions were sites `8399807e` / `92d7411d` / `d4da9406` and edge `fe34113c` (pool-grants). The shards of repositories 65587 to 65700 were torn down after the run.
+
+Site day `fresh-repo` follow-up, 2026-11-13 23:29Z to 23:39Z: sites a / b / c `41cd80ad` / `722b4bc3` / `050633c6`, edge `a3fc5083`, from `fresh-repo` `8843399` (the 404 before `RepoOwner`), with the same flags, image, and `SHARD_INSTANCE`. The shards of repositories 65646 to 65655 were torn down after the run.
+
 ## Point the drivers at it
 
 `source tests/am1/lf13/env-m3c.sh` sets `GRAFT_EDGE`, `GRAFT_TOOLS_EDGE`, `BED_TOKEN_FILE`, `M3_STATE=~/.graft-m3c/m3`, `INSTALL=graft-m3c` (for `tests/fanout/m2bcost.py` and `containers.py`), and `HELD=999`. `tests/m0/.m0-token` was a symlink to `~/.graft-m3c/tools.token` while seeding (it is git-ignored) and was removed after.

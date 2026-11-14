@@ -959,9 +959,9 @@ async fn leaderless(
 
 /// Creates `chain`'s group from `record` if the lookup finds none: joins its bootstrap members with `join` (the
 /// `/join` fields beyond `chain`, `me`, and `record`), each of which checks the record against its source and claims
-/// the generation, then campaigns on the record's home until a member leads, and then has the leader run the near
-/// check (`place`), which may re-place a follower and fails the create if no try passes. Joins are idempotent, and a
-/// member of a generation that lost the claim refuses, so two callers at once still build one group.
+/// the generation, then campaigns on the record's home until a member leads, and then starts the leader's near check
+/// (`place`), which runs after the create returns. Joins are idempotent, and a member of a generation that lost the
+/// claim refuses, so two callers at once still build one group.
 pub async fn create(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -993,7 +993,7 @@ pub async fn create(
         return call(b, chain, record, "/read", &json!({ "q": { "probe": true } }))
             .await
             .map(|_| ())
-            .map_err(|e| format!("{chain}: {joined} of {} joined ({answers:?}); {e}", members.len()));
+            .map_err(|e| refused(chain, &answers, &e));
     }
     let home = members.iter().find(|m| m.site == record.home).unwrap_or(&members[0]);
     let end = now_ms() + LOOKUP_FOR.as_millis() as u64;
@@ -1007,13 +1007,40 @@ pub async fn create(
     Err(format!("{chain}: created, but no member leads"))
 }
 
-/// How long `create` waits for a new group's `/place`: PLACE_TRIES joins, each measuring two voters 20 times, plus
-/// the leader's own 20 round trips to each, and three config changes [inference from apac round trips of about 250 ms].
+/// The word in `create`'s error when a majority of the bootstrap members refused to join because the chain's source
+/// holds no row for it yet: a repository whose create has not committed `RepoOwner`. The edge answers a read of it as
+/// for a repository the caller cannot see, 404, as GitHub answers before a create returns; every other refusal stays
+/// a 503, so an outage never reads as "not found" (`decisions/DECISIONS.md`, "`fresh-repo`").
+pub const NOT_CREATED: &str = "not created yet";
+
+/// Whether `create`'s error says the chain is not created yet (`NOT_CREATED`).
+pub fn is_not_created(e: &str) -> bool {
+    e.contains(NOT_CREATED)
+}
+
+/// `create`'s error when too few members joined and no group answered (`probe`). It names `NOT_CREATED` only when a
+/// majority of the bootstrap members answered `{"refused": {"noRepoOwner": ..}}`: each read `RepoOwner` through its
+/// `Names` leader and found no row, which no outage answers. A member that did not answer, refused for any other
+/// reason, or answered from a release before `noRepoOwner` counts against it.
+fn refused(chain: ChainId, answers: &[Option<(u16, Value)>], probe: &str) -> String {
+    let unsourced =
+        answers.iter().filter(|a| matches!(a, Some((409, v)) if v.pointer("/refused/noRepoOwner").is_some())).count();
+    let why = if unsourced * 2 > answers.len() { format!("{NOT_CREATED}: ") } else { String::new() };
+    let joined = answers.iter().filter(|a| matches!(a, Some((200, _)))).count();
+    format!("{chain}: {why}{joined} of {} joined ({answers:?}); {probe}", answers.len())
+}
+
+/// How long `create` waits for a new group's `/place`. A member that takes `background` answers before it measures
+/// anything; one built before it ignores the field and answers after PLACE_TRIES joins, each measuring two voters
+/// 20 times, plus three config changes [inference from apac round trips of about 250 ms], so the bound stays.
 const PLACE_FOR: Duration = Duration::from_secs(240);
 
-/// The near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader re-places a
-/// voter until the home has one within `NEAR_RTT`, or keeps the nearest try; only an error such as a lost leader or
-/// a refused config change fails the create, never the bound alone.
+/// Starts the near check on a new group (`design/DESIGN.md`, "Placement is checked by latency"): its leader
+/// re-places a voter until the home has one within `NEAR_RTT`, or keeps the nearest try, under `wait_until` after it
+/// answers (`{"background": true}`). Each try's join measures 20 round trips to each peer, so a home over the bound
+/// on every try held a create for about 60 to 95 s, and a read of the repository in that time found no `RepoOwner`
+/// row and failed "0 of 3 joined" (`tests/am1/results/fresh-repo.md`). The group serves while it is placed, as it
+/// does through a daily re-placement. Only a leader that cannot be reached fails the create.
 async fn place(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -1022,7 +1049,7 @@ async fn place(
 ) -> std::result::Result<(), String> {
     let mut leader = leader;
     for _ in 0..3 {
-        match post_within(b, leader.site, &leader.do_name, "/place", b"{}", PLACE_FOR).await {
+        match post_within(b, leader.site, &leader.do_name, "/place", br#"{"background":true}"#, PLACE_FOR).await {
             Some((200, v)) if v.get("error").is_none() => return Ok(()),
             // Leadership moved, as it does to `home` after a create: place from the member that leads now.
             Some((200, v)) if v.pointer("/error/notLeader").is_some() => {
@@ -1107,6 +1134,34 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A read during a repository's create, before `RepoOwner` commits, is "not created" only when a majority of the
+    /// bootstrap members found no row; members that did not answer, refused for another reason (such as a `Names`
+    /// read that failed), or come from an older release keep it an outage, which the edge answers 503.
+    #[test]
+    fn only_a_majority_with_no_repo_owner_row_is_not_created() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(131316)));
+        let none = || Some((409, json!({ "refused": { "noRepoOwner": 131316 } })));
+        let failed = || Some((409, json!({ "refused": { "source": "names:994: no member answered" } })));
+        let old = || Some((409, json!({ "refused": { "source": "RepoId(DbId(131316)) has no RepoOwner row" } })));
+        let joined = || Some((200, json!([])));
+        let cases = [
+            (vec![none(), none(), none()], true),
+            (vec![none(), none(), None], true),
+            (vec![none(), none(), failed()], true),
+            (vec![none(), joined(), None], false),
+            (vec![none(), None, None], false),
+            (vec![none(), failed(), failed()], false),
+            (vec![failed(), failed(), failed()], false),
+            (vec![None, None, None], false),
+            (vec![old(), old(), old()], false),
+        ];
+        for (answers, want) in cases {
+            let e = refused(chain, &answers, "repo:131316: no group");
+            assert_eq!(is_not_created(&e), want, "{e}");
+            assert!(e.starts_with("repo:131316: "), "{e}");
+        }
+    }
 
     #[test]
     fn only_the_commit_shapes_are_readable() {

@@ -224,6 +224,9 @@ async fn read_gate(
         futures_util::future::join(api::core_rows(c, repo, "access"), authz_read(c, repo.owner, &repo.record)).await;
     let core = match rows? {
         Ok(core) => core,
+        // A repository whose create has not committed `RepoOwner` yet: hidden from every caller, as GitHub hides one
+        // that does not exist yet, and not cached, so it shows as soon as the create commits.
+        Err(e) if graftyard_lookup::is_not_created(&e) => return Ok(Ok(graftyard_identity::Decision::Hidden)),
         Err(e) => return Ok(Err(e)),
     };
     let owner = match gate_owner(owner) {
