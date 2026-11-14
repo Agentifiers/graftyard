@@ -6,7 +6,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 
 | Row | In memory | Hosted (graft-m4a) |
 | --- | --- | --- |
-| BF-4 | Pass, also with the real runner killed | Not run |
+| BF-4 | Pass, also with the real runner killed | Pass (run 1179649): failed at its lease end, 10 min after the renew answered, 10 min 4 s after it was sent |
 | BF-37 | Parser and filter built (`merge_group`, `pull_request` `enqueued`/`dequeued`); trigger not wired | Not run |
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
@@ -75,6 +75,9 @@ Site day 28 (14:15Z) put the `Actions` family, `/runsvc`, `RunnerBroker`, `LogRe
 - **Found on day 28:** a new Actions shard's first command answered 422 `NeedIdBlock`. `/runsvc` waited on its ticket without handing over the command, so the host's lease loop had nothing to re-send after leasing a block. The command now goes with the ticket, as `/commit`'s does (`f0282e80`).
 - **Live log, 14:47Z** (`tests/m4/wp3/hosted/live.yml`, one line a second for 10 minutes): the runner took job 1114114 of run 1114113 on `m3org/wp3-live` (shard `actions:7100001.8`) 4 s after dispatch. A viewer on `/_t/logrelay/repos/m3org/wp3-live/jobs/1114114` got `hello` with the tail, then `line` messages p50 339 ms and at most 375 ms after the runner printed them, over 23 lines [measured]. The relay's `line.at` is to the second.
 - **GHES reads** on the same run: `actions/runs/{id}`, `runs/{id}/jobs`, and `jobs/{id}` answer 200, with the runner's step report as `steps` (1 and 2 `completed`/`success`, 3 `in_progress`, 4 `queued`) [measured].
+- **BF-4 hosted** (`tests/m4/wp3/hosted/bf4.yml`, one long step): the runner took job 1179650 of run 1179649 on `m3org/wp3-bf4` (shard `actions:7100001.11`). Its last `renewjob` was at 14:52:47Z and answered `lockedUntil` 15:02:50Z. The runner tree was killed at 14:53:22Z. The job read `Completed Failure` at 15:02:50.958Z, the lease end: 10 min 4 s after the renew was sent, 10 min after its answer set the lease. The row's fail line, still running at 11 minutes, did not happen [measured]. The driver process exited at about 15:01:49Z for a reason not found, so the job's state was read directly with the GHES `jobs/{id}` read.
+- **Found by BF-4:** the GHES `job.completed_at` showed the last step report (14:52:47Z), because a runner killed mid-step reports no end. It is now the job's own completion time (`crates/actions/src/rest.rs`).
+- **A running job's `/logs`** now answers the step logs uploaded so far, in upload order, instead of 404, as GHES serves a log so far (`workers/edge/src/actions.rs`). A step still running has no lines there until it ends.
 - **Not yet checked:** a viewer's close arrives about 10 s after `no-stream` (M4 web, edge day 10), or not within 12 s (edge day 11). The web viewer falls back on `no-stream` itself; BF-61's kill path falls back on the close, so it is checked there.
 
 ## The parser: `crates/actions/src/workflow`

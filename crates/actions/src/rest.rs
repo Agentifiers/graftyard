@@ -5,7 +5,7 @@
 //! - **Ids.** A run's `run_number` is its id until `ActionsTrigger` numbers runs per workflow [inference: GHES
 //!   numbers per workflow, which only a trigger that keeps a counter can do]. `workflow_id` is 0 for the same reason.
 //! - **Times.** A job's `created_at` is the run's; `started_at` and `completed_at` come from the runner's own step
-//!   report when the edge kept one (`steps`), else the job's state (a completed job's `at`).
+//!   report when the edge kept one (`steps`); `completed_at` is the job's own `at`, when the shard completed it.
 //! - **Steps** are the runner's `WorkflowStepsUpdate` rows, merged by number, which the edge stores beside the job's
 //!   logs; a job with none shows `steps: []`, as GHES shows a queued job.
 
@@ -115,9 +115,9 @@ pub fn job(
     let (status, conclusion) = job_status(&j.state);
     let id = j.spec.id.0.0;
     let first = steps.iter().find_map(|s| s["started_at"].as_str().map(str::to_owned));
-    let last = steps.iter().rev().find_map(|s| s["completed_at"].as_str().map(str::to_owned));
+    // The job's own end: a runner killed mid-step reports no end, and its last report is an earlier step's.
     let completed_at = match &j.state {
-        JobState::Completed { at, .. } => Some(last.unwrap_or_else(|| graftyard_wire::time::iso(*at))),
+        JobState::Completed { at, .. } => Some(graftyard_wire::time::iso(*at)),
         _ => None,
     };
     let run_url = format!("{}/repos/{}/actions/runs/{}", c.api, c.full_name, run.id.0.0);

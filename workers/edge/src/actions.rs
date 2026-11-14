@@ -311,8 +311,8 @@ pub async fn viewer(c: &Ctx<'_>, req: Request, rest: &str) -> Result<Response> {
 }
 
 /// The job's log from the owner's home bucket for `GET /repos/{o}/{r}/actions/jobs/{id}/logs`: 200 with the plain log
-/// (GHES answers 302 to a blob URL, which fetch follows to the same body), or 404 for a job of another repository or
-/// one with no log yet.
+/// (GHES answers 302 to a blob URL, which fetch follows to the same body), the step logs so far for a job still
+/// running, or 404 for a job of another repository or one with no log yet.
 pub async fn job_log(c: &Ctx<'_>, rd: &Read, id: &str) -> Result<Reply> {
     let Ok(j) = id.parse::<i64>() else { return Ok(Reply::not_found()) };
     let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
@@ -322,12 +322,44 @@ pub async fn job_log(c: &Ctx<'_>, rd: &Read, id: &str) -> Result<Reply> {
         return Ok(Reply::not_found());
     }
     let bucket = c.env.bucket(&format!("BUCKET_{}", rd.repo.record.home.0))?;
-    let Some(o) = bucket.get(format!("actions/{j}/logs-job")).execute().await? else { return Ok(Reply::not_found()) };
-    let bytes = match o.body() {
-        Some(b) => b.bytes().await?,
-        None => Vec::new(),
+    let read = async |key: String| -> Result<Option<Vec<u8>>> {
+        Ok(match bucket.get(key).execute().await? {
+            Some(o) => Some(match o.body() {
+                Some(b) => b.bytes().await?,
+                None => Vec::new(),
+            }),
+            None => None,
+        })
     };
-    Ok(Reply::bytes(200, "text/plain; charset=utf-8", bytes))
+    if let Some(bytes) = read(format!("actions/{j}/logs-job")).await? {
+        return Ok(Reply::bytes(200, "text/plain; charset=utf-8", bytes));
+    }
+    // A job without its whole log yet: GHES serves the log so far, so here it is the step logs uploaded so far, in
+    // upload order, which is step order [inference: the runner uploads each step's log as the step ends], so a step
+    // still running has no lines here yet.
+    let mut steps: Vec<(i64, String)> = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut q = bucket.list().prefix(format!("actions/{j}/logs-"));
+        if let Some(cur) = cursor.take() {
+            q = q.cursor(cur);
+        }
+        let page = q.execute().await?;
+        steps.extend(page.objects().iter().map(|o| (o.uploaded().as_millis() as i64, o.key())));
+        match page.cursor().filter(|_| page.truncated()) {
+            Some(cur) => cursor = Some(cur),
+            None => break,
+        }
+    }
+    if steps.is_empty() {
+        return Ok(Reply::not_found());
+    }
+    steps.sort();
+    let mut out = Vec::new();
+    for (_, key) in steps {
+        out.extend(read(key).await?.unwrap_or_default());
+    }
+    Ok(Reply::bytes(200, "text/plain; charset=utf-8", out))
 }
 
 // ---- Graftyard's own Actions routes
