@@ -4,7 +4,7 @@ This file records M4-WP1's hosted half on `graft-m4a`, a product build with `sta
 
 Branch `m4-actions`. Every site day is in `install-m4a.md`'s site-day log. The raw data is in `tests/m4/results/raw/`: `bf57-runN.jsonl` holds the driver's rows, and `bf57-runN-sink.json` holds the receiver's log where it was kept. The driver is `tests/m4/wp1/bf57.mjs`.
 
-Status: **in progress.** **BF-57 passes** (run 16, site day 18). BF-58 and the hosted `Audit` stream are not done yet.
+Status: **in progress.** **BF-57 passes** (run 16, site day 18). **BF-58 passes** (run 2, site days 21 and 22). The hosted `Audit` stream is not done yet.
 
 ## BF-57: one hook timing out at 10 s beside 49 healthy hooks, 10 events/s
 
@@ -78,6 +78,29 @@ Cursor lag stays around 1.6 to 2.2 s at p50 and does not grow with the slow hook
 - **Run 7.** Measured on the old code.
 - **Run 9.** One cursor-only commit, now excluded from the measure.
 - **Run 10.** The lost alarm, fixed in `05cf164`.
+
+## BF-58: kill the site holding a hook owner's `HookSequencer` with deliveries pending
+
+The row as written:
+
+- **Pass:** every event in the range reaches every hook at least once, with unchanged GUIDs.
+- **Fail:** any event never delivered, or a redelivery under a new GUID.
+
+**What DESIGN promises during the outage.** A lost store is rebuilt on the owner's next site and replays from the committed `replay_from` (Shape, `HookSequencer`; `design/SHARED.md`, "Event fan-out"). The consumer already falls back to the record's next site when the home store fails and retries home every `HOME_RETRY_MS` (30 s, `workers/site/src/hookseq.rs`). So deliveries should continue from site b while site a is down, and the run must show it.
+
+**Setup.** Owner m3org (record home site a, `enam`), so its `HookSequencer` is `hookseq:7100001` on site a. Three repositories (`bf58a`, `bf58b`, `bf58c`) with five hooks each at the receiver Worker `graft-m4-hooksink2`; `bf58b`'s first hook answers after 2 s (3 s in run 1), so its queue keeps a backlog. Commit statuses at 2/s, round robin, for 21 minutes (18 in run 1). The kill is a site day of site a alone through the production deploy path (`tests/m4/wp1/bf58-kill.sh down`: `deploy.mjs --only 0 --down 0`, `GRAFTYARD_SITE_DOWN=1`, which makes every class on site a answer 503 and run no alarm). The restore is a second site day of site a that also sets `GRAFTYARD_HOOKSEQ_RESET_BEFORE`, so every `HookSequencer` store on site a starts empty, as a store lost with its site. Driver `tests/m4/wp1/bf58.mjs`, raw data `raw/bf58-runN.jsonl`.
+
+### Run 2 (the row): site days 21 and 22, 2026-11-13 23:52Z to 2026-11-14 00:22Z
+
+- **Kill.** Site a's `fb5d76ea` was deployed at 23:58:11Z. Its members ran it within seconds, but the owner's store kept running day 18's version until 00:03:40Z, 5.5 minutes later, because a running object keeps its version until it restarts. `bf58-kill.sh dead` watches Workers Logs for the store's first call on the down version and marks that time. The outage was held 3 minutes from then. From 00:03:45Z site a's `HookSequencer` answered only 7 calls, all 503, and site b's answered 2,250 in the next 45 s.
+- **Restore.** Site a back on `9cb4d8d7` at 00:06:51Z, with the reset.
+- **Result.** **Pass.** 2,465 statuses acknowledged (55 more got 503 from the edge while site a's members went down, so no event of theirs exists). **12,325 of 12,325 (event, hook) pairs delivered, 0 missing, 0 under two GUIDs.** 1,061 pairs arrived more than once, every repeat under its first GUID.
+- **During the outage.** The first delivery after the store went down arrived **0.19 s** after it, served by site b's store. 1,860 arrivals came between the store's kill and the restore, 496 of them repeats: site b's new store replayed from `replay_from`. Its first repeat arrived 201 s after the kill, once its replay reached entries site a had already delivered.
+- **After the restore.** The first delivery arrived 0.95 s after site a came back, and the first redelivery at the same moment (**outage-to-first-redelivery 0.95 s** from the restore).
+
+### Run 1 (does not count): site days 19 and 20, 23:04Z to 23:45Z
+
+Site a's members took the down version at 23:14:11Z, but Workers Logs show its `HookSequencer` objects ran day 18's `dedb3861` through the whole 4-minute window (last call 23:19:27Z), so the store was never down. What the run did show is option A, the store reset alone: from 23:19Z the store restarted empty under `GRAFTYARD_HOOKSEQ_RESET_BEFORE` and replayed. 10,800 of 10,800 pairs were delivered, 0 under two GUIDs, 1,061 repeats after the reset, the first 0.92 s after it. This is the lead's extra check of the empty-store replay; it is not counted as the row. Run 2 adds the `dead` mark, so the outage is timed from the store's own kill.
 
 ## Cost
 
