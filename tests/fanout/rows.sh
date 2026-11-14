@@ -64,12 +64,13 @@ for row in $ROWS; do
   echo "$(date -u +%FT%TZ) $row $repo $rid done $(grep -E '^exit' tests/am1/raw/runs/a1-$row-$repo.log)" >> "$ST"
   # L0-12's other parts on the same repository: the 30-minute stall with every member call blackholed, then the idle
   # 60 s lease and the overlapping Exclusive acquire 10 minutes later (stall.mjs), then 100 conflicting pushes and 100
-  # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012).
+  # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012). Six kinds
+  # take about 21 minutes each, so 7,200 s cut m3fr1's last kind.
   if [ "$row" = l0-12 ]; then
     STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
       > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
-    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 7200 node tests/am1/hosted/rows.mjs l012 100 \
+    ROWS_REPO=$repo ROWS_INSTALL_APPS=1 timeout 10800 node tests/am1/hosted/rows.mjs l012 100 \
       > tests/am1/raw/runs/l012-refusals-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 refusals exit $?" >> "$ST"
   fi

@@ -136,7 +136,7 @@ Repository 65554 (`fm3fr1-l012`). Replay run `mwfza2tr`, 06:18:59Z to 06:28:59Z:
 | Every lease live before the stall is live after, `expires` moved by the stall | 20 of 20 live, moved 1,803 to 1,804 s for a 1,801 s stall | Pass |
 | The late Exclusive acquire succeeds | 201, 0 conflicts (07:15:36Z) | Pass |
 | Feed: each event within 3 s at p99 outside leader kills | p99 25,622 ms, p50 1,147 ms (15,886 events, 10 kills) | **Fail** |
-| Refusals: 100 of 100 for the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Table below | Pass for the four kinds that ran; `Graftyard MCP` below |
+| Refusals: 100 of 100 for the two `ActorKind::Agent` kinds, 0 of 100 for the other three | Table below | Pass (five kinds; `Graftyard MCP` run alone, below) |
 
 | Kind | Gate | Pushes | REST ref writes |
 |---|---|---|---|
@@ -144,13 +144,13 @@ Repository 65554 (`fm3fr1-l012`). Replay run `mwfza2tr`, 06:18:59Z to 06:28:59Z:
 | Flagged App without `confine` | 0 refused | 100 accepted | 100 accepted |
 | Human PAT | 0 refused | 100 accepted | 100 accepted |
 | Graftyard-run App (`graftyard-workspace`) | 100 refused | 100 refused (`push needs a live task`) | 100 × 422 refused |
-| `Graftyard MCP` | 0 refused | see below | see below |
+| `Graftyard MCP` (run alone, 09:36Z to 09:57Z) | 0 refused | 100 accepted | 100 accepted |
 
 The run also tried an unflagged App, which is not one of the row's five kinds: 96 accepted, and 4 REST writes got 422 `Object does not exist` (their scratch commits had not landed yet [guess]).
 
-`Graftyard MCP` did not run inside the row: `rows.sh`'s 7,200 s timeout ended the refusal phase at 09:15:36Z, after five kinds of about 21 minutes each. It was run alone on the same repository and holder setup (`ROWS_L012_ONLY`). The first lone run (09:20Z) is void: its admin clone failed unseen, so all 100 REST writes read 422 `"sha" wasn't supplied` and all 100 pushes were rejected with no refusal text. `rows.mjs` now stops on a failed clone (`4fc6e736`), and the kind was run again at 09:35Z.
+`Graftyard MCP` did not run inside the row: `rows.sh`'s 7,200 s timeout ended the refusal phase at 09:15:36Z, after five kinds of about 21 minutes each. It was run alone on the same repository and holder setup (`ROWS_L012_ONLY`). The first lone run (09:20Z) is void: its admin clone failed unseen, so all 100 REST writes read 422 `"sha" wasn't supplied` and all 100 pushes were rejected with no refusal text. `rows.mjs` now stops on a failed clone (`4fc6e736`). The kind ran again from 09:35Z with the same holder setup (a new holder task and Exclusive lease, `01M7CPKX…`): 100 of 100 pushes and 100 of 100 REST writes accepted. Its shards were torn down and a sweep of graft-m3f found none running (09:57:50Z).
 
-The two fails stand whatever `Graftyard MCP` shows. Their causes are below.
+L0-12 fails on the clock and feed lines alone. Their causes are below.
 
 ### 4. L0-12 m3fr1: the clock and feed fails, what the kept data shows
 
@@ -181,3 +181,5 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 **Next:** rerun L0-12 on main `5c0f06f` with these instruments. The churn may be gone on the liveness build; if the clock spread or the feed p99 still fails, the raw data names the member.
 
 ## Cost
+
+Metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
