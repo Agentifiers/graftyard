@@ -265,6 +265,11 @@ all the way to it (`log_archive::Run`). Promoting ahead goes first only until a 
     75 MB after the promotions that follow. It does not grow from cycle to cycle;
   - archive steps 41 to 46 entries, 7 to 10 s apart (Workers Logs, site a);
   - `SQLITE_FULL` 0, no StepDown since 12:49:02Z, no leaderless gap, no watcher alert.
+- **Idle spend while the load was stopped (18:41Z to 23:04Z): $23.16** ($20.89 DO and Workers, $2.27 containers).
+  About $20 of it is not this group. Site b's member of smoke 1's `repo:1048586` (DO `a217c64f…`) wrote 19.4 M rows
+  from 20:00Z to 22:45Z. In Workers Logs it reinstalled a 3.16 GB tier (`install`, 3,467,920 rows, through 16,259,
+  1,022 s), with 300 `no install source` notes from 21:45Z to 22:27Z. `usage.py` counts every graft-m1 namespace, so
+  the rerun's meter includes it. The rest is the watcher and cross polling, which were stopped at 21:40Z.
 
 ## Cost
 
