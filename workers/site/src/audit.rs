@@ -77,9 +77,11 @@ async fn stream_send(env: &Env, rows: &[audit::StreamRow]) -> std::result::Resul
         .ok_or("the audit stream binding has no send")?;
     let json = serde_json::to_string(rows).map_err(|e| e.to_string())?;
     let records = js_sys::JSON::parse(&json).map_err(|e| format!("{e:?}"))?;
-    let p = send.call1(&b, &records).map_err(|e| format!("audit stream send: {e:?}"))?;
-    // The binding's `send` answers an RPC thenable, not a `Promise` instance (site day 23: every batch failed
-    // `dyn_into`), so it is adopted through `Promise.resolve`.
+    // The binding's `send` is an RPC stub: `send.call(..)` asks the stream for a method named "call" (site day 24), so
+    // it is invoked through `Reflect.apply`, and it answers an `RpcPromise`, a thenable that is not a `Promise`
+    // instance (site day 23), so its result is adopted through `Promise.resolve` [measured, probe graft-m4a-pprobe].
+    let args = js_sys::Array::of1(&records);
+    let p = js_sys::Reflect::apply(&send, &b, &args).map_err(|e| format!("audit stream send: {e:?}"))?;
     let p = js_sys::Promise::resolve(&p);
     wasm_bindgen_futures::JsFuture::from(p).await.map_err(|e| format!("audit stream send: {e:?}"))?;
     Ok(())
