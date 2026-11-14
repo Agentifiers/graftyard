@@ -308,4 +308,4 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 
 ## Cost
 
-**$17.14** at 13:20Z on 2026-11-14 (after m3fr2 and its 5 leaked shards; none running since 12:28Z). Earlier: metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
+**$17.14** at 13:07Z on 2026-11-14 (after m3fr2 and its 5 leaked shards; none running since 12:28Z). Earlier: metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
