@@ -2624,10 +2624,10 @@ impl<F: Family> Host<F> {
         self.alarm_at.get()
     }
 
-    /// Arms the object's one alarm `ms` from now, unless one is set sooner.
+    /// Arms the object's one alarm `ms` from now, unless one is set sooner and not yet overdue.
     pub fn arm_in(self: &Rc<Self>, ms: i64) {
         let at = now_ms() + ms as u64;
-        if self.alarm_at.get() != 0 && self.alarm_at.get() <= at {
+        if !rearm(self.alarm_at.get(), at, now_ms()) {
             return;
         }
         self.alarm_at.set(at);
@@ -2664,6 +2664,20 @@ impl<F: Family> Host<F> {
         }
         if leading && recent {
             self.arm();
+        }
+        // The alarm this invocation armed is set again, awaited, before it returns. One armed only from the task
+        // `arm_in` spawns can be lost as the invocation ends [inference]: in BF-57 run 10 (graft-m4a) a leader's alarm
+        // armed `arm` 2 s out at 90 s, none ran after it, and five committed entries waited 137 s for an unrelated
+        // read to wake the member (`tests/m4/results/m4-wp1-hosted.md`).
+        let at = self.alarm_at.get();
+        let opts = SetAlarmOptions { allow_unconfirmed: Some(true), ..Default::default() };
+        if at != 0
+            && let Err(e) = self.state.storage().set_alarm_with_options(at.saturating_sub(now_ms()) as i64, opts).await
+        {
+            let mut s = self.stats.borrow_mut();
+            if s.alarms.len() < 50 {
+                s.alarms.push(format!("{} set alarm at end: {e}", now_ms()));
+            }
         }
     }
 
@@ -3025,6 +3039,21 @@ async fn each_at_once<T, Fut: std::future::Future<Output = T>>(
     futures_util::future::join_all(chains.iter().copied().map(read)).await
 }
 
+/// How long past its time an alarm `arm_in` set may be before it counts as lost [guess]. At 5 s, a leader whose alarm
+/// invocation was canceled still stalled its alarm-driven consumers 5.5 to 6.3 s three times in BF-57 run 6
+/// (graft-m4a), each from its last alarm to the first input after the 5 s; an alarm that runs reaches `alarm` well
+/// within a second of its time, and re-arming a live one only moves it.
+const ALARM_LATE_MS: u64 = 1_000;
+
+/// Whether `arm_in` sets the alarm for `at`, with `armed` the one it set last (0 for none) at `now`: when there is
+/// none, when `at` is sooner, or when the armed one is `ALARM_LATE_MS` overdue. A canceled alarm invocation never
+/// runs `alarm`, which clears `armed`; before the last case, every `arm_in` after one saw the stale time as sooner and
+/// set nothing, and a leader's alarm-driven consumers stopped for 50 s, until an unrelated input re-armed it
+/// (graft-m4a, BF-57 run 5, `tests/m4/results/m4-wp1-hosted.md`).
+fn rearm(armed: u64, at: u64, now: u64) -> bool {
+    armed == 0 || at < armed || now > armed + ALARM_LATE_MS
+}
+
 /// A request id in its text form, the ULID's 26 characters.
 pub fn rid_from(s: &str) -> Result<RequestId> {
     s.parse().map_err(|_| err(format!("bad request id {s:?}")))
@@ -3032,6 +3061,17 @@ pub fn rid_from(s: &str) -> Result<RequestId> {
 
 #[cfg(test)]
 mod tests {
+    /// An alarm whose invocation never ran (canceled) is re-armed once it is overdue, not left as the sooner one.
+    #[test]
+    fn an_overdue_alarm_is_set_again() {
+        use super::{ALARM_LATE_MS, rearm};
+        assert!(rearm(0, 1_000, 900), "none armed");
+        assert!(rearm(2_000, 1_000, 900), "sooner");
+        assert!(!rearm(1_000, 2_000, 900), "a sooner one is armed and not yet due");
+        assert!(!rearm(1_000, 2_000, 1_000 + ALARM_LATE_MS), "just due: its invocation may still come");
+        assert!(rearm(1_000, 9_000, 1_001 + ALARM_LATE_MS), "overdue: lost");
+    }
+
     /// The site's own shard gets the larger page it asks for, never past the local cap or under the standard page; a
     /// remote read keeps the standard page whatever it asks, so it still answers within the lookup's CALL. While the
     /// member serves other reads the local page is at most 1 MB, and an idle member serves the full 4 MB.

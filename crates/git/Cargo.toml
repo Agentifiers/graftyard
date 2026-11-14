@@ -12,6 +12,7 @@ worker = ["dep:worker", "dep:js-sys", "dep:wasm-bindgen"]
 
 [dependencies]
 arrayvec.workspace = true
+futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 graftyard-fold = { path = "../fold" }
 graftyard-identity = { path = "../identity" }
