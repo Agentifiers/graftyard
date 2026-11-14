@@ -817,6 +817,62 @@ impl Fold for RepoFold {
             other => other.clone(),
         }
     }
+
+    /// One mark per write command, on the event that command is for, so DEMOTE_PER_MIN counts commands and not
+    /// events: a push's `Refs` (not its `Provenance` or `PathSet`), a pull request's `PrOpened` (not its `AgentMeta`
+    /// or plan lease), a review's `Review` (not its `AgentGate`), a check run's `CheckRun` and a status's `Status` (not
+    /// their `RequiredCheck`), a creation's `Created` (not its `Settings`). Events with no actor mark nothing, and nor
+    /// do the task API's (`TaskCreated`, `TaskUpdated`), which DEMOTE_PER_MIN excludes (DESIGN, Shape, "Agent load
+    /// and agent safety"). `push` is a `Refs` that moved a client ref: PrSync's `refs/pull/` moves are host work. Lease
+    /// renews and releases carry no actor or ride another command (a plan edit, a task's end), so only a lease API
+    /// acquire marks. `Merged` marks `by`, which for a queue landing is the enqueuer, so a queued pull request counts
+    /// twice for its enqueuer (enqueue and landing) [inference: the event does not say which path merged it]. A `Refs`
+    /// names only a user's account, so an App's own push counts for `hot` but not toward its App's DEMOTE_PER_MIN.
+    fn write_mark(ev: &RepoEvent) -> Option<graftyard_raft::admit::WriteMark> {
+        use crate::issues::{CommentEvent as C, LabelEvent, LfsLockEvent, ReviewEvent as R};
+        use graftyard_identity::InvitationEvent as I;
+        use graftyard_raft::admit::{ActorKey, WriteMark};
+        // `ActorKey` as `group::AdmitWire::of` keys it: a user's account id, or an App's id with the top bit set.
+        let account = |a: AccountId| Some(ActorKey(a.0.0 as u64));
+        let app = |a: AppId| Some(ActorKey(1 << 63 | a.0.0 as u64));
+        let by = |a: &Option<AccountId>| a.and_then(account);
+        let actor = match ev {
+            RepoEvent::Refs { actor, updates, .. } => {
+                let push = !updates.iter().all(|u| u.name.starts_with("refs/pull/"));
+                return Some(WriteMark { actor: by(actor), push });
+            }
+            RepoEvent::IssueOpened { capture, .. } => by(&capture.author),
+            RepoEvent::PrOpened { capture, .. } => by(&capture.issue.author),
+            RepoEvent::IssueChanged { actor, .. }
+            | RepoEvent::Release { actor, .. }
+            | RepoEvent::ReleaseAsset { actor, .. }
+            | RepoEvent::LfsObject { actor, .. }
+            | RepoEvent::Created { actor }
+            | RepoEvent::Deleted { actor, .. }
+            | RepoEvent::Hook { actor, .. } => by(actor),
+            RepoEvent::Comment(
+                C::Created { author: a, .. } | C::Edited { actor: a, .. } | C::Deleted { actor: a, .. },
+            )
+            | RepoEvent::Comment(C::Resolved { actor: a, .. })
+            | RepoEvent::Review(
+                R::Submitted { reviewer: a, .. } | R::Dismissed { actor: a, .. } | R::Requested { actor: a, .. },
+            )
+            | RepoEvent::Labels(LabelEvent::Applied { actor: a, .. })
+            | RepoEvent::LfsLock(LfsLockEvent::Deleted { actor: a, .. })
+            | RepoEvent::Invitation(I::Sent { inviter: a, .. } | I::Cancelled { actor: a, .. }) => by(a),
+            RepoEvent::LfsLock(LfsLockEvent::Created { owner, .. }) => account(*owner),
+            RepoEvent::Status(s) => account(s.creator),
+            RepoEvent::CheckRun(c) => app(c.app),
+            RepoEvent::CheckSuite(c) => app(c.app),
+            RepoEvent::Merged { by: u, .. } | RepoEvent::Queue(QueueEvent::Enqueued { actor: u, .. }) => account(u.0),
+            RepoEvent::LeaseAcquire { lease, plan: None } => match lease.holder.actor {
+                crate::lease::ActorId::User(u) => account(u.0),
+                crate::lease::ActorId::App { app: a, .. } => app(a),
+            },
+            _ => None,
+        };
+        actor.map(|a| WriteMark { actor: Some(a), push: false })
+    }
 }
 
 /// The ref namespaces a push may not write: `refs/pull/`, and the host-owned `refs/graftyard/` (`agent::HOST_REFS`),

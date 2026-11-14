@@ -746,6 +746,81 @@ fn a_voter_that_grants_a_rivals_pre_vote_drops_its_own() {
     assert_eq!(c.m(C).term(), Term(term.0 + 1));
 }
 
+/// Six confirms of 1.05 s on `s`: within one STEP_DOWN window its storage would trip the confirm rule.
+fn slow_storage(c: &mut Cluster, s: SiteId) {
+    for _ in 0..6 {
+        c.slow_confirm(s, 1_050);
+    }
+}
+
+/// A report about the leader A to `s` from colo `colo`.
+fn report(c: &mut Cluster, s: SiteId, colo: u32) -> Verdict {
+    let term = c.m(s).term();
+    c.on(s, |m, now| m.suspect(now, graftyard_raft::Colo(colo), A, term))
+}
+
+/// A gray leader with one slow and one healthy follower. Two colos report A to both, so both withhold their promises,
+/// while A keeps appending. Once the promises lapse, the slow follower does not campaign against a leader still
+/// appending to it, and the healthy one does and wins. So judging by the candidate's own storage keeps F67's move of
+/// a gray leader.
+#[test]
+fn a_slow_follower_holds_back_while_a_healthy_one_moves_a_gray_leader() {
+    let mut c = Cluster::new(31);
+    c.elect(A);
+    c.sync(A);
+    for s in [B, C] {
+        assert_eq!(report(&mut c, s, 1), Verdict::Promised);
+        assert_eq!(report(&mut c, s, 2), Verdict::Promised);
+    }
+    // A keeps appending, which renews no promise while they withhold; their promises lapse within ELECTION_AFTER.
+    for i in 0..4 {
+        c.advance(1_000);
+        let _ = admit(&mut c, A, 10 + i, put("k", "v"));
+        c.deliver_all();
+    }
+    let _ = admit(&mut c, A, 20, put("k", "w"));
+    c.deliver_all();
+    // C's storage had one slow confirm, under STEP_DOWN's six: that is no reason to hold back.
+    c.slow_confirm(C, 1_050);
+    let _ = admit(&mut c, A, 21, put("k", "x"));
+    c.deliver_all();
+    // B's sixth slow confirm is still running: it counts, or a member whose storage has stopped answering would look
+    // healthier than one whose confirms end slowly.
+    for _ in 0..5 {
+        c.slow_confirm(B, 1_050);
+    }
+    let stuck = c.members[B.0 as usize].as_mut().expect("B is up").confirm_begin(c.now);
+    c.advance(1_050);
+    let _ = admit(&mut c, A, 22, put("k", "y"));
+    c.deliver_all();
+    assert!(c.m(B).state().promise_until < c.now && c.m(C).state().promise_until < c.now, "promises lapsed");
+    assert_eq!(report(&mut c, B, 3), Verdict::MayNotLead, "a slow follower deposed a leader that still appends");
+    c.on(B, |m, now| m.confirm_end(now, stuck));
+    assert_eq!(report(&mut c, C, 3), Verdict::Started, "one slow confirm held a healthy follower back");
+    c.deliver_all();
+    assert_eq!(c.m(C).role(), Role::Leader);
+}
+
+/// The hold on a slow follower lasts only while the leader appends: CAMPAIGN_DEADLINE after the last append, a
+/// follower whose storage is still slow campaigns as any other does, so a dead leader is replaced.
+#[test]
+fn a_slow_follower_still_replaces_a_dead_leader() {
+    let mut c = Cluster::new(37);
+    c.elect(A);
+    c.sync(A);
+    let t = admit(&mut c, A, 1, put("k", "v"));
+    c.deliver_all();
+    assert_eq!(c.m(A).outcome(t).unwrap().map(|a| a.out), Ok(true));
+    c.crash(A);
+    // B's promise to A lapses ELECTION_AFTER after A's last append; its storage is slow over the last 6.3 s of that.
+    c.advance(3_750);
+    slow_storage(&mut c, B);
+    let term = c.m(B).term();
+    assert_eq!(c.on(B, |m, now| m.suspect(now, graftyard_raft::Colo(1), A, term)), Verdict::Started);
+    c.deliver_all();
+    assert_eq!(c.m(B).role(), Role::Leader);
+}
+
 /// A vote is persisted before the grant leaves, and a restart keeps it: no second vote in that term.
 #[test]
 fn a_restarted_voter_does_not_vote_twice_in_a_term() {

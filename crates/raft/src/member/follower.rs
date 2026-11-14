@@ -62,6 +62,7 @@ impl<C: Command> Member<C> {
         }
         self.leader = Some(req.leader);
         self.forgot = None;
+        self.appended_at = self.now;
         // A leader two colos reported, from which this member withholds promises, does not count as seen, or its
         // appends, still arriving from a half-hung site, kept the 2 x ELECTION_AFTER waiver from ever freeing two
         // healthy voters that quarantined each other (F67, live seed 11089: 32.9 s).

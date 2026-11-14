@@ -129,6 +129,14 @@ impl<C: Command> Member<C> {
         if barred && !waived {
             return Verdict::MayNotLead;
         }
+        // A member whose own storage would trip STEP_DOWN's confirm rule does not campaign against a leader that
+        // appended to it within CAMPAIGN_DEADLINE, even one `suspect` reports withhold its promises from: it would lead
+        // no better and step down on winning, and its higher term deposes a leader that still commits (LM-1's k-4
+        // churn: slow confirms on both followers cost 3 to 5 terms a minute per seed). The waiver does not lift it:
+        // the leader is heard.
+        if self.now < after(self.appended_at, CAMPAIGN_DEADLINE) && self.storage_slow() {
+            return Verdict::MayNotLead;
+        }
         // A restarted leader resumes `led_term` after one round rather than start a new term.
         if self.state.led_term == Some(self.state.term) {
             self.become_leader(true);
