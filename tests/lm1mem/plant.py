@@ -245,6 +245,20 @@ MUTANTS = [
      '(Method::Put, ["pulls", n, "merge"]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
      '(Method::Put, ["pulls", n, ..]) => {\n            n.parse().ok().map(|n| MergeOf::Number',
      ['cargo', '-p', 'graftyard-edge', '--lib', 'only_a_rest_merge']),
+    # Round 18c: a clone the client cancels releases the network's lock (TestCancelledCloneReleasesTheLock).
+    ('round 18c: upload-pack is not stopped when its response write fails (the lock stays held)', GO,
+     '\t\tcmd.Process.Kill()\n', '\t\t_ = cmd.Process\n', ['go', 'TestCancelledCloneReleasesTheLock']),
+    ('round 18c: the failed copy is ignored, so nothing stops upload-pack', GO,
+     '\t} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil {\n',
+     '\t} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil && false {\n',
+     ['go', 'TestCancelledCloneReleasesTheLock']),
+    ('round 18c: a streamed pack goes to the home whatever its probe answers', EDGE_LIB,
+     '            (200, _) => return (site, tries),\n', '            (200, _) | (_, _) => return (site, tries),\n',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_streamed_pack_goes']),
+    ('round 18c: the last site is probed too, so a streamed pack can find no shard', EDGE_LIB,
+     '    let (last, rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in rest.iter()',
+     '    let (last, _rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in sites.iter()',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_streamed_pack_goes']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
@@ -257,7 +271,7 @@ def run(t):
         out = r.stdout + r.stderr
         return r.returncode, out, 'SyntaxError' in out
     if t[0] == 'go':
-        r = subprocess.run(['go', 'test', '-count=1', '-run', t[1], '.'], cwd=os.path.join(ROOT, 'containers/git/server'),
+        r = subprocess.run(['go', 'test', '-count=1', '-timeout', '120s', '-run', t[1], '.'], cwd=os.path.join(ROOT, 'containers/git/server'),
                            capture_output=True, text=True, timeout=600)
         out = r.stdout + r.stderr
         return r.returncode, out, 'build failed' in out or 'syntax error' in out or 'undefined:' in out

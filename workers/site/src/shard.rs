@@ -656,7 +656,8 @@ impl DurableObject for GitShard {
         // `wait`. A pool shard forwarded a push (`pool=1`) while it holds no cursor for its disk answers that too: a
         // rehydrate of a hot group's tail outlasts the push (`tests/am1/results/b0-30.md`, "Why it crossed"), and the
         // first shard validates the push itself. Either way the catch-up goes on in the background.
-        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote") {
+        // `/catchup` too: the edge's probe before a streamed pack (`validate_streamed`) asks it with `next=1`.
+        if matches!(path.as_str(), "/validate" | "/info-refs" | "/upload-pack" | "/promote" | "/catchup") {
             let follows = q(&url, "next").is_some();
             let rehydrating = follows && host.rehydrating(net).await;
             let pool_cold = path == "/validate" && q(&url, "pool").is_some() && !host.warm(net).await.unwrap_or(false);

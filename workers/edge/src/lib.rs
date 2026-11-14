@@ -1416,10 +1416,13 @@ pub(crate) async fn validate(
 }
 
 /// `validate` for a pack that streams (`PackStore::place_streamed`): the body is the tips and detail, then the pack as
-/// the tee hands it on. The body is read once, so the pack is sent to one shard, the first of `shard_order`, with the
-/// last try's wait, and no trailer: it is known only at the pack's end, so the shard validates the push itself
-/// rather than forwarding it to a fan-out shard. A shard that fails without a 422 or 429 is `Unavailable`, which the
-/// push answers 503 `Retry-After`, as when every shard failed.
+/// the tee hands it on. The body is read once, so it fails over only before its first byte: `streamed_site` asks each
+/// shard of `shard_order` but the last whether it is caught up, with a bodiless `/catchup` at that try's wait, and the
+/// pack goes to the first that is, or to the last, with the last try's wait and no trailer: it is known only at the
+/// pack's end, so the shard validates the push itself rather than forwarding it to a fan-out shard. A shard that
+/// fails once the pack streams, without a 422 or 429, is `Unavailable`, which the push answers 503 `Retry-After`, as
+/// when every shard failed. Sent to the first shard only, a big push during B0-34's home-shard stall would answer
+/// 503 with the other sites' shards never asked (`tests/am1/results/lm1-memory.md`, round 18c).
 async fn validate_streamed(
     c: &Ctx<'_>,
     repo: &Repo,
@@ -1443,15 +1446,58 @@ async fn validate_streamed(
     let pinned = c.shard;
     #[cfg(not(feature = "test-faults"))]
     let pinned = None;
-    let site = shard_order(repo, pinned)[0];
+    let sites = shard_order(repo, pinned);
+    let record = serde_json::to_string(&repo.record).map(|r| String::from(js_sys::encode_uri_component(&r)));
+    let record = record.unwrap_or_default();
+    let probe = |i: usize, site: SiteId| {
+        let url = format!("https://shard/catchup?repo={}&record={record}", repo.id.0.0);
+        let url = shard_url(&url, i, sites.len());
+        async move {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let r = match shard_at(c, repo, Some(site)).and_then(|s| Ok((s, Request::new_with_init(&url, &init)?))) {
+                Ok((s, req)) => s.fetch_with_request(req).await,
+                Err(e) => Err(e),
+            };
+            let r = match r {
+                Ok(mut r) => (r.status_code(), r.text().await.unwrap_or_default()),
+                Err(e) => (0, e.to_string()),
+            };
+            mark_shard(repo, site, r.0 != 200);
+            r
+        }
+    };
+    let (site, mut tries) = streamed_site(&sites, probe).await;
     let r = validate_on(c, repo, site, &shard_url(&url, 1, 2), &body, detail).await;
     let r = r.map_err(|e| (0, e.to_string())).and_then(|r| r);
     mark_shard(repo, site, !matches!(r, Ok(_) | Err((422 | 429, _))));
     match r {
         Ok(r) => Ok(r),
         Err((429, s)) => Err(ShardRefusal::Busy(s.parse().unwrap_or(1))),
-        Err((status, e)) => Err(validate_failed(vec![(site, status, e)])),
+        Err((status, e)) => {
+            tries.push((site, status, e));
+            Err(validate_failed(tries))
+        }
     }
+}
+
+/// The shard a streamed pack goes to: the first of `sites` but the last whose `probe(i, site)` (a bodiless
+/// catch-up at try `i`'s wait) answers 200, else the last, which is never probed: the pack goes there whatever it
+/// would answer. Also the probes that failed, each `(site, status, body)`, for `validate_failed`.
+async fn streamed_site<F, Fut>(sites: &[SiteId], mut probe: F) -> (SiteId, Vec<(SiteId, u16, String)>)
+where
+    F: FnMut(usize, SiteId) -> Fut,
+    Fut: std::future::Future<Output = (u16, String)>,
+{
+    let mut tries = Vec::new();
+    let (last, rest) = sites.split_last().expect("validate_sites always holds the home site");
+    for (i, site) in rest.iter().copied().enumerate() {
+        match probe(i, site).await {
+            (200, _) => return (site, tries),
+            (status, e) => tries.push((site, status, e)),
+        }
+    }
+    (*last, tries)
 }
 
 /// The tries `validate` made, each `(site, status, body)` with status 0 for a failed call, in order, and none
@@ -2554,8 +2600,8 @@ mod tests {
     use graftyard_types::{DbId, PlacementName, PlacementRecord, RepoId, SiteId, Timestamp};
 
     use super::{
-        Cut, ShardRefusal, capped, gunzip, shard_refusal, shard_url, validate_failed, validate_sites, validate_url,
-        warm_first,
+        Cut, ShardRefusal, capped, gunzip, shard_refusal, shard_url, streamed_site, validate_failed, validate_sites,
+        validate_url, warm_first,
     };
 
     /// A streamed body's cap counts the bytes the edge read ahead of the stream, so a body one byte over the cap is
@@ -2640,6 +2686,34 @@ mod tests {
         let u = validate_failed(vec![t(0, 503, "warming"), t(1, 0, "Network connection lost")]);
         assert_eq!(u, ShardRefusal::Unavailable("site 1's shard: Network connection lost".into()));
         assert!(matches!(validate_failed(vec![]), ShardRefusal::Unavailable(_)));
+    }
+
+    /// A streamed pack can be sent once, so it fails over before its first byte: it goes to the first site whose
+    /// bodiless probe answers 200, in `shard_order`, and the last site is taken without a probe. Sent to the home only,
+    /// a big push through B0-34's home stall would answer 503 with the other sites never asked (round 18c).
+    #[test]
+    fn a_streamed_pack_goes_to_the_first_shard_that_is_caught_up() {
+        use futures_util::FutureExt;
+        let s = |v: &[u8]| v.iter().map(|&i| SiteId(i)).collect::<Vec<_>>();
+        let pick = |sites: &[SiteId], ok: &[u8]| {
+            let mut asked = Vec::new();
+            let (site, tries) = streamed_site(sites, |i, site| {
+                asked.push((i, site.0));
+                let ok = ok.contains(&site.0);
+                async move { if ok { (200, String::new()) } else { (503, "{\"warming\":true}".to_owned()) } }
+            })
+            .now_or_never()
+            .expect("ready");
+            (site.0, asked, tries.iter().map(|t| (t.0.0, t.1)).collect::<Vec<_>>())
+        };
+        // The home is caught up: it takes the pack after one probe.
+        assert_eq!(pick(&s(&[2, 0, 1]), &[2, 0, 1]), (2, vec![(0, 2)], vec![]));
+        // The home warms: the next site takes it, at the second try's index (its wait).
+        assert_eq!(pick(&s(&[2, 0, 1]), &[0, 1]), (0, vec![(0, 2), (1, 0)], vec![(2, 503)]));
+        // Both probed sites warm: the last takes it unprobed, and both refusals are kept.
+        assert_eq!(pick(&s(&[2, 0, 1]), &[]), (1, vec![(0, 2), (1, 0)], vec![(2, 503), (0, 503)]));
+        // One site (a test-pinned one, or Solo): no probe at all.
+        assert_eq!(pick(&s(&[5]), &[]), (5, vec![], vec![]));
     }
 
     /// Every try but the last says another shard follows, so a rehydrating shard answers it at once; the last try
