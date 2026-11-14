@@ -212,12 +212,15 @@ async fn commit(
     op: ActionsOp,
 ) -> Result<Result<ActionsOut, ActionsErr>, String> {
     let cmd = ActionsCmd { actor, op };
-    let admitted = h.input(|m, t| m.commit(t, rid, cmd)).map_err(|e| e.to_string())?;
+    let at = crate::now_ms();
+    let admitted = h.input(|m, t| m.commit(t, rid, cmd.clone())).map_err(|e| e.to_string())?;
     let a = admitted.map_err(|e| crate::host::call_error_json(&e).to_string())?;
     h.served();
     let t = a.ticket;
     let end = crate::now_ms() + 10_000;
-    let mut rx = h.wait_ticket(t, None);
+    // The command goes with the ticket, so a `NeedIdBlock` refusal is parked for the lease loop, which records a block
+    // and re-sends it, as `/commit` does.
+    let mut rx = h.wait_ticket(t, Some((rid, at, Some(cmd))));
     loop {
         let left = std::time::Duration::from_millis(end.saturating_sub(crate::now_ms()).max(1));
         match crate::host::within(left, &mut rx).await {
