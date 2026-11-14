@@ -4,7 +4,8 @@
 // due acts after 20 s"): paced `MetaSlim` entries, and a voter that campaigns for leader-only work after 20 s.
 //
 // 1. A fresh repository (tests/am1/b030/mkrepo.mjs NAME) seeded to SEED bytes (tests/am1/b030/seed.mjs), then each
-//    member's `SPLIT_AT` set just under that (`/bench_seed {"splitAt"}`), so the split runs as at 7 GiB, smaller.
+//    member's `SPLIT_AT` set just under that (`/bench_seed {"splitAt"}`), so the split runs as at 7 GiB, smaller. The
+//    group has no leader then, so a voter must elect one for the split on its own; then the snapshot is forced.
 // 2. Every 5 s until the slim pass is done: which member leads (by `/status`), so each leaderless gap is measured.
 // 3. Once the slim pass has run CUT_AFTER_S, the leader is cut off for CUT_S (`/sever`), as a site that stops
 //    answering: it stops leading by check-quorum, nobody calls the group, and a voter must campaign for the slim work
@@ -41,13 +42,25 @@ async function bodies(keys) {
 const size = async (s) => (await member(C, s, "/bench_seed", { b030: { size: true } }, 60_000).catch(() => ({ v: {} }))).v;
 
 const keys = Array.from({ length: SAMPLE }, (_, i) => 2 ** 40 + Math.floor((i * rows) / SAMPLE));
-const b0 = await bodies(keys);
-log(`read before: ${Object.keys(b0).length} of ${SAMPLE}`);
+// The seeded group has had no request since its create, so it has no leader. SPLIT_AT goes to every member with
+// none: only the keep-led rule can elect one now, and the time it takes is the first leaderless gap.
 const sizes = await Promise.all([0, 1, 2].map(size));
 const at = Math.min(...sizes.map((s) => s.dbBytes)) - 1e6;
-for (const s of [0, 1, 2]) log(`splitAt ${s}: ${JSON.stringify((await member(C, s, "/bench_seed", { splitAt: at })).v)}`);
 const t0 = Date.now();
+for (const s of [0, 1, 2]) log(`splitAt ${s}: ${JSON.stringify((await member(C, s, "/bench_seed", { splitAt: at })).v)}`);
 row(OUT, { kind: "start", at: new Date(t0).toISOString(), splitAt: at, dbBytes: sizes.map((s) => s.dbBytes) });
+let first = null;
+while (!first && Date.now() - t0 < 300_000) {
+  first = (await statuses(C)).find((s) => s.role === "leader");
+  if (!first) await sleep(2_000);
+}
+const electS = Math.round((Date.now() - t0) / 1000);
+log(first ? `elected with no request: site ${first.site} after ${electS} s` : `no leader 300 s after splitAt`);
+row(OUT, { kind: "elect", s: electS, site: first?.site ?? null });
+// The split seeds at the newest committed metadata snapshot: one now, on the leader.
+log(`force: ${JSON.stringify((await member(C, first?.site ?? 0, "/bench_seed", { force: 1 })).v)}`);
+const b0 = await bodies(keys);
+log(`read before: ${Object.keys(b0).length} of ${SAMPLE}`);
 
 // Leaderless gaps, from each member's role every 5 s.
 const gaps = [];
@@ -87,6 +100,6 @@ for (const s of ["a", "b", "c"]) {
   logs[s] = { stepDowns: ev.filter((e) => e.msg.includes("StepDown")).length, keepLed: ev.filter((e) => e.msg.startsWith("keep led")).map((e) => e.msg.slice(0, 120)) };
 }
 const after = await Promise.all([0, 1, 2].map(size));
-const sum = { at: new Date().toISOString(), min: Math.round((t1 - t0) / 60_000), cut, gaps, longestGapS: Math.max(0, ...gaps.map((g) => g.s)), same, of: Object.keys(b0).length, logs, before: sizes.map((s) => s.dbBytes), after: after.map((s) => s.dbBytes), sqliteFull: after.map((s) => s.sqliteFull) };
+const sum = { at: new Date().toISOString(), min: Math.round((t1 - t0) / 60_000), electS, cut, gaps, longestGapS: Math.max(0, ...gaps.map((g) => g.s)), same, of: Object.keys(b0).length, logs, before: sizes.map((s) => s.dbBytes), after: after.map((s) => s.dbBytes), sqliteFull: after.map((s) => s.sqliteFull) };
 row(OUT, { kind: "summary", ...sum });
 log(`smoke2 ${JSON.stringify(sum)}`);
