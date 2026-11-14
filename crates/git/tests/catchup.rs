@@ -702,3 +702,55 @@ fn a_rehydrate_ingests_runs_of_inline_packs_a_call_at_a_time() {
     assert_eq!(b.disk.ingests.get(), 1 + 300 + 1, "the promoted pack, each tail pack once, and entry 150 again");
     b.assert_serves_head();
 }
+
+/// A shard reads a stored pack from its own site's bucket first, and from the others in site order when its own
+/// copy is missing or does not match the pack's checksum: B0-31 m3fr2's apac shard read every 1 MiB pack from enam's
+/// bucket, site 0's, because the list was in site order (`tests/am1/results/lm1-rows-m3f.md`, m3fr2, B0-31).
+#[test]
+fn a_shard_reads_its_own_sites_bucket_first_and_falls_back() {
+    use graftyard_git::catchup::{first_copy, own_first};
+    use graftyard_git::mem::MemBucket;
+    use graftyard_git::{Bucket, PutNew};
+    use graftyard_types::SiteId;
+
+    let key = "pack/9/p.pack";
+    let good = b"the pack".to_vec();
+    let want = sum(&good);
+    let buckets: Vec<(SiteId, MemBucket)> = (0..3).map(|s| (SiteId(s), MemBucket::default())).collect();
+    let put = |s: usize, b: &[u8]| {
+        let r = block_on(buckets[s].1.put_new(key, b, sum(b), &[])).unwrap();
+        assert_eq!(r, PutNew::Created);
+    };
+    // Every site holds a copy, as a placed pack's three buckets do once the filler ran.
+    for s in 0..3 {
+        put(s, &good);
+    }
+    // Who answered, in the order asked, and the copy that matched.
+    let read = |me: u8| {
+        let asked = RefCell::new(Vec::new());
+        let order = own_first(SiteId(me), buckets.iter().map(|(s, b)| (*s, b)));
+        let got = block_on(first_copy(&order, |b: &&MemBucket| {
+            let b: &MemBucket = b;
+            let s = buckets.iter().find(|(_, x)| std::ptr::eq(x, b)).unwrap().0;
+            asked.borrow_mut().push(s.0);
+            async move { Ok(b.get(key).await?.filter(|c| sum(c) == want)) }
+        }))
+        .unwrap();
+        (got.map(|(s, _)| s.0), asked.into_inner())
+    };
+    for me in 0..3 {
+        assert_eq!(read(me), (Some(me), vec![me]), "site {me} reads its own copy and no other");
+    }
+    // Site 2's own copy is gone: it reads site 0's, then stops.
+    block_on(buckets[2].1.delete(&[key.into()])).unwrap();
+    assert_eq!(read(2), (Some(0), vec![2, 0]));
+    // Site 0's copy is corrupt too: it goes on to site 1's.
+    block_on(buckets[0].1.delete(&[key.into()])).unwrap();
+    put(0, b"not the pack");
+    assert_eq!(read(2), (Some(1), vec![2, 0, 1]));
+    // No good copy anywhere: every bucket asked, none answered.
+    block_on(buckets[1].1.delete(&[key.into()])).unwrap();
+    assert_eq!(read(2), (None, vec![2, 0, 1]));
+    // Site 1 reads its own first, then the others in site order.
+    assert_eq!(read(1).1, vec![1, 0, 2]);
+}

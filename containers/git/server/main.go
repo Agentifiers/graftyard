@@ -1176,18 +1176,23 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	l.Unlock()
+	// The spool's time is the body's read, from a bucket when a catch-up streams a stored pack here; index_ms is
+	// index-pack's: the shard reports both per catch-up, to tell a slow fetch from a slow unpack or index.
+	t0 := time.Now()
 	file, sum, n, err := spool(filepath.Join(data, "spool"), r.Body)
 	if err != nil {
 		fail(w, 500, "%v", err)
 		return
 	}
 	defer os.Remove(file)
+	spoolMs := time.Since(t0).Milliseconds()
 	if sum != want {
 		fail(w, 422, "checksum %s, want %s", sum, want)
 		return
 	}
 	l.Lock()
 	defer l.Unlock()
+	t1 := time.Now()
 	name, err := indexPack(rp, []string{derivedEnv}, file)
 	if err != nil {
 		if unresolved(err) {
@@ -1202,7 +1207,7 @@ func handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	midxAfterIngest(net, rp)
-	jsonOut(w, map[string]any{"ingested": true, "bytes": n})
+	jsonOut(w, map[string]any{"ingested": true, "bytes": n, "spool_ms": spoolMs, "index_ms": time.Since(t1).Milliseconds()})
 }
 
 // handleIngestBatch is /ingest for many packs in one call: a catch-up's or rehydrate's run of inline packs from one
