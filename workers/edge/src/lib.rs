@@ -1901,6 +1901,7 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
         bytes: &promoted,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: 0,
     };
     let pack = store.place(place).await.map_err(|e| fail(e.to_string()))?.into_pack();

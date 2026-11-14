@@ -847,6 +847,17 @@ impl DurableObject for GitShard {
                 Response::from_bytes(host.promote(net, &sums).await.map_err(se)?)
             }
             "/fsck" => Response::from_json(&host.fsck(net).await.map_err(se)?),
+            // The `.idx` of a pack this shard's `/validate` kept aside, for the archive's promotion to store with it.
+            // No catch-up: the promotion's own validate just wrote it.
+            "/idx" => {
+                let sum = q(&url, "sha256")
+                    .and_then(|h| graftyard_types::Digest::parse_hex(&h))
+                    .ok_or_else(|| Error::RustError("sha256".into()))?;
+                match host.validated_idx(net, sum).await.map_err(se)? {
+                    Some(b) => Response::from_bytes(b),
+                    None => Response::error("no validated pack", 404),
+                }
+            }
             // `GitCacheShard::merge` for a real merge or a merge-queue group (`method`), after catching up.
             "/merge" if q(&url, "method").is_some() => {
                 let oid = |v: &str| {

@@ -124,7 +124,7 @@ impl ArchiveHost for Bed {
         Ok(Box::new(rows.into_iter()))
     }
 
-    async fn promote(&self, sums: &[Digest], _request: RequestId) -> Result<PackRef, String> {
+    async fn promote(&self, sums: &[Digest], _from: Index, _to: Index, _request: RequestId) -> Result<PackRef, String> {
         self.promoted.borrow_mut().push(sums.to_vec());
         if self.rate.get() > 0.0 {
             let bytes: u64 = sums.iter().map(|s| self.sizes.borrow().get(s).copied().unwrap_or(0)).sum();
@@ -562,10 +562,13 @@ fn stored_pushes_alone_promote_ahead_once_their_pack_bytes_pass_the_bound() {
 /// `STEP_FOR`. That growth is the `DECISIONS.md` flip to shard-streamed promotion ("Promote-ahead counts pack bytes").
 #[test]
 fn promotion_keeps_up_below_its_rate_and_stays_bounded_above_it() {
-    const RATE: f64 = 1.45e6;
+    // Measured on git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted at once, on 4 CPUs:
+    // `pack-objects` 4.65 s and the validate's threaded `index-pack` 6.50 s, so 2.62 MB/s of pushed bytes
+    // (`tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"). Above it the tail grows; B0-31's agents staged about 4.
+    const RATE: f64 = 2.62e6;
     const PACK: u64 = 1 << 20;
     let mut out = Vec::new();
-    for push_rate in [0.5e6, 1.0e6, 2.0e6, 4.0e6] {
+    for push_rate in [1.0e6, 2.0e6, 4.0e6, 6.0e6] {
         let b = Bed::new();
         b.rate.set(RATE);
         let cap = 4_000 * CAP;

@@ -221,9 +221,16 @@ impl ArchiveHost for SiteHost<'_> {
     }
 
     /// In a new invocation of this site script (`in_band`), not in this member: see `PROMOTE_PATH`.
-    async fn promote(&self, sums: &[Digest], request: RequestId) -> std::result::Result<PackRef, String> {
+    async fn promote(
+        &self,
+        sums: &[Digest],
+        from: Index,
+        to: Index,
+        request: RequestId,
+    ) -> std::result::Result<PackRef, String> {
         let (chain, record) = self.chain()?;
-        in_band(&self.h.env, &Promote { chain, record, sums: sums.to_vec(), request }).await
+        in_band(&self.h.env, &Promote { chain, record, sums: sums.to_vec(), request, range: Some((from.0, to.0)) })
+            .await
     }
 
     async fn mark(&self, pack: &PackRef, index: Index) {
@@ -277,6 +284,9 @@ struct Promote {
     record: graftyard_types::PlacementRecord,
     sums: Vec<Digest>,
     request: RequestId,
+    /// The range, which the pack's stored `.idx` names (`git::Place::idx_range`).
+    #[serde(default)]
+    range: Option<(u64, u64)>,
 }
 
 /// Runs a promotion's shard calls and its placement in a new invocation of this site script, through its own `SITE`
@@ -333,7 +343,7 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
             Err((_, e)) => return Err(e),
         }
     }
-    let (pack, ix) = built.ok_or(last)?;
+    let (pack, ix, idx) = built.ok_or(last)?;
     let raw: Vec<(SiteId, git::host::R2)> = p
         .record
         .sites
@@ -352,7 +362,9 @@ async fn promote(env: &Env, p: &Promote) -> std::result::Result<PackRef, String>
         meta: git::ObjectMeta { chain: p.chain, request: p.request },
         bytes: &pack,
         index: &ix,
-        idx: None,
+        // The `.idx` the shard's validate wrote, so a rehydrate loads the pack without `index-pack`.
+        idx: idx.as_deref(),
+        idx_range: p.range.map(|(f, t)| (Index(f), Index(t))),
         inline_max: 0,
     };
     store.place(place).await.map(|d| d.into_pack()).map_err(|e| e.to_string())
@@ -367,7 +379,7 @@ async fn promote_on(
     at: SiteId,
     body: &[u8],
     next: bool,
-) -> std::result::Result<(Vec<u8>, PackIndex), (u16, String)> {
+) -> std::result::Result<(Vec<u8>, PackIndex, Option<Vec<u8>>), (u16, String)> {
     // `wait`: a shard still catching up answers 503 "warming" after it and goes on in the background
     // (`git::promote_sites`).
     let path = format!("/promote?wait={}&{}", git::PROMOTE_WAIT_S, if next { "next=1&" } else { "" });
@@ -376,9 +388,12 @@ async fn promote_on(
     // catch-up on a hot group is a rehydrate of gigabytes, and archiving stopped (`tests/am1/results/b0-30.md`).
     // `derived=1`: not a push, so it reports no `NetworkLoad` and its CPU stays out of `fanout`'s k (A31).
     let path = format!("/validate?tipsn=0&via=0&derived=1&wait={}&", git::PROMOTE_WAIT_S);
-    let ix =
+    let ix: PackIndex =
         serde_json::from_slice(&shard(env, site, p, at, &path, pack.clone()).await?).map_err(|e| (0, e.to_string()))?;
-    Ok((pack, ix))
+    // Derived: a shard without `/idx` (the previous image) or a failed read stores the pack alone, as before.
+    let sum = Digest(<sha2::Sha256 as sha2::Digest>::digest(&pack).into());
+    let idx = shard(env, site, p, at, &format!("/idx?sha256={}&", sum.hex()), Vec::new()).await.ok();
+    Ok((pack, ix, idx))
 }
 
 /// Site `at`'s git cache shard of the network, whose catch-up reads the group through the record: `Err((status,

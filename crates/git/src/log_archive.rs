@@ -293,9 +293,9 @@ pub trait ArchiveHost {
     fn view(&self) -> Option<View>;
     /// The stored rows above `after`, in index order, read lazily.
     fn rows(&self, after: Index) -> Result<Rows<'_>, String>;
-    /// The packs under these checksums as one complete pack, validated and placed: the home shard's `/promote` and
-    /// `/validate`, then `PackStore::place`. Always `Stored`.
-    async fn promote(&self, sums: &[Digest], request: RequestId) -> Result<PackRef, String>;
+    /// The packs under these checksums as one complete pack, validated and placed with its `.idx`, which names the
+    /// range `from..=to`: the home shard's `/promote` and `/validate`, then `PackStore::place`. Always `Stored`.
+    async fn promote(&self, sums: &[Digest], from: Index, to: Index, request: RequestId) -> Result<PackRef, String>;
     /// The `Committed` marker of a stored pack at `index`.
     async fn mark(&self, pack: &PackRef, index: Index);
     /// Create-only puts of the archive object; how many buckets hold it.
@@ -368,7 +368,7 @@ pub async fn step<H: ArchiveHost>(h: &H, max_bytes: u64, range_max: u64, promote
     let entries = within_promote_max(range, promote_max)?;
     let (from, to) = (Index(done.0 + 1), entries.last().expect("at least one").index);
     let request = promote_request(v.chain, from, to);
-    let pack = h.promote(&promotion_sums(&entries), request).await?;
+    let pack = h.promote(&promotion_sums(&entries), from, to, request).await?;
     if !matches!(pack, PackRef::Stored { .. }) {
         return Err("a promoted pack is always stored".into());
     }
