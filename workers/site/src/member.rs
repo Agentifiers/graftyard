@@ -113,6 +113,14 @@ fn waits_for_rebuild(learner: bool, narrow: bool, index: bool, now: u64, ms: u64
     (learner || narrow) && index && now + ms < until
 }
 
+/// The leader's lease clock (`host::Stats::lease_clock`): per appended entry, how far its `at` (the clock leases are
+/// judged by) fell behind the isolate's clock when the entry left, and one macrotask later. Test installs only.
+#[cfg(feature = "test-faults")]
+fn lease_clock_pcts(rows: &[[u32; 2]]) -> Value {
+    let col = |i: usize| rows.iter().map(|r| r[i]).collect::<Vec<_>>();
+    json!({ "atToSend": percentiles(&col(0)), "atToNextTask": percentiles(&col(1)) })
+}
+
 /// `{n, p50, p99, max}` of `v`, sorted in place.
 fn pcts(v: &mut [u32]) -> Value {
     v.sort_unstable();
@@ -626,6 +634,20 @@ impl<F: Family> Routes<F> {
             (Method::Post, "/learners") => {
                 let body: Value = req.json().await?;
                 self.ready_or(|| self.learners(body)).await
+            }
+            // `?clock=1` (L0-12's clock line): this isolate's clock read now and again after one awaited macrotask.
+            // A busy leader whose clock lags the others' shows it here: `now` read before the event loop runs again
+            // is the time the input began, and the second read is the time a lease decision taken next would use.
+            // Test installs only.
+            #[cfg(feature = "test-faults")]
+            (Method::Get, "/status") if url.query_pairs().any(|(k, v)| k == "clock" && v == "1") => {
+                let before = now_ms();
+                Delay::from(Duration::ZERO).await;
+                let mut v = self.status();
+                v["clockBefore"] = json!(before);
+                v["clockAfter"] = json!(now_ms());
+                v["leaseClock"] = json!(self.host.stats.borrow().lease_clock.last().copied());
+                Response::from_json(&v)
             }
             (Method::Get, "/status") => Response::from_json(&self.status()),
             // The committed entries `from..=to` with the family's fields (a repository's packs): the git cache
@@ -1449,6 +1471,10 @@ impl<F: Family> Routes<F> {
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);
+            #[cfg(feature = "test-faults")]
+            {
+                v["leaseClock"] = lease_clock_pcts(&s.lease_clock);
+            }
             if reset {
                 s.reset();
             }

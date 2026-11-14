@@ -174,6 +174,12 @@ pub struct Stats {
     /// member's clock at apply, in ms. On a follower it includes the commit round and the wait for the next
     /// AppendEntries that carries the commit (BF-20).
     pub apply_ms: Vec<u32>,
+    /// Leader, per input that appended an `Events` entry: its `at` (the step's clock, which judges every lease the entry
+    /// decides, `ExtendLeases` and expiry) to `now_ms()` once the step returned, and to one macrotask later. A busy
+    /// isolate whose clock reads stale shows a gap here (L0-12 m3fr2: the leader's `/status` read 350 to 800 ms below
+    /// both followers). Test installs only.
+    #[cfg(feature = "test-faults")]
+    pub lease_clock: Vec<[u32; 2]>,
     /// Leader: storage confirm of an input that appended an entry (its writes to `storage.sync()`), in ms. The output
     /// gate holds the entry's AppendEntries for this long.
     pub confirm_ms: Vec<u32>,
@@ -1492,6 +1498,9 @@ impl<F: Family> Host<F> {
         #[cfg(feature = "test-faults")]
         let appended = self.appended_kill(core, &ready.writes);
         let wrote = !ready.writes.is_empty();
+        #[cfg(feature = "test-faults")]
+        let ready_appended_events =
+            ready.writes.iter().any(|w| matches!(w, Write::Append(e) if matches!(e.body, EntryBody::Events(_))));
         for w in &ready.writes {
             match w {
                 Write::Append(e) => self.queued_last.set(Some(e.index.0)),
@@ -1570,7 +1579,22 @@ impl<F: Family> Host<F> {
                     .any(|e| matches!(&e.msg, raft::Message::Append(a) if !a.entries.is_empty()));
             self.unconfirmed.borrow_mut().push((id, timed.then(now_ms), out.self_ack.take()));
         }
+        #[cfg(feature = "test-faults")]
+        let lease_at = core.m.role() == Role::Leader && ready_appended_events;
         drop(guard);
+        #[cfg(feature = "test-faults")]
+        if lease_at {
+            let sent = now_ms().saturating_sub(t) as u32;
+            let h = self.clone();
+            spawn_local(async move {
+                Delay::from(Duration::ZERO).await;
+                let next = now_ms().saturating_sub(t) as u32;
+                let mut s = h.stats.borrow_mut();
+                if s.lease_clock.len() < SAMPLES_MAX {
+                    s.lease_clock.push([sent, next]);
+                }
+            });
+        }
         if wrote {
             self.trace(Trace::Stepped, 0, 0, self.queued_last.get().unwrap_or(0), now_ms().saturating_sub(t));
         }
