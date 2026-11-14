@@ -362,7 +362,7 @@ pub const RESET_QUARANTINE: Duration = Duration::from_secs(300);
 /// on the parent's placement record (`repo-meta:<id>`, hosted by the repository family), and records the same
 /// `MetaSeed` there. Each child member restores that snapshot into its metadata tier in the background; no entry
 /// writes that tier after it, and the child decides nothing. Commit point. Once the child leader has restored it, the
-/// parent records `MetaDropped { seed: p }`, then `MetaSlim` entries until one pass is done, each over the next
+/// parent records `MetaDropped { seed: p }`, then paced `MetaSlim` entries until one pass is done, each over the next
 /// SLIM_ROWS rows: a row last written at or before p loses the text no `decide` reads (issue, comment, review and
 /// release bodies, a task's prompt and summary), which the child's snapshot holds, and `provenance` and `path_set`
 /// rows, which no read serves, go. A row written after p keeps its text. Every table and column `decide` reads stays,
@@ -415,8 +415,12 @@ pub enum TransferError { NotLeader(NotLeader), Busy(TransferId), Target(SiteId) 
 /// waiting and two voters up and linked completes one within 30 s on 4,000 live seeds [measured, simulator,
 /// `tests/m0/results/f67.md`]: a leader whose entry, read, or transfer no quorum answered for ELECTION_AFTER stops
 /// leading (F67). Only `home` gets `/campaign`; pre-vote denies a higher site id with an equal log [inference,
-/// wire-fix]. Only a voter that may lead and was not refused as suspected denies a rival as contending. A promise bars
-/// votes for a rival of its leader, not for that leader, and an edge answered `NotLeader` naming none also reports to
+/// wire-fix]. A leader paces its own background entries (`MetaSlim`, `Promoted`, `Archived`) by twice each one's commit,
+/// at most 10 s: back to back they tripped STEP_DOWN 110 times in 2.5 h [measured, `b030-split`, smoke 1]. A voter
+/// with such work due that has seen no leader for 2 x ELECTION_AFTER acts as on one `suspect` report (campaigns, or
+/// first probes a leader it names by read index), else its group sat leaderless 39 min (`decisions/DECISIONS.md`).
+/// Only a voter that may lead and was not refused as suspected denies a rival as contending. A promise bars votes for
+/// a rival of its leader, not for that leader, and an edge answered `NotLeader` naming none also reports to
 /// that member, so a deposed leader with the newest log can win the next term while promises run (11 s idle without).
 pub async fn suspect(follower: &Stub, from: Colo, about: SiteId, term: Term) -> Result<Verdict, SuspectError>;
 pub struct Colo(u32);   // the edge's data center; `suspect` counts distinct ones

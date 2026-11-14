@@ -93,6 +93,7 @@ fn size(h: &Rc<Host<Repo>>) -> Result<Value> {
         "unpromotedBytes": above,
         "sqliteFull": h.stats.borrow().sqlite_full,
         "archiveSteps": h.stats.borrow().archive_steps,
+        "keepLed": h.stats.borrow().keep_led,
         "truncatedTo": h.stats.borrow().truncated_to,
         "alarms": h.stats.borrow().alarms.iter().rev().take(5).cloned().collect::<Vec<_>>(),
     }))

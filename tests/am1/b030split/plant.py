@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """b030-split: planted bugs in the metadata child group (`crates/git/src/split.rs`, `workers/site/src/split.rs`,
-`crates/git/src/repo.rs`). Plants one mutant at a time, runs the tests that gate it, and restores the file byte for
-byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE. Never run it while a site day builds
+`crates/git/src/repo.rs`), and the leader-only work rules (`workers/site/src/host.rs`, `paced` and `keep_led`). Plants
+one mutant at a time, runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT with the failing tests, MISSED, or DID NOT COMPILE. Never run it while a site day builds
 from this worktree. Run from the worktree root:
 
     python3 tests/am1/b030split/plant.py          # every mutant
@@ -14,8 +14,10 @@ SPLIT = 'crates/git/src/split.rs'
 REPO = 'crates/git/src/repo.rs'
 SITE = 'workers/site/src/split.rs'
 FAMILY = 'workers/site/src/family.rs'
+HOST = 'workers/site/src/host.rs'
 T = ('cargo', ['-p', 'graftyard-git', '--test', 'split'], '')
 S = ('cargo', ['-p', 'graftyard-site', '--features', 'test-faults', '--lib'], 'split::')
+H = ('cargo', ['-p', 'graftyard-site', '--features', 'test-faults', '--lib'], 'host::')
 
 # (name, file, old, new, tests)
 MUTANTS = [
@@ -58,6 +60,29 @@ MUTANTS = [
      '    let _ = crate::split::since(m0);\n', S),
     ('a parent answer does not fill slimmed rows from the child', SITE,
      '            Some(c) => *cols = git::split::fill(t, cols, c.as_deref()),', '            Some(_) => {}', S),
+    # The leader-only work rules (`decisions/DECISIONS.md`, "A leader paces its own background writes").
+    ('keep_led counts the bound from its first check, not from when its promise lapsed', HOST,
+     '    let base = if lapsed > 0 { lapsed } else { found }.max(acted);', '    let base = found.max(acted);', H),
+    ('keep_led acts again on every check after it first acted', HOST,
+     '    let base = if lapsed > 0 { lapsed } else { found }.max(acted);',
+     '    let base = if lapsed > 0 { lapsed } else { found };', H),
+    ('keep_led campaigns at once, with no bound', HOST,
+     '    if now < base + LEADERLESS_FOR.as_millis() as u64 {', '    if false {', H),
+    ('keep_led acts on a member that still holds a promise to its leader', HOST,
+     '    if heard || !needs {\n        return KeepLed::Off;', '    if !needs {\n        return KeepLed::Off;', H),
+    ('keep_led campaigns past a leader it still names instead of probing it', HOST,
+     '    } else if named {\n        KeepLed::Probe', '    } else if false {\n        KeepLed::Probe', H),
+    ('keep_led acts with no leader-only work due', HOST,
+     '    if heard || !needs {\n        return KeepLed::Off;', '    if heard {\n        return KeepLed::Off;', H),
+    ('a paced write waits only its own commit time, not twice it', HOST,
+     'pub const PACE: u32 = 2;', 'pub const PACE: u32 = 1;', H),
+    ('paced writes are not capped', HOST,
+     '    (Duration::from_millis(took_ms) * PACE).min(PACE_MAX)', '    Duration::from_millis(took_ms) * PACE', H),
+    ('a split needs its leader on the child too', SITE,
+     '    !fold.child && !matches!(git::split::plan', '    !matches!(git::split::plan', S),
+    ('a split needs its leader once the slim pass is done', SITE,
+     '    !fold.child && !matches!(git::split::plan(&*fold.core, &fold.meta, bytes, split_at, None), SplitStep::Idle)',
+     '    !fold.child && git::split::slim_cursor(&fold.meta).is_none_or(|_| true)', S),
 ]
 
 

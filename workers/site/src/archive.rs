@@ -55,6 +55,8 @@ thread_local! {
     static CAP: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
     /// Members of this isolate with a run in flight, by object name.
     static RUNNING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+    /// Members of this isolate whose last run stopped with work left, by object name, and when (`leader_due`).
+    static LEFT: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
     /// When each member last summed its log, by object name.
     static SUMMED: RefCell<std::collections::HashMap<String, u64>> = RefCell::new(Default::default());
 }
@@ -85,6 +87,10 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
             None => Ok(Step::Idle),
         };
         RUNNING.with(|r| r.borrow_mut().remove(&key));
+        LEFT.with(|l| match &r {
+            Ok(Step::Idle) => l.borrow_mut().remove(&key),
+            _ => l.borrow_mut().insert(key.clone(), now_ms()),
+        });
         let Some(h) = w.upgrade() else { return };
         match r {
             // Nothing due: the next sum waits a minute.
@@ -101,11 +107,25 @@ pub fn on_alarm(h: &Rc<Host<Repo>>) {
     });
 }
 
+/// Whether this member's last archive run as leader, within `LEFT_FOR`, stopped with a range still due or failed:
+/// the next leader's work, so a member that has heard no leader since acts for it (`crate::host::keep_led`). From
+/// this isolate's memory, so it costs no log sum; a reset member forgets it until it leads again, and a new leader's
+/// own runs take it over.
+pub fn leader_due(h: &Rc<Host<Repo>>) -> bool {
+    let Some(key) = h.core.borrow().as_ref().map(|c| c.join.me.do_name.to_string()) else { return false };
+    LEFT.with(|l| l.borrow().get(&key).is_some_and(|at| now_ms() < at + LEFT_FOR_MS))
+}
+
+/// How long a run that left work counts for `leader_due` [guess]: well past one election, and short enough that a
+/// former leader whose work a quiet new leader finished stops probing it.
+const LEFT_FOR_MS: u64 = 600_000;
+
 /// Steps until nothing is due, a step fails, or `DRAIN_FOR_MS` has passed: the last step's result.
 async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
     let began = now_ms();
     loop {
-        let s = crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
+        let (s, took) =
+            crate::host::within(STEP_FOR, run(h)).await.unwrap_or_else(|| Err("a step timed out".into()))?;
         if s == Step::Idle {
             return Ok(s);
         }
@@ -114,6 +134,8 @@ async fn drain(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
         if now_ms() >= began + DRAIN_FOR_MS {
             return Ok(s);
         }
+        // Paced by the step's own entry, not its shard or bucket time (`crate::host::PACE`).
+        Delay::from(crate::host::paced(took)).await;
     }
 }
 
@@ -125,15 +147,17 @@ fn note(h: &Rc<Host<Repo>>, m: String) {
     }
 }
 
-async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<Step, String> {
+/// One step, and how long its entry took to commit.
+async fn run(h: &Rc<Host<Repo>>) -> std::result::Result<(Step, u64), String> {
     h.settled().await;
     let sql = h.state.storage().sql();
-    let s = SiteHost { h, sql };
+    let s = SiteHost { h, sql, recorded_ms: std::cell::Cell::new(0) };
     #[cfg(feature = "test-faults")]
-    if let Some((max, range)) = CAP.with(|c| c.get()) {
-        return log_archive::step(&s, max, range, PROMOTE_MAX).await;
-    }
-    log_archive::step(&s, graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX, PROMOTE_MAX).await
+    let (max, range) = CAP.with(|c| c.get()).unwrap_or((graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX));
+    #[cfg(not(feature = "test-faults"))]
+    let (max, range) = (graftyard_fold::LOG_MAX_BYTES, ARCHIVE_RANGE_MAX);
+    let step = log_archive::step(&s, max, range, PROMOTE_MAX).await?;
+    Ok((step, s.recorded_ms.get()))
 }
 
 /// Test installs: sets or clears this isolate's cap override, and forgets when each member last summed its log so
@@ -149,6 +173,8 @@ pub fn set_cap(v: &serde_json::Value) -> serde_json::Value {
 struct SiteHost<'a> {
     h: &'a Rc<Host<Repo>>,
     sql: SqlStorage,
+    /// How long the step's `record` waited for its entry.
+    recorded_ms: std::cell::Cell<u64>,
 }
 
 impl SiteHost<'_> {
@@ -230,11 +256,14 @@ impl ArchiveHost for SiteHost<'_> {
         events: Vec<git::repo::RepoEvent>,
     ) -> std::result::Result<Index, String> {
         let rx = self.h.wait_recorded(request);
+        let t0 = now_ms();
         let r =
             self.h.input(|m, t| m.record(t, request, git::repo::REPO_FORMAT_V1, events)).map_err(|e| e.to_string())?;
         r.map_err(|e| crate::host::call_error_json(&e).to_string())?;
         self.h.served();
-        match crate::host::within(std::time::Duration::from_secs(10), rx).await {
+        let r = crate::host::within(std::time::Duration::from_secs(10), rx).await;
+        self.recorded_ms.set(self.recorded_ms.get() + (now_ms() - t0));
+        match r {
             Some(Ok(Ok(index))) => Ok(index),
             Some(Ok(Err(nl))) => Err(format!("not leader: {}", crate::host::nl_json(&nl))),
             Some(Err(_)) => Err("member reset".into()),

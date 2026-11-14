@@ -209,6 +209,14 @@ pub trait Family: 'static {
         Self: Sized,
     {
     }
+    /// Whether this member's group has background work only its leader does now (`Host::keep_led`): a repository's
+    /// split step, archive, or promotion.
+    fn needs_leader(_host: &std::rc::Rc<crate::host::Host<Self>>) -> bool
+    where
+        Self: Sized,
+    {
+        false
+    }
     /// `Write::Install`'s statements that make the loaded tables the member's fold.
     fn install_stmts(_stmts: &mut Vec<Stmt>) {}
     /// Family fields of a log entry on the harness's `/log` and the shard's `/entries`.
@@ -934,6 +942,17 @@ impl Family for Repo {
                         .await,
                 )
             }
+            // Test installs: this chain's `SPLIT_AT` in this isolate (`crate::split::set_split_at`).
+            #[cfg(feature = "test-faults")]
+            "/bench_seed" if body.get("splitAt").is_some() => {
+                let chain = host.core.borrow().as_ref().map(|c| c.join.chain);
+                host.arm_in(0);
+                Some(
+                    chain
+                        .ok_or_else(|| worker::Error::RustError("not joined".into()))
+                        .map(|c| crate::split::set_split_at(c, &body["splitAt"])),
+                )
+            }
             // Test installs: this isolate's archive cap in place of `LOG_MAX_BYTES` (`crate::archive`).
             #[cfg(feature = "test-faults")]
             "/bench_seed" if body.get("archiveCap").is_some() => {
@@ -1211,6 +1230,9 @@ impl Family for Repo {
     fn restored(host: &std::rc::Rc<crate::host::Host<Self>>) {
         crate::load::restored(host);
         crate::split::restored(host);
+    }
+    fn needs_leader(host: &std::rc::Rc<crate::host::Host<Self>>) -> bool {
+        crate::split::leader_due(host) || crate::archive::leader_due(host)
     }
     async fn fetch_missed(host: &std::rc::Rc<crate::host::Host<Self>>, missed: &Value) -> Result<(), String> {
         crate::split::fetch(host, missed).await

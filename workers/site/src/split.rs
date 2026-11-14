@@ -51,6 +51,9 @@ thread_local! {
     static CACHE: RefCell<Cache> = RefCell::new((0, HashMap::new()));
     /// The child rows the answer being built missed.
     static MISSED: RefCell<Vec<(RepoId, String, Vec<Val>)>> = const { RefCell::new(Vec::new()) };
+    /// Test installs: `SPLIT_AT` by chain (`set_split_at`).
+    #[cfg(feature = "test-faults")]
+    static SPLIT_AT_FOR: RefCell<HashMap<ChainId, u64>> = RefCell::new(HashMap::new());
 }
 
 /// `ctx.storage.sql.databaseSize` as the `f64` the runtime returns: workers-rs 0.8.7's `database_size()` is
@@ -380,7 +383,7 @@ async fn run(h: &Rc<Host<Repo>>, repo: RepoId) -> std::result::Result<bool, Stri
             }
             let f = &c.m.group_fold().fold;
             let bytes = db_bytes(h).max(0.0) as u64;
-            (git::split::plan(&*f.core, &f.meta, bytes, git::split::SPLIT_AT, view.as_ref()), c.join.record.clone())
+            (git::split::plan(&*f.core, &f.meta, bytes, split_at(c.join.chain), view.as_ref()), c.join.record.clone())
         };
         match step {
             SplitStep::Idle | SplitStep::WaitSnapshot => return Ok(false),
@@ -398,13 +401,50 @@ async fn run(h: &Rc<Host<Repo>>, repo: RepoId) -> std::result::Result<bool, Stri
                 record_on(h, SplitEntry::MetaDropped { seed }).await?;
             }
             SplitStep::Slim => {
+                let t0 = now_ms();
                 record_on(h, SplitEntry::MetaSlim).await?;
+                Delay::from(crate::host::paced(now_ms() - t0)).await;
             }
         }
         if now_ms() >= began + RUN_FOR_MS {
             return Ok(true);
         }
     }
+}
+
+/// Test installs: `SPLIT_AT` for one chain in this isolate (`/bench_seed {"splitAt": n}`), so a hosted smoke splits a
+/// group of a few hundred MB. Only `MetaSplit` reads it; every later step follows the fold.
+#[cfg(feature = "test-faults")]
+pub fn set_split_at(chain: ChainId, v: &Value) -> Value {
+    let at = v.as_u64();
+    SPLIT_AT_FOR.with(|m| match at {
+        Some(n) => m.borrow_mut().insert(chain, n),
+        None => m.borrow_mut().remove(&chain),
+    });
+    CHECKED.with(|c| c.borrow_mut().clear());
+    json!({ "splitAt": at })
+}
+
+fn split_at(chain: ChainId) -> u64 {
+    #[cfg(feature = "test-faults")]
+    if let Some(n) = SPLIT_AT_FOR.with(|m| m.borrow().get(&chain).copied()) {
+        return n;
+    }
+    let _ = chain;
+    git::split::SPLIT_AT
+}
+
+/// Whether a split of `fold`, at `bytes` of member SQLite, has a step only its leader takes: any but `Idle`. A child
+/// has none. A campaign it starts still waits out every promise to a live leader (`Member::campaign`).
+pub fn needs_leader(fold: &git::repo::RepoFold, bytes: u64, split_at: u64) -> bool {
+    !fold.child && !matches!(git::split::plan(&*fold.core, &fold.meta, bytes, split_at, None), SplitStep::Idle)
+}
+
+/// `needs_leader` on this member, for `Host::keep_led`.
+pub fn leader_due(h: &Rc<Host<Repo>>) -> bool {
+    let bytes = db_bytes(h).max(0.0) as u64;
+    let core = h.core.borrow();
+    core.as_ref().is_some_and(|c| needs_leader(&c.m.group_fold().fold, bytes, split_at(c.join.chain)))
 }
 
 async fn record_on(h: &Rc<Host<Repo>>, x: SplitEntry) -> std::result::Result<(), String> {
@@ -678,6 +718,23 @@ mod tests {
             graftyard_api::hosted::TierRows::from_value(&Repo::read_json(&f, &json!({ "rows": true }))).unwrap();
         assert_eq!(body(&plain, 2).as_deref(), Some("text 2"));
         super::CACHE.with(|c| *c.borrow_mut() = (0, Default::default()));
+    }
+
+    /// A split needs its leader while a step is due: at SPLIT_AT before `MetaSplit`, and through the slim pass; not
+    /// under SPLIT_AT, not once the pass is done, and never on the child.
+    #[test]
+    fn a_split_needs_its_leader_only_while_a_step_is_due() {
+        use super::needs_leader;
+        let fresh = RepoFold::new(REPO, AccountId(DbId(1)));
+        assert!(!needs_leader(&fresh, 100, 200));
+        assert!(needs_leader(&fresh, 200, 200));
+        let mut child = RepoFold::new(REPO, AccountId(DbId(1)));
+        child.child = true;
+        assert!(!needs_leader(&child, 300, 200));
+        // `parent()`'s one `MetaSlim` covered its three rows, so the pass is done.
+        let done = parent();
+        assert!(super::git::split::slim_cursor(&done.meta).is_some_and(|c| c.done));
+        assert!(!needs_leader(&done, 300, 200));
     }
 
     /// The child answers its restored rows by key, and the parent group answers none.
