@@ -727,6 +727,9 @@ const WARM_PUSHES = 30, WARM_MAX_S = 900;
 if (plan.burst) jobs.push((async () => {
   await sleep(Math.max(0, t0 + plan.burst.at * 1000 - Date.now()));
   const w0 = Date.now();
+  // The load runs while `Date.now() < end`: hold `end` past the warm-up's longest wait, or the load stops at
+  // `seconds` and the group cools while the warm-up waits (m3fr2: load ended at 180 s, `hot` false from then on).
+  end = w0 + (WARM_MAX_S + seconds) * 1000;
   let hot = false, warm = false, polls = 0;
   while (Date.now() - w0 < WARM_MAX_S * 1000) {
     const l = (await statuses(CHAIN)).filter((x) => x.role === "leader").sort((a, b) => b.term - a.term)[0];
@@ -739,7 +742,7 @@ if (plan.burst) jobs.push((async () => {
   writeRow(OUT, { step: "burst warm-up", seconds: Math.round((Date.now() - w0) / 1000) + plan.burst.at, hot, warm, polls,
     lastAgentMs: recentAgent.slice(-WARM_PUSHES).map(([, ms]) => ms) });
   log(`burst warm-up: hot ${hot}, warm ${warm} after ${Math.round((Date.now() - w0) / 1000) + plan.burst.at} s`);
-  end = Math.max(end, Date.now() + (seconds - plan.burst.at) * 1000);
+  end = Date.now() + (seconds - plan.burst.at) * 1000;
   const s = Date.now();
   // Client-side record of every burst push, so one with no edge event still shows when it was sent and how it ended.
   const sent = [];

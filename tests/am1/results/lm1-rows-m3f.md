@@ -21,6 +21,63 @@ Shard image `sha256:de39c828…`, built from main's `containers/git` (`b4a7510`:
 
 2026-11-14, 05:02Z to 05:17Z, `tests/fanout/siteday-m3f.sh`, logged in `install-m3f.md` on main. Sites `4440f04d` / `664f2927` / `dfd53b45` (phase 1 `9f3d53c2` / `03930d80` / `fea147c4`), edge `a197b7fd`, built from `lm1-rows-m3f` `7e5b63f`. After the deploy, `GET /repos/m3org/j4` answered 200 and `repo:65536`'s leader answered the new `/status` admission fields. The install's own Apps (`tests/am1/rest/apps.mjs`, for L0-12's Graftyard-run and MCP kinds) were registered at 05:59Z: `graftyard-workspace` 196608, `graftyard-agent` 262144, `graftyard-mcp` 327680, installations 7190011 to 7190013 on `m3org`.
 
+## Rows m3fr2 (2026-11-14, TAG `m3fr2`, `ROWS="b0-31 b0-32 l0-12"`)
+
+On the 10:04Z site day (`d438f437`: `repo-write-mark` and `admission-stored-bytes`). Each row on a fresh repository with learners enam 4,000, weur 2,000, apac 2,000, k 4 granted, the row's shards torn down after it. `admit.mjs` read capacity, `cmdBytes` and `retryAfterS` every second. Raw files: `tests/am1/raw/a1-<row>-<run>.jsonl`, `tests/fanout/raw/{terms,admit}-m3fr2-<row>.jsonl`, `tests/fanout/raw/rows-m3fr2.status` (git-ignored).
+
+### B0-31: fail
+
+Repository 65555, run `mwg9hh9a`, 10:33:16Z to 10:43:16Z, 500 agents, every agent push 1 MiB, placement failing from 300 s. `/move` homed the group on apac. The apac leader held all 600 s at term 3 (`terms.mjs` on the live voters), with 1 failed call and 6 `/suspect` reports at the leader.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | Leader `/stats` reset at 300 s: buckets-up half p99 **1,118 ms** (p50 777, n 5,210); queue p99 910, round p99 311, confirm p99 59 ms | **Fail** (between 1 s and the 3 s fail line) |
+| While placement fails: Human and MergeQueue commit p99 at most 3 s, 0 of them refused | Leader commit p99 1,121 ms over the half (all classes). Human pushes 158 ok, 10 `stale:race`, 0 refused, end to end p99 20.1 s. **MergeQueue: 0 of 29 merges committed**; every one answered 503 `the git cache: {"warming":true}` after `MERGE_WAIT` (15 s) | **Fail** (MergeQueue refused) |
+| Agent pushes over `INLINE_MAX_HOT` refused at once in the `ng` shape | 1,277 of 1,302 `full` (`ng … agent admission full`), push p50 1.8 s; 25 accepted (started before 300 s) | Pass on the refused shape |
+| Fail line | MergeQueue merges refused while placement fails | **Fail** |
+
+Buckets up: 1,199 of 1,199 agent pushes ok (p99 11.0 s), and 1 of 22 merges committed (21 × 503 `warming`). Feed p99 2,444 ms.
+
+**Hot and staged now.** `hot` was true in 239 of 300 buckets-up samples (it reads committed pushes over HOT_WINDOW, so it falls once placement fails and agent pushes are refused: 5 of 299). Every agent pack was staged (1 MiB, over `INLINE_MAX_HOT`).
+
+**Admission (`admit.mjs`, leader apac throughout):**
+
+| Half | Capacity, min / p50 / max | `cmdBytes` p50 / max | Agent queued p50 / max | `retryAfterS` | Round p50 / max (ms) | `pressure` |
+|---|---|---|---|---|---|---|
+| Buckets up (300 samples) | 270 / 654 / 1,043 | 768 / 1,892 | 2 / 18 | 2 throughout | 198 / 255 | never |
+| Placement failing (299) | 192 / 367 / 846 | 1,356 / 2,563 | 2 / 11 | 2 throughout | 198 / 234 | never |
+
+Capacity stayed 7 to 40 times the 27.6 commands/s offered. The commit p99 is queue time (910 ms p99) on a 200 ms round, not admission.
+
+**The apac shard still falls minutes behind, and `MERGE_WAIT` now turns that into refused merges.** Merges go to the leader site's shard, `git#2#net:65555` (`workers/edge/src/api.rs`, `merge_plan`). That shard's `warm` catch-ups (Workers Logs, site c, object `c89e4269`):
+
+- 10:28:20Z, before the window: rehydrate of 36 entries in 36 s, 34 of it `up` (container start).
+- 10:30 to 10:33: warm catch-ups of 0.2 s each (the log was quiet).
+- From 10:34:09Z: 34 s, then 76 s and 91 s (10:35:22Z), then five more that never ended: each ran 504 to 577 s and was cut at teardown (10:43:46Z, "The container has not been started").
+- Every one of the queue's `/merge` calls on that shard waited on the catch-up and was answered 503 `warming` at `MERGE_WAIT`; `merge_plan` on the one merge that committed spent 12.1 s in the catch-up.
+- `shard warm 65555 site 2: no answer in 25 s` every 15 s from 10:41Z to the end.
+
+What its catch-up reads, from R2's per-bucket operations (GraphQL `r2OperationsAdaptiveGroups`, 10:33 to 10:44): agent packs were put to all three buckets (about 500, 300 and 450 puts a minute to a, b, c), but **every GET was from bucket a (enam)**, 1,000 to 1,400 a minute while the load ran. Buckets b and c had no GETs. `ShardIo::ingest_stored` (`crates/git/src/host.rs`) tries `self.buckets` in order, and `buckets()` (`workers/site/src/shard.rs`) lists every site's bucket by site id, so every shard reads site 0's bucket first. The apac shard therefore pulls each 1 MiB staged pack from enam, one pack at a time (`Load::Stored` is one call each in `ingest_all`), at about 4 packs/s of log. Hypothesis, not yet timed per step: the catch-up is bound by that cross-region fetch, not by unpack or index (site a's shards validate the same packs at p50 1.1 to 2.6 s). The fix this points to: `ingest_stored` should try the shard's own site's bucket first, then the others; and stored packs could be fetched a few at a time. Not made yet; the per-step timing (`ms` in the catch-up report) of a catch-up that finishes would settle it.
+
+### B0-32: invalid as run (driver bug), and fail on its numbers
+
+Repository 65556, run `mwga3x8e`. The load started 10:48:07Z; the warm-up waited from 60 s for `hot` and the last 30 agent pushes acked within 5 s.
+
+**The warm-up's load stopped at 180 s.** The driver's load loops run while `Date.now() < end`, and `end` was `t0 + 180 s`; the warm-up moved `end` only after it ended. So the load ran 10:48:07Z to 10:51:07Z, `hot` was true from about 10:48:30Z to 10:51Z (170 of 180 samples), and then the group sat idle while the warm-up polled for 900 s. Warm never held in the load's 120 s of warm-up: the last 30 agent pushes took 3.2 to 7.4 s. The burst fired at 11:04:08Z on a cold, idle group (`hot: false, warm: false`), which is not the row as written. Fixed in `a1.mjs` (below): `end` now moves past the warm-up's longest wait when the warm-up starts.
+
+Its numbers, for the record (they do not count as the row):
+
+| Gate line | Measured |
+|---|---|
+| Every push acked within 5 s or `ng … agent admission full` | 0 of 500 within 5 s. 233 ok (p50 25.0 s), 26 `full` in the `ng` shape, 241 × 503 `no shard could check the pack (… {"warming":true})`. Every push has an answer: none lost, client log has `sentAt` and result for each |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Peak 13.9 KB, 34 agent commands |
+| Merges in one of the next 2 entries, none over 2 s | merge:only p99 1,783 ms (24 × 200, 2 × 409), shard catch-up 0 ms |
+| Zero leader changes, zero `suspect` | Term 2 throughout, site 0 led; but **72 `/suspect` reports and 1,032 failed calls at the leader** |
+
+Admission during the burst (166 samples): capacity 323 / 947 / 1,056, `cmdBytes` p50 407 max 1,900, agent queued max 34, `retryAfterS` 1 to 2, `hot` in 12 samples, never `pressure`.
+
+Before the burst, while the load ran, site a's validates took p50 1.1 s and p90 1.9 s (100 sampled, 43 forwarded to pool shards), and agent pushes acked at p50 4.1 s. So even hot, agent pushes on this group were not under 5 s end to end; whether the burst meets 5 s on a warm group is the rerun's question.
+
 ## Rows m3fr1 (2026-11-14, `tests/fanout/rows-m3f.sh`, TAG `m3fr1`)
 
 Every row ran on a fresh repository with learners enam 4,000, weur 2,000, apac 2,000 (8 learners), k 4 granted on both warm sites, and the row's shards torn down after it. Raw files: `tests/am1/raw/a1-<row>-<run>.jsonl`, `tests/fanout/raw/{terms,admit}-m3fr1-<row>.jsonl`, and `tests/fanout/raw/rows-m3fr1.status`. All of them are git-ignored.
