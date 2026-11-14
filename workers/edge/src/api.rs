@@ -112,6 +112,10 @@ impl Timing {
         self.phases.borrow_mut().push((name, now - since));
         self.last.set(self.last.get().max(now));
     }
+    /// A stage another party measured, such as the member's own split of a tier read (`member_stages`).
+    fn put(&self, name: &'static str, ms: f64) {
+        self.phases.borrow_mut().push((name, ms));
+    }
     /// Each stage and its ms, then `total`.
     fn phases(&self) -> Vec<(&'static str, f64)> {
         let mut out = self.phases.borrow().clone();
@@ -369,7 +373,11 @@ pub(crate) async fn read_repo(
             Rows::Merge(_, Some(v)) => v,
             Rows::Api(route) => {
                 let spec = graftyard_api::narrow::Spec { at: at.clone(), route };
-                match api_rows(c, &repo, &spec).await? {
+                let v = api_rows(c, &repo, &spec).await?;
+                if let Ok(v) = &v {
+                    member_stages(c, v);
+                }
+                match v {
                     // A route the member answers whole, or a member that cannot read the spec: both whole tiers.
                     Ok(v) if v["value"].get("whole").is_some() || v["value"].get("error").is_some() => {
                         tier_rows(c, &repo, None).await
@@ -451,6 +459,16 @@ pub(crate) enum Rows {
     Core,
     Merge(MergeOf, Option<Result<std::result::Result<Value, Reply>>>),
     Api(graftyard_api::narrow::Route),
+}
+
+/// The member's split of a read it answered (`stages`, `[grant, waited]` ms): `tier_grant`, the wait for the
+/// leader's read index to be applied, and `tier_wait`, the wait for the answer's build (narrow-reads-3). A member built
+/// before it sends none.
+fn member_stages(c: &Ctx<'_>, v: &Value) {
+    if let Some([g, w]) = v.get("stages").and_then(Value::as_array).map(Vec::as_slice) {
+        c.timing.put("tier_grant", g.as_f64().unwrap_or(0.0));
+        c.timing.put("tier_wait", w.as_f64().unwrap_or(0.0));
+    }
 }
 
 /// A narrow API read (`{"rows": {"api": spec}}`, `graftyard_api::narrow::answer`) on the repository's learners and
@@ -1278,7 +1296,10 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
     let r = rd.view(host);
     if !gq.is_mutation().unwrap_or(false) {
         let rendered = js_sys::Date::now();
-        let (v, asks) = graphql::query_asks(&gq, Some(&r));
+        let (mut v, mut asks) = graphql::query_asks(&gq, Some(&r));
+        if crate::ui::read_compares(c, &rd).await {
+            (v, asks) = graphql::query_asks(&gq, Some(&r));
+        }
         if !rd.dir.picks.missed() {
             ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
             c.timing.add("render", rendered);
@@ -1292,7 +1313,10 @@ async fn graphql_post(c: &Ctx<'_>, req: &mut Request, host: &Host) -> Result<Rep
             Err(r) => return Ok(r),
         };
         let r = rd.view(host);
-        let (v, asks) = graphql::query_asks(&gq, Some(&r));
+        let (mut v, mut asks) = graphql::query_asks(&gq, Some(&r));
+        if crate::ui::read_compares(c, &rd).await {
+            (v, asks) = graphql::query_asks(&gq, Some(&r));
+        }
         ask_merges(c, &rd.repo, asks, merge_computes(&r, Some(&who)));
         return Ok(Reply::json(200, v));
     }
@@ -1556,7 +1580,10 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
         // A writer's or an App's poll asks the shard for the test merge its `mergeable` lacks, as GraphQL's single-PR
         // read does (`ask_merges`); anyone else's is counted as a list's. `mergeable` stays null until the merge is recorded.
         (Method::Get, ["pulls", n]) => {
-            let (reply, asks) = rest::get_pull_asks(&r, n);
+            let (mut reply, mut asks) = rest::get_pull_asks(&r, n);
+            if crate::ui::read_compares(c, &rd).await {
+                (reply, asks) = rest::get_pull_asks(&r, n);
+            }
             ask_merges(c, &rd.repo, asks, merge_computes(&r, who.as_ref()));
             reply
         }
@@ -1822,6 +1849,11 @@ async fn rest_narrow(
             None => rest::commit_not_found(reference),
         },
         _ => match graftyard_api::narrow::rest_get(&r, tail, query, graftyard_types::Index(rd.index)) {
+            // A pull request's counts are the git cache's (`crate::ui::read_compares`): read the pairs the render
+            // asked for, then render again.
+            Some(reply) if crate::ui::read_compares(c, &rd).await => {
+                graftyard_api::narrow::rest_get(&r, tail, query, graftyard_types::Index(rd.index)).unwrap_or(reply)
+            }
             Some(reply) => reply,
             None => return Ok(None),
         },

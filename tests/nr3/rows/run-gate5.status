@@ -1,0 +1,73 @@
+2026-11-13T19:00:10.899Z m3org/nr3-gate5 = 65549
+2026-11-13T19:00:10Z nr3-gate5 = 65549 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6554":137}
+2026-11-13T19:11:57.906Z repo:65549 leader 0: learners [{"addr":192,"doName":"repo:65549#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65549#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65549#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65549#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65549#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65549#4#l5","join":200,"sit config 915
+2026-11-13T19:12:01.425Z repo:65549 leader 0: k 1 at 915
+f0 {"role":true,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":4}
+f1 {"role":false,"shed":0,"shared":0,"fr":2,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":2}
+f2 {"role":false,"shed":0,"shared":0,"fr":2,"late":0,"refused":0,"waited":0,"builds":163,"heavy":0,"inflight":0,"read":2}
+l0 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l2 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l3 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l4 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l5 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l6 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l7 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+{"status":200,"ms":2647,"bytes":226373,"index":1009}
+2026-11-13T19:12:08Z b0-29 start
+2026-11-13T19:20:42Z b0-29 done 0
+f0 {"role":true,"shed":2,"shared":0,"fr":1,"late":0,"refused":0,"waited":37,"builds":8,"heavy":0,"inflight":0,"read":2719}
+f1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+f2 {"role":false,"shed":8,"shared":760,"fr":922,"late":0,"refused":0,"waited":0,"builds":171,"heavy":0,"inflight":0,"read":934}
+l0 {"role":false,"shed":2,"shared":4821,"fr":7940,"late":277,"refused":0,"waited":427,"builds":228,"heavy":0,"inflight":0,"read":7940}
+l1 {"role":false,"shed":15,"shared":4403,"fr":7847,"late":1743,"refused":0,"waited":846,"builds":158,"heavy":0,"inflight":1,"read":7847}
+l2 {"role":false,"shed":4,"shared":5325,"fr":9411,"late":2290,"refused":0,"waited":842,"builds":184,"heavy":0,"inflight":0,"read":9411}
+l3 {"role":false,"shed":2,"shared":6082,"fr":9790,"late":432,"refused":0,"waited":732,"builds":229,"heavy":0,"inflight":0,"read":9790}
+l4 {"role":false,"shed":0,"shared":5095,"fr":7967,"late":832,"refused":0,"waited":458,"builds":178,"heavy":0,"inflight":0,"read":7967}
+l5 {"role":false,"shed":9,"shared":4092,"fr":8486,"late":2870,"refused":0,"waited":1391,"builds":155,"heavy":0,"inflight":0,"read":8486}
+l6 {"role":false,"shed":3,"shared":7056,"fr":10397,"late":618,"refused":0,"waited":420,"builds":242,"heavy":0,"inflight":0,"read":10397}
+l7 {"role":false,"shed":1,"shared":5392,"fr":8349,"late":395,"refused":0,"waited":306,"builds":224,"heavy":0,"inflight":0,"read":8349}
+f0 {"stages":{"grant":{"max":0,"n":294,"p50":0,"p99":0},"total":{"max":100,"n":294,"p50":0,"p99":98},"waited":{"max":100,"n":294,"p50":0,"p99":98},"waitedN":37},"builds":59,"buildMs":{"max":0,"n":58,"p50":0,"p99":0},"waited":37,"late":0,"shed":2}
+f1 {"stages":{"grant":{"max":null,"n":0,"p50":null,"p99":null},"total":{"max":null,"n":0,"p50":null,"p99":null},"waited":{"max":null,"n":0,"p50":null,"p99":null},"waitedN":0},"builds":0,"buildMs":{"max":null,"n":0,"p50":null,"p99":null},"waited":0,"late":0,"shed":0}
+f2 {"stages":{"grant":{"max":969,"n":913,"p50":570,"p99":961},"total":{"max":969,"n":913,"p50":570,"p99":961},"waited":{"max":0,"n":913,"p50":0,"p99":0},"waitedN":0},"builds":155,"buildMs":{"max":0,"n":111,"p50":0,"p99":0},"waited":0,"late":0,"shed":8}
+l0 {"stages":{"grant":{"max":1000,"n":7661,"p50":322,"p99":889},"total":{"max":1000,"n":7661,"p50":326,"p99":891},"waited":{"max":664,"n":7661,"p50":0,"p99":100},"waitedN":425},"builds":1948,"buildMs":{"max":0,"n":1948,"p50":0,"p99":0},"waited":427,"late":277,"shed":2}
+l1 {"stages":{"grant":{"max":1628,"n":6090,"p50":572,"p99":966},"total":{"max":1971,"n":6090,"p50":578,"p99":981},"waited":{"max":1768,"n":6090,"p50":0,"p99":100},"waitedN":845},"builds":1257,"buildMs":{"max":0,"n":1257,"p50":0,"p99":0},"waited":846,"late":1743,"shed":15}
+l2 {"stages":{"grant":{"max":1001,"n":7119,"p50":556,"p99":980},"total":{"max":1001,"n":7119,"p50":563,"p99":982},"waited":{"max":544,"n":7119,"p50":0,"p99":100},"waitedN":841},"builds":1357,"buildMs":{"max":0,"n":1357,"p50":0,"p99":0},"waited":842,"late":2290,"shed":4}
+l3 {"stages":{"grant":{"max":1019,"n":9356,"p50":251,"p99":859},"total":{"max":1019,"n":9356,"p50":253,"p99":862},"waited":{"max":815,"n":9356,"p50":0,"p99":100},"waitedN":728},"builds":1969,"buildMs":{"max":0,"n":1969,"p50":0,"p99":0},"waited":732,"late":432,"shed":2}
+l4 {"stages":{"grant":{"max":1011,"n":7135,"p50":501,"p99":969},"total":{"max":1011,"n":7135,"p50":505,"p99":970},"waited":{"max":498,"n":7135,"p50":0,"p99":100},"waitedN":458},"builds":1503,"buildMs":{"max":0,"n":1503,"p50":0,"p99":0},"waited":458,"late":832,"shed":0}
+l5 {"stages":{"grant":{"max":1010,"n":5607,"p50":602,"p99":992},"total":{"max":1010,"n":5607,"p50":622,"p99":992},"waited":{"max":666,"n":5607,"p50":0,"p99":100},"waitedN":1390},"builds":1150,"buildMs":{"max":0,"n":1150,"p50":0,"p99":0},"waited":1391,"late":2870,"shed":9}
+l6 {"stages":{"grant":{"max":999,"n":9778,"p50":346,"p99":936},"total":{"max":999,"n":9778,"p50":347,"p99":943},"waited":{"max":791,"n":9778,"p50":0,"p99":100},"waitedN":413},"builds":1887,"buildMs":{"max":0,"n":1887,"p50":0,"p99":0},"waited":420,"late":618,"shed":3}
+l7 {"stages":{"grant":{"max":1002,"n":7954,"p50":365,"p99":916},"total":{"max":1002,"n":7954,"p50":367,"p99":916},"waited":{"max":590,"n":7954,"p50":0,"p99":100},"waitedN":304},"builds":1836,"buildMs":{"max":0,"n":1836,"p50":0,"p99":0},"waited":306,"late":395,"shed":1}
+f0 {"role":true,"entries":33443,"rtt":{"n":0,"p50":null,"p99":null,"max":null},"apply":{"n":0,"p50":null,"p99":null,"max":null},"unanswered":0}
+f1 {"role":false,"entries":0,"rtt":{"n":0,"p50":null,"p99":null,"max":null},"apply":{"n":0,"p50":null,"p99":null,"max":null},"unanswered":0}
+f2 {"role":false,"entries":4004,"rtt":{"n":73,"p50":333,"p99":620,"max":620},"apply":{"n":73,"p50":0,"p99":563,"max":563},"unanswered":0}
+l0 {"role":false,"entries":9636,"rtt":{"n":1473,"p50":152,"p99":688,"max":994},"apply":{"n":1473,"p50":0,"p99":383,"max":928},"unanswered":0}
+l1 {"role":false,"entries":7514,"rtt":{"n":911,"p50":276,"p99":895,"max":1069},"apply":{"n":911,"p50":0,"p99":1415,"max":2481},"unanswered":0}
+l2 {"role":false,"entries":7590,"rtt":{"n":998,"p50":281,"p99":821,"max":1050},"apply":{"n":998,"p50":0,"p99":1671,"max":1893},"unanswered":0}
+l3 {"role":false,"entries":10351,"rtt":{"n":1731,"p50":117,"p99":734,"max":1066},"apply":{"n":1731,"p50":0,"p99":7,"max":422},"unanswered":0}
+l4 {"role":false,"entries":7812,"rtt":{"n":1023,"p50":260,"p99":779,"max":991},"apply":{"n":1023,"p50":0,"p99":878,"max":1314},"unanswered":0}
+l5 {"role":false,"entries":7489,"rtt":{"n":915,"p50":261,"p99":882,"max":1057},"apply":{"n":915,"p50":0,"p99":1858,"max":2188},"unanswered":0}
+l6 {"role":false,"entries":9162,"rtt":{"n":1333,"p50":170,"p99":681,"max":965},"apply":{"n":1333,"p50":0,"p99":387,"max":975},"unanswered":0}
+l7 {"role":false,"entries":8987,"rtt":{"n":1308,"p50":177,"p99":723,"max":1022},"apply":{"n":1308,"p50":0,"p99":398,"max":962},"unanswered":0}
+node:internal/modules/cjs/loader:1607
+  throw err;
+  ^
+
+Error: Cannot find module '/home/user/workspace/repo/tests/nr3/egress.mjs'
+    at Module._resolveFilename (node:internal/modules/cjs/loader:1603:15)
+    at wrapResolveFilename (node:internal/modules/cjs/loader:1145:27)
+    at defaultResolveImplForCJSLoading (node:internal/modules/cjs/loader:1169:10)
+    at resolveForCJSWithHooks (node:internal/modules/cjs/loader:1196:12)
+    at Module._load (node:internal/modules/cjs/loader:1370:5)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:173:5)
+    at node:internal/main/run_main_module:33:47 {
+  code: 'MODULE_NOT_FOUND',
+  requireStack: []
+}
+
+Node.js v26.12.0
+2026-11-13T19:22:35Z fresh exit 0
+2026-11-13T19:22:39Z torn down 65549
+DONE

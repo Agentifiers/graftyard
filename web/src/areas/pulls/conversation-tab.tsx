@@ -101,7 +101,9 @@ export function ConversationTab({
           </ReviewEntry>
         ),
       })),
-    // A thread whose review is not listed still shows, on its own, at its first comment.
+    // A thread whose review is not listed still shows, on its own, at its first comment: the
+    // edge gives no single-comment review to a commenter whose verdict approves or requests
+    // changes, nor to a comment made before it gave them.
     ...[...threadsByReview]
       .filter(([id]) => !model.reviews.some((r) => r.id === id))
       .flatMap(([, ts]) => ts)

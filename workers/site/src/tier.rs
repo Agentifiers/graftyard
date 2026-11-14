@@ -337,6 +337,23 @@ impl TierSql {
         inner.sealed.push(open);
     }
 
+    /// The rows held in memory, buffered and sealed but not yet flushed, and roughly their bytes: keys and columns
+    /// at their encoded lengths, 8 per integer (`/stats` `memSplit`).
+    pub fn buffered(&self) -> (usize, usize) {
+        let i = self.0.borrow();
+        let val = |v: &Val| match v {
+            Val::Null => 1,
+            Val::Int(_) => 8,
+            Val::Text(t) => t.len(),
+            Val::Blob(b) => b.len(),
+        };
+        let rows = std::iter::once(&i.open).chain(&i.sealed).flat_map(|r| r.iter());
+        rows.fold((0, 0), |(n, b), ((t, k), row)| {
+            let cols = row.as_ref().map_or(0, |s| 8 + s.cols.iter().map(val).sum::<usize>());
+            (n + 1, b + t.len() + k.iter().map(val).sum::<usize>() + cols)
+        })
+    }
+
     /// Every sealed batch's transaction has run.
     pub fn flushed(&self) {
         self.0.borrow_mut().sealed.clear();

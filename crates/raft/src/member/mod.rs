@@ -32,7 +32,7 @@ mod leader;
 mod log;
 mod transfer;
 
-pub use install::LEARNER_READ_EVERY;
+pub use install::{LEARNER_READ_EVERY, READ_PIPELINE};
 pub use leader::{APPEND_BYTES_MAX, PIPELINE};
 pub use log::{FoldView, verify};
 
