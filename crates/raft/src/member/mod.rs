@@ -662,6 +662,8 @@ pub struct Member<C: Command> {
     role: Role,
     leader: Option<SiteId>,
     last_leader_seen: Timestamp,
+    /// The last AppendEntries this member accepted from a leader, withheld or not.
+    appended_at: Timestamp,
     campaign: Option<election::Campaign>,
     /// The voters that stored the bootstrap entry this member proposed, while it waits for a quorum.
     /// And when it started and last sent the proposal.
@@ -820,6 +822,7 @@ impl<C: Command> Member<C> {
             role: Role::Follower,
             leader: None,
             last_leader_seen,
+            appended_at: Timestamp(0),
             campaign: None,
             boot_acks: None,
             backoff_until: Timestamp(0),
