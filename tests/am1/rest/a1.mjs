@@ -117,7 +117,7 @@ export function offered(p) {
   };
 }
 
-const FIELDS = ["spentMs", "wallMs", "computed", "shed", "getAsked", "getComputes", "listAsked", "listComputes"];
+const FIELDS = ["spentMs", "wallMs", "computed", "shed", "late", "getAsked", "getComputes", "listAsked", "listComputes"];
 // `graftyard_git::prsync::WAIT_EDGES_MS`: the upper edges of `waitHist`'s buckets, then one bucket past the last.
 export const WAIT_EDGES_MS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 20000, 30000, 60000, 120000];
 const COALESCE_MS = 30000;
@@ -158,7 +158,7 @@ export function budgetWindow(before, after, seconds) {
     // `waitMaxMs` covers the shard's life since `since`, as `lowMs` does: the window's own max is at most it.
     wait: waitSummary(WAIT_EDGES_MS.concat([0]).map((_, i) => sites.reduce((n, x) => n + x.waitHist[i], 0)),
       Math.max(0, ...sites.map((x) => x.waitMaxMs))),
-    computed: sum("computed"), shed: sum("shed"), getAsked: sum("getAsked"), getComputes: sum("getComputes"),
+    computed: sum("computed"), shed: sum("shed"), late: sum("late"), getAsked: sum("getAsked"), getComputes: sum("getComputes"),
     listAsked: sum("listAsked"), listComputes: sum("listComputes"), cpuToWall: sum("wallMs") ? +(sum("spentMs") / sum("wallMs")).toFixed(3) : null };
 }
 

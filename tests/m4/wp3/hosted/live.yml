@@ -1,0 +1,10 @@
+on: workflow_dispatch
+jobs:
+  live:
+    name: Live log
+    runs-on: self-hosted
+    steps:
+      - run: echo "first step"
+      - name: Count for ten minutes
+        run: for i in $(seq 1 600); do echo "line $i at $(date -u +%H:%M:%S.%N)"; sleep 1; done
+      - run: echo "last step"

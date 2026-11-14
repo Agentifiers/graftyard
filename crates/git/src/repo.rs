@@ -1974,6 +1974,9 @@ pub enum RepoCmd {
     Counts(crate::watch::CountsCmd),
     /// `Notify`'s or `Search`'s cursor (`crate::watch`), `{"consumerCursor": ..}`, format 32.19.
     ConsumerCursor(crate::watch::ConsumerCursorCmd),
+    /// `RunOwner`'s check suite, check runs, and required checks (`crate::run_checks`), `{"runChecks": ..}`,
+    /// format 32.21.
+    RunChecks(crate::run_checks::RunChecksCmd),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1986,6 +1989,7 @@ pub enum RepoOut {
     HookCursor(crate::hooks::HookCursorOut),
     Lifecycle(crate::lifecycle::LifecycleOut),
     Counts(crate::watch::CountsOut),
+    RunChecks(crate::run_checks::RunChecksOut),
 }
 
 /// An issue command's refusal carries its render request too, so the member renders the client's error reply.
@@ -2008,7 +2012,8 @@ impl crate::smart::PushOutOf for RepoOut {
             | RepoOut::Transfer(_)
             | RepoOut::HookCursor(_)
             | RepoOut::Lifecycle(_)
-            | RepoOut::Counts(_) => None,
+            | RepoOut::Counts(_)
+            | RepoOut::RunChecks(_) => None,
         }
     }
 }
@@ -2026,6 +2031,7 @@ impl Serialize for RepoCmd {
             Lifecycle(&'a crate::lifecycle::Lifecycle),
             Counts(&'a crate::watch::CountsCmd),
             ConsumerCursor(&'a crate::watch::ConsumerCursorCmd),
+            RunChecks(&'a crate::run_checks::RunChecksCmd),
         }
         match self {
             RepoCmd::Push(p) => p.serialize(s),
@@ -2037,6 +2043,7 @@ impl Serialize for RepoCmd {
             RepoCmd::Lifecycle(c) => Tagged::Lifecycle(c).serialize(s),
             RepoCmd::Counts(c) => Tagged::Counts(c).serialize(s),
             RepoCmd::ConsumerCursor(c) => Tagged::ConsumerCursor(c).serialize(s),
+            RepoCmd::RunChecks(c) => Tagged::RunChecks(c).serialize(s),
         }
     }
 }
@@ -2065,6 +2072,8 @@ impl<'de> Deserialize<'de> for RepoCmd {
             serde_json::from_value(c).map(RepoCmd::Counts).map_err(D::Error::custom)
         } else if let Some(c) = one("consumerCursor") {
             serde_json::from_value(c).map(RepoCmd::ConsumerCursor).map_err(D::Error::custom)
+        } else if let Some(c) = one("runChecks") {
+            serde_json::from_value(c).map(RepoCmd::RunChecks).map_err(D::Error::custom)
         } else {
             Err(D::Error::custom("not a repository command"))
         }
@@ -2083,6 +2092,7 @@ impl Record for RepoCmd {
             RepoCmd::Lifecycle(c) => c.encode(out),
             RepoCmd::Counts(c) => c.encode(out),
             RepoCmd::ConsumerCursor(c) => c.encode(out),
+            RepoCmd::RunChecks(c) => c.encode(out),
         }
     }
 }
@@ -2103,6 +2113,7 @@ impl Command for RepoCmd {
             RepoCmd::HookCursor(_) => crate::hooks::REPO_FORMAT_HOOKS,
             RepoCmd::Lifecycle(c) => c.format(),
             RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => crate::watch::REPO_FORMAT_WATCH,
+            RepoCmd::RunChecks(_) => crate::run_checks::REPO_FORMAT_ACTIONS,
         }
     }
     fn tiers(&self) -> TierSet {
@@ -2116,6 +2127,7 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => c.tiers(),
             RepoCmd::Counts(c) => c.tiers(),
             RepoCmd::ConsumerCursor(_) => TierSet::CORE,
+            RepoCmd::RunChecks(c) => c.tiers(),
         }
     }
     fn deps(&self, fold: &RepoFold) -> SmallVec<[ChainId; 3]> {
@@ -2127,7 +2139,7 @@ impl Command for RepoCmd {
             RepoCmd::Transfer(c) => c.deps(),
             RepoCmd::HookCursor(_) => SmallVec::new(),
             RepoCmd::Lifecycle(c) => c.deps(fold),
-            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) => SmallVec::new(),
+            RepoCmd::Counts(_) | RepoCmd::ConsumerCursor(_) | RepoCmd::RunChecks(_) => SmallVec::new(),
         }
     }
     fn decide(
@@ -2168,6 +2180,10 @@ impl Command for RepoCmd {
                 let (e, o) = c.decide(s);
                 Ok((e, RepoOut::Counts(o)))
             }
+            RepoCmd::RunChecks(c) => {
+                let (e, o) = c.decide(s);
+                Ok((e, RepoOut::RunChecks(o)))
+            }
         }
     }
     fn replay(&self, events: &[RepoEvent]) -> RepoOut {
@@ -2183,6 +2199,7 @@ impl Command for RepoCmd {
             RepoCmd::Lifecycle(c) => RepoOut::Lifecycle(c.replay(events)),
             RepoCmd::Counts(c) => RepoOut::Counts(c.replay(events)),
             RepoCmd::ConsumerCursor(c) => RepoOut::Counts(c.replay(events)),
+            RepoCmd::RunChecks(c) => RepoOut::RunChecks(c.replay(events)),
         }
     }
     /// An issue command without its `render`, the reply the leader renders from its `&Acked`, which no event stores:

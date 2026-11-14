@@ -10,11 +10,13 @@ use graftyard_types::{SiteId, SiteTable};
 use serde::Deserialize;
 use worker::*;
 
+mod actions;
 mod activity;
 mod archive;
 mod audit;
 #[cfg(feature = "test-faults")]
 mod b030;
+mod broker;
 mod callers;
 mod family;
 mod fanout;
@@ -26,6 +28,7 @@ mod hookseq;
 mod host;
 mod inbox;
 mod load;
+mod logrelay;
 mod lookup;
 mod member;
 mod merge_queue;
@@ -40,8 +43,10 @@ mod snap;
 mod sweep;
 mod tier;
 
+pub use broker::RunnerBroker;
 pub use hookseq::HookSequencer;
 pub use inbox::Inbox;
+pub use logrelay::LogRelay;
 pub use member::Member;
 pub use registry::Registry;
 pub use search::SearchShard;

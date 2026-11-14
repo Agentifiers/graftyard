@@ -1,6 +1,6 @@
 // BF-38 (build/BUILD-PLAN.md, M4-WP5) against a hosted edge: sign in, open a repository, a pull request's timeline,
-// diff, and checks, then force the checks region's query to fail. The running job's live log needs LogRelay
-// (M4-WP3) and is pending. Each page asserts that the route's regions render from the shell's inlined seed: no read
+// diff, and checks, force the checks region's query to fail, then a running job's live log over LogRelay when
+// `BF38_JOB` names one. Each page asserts that the route's regions render from the shell's inlined seed: no read
 // of a seeded query reaches the network during the load, and the regions' content is on screen.
 import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
@@ -184,4 +184,23 @@ test("with the checks query failing, only the checks region shows an error", asy
   await page.unrouteAll();
 });
 
-test.fixme("a running job's live log streams (needs LogRelay, M4-WP3)", async () => {});
+// `BF38_JOB` is `{ "repo": "owner/name", "run": id, "job": id }` for a job a runner is running now. The job page joins
+// `/_t/logrelay/repos/{owner}/{repo}/jobs/{job}`; the step passes when the relay says hello and lines arrive over the
+// socket while the job runs, shown under the Live badge.
+const JOB = process.env.BF38_JOB && JSON.parse(process.env.BF38_JOB);
+test("a running job's live log streams", async () => {
+  test.skip(!JOB, "BF38_JOB names no running job");
+  const frames = [];
+  page.on("websocket", (ws) => {
+    if (!ws.url().includes("/_t/logrelay/repos/")) return;
+    ws.on("framereceived", (f) => frames.push({ at: Date.now(), type: JSON.parse(f.payload).type }));
+  });
+  await page.goto(`/${JOB.repo}/actions/runs/${JOB.run}/job/${JOB.job}`);
+  await expect(page.getByTestId("log-live")).toBeVisible();
+  const start = await page.locator("[data-log-lines]").getAttribute("data-log-lines");
+  await expect.poll(async () => Number(await page.locator("[data-log-lines]").getAttribute("data-log-lines"))).toBeGreaterThan(Number(start));
+  await page.screenshot({ path: `${SHOTS}/8-live-log.png` });
+  results.liveLog = { hello: frames.some((f) => f.type === "hello"), lines: frames.filter((f) => f.type === "line").length };
+  expect(results.liveLog.hello).toBe(true);
+  expect(results.liveLog.lines).toBeGreaterThan(0);
+});

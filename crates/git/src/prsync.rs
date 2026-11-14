@@ -36,6 +36,17 @@ pub const REPO_FORMAT_V3: Format = Format { family: 0x20, version: 3 };
 /// The first attempt runs in band, so this covers an attempt that failed silently or never returned, a message lost
 /// with its consumer, or a leader change; Queues retries a failed queue delivery itself.
 pub const REDELIVER_AFTER_MS: u64 = 30_000;
+/// An attempt's whole run, first or re-sent [guess: the lookup's own 20 s, plus a cold shard's catch-up]. The
+/// invocation that runs it ends it there (`workers/site/src/prsync.rs`, `attempt`), and the leader waits for its
+/// answer, so it starts no other first attempt while one runs. It is under REDELIVER_AFTER_MS, so an attempt the
+/// dispatcher counts as lost has ended. Before, the leader stopped waiting at 25 s and the attempt ran on: a new one
+/// started every 25 s, each over a larger batch, until 14 ran at once in one isolate and all failed past 128 MB (LM-1
+/// round 16d, `tests/am1/results/lm1-memory.md` on `lm1-memory`).
+pub const FIRST_FOR_MS: u64 = 25_000;
+/// An attempt asks no test merge in the last this long before its deadline, which it keeps for its commits
+/// (`test_merges`) [guess: B0-29's commit p99 was 3.4 s at 500 agents, and a batch is one to a few commands].
+pub const COMMIT_RESERVE_MS: u64 = 10_000;
+const _: () = assert!(COMMIT_RESERVE_MS < FIRST_FOR_MS && FIRST_FOR_MS < REDELIVER_AFTER_MS);
 /// Batches handed out, first attempts and re-sends, while the committed cursor stays at one index. Past it the
 /// dispatcher parks the chain for its consumer (`design/SHARED.md`, "Event fan-out", Isolation: a handler that fails 10
 /// times on one entry parks that chain), so a batch that fails the same way every time stops waking the network's git
@@ -283,6 +294,16 @@ pub const GET_COALESCE_MS: u64 = 30_000;
 pub const MERGE_EST_MS: f32 = 50.0;
 /// The share of a second's budget a GET may not take, kept for pushes and dispatch [guess].
 pub const GET_RESERVE: f32 = 0.5;
+/// A merge that waited longer than this in line for its network's turn is shed when the turn comes, as one past the
+/// budget is, without running [guess: under FIRST_FOR_MS - COMMIT_RESERVE_MS, so a consumer's merge that waits it out
+/// still answers inside its attempt, and under GET_COALESCE_MS, so a GET's merge never waits past its coalescing slot].
+/// The wait counted is the line's alone, after the shard's catch-up, which every merge needs and which merges share.
+/// The turn runs merges one at a time at their wall time, so when they arrive faster than it clears them the line,
+/// not the CPU, is the limit: on B0-35 (m27) 3,593 were in line at once, waits reached 265 s with 0 shed at 0.603
+/// vCPU of 1, and `mergeable` read `UNKNOWN` to 98.3% of polls (LM-1 round 16d, `tests/am1/results/lm1-memory.md` on
+/// `lm1-memory`).
+pub const TURN_WAIT_MS: u64 = 10_000;
+const _: () = assert!(TURN_WAIT_MS < FIRST_FOR_MS - COMMIT_RESERVE_MS && TURN_WAIT_MS < GET_COALESCE_MS);
 
 /// Why a test merge would run. Pushes and Actions dispatch are served first, then GETs; list fields never compute.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -325,6 +346,8 @@ pub struct BudgetStats {
     pub wall_ms: f64,
     pub computed: u32,
     pub shed: u32,
+    /// Of `shed`, the merges shed because their turn came past TURN_WAIT_MS.
+    pub late: u32,
     pub get_asked: u32,
     pub get_computes: u32,
     pub list_asked: u32,
@@ -564,10 +587,11 @@ pub async fn budgeted<T, E, P: Future<Output = Result<(), E>>, F: Future<Output 
 
 /// A test merge whose ask passed. A merge the budget would not admit now is shed before anything runs. Otherwise
 /// `prepare` (the shard's catch-up, not charged) runs, then the merge waits for `net`'s turn, so the merge before it
-/// has been charged, and the budget decides again. Only when admitted does `run` (the merge) run; it answers with the
-/// CPU ms of the merge's own git processes, which is charged, or `run`'s wall time on `clock` (ms) when the container
-/// did not report it. Admitting at the estimate while earlier merges still ran let LM-1 round 5's shard spend 0.274
-/// vCPU of 0.25: up to five batches' merges were in flight at once, each admitted before those ahead of it were charged
+/// has been charged. A merge that waited in that line more than TURN_WAIT_MS is shed; otherwise the budget decides
+/// again. Only when admitted does `run` (the merge) run; it answers with the CPU ms of the merge's own git processes,
+/// which is charged, or `run`'s wall time on `clock` (ms) when the container did not report it. Admitting at the
+/// estimate while earlier merges still ran let LM-1 round 5's shard spend 0.274 vCPU of 0.25: up to five batches'
+/// merges were in flight at once, each admitted before those ahead of it were charged
 /// (`tests/am1/results/merge-budget-2.md`). `None` when the budget shed it, so `mergeable` stays null. A merge that
 /// failed is charged for its time.
 pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = Result<(T, Option<f32>), E>>>(
@@ -602,9 +626,19 @@ pub async fn asked<T, E, P: Future<Output = Result<(), E>>, F: Future<Output = R
     let _in_flight = InFlight(budgets, net);
     let asked_at = clock();
     prepare().await?;
+    let queued = clock();
     let turn = budgets.borrow_mut().turn(net);
     let _turn = turn.turn().await;
     let now = clock();
+    // Its turn came too late to be of use: shed, as past the budget, without running, so the line clears at once. A
+    // GET keeps its coalescing slot, so its poller does not put the same pull request back in the line it just left.
+    if now.saturating_sub(queued) > TURN_WAIT_MS {
+        let mut all = budgets.borrow_mut();
+        let s = &mut all.of(net, now).stats;
+        s.shed += 1;
+        s.late += 1;
+        return Ok(None);
+    }
     if !budgets.borrow_mut().of(net, now).decide(cause, n, MERGE_EST_MS, now) {
         return Ok(None);
     }
@@ -657,6 +691,49 @@ pub fn take(
         a => merges.push(a.test_merge(n, base, head).ok_or("the shard named no object id")?),
     }
     Ok(())
+}
+
+/// What a batch's test merges came to (`test_merges`): the merges computed, the heads shed (`commands` puts them in
+/// `unmerged`, so `mergeable` reads null), the merges asked of the shard, and those left unasked at the deadline.
+#[derive(Debug, Default)]
+pub struct BatchMerges {
+    pub merges: Vec<TestMerge>,
+    pub shed: Vec<(IssueNumber, ObjectId)>,
+    pub asked: u32,
+    pub unasked: u32,
+}
+
+/// When an attempt that started at `start` and ends at `end` stops asking test merges: COMMIT_RESERVE_MS before its
+/// end, or halfway for a deadline under twice that (a test install's `prsyncFirstFor`).
+pub fn merges_until(start: u64, end: u64) -> u64 {
+    end - COMMIT_RESERVE_MS.min(end.saturating_sub(start) / 2)
+}
+
+/// A batch's test merges, asked one after another on the shard (`merge`, given the ms left to `until`, which it must
+/// not wait past), while `clock` is before `until`. A merge not asked by then is shed, as one past the budget is, so
+/// the attempt still commits its head moves and moves the cursor inside FIRST_FOR_MS, however many pull requests the
+/// batch names and however long the shard's line. With no deadline, B0-29's first attempts of 100 or more merges
+/// behind a long line never finished, so their batches grew every re-send (LM-1 round 16d).
+pub async fn test_merges<Fut: Future<Output = Result<MergeAnswer, String>>>(
+    views: &[PrView],
+    clock: impl Fn() -> u64,
+    until: u64,
+    mut merge: impl FnMut(IssueNumber, ObjectId, ObjectId, u64) -> Fut,
+) -> Result<BatchMerges, String> {
+    let mut out = BatchMerges::default();
+    for v in views {
+        let Some((base, head)) = v.needs_merge() else { continue };
+        let now = clock();
+        if now >= until {
+            out.unasked += 1;
+            out.shed.push((v.n, head));
+            continue;
+        }
+        out.asked += 1;
+        let a = merge(v.n, base, head, until - now).await?;
+        take(a, v.n, base, head, &mut out.merges, &mut out.shed)?;
+    }
+    Ok(out)
 }
 
 impl MergeCause {
