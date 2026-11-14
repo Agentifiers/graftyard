@@ -1988,14 +1988,15 @@ async fn bed(c: &Ctx<'_>, req: &mut Request, path: &str) -> Result<Response> {
             let for_ms = qp("for_ms").and_then(|v| v.parse::<u64>().ok()).unwrap_or(30 * 86_400_000);
             let until = from + for_ms;
             let rate = qp("rate").and_then(|v| v.parse::<f64>().ok());
-            // M5-WP2: `chains=release,repo:7` fails only those chains' members; `members_only=1` only their Raft calls.
+            // M5-WP2: `chains=release,repo:7` fails only those chains' members; `group_only=1` only their
+            // member-to-member Raft calls, so the group cannot commit and members still answer `/read` and `/view`.
             let chains: Vec<String> =
                 qp("chains").map(|c| c.split(',').map(str::to_owned).collect()).unwrap_or_default();
-            let members_only = qp("members_only").is_some();
+            let group_only = qp("group_only").is_some();
             // `hang_ms=H`: a hit call hangs H ms before it fails, a blackhole rather than a refusal (B0-07's gray site).
             let hang_ms = qp("hang_ms").and_then(|v| v.parse::<u64>().ok());
             json!({ "site": site, "from": from, "until": until, "rate": rate, "chains": chains,
-                    "members_only": members_only, "hang_ms": hang_ms })
+                    "group_only": group_only, "hang_ms": hang_ms })
         };
         let mut set = Vec::new();
         for s in &c.sites.0 {

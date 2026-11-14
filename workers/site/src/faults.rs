@@ -207,10 +207,11 @@ pub struct SiteFault {
     /// `Release` group this way.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chains: Vec<String>,
-    /// Only member-to-member Raft calls fail (each send, and an inbound `/raft`, `/campaign`, or `/suspect`): the
-    /// group cannot commit, and every member still answers calls from Workers. BF-48's group that cannot commit.
+    /// Only member-to-member Raft calls fail (each send, and an inbound `/raft`, `/campaign`, or `/suspect`): the group
+    /// can neither commit nor, once its leader's lease ends, serve a fresh read, while every member still answers
+    /// calls from Workers (`/read`, `/commit`, `/view`, `/pending`). BF-48's groups that cannot commit.
     #[serde(default)]
-    pub members_only: bool,
+    pub group_only: bool,
 }
 
 /// A `SiteFault.site` naming every site at once.
@@ -245,10 +246,10 @@ fn keep(plan: Option<SiteFault>) {
 }
 
 /// Whether this call of this script's site fails now, and after how long: `Some(0)` at once, `Some(ms)` after
-/// hanging `ms` (the plan's `hang_ms`). `chain` is the calling or called member's chain, `raft` whether the call is a
-/// member-to-member Raft call. The first call in an isolate waits for the plan; a stale plan is reread in the
-/// background, so the plan's object never sits on the measured path.
-pub async fn site_fault(env: &Env, chain: Option<graftyard_types::ChainId>, raft: bool) -> Option<u64> {
+/// hanging `ms` (the plan's `hang_ms`). `chain` is the calling or called member's chain, `consensus` whether the call
+/// is a member-to-member Raft call (`SiteFault::group_only`). The first call in an isolate waits for the plan; a stale plan
+/// is reread in the background, so the plan's object never sits on the measured path.
+pub async fn site_fault(env: &Env, chain: Option<graftyard_types::ChainId>, consensus: bool) -> Option<u64> {
     let Ok(me) = crate::SiteEnv::read(env).map(|s| s.id.0) else { return None };
     let now = crate::now_ms();
     let state = SITE_FAULT
@@ -276,7 +277,7 @@ pub async fn site_fault(env: &Env, chain: Option<graftyard_types::ChainId>, raft
         && plan.from <= now
         && now < plan.until
         && (plan.chains.is_empty() || chain.is_some_and(|x| plan.chains.contains(&x.to_string())))
-        && (raft || !plan.members_only)
+        && (consensus || !plan.group_only)
         && plan.rate.is_none_or(roll);
     hit.then_some(plan.hang_ms.unwrap_or(0))
 }

@@ -554,8 +554,13 @@ impl<F: Family> Routes<F> {
                 crate::faults::count("severed:in");
                 return Response::error("member severed (injected)", 503);
             }
-            let raft_in = matches!(url.path(), "/raft" | "/campaign" | "/suspect");
-            if !observe && let Some(hang) = crate::faults::site_fault(&self.host.env, self.host.chain(), raft_in).await
+            if !observe
+                && let Some(hang) = crate::faults::site_fault(
+                    &self.host.env,
+                    self.host.chain(),
+                    matches!(url.path(), "/raft" | "/campaign" | "/suspect"),
+                )
+                .await
             {
                 crate::faults::count("site_fault:in");
                 if hang > 0 {
@@ -1396,7 +1401,7 @@ impl<F: Family> Routes<F> {
             let core = self.host.core.borrow();
             let c = core.as_ref().ok_or_else(|| err("member not joined"))?;
             let s = c.m.stale();
-            let v = match host::fold_answer::<F>(s.fold(), q, s.index().0, now_ms(), 0) {
+            let v = match host::fold_answer::<F>(s.fold(), q, s.index().0, now_ms(), family::dump_every(c.m.me())) {
                 host::ReadBody::Json(b) => b,
                 host::ReadBody::Shed(ms, _) => return self.reply(graftyard_lookup::overloaded_reply(ms)),
             };
