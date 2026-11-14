@@ -891,33 +891,79 @@ const seen = []; // [poller, ref, ms after its push's ack, seen at]
 const kills = [];
 const KILL_WINDOW_MS = 15_000;
 if (plan.pollers) {
-  const cfg = (await statuses(CHAIN)).find((s) => s.config)?.config?.config?.normal;
-  const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name }));
-  const followers = (await statuses(CHAIN)).filter((s) => s.role === "follower").map((s) => ({ site: s.site, name: undefined }));
-  const serve = learners.length ? learners : followers;
-  writeRow(OUT, { step: "feed members", learners: learners.length, followers: followers.length });
+  // The members a poll may go to, as the edge's `feed_members` lists them (workers/edge/src/agents.rs): learners
+  // first, then the voters that do not lead, re-read every 60 s and at once when a voter answers `notServing` (it
+  // leads now).
+  let members = [], membersAt = 0;
+  const readMembers = async () => {
+    const st = await statuses(CHAIN);
+    const cfg = st.find((s) => s.config)?.config?.config?.normal;
+    const learners = (cfg?.learners ?? []).map((l) => ({ site: l.site, name: l.do_name, learner: true }));
+    const voters = (cfg?.voters ?? []).filter((v) => !st.some((s) => s.site === v.site && s.role === "leader"))
+      .map((v) => ({ site: v.site, name: v.do_name, learner: false }));
+    members = [...learners, ...voters];
+    membersAt = Date.now();
+    return { learners: learners.length, followers: voters.length };
+  };
+  writeRow(OUT, { step: "feed members", ...(await readMembers()) });
+  // One poll as the edge's `activity` routes it: members in order (this poller's learner first, so 500 pollers
+  // spread over the learners as the edge's isolates' members do), up to three that answer; the first `hold` is the
+  // answer; a full member answers 429; if every one tried refused as lagging and the least lagged is a learner, that
+  // learner holds the poll with `lagging_ok`; otherwise 429. `learner_answers` is set on followers once a learner
+  // answered `notServing`, as the edge sets it.
+  const poll = async (k, cursor) => {
+    if (Date.now() - membersAt > 60_000) await readMembers();
+    const ls = members.filter((m) => m.learner), vs = members.filter((m) => !m.learner);
+    const order = [...ls.slice(k % Math.max(1, ls.length)), ...ls.slice(0, k % Math.max(1, ls.length)), ...vs];
+    const body = (extra) => ({ cursor, wait_s: 25, paths: [`a1/${k % 50}/**`], token: `a1-${RUN}-${k}`, ip: `a1ip-${k}`, ...extra });
+    const answers = [], tried = [];
+    let learnerAnswered = false;
+    for (const m of order) {
+      if (answers.length >= 3) break;
+      let r;
+      try { r = await member(CHAIN, m.site, "/feed", body({ learner_answers: learnerAnswered && !m.learner }), 40_000, m.name); } catch { continue; }
+      const v = r.v ?? {};
+      tried.push(v.admit ?? `status ${r.status}`);
+      if (r.status !== 200 || !v.admit) continue;
+      if (v.admit === "hold") return { v, m, tried };
+      if (v.admit === "gone" || v.admit === "tooMany") return { v, m, tried };
+      if (v.admit === "full") answers.push({ a: "full", m, lag: 0 });
+      else if (v.admit === "lagging") answers.push({ a: "lagging", m, lag: v.lagMs ?? Number.MAX_SAFE_INTEGER });
+      else if (v.admit === "notServing" && m.learner) learnerAnswered = true;
+      else if (v.admit === "notServing") membersAt = 0;
+    }
+    if (answers.some((x) => x.a === "full")) return { v: { admit: "429" }, tried };
+    const lag = answers.filter((x) => x.a === "lagging");
+    const least = lag.sort((a, b) => a.lag - b.lag)[0];
+    if (least && lag.length === answers.length && least.m.learner) {
+      try {
+        const r = await member(CHAIN, least.m.site, "/feed", body({ learner_answers: false, lagging_ok: true }), 40_000, least.m.name);
+        if (r.v?.admit === "hold") return { v: r.v, m: least.m, tried: [...tried, "laggingOk"] };
+      } catch { /* 429 below */ }
+    }
+    return { v: { admit: "429" }, tried };
+  };
   for (let k = 0; k < plan.pollers; k++) {
     jobs.push((async () => {
       await sleep(Math.max(0, t0 - Date.now()) + (k % 500) * 4);
       let cursor = null, misses = {};
-      const m = serve[k % serve.length];
       while (Date.now() < end) {
         const s = Date.now();
         try {
-          const r = await member(CHAIN, m.site, "/feed", { cursor, wait_s: 25, paths: [`a1/${k % 50}/**`], learner_answers: !!learners.length,
-            token: `a1-${RUN}-${k}`, ip: `a1ip-${k}` }, 40_000, m.name);
-          const v = r.v ?? {};
-          note("feed", Date.now() - s, v.admit ?? `status ${r.status}`);
-          // Polls since this poller last held: what an event seen late waited on (lagging, full, notServing, errors).
+          const { v, m, tried } = await poll(k, cursor);
+          note("feed", Date.now() - s, v.admit);
+          // Polls since this poller last held: what an event seen late waited on. Each 429 counts the members tried.
           const missed = misses;
-          if (v.admit === "hold") misses = {}; else misses[v.admit ?? `status ${r.status}`] = (misses[v.admit ?? `status ${r.status}`] ?? 0) + 1;
+          if (v.admit === "hold") misses = {};
+          else for (const t of ["429", ...tried]) misses[t] = (misses[t] ?? 0) + 1;
           if (v.cursor) cursor = v.cursor;
           for (const e of v.events ?? []) {
             const p = e[2]?.AgentPush;
             const head = p ? (typeof p.head === "string" ? p.head : Buffer.from(p.head).toString("hex")) : null;
-            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now(), m.site, missed]);
+            if (head && pushed.has(head)) seen.push([k, head, Date.now() - pushed.get(head), Date.now(), m?.site, missed]);
           }
-          if (v.admit && v.admit !== "hold") await sleep(1000);
+          // A 429 carries Retry-After FEED_BATCH_ALL (10 s); a client that honours it waits that long.
+          if (v.admit === "429") await sleep(10_000);
         } catch (e) { note("feed", Date.now() - s, "error"); misses.error = (misses.error ?? 0) + 1; await sleep(1000); }
       }
     })());
