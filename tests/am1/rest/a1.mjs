@@ -1028,6 +1028,14 @@ const after = await statuses(CHAIN);
 // A leader mid-reset answers `/stats` with no body; the row still writes its own counts.
 // Always `?summary=1`: a loaded leader's raw arrays (megabytes) rebuilt its wasm instance (round 6, B0-29).
 const endStats = (leader !== undefined ? (await member(CHAIN, leader, "/stats?summary=1", undefined, 15_000).catch(() => ({}))).v : null) ?? {};
+// The leader's failed calls by peer (B0-32 m3fr2: 1,032 `failedCalls`, no target named): the full `/stats` `peers`
+// (per peer ok, sent, failed and late by cause, newest errors), read once after the window so a raw read's reset
+// cannot fall inside it, and before teardown, so the leader object has not restarted yet. Written as its own row.
+if (leader !== undefined) {
+  const full = (await member(CHAIN, leader, "/stats", undefined, 30_000).catch((e) => ({ v: { error: String(e).slice(0, 120) } }))).v ?? {};
+  writeRow(OUT, { step: "leader peers", site: leader, failedCalls: full.failedCalls, peers: full.peers ?? null, error: full.error });
+  log(`leader peers: failedCalls ${full.failedCalls} ${JSON.stringify(Object.fromEntries(Object.entries(full.peers ?? {}).map(([p, c]) => [p, { ok: c.ok, failed: c.failed, late: c.late, lateFailed: c.lateFailed }]))).slice(0, 600)}`);
+}
 const lstats = endStats.commitMs?.n ? endStats : (lateStats ?? endStats);
 const statsFrom = endStats.commitMs?.n ? "end" : lateStats ? "late" : "none";
 // A sample array, or `/stats?summary=1`'s `{n, p50, p99}` of one.
