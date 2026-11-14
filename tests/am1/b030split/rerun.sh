@@ -6,6 +6,7 @@
 #   amp orb service start b030-load    --command 'bash tests/am1/b030split/rerun.sh load'
 #   amp orb service start b030-monitor --command 'bash tests/am1/b030split/rerun.sh monitor'
 #   amp orb service start b030-cross   --command 'bash tests/am1/b030split/rerun.sh cross'
+#   amp orb service start b030-watch   --command 'bash tests/am1/b030split/rerun.sh watch'
 # STOP_USD (default 175) is the rerun's own spend, DO, Workers and containers, from the start time in
 # tests/am1/raw/b030r2.start. To change it mid-run, write the new number to tests/am1/raw/b030-stop-usd.
 cd "$(dirname "$0")/../../.."
@@ -35,5 +36,8 @@ case "$1" in
   cross)
     until seeded; do sleep 60; done
     node tests/am1/b030/cross.mjs >> $R/b030r2-cross.log 2>&1 ;;
+  watch)
+    until seeded; do sleep 60; done
+    node tests/am1/b030split/watch.mjs >> $R/b030r2-watch.log 2>&1 ;;
 esac
 exec sleep infinity
