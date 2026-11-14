@@ -139,7 +139,7 @@ export function useJobLog(ref: Ref, job: Schemas["job"]) {
       void readSaved(false);
       return () => void (closed = true);
     }
-    const socket = new WebSocket(relayUrl(ref.jobId));
+    const socket = new WebSocket(relayUrl(ref.owner, ref.repo, ref.jobId));
     let ended = false;
     let poll: ReturnType<typeof setInterval> | undefined;
     // Without the relay, a job that is still running keeps writing its blob; reread it.
@@ -173,7 +173,7 @@ export function useJobLog(ref: Ref, job: Schemas["job"]) {
     };
     // Reconnect only when the job starts or stops running, not on every poll.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ref.jobId, running, job.run_attempt, attempt]);
+  }, [ref.owner, ref.repo, ref.jobId, running, job.run_attempt, attempt]);
 
   return { ...state, retry: () => setAttempt((n) => n + 1) };
 }

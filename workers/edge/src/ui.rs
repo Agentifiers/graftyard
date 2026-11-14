@@ -26,13 +26,29 @@ const PERSISTED: &str = include_str!("../../../web/src/api/persisted.json");
 
 // ---- the session ----
 
-/// The caller a web session cookie names, when the request carries `x-graftyard-web: 1` and the account's `Identity`
-/// fold lists the session and its `Account` row was not signed out after it. `None` otherwise, as no credential is.
+/// The caller a web session cookie names, when the request is the app's own (`web_request`) and the account's
+/// `Identity` fold lists the session and its `Account` row was not signed out after it. `None` otherwise, as no
+/// credential is.
 pub async fn session(c: &Ctx<'_>, req: &Request) -> Result<Option<Principal>> {
-    if req.headers().get(WEB_HEADER)?.as_deref() != Some("1") {
+    let h = req.headers();
+    if !web_request(
+        h.get(WEB_HEADER)?.as_deref(),
+        h.get("upgrade")?.as_deref(),
+        h.get("origin")?.as_deref(),
+        &c.cfg.host,
+    ) {
         return Ok(None);
     }
     cookie_session(c, req).await
+}
+
+/// Whether a request may use the session cookie: it carries `x-graftyard-web: 1`, or it is a WebSocket upgrade from
+/// the edge's own origin. A browser's `WebSocket` cannot set a header, but it always sends `Origin`, which a page on
+/// another origin cannot forge, so the live-log viewer's socket is checked by origin instead.
+fn web_request(header: Option<&str>, upgrade: Option<&str>, origin: Option<&str>, host: &str) -> bool {
+    header == Some("1")
+        || (upgrade.is_some_and(|u| u.eq_ignore_ascii_case("websocket"))
+            && origin.and_then(|o| o.strip_prefix("https://")) == Some(host))
 }
 
 /// The cookie's caller without the header check, for the shell's own document `GET` only: the seed it renders is
@@ -612,6 +628,22 @@ mod tests {
         assert_eq!(out.matches("</script>").count(), 1, "{out}");
         assert!(out.contains("<script id=\"__graft_seed\" type=\"application/json\">"));
         assert!(out.find("__graft_seed").unwrap() < out.find("</head>").unwrap());
+    }
+
+    /// The cookie counts for the app's fetches and for a WebSocket from the edge's own origin, and never for a socket
+    /// another origin opens, a plain request, or a lookalike host.
+    #[test]
+    fn the_cookie_counts_only_for_the_apps_own_requests() {
+        let host = "graft.example";
+        let ws = Some("websocket");
+        assert!(super::web_request(Some("1"), None, None, host));
+        assert!(super::web_request(None, Some("WebSocket"), Some("https://graft.example"), host));
+        assert!(!super::web_request(None, ws, Some("https://evil.example"), host));
+        assert!(!super::web_request(None, ws, Some("https://graft.example.evil.example"), host));
+        assert!(!super::web_request(None, ws, Some("http://graft.example"), host));
+        assert!(!super::web_request(None, ws, None, host));
+        assert!(!super::web_request(None, None, Some("https://graft.example"), host));
+        assert!(!super::web_request(Some("0"), None, Some("https://graft.example"), host));
     }
 
     /// A persisted request is looked up by hash; one with its own text passes through; an unknown hash is GraphQL's
