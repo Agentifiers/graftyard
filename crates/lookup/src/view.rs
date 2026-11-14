@@ -212,7 +212,8 @@ pub fn status() -> Value {
 /// answers (`Replica::adopt`: all of a copy's entries checked against this isolate's anchor or none of them, and only
 /// a copy longer than what is held). Once every copy has answered or COPY_MS has passed, an isolate that holds a view
 /// releases the requests waiting on its refresh: they go out with the longest copy, never the first, because a site
-/// whose members are followers of an idle group can hold one entry fewer (BF-8 run 3, `tests/m5/results/m5-wp2.md`).
+/// whose members are followers of an idle group can hold one entry fewer (BF-8 run 3, `tests/m5/results/m5-wp2.md`,
+/// "BF-8 run 3: two holes, fixed before run 4").
 async fn copies(b: &Bindings<'_>, anchor: &Anchor, start: u64) {
     let reads = b.sites.0.iter().map(|s| async move {
         let name = graftyard_types::MemberRegistry::for_chain(s.id, ChainId::Release).do_name();

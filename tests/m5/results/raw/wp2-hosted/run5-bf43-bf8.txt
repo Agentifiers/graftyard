@@ -1,0 +1,21 @@
+BF-43: 102830 requests, 102830 200
+  before the undo: 44015 requests, 282 on N+1 (0.64%)
+  undo 201 at +0; first request carrying the pin at +3331 ms
+  requests off N after the undo: 12; last one started at +3280 ms
+  requests from +5 s to the next roll: 26874, off N or unpinned: 0
+  with the API blocked (62 s): 20105 requests, 20093 on N
+  after the next EdgeRoll's 201: 30336 requests; last pinned one at +730 ms; pinned after +5 s: 0
+  under the second 1% split: 19618 requests, 216 on N+2
+  alarms: 0
+BF-8: 290597 requests
+  (A) blackhole 601 s: 200416 requests, 200416 200, 200416 carried the pin, 200416 ran N, p50 22 ms p99 56 ms max 1060 ms
+  views failing during it: 183768 of 200416
+  repository reads during it: 1060, 1060 200, p50 466 ms max 2306 ms
+  (B) EdgeRoll whose undo names N+2: {"message": "an EdgeRoll that drops version 3cd8ef6e2e35eae3036c29b20acfd69a636f47bf85f6464ce54d29315aeccb21 an undo still names", "refusal": "DropsUndoVersion", "status": 422}
+  pointer outside the deployment at +0: first alarm at +331 ms; 19616 alarmed of 20339 requests until N was back; silent pinned mismatches: 0
+  isolates started before the blackhole: 37, 33642 requests, pinned 33642, ran N 33642, p99 51 ms
+    took a site's copy: 37 isolates, sites ['0', '2'], read ms p50 81 max 139
+  isolates started during the blackhole: 240, 166774 requests, pinned 166774, ran N 166774, p99 57 ms
+    took a site's copy: 240 isolates, sites ['0', '2'], read ms p50 81 max 139
+    by isolate start (min after blackhole: requests, pinned): 0: 21376/21376, 1: 18542/18542, 2: 15952/15952, 3: 17459/17459, 4: 20651/20651, 5: 21217/21217, 6: 8648/8648, 7: 15497/15497, 8: 15655/15655, 9: 11777/11777
+  not alarmed after the outside pin: 723, pins ['52f05950-b49c-42b9-a4d2-7d0aafb6c894', 'none'], last at +63106 ms

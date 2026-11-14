@@ -37,8 +37,9 @@ pub const ABANDON_MS: u64 = 4 * VIEW_CALL_MS;
 /// the `Release` chain's own `MemberRegistry` object on that site (`design/DESIGN.md`, Shape, `POINTER_TTL`). The read
 /// asks every site at once and takes what answered by then. An idle Durable Object round trip between regions is 111 to
 /// 135 ms at p50 with p99 within 10 ms of it [measured, `tests/m0/results/m0-wp2.md`, "Transport"], so the near
-/// site's copy, and normally all three, answer well inside it; and it is half of VIEW_CALL_MS, the wait a cold request
-/// already has, so the read adds no wait [inference; BF-8 run 3 measures the reads, `tests/m5/results/m5-wp2.md`].
+/// site's copy, and normally all three, answer well inside it; BF-8 run 4's 277 isolates read them in 81 ms at p50 and
+/// 139 ms at most [measured, `tests/m5/results/m5-wp2.md`]. It is half of VIEW_CALL_MS, the wait a cold request already
+/// had, so the read adds no wait [inference].
 pub const COPY_MS: u64 = 500;
 
 /// The `Cloudflare-Workers-Version-Overrides` value that pins `script` to `v`: a Structured Fields dictionary whose

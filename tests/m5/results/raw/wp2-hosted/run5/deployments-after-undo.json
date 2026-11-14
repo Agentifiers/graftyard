@@ -1,0 +1,178 @@
+
+
+[
+  {
+    "id": "95b776a6-b0f8-4586-b953-b00c1e7d5b23",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "4db9f6cf-9b7c-4a2e-a864-86ee97995d22",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T20:38:40.0747Z"
+  },
+  {
+    "id": "f3a5103b-0ef2-4cfa-8168-d4d8aa04431e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/triggered_by": "secret"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T20:38:43.276095Z"
+  },
+  {
+    "id": "daac5d3c-fea7-40d3-a1e4-e2da94397f95",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T20:44:03.396383Z"
+  },
+  {
+    "id": "a6835e49-7259-4ca3-ae73-34a91eb22d8c",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T20:46:43.703172Z"
+  },
+  {
+    "id": "e0b6afe6-2fa7-4302-8d74-5265684c94c0",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "a02b9c73-7d7a-4bd7-9091-bb9abe7fba03",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T20:47:08.291893Z"
+  },
+  {
+    "id": "c44ccd0f-2b75-44b6-9138-3b851af6883e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:04:53.583287Z"
+  },
+  {
+    "id": "685dd91a-f8c0-4aa2-8648-0d9f03615fd4",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:05:06.18999Z"
+  },
+  {
+    "id": "637bebbc-21a6-4ad4-bdec-ee783a4d8bab",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:05:42.320694Z"
+  },
+  {
+    "id": "3ba4bbe4-0dcf-4e0d-870b-787ad29b612c",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 100
+      }
+    ],
+    "created_on": "2026-11-14T21:07:08.836654Z"
+  },
+  {
+    "id": "22856dfc-89d3-404b-8b70-92c13ddc980e",
+    "source": "wrangler",
+    "strategy": "percentage",
+    "annotations": {
+      "workers/message": "",
+      "workers/triggered_by": "deployment"
+    },
+    "versions": [
+      {
+        "version_id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+        "percentage": 99
+      },
+      {
+        "version_id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+        "percentage": 1
+      }
+    ],
+    "created_on": "2026-11-14T21:08:50.915962Z"
+  }
+]

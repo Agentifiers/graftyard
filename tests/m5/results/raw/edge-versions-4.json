@@ -1,0 +1,100 @@
+[
+  {
+    "id": "a90854b3-f391-4bc0-bcf6-b5bb886319bc",
+    "number": 1,
+    "metadata": {
+      "created_on": "2026-11-14T20:36:08.409506Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "upload"
+    }
+  },
+  {
+    "id": "3dfbe8af-bbef-440f-baa9-6b376900fb61",
+    "number": 2,
+    "metadata": {
+      "created_on": "2026-11-14T20:36:33.983877Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "d349a856-c5b7-4918-8ca5-b2d08349dea6",
+    "number": 3,
+    "metadata": {
+      "created_on": "2026-11-14T20:36:59.873681Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "4db9f6cf-9b7c-4a2e-a864-86ee97995d22",
+    "number": 4,
+    "metadata": {
+      "created_on": "2026-11-14T20:38:39.406505Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "52f05950-b49c-42b9-a4d2-7d0aafb6c894",
+    "number": 5,
+    "metadata": {
+      "created_on": "2026-11-14T20:38:43.276095Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": false
+    },
+    "annotations": {
+      "workers/triggered_by": "secret"
+    }
+  },
+  {
+    "id": "5cfcecc3-da40-43d7-9150-8500323e1a0c",
+    "number": 6,
+    "metadata": {
+      "created_on": "2026-11-14T20:39:08.444707Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  },
+  {
+    "id": "a02b9c73-7d7a-4bd7-9091-bb9abe7fba03",
+    "number": 7,
+    "metadata": {
+      "created_on": "2026-11-14T20:39:34.879272Z",
+      "source": "wrangler",
+      "author_id": "cd2328dcc0abc426070bd4c4761bc0ee",
+      "author_email": "",
+      "has_preview": true
+    },
+    "annotations": {
+      "workers/triggered_by": "version_upload"
+    }
+  }
+]

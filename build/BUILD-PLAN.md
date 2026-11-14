@@ -1287,7 +1287,7 @@ Built (`design/DESIGN.md`, "Milestones 1 to 7"): the `Release` group with genesi
 | BF-43 | `EdgePointer` undo under 1% `EdgeRoll` with the API blocked, then the next `EdgeRoll` | Every request pins to N within `POINTER_TTL`; the next `EdgeRoll` sets `None` | Any request off N while pinned, or the pin survives |
 | BF-48 | Blackhole the `Release` group, then send a customer-signed `StaleMode` | Scoped groups serve `stale()` within `POINTER_TTL`; the flag expires at `until` | No stale reads, or a flag past `STALE_MAX` honored |
 
-**Not passed (2026-11-14)** (`tests/m5/results/m5-wp2.md`). BF-43 and BF-48 passed on graft-m3c after site day 3. BF-8 failed one clause: isolates started during the 10-minute blackhole held no pointers (`decisions/OPEN-QUESTIONS.md`, R20). Its refused `EdgeRoll` and its alarm (465 ms, none silent) passed. 23 of 23 plants were caught.
+**Passed (2026-11-14)** (`tests/m5/results/m5-wp2.md`). BF-43 and BF-48 passed on graft-m3c after site day 3. BF-8 failed in run 2 on isolates started during the blackhole, which held no pointers (`decisions/OPEN-QUESTIONS.md`, R20). The operator chose a copy of the group's entries outside the group, and BF-8 run 4 passed after site day 4: 200,416 of 200,416 requests pinned through a 601 s blackhole, the refused `EdgeRoll`, and an alarm 331 ms after the pointer left the deployment, none silent. BF-43 also passed again on the final code. 25 of 25 plants were caught.
 
 ### M5-WP3. The `graft-ops` executor and record formats
 
