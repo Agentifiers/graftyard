@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, and read-index batches in flight (`crates/raft`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), and the edge's herding guard (`crates/lookup`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -66,6 +66,22 @@ MUTANTS = [
     ('genesis: an unreadable view drops the binding', LOOKUP,
      '    let Some(view) = view else { return false };',
      '    let Some(view) = view else {\n        GENESIS.with(|c| *c.borrow_mut() = None);\n        return true;\n    };', LK),
+    # The edge's herding guard (`crates/lookup`: `timed_spread_order`, `Timed`).
+    ('guard: no spread, only the best within the margin share the reads (gate 15\'s herding)', LOOKUP,
+     '    near.extend(far.drain(..pad.min(ROUTE_SPREAD.saturating_sub(near.len()))));', '', LK),
+    ('guard: a learner scored past ROUTE_LATE is padded in too', LOOKUP,
+     '    let pad = far.iter().take_while(|l| l.2.is_some_and(|s| s < late)).count();',
+     '    let pad = far.len();', LK),
+    ('guard: the score is the average alone, with no deviation', LOOKUP,
+     'then_some(self.mean + ROUTE_DEV * self.dev)', 'then_some(self.mean)', LK),
+    ('guard: a learner untimed for ROUTE_STALE keeps its old score', LOOKUP,
+     '        (now.saturating_sub(self.at) < ROUTE_STALE.as_millis() as u64).then_some(',
+     '        (now >= self.at || true).then_some(', LK),
+    ('guard: an untimed learner counts as the best, which shuts out the timed ones', LOOKUP,
+     '    let best = learners.iter().filter_map(|l| l.2).fold(f64::INFINITY, f64::min);',
+     '    let best = learners.iter().map(|l| l.2.unwrap_or(0.0)).fold(f64::INFINITY, f64::min);', LK),
+    ('guard: padded to one more than ROUTE_SPREAD (off by one)', LOOKUP,
+     'pad.min(ROUTE_SPREAD.saturating_sub(near.len()))', 'pad.min((ROUTE_SPREAD + 1).saturating_sub(near.len()))', LK),
     # A learner's entries ride ahead of its read-index answer (`Member::append_for_read`).
     ('read entries: none sent before the answer', INSTALL,
      '                if let Some((i, _)) = index {\n                    self.append_for_read(to, i);\n                }\n', '', SCEN),

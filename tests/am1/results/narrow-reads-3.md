@@ -477,6 +477,147 @@ completing: 15.7 s, seed 11431), and Porcupine finds every history linearizable:
 Rows: `tests/nr3/rows/a1-b0-29-gate12.jsonl`, `run-gate12.status`, `lmem-gate12.jsonl`, `mem-gate12.json`,
 `egress-gate12.txt`, `fresh-gate12.jsonl`, `trace-gate12.json.gz`.
 
+### Gate 13 on main 31d19c9: READ_PIPELINE in, the API line passes
+
+The first gate counting toward the streak: main 31d19c9 (narrow-reads-3 merged, with READ_PIPELINE, the read floor
+and the entries ahead of a learner's answer), site day 12 from that commit, the adopted B0-29 shape. Repo 65558,
+window 09:44:37 to 09:54:37Z, torn down [measured]:
+
+| Line | Gate 13 | Gate 12 (1 batch in flight) | B0-29 pass |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 499 / 1,575 ms, 99.96% (112,716 reads) | 672 / 2,011 ms, 99.93% | p99 ≤ 2,000 ms, ≥ 99% |
+| Tier read at the edge, p50 / p99 | 466 / 1,438 ms (grant p99 933, build wait p99 100) | 636 / 1,935 ms | |
+| Commit p50 / p99 | 411 / 1,638 ms (queue p99 1,372, round 341, confirm 112) | 997 / 5,140 ms | p99 ≤ 600 ms (B0-02's) |
+| merge:only p99 | 2,169 ms | 5,985 ms | ≤ 2 s |
+| Leader | site 0, term 2 throughout | same | no change |
+| Read-your-write | 150 of 150, 0 stale | 150 of 150, 0 stale | 0 stale |
+
+A pass on the API line, 425 ms under it. Setup: 500 of 500 PRs opened, 8 learners caught up in 2.5 s, leader 11.7 MiB.
+
+**Leader memory.** 82 MiB by the analytics peak, under the 100 MiB stop line, and 46.9 MiB by `/stats`. `memSplit` at
+the `/stats` peak (09:54Z): log 8.0 MB (the `LOG_BYTES` cap), read caches 1.67 MB (dumps 1.61 MB, narrow 54 KB), held
+61 KB, in-flight call bodies 163 KB, fold rows buffered 0, statements queued 0. Over the window in-flight call bodies
+peaked at 393 KB, read answers streaming at 219 KB and queued statements at 124 KB. So what `memSplit` names stays
+under 10 MB, and the remaining 35 to 70 MiB is wasm memory the isolate already grew, which it never returns
+(`wasmMemMb` only grows) [measured; that the rest is past allocation high-water, not live data, is an inference].
+Learners peaked at 59 to 66 MiB.
+
+**Read share** (`readStages` n): l3 24.7%, l6 23.7%, l7 12.1%, l4 11.7%, l5 9.4%, l0 8.6%, l2 7.4%, l1 2.5%. Reads
+spread wider than gate 12's 71% on two learners. Grant p99 851 to 986 ms on every learner, with `late` 487 to 1,381
+each and at most 24 shed.
+
+**The round trip** (`tests/nr3/legs.py gate13`, p50 / p90 / p99 ms): out 31 to 74 / 140 to 276 / 286 to 571, and back
+77 to 194 / 439 to 1,008 / 1,308 to 1,702. The leg out is shorter at p50 and p99 than on gate 12. The leg back's
+p90 and p99 are longer, with 8 batches per learner in flight. Leader confirms overlap 27 to 34% of batches, against
+53 to 65%. This tree has no send timestamps, so wire and input queue are still not separated.
+
+Rows: `tests/nr3/rows/a1-b0-29-gate13.jsonl`, `run-gate13.status`, `lmem-gate13.jsonl`, `mem-gate13.json`,
+`egress-gate13.txt`, `fresh-gate13.jsonl`, `trace-gate13.json.gz`. Spend to 09:58Z: $21.73 of $40.
+
+### Gate 14 on main 31d19c9: streak 2
+
+Same tree and site day as gate 13 (site day 12, main 31d19c9). Repo 65559, window 10:08:28 to 10:18:28Z, torn down
+[measured]:
+
+| Line | Gate 14 | Gate 13 |
+| --- | --- | --- |
+| API p50 / p99, served | 314 / 1,477 ms, 99.99% (115,023 reads) | 499 / 1,575 ms, 99.96% |
+| Tier read at the edge, p50 / p99 | 286 / 1,402 ms (grant p99 578, build wait p99 24) | 466 / 1,438 ms |
+| Commit p50 / p99 | 539 / 2,168 ms (queue p99 1,820, round 465, confirm 96) | 411 / 1,638 ms |
+| merge:only p99 | 2,853 ms | 2,169 ms |
+| Leader | site 0, term 2 throughout | same |
+| Read-your-write | 150 of 150, 0 stale | same |
+
+A pass on the API line, 523 ms under it. Setup: 500 of 500 PRs opened, 8 learners caught up in 4.8 s.
+
+**Leader memory.** 85 MiB by the analytics peak, under the 100 MiB stop line; 47.1 MiB by `/stats`. `memSplit` at the
+`/stats` peak (10:16:46Z): log 8.0 MB, read caches 1.60 MB, held 0, in-flight call bodies 319 KB. Over the window:
+call bodies at most 576 KB, held 281 KB, queued statements 89 KB, read answers streaming 571 bytes. Learners 61 to
+70 MiB.
+
+**Read share** (`readStages` n): l0 25.4%, l7 25.4%, l3 25.1%, l6 18.0%, l4 2.1%, l1 1.6%, l5 1.2%, l2 1.2%: the four
+enam learners took 94%. Their grant p99 was 320 to 546 ms with 0 to 56 `late` each; weur and apac learners 764 to 976
+ms with up to 819 `late`, on 1 to 2% of reads each. At most 3 reads shed on any learner.
+
+**The round trip** (`tests/nr3/legs.py gate14`, p50 / p90 / p99 ms), enam learners: out 13 to 27 / 90 to 124 / 160 to
+202, back 49 to 85 / 152 to 210 / 309 to 518, total p99 347 to 564. The far learners' back leg reaches p99 608 to
+1,224 ms. Against gate 12's near learners (out p99 310 to 337, back p99 574 to 716 at one batch in flight) both legs
+are shorter here, so part of gate 12's round trip was the queue that one batch in flight built up, not the wire
+[inference; wire and leader input queue are still not separated on this tree].
+
+Rows: `tests/nr3/rows/a1-b0-29-gate14.jsonl`, `run-gate14.status`, `lmem-gate14.jsonl`, `mem-gate14.json`,
+`egress-gate14.txt`, `fresh-gate14.jsonl`, `trace-gate14.json.gz`.
+
+### Gate 15 on main 31d19c9: a miss by 19 ms, and the streak on this tree ends at 2
+
+Same tree and site day as gates 13 and 14. Repo 65560, window 10:44:51 to 10:54:51Z, torn down [measured]:
+
+| Line | Gate 15 | Gate 14 | Gate 13 |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 365 / 2,019 ms, 99.89% (115,647 reads, 127 answered 503) | 314 / 1,477 ms, 99.99% | 499 / 1,575 ms, 99.96% |
+| Tier read at the edge, p50 / p99 | 337 / 1,896 ms (grant p99 900, build wait p99 100) | 286 / 1,402 ms | 466 / 1,438 ms |
+| Commit p50 / p99 | 409 / 2,249 ms (queue p99 2,058, round 349, confirm 89) | 539 / 2,168 ms | 411 / 1,638 ms |
+| merge:only p99 | 3,328 ms | 2,853 ms | 2,169 ms |
+| Leader | site 0, term 2 throughout | same | same |
+| Read-your-write | 150 of 150, 0 stale | same | same |
+
+A miss on the API line by 19 ms, so the streak on this tree is gates 13 and 14. The operator had already moved the line
+to a confirming streak on current main, which carries the admission pricing fix: before it, admission held agents to
+about 30 commands/s, which also lightened read load on these three gates.
+
+**Leader memory.** 84 MiB by the analytics peak, under the 100 MiB stop line; 46.3 MiB by `/stats`, with `memSplit` at
+that peak: log 8.0 MB, read caches 1.56 MB, held 0, call bodies 45 KB (at most 317 KB, held at most 149 KB). The
+leader answered every `ReadIndex` in the same ms, its ticker never ran late, and its confirms were p99 119 ms.
+
+**Where the tail came from.** Routing put half of all reads on one learner: l7 50.2%, l6 23.3%, l3 12.6%, l0 7.5%, and
+1.1 to 1.8% on each weur and apac learner. l7's grant p99 was 747 ms, but it shed 54 reads and answered 720 late. The
+far learners' grant p99 was 949 to 1,000 ms (`FOLLOWER_WAIT`) with 425 to 1,567 late each, so a read sent to one
+mostly comes back late and is retried. Per learner round trip (`tests/nr3/legs.py`, p50 / p90 / p99 ms): enam out
+19 to 44 / 110 to 210 / 220 to 388 and back 56 to 119 / 505 to 1,034 / 1,348 to 1,905; weur and apac back p99 1,395 to
+2,005. The back leg's tail is longer than on gate 14 (p99 309 to 518 on enam), on the same tree, so it varies from run
+to run with the leader's load rather than with the tree [measured; the cause of the variation is not measured, and
+this tree has no send timestamps to split wire from input queue].
+
+Rows: `tests/nr3/rows/a1-b0-29-gate15.jsonl`, `run-gate15.status`, `lmem-gate15.jsonl`, `mem-gate15.json`,
+`egress-gate15.txt`, `fresh-gate15.jsonl`, `trace-gate15.json.gz`.
+
+### The herding guard (after gate 15)
+
+Gate 15's miss had one learner, l7, take 50.2% of the reads; it shed 54 and answered 720 late. Routing by the average
+alone sends every read to the fastest learner, which those reads then slow, and the one read in 20 sent at random went
+to far learners that answered at `FOLLOWER_WAIT` (425 to 1,567 late each). The operator asked for the simplest guard a
+replay shows works, before site day 13.
+
+**The rule** (`crates/lookup`, `timed_spread_order` and `Timed`): a learner's score is its moving average plus 4 moving
+mean deviations. Eligible are the untimed learners, those within 200 ms of the best timed score, and, while fewer than
+3, the next best scored under 1 s. A read goes to one of them at random, then the rest by score. A learner untimed for
+10 s counts as untimed again, which replaces the one-in-20 random read. So a learner that mostly answers late
+(score past 1 s) is asked only after the eligible ones, which answers the operator's second question with the same rule.
+
+**The replay** (`tests/nr3/route.py`, over each gate's learner traces: a read leaves in the next 50 ms batch, takes
+the round trip and read index of the traced batch nearest its send, waits for that learner's applied index, answers
+late at 1 s and moves on, three members at most; 4 edge isolates at 200 reads/s, 120 ms of edge stages) [inference]:
+
+| Gate | Routing | Projected API p99 | Reads over 2 s | Late answers | Busiest learner |
+| --- | --- | --- | --- | --- | --- |
+| 13 | average only, 1 in 20 random (as built) | 1,504 ms | 0.36% | 2.98% | 17.5% |
+| 13 | guard | 1,288 ms | 0.22% | 1.64% | 19.1% |
+| 14 | as built | 757 ms | 0.02% | 0.40% | 26.2% |
+| 14 | guard | 764 ms | 0.02% | 0.31% | 25.2% |
+| 15 | as built | 1,444 ms | 0.34% | 2.61% | 36.0% |
+| 15 | guard | 1,254 ms | 0.31% | 1.71% | 24.1% |
+
+Also tried, and beaten in the same replay: the deviation score alone, with the random read kept (busiest 33% on gate
+15); a random pick between the two best-scored learners (busiest 36% on gate 14, p99 1.64 and 1.58 s on gates 13 and
+15); a spread of 4 (no better than 3). The replay holds each learner's answer times as traced, so it cannot show the
+herding feeding on itself, which is what gate 15 measured; the gain there is likely larger than projected. It also runs
+about 0.6 s under gate 15's measured 2,019 ms, so its absolute numbers are optimistic and only the comparison counts.
+
+**Tests and plants.** Kept tests in `crates/lookup`: the fastest learner gets at most 1 in 3 of the first places while
+the others answer in time, and a learner scored at 1 s is never asked; an untimed or stale learner is eligible and
+sets no best; the score counts the deviation, so a swinging learner scores worse than a steady one at the same
+average; the margin is inclusive at its edge. `tests/nr3/plant.py` adds six mutants of the guard; all six are caught.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

@@ -364,6 +364,15 @@ pub enum Trace {
     /// A held AppendEntries left in the response to a learner's call: `batch` its round, `index` its last entry, `ms`
     /// its commit.
     AppendTaken = 19,
+    /// A `/raft` call arrived here (narrow-reads-3's wire split): `peer` its sender, `index` the sender's clock when
+    /// it issued the fetch (`x-graft-sent`), `ms` how long its body took to read. Logged when the handler starts, so
+    /// against `index` it bounds the wire plus this isolate's input queue, and against `IndexTaken` the body and decode.
+    #[cfg(feature = "test-faults")]
+    CallArrived = 20,
+    /// The answer to this member's `/raft` call to `peer` reached it: `index` the callee's clock when its handler
+    /// returned the answer (`x-graft-left`), `ms` 0. Against `index` it bounds the output gate plus the wire back.
+    #[cfg(feature = "test-faults")]
+    AnswerArrived = 21,
 }
 
 /// Trace entries kept per member: 16 learners' batches at 20 a second for a 30 s run, on the leader, twice over.
@@ -2350,6 +2359,7 @@ impl<F: Family> Host<F> {
         {
             let h = Headers::new();
             let _ = h.set("x-graft-hop", &hop.to_string());
+            let _ = h.set("x-graft-sent", &now_ms().to_string());
             init.with_headers(h);
         }
         #[cfg(not(feature = "test-faults"))]
@@ -2357,6 +2367,10 @@ impl<F: Family> Host<F> {
         let req =
             Request::new_with_init("https://member/raft", &init).map_err(|x| PeerErr::new(CallFail::Request, x))?;
         let mut res = stub.fetch_with_request(req).await.map_err(|x| PeerErr::new(CallFail::Fetch, x))?;
+        #[cfg(feature = "test-faults")]
+        if let Some(left) = res.headers().get("x-graft-left").ok().flatten().and_then(|v| v.parse().ok()) {
+            self.trace(Trace::AnswerArrived, to.0, 0, left, 0);
+        }
         let status = res.status_code();
         if status != 200 {
             let text = res.text().await.unwrap_or_default();

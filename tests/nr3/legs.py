@@ -97,3 +97,16 @@ for s in ["l3","l6","l1","l4"]:
             if r is None: continue
             n=took.get(r,0); (w if n else wo).append(at-t)
     print(s,"back leg with entries n %d p50/p99 %s/%s | without n %d p50/p99 %s/%s"%(len(w),pct(w,.5),pct(w,.99),len(wo),pct(wo,.5),pct(wo,.99)))
+# With the send timestamps (Trace 20 CallArrived, 21 AnswerArrived; trees from narrow-reads-3's wire split on): per
+# learner, out = the leader's handler start minus the learner's send (wire plus the leader isolate's input queue),
+# body = reading the call's body; back = the learner's arrival minus the leader's handler return (output gate plus wire).
+# The two clocks are different isolates', so out and back each carry their skew, which cancels in their sum.
+arr=collections.defaultdict(list)
+for at,kind,peer,batch,index,ms in f:
+    if kind==20: arr[peer].append((at,index,ms))
+if any(arr.values()):
+    print("wire split: out (handler start - sent) | body read | back (arrived - left) | out+back, p50/p90/p99")
+    for s in sorted(addr):
+        a=addr[s]; out=[x[0]-x[1] for x in arr.get(a,[])]; body=[x[2] for x in arr.get(a,[])]
+        back=[at-index for at,kind,peer,batch,index,ms in D[s] if kind==21 and index]
+        print(s,"%s/%s/%s | %s/%s | %s/%s/%s"%(pct(out,.5),pct(out,.9),pct(out,.99),pct(body,.5),pct(body,.99),pct(back,.5),pct(back,.9),pct(back,.99)))

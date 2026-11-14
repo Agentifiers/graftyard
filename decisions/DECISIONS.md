@@ -2555,6 +2555,20 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). The operat
 
 **Flip.** One learner taking so much of the reads that it sheds or runs hot (CPU or memory near its limits), or the far learners' answers falling within `ROUTE_MARGIN` of the near ones, which makes the ordering moot.
 
+### `narrow-reads-3`: the edge spreads a learner read over at least three learners, by a score that counts variance, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The herding guard"; F65). The operator's decision after gate 15: a herding guard before site day 13, not after another miss.
+
+**Decision.** `timed_spread_order` (`crates/lookup`) scores each learner by its moving average plus `ROUTE_DEV` (4 [guess]) moving mean deviations, both at `ROUTE_WEIGHT` (0.2). The eligible learners are the untimed ones, those within `ROUTE_MARGIN` (200 ms) of the best timed score, and, while there are fewer than `ROUTE_SPREAD` (3 [guess]), the next best scored under `ROUTE_LATE` (1 s, a member's `FOLLOWER_WAIT`). A read goes to one of them at random, and the rest follow by score. A learner this isolate has not timed for `ROUTE_STALE` (10 s [guess]) counts as untimed: eligible, and not setting the best. That replaces the one read in `ROUTE_EXPLORE` that went to any learner at random. It is still one request per read, and every learner still does its read-index.
+
+**Why.** Gate 15 missed by 19 ms with one learner taking 50.2% of the reads, shedding 54 and answering 720 late: ordered by the average alone, the fastest learner drew the reads that then slowed it. The far learners answered at `FOLLOWER_WAIT` 425 to 1,567 times each, mostly from the random one-in-20 reads [measured, gate 15]. Replayed over gates 13 to 15's traces, the guard cut the busiest learner's share on gate 15 from 36% to 24%, late answers from 2.6% to 1.7% of reads, and the projected API p99 from 1.44 to 1.25 s; on gate 13 from 1.50 to 1.29 s; on gate 14 it was flat at 0.76 s [inference, `tests/nr3/route.py`].
+
+**Beat.** The mean-plus-deviation score alone, which in the replay left the busiest learner at 33% on gate 15 with explore kept. A random choice between the two best-scored learners ("top two"), which in the replay put 36% on one learner on gate 14 and gave a higher p99 on gates 13 and 15 (1.64 and 1.58 s). A spread of 4, no better than 3 in the replay. Keeping `ROUTE_EXPLORE`, which sends one read in 20 to a far learner that then answers late; the stale rule times a recovered learner without it.
+
+**Evidence.** `crates/lookup/src/lib.rs` tests: the fastest learner gets at most one in `ROUTE_SPREAD` of the first places and a learner scored at `ROUTE_LATE` is never asked while others answer in time; an untimed or stale learner is eligible and does not set the best; the score is the average plus the deviation, and a swinging learner scores worse than a steady one; the margin is inclusive at its edge. `tests/nr3/plant.py` plants six mutants of the guard (no spread, padding past `ROUTE_LATE`, no deviation, no staleness, an untimed learner as the best, spread off by one); all are caught. The replay is `tests/nr3/route.py`; the hosted read share comes from gates 16 on.
+
+**Flip.** A gate where a learner padded in by the spread sheds or answers late often enough to raise the API p99 above what routing to the best alone gave, or where the deviation keeps a learner that recovered out for long after `ROUTE_STALE`.
+
 ### `narrow-reads-3`: a follower or learner keeps several read-index batches in flight, 2026-11-14
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Gate 12 on fdf363f3"; F65). The operator's decision 3 after gate 12: find what makes a busy learner's read slow and fix it before the next gates.
