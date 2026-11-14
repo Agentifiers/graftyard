@@ -88,7 +88,7 @@ Each was built from `m4-web` merged with `origin/m4-actions` `83afa6d`, deployed
 
 `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T03:00:00Z 2026-11-13T13:30:00Z`: **$4.52** for the whole install that day (all threads sharing it), under the $25 cap. Containers are $3.03 of it.
 
-Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2026-11-14T08:45:00Z` is **$24.47** (containers $14.51), mostly M4 Actions' load runs on the shared install. The install's total, $28.99, is past the $25 cap.
+Later: `INSTALL=graft-m4a python3 tests/fanout/m2bcost.py 2026-11-13T13:30:00Z 2026-11-14T08:45:00Z` is **$24.47** (containers $14.51), mostly M4 Actions' load runs on the shared install. With the earlier window's $4.52, the install has spent about $29 since 03:00Z on 2026-11-13, past the $25 cap.
 
 ## Pending
 
