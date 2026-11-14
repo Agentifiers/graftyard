@@ -1,0 +1,15 @@
+on: pull_request
+env: &e
+  A: a
+jobs:
+  a:
+    runs-on: &r [self-hosted, linux]
+    env: *e
+    steps:
+      - &s
+        run: echo hi
+      - *s
+  b:
+    runs-on: *r
+    steps:
+      - run: echo

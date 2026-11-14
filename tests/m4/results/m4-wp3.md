@@ -7,7 +7,7 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 | Row | In memory | Hosted (graft-m4a) |
 | --- | --- | --- |
 | BF-4 | Pass | Not run |
-| BF-37 | Not built | Not run |
+| BF-37 | Parser and filter built (`merge_group`, `pull_request` `enqueued`/`dequeued`); trigger not wired | Not run |
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
 | BF-56 | Pass (both kills) | Not run |
@@ -19,6 +19,7 @@ A row passes only hosted, with an unmodified `actions/runner`. The in-memory hal
 
 - `crates/actions`: `JobState`, `transition`, `derive_run_status`, `LabelSet`, `actions_shard`, the shard's fold (`ActionsFold`, an overlay scratch) and commands (`ActionsCmd`, format 0x15.1), and `RunOwner`'s pure round (`run_owner`).
 - `crates/git/src/run_checks.rs`: `RepoCmd::RunChecks`, format 32.21, `RunOwner`'s check suite, check runs, and required checks on the repository chain.
+- `crates/actions/src/workflow`: the workflow parser, a Rust port of the runner's `WorkflowParser` with its expression grammar, `MatrixBuilder`, and the `on:` filters. See "The parser" below.
 - Wire tags: the Actions enums and `RunChecksOut`, appended to `crates/git/tests/wire_tags.golden`. Main's last `RepoEvent` tag is still 42. No `RepoEvent` or `IssueOp` variant was added.
 
 ## In memory: `crates/actions/tests/gates.rs`
@@ -31,7 +32,7 @@ Three real `Member<ActionsCmd>`s of one owner's shard and three real `Member<Rep
 - **One runner at a time.** Two runners matched to one job in one entry: the second is refused `Stale`. A runner whose labels lack the job's is refused, and a second run for one trigger is refused `Duplicate`.
 - **The abort path.** A repository deleted mid-run answers `Gone`, and `RunOwner` cancels the run's unfinished jobs.
 
-`cargo test -p graftyard-actions`: 9 unit and 6 gate tests pass.
+`cargo test -p graftyard-actions`: 19 unit tests, 6 gate tests, and the parser's differential test pass.
 
 ### Plants: `tests/m4/wp3/plant.py`
 
@@ -57,6 +58,18 @@ Three real `Member<ActionsCmd>`s of one owner's shard and three real `Member<Rep
 | 17 | every job's check row is version 1 | caught |
 
 The first run missed four plants. Each miss led to a fix: the stall test in `shard.rs`, a `notify` job behind `report` with lint finishing last, the cursor test, and the abort-path test. One plant was dropped: "a completed run takes another status" cannot happen, because a completed run's jobs take no event, so the guard was removed instead.
+
+## The parser: `crates/actions/src/workflow`
+
+- **`template`** reads YAML (`yaml-rust2`, default features off, which builds for wasm32) into template tokens and validates them against `workflow-v1.0.json`, the oracle's schema with descriptions removed, so allowed contexts, required properties, and error text come from the same data the runner uses.
+- **`expr`** ports `@actions/expressions`' lexer, parser, and evaluator, with the oracle's error text, and JavaScript's and .NET's number printing (`G15` names matrix jobs).
+- **`mod`** converts as `convertWorkflowTemplate` does: events and their filters, jobs, `needs` checked for unknown jobs and cycles, `if` given `success() &&` unless it calls a status function, step ids (`__run`, `__run_2`, `__owner_repo`, `__self`, a docker image's), and reusable-workflow calls (parsed, not run).
+- **`matrix`** ports the C# `ConvertToStrategy` and `MatrixBuilder`. The npm oracle has none, so its tests are GitHub's documented include and exclude examples plus id and name rules read from the C# source, with expected values written by hand.
+- **`filter`** decides `on:` for push branches, tags, and paths, `pull_request` and `merge_group` activity types and base branches, and `workflow_dispatch`. Pattern rules are act's `workflowpattern`, checked against GitHub's cheat-sheet rows.
+
+**Differential test** (`crates/actions/tests/workflows.rs`): 59 workflows, 43 of them public (ripgrep, tokio, cargo, serde, TypeScript, node, cli, uv, ruff, rust-analyzer, home-assistant, next.js, react, deno, cpython, vscode, docker/build-push-action, workerd, and others) and 16 written for the port, each parsed by the port and compared with `@actions/workflow-parser` 0.3.61's JSON (`*.oracle.json`, written by `tests/m4/wp3/oracle.mjs`), errors included. All 59 match. Two differences are allowed and recorded: a multi-line string's expressions are read from its value, as the C# parser does, not from its raw YAML source (`07-scalars.yml`), and a YAML syntax error must match in position, not in the YAML library's wording (`14-bad-yaml.yml`).
+
+**Plants** 18 to 40 in `tests/m4/wp3/plant.py`: all 23 caught. The first run missed one, "a job name falls back to its id only when absent", because no workflow had `name: ''`. `16-names.yml` covers it now.
 
 ## Checks
 

@@ -1,0 +1,1 @@
+{"events":{"merge_group":{"types":["checks_requested"]},"workflow_dispatch":{}},"jobs":[{"type":"job","id":"queue","name":"queue","if":{"type":3,"expr":"success()"},"runs-on":"self-hosted","steps":[{"id":"__run","if":{"type":3,"expr":"success()"},"run":{"type":3,"expr":"format('echo \"{0}\"', github.ref)"}}]}]}

@@ -7,6 +7,7 @@ pub mod job;
 pub mod labels;
 pub mod run_owner;
 pub mod shard;
+pub mod workflow;
 
 pub use ids::{ACTIONS_SHARDS, JobId, OWNER_SCOPE_SHARD, RunId, RunnerId, RunnerSessionId, actions_shard};
 pub use job::{

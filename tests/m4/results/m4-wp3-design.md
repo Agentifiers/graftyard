@@ -39,7 +39,7 @@ The runner contract is measured in `tests/m4/wp3/runner-protocol.md`, against th
 
 ## Workflows
 
-- **The parser** is a Rust port of the runner's `GitHub.Actions.WorkflowParser` and `MatrixBuilder` for the subset the gates use, with `@actions/workflow-parser` as the differential oracle (SHARED, Workflow engine). It covers `on:` (`push`, `pull_request`, `merge_group`, `workflow_dispatch`) with branch and path filters, `jobs.<id>.runs-on`, `needs`, `if`, `strategy.matrix` (with `include` and `exclude`), `environment`, `env`, `steps` (`run`, `uses`, `with`, `env`, `name`, `id`), and `concurrency`. YAML comes from `yaml-rust2` [inference: a pure Rust YAML 1.2 parser that builds for wasm32; checked 2026-11-14].
+- **The parser** is a Rust port of the runner's `GitHub.Actions.WorkflowParser` and `MatrixBuilder`, with `@actions/workflow-parser` 0.3.61 as the differential oracle (SHARED, Workflow engine). The schema is data: the oracle's `workflow-v1.0` with descriptions removed, so the port reads every definition the runner reads, not only the gates' subset [measured: 59 workflows match, `tests/m4/results/m4-wp3.md`]. YAML comes from `yaml-rust2` 0.10 with default features off [measured: builds for wasm32]. `MatrixBuilder` is ported from the C# source, because the npm oracle has no matrix builder.
 - **`on: merge_group`** runs on the queue ref the merge queue built (`crates/git/src/queue.rs`), with `github.ref` the queue ref and `github.event_name` `merge_group`. BF-37 adds go-playground/webhooks parsing of `merge_group`, `pull_request.enqueued`, and `pull_request.dequeued`, which M4-WP1's payloads already carry.
 
 ## Logs

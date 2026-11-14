@@ -3085,6 +3085,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A run whose `RunChecksCmd` entries grow past one entry, which forces splitting a suite. Or GitHub semantics showing that a job whose need was cancelled runs anyway.
 
+### M4-WP3: the workflow parser reads the runner's schema as data, 2026-11-14
+
+**Decision.** `crates/actions/src/workflow` validates a workflow against `workflow-v1.0.json`, the schema `@actions/workflow-parser` 0.3.61 ships (MIT), with descriptions removed, through a port of its schema-driven `TemplateReader`. It does not hand-code the subset of keys the gates use. The converter, expression parser, and step ids port the npm package, and the matrix ports the runner's C# `MatrixBuilder`, which the npm package does not have. The differential test compares the port's output with the oracle's JSON for every workflow in `tests/m4/wp3/workflows/`, errors included. A multi-line string's embedded expressions are read from its value, as the C# reader does. The npm reader reads them from the raw YAML source, indentation included, to keep editor ranges, so the oracle script turns that off. YAML is `yaml-rust2` 0.10 with default features off.
+
+**Why.** A hand-coded subset rejects or mis-reads keys the runner accepts, and real workflows use many: 43 public workflows use `container`, `services`, `defaults`, `permissions`, `timeout-minutes`, reusable calls, `schedule`, and `workflow_dispatch` inputs. With the schema as data, the allowed contexts per key, the required properties, and the error messages come from the file the runner reads. The two readers differ only where the npm one serves an editor, and the job message the runner evaluates must carry the C# reader's strings, so the port follows the C# reader there [measured: `07-scalars.yml` and `tests/m4/wp3/oracle.mjs`].
+
+**Beat.** A hand-written parser of the gates' keys, which is smaller but fails on most of the corpus. Running `@actions/workflow-parser` itself in the site script, which adds a JavaScript runtime to a Rust Worker for one parser. `serde_yaml`, which is deprecated.
+
+**Evidence.** `crates/actions/tests/workflows.rs`: 59 of 59 workflows match. `tests/m4/wp3/plant.py` 18 to 40: 23 of 23 planted parser, matrix, and filter bugs are caught (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** A workflow on which the runner and the npm oracle disagree in a way the gates see, which would make the C# parser the oracle. Or a schema version the runner ships that the npm package does not.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
