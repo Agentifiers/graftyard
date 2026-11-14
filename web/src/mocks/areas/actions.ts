@@ -567,10 +567,15 @@ export const handlers = [
   // or the relay is failed from the Mock panel), it says so and closes, and the viewer
   // reads the step log blobs instead.
   ws
-    .link(`${location.origin.replace(/^http/, "ws")}${relayPath(":jobId")}`)
+    .link(`${location.origin.replace(/^http/, "ws")}${relayPath(":owner", ":repo", ":jobId")}`)
     .addEventListener("connection", ({ client, params }) => {
       const send = (m: RelayMessage) => client.send(JSON.stringify(m));
-      const j = actions.job(Number(params.jobId));
+      // A job id under another repository's path has no stream here.
+      const found = actions.job(Number(params.jobId));
+      const j =
+        found?.run.full === full({ owner: String(params.owner), repo: String(params.repo) })
+          ? found
+          : undefined;
       if (!j || !j.streaming || failing("actions-log-relay")) {
         send({ type: "no-stream" });
         client.close(1000, "no runner stream");
