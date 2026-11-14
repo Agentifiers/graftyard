@@ -1,0 +1,1 @@
+{"configIndex":4,"meta":{"configIndex":4,"leader":0,"term":2},"ms":9710,"old":"repo:1010000#1#f1","over":{"boundMs":100,"ms":113,"site":1},"tried":[{"member":"repo:1010000#2#f1","result":null,"rtt":[[0,88],[2,193]]}]}

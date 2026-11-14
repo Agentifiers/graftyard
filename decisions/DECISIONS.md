@@ -3310,7 +3310,7 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 - Doubling back on an answer, which oscillated on an earlier tree (2 of 24 over 20 s).
 - Re-sending a gap-refused call behind the one ahead at once. If the call ahead is lost, that resends without end.
 
-**Evidence.** Kept tests: `a_voter_is_pipelined_unless_its_calls_are_lost`, `a_voter_whose_calls_arrive_out_of_order_keeps_its_pipeline` and `a_voters_call_bound_halves_on_lost_calls_and_grows_back_on_answers` (`crates/raft/tests/scenarios.rs`), and the r300-3 scenario (`crates/raft/tests/admission.rs`). `tests/m0carried/plant9.py` plants each rule.
+**Evidence.** Kept tests: `a_voter_is_pipelined_unless_its_calls_are_lost`, `a_voter_whose_calls_arrive_out_of_order_keeps_its_pipeline` and `a_voters_call_bound_halves_on_lost_calls_and_grows_back_on_answers` (`crates/raft/tests/scenarios.rs`), and the r300-3 scenario (`crates/raft/tests/admission.rs`). `tests/m0carried/plant9.py` plants each rule. Hosted on `graft-m3d` (`tests/m0/results/carried-9.md`) [measured]: a weur-homed group at 300 commands/s that lost enam's member stalled commits 0.8 s, on an apac link with no lost call; and the B0-02 gate passed 16 of 16 (commit p99 253 to 543 ms), with 16 late answers from apac over 3 runs, none counted as lost.
 
 **Flip.** Any one of these reverses it:
 - a hosted far link whose per-call time grows with the calls in flight, where smaller calls would then not help;

@@ -16,6 +16,7 @@ import glob
 import json
 import os
 import sys
+import time
 import urllib.request
 
 RAW = 'tests/m1/wp2/raw'
@@ -68,7 +69,13 @@ class Cpu:
     def get(self, url, body=None):
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, headers=self.h, method='POST' if body is not None else 'GET')
-        return json.load(urllib.request.urlopen(req, timeout=180))
+        for attempt in range(4):
+            try:
+                return json.load(urllib.request.urlopen(req, timeout=180))
+            except OSError:
+                if attempt == 3:
+                    raise
+                time.sleep(5 * (attempt + 1))
 
     def gql(self, q, v):
         r = self.get('https://api.cloudflare.com/client/v4/graphql', {'query': q, 'variables': v})

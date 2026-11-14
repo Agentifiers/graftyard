@@ -1,0 +1,24 @@
+2026-11-13T21:58:22.753Z created repo:1242000: leader in 10543 ms; placed {"configIndex":4,"meta":{"configIndex":4,"leader":1,"term":2},"ms":8756,"old":"repo:1242000#1#f0","over":{"boundMs":100,"ms":111,"site":0},"tried":[{"member":"repo:1242000#2#f0","result":null,"rtt":[[1,89],[2,174]]}]}
+2026-11-13T21:58:39.506Z chunk at +0 s: 4500 ok, 0 failed, p99 917 ms
+2026-11-13T21:58:55.570Z chunk at +16 s: 4500 ok, 0 failed, p99 748 ms
+2026-11-13T21:59:11.619Z chunk at +32 s: 4500 ok, 0 failed, p99 771 ms
+2026-11-13T21:59:23.446Z severed site 0: {"now":1794607169678,"until":1794607259678}
+2026-11-13T21:59:30.045Z chunk at +48 s: 4500 ok, 0 failed, p99 2096 ms
+2026-11-13T21:59:51.766Z chunk at +67 s: 4500 ok, 0 failed, p99 1848 ms
+2026-11-13T22:00:10.850Z chunk at +89 s: 4500 ok, 0 failed, p99 1578 ms
+2026-11-13T22:00:29.413Z chunk at +108 s: 4500 ok, 0 failed, p99 1864 ms
+node:fs:3028
+    return binding.writeFileUtf8(
+                   ^
+
+Error: ENOENT: no such file or directory, open '/tmp/deploy6/tests/m1/wp2/raw/m0c9-far1.far.json'
+    at writeFileSync (node:fs:3028:20)
+    at file:///tmp/deploy6/tests/m0carried/far9.ts:95:1
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5) {
+  errno: -2,
+  code: 'ENOENT',
+  syscall: 'open',
+  path: '/tmp/deploy6/tests/m1/wp2/raw/m0c9-far1.far.json'
+}
+
+Node.js v26.12.0
