@@ -32,4 +32,6 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 
 [dev-dependencies]
 futures-executor = "0.3"
+# `tests/wire_tags.rs` pins the Actions family's enums beside the others; a dev-only cycle, which integration tests allow.
+graftyard-actions = { path = "../actions" }
 postcard.workspace = true

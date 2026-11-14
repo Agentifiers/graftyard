@@ -1,0 +1,16 @@
+name: ci
+on: push
+jobs:
+  build:
+    runs-on: [self-hosted, linux]
+    strategy:
+      matrix:
+        val: [one, two]
+    steps:
+      - run: echo "hello from ${{ matrix.val }}"
+      - name: Show the matrix value through env
+        run: echo "MATRIX_VAL=$MATRIX_VAL"
+        env:
+          MATRIX_VAL: ${{ matrix.val }}
+      - run: |
+          for i in 1 2 3; do echo "line $i"; sleep 1; done

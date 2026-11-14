@@ -235,6 +235,8 @@ pub enum Kind {
     Identity,
     Repo,
     Release,
+    /// An owner's Actions shard (`crate::actions`).
+    Actions,
     /// Test installs only: a `repo:` chain joined with no owner hosts the test register, for M1-WP2's rows and the
     /// linearizability run.
     #[cfg(feature = "test-faults")]
@@ -255,7 +257,8 @@ impl Kind {
             #[cfg(not(feature = "test-faults"))]
             ChainId::Repo(_) => Some(Kind::Repo),
             ChainId::Identity(_) => Some(Kind::Identity),
-            ChainId::Network(_) | ChainId::Actions(..) | ChainId::RepoMeta(_) => None,
+            ChainId::Actions(..) => Some(Kind::Actions),
+            ChainId::Network(_) | ChainId::RepoMeta(_) => None,
         }
     }
 }
@@ -565,8 +568,9 @@ impl Family for Repo {
     /// 32.17 holds F59's finisher steps, which only this release's own `Audit` consumer sends, once
     /// `GRAFTYARD_AUDIT` is set. 32.18 is `IssueOp::CreateCheck`, sent once `FormatsEnable` enabled it. 32.16 is
     /// M4-WP1's hook commands, which the edge sends once `FormatsEnable` enabled it, and the `Webhooks` consumer's
-    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.22 is a review
-    /// comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
+    /// `HookCursorCmd`, which only a leader of this release commits, for a repository that has a hook. 32.21 is
+    /// M4-WP3's `RunChecksCmd`, which only `RunOwner` sends, from a release whose Actions leaders run it. 32.22 is a
+    /// review comment outside a review, whose entry carries `ReviewEvent::SingleComment`, sent once `FormatsEnable` enabled it.
     fn reads() -> Vec<Format> {
         vec![
             git::repo::REPO_FORMAT_V1,
@@ -588,6 +592,7 @@ impl Family for Repo {
             git::hooks::REPO_FORMAT_HOOKS,
             git::watch::REPO_FORMAT_WATCH,
             git::issue_ops::call::REPO_FORMAT_REVIEWS,
+            git::run_checks::REPO_FORMAT_ACTIONS,
         ]
     }
     /// The repository and its owner, from the join, over the member's two tier table sets (`crate::tier`). A member
@@ -905,6 +910,7 @@ impl Family for Repo {
             git::repo::RepoOut::HookCursor(o) => json!({ "HookCursor": o }),
             git::repo::RepoOut::Lifecycle(o) => json!({ "Lifecycle": o }),
             git::repo::RepoOut::Counts(o) => json!({ "Counts": o }),
+            git::repo::RepoOut::RunChecks(o) => json!({ "RunChecks": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
@@ -1358,11 +1364,11 @@ impl Family for Register {
 
 /// The identity folds are stored whole, in the crate's codec, in one `fold` row written with the entries' apply.
 /// Per-table rows come with the folds' own storage layout (`design/SHARED.md`, "Folds").
-fn store_blob<T: Serialize>(fold: &T, stmts: &mut Vec<Stmt>) {
+pub(crate) fn store_blob<T: Serialize>(fold: &T, stmts: &mut Vec<Stmt>) {
     stmts.push(("INSERT OR REPLACE INTO fold (id, row) VALUES (1, ?)", vec![codec::to_bytes(fold).into()]));
 }
 
-fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>> {
+pub(crate) fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>> {
     match crate::host::rows(sql, "SELECT row FROM fold WHERE id = 1", vec![])?.first() {
         Some(r) => Ok(Some(
             codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| crate::host::err(format!("fold row: {e}")))?,
@@ -1372,7 +1378,7 @@ fn load_blob<T: DeserializeOwned>(sql: &SqlStorage) -> worker::Result<Option<T>>
 }
 
 /// 401 for a credential refusal, 403 for a permission refusal, 422 for the rest.
-fn refusal(e: &impl Debug, status: u16) -> Value {
+pub(crate) fn refusal(e: &impl Debug, status: u16) -> Value {
     json!({ "err": format!("{e:?}"), "status": status })
 }
 

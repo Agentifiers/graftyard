@@ -1,0 +1,1 @@
+{"events":{"push":{}},"jobs":[{"type":"job","id":"a","name":"a","needs":["nope"],"if":{"type":3,"expr":"success()"},"runs-on":"self-hosted","steps":[{"id":"__run","if":{"type":3,"expr":"success()"},"run":"x"}]}],"errors":[{"Message":"05-bad-needs.yml (Line: 3, Col: 3): The workflow must contain at least one job with no dependencies."}]}

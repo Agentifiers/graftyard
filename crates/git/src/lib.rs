@@ -35,6 +35,7 @@ pub mod queue;
 pub mod queue_consumer;
 pub mod refs;
 pub mod repo;
+pub mod run_checks;
 pub mod search;
 pub mod sequencer;
 pub mod shard;

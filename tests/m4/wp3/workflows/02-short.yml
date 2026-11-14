@@ -1,0 +1,7 @@
+on: push
+jobs:
+  a:
+    name: First job
+    runs-on: self-hosted
+    steps:
+      - run: true

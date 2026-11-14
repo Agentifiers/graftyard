@@ -1,0 +1,7 @@
+on: push
+jobs:
+  a:
+    needs: nope
+    runs-on: self-hosted
+    steps:
+      - run: x

@@ -229,6 +229,7 @@ pub enum Hosted {
     Identity(Rc<Host<family::Identity>>),
     Repo(Rc<Host<family::Repo>>),
     Release(Rc<Host<crate::release::Release>>),
+    Actions(Rc<Host<crate::actions::Actions>>),
     #[cfg(feature = "test-faults")]
     Register(Rc<Host<family::Register>>),
 }
@@ -321,6 +322,7 @@ macro_rules! each {
             Hosted::Identity($x) => $body,
             Hosted::Repo($x) => $body,
             Hosted::Release($x) => $body,
+            Hosted::Actions($x) => $body,
             #[cfg(feature = "test-faults")]
             Hosted::Register($x) => $body,
         }
@@ -337,6 +339,7 @@ impl Hosted {
             Kind::Identity => Hosted::Identity(Host::new(state, env)),
             Kind::Repo => Hosted::Repo(Host::new(state, env)),
             Kind::Release => Hosted::Release(Host::new(state, env)),
+            Kind::Actions => Hosted::Actions(Host::new(state, env)),
             #[cfg(feature = "test-faults")]
             Kind::Register => Hosted::Register(Host::new(state, env)),
         })

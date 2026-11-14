@@ -1257,12 +1257,12 @@ pub enum NamesEvent { LoginClaimed { key: LoginKey, account: AccountId, kind: Ac
                       Placement { owner: AccountId, record: PlacementRecord } /* on account_shard(owner) */,
                       RepoOwner { repo: RepoId, owner: AccountId } /* on name_shard(NameKey::Repo(repo)) */,
                       AccountLogin { account: AccountId, login: Login } /* on account_shard(account), tag 12 */ }
-/// SHARED's run, job, runner, and session events on an owner's `Actions` shards. `Job` applies `transition` against the
-/// job's version, and job leases extend only by `ExtendLeases`. The leader sets a DO alarm at the earliest `lease_until`
-/// or queue deadline and commits `LeaseExpired` or `QueueExpired` then. Only `RunOwner` writes `RunStatus`.
+/// SHARED's run, job, runner, and session events on an owner's `Actions` shards (0x15.1). `Job` applies `transition` at the
+/// job's version; leases extend only by `ExtendLeases`. The leader's DO alarm commits `LeaseExpired` or `QueueExpired` at
+/// the earliest deadline. `RunOwner` alone writes `RunStatus`, and `OwnerCursor` after its `RunChecks` (32.21).
 pub enum ActionsEvent { RunCreated { run: WorkflowRun, jobs: Vec<JobSpec> }, RunStatus { run: RunId, status: RunStatus },
     Job { job: JobId, version: u64, event: JobEvent }, Runner { id: RunnerId, record: Option<RunnerRecord> },
-    Session { runner: RunnerId, session: Option<RunnerSessionId> } }
+    Session { runner: RunnerId, session: Option<RunnerSessionId> }, OwnerCursor { through: Index } }
 /// `hash(run.repo) % 16`: `/actions/runs` is one query. `Repo`-scope runners register there, `Owner`-scope on shard 0.
 pub fn actions_shard(run: &WorkflowRun) -> u8;
 /// Site-script classes, derived only, on their shard's leader site per cached `ReplyMeta`: the registration shard for a
@@ -2183,7 +2183,7 @@ Each entry applies the act-on item of the same id in `history/review/cloudflare-
 **Third walk** (`history/review/walk-rest-interrogate.md`, from `history/review/walk-rest.md`, applied as WK-X1 to WK-X13 and WK-Y1 to WK-Y3, with the writers' reports in `history/review/walk-rest-reports.md`).
 
 - **WK-X1.** `RunnerBroker` and `LogRelay` are site-script classes with derived state on their shard's leader site, and a broker past `BROKER_HELD_MAX` answers 503 with `Retry-After: 15`. Sections: Stack (Durable Objects), Shape (Identity), Failure modes (`actions state`); `design/SHARED.md` "Actions" (Logs).
-- **WK-X2.** `ActionsEvent` has `RunCreated`, `RunStatus`, `Job`, `Runner`, and `Session`, `actions_shard(run)` hashes the repository, and a broker reads all 16 shards by summary and counted hints. Sections: Shape (Identity); `design/SHARED.md` "Actions runs and jobs".
+- **WK-X2.** `ActionsEvent` has `RunCreated`, `RunStatus`, `Job`, `Runner`, `Session`, and M4-WP3's `OwnerCursor`, `actions_shard(run)` hashes the repository, and a broker reads all 16 shards by summary and counted hints. Sections: Shape (Identity); `design/SHARED.md` "Actions runs and jobs".
 - **WK-X3.** The "Workflow run" operation commits at `RunCreated`, finishes through `RunOwner` per (job, attempt), aborts by `Cancel`, and leaves no `RequiredCheck` without a conclusion. Sections: `design/SHARED.md` "Multi-chain operations" and "Actions runs and jobs".
 - **WK-X4.** `HookCursor.read` passes an entry once its `HookDelivery` rows are recorded, order holds per (chain, hook), and `HOOK_OWNER_CONCURRENCY` is 50 [guess]. Sections: Failure modes (`event pipeline`); `design/SHARED.md` "Event fan-out".
 - **WK-X5.** Sealed-box secrets and variables with `SealKey`, `Wrapped`, and a rotation rule, opened only by job-message assembly and webhook signing, and `SecretName` gains `SecretsWrapKey` and `HostedRunnersAppKey`. Sections: Stack (Secrets Store), Shape (Release group, `SecretName`); `design/SHARED.md` "Actions" (Secrets and variables).
