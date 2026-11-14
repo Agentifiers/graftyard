@@ -1,0 +1,9 @@
+file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99
+  throw new Error(`no leader for ${chain}`);
+        ^
+
+Error: no leader for repo:65549
+    at leaderOf (file:///home/user/workspace/repo/tests/am1/hosted/lib.mjs:99:9)
+    at async file:///home/user/workspace/repo/tests/nr3/egress.mjs:6:16
+
+Node.js v26.12.0

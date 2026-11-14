@@ -1,0 +1,43 @@
+2026-11-13T04:18:41.315Z m3org/nr3-before1 = 65537
+2026-11-13T04:18:41Z nr3-before1 = 65537 setup
+"step":"open PRs","opened":500,"failures":{"open 503 \"the repository's tier rows did not answer; retry (repo:6553":239}
+2026-11-13T04:32:56.157Z repo:65537 leader 0: learners [{"addr":192,"doName":"repo:65537#4#l0","join":200,"site":0,"slot":0},{"addr":193,"doName":"repo:65537#4#l1","join":200,"site":1,"slot":1},{"addr":194,"doName":"repo:65537#4#l2","join":200,"site":2,"slot":2},{"addr":195,"doName":"repo:65537#4#l3","join":200,"site":0,"slot":3},{"addr":196,"doName":"repo:65537#4#l4","join":200,"site":1,"slot":4},{"addr":197,"doName":"repo:65537#4#l5","join":200,"sit config 939
+2026-11-13T04:33:01.427Z repo:65537 leader 0: k 1 at 939
+f0 {"role":true,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":2}
+f1 {"role":false,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":1}
+f2 {"role":false,"shed":0,"shared":0,"fr":1,"late":0,"refused":0,"waited":0,"builds":1,"heavy":0,"inflight":0,"read":1}
+l0 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l1 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l2 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l3 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l4 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l5 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l6 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+l7 {"role":false,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0}
+2026-11-13T04:33:06Z b0-29 start
+2026-11-13T04:40:50Z b0-29 done 0
+f0 {"role":true,"shed":0,"shared":0,"fr":0,"late":0,"refused":0,"waited":86,"builds":7,"heavy":0,"inflight":0,"read":13243}
+f1 {"role":false,"shed":0,"shared":0,"fr":43,"late":0,"refused":0,"waited":0,"builds":0,"heavy":0,"inflight":0,"read":46}
+f2 {"role":false,"shed":8,"shared":715,"fr":911,"late":9,"refused":0,"waited":34,"builds":11,"heavy":0,"inflight":0,"read":1075}
+l0 {"role":false,"shed":100,"shared":8688,"fr":7934,"late":1519,"refused":0,"waited":5678,"builds":198,"heavy":0,"inflight":0,"read":7934}
+l1 {"role":false,"shed":75,"shared":8499,"fr":9375,"late":1038,"refused":0,"waited":3516,"builds":219,"heavy":0,"inflight":0,"read":9375}
+l2 {"role":false,"shed":61,"shared":4807,"fr":8696,"late":3399,"refused":0,"waited":1002,"builds":148,"heavy":0,"inflight":0,"read":8696}
+l3 {"role":false,"shed":117,"shared":12203,"fr":11163,"late":1419,"refused":0,"waited":6607,"builds":271,"heavy":0,"inflight":0,"read":11163}
+l4 {"role":false,"shed":14,"shared":7108,"fr":8969,"late":647,"refused":0,"waited":1687,"builds":219,"heavy":0,"inflight":0,"read":8969}
+l5 {"role":false,"shed":116,"shared":4562,"fr":8177,"late":3369,"refused":0,"waited":1289,"builds":128,"heavy":0,"inflight":0,"read":8177}
+l6 {"role":false,"shed":138,"shared":13728,"fr":11151,"late":2047,"refused":0,"waited":8390,"builds":227,"heavy":0,"inflight":0,"read":11151}
+l7 {"role":false,"shed":45,"shared":8710,"fr":9783,"late":96,"refused":0,"waited":4339,"builds":232,"heavy":0,"inflight":0,"read":9783}
+f0 {"waited":86,"late":0,"shed":0}
+f1 {"waited":0,"late":0,"shed":0}
+f2 {"waited":34,"late":9,"shed":8}
+l0 {"waited":5678,"late":1519,"shed":100}
+l1 {"waited":3516,"late":1038,"shed":75}
+l2 {"waited":1002,"late":3399,"shed":61}
+l3 {"waited":6607,"late":1419,"shed":117}
+l4 {"waited":1687,"late":647,"shed":14}
+l5 {"waited":1289,"late":3369,"shed":116}
+l6 {"waited":8390,"late":2047,"shed":138}
+l7 {"waited":4339,"late":96,"shed":45}
+2026-11-13T04:41:07Z fresh exit 0
+2026-11-13T04:41:10Z torn down 65537
+DONE
