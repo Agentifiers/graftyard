@@ -30,6 +30,8 @@ for row in $ROWS; do
   if [ -n "${TRACE:-}" ]; then
     node tests/fanout/terms.mjs "$repo" 10800 > tests/fanout/raw/terms-$TAG-$row.jsonl 2>&1 & tracers+=($!)
     node tests/fanout/admit.mjs "$repo" 10800 > tests/fanout/raw/admit-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+    # Every voter's memory split every 2 s (vmem.mjs), for L0-12's memory resets.
+    node tests/fanout/vmem.mjs "$repo" 10800 > tests/fanout/raw/vmem-$TAG-$row.jsonl 2>&1 & tracers+=($!)
   fi
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
   rid=$(id "$repo")
@@ -56,7 +58,14 @@ for row in $ROWS; do
     l0-12) flags="--seconds 600 --kill-every 60" ;;
   esac
   echo "$(date -u +%FT%TZ) $row $repo $rid start" >> "$ST"
+  # TRACE=1: every voter's trace rows each minute (tests/nr3/tsave.mjs), kept across its isolate's resets.
+  if [ -n "${TRACE:-}" ]; then
+    rm -f tests/fanout/raw/.tsave-$TAG-$row.done
+    DONE_FILE=tests/fanout/raw/.tsave-$TAG-$row.done node tests/nr3/tsave.mjs "repo:$rid" \
+      > tests/fanout/raw/tsave-$TAG-$row.jsonl 2>&1 & tracers+=($!)
+  fi
   bash tests/am1/runs/a1.sh "$row" "$repo" "$rid" $flags
+  [ -n "${TRACE:-}" ] && touch tests/fanout/raw/.tsave-$TAG-$row.done
   # Back to k = 1, which releases the network's pool leases: a lease is only renewed or released by its own network,
   # and the ledger shifts every lease past a call gap of LEDGER_GAP, so a network torn down at k > 1 kept its owner's
   # pool share and every later row of the same owner was granted no slot (rows m21: k 1 on every row).
@@ -66,7 +75,8 @@ for row in $ROWS; do
   # 60 s lease and the overlapping Exclusive acquire 10 minutes later (stall.mjs), then 100 conflicting pushes and 100
   # REST ref writes per actor kind under AgentsExclusive, the install's two Apps included (rows.mjs l012). Six kinds
   # take about 21 minutes each, so 7,200 s cut m3fr1's last kind.
-  if [ "$row" = l0-12 ]; then
+  # L012_REPLAY_ONLY=1: the replay alone (the storm reproducer); the stall and refusals are left out.
+  if [ "$row" = l0-12 ] && [ -z "${L012_REPLAY_ONLY:-}" ]; then
     STALL_REPO=$repo STALL_REPO_ID=$rid timeout 3600 node tests/am1/hosted/stall.mjs "${STALL_MIN:-30}" 20 \
       > tests/am1/raw/runs/l012-stall-$repo.log 2>&1
     echo "$(date -u +%FT%TZ) l0-12 stall exit $?" >> "$ST"
@@ -76,6 +86,8 @@ for row in $ROWS; do
   fi
   # A durable_object shard container never sleeps on its own: the row's own shards are torn down after it.
   [ -n "${TEARDOWN:-}" ] && python3 tests/fanout/teardown.py "$rid" "$rid" > /dev/null 2>&1 && echo "$(date -u +%FT%TZ) torn down $rid" >> "$ST"
+  # tsave's last save runs after the done file; give it its minute before the tracers stop.
+  [ -n "${TRACE:-}" ] && sleep 70
   [ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null
 done
 [ ${#tracers[@]} -gt 0 ] && kill "${tracers[@]}" 2>/dev/null
