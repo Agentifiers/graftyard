@@ -1,5 +1,5 @@
 #!/bin/bash
-# b030-split site day on graft-m1 (sites a to d): the metadata child group (MetaSplit, MetaSeed, MetaDropped, MetaSlim),
+# b030-split site day on graft-m1 (sites a to d): the leader-only work pacing and keep-led (d879b0b), the metadata child group (MetaSplit, MetaSeed, MetaDropped, MetaSlim),
 # the archive drain loop, and main's hot-shards 1 to 4 (promotion on a warm shard, in-band /archive/promote, the
 # rehydrate resume fix). Shard image: main's newest containers commit 35c398c (hot-shards-4). SHARD_INSTANCE is
 # standard-4 (operator approval for test installs). GRAFTYARD_REPO_REQUEST_RETENTION_S = 9600 as in site day 8

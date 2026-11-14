@@ -6,7 +6,10 @@
 // 1. A fresh repository (tests/am1/b030/mkrepo.mjs NAME) seeded to SEED bytes (tests/am1/b030/seed.mjs), then each
 //    member's `SPLIT_AT` set just under that (`/bench_seed {"splitAt"}`), so the split runs as at 7 GiB, smaller.
 // 2. Every 5 s until the slim pass is done: which member leads (by `/status`), so each leaderless gap is measured.
-// 3. At the end: the gaps, StepDown and keep-led lines from Workers Logs, and the comment bodies of a sample of keys
+// 3. Once the slim pass has run CUT_AFTER_S, the leader is cut off for CUT_S (`/sever`), as a site that stops
+//    answering: it stops leading by check-quorum, nobody calls the group, and a voter must campaign for the slim work
+//    on its own within about 2 x ELECTION_AFTER of its promise lapsing.
+// 4. At the end: the gaps, StepDown and keep-led lines from Workers Logs, and the comment bodies of a sample of keys
 //    read through the parent before and after, which must match.
 // Rows go to tests/am1/raw/b030split-smoke2.jsonl.
 //   node tests/am1/b030split/smoke2.mjs
@@ -48,7 +51,8 @@ row(OUT, { kind: "start", at: new Date(t0).toISOString(), splitAt: at, dbBytes: 
 
 // Leaderless gaps, from each member's role every 5 s.
 const gaps = [];
-let since = null, last = "", done = false;
+const CUT_AFTER_S = Number(process.env.CUT_AFTER_S ?? 180), CUT_S = Number(process.env.CUT_S ?? 15);
+let since = null, last = "", done = false, slimFrom = null, cut = null;
 while (!done) {
   const st = await statuses(C);
   const led = st.find((s) => s.role === "leader");
@@ -60,6 +64,12 @@ while (!done) {
     const sp = JSON.stringify({ state: v.split?.state && { dropped: v.split.state.dropped, seed: v.split.state.seed?.[0] }, slim: v.split?.slim && { done: v.split.slim.done, table: v.split.slim.table } });
     if (sp !== last) { log(`split ${sp} dbBytes ${v.dbBytes} keepLed ${v.keepLed}`); row(OUT, { kind: "step", at: new Date().toISOString(), split: v.split, dbBytes: v.dbBytes }); last = sp; }
     done = v.split?.slim?.done === true;
+    if (v.split?.slim && !done) slimFrom ??= now;
+    if (!cut && slimFrom && now - slimFrom >= CUT_AFTER_S * 1000) {
+      cut = { at: new Date().toISOString(), site: led.site, v: (await member(C, led.site, "/sever", { for_ms: CUT_S * 1000 }).catch((e) => ({ v: String(e) }))).v };
+      log(`cut leader ${led.site} for ${CUT_S} s: ${JSON.stringify(cut.v)}`);
+      row(OUT, { kind: "cut", ...cut });
+    }
   }
   if (now - t0 > 4 * 3600_000) { log("no end in 4 h"); break; }
   await sleep(5_000);
@@ -77,6 +87,6 @@ for (const s of ["a", "b", "c"]) {
   logs[s] = { stepDowns: ev.filter((e) => e.msg.includes("StepDown")).length, keepLed: ev.filter((e) => e.msg.startsWith("keep led")).map((e) => e.msg.slice(0, 120)) };
 }
 const after = await Promise.all([0, 1, 2].map(size));
-const sum = { at: new Date().toISOString(), min: Math.round((t1 - t0) / 60_000), gaps, longestGapS: Math.max(0, ...gaps.map((g) => g.s)), same, of: Object.keys(b0).length, logs, before: sizes.map((s) => s.dbBytes), after: after.map((s) => s.dbBytes), sqliteFull: after.map((s) => s.sqliteFull) };
+const sum = { at: new Date().toISOString(), min: Math.round((t1 - t0) / 60_000), cut, gaps, longestGapS: Math.max(0, ...gaps.map((g) => g.s)), same, of: Object.keys(b0).length, logs, before: sizes.map((s) => s.dbBytes), after: after.map((s) => s.dbBytes), sqliteFull: after.map((s) => s.sqliteFull) };
 row(OUT, { kind: "summary", ...sum });
 log(`smoke2 ${JSON.stringify(sum)}`);

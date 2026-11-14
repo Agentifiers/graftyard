@@ -68,7 +68,7 @@ Two problems showed up, and both are product bugs:
 
 Tests: `host::tests::a_leaderless_voter_with_work_due_acts_after_the_bound_only`,
 `host::tests::paced_writes_wait_twice_their_commit_up_to_the_cap`, and
-`split::tests::a_split_needs_its_leader_only_while_a_step_is_due`. Plants 15 to 23 in `tests/am1/b030split/plant.py`
+`split::tests::a_split_needs_its_leader_only_while_a_step_is_due`. Plants 15 to 24 in `tests/am1/b030split/plant.py`
 cover these rules: the bound counted from each check, from the first check rather than the lapse, or not at all; acting
 again on every check; acting while a promise runs; campaigning past a named leader; acting with no work due; pacing
 by 1x; pacing uncapped; a child that needs a leader; and a finished pass that needs one.
