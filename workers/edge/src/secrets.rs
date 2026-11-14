@@ -26,7 +26,7 @@ use serde_json::{Value, json};
 use worker::*;
 
 use crate::Ctx;
-use crate::api::{Read, commit_issue, unavailable};
+use crate::api::{Read, commit_issue, commit_issue_as, unavailable};
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -80,7 +80,7 @@ async fn commit_as(
     cred: graftyard_types::CredentialShard,
     op: AuthzOp,
 ) -> std::result::Result<(), Reply> {
-    let rid = graftyard_types::RequestId(graftyard_types::Ulid::new(crate::now(), crate::rand10()));
+    let rid = fresh_rid();
     let body = json!({ "rid": rid.to_string(), "cmd": AuthzCmd { cred, op } }).to_string();
     let r = graftyard_lookup::commit_hedged(
         &c.bindings(),
@@ -433,6 +433,11 @@ async fn owner_repos(
     Ok(out)
 }
 
+/// A request id for one of several commands a rotation commits in one request.
+fn fresh_rid() -> graftyard_types::RequestId {
+    graftyard_types::RequestId(graftyard_types::Ulid::new(crate::now(), crate::rand10()))
+}
+
 fn ok2xx(r: &Reply) -> std::result::Result<(), String> {
     if (200..300).contains(&r.status) { Ok(()) } else { Err(format!("a write answered {}", r.status)) }
 }
@@ -537,7 +542,9 @@ async fn rotate(
             }
             let sealed = reseal(c, &new, &keys, name.as_str(), &r.sealed, &r.key_id).await?;
             let op = IssueOp::PutActionsSecret { scope, name, sealed, key_id: new.key_id.clone() };
-            ok2xx(&commit_issue(c, rd, who, op, What::ActionsConfig).await.map_err(|e| e.to_string())?)?;
+            ok2xx(
+                &commit_issue_as(c, rd, who, op, What::ActionsConfig, fresh_rid()).await.map_err(|e| e.to_string())?,
+            )?;
             resealed += 1;
         }
     }
@@ -601,7 +608,11 @@ async fn rewrap(
             }
             rec.secret = Some(w2);
             let op = IssueOp::PutHook { id: Some(id), record: rec };
-            ok2xx(&commit_issue(c, rd, who, op, What::Hook { created: false }).await.map_err(|e| e.to_string())?)?;
+            ok2xx(
+                &commit_issue_as(c, rd, who, op, What::Hook { created: false }, fresh_rid())
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )?;
             hooks += 1;
         }
     }

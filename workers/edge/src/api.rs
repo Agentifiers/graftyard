@@ -720,6 +720,20 @@ pub(crate) async fn commit_issue(
     commit_issue_in(c, rd, who, op, what, None).await
 }
 
+/// `commit_issue` under its own request id, for an edge route that commits several commands in one request (the
+/// Actions rotations): under the request's own id the leader would take the second as a replay of the first and
+/// answer the first's outcome without committing it (BF-59 run 1, `tests/m4/results/m4-wp3.md`).
+pub(crate) async fn commit_issue_as(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+    rid: graftyard_types::RequestId,
+) -> Result<Reply> {
+    commit_issue_rid(c, rd, who, op, what, None, rid).await
+}
+
 /// `commit_issue` with the session a pull request's creator named in `X-Graftyard-Agent-Session` (AM1-WP3), which
 /// `decide` records in `AgentMeta` only for a task of the creating App. Carried only on `OpenPr` by an App's token or
 /// a user-to-server token, and only once 32.12 is enabled; otherwise the header changes nothing.
@@ -731,6 +745,18 @@ async fn commit_issue_in(
     what: What,
     session: Option<graftyard_identity::SessionId>,
 ) -> Result<Reply> {
+    commit_issue_rid(c, rd, who, op, what, session, c.rid).await
+}
+
+async fn commit_issue_rid(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+    session: Option<graftyard_identity::SessionId>,
+    rid: graftyard_types::RequestId,
+) -> Result<Reply> {
     if !c.cfg.enabled.contains(&REPO_FORMAT_ISSUES) {
         return Ok(unavailable(&format!(
             "issue writes need record format {}.{}, which FormatsEnable has not enabled on this install",
@@ -738,7 +764,7 @@ async fn commit_issue_in(
         )));
     }
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
-    let mut call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
+    let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -769,7 +795,7 @@ async fn commit_issue_in(
             f.family, f.version
         )));
     }
-    let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
+    let mut body = json!({ "rid": rid.to_string(), "cmd": { "issue": call } });
     if let Some(a) = crate::admission(c, who, &[], false, 0).await {
         body["admit"] = serde_json::to_value(a)?;
     }
@@ -788,7 +814,7 @@ async fn commit_issue_in(
         Ok(done) => {
             // The refusal's cause (`IssueErr`) is not in the client's reply, so it is logged.
             if let Some(e) = done.pointer("/refused/err") {
-                worker::console_log!("issue command {} refused: {e}", c.rid);
+                worker::console_log!("issue command {} refused: {e}", rid);
             }
             let wire = done
                 .pointer("/ok/out/issue/reply")

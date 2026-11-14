@@ -80,8 +80,16 @@ if (phase === "set") {
   writeFileSync(join(dir, "driver.log"), (r.stdout || "") + (r.stderr || ""));
   const last = readFileSync(join(dir, "run.jsonl"), "utf8").trim().split("\n").pop();
   const job = JSON.parse(last).jobs[0];
-  const logs = await api("GET", `/api/v3/repos/${R}/actions/jobs/${job.id}/logs`, admin);
-  const text = typeof logs.body === "string" ? logs.body : JSON.stringify(logs.body);
+  // A raw read: `api()` keeps only 300 characters of a body that is not JSON. The whole log is joined a few
+  // seconds after the job completes; until then `/logs` serves the blobs so far.
+  let logs = { status: 0 }, text = "";
+  for (let i = 0; i < 12; i++) {
+    const r = await fetch(`${EDGE}/api/v3/repos/${R}/actions/jobs/${job.id}/logs`, { headers: { authorization: `token ${admin}` } });
+    logs = { status: r.status };
+    text = await r.text();
+    if (/\bvar \S/.test(text)) break;
+    await sleep(5000);
+  }
   writeFileSync(join(dir, "job.log"), text);
   const want = fork
     ? { repo: [hash(""), 0], env: [hash(""), 0], org: [hash(""), 0] }
