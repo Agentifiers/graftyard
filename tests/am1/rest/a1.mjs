@@ -805,9 +805,13 @@ if (plan.leases) jobs.push((async () => {
       const s = Date.now();
       try {
         // The site's current voter object: by site alone a replaced voter's first-generation object answers.
-        const v = (await member(CHAIN, site, "/status", undefined, 5_000, voterAt(CHAIN, site))).v;
+        // `?clock=1` (leader-clock-check): the member's clock before and after one awaited macrotask, and its last
+        // appended entry's `at` lag at send and one macrotask later; older builds answer plain `/status`.
+        const v = (await member(CHAIN, site, "/status?clock=1", undefined, 5_000, voterAt(CHAIN, site))).v;
         const e = Date.now();
-        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s, term: v.term, role: v.role });
+        if (v?.now) clockSamples.push({ round: clockRound, site, offset: v.now - (s + e) / 2, rtt: e - s, term: v.term, role: v.role,
+          before: v.clockBefore != null ? v.clockBefore - (s + e) / 2 : null, tick: v.clockAfter != null ? v.clockAfter - v.clockBefore : null,
+          lease: v.leaseClock ?? null });
       } catch { /* a member mid-kill */ }
     }));
     await sleep(15_000);
@@ -1072,7 +1076,8 @@ const v = {
     // on a real overlap adds the members' clock spread (clock.mjs's upper bound).
     overlapBoundMs: overlaps.length && clockSpread(clockSamples).upperMs != null
       ? Math.round(Math.max(...overlaps.map(([o]) => o)) + clockSpread(clockSamples).upperMs) : null,
-    clock: { samples: clockSamples.length, ...clockSpread(clockSamples), raw: clockSamples.map((c) => [c.round, c.site, Math.round(c.offset), c.rtt, c.term, c.role]),
+    clock: { samples: clockSamples.length, ...clockSpread(clockSamples), raw: clockSamples.map((c) => [c.round, c.site, Math.round(c.offset), c.rtt, c.term, c.role,
+      c.before == null ? null : Math.round(c.before), c.tick, c.lease]),
       maxAbsOffsetMs: clockSamples.length ? Math.round(Math.max(...clockSamples.map((c) => Math.abs(c.offset)))) : null },
   } } : {}),
   ...(plan.openPrs ? { testMerges: { ...budgetWindow(budgetBefore, budgetAfter, seconds), leader: lstats.testMerges ?? null,

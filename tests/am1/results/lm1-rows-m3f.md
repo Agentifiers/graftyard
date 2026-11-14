@@ -78,6 +78,40 @@ Admission during the burst (166 samples): capacity 323 / 947 / 1,056, `cmdBytes`
 
 Before the burst, while the load ran, site a's validates took p50 1.1 s and p90 1.9 s (100 sampled, 43 forwarded to pool shards), and agent pushes acked at p50 4.1 s. So even hot, agent pushes on this group were not under 5 s end to end; whether the burst meets 5 s on a warm group is the rerun's question.
 
+### L0-12 m3fr2: diagnostic only, stall and refusals cut off
+
+Repository 65557, run `mwgayihm`, replay 11:39:41Z to 11:49:41Z. The stall started next; the `rows-m3f-r2` service was stopped at about 12:15Z, in the stall's 20th minute of 30, so **the stall and refusal parts have no result**. The replay's numbers:
+
+| Line | Measured |
+|---|---|
+| Clock | `lowerMs` 704, `upperMs` 1,150. The low reading follows the leader role, not a site: whichever member leads reads 350 to 800 ms below both followers (raw samples, each leader change moves it) |
+| Feed p99 outside kills | 6,291 ms over 12,636 events. All 128 slowest were held by apac (site 2) learners after 1 to 8 `lagging` answers: the driver pinned pollers to members and did not route as the edge does |
+| Overlap | 133 samples, none over 0 ms |
+| Kills | 10 kills, 9 ok, 1 answered 503 `overloaded`; term 2 → 10 |
+| StepDowns | 5 × `CommitErrors` holds from site 2's leader (11:43:42Z to 11:44:41Z, 3 to 6 failed calls to sites 0 and 1 each), 2 from site 0's leader (11:47:41Z, 11:47:51Z); no `Confirm`. Trace sent to LM-1 |
+
+Leaderless spans per kill (live-voter terms trace `tests/fanout/raw/terms-m3fr2-l0-12.jsonl`; leader lost → new leader site and term):
+
+| Lost | Led | Gap |
+|---|---|---|
+| 11:43:00Z | 11:43:07Z, site 1, t3 | 7 s |
+| 11:43:08Z | 11:43:26Z, site 2, t4 | 18 s |
+| 11:45:52Z | 11:45:56Z, site 0, t5 | 4 s |
+| 11:46:19Z | 11:46:26Z, site 1, t6 | 7 s |
+| 11:46:35Z | 11:46:49Z, site 0, t7 | 15 s (rounded from 14) |
+| 11:47:03Z | 11:47:14Z, site 1, t8 | 11 s |
+| 11:47:35Z | 11:47:35Z, site 0, t9 | 0 s |
+| 11:49:29Z | 11:49:54Z, site 1, t10 | 26 s |
+
+BUILD-PLAN's L0-12 gives no 15 s kill window; the 15 s `KILL_WINDOW_MS` is `a1.mjs`'s own. `ELECTION_AFTER` is 10 s (`crates/raft/src/lib.rs`), so a gap of 11 to 26 s is an election that ran past one timeout. The `/suspect` bursts start 11:43:24Z, 11:45:57Z, 11:46:51Z, 11:47:15Z, 11:47:37Z, 11:49:29Z and 11:49:55Z. Pre-vote, vote and first-commit times per kill are in no log on this build; they need Raft-level logs.
+
+**Teardown leak after m3fr2.** With the stall's `/_bed/fault?site=255` still armed when the service stopped, every member call failed, `/_bed/kill` could not read the repository's record (`release: release#9#f1: 409`, 500 after 20 s), and five shards stayed running: `git#2#net:65555` (from 10:43Z), `git#2#net:65556` (from 11:06Z), and `git#{0,1,2}#net:65557` (from 11:07Z to 11:43Z), until 12:28Z. `rows.sh` printed "torn down" because `teardown.py` exited 0 on 500s. Fixed in `teardown.py`: `--sweep` clears the site fault first, and a teardown with any non-200 exits 1. `/_bed/fault?off=1`, then `--sweep`: 5 × 200, none running.
+
+**Built since (for the L0-12 rerun):**
+
+- Clock check, branch `leader-clock-check` off main `7200c96`: `/status?clock=1` adds `clockBefore` and `clockAfter` around one awaited macrotask and `leaseClock`; `Stats::lease_clock` records, per leader input that appended an entry, `at` → after the step and `at` → next macrotask (`/stats?summary=1` `leaseClock`). `a1.mjs` reads `?clock=1` and keeps the three readings in each raw clock sample.
+- Feed driver `f3dd757e`: polls as the edge's `activity` routes them (learners first, then non-leader voters, up to 3; a lagging member's poll moves on; `lagging_ok` on the least lagged learner when all lag).
+
 ## Rows m3fr1 (2026-11-14, `tests/fanout/rows-m3f.sh`, TAG `m3fr1`)
 
 Every row ran on a fresh repository with learners enam 4,000, weur 2,000, apac 2,000 (8 learners), k 4 granted on both warm sites, and the row's shards torn down after it. Raw files: `tests/am1/raw/a1-<row>-<run>.jsonl`, `tests/fanout/raw/{terms,admit}-m3fr1-<row>.jsonl`, and `tests/fanout/raw/rows-m3fr1.status`. All of them are git-ignored.
