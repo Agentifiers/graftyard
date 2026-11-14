@@ -5,9 +5,12 @@
 //   node workers/site/deploy.mjs <sites.json> [--genesis <genesis.json>] [--skip-build] [--test-faults] [--vars <vars.json>]
 //                                [--image <digest-pinned image>] [--anchor <install.toml>] [--roll-shards <edge url>]
 //                                [--ops <graft-ops script>] [--var K=V ...] [--only <site id>] [--down <site id>]
+//                                [--audit-stream <Basin Pipelines stream id>]
 // `--test-faults` builds with the `test-faults` feature, for test installs only; `--vars` adds variables to every site
 // (the 24-hour run's GRAFTYARD_FAULTS and GRAFTYARD_REQUEST_RETENTION_S, and `GRAFTYARD_HOST`, the API host webhook
 // payloads name). `--ops` binds the install's `graft-ops` as `OPS`, which `HookSequencer` unwraps hook secrets with.
+// `--audit-stream <id>` binds that Basin Pipelines stream as `AUDIT_STREAM`, which the `Audit` consumer sends each
+// scanned identity entry's rows to before it moves its cursor (workers/site/src/audit.rs).
 // `--var K=V` adds one more variable to every site deployed. `--only <id>` deploys that site alone (its phase 2
 // config), leaving the others' versions and members untouched. `--down <id>` sets `GRAFTYARD_SITE_DOWN=1` on that
 // site, which stops every class it hosts as if the site were lost (workers/site/src/lib.rs, `site_down`); the next
@@ -43,6 +46,8 @@ const only = idFlag("--only");
 const down = idFlag("--down");
 const ii = flags.indexOf("--image");
 const image = ii >= 0 ? flags[ii + 1] : null;
+const si = flags.indexOf("--audit-stream");
+const auditStream = si >= 0 ? flags[si + 1] : null;
 const oi = flags.indexOf("--ops");
 const ops = oi >= 0 ? flags[oi + 1] : null;
 const ai = flags.indexOf("--anchor");
@@ -108,6 +113,7 @@ function config(site, targets, own = true, phase1 = false) {
       ...(ops ? [{ binding: "OPS", service: ops }] : []),
     ],
     r2_buckets: sites.map((s) => ({ binding: `BUCKET_${s.id}`, bucket_name: s.bucket })),
+    ...(auditStream ? { pipelines: [{ binding: "AUDIT_STREAM", stream: auditStream }] } : {}),
     containers: [{
       class_name: "GitShard",
       scheduling_policy: "durable_object",

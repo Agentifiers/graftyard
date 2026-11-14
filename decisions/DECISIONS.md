@@ -2146,6 +2146,20 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 **Flip.** `Authz` followers and learners that shed most reads at the row's rate, or dep reads still past 1 s on the repository leader after the move.
 
+### Pushes stream through the edge, 2026-11-14
+
+LM-1's B0-34 seed on `graft-m2b` failed every 60 MB push with `exceededMemory` or a hung exception on the edge: `receive_pack` read the whole body into one `Vec` before it parsed the commands, then copied it into the validate body and each bucket's put. B0-20 (`design/DESIGN.md`, Milestone 0) fails a push that needs buffering, so this is a code gap and the row stays as written.
+
+**Decision.** The edge holds a push body only while it may still be inline: until its commands parse and more than `INLINE_MAX` of pack follows them (`graftyard_git::smart::BodyReader`). Such a body, and a gzip body, which git sends only below `postBuffer`, is handled as before, from the whole body. The rest of a longer body streams through `PackStore::place_streamed`: the tee hashes it, hands it on to validate through a one-chunk pipe, and fills two part buffers in JavaScript memory (`JsPart`), each put to every bucket still taking the pack before it is filled again. The cap counts every byte, and a body past it is answered the same `cap_refusal`. A streamed validate goes to the first shard of `shard_order` only, with a 60 s wait and no trailer, and a non-422, non-429 answer is a 503 `Retry-After`. The `DurablePack` still needs validate's index to name the SHA-256 and length the tee read.
+
+**Why.** Two parts bound the isolate's pack bytes at 32 MiB at `PART_SIZE` whatever the push's size, and a part in a `Uint8Array` is passed to R2 as a view, so neither the wasm heap nor a copy per bucket holds it. The validate body cannot be read twice, and the trailer is the pack's last 20 bytes.
+
+**Beat.** Buffering up to the cap and streaming above it: B0-34's 60 MB pushes are under any cap. Retrying validate on the next shard: it needs the body again, so the edge would hold it. Putting each part to two buckets and leaving the third to the filler: the filler copies whole packs, and the tee would still wait on two. Answering an early refusal (atomic refs, format, `COMMAND_MAX`, placement failing) before the rest of the body is read: the old code read the body first, so a body over the cap got the cap refusal, and it still does.
+
+**Evidence.** `the_edge_holds_a_push_body_only_while_its_pack_may_be_inline` and `a_push_body_the_edge_does_not_stream_reads_as_when_it_was_held_whole` in `crates/git/src/smart.rs`; `a_streamed_pack_holds_two_parts_whatever_its_size`, `a_streamed_pack_is_durable_only_on_the_bytes_validate_indexed`, and `a_streamed_pack_that_breaks_off_places_nothing` in `crates/git/src/store.rs`; `tests/streampush/plant.py`; the hosted pushes on `graft-m3f` in `tests/am1/results/stream-push.md`.
+
+**Flip.** A hosted push whose edge memory grows with the pack's size, or streamed pushes that answer 503 often enough on a warming home shard that a buffered retry across shards would serve them better.
+
 ### LM-1 round 6: shards stream push bodies and cap validates, 2026-11-12
 
 Round 6's baseline (`tests/am1/results/lm1-memory.md`, section 13) failed B0-31, B0-32, and B0-34 in the git cache, not in the group: the first shard's Durable Object read each push body (`req.bytes()`) and copied it three or four times before the container saw it, and the container ran every validate at once.
@@ -3075,6 +3089,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Measured, not a decision.** On main `84d29c2` (F67 rules 10 to 13) plus the pipeline and `LOOP_LAG`, B0-02's gate passed 7 of 8 at 300 and 5 of 8 at 330 (`tests/m0/results/carried-8.md`). The near-gap shape did not recur (no near call of 400 ms or more outside r330-6) and no leader was clamped, so neither rule above is reversed. Two misses meet the `ENTRY_SOFT` flip ("capped entries do not lower commit p99") at 330: one 60 KB entry per round at a round p50 of 169 to 174 ms holds the group to 322 to 331 commands/s. One miss is a far follower whose catch-up calls of 319 to 717 KB missed `CALL_DEADLINE`, so `failed_to` turned off its pipeline and every later call carried the backlog; with a slow near follower, `CommitErrors` moved leadership to the far site. The next step is the operator's (C20).
 
+### M4-WP1's hosted half: webhook attempts run in per-hook lanes, 2026-11-13
+
+**Decision.** The `HookSequencer` keeps order, the delivery rows, and the cursor halves, and signs every request. It sends each attempt through the hook's lane, `hooklane:<wire>:<hook>`, an object of the same class on the store's site that keeps nothing. One lane call carries a queue's run: its head and up to `RUN_MAX` (8) deliveries queued behind it, sent in order and stopped at the first non-2xx or after `RUN_FOR_MS` (2 s). The store records each sent delivery as its queue's attempt only once it is the queue's front (`Sequencer::queued_after`, `next_in_run`), so one attempt in flight per (chain, hook) and chain order hold as before. Lanes are named and routed by `LANE_WIRE`, so a store on a new release never reaches a lane still running an old one.
+
+**Why.** BF-57's healthy p99 stayed at 2.1 to 3.2 s through runs 8 to 12, because every POST ran inside the owner's one object behind its other work. A probe at 49 busy queues put the POST at 184 to 301 ms p50 inside one object, at 205 ms from an invocation of the site script over its own `SITE` binding, which runs beside its caller, and at 7 ms from a separate object (`graft-m4-probe-sb5`, `-sb8`, 2026-11-13). Run 13, on the `SITE` binding, had p99 9.4 s. Run 14, on per-hook lanes with one attempt per call, had p99 2.10 s, and all 124 late deliveries were behind earlier entries of their own queue. Run 16, with runs, had p99 1.11 s and none over 2 s (`tests/m4/results/m4-wp1-hosted.md`) [measured].
+
+**Beat.** Stateless delivery Workers over the site script's own `SITE` binding, as DESIGN's Shape first read and as `prsync::in_band` does (run 13, 9.4 s). Batching the store's report writes (runs 10 to 12, no gain). Attempts through Queues (latency). One lane call per attempt (run 14, 2.10 s).
+
+**Evidence.** `tests/m4/results/m4-wp1-hosted.md`, BF-57 runs 13 to 16. `a_run_sends_a_queues_waiting_deliveries_in_order_under_one_slot` (`crates/git/src/sequencer.rs`).
+
+**Flip.** A run in which lanes do not shorten the healthy tail against the store's own POSTs, or a chain-order inversion that a run causes.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).
@@ -3114,3 +3140,19 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** `tests/am1/results/fresh-repo.md`, "Bug 2".
 
 **Flip.** None needed. A driver that must survive a lost answer should read the repository's `main`, not its settings.
+
+### `liveness-split-vote`: a voter that granted a rival's pre-vote waits before its own, 2026-11-14
+
+#### A pre-vote grant holds back the granter's own campaign
+
+**Decision.** Two rules in `crates/raft/src/member/election.rs`. Pre-vote grants and refusals are otherwise unchanged.
+- A voter that grants a rival's pre-vote starts no campaign of its own for one CALL_DEADLINE (1 s) from the first grant for that asked term (`pre_granted`). A repeated pre-vote for the same term does not extend the wait.
+- A voter whose own pre-vote is out when it grants a rival's drops its own (`lose_campaign`, with its usual backoff). A real campaign it already started is kept.
+
+**Why.** `long_liveness`'s writes-fail target (every group moved within 20 s) missed seed 14011 on main (21.5 s) and seed 3052 on `m0-adaptive-append` (21.9 s). The trace of 14011: with site 0's writes failing, followers 1 and 2 lost their promises together, and the same `suspect` reports, which every edge sends to both, started both within 31 to 117 ms, three terms running (4, 5 and 6). Each granted the other's pre-vote: site 2's reached site 1 just before the report that started site 1, and a campaigning member denies only a higher id as `Contending`, so site 2 granted site 1. Both entered the real vote and each refused the other as `Voted`. Site 0 never answered in time, so each campaign ran its full CAMPAIGN_DEADLINE (3 s), lost, backed off 100 to 400 ms, and the next report started both again [measured, simulator, `tests/m0/results/split-vote.md`]. The random backoff does not separate them because the reports, not the backoff, set when they start. The first rule alone fixed 14011 and 3052 but, over 20,000 seeds, made two other seeds fail that pass on main: 15198 (3 leader changes) and 21945 (22.2 s). In both, each follower's own pre-vote was already out when it granted the other's, so the wait did not apply; the gray leader, still a follower answering pre-votes, granted both, and the two real votes split. The second rule closes that path.
+
+**Beat.** A longer or wider random backoff: the restart comes from the reports, which arrive at both voters together, so a backoff only delays both. Denying a pre-vote while the voter has granted one, which needs a second refusal kind on the wire. Letting a lost real vote end before CAMPAIGN_DEADLINE when every answer is `Voted`, which shortens each failed term but does not stop the next split.
+
+**Evidence.** `a_voter_that_granted_a_rivals_pre_vote_lets_it_win` and `a_voter_that_grants_a_rivals_pre_vote_drops_its_own` (`crates/raft/tests/scenarios.rs`), each failing without its rule. `tests/m0carried/plant10.py` plants seven mutants of the two rules. The writes-fail scan, the long sweep and Porcupine are in `tests/m0/results/split-vote.md`.
+
+**Flip.** A history in which the wait delays an election past the liveness bound, for example a rival whose pre-vote passes and whose real vote never arrives, repeated each term; or a writes-fail seed over 20 s that is still a split vote.

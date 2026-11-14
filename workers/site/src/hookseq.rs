@@ -11,12 +11,14 @@
 //!   next site, and tries the home site again every `HOME_RETRY_MS`. A store the consumer has not talked to in this
 //!   leadership is first asked what it holds, and one that holds nothing of the chain (new, rebuilt, or lost with its
 //!   site) is filled from the committed `replay_from`, which redelivers unfinished deliveries under their GUIDs.
-//! - **The object** (`HookSequencer`). It keeps the `Sequencer` in its SQLite (one `core` row and one row per delivery). Its
-//!   alarm starts attempts (`Sequencer::start`); each attempt runs as a call from the object to itself (`/attempt`),
-//!   which POSTs `graftyard_api::webhooks::request` with a 10 s deadline and reports the result. A Durable Object's own
-//!   outbound `fetch` runs at most 6 at once, and calls the object receives do not share that cap: 50 two-second
-//!   fetches through self-calls took 2.1 s [measured, probe `graft-m4-probe-conn`, 2026-11-13]. A report starts the
-//!   queue's next attempt at once.
+//! - **The object** (`HookSequencer`). It keeps the `Sequencer` in its SQLite (one `core` row and one row per delivery)
+//!   and owns order, the cursor halves, and the delivery rows. Its alarm starts attempts (`Sequencer::start`); each
+//!   attempt runs as a call from the object to itself (`/attempt`), which builds and signs the request and hands it
+//!   to the hook's lane (`lane_post`), the delivery Worker: an object of this class that keeps nothing, POSTs with the
+//!   10 s deadline, and answers the result, which the store reports. A report starts the queue's next attempt at once.
+//! - **Attempts in flight.** One per (chain, hook) queue and one on the hook's own queue (pings and manual
+//!   redeliveries), so at most two per hook and per lane, and at most `HOOK_OWNER_CONCURRENCY` per owner, failing
+//!   hooks at most half. The next attempt a report starts keeps its queue's slot; it never takes another queue's.
 //! - **Secrets.** A hook secret is unwrapped by `graft-ops` (`/unwrap` over the `OPS` binding) and kept only in this
 //!   isolate's memory. A hook whose secret cannot be unwrapped gets a failed attempt, never an unsigned one.
 //!
@@ -60,16 +62,36 @@ const CURSOR_EVERY_MS: u64 = 1_000;
 const POLL_MS: i64 = 1_000;
 /// A store call with no answer by then counts as failed [guess].
 const STORE_FOR: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long one `/attempt` call keeps starting its queue's next attempts (`HookSequencer::attempt`) [guess: under the
+/// 30 s `waitUntil` grace of the alarm that started it].
+const CHAIN_FOR_MS: u64 = 20_000;
 /// After falling back from the home site's store, the consumer tries the home site again this often [guess].
 const HOME_RETRY_MS: u64 = 30_000;
-/// How long a batch's logins and `Authz` read serve the next batches of the same leadership [guess].
+/// How long a batch's logins and `Authz` read serve the next batches of the same leadership before a refresh starts
+/// beside them [guess]. A round that waited for that refresh stopped bf57b's consumer for 26 s in BF-57 run 4
+/// [inference: the stall began about 30 s after the leadership's first read, and nothing else in the round logged].
 const DIR_FOR_MS: u64 = 30_000;
+/// The store drops finished deliveries past their 3 days at most this often [guess]. `prune` walks every delivery
+/// held, about 35 ms of CPU per alarm with BF-57 run 8's 80,000 (graft-m4a), and the alarm ran 4 to 5 times a second:
+/// a third of the object's time, which every attempt's report waited behind [measured,
+/// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 8].
+const PRUNE_EVERY_MS: u64 = 60_000;
+/// Attempt reports are written together, once per this window, not one transaction each [guess]. A Durable Object
+/// holds every outgoing fetch until all its earlier writes are confirmed, so an attempt's POST waits for any write still
+/// unconfirmed. With one commit per report an attempt took 110 ms at p50 (BF-57 run 9), and with one every 50 ms 223 ms
+/// at p50 against 6 ms when no write was pending (run 11) [measured, `tests/m4/results/m4-wp1-hosted.md`]: a window of
+/// 50 ms left a write pending almost always. A report lost to a reset inside the window leaves its attempt to be
+/// re-sent under its GUID after `RESEND_AFTER_MS`, which the at-least-once contract allows.
+const REPORT_SAVE_MS: u64 = 1_000;
 
 /// One leadership's consumer state, in this isolate's memory.
 #[derive(Default)]
 struct Consumer {
     leadership: (u64, u64),
     busy: bool,
+    /// An alarm came while a round ran: the round's end starts the next one at once, rather than after `POLL_MS`, so
+    /// an entry committed meanwhile is recorded without waiting a poll.
+    again: bool,
     /// The site whose store the consumer records in, and how far that store said it holds the chain (`None` for
     /// nothing). `None` until a store answered in this leadership.
     store: Option<(SiteId, Option<Index>)>,
@@ -79,6 +101,8 @@ struct Consumer {
     /// Rows recorded since the last cursor commit.
     dirty: bool,
     dir: Option<(u64, HostedDir)>,
+    /// A refresh of a stale `dir` is running beside the rounds.
+    dir_refreshing: bool,
 }
 
 thread_local! {
@@ -145,6 +169,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
             *s = Consumer { leadership, ..Consumer::default() };
         }
         if s.busy {
+            s.again = true;
             return false;
         }
         s.busy = true;
@@ -156,7 +181,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
     let w = Rc::downgrade(h);
     spawn_local(async move {
         let Some(h) = w.upgrade() else { return };
-        let r = round(&h, &key, repo, owner, &record, cursor, applied).await;
+        let r = round(&h, &key, repo, owner, &record, cursor, applied, leadership).await;
         let again = match &r {
             Ok(again) => *again,
             Err(e) => {
@@ -164,11 +189,13 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
                 Some(POLL_MS * 5)
             }
         };
-        CONSUMERS.with(|m| {
-            if let Some(s) = m.borrow_mut().get_mut(&key).filter(|s| s.leadership == leadership) {
-                s.busy = false;
-            }
+        let woke = CONSUMERS.with(|m| {
+            let mut m = m.borrow_mut();
+            let s = m.get_mut(&key).filter(|s| s.leadership == leadership)?;
+            s.busy = false;
+            Some(std::mem::take(&mut s.again))
         });
+        let again = if woke == Some(true) && r.is_ok() { Some(0) } else { again };
         if let Some(ms) = again {
             h.arm_in(ms);
         }
@@ -176,6 +203,7 @@ pub async fn on_alarm(h: &Rc<Host<Repo>>) {
 }
 
 /// One round: ask or fill the store, then commit the cursor if due. Answers when the alarm should come back.
+#[expect(clippy::too_many_arguments, reason = "what `on_alarm` read from the member under one borrow")]
 async fn round(
     h: &Rc<Host<Repo>>,
     key: &str,
@@ -184,15 +212,45 @@ async fn round(
     record: &PlacementRecord,
     committed: HookCursor,
     applied: Index,
+    leadership: (u64, u64),
 ) -> std::result::Result<Option<i64>, String> {
     let chain = ChainId::Repo(repo);
     let now = now_ms();
-    let (store, dir_cached) = CONSUMERS.with(|m| {
-        let m = m.borrow();
+    // A directory past `DIR_FOR_MS` still serves while a refresh runs beside the rounds, so its reads (the owner's
+    // `Authz` and the logins) never hold a round; only a consumer with none yet waits for one.
+    let (store, dir_cached, refresh) = CONSUMERS.with(|m| {
+        let mut m = m.borrow_mut();
+        let s = m.get_mut(key);
+        let stale = s.as_ref().and_then(|s| s.dir.as_ref()).is_some_and(|(at, _)| now >= at + DIR_FOR_MS);
+        let refresh = match s {
+            Some(s) if stale && !s.dir_refreshing => {
+                s.dir_refreshing = true;
+                true
+            }
+            _ => false,
+        };
         let s = m.get(key);
-        let dir = s.and_then(|s| s.dir.as_ref()).filter(|(at, _)| now < at + DIR_FOR_MS).map(|(_, d)| d.clone());
-        (s.and_then(|s| s.store), dir)
+        (s.and_then(|s| s.store), s.and_then(|s| s.dir.as_ref()).map(|(_, d)| d.clone()), refresh)
     });
+    if refresh {
+        let (w, key, record) = (Rc::downgrade(h), key.to_owned(), record.clone());
+        spawn_local(async move {
+            let Some(h) = w.upgrade() else { return };
+            let t0 = now_ms();
+            let d = crate::host::within(STORE_FOR, directory(&h, repo, owner, &record)).await;
+            console_log!("webhooks dir {} refreshed in {}ms", repo.0.0, now_ms() - t0);
+            CONSUMERS.with(|m| {
+                if let Some(s) = m.borrow_mut().get_mut(&key) {
+                    s.dir_refreshing = false;
+                    match d {
+                        Some(Ok(d)) => s.dir = Some((now_ms(), d)),
+                        Some(Err(e)) => console_error!("webhooks dir {}: {e}", repo.0.0),
+                        None => console_error!("webhooks dir {}: no answer in {} s", repo.0.0, STORE_FOR.as_secs()),
+                    }
+                }
+            });
+        });
+    }
     // The store in use, or the home site's when none answered yet or home is due to be tried again: asked first.
     let home_failed_at = CONSUMERS.with(|m| m.borrow().get(key).map_or(0, |s| s.home_failed_at));
     let home_down = now < home_failed_at + HOME_RETRY_MS;
@@ -209,16 +267,20 @@ async fn round(
             (site, res.recorded)
         }
     };
-    // A store that holds nothing of the chain, or holds it only to before the committed `read` (one the consumer left
-    // for another site's and came back to), is filled from the committed `replay_from`.
-    let replay = held.is_none_or(|h| h < committed.read);
-    let start = consumer_start(committed, if replay { None } else { held });
+    // A store that holds nothing of the chain is filled from the committed `replay_from`; one that holds it only to
+    // before the committed `read` (one the consumer left for another site's and came back to) continues past what it
+    // holds, or from `replay_from` if that is later (`consumer_start`). Either batch is a replay: the store takes it
+    // even though it holds the chain only to before `from`.
+    let start = consumer_start(committed, held);
+    let replay = held.is_none_or(|h| h < start);
     let through = Index(applied.0.min(start.0 + BATCH_ENTRIES));
     let (rows, hooks, through) = if through > start || replay {
         let dir = match dir_cached {
             Some(d) => d,
             None => {
-                let d = directory(h, repo, owner, record).await?;
+                let d = crate::host::within(STORE_FOR, directory(h, repo, owner, record))
+                    .await
+                    .ok_or_else(|| format!("the directory read took over {} s", STORE_FOR.as_secs()))??;
                 CONSUMERS.with(|m| {
                     if let Some(s) = m.borrow_mut().get_mut(key) {
                         s.dir = Some((now, d.clone()));
@@ -266,11 +328,38 @@ async fn round(
     let mut wait = None;
     if let Some(next) = cursor_to_commit(committed, res.cursor, dirty) {
         if due {
-            commit_cursor(h, next).await?;
+            // The commit runs beside the next rounds rather than holding them: a round waited for it, a quorum round
+            // trip, before recording the next entries' rows. A failed one marks the rows uncommitted again; a late
+            // one is harmless, as `HookCursorCmd` only moves forward.
             CONSUMERS.with(|m| {
                 if let Some(s) = m.borrow_mut().get_mut(key) {
                     s.cursor_at = now_ms();
                     s.dirty = false;
+                }
+            });
+            // BF-57's cursor lag: from the commit of the first entry this cursor passes that carries anything but a
+            // cursor, to the cursor's own commit. A cursor entry has no webhook, and a lag from one only measures the
+            // cursor chasing its own tail (run 9's one 8.6 s lag passed nothing else).
+            let first_at = (committed.read.0 + 1..=next.read.0).find_map(|i| event_time(h, Index(i)));
+            let (w, key) = (Rc::downgrade(h), key.to_owned());
+            spawn_local(async move {
+                let Some(h) = w.upgrade() else { return };
+                let r = commit_cursor(&h, next).await;
+                if let (Ok(()), Some(at)) = (&r, first_at) {
+                    console_log!(
+                        "webhooks cursor {} read {} lag {}ms",
+                        repo.0.0,
+                        next.read.0,
+                        now_ms().saturating_sub(at.0)
+                    );
+                }
+                if let Err(e) = r {
+                    console_error!("webhooks cursor {}: {e}", repo.0.0);
+                    CONSUMERS.with(|m| {
+                        if let Some(s) = m.borrow_mut().get_mut(&key).filter(|s| s.leadership == leadership) {
+                            s.dirty = true;
+                        }
+                    });
                 }
             });
         } else {
@@ -451,6 +540,25 @@ fn api_host(env: &Env) -> String {
     env.var("GRAFTYARD_HOST").map(|v| v.to_string()).unwrap_or_else(|_| "graftyard.dev".into())
 }
 
+/// When the entry at `i` was appended, by the leader's clock, if it carries an event other than `HookCursor`; from the
+/// member's log or the stored log.
+fn event_time(h: &Rc<Host<Repo>>, i: Index) -> Option<Timestamp> {
+    let core = h.core.borrow();
+    let c = core.as_ref()?;
+    let e = match c.m.entry_at(i) {
+        Some(e) => e.clone(),
+        None => crate::host::stored_entry::<Repo>(&h.state.storage().sql(), i)?,
+    };
+    match &e.body {
+        graftyard_raft::EntryBody::Events(evs)
+            if evs.iter().any(|v| !matches!(v, git::repo::RepoEvent::HookCursor(_))) =>
+        {
+            Some(e.at)
+        }
+        _ => None,
+    }
+}
+
 /// `HookCursorCmd` through this member, waiting for its outcome.
 async fn commit_cursor(h: &Rc<Host<Repo>>, cursor: HookCursor) -> std::result::Result<(), String> {
     let rid = graftyard_lookup::request_id();
@@ -472,21 +580,43 @@ pub struct HookSequencer {
     state: Rc<State>,
     env: Env,
     seq: Rc<RefCell<Option<Sequencer>>>,
+    pruned_at: std::cell::Cell<u64>,
+    /// A `save` of attempt reports is scheduled (`save_soon`).
+    save_due: Rc<std::cell::Cell<bool>>,
 }
 
-const SCHEMA: [&str; 3] = [
+/// A delivery's payload is kept in `body`, apart from its `delivery` row, and the object holds in memory only the
+/// bodies of deliveries not yet done: on graft-m4a at 10 events/s over 50 hooks, a store that held every 11.7 KB body
+/// in its rows and in memory reached about 7,300 deliveries (85 MB of bodies) in 30 s, and its isolate then failed
+/// inside `transactionSync` ("Critical", "Reinitializing Wasm application") 21 times in 13 minutes, losing the
+/// attempts it was running each time [measured, `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 2]. A done delivery's
+/// body is read back from SQLite only for `GET .../deliveries/{id}` and a manual redelivery.
+const SCHEMA: [&str; 5] = [
     "CREATE TABLE IF NOT EXISTS core (k INTEGER PRIMARY KEY CHECK (k = 0), v BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS delivery (guid BLOB PRIMARY KEY, row BLOB NOT NULL)",
     "CREATE TABLE IF NOT EXISTS born (k INTEGER PRIMARY KEY CHECK (k = 0), at INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS body (guid BLOB PRIMARY KEY, b BLOB NOT NULL)",
+    // One body per entry and slot, which every hook of that webhook shares (`body_key`), kept while the store holds a
+    // delivery of it. The per-delivery `body` table above is read only for rows written before it.
+    "CREATE TABLE IF NOT EXISTS shared_body (k BLOB PRIMARY KEY, b BLOB NOT NULL)",
 ];
 
 impl DurableObject for HookSequencer {
     fn new(state: State, env: Env) -> Self {
-        let sql = state.storage().sql();
-        for s in SCHEMA {
-            sql.exec(s, None).expect("hookseq schema");
+        // A lane keeps nothing (`lane_post`).
+        if !state.id().name().is_some_and(|n| n.starts_with(LANE_PREFIX)) {
+            let sql = state.storage().sql();
+            for s in SCHEMA {
+                sql.exec(s, None).expect("hookseq schema");
+            }
         }
-        HookSequencer { state: Rc::new(state), env, seq: Rc::default() }
+        HookSequencer {
+            state: Rc::new(state),
+            env,
+            seq: Rc::default(),
+            pruned_at: std::cell::Cell::new(0),
+            save_due: Rc::default(),
+        }
     }
 
     async fn fetch(&self, mut req: Request) -> Result<Response> {
@@ -494,6 +624,10 @@ impl DurableObject for HookSequencer {
             return Response::error("site down", 503);
         }
         let url = req.url()?;
+        if req.method() == Method::Post && url.path() == format!("/lane/{LANE_WIRE}") {
+            let run: Vec<Lane> = codec::from_bytes(&req.bytes().await?).map_err(|e| Error::RustError(e.to_string()))?;
+            return Response::from_bytes(codec::to_bytes(&lane_run(&run).await));
+        }
         self.load()?;
         match (req.method(), url.path()) {
             (Method::Post, "/record") => {
@@ -515,6 +649,17 @@ impl DurableObject for HookSequencer {
                     *b = (js_sys::Math::random() * 256.0) as u8;
                 }
                 let tail: Vec<&str> = r.tail.iter().map(String::as_str).collect();
+                // One delivery's page shows its payload, which a done delivery keeps only in SQLite.
+                let one = match tail.as_slice() {
+                    ["deliveries", n] => n
+                        .parse::<u64>()
+                        .ok()
+                        .and_then(|n| self.seq.borrow().as_ref().and_then(|s| s.get(r.id, n).map(|(d, _)| d.guid))),
+                    _ => None,
+                };
+                if let Some(g) = one {
+                    self.ensure_body(&g)?;
+                }
                 let reply = {
                     let mut g = self.seq.borrow_mut();
                     let seq = g.as_mut().expect("loaded");
@@ -602,6 +747,8 @@ impl HookSequencer {
                 vec![
                     ("DELETE FROM core", vec![]),
                     ("DELETE FROM delivery", vec![]),
+                    ("DELETE FROM body", vec![]),
+                    ("DELETE FROM shared_body", vec![]),
                     ("INSERT OR REPLACE INTO born (k, at) VALUES (0, ?)", vec![crate::host::i(now)]),
                 ],
             )
@@ -612,11 +759,28 @@ impl HookSequencer {
             Some(r) => {
                 let c: Sequencer =
                     codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+                // One row at a time, keeping no done delivery's body: rows written before bodies had their own table
+                // carry theirs inline, and reading every one at once kept the store's isolate failing in `save` in
+                // BF-57's run 3, with about 14,000 of them from runs 1 and 2.
                 let mut ds: Vec<HookDelivery> = Vec::new();
-                for r in crate::host::rows(&sql, "SELECT row FROM delivery", vec![])? {
-                    ds.push(codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?);
+                for r in sql.exec("SELECT row FROM delivery", None)?.raw() {
+                    let r = r?;
+                    let mut d: HookDelivery =
+                        codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+                    if d.done {
+                        d.body = Box::default();
+                    }
+                    ds.push(d);
                 }
-                Sequencer::restore(c, ds)
+                let undone: Vec<(Guid, Vec<u8>)> =
+                    ds.iter().filter(|d| !d.done).map(|d| (d.guid, body_key(d))).collect();
+                let mut seq = Sequencer::restore(c, ds);
+                for (g, k) in undone {
+                    if let Some(b) = read_body(&sql, &g, k)? {
+                        seq.set_body(&g, b);
+                    }
+                }
+                seq
             }
             None => Sequencer::new(self.owner(), Timestamp(now)),
         };
@@ -626,20 +790,7 @@ impl HookSequencer {
 
     /// Writes the core row and the deliveries that changed, in one transaction.
     fn save(&self) -> Result<()> {
-        let mut g = self.seq.borrow_mut();
-        let Some(s) = g.as_mut() else { return Ok(()) };
-        let mut stmts: Vec<crate::family::Stmt> = Vec::new();
-        for (guid, d) in s.take_dirty() {
-            match d {
-                Some(d) => stmts.push((
-                    "INSERT OR REPLACE INTO delivery (guid, row) VALUES (?, ?)",
-                    vec![guid.0.to_vec().into(), codec::to_bytes(d).into()],
-                )),
-                None => stmts.push(("DELETE FROM delivery WHERE guid = ?", vec![guid.0.to_vec().into()])),
-            }
-        }
-        stmts.push(("INSERT OR REPLACE INTO core (k, v) VALUES (0, ?)", vec![codec::to_bytes(&*s).into()]));
-        crate::host::commit_tx(&self.state.storage(), stmts).map_err(Error::RustError)
+        save_seq(&self.state, &self.seq).map_err(Error::RustError)
     }
 
     fn record(&self, r: RecordReq) -> Result<RecordRes> {
@@ -692,7 +843,23 @@ impl HookSequencer {
         let starts = {
             let mut g = self.seq.borrow_mut();
             let Some(s) = g.as_mut() else { return Ok(()) };
-            s.prune(now);
+            if now.0 >= self.pruned_at.get() + PRUNE_EVERY_MS {
+                self.pruned_at.set(now.0);
+                s.prune(now);
+                // A shared body goes once the store holds none of its deliveries.
+                let held: std::collections::HashSet<Vec<u8>> = s.deliveries().map(body_key).collect();
+                let sql = self.state.storage().sql();
+                let mut gone: Vec<Vec<u8>> = Vec::new();
+                for r in sql.exec("SELECT k FROM shared_body", None)?.raw() {
+                    let k = crate::host::blob(&r?[0])?.to_vec();
+                    if !held.contains(&k) {
+                        gone.push(k);
+                    }
+                }
+                for k in gone {
+                    sql.exec("DELETE FROM shared_body WHERE k = ?", vec![k.into()])?;
+                }
+            }
             s.start(now)
         };
         self.save()?;
@@ -730,44 +897,147 @@ impl HookSequencer {
         Ok(())
     }
 
-    /// One attempt: the request for the delivery's hook as it is now, POSTed with the 10 s deadline, then reported.
-    async fn attempt(&self, s: Start) -> Result<()> {
+    /// One attempt and its run: the request for the delivery's hook as it is now, and for up to `RUN_MAX` deliveries
+    /// queued behind it (`Sequencer::queued_after`), sent in order through the hook's lane in one call, then reported.
+    /// Then, while the sequencer hands this queue its next attempt (`Sequencer::next_in_queue`), runs that one too in
+    /// the same call: a queue busy with one event after another no longer waits a whole `start` round between its
+    /// attempts, which held healthy first attempts to a p99 of 6.8 s in BF-57's run 2, nor a lane round trip per
+    /// attempt, which held them to 2.1 s in run 14.
+    /// A call chains for at most `CHAIN_FOR_MS`, so the alarm invocation that started it never holds it for long; a
+    /// call cut short leaves its attempt to be re-sent under its GUID after `RESEND_AFTER_MS`.
+    async fn attempt(&self, first: Start) -> Result<()> {
+        let t0 = now_ms();
+        let mut next = Some(first);
+        while let Some(s) = next.take() {
+            let last = self.attempt_run(s).await?;
+            if now_ms() >= t0 + CHAIN_FOR_MS {
+                break;
+            }
+            next = self.seq.borrow_mut().as_mut().expect("loaded").next_in_queue(&last, Timestamp(now_ms()));
+        }
+        self.kick();
+        Ok(())
+    }
+
+    /// `s` and the run behind it, sent and reported; answers the last attempt reported.
+    async fn attempt_run(&self, s: Start) -> Result<Start> {
+        let behind = self.seq.borrow().as_ref().expect("loaded").queued_after(&s, RUN_MAX);
+        let mut guids = Vec::new();
+        let mut reqs = Vec::new();
+        let mut failed = None;
+        for g in std::iter::once(s.guid).chain(behind) {
+            match self.lane_request(&g, s.hook).await? {
+                Ok(r) => {
+                    guids.push(g);
+                    reqs.push(r);
+                }
+                // The head's failure is its report; a later one ends the run before it.
+                Err(e) => {
+                    if reqs.is_empty() {
+                        guids.push(g);
+                        failed = Some(e);
+                    }
+                    break;
+                }
+            }
+        }
+        let call_at = now_ms();
+        let results = match failed {
+            Some(e) => vec![Sent { at_ms: 0, ms: 0, status: None, timed_out: false, response: Some(e) }],
+            None => lane_post(&self.env, s.hook, &reqs).await,
+        };
+        let mut prev = s.clone();
+        let mut last = s;
+        for (k, (g, r)) in guids.iter().zip(results).enumerate() {
+            let sent_at = call_at + r.at_ms;
+            let cur = if k == 0 {
+                prev.clone()
+            } else {
+                // The run sent it after `prev`; it is recorded as that queue's attempt, or left to be sent again.
+                let Some(c) =
+                    self.seq.borrow_mut().as_mut().expect("loaded").next_in_run(&prev, *g, Timestamp(sent_at))
+                else {
+                    break;
+                };
+                c
+            };
+            self.seq.borrow_mut().as_mut().expect("loaded").report(
+                cur.attempt,
+                Timestamp(sent_at + r.ms),
+                r.status,
+                r.timed_out,
+                r.response.as_deref(),
+            );
+            console_log!(
+                "hookseq {} {} hook {} attempt {} {:?} {}ms",
+                self.owner().0.0,
+                cur.guid,
+                cur.hook.0.0,
+                cur.attempt,
+                r.status,
+                now_ms().saturating_sub(sent_at)
+            );
+            last = cur.clone();
+            prev = cur;
+        }
+        self.save_soon();
+        Ok(last)
+    }
+
+    /// The request for delivery `guid` to `hook` as the hook is now, signed; `Err` with the reason it cannot be sent
+    /// (the delivery or hook is gone, or the secret could not be unwrapped: never an unsigned attempt).
+    async fn lane_request(&self, guid: &Guid, hook: HookId) -> Result<std::result::Result<Lane, String>> {
+        self.ensure_body(guid)?;
         let built = {
             let g = self.seq.borrow();
             let seq = g.as_ref().expect("loaded");
-            match (seq.delivery(&s.guid), seq.target(s.hook)) {
+            match (seq.delivery(guid), seq.target(hook)) {
                 (Some(d), Some(t)) => Some((d.clone(), t.clone())),
                 _ => None,
             }
         };
-        let started = now_ms();
-        let (status, timed_out, response) = match built {
-            None => (None, false, Some("the delivery or its hook is gone".to_owned())),
-            Some((d, t)) => match self.secret(&t).await {
-                Err(e) => (None, false, Some(format!("the hook secret could not be unwrapped: {e}"))),
-                Ok(secret) => {
-                    let target = ("repository", d.repo.map_or(0, |r| r.0.0));
-                    let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
-                    post(&r).await
-                }
-            },
+        let Some((d, t)) = built else { return Ok(Err("the delivery or its hook is gone".to_owned())) };
+        let secret = match self.secret(&t).await {
+            Ok(s) => s,
+            Err(e) => return Ok(Err(format!("the hook secret could not be unwrapped: {e}"))),
         };
-        {
-            let mut g = self.seq.borrow_mut();
-            let seq = g.as_mut().expect("loaded");
-            seq.report(s.attempt, Timestamp(now_ms()), status, timed_out, response.as_deref());
+        let target = ("repository", d.repo.map_or(0, |r| r.0.0));
+        let r = request(&api_host(&self.env), &d, &t, target, secret.as_ref());
+        Ok(Ok(Lane {
+            url: r.url,
+            headers: r.headers.into_iter().map(|(k, v)| (k.to_owned(), v)).collect(),
+            body: r.body,
+        }))
+    }
+
+    /// Writes what changed within `REPORT_SAVE_MS`, in one transaction with every other report of the window.
+    fn save_soon(&self) {
+        if self.save_due.replace(true) {
+            return;
         }
-        console_log!(
-            "hookseq {} {} hook {} attempt {} {:?} {}ms",
-            self.owner().0.0,
-            s.guid,
-            s.hook.0.0,
-            s.attempt,
-            status,
-            now_ms() - started
-        );
-        self.save()?;
-        self.kick();
+        let (state, seq, due) = (self.state.clone(), self.seq.clone(), self.save_due.clone());
+        spawn_local(async move {
+            worker::Delay::from(std::time::Duration::from_millis(REPORT_SAVE_MS)).await;
+            due.set(false);
+            if let Err(e) = save_seq(&state, &seq) {
+                console_error!("hookseq save: {e}");
+                // The writes failed: reset the object, as a failed synchronous `save` does through its error.
+                crate::host::abort(&state, "graftyard hookseq storage write failed");
+            }
+        });
+    }
+
+    /// Puts a delivery's body back in memory from `body` when it is not there: a done delivery's, for a manual
+    /// redelivery or `GET .../deliveries/{id}`.
+    fn ensure_body(&self, guid: &Guid) -> Result<()> {
+        let mut g = self.seq.borrow_mut();
+        let seq = g.as_mut().expect("loaded");
+        let key = seq.delivery(guid).filter(|d| d.body.is_empty()).map(body_key);
+        if let Some(k) = key
+            && let Some(b) = read_body(&self.state.storage().sql(), guid, k)?
+        {
+            seq.set_body(guid, b);
+        }
         Ok(())
     }
 
@@ -784,6 +1054,75 @@ impl HookSequencer {
     }
 }
 
+/// `HookSequencer::save`: the core row and the deliveries that changed, in one transaction.
+fn save_seq(state: &State, seq: &RefCell<Option<Sequencer>>) -> std::result::Result<(), String> {
+    let mut g = seq.borrow_mut();
+    let Some(s) = g.as_mut() else { return Ok(()) };
+    let mut stmts: Vec<crate::family::Stmt> = Vec::new();
+    let mut done = Vec::new();
+    for (guid, d) in s.take_dirty() {
+        let key: SqlStorageValue = guid.0.to_vec().into();
+        match d {
+            Some(d) => {
+                // A delivery's first write carries its body, which goes to `shared_body` once per entry and slot; the
+                // row never does.
+                if d.attempts.is_empty() && !d.body.is_empty() {
+                    stmts.push((
+                        "INSERT OR IGNORE INTO shared_body (k, b) VALUES (?, ?)",
+                        vec![body_key(d).into(), d.body.to_vec().into()],
+                    ));
+                }
+                let row = HookDelivery { body: Box::default(), ..d.clone() };
+                stmts.push((
+                    "INSERT OR REPLACE INTO delivery (guid, row) VALUES (?, ?)",
+                    vec![key, codec::to_bytes(&row).into()],
+                ));
+                if d.done {
+                    done.push(guid);
+                }
+            }
+            None => {
+                stmts.push(("DELETE FROM delivery WHERE guid = ?", vec![key.clone()]));
+                stmts.push(("DELETE FROM body WHERE guid = ?", vec![key]));
+            }
+        }
+    }
+    for g in done {
+        s.take_body(&g);
+    }
+    stmts.push(("INSERT OR REPLACE INTO core (k, v) VALUES (0, ?)", vec![codec::to_bytes(&*s).into()]));
+    crate::host::commit_tx(&state.storage(), stmts)
+}
+
+/// Where a delivery's body is kept in `shared_body`: its (chain, index, slot), which every hook of one webhook shares,
+/// or a ping's own GUID. One copy per entry and slot: graft-m4a's bf57b wrote 20 copies of each 11.7 KB payload, about
+/// 234 KB an entry, and an attempt whose POST the output gate held behind such a `/record` write took 114 ms at p50
+/// against 36 ms with none (BF-57 run 10, `tests/m4/results/m4-wp1-hosted.md`) [measured].
+fn body_key(d: &HookDelivery) -> Vec<u8> {
+    match d.entry {
+        Some(e) => codec::to_bytes(&e),
+        None => d.guid.0.to_vec(),
+    }
+}
+
+/// A delivery's body: from `shared_body` by `key`; for one written before that table, from `body`, or from before
+/// that, the row itself.
+fn read_body(sql: &SqlStorage, guid: &Guid, key: Vec<u8>) -> Result<Option<Box<[u8]>>> {
+    let rows = crate::host::rows(sql, "SELECT b FROM shared_body WHERE k = ?", vec![key.into()])?;
+    if let Some(r) = rows.first() {
+        return Ok(Some(crate::host::blob(&r[0])?.into()));
+    }
+    let key: SqlStorageValue = guid.0.to_vec().into();
+    let rows = crate::host::rows(sql, "SELECT b FROM body WHERE guid = ?", vec![key.clone()])?;
+    if let Some(r) = rows.first() {
+        return Ok(Some(crate::host::blob(&r[0])?.into()));
+    }
+    let rows = crate::host::rows(sql, "SELECT row FROM delivery WHERE guid = ?", vec![key])?;
+    let Some(r) = rows.first() else { return Ok(None) };
+    let d: HookDelivery = codec::from_bytes(crate::host::blob(&r[0])?).map_err(|e| Error::RustError(e.to_string()))?;
+    Ok((!d.body.is_empty()).then_some(d.body))
+}
+
 async fn unwrap(env: &Env, w: &Wrapped) -> std::result::Result<HookSecret, String> {
     let ops = env.service("OPS").map_err(|_| "no graft-ops binding")?;
     let mut init = RequestInit::new();
@@ -798,7 +1137,7 @@ async fn unwrap(env: &Env, w: &Wrapped) -> std::result::Result<HookSecret, Strin
 }
 
 /// POSTs one attempt under `ATTEMPT_DEADLINE_MS`: the status, whether it timed out, and the response body's start.
-async fn post(r: &graftyard_api::webhooks::Request) -> (Option<u16>, bool, Option<String>) {
+async fn post(r: &Lane) -> (Option<u16>, bool, Option<String>) {
     let headers = Headers::new();
     for (k, v) in &r.headers {
         let _ = headers.set(k, v);
@@ -825,5 +1164,94 @@ async fn post(r: &graftyard_api::webhooks::Request) -> (Option<u16>, bool, Optio
             ctrl.abort();
             (None, true, None)
         }
+    }
+}
+
+/// A lane: an object of this class named `hooklane:<hook>` on the store's site, which keeps nothing and only sends
+/// the requests the store hands it (`/lane`) and answers each result. The POST runs outside the store object, whose
+/// own outgoing fetches waited behind its other work: with 49 busy queues a POST took 205 to 301 ms at p50 from inside
+/// one object, the same from a stateless invocation of the site script over its own `SITE` binding (which runs beside
+/// its caller), and 7 ms from a separate object [measured, probes `graft-m4-probe-sb5` and `-sb8`, 2026-11-13,
+/// `tests/m4/results/m4-wp1-hosted.md`, BF-57 run 13]. Calls go one way, store to lane, so no call cycle forms
+/// (`tests/m3/results/m3-wp5.md`, "Where the depth comes from"). One lane per hook: it carries at most that hook's two
+/// queues' attempts at once.
+const LANE_PREFIX: &str = "hooklane:";
+/// The lane wire's version, in the lane's name and route. A running object keeps its old code until it restarts, so
+/// after site day 17 a new store's calls reached lanes still on day 16's code, and every attempt for about 90 s failed
+/// to decode ("Hit the end of buffer", BF-57 run 15) [measured]. A new wire takes the next version: new lanes, which
+/// only ever ran it. Bump it with any change to `Lane` or `Sent` or what a lane does.
+const LANE_WIRE: u32 = 2;
+
+/// One attempt's request, signed by the store, so a lane never holds the hook's secret.
+#[derive(Serialize, Deserialize)]
+struct Lane {
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+/// One request's result from a lane: when it was sent (ms after the lane was called) and how long it took.
+#[derive(Serialize, Deserialize)]
+struct Sent {
+    at_ms: u64,
+    ms: u64,
+    status: Option<u16>,
+    timed_out: bool,
+    response: Option<String>,
+}
+
+/// The deliveries one lane call sends after its head at most [guess].
+const RUN_MAX: usize = 8;
+/// A lane starts no request of a run past this long after the run began [guess], so one call lasts at most this and
+/// one attempt deadline.
+const RUN_FOR_MS: u64 = 2_000;
+
+/// A lane's run: the requests in order, one at a time, stopping at the first that is not answered 2xx (a hook with
+/// `retry` holds its queue on a failure, and a run must not pass it) and at `RUN_FOR_MS`.
+async fn lane_run(run: &[Lane]) -> Vec<Sent> {
+    let t0 = now_ms();
+    let mut out = Vec::new();
+    for r in run {
+        if !out.is_empty() && now_ms() >= t0 + RUN_FOR_MS {
+            break;
+        }
+        let at = now_ms();
+        let (status, timed_out, response) = post(r).await;
+        let ok = status.is_some_and(|s| (200..300).contains(&s));
+        out.push(Sent { at_ms: at - t0, ms: now_ms() - at, status, timed_out, response });
+        if !ok {
+            break;
+        }
+    }
+    out
+}
+
+/// `lane_run` through `hook`'s lane on this site. A lane that does not answer in time counts as one failed (timed
+/// out) attempt of the run's head; the rest stay queued.
+async fn lane_post(env: &Env, hook: HookId, run: &[Lane]) -> Vec<Sent> {
+    let call = async {
+        let site = SiteEnv::read(env)?;
+        let region = site.sites.get(site.id).ok_or("this site is not in GRAFTYARD_SITES")?.region;
+        let stub = env
+            .durable_object(&format!("HOOKSEQ_{}", site.id.0))?
+            .get_by_name_with_location_hint(&format!("{LANE_PREFIX}{LANE_WIRE}:{}", hook.0.0), region.hint())?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_body(Some(js_sys::Uint8Array::from(&codec::to_bytes(run)[..]).into()));
+        let mut res = stub
+            .fetch_with_request(Request::new_with_init(&format!("https://hookseq/lane/{LANE_WIRE}"), &init)?)
+            .await?;
+        if res.status_code() != 200 {
+            return Err(Error::RustError(format!("lane answered {}", res.status_code())));
+        }
+        codec::from_bytes::<Vec<Sent>>(&res.bytes().await?).map_err(|e| Error::RustError(e.to_string()))
+    };
+    let deadline = std::time::Duration::from_millis(ATTEMPT_DEADLINE_MS + RUN_FOR_MS + 5_000);
+    let failed =
+        |timed_out: bool, response: Option<String>| vec![Sent { at_ms: 0, ms: 0, status: None, timed_out, response }];
+    match crate::host::within(deadline, call).await {
+        Some(Ok(r)) if !r.is_empty() => r,
+        Some(Ok(_)) => failed(false, Some("the delivery lane sent nothing".into())),
+        Some(Err(e)) => failed(false, Some(format!("the delivery lane failed: {e}"))),
+        None => failed(true, None),
     }
 }

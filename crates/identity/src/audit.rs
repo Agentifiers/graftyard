@@ -49,9 +49,64 @@ pub const STEPS_MAX: usize = 6;
 /// move it again, forever.
 pub const CURSOR_STRIDE: u64 = 1_000;
 
-/// Whether `(from, through]`, which owed `owed`, needs a batch: work to finish, or a stride to cover.
-pub fn needs_batch(from: Index, through: Index, owed: &[Owed]) -> bool {
-    through > from && (!owed.is_empty() || through.0 - from.0 >= CURSOR_STRIDE)
+/// Whether `(from, through]`, which owed `owed` and holds `streamed` audit stream rows, needs a batch: work to finish,
+/// rows to send, or a stride to cover.
+pub fn needs_batch(from: Index, through: Index, owed: &[Owed], streamed: usize) -> bool {
+    through > from && (!owed.is_empty() || streamed > 0 || through.0 - from.0 >= CURSOR_STRIDE)
+}
+
+/// One row of the audit stream (DESIGN, Stack: Basin Pipelines "Stream audit entries ... into Iceberg tables"): one
+/// event of an entry the consumer scanned, sent before the cursor passes the entry, so a row is sent at least once.
+/// `id` (chain, index, slot) is the key a reader deduplicates on. Only the variant and the ids an event names are
+/// kept, never a hash, key, or secret [inference: the stream is operator data, and the chains stay the record].
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct StreamRow {
+    pub id: String,
+    pub chain: String,
+    pub index: u64,
+    pub slot: u16,
+    pub at: u64,
+    pub action: String,
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The fields of an event a row keeps [inference: who and what, as GHES's audit log names them].
+const STREAM_FIELDS: [&str; 11] =
+    ["account", "owner", "org", "actor", "repo", "app", "slug", "login", "kind", "from", "to"];
+
+/// The stream rows of entry `e` of `chain`: one per event but the consumer's own cursor.
+pub fn stream_rows<E: Serialize>(chain: ChainId, e: &LogEntry<E>) -> Vec<StreamRow> {
+    let EntryBody::Events(evs) = &e.body else { return Vec::new() };
+    let mut out = Vec::new();
+    for (slot, ev) in evs.iter().enumerate() {
+        let (action, inner) = match serde_json::to_value(ev) {
+            Ok(serde_json::Value::String(s)) => (s, serde_json::Value::Null),
+            Ok(serde_json::Value::Object(m)) if m.len() == 1 => {
+                let (k, v) = m.into_iter().next().expect("one");
+                (k, v)
+            }
+            _ => continue,
+        };
+        if action == "AuditCursor" {
+            continue;
+        }
+        let fields = match inner {
+            serde_json::Value::Object(m) => {
+                m.into_iter().filter(|(k, _)| STREAM_FIELDS.contains(&k.as_str())).collect()
+            }
+            _ => serde_json::Map::new(),
+        };
+        out.push(StreamRow {
+            id: format!("{chain}:{}:{slot}", e.index.0),
+            chain: chain.to_string(),
+            index: e.index.0,
+            slot: slot as u16,
+            at: e.at.0,
+            action,
+            fields,
+        });
+    }
+    out
 }
 
 /// One operation an entry's commit point may have left unfinished.
@@ -446,6 +501,8 @@ pub struct Finisher {
     steps: usize,
     reads: Vec<(ChainId, AuditRead)>,
     cursor_sent: bool,
+    /// Stream rows the host sent for `(from, through]`, so the cursor moves past them.
+    streamed: usize,
     report: Report,
 }
 
@@ -454,7 +511,25 @@ impl Finisher {
     pub fn new(chain: ChainId, now: Timestamp, from: Index, through: Index, mut owed: Vec<Owed>) -> Finisher {
         owed.dedup();
         let report = Report { owed: owed.len() as u32, ..Report::default() };
-        Finisher { chain, now, from, through, owed, at: 0, steps: 0, reads: Vec::new(), cursor_sent: false, report }
+        Finisher {
+            chain,
+            now,
+            from,
+            through,
+            owed,
+            at: 0,
+            steps: 0,
+            reads: Vec::new(),
+            cursor_sent: false,
+            streamed: 0,
+            report,
+        }
+    }
+
+    /// The host sent `n` stream rows for the batch's range: the cursor must pass them even when nothing is owed.
+    pub fn streamed(mut self, n: usize) -> Finisher {
+        self.streamed = n;
+        self
     }
 
     pub fn want(&mut self) -> Want {
@@ -476,7 +551,7 @@ impl Finisher {
                 }
             }
         }
-        if self.cursor_sent || !needs_batch(self.from, self.through, &self.owed) {
+        if self.cursor_sent || !needs_batch(self.from, self.through, &self.owed, self.streamed) {
             return Want::Done(self.report);
         }
         match cursor(self.chain, self.through) {
