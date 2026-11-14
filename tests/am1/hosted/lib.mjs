@@ -74,11 +74,33 @@ export async function bedGet(path) {
   return { status: r.status, body: await r.text() };
 }
 
-/** Every member's `/status` of a chain (sites 0..n-1). */
+/** One raw call to a site's current voter of a chain: `member` with the voter's object name from the committed
+ * config, so a voter replaced since the group was made (a later generation's `#<g>#f<site>`) is reached, not the
+ * first generation's object, which no longer takes writes (B0-30's rerun seed: site 1 replaced at index 4). Names
+ * are read again every 60 s and after a call that fails. */
+const VOTERS = new Map();
+export async function voter(chain, site, path, body, deadline = 30_000) {
+  let c = VOTERS.get(chain);
+  if (!c || Date.now() - c.at > 60_000) {
+    for (const st of await statuses(chain)) {
+      const vs = st.config?.config?.normal?.voters;
+      if (vs && (!c || (st.config.index ?? 0) >= c.index)) c = { at: Date.now(), index: st.config.index ?? 0, names: Object.fromEntries(vs.map((v) => [v.site, v.do_name])) };
+    }
+    if (c) VOTERS.set(chain, c);
+  }
+  try { return await member(chain, site, path, body, deadline, c?.names?.[site]); }
+  catch (e) { VOTERS.delete(chain); throw e; }
+}
+
+/** Every member's `/status` of a chain (sites 0..n-1), from each site's current voter: a site whose first
+ * generation's object answers with an older config than another member's is read again by the newer config's name. */
 export async function statuses(chain, n = 3) {
-  return Promise.all([...Array(n).keys()].map(async (s) => {
-    try { return { site: s, ...(await member(chain, s, "/status", undefined, 15_000)).v }; } catch (e) { return { site: s, error: String(e).slice(0, 100) }; }
-  }));
+  const one = (s, name) => member(chain, s, "/status", undefined, 15_000, name).then((r) => ({ site: s, ...r.v }), (e) => ({ site: s, error: String(e).slice(0, 100) }));
+  const sts = await Promise.all([...Array(n).keys()].map((s) => one(s)));
+  const newest = sts.filter((st) => st.config?.config?.normal?.voters).sort((a, b) => (b.config.index ?? 0) - (a.config.index ?? 0))[0];
+  if (!newest) return sts;
+  const names = Object.fromEntries(newest.config.config.normal.voters.map((v) => [v.site, v.do_name]));
+  return Promise.all(sts.map((st) => (st.doName && names[st.site] && st.doName !== names[st.site] ? one(st.site, names[st.site]) : st)));
 }
 /** Each site's current voter object of a chain, from a member's committed config: a voter replaced since the group
  * was made has a later generation's name, and a call by site alone reaches the first generation's object. */

@@ -5,7 +5,7 @@
 // `start n ms dbBytes digest` line a call. Ends by checking that the three members' metadata digests are equal.
 //   node tests/am1/b030/seed.mjs [TARGET=4000000000]
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { log, member, sleep } from "../hosted/lib.mjs";
+import { log, member, sleep, voter } from "../hosted/lib.mjs";
 const repo = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8")).repo;
 const chain = `repo:${repo}`;
 const TARGET = Number(process.argv[2] ?? 4_000_000_000);
@@ -16,7 +16,7 @@ const WRITTEN = 2;
 const file = (s) => `tests/am1/raw/b030-seed.${repo}.${s}`;
 const lines = (s) => (existsSync(file(s)) ? readFileSync(file(s), "utf8").trim().split("\n").filter(Boolean).map((l) => l.split(" ")) : []);
 
-for (const s of [0, 1, 2]) log(`hold ${s}: ${JSON.stringify((await member(chain, s, "/bench_seed", { snap: "hold" })).v)}`);
+for (const s of [0, 1, 2]) log(`hold ${s}: ${JSON.stringify((await voter(chain, s, "/bench_seed", { snap: "hold" })).v)}`);
 
 async function run(s) {
   let done = lines(s);
@@ -27,7 +27,7 @@ async function run(s) {
     const t = Date.now();
     let v;
     try {
-      v = (await member(chain, s, "/bench_seed", { start, n: BATCH, bytes: 1800, written: WRITTEN }, 55_000)).v;
+      v = (await voter(chain, s, "/bench_seed", { start, n: BATCH, bytes: 1800, written: WRITTEN }, 55_000)).v;
       if (!v?.digest) throw new Error(JSON.stringify(v).slice(0, 200));
     } catch (e) {
       fails++;
@@ -35,7 +35,7 @@ async function run(s) {
       // A snapshot that began before this script's `hold` never finishes under it, and the seed is refused while it
       // runs (smoke 3, site 1 of repo:1048589, 18 min). Abandon it; it starts again from `begin` after the release.
       if (String(e).includes("a snapshot is running") && fails >= 3) {
-        log(`site ${s} abort: ${JSON.stringify((await member(chain, s, "/bench_seed", { snap: "abort" })).v)}`);
+        log(`site ${s} abort: ${JSON.stringify((await voter(chain, s, "/bench_seed", { snap: "abort" })).v)}`);
       }
       await sleep(Math.min(60_000, 5_000 * fails));
       continue;
@@ -55,7 +55,7 @@ const rows = Math.max(...ends);
 for (const s of [0, 1, 2]) {
   let start = ends[s];
   while (start < rows) {
-    const v = (await member(chain, s, "/bench_seed", { start, n: BATCH, bytes: 1800, written: WRITTEN }, 55_000)).v;
+    const v = (await voter(chain, s, "/bench_seed", { start, n: BATCH, bytes: 1800, written: WRITTEN }, 55_000)).v;
     if (!v?.digest) { await sleep(5_000); continue; }
     appendFileSync(file(s), `${start} ${BATCH} 0 ${v.dbBytes} ${v.digest}\n`);
     start += BATCH;
@@ -63,11 +63,11 @@ for (const s of [0, 1, 2]) {
 }
 // Each member's own metadata digest now: the seed reply's is at the index each member had applied when it seeded.
 const folds = [];
-for (const s of [0, 1, 2]) folds.push((await member(chain, s, "/fold", { tier: 1 })).v);
+for (const s of [0, 1, 2]) folds.push((await voter(chain, s, "/fold", { tier: 1 })).v);
 log(`folds ${JSON.stringify(folds).slice(0, 1500)}`);
 const digests = [0, 1, 2].map((s) => lines(s).at(-1)[4]);
 const db = [0, 1, 2].map((s) => +lines(s).at(-1)[3]);
-for (const s of [0, 1, 2]) log(`release ${s}: ${JSON.stringify((await member(chain, s, "/bench_seed", { snap: "release" })).v)}`);
+for (const s of [0, 1, 2]) log(`release ${s}: ${JSON.stringify((await voter(chain, s, "/bench_seed", { snap: "release" })).v)}`);
 const out = { chain, rows, bytesPerRow: 1800, written: WRITTEN, dbBytes: db, digests, equal: new Set(digests).size === 1, at: new Date().toISOString() };
 writeFileSync("tests/am1/raw/b030-seed.json", JSON.stringify(out) + "\n");
 log(`seeded ${JSON.stringify(out)}`);

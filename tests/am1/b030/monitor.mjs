@@ -8,7 +8,7 @@
 //   node tests/am1/b030/monitor.mjs
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import { log, member, sleep } from "../hosted/lib.mjs";
+import { log, member, sleep, voter } from "../hosted/lib.mjs";
 
 const REPO = JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8"));
 const CHAIN = `repo:${REPO.repo}`;
@@ -68,7 +68,7 @@ for (;;) {
   const at = Date.now();
   const members = [];
   for (const s of [0, 1, 2]) {
-    try { members.push({ site: s, ...(await member(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v }); }
+    try { members.push({ site: s, ...(await voter(CHAIN, s, "/bench_seed", { b030: { size: true } }, 25_000)).v }); }
     catch (e) { members.push({ site: s, error: String(e).slice(0, 120) }); }
   }
   for (const m of members) delete m.meta;

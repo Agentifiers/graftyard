@@ -4,10 +4,10 @@
 // (`{"b030": {"at": t}}`) at times inside sampled ranges, each checked against the range's own entries.
 // Writes tests/am1/raw/b030-verify.jsonl and prints a summary.
 //   N=80 node tests/am1/b030/verify.mjs
-import { appendFileSync } from "node:fs";
-import { leaderOf, log, member } from "../hosted/lib.mjs";
+import { appendFileSync, readFileSync } from "node:fs";
+import { leaderOf, log, member, voter } from "../hosted/lib.mjs";
 
-const C = "repo:1048586";
+const C = `repo:${JSON.parse(readFileSync("tests/am1/raw/b030-repo.json", "utf8")).repo}`;
 const OUT = "tests/am1/raw/b030-verify.jsonl";
 const N = Number(process.env.N ?? 80);
 let s = await leaderOf(C);
