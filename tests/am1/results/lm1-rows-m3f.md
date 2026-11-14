@@ -78,6 +78,23 @@ Admission during the burst (166 samples): capacity 323 / 947 / 1,056, `cmdBytes`
 
 Before the burst, while the load ran, site a's validates took p50 1.1 s and p90 1.9 s (100 sampled, 43 forwarded to pool shards), and agent pushes acked at p50 4.1 s. So even hot, agent pushes on this group were not under 5 s end to end; whether the burst meets 5 s on a warm group is the rerun's question.
 
+**Where the pre-burst push time goes** (45 acked agent pushes, 3 every 10 s from 10:48:30Z to 10:50:50Z, joined by trace id in Workers Logs: edge `git-receive-pack`, shard validate, member `/commit`; ms, p50 / p90):
+
+| Step | p50 | p90 |
+|---|---|---|
+| Edge wall (client p50 4,138) | 3,927 | 5,126 |
+| Before validate: about 8 member `/read`s per push, 2 cross-site (site c p50 253 ms, site b about 100 ms), and about 465 ms with no object call (body upload, edge work) | 1,135 | 1,492 |
+| Validate on site a's network shard (`wait=15&next=1`, all 45 answered 200 first try, none forwarded to a pool shard) | 1,486 | 2,312 |
+| Validate end to `/commit` | 116 | 312 |
+| `/commit` at the leader, all sends | 466 | 1,300 |
+| Last `/commit` end to the edge's end | 618 | 743 |
+
+Validate is the largest part (38%). Staging is off the path for inline packs; 5 of 45 got `Stage` and paid about 770 ms of placement plus a second `/commit` of about 614 ms. The last row's 0.6 s also shows on merges, inside the edge's `commit` stage; not explained. The edge sends no `server-timing` for `receive-pack`, so the rerun cannot read this split from the client.
+
+**The 72 `/suspect` at the leader** came from edge isolates inside push requests, just before `/commit` (46 of 49 traces), 35 during the load and 37 in the burst's first 3 s; none changed a term (term 2 throughout). Each follower got 96, which fits 72 `all` reports (a `NotLeader` naming no leader) plus 24 about site 0. In the 7 traces read, the edge had just read site b's retired first-generation voter `repo:65556#1#f1`, still live and answering follower at term 2 with no leader and config index 3 (the current `#2#f1` is at 9). Inference, not proved: lookups fall back to the record's generation-1 bootstrap names and the stale voter's `NotLeader` with no leader starts the `all` reports.
+
+**The 1,032 failed calls** are the leader's outgoing AppendEntries and pings that errored or missed CALL_DEADLINE. The two followers handled every `/raft` under 1 s. 128 calls of 1 s or more went to learners (feed learners and two others), about 12%. The rest never reached a callee or queued before it; the per-peer split was not kept (`a1.mjs` reads only `/stats?summary=1`, and the leader has since restarted). The rerun needs the leader's full `peers` before the row ends.
+
 ### L0-12 m3fr2: diagnostic only, stall and refusals cut off
 
 Repository 65557, run `mwgayihm`, replay 11:39:41Z to 11:49:41Z. The stall started next; the `rows-m3f-r2` service was stopped at about 12:15Z, in the stall's 20th minute of 30, so **the stall and refusal parts have no result**. The replay's numbers:
@@ -103,13 +120,27 @@ Leaderless spans per kill (live-voter terms trace `tests/fanout/raw/terms-m3fr2-
 | 11:47:35Z | 11:47:35Z, site 0, t9 | 0 s |
 | 11:49:29Z | 11:49:54Z, site 1, t10 | 26 s |
 
-BUILD-PLAN's L0-12 gives no 15 s kill window; the 15 s `KILL_WINDOW_MS` is `a1.mjs`'s own. `ELECTION_AFTER` is 10 s (`crates/raft/src/lib.rs`), so a gap of 11 to 26 s is an election that ran past one timeout. The `/suspect` bursts start 11:43:24Z, 11:45:57Z, 11:46:51Z, 11:47:15Z, 11:47:37Z, 11:49:29Z and 11:49:55Z. Pre-vote, vote and first-commit times per kill are in no log on this build; they need Raft-level logs.
+BUILD-PLAN's L0-12 gives no 15 s kill window; the 15 s `KILL_WINDOW_MS` is `a1.mjs`'s own. `ELECTION_AFTER` is 10 s (`crates/raft/src/lib.rs`), so a gap of 11 to 26 s is an election that ran past one timeout. The `/suspect` bursts start 11:43:24Z, 11:45:57Z, 11:46:51Z, 11:47:15Z, 11:47:37Z, 11:49:29Z and 11:49:55Z. Pre-vote, vote and first-commit times per kill are in no log on this build.
+
+**What the leaderless spans were: voter isolates resetting on memory, not slow elections.** Workers Logs counts of "Durable Object's isolate exceeded its memory limit and was reset" over the replay, per 10 s: site a's voter `7b9da729` 8,465 events (11:42:50, 11:43:00, 11:46:10 to :20, 11:46:50 to 11:47:00, 11:49:10, 11:49:40), site b's voter `9a5c6a7e` 4,722 (11:43:00 to :30, 11:46:20 to :30, 11:47:20, 11:49:30, 11:49:50), site c's none. The injected kills (`graftyard member fault`) were at 11:40:48, 11:42:48 and 11:49:04 on site a and 11:45:46 on site c. Against the gaps:
+
+| Gap | What the trace and logs show |
+|---|---|
+| 11:43:00 → :07 (7 s) | Site 0 (leader) killed at 11:42:48, then memory resets on site a; site 1 campaigned at 11:43:02 and led at :07 |
+| 11:43:08 → :26 (18 s) | Site 1, the new leader, reset on memory from 11:43:00 to :30. Site 2 named site 1 its leader to 11:43:23; its promise to site 1 held until it lapsed, then site 2 campaigned at 11:43:25 and led at :26 |
+| 11:46:35 → :49 (14 s) | Site 1 leading, reset on memory at 11:46:20 to :30; site 0 campaigned at 11:46:48 |
+| 11:47:03 → :14 (11 s) | Site 0 leading, reset on memory at 11:47:00 |
+| 11:49:29 → :54 (26 s) | **Not leaderless for 26 s.** Site 0 was killed at 11:49:04. At 11:49:29 site 2 already followed site 1 at term 10, and site 0 named site 1 at :47. Site 1 (`9a5c6a7e`) was elected but its isolate reset on memory at 11:49:36 to :38 and again at :50, so its `/status` did not answer until 11:49:54. The terms trace marks a leader only when the leader's own `/status` says so |
+
+So past two ELECTION_AFTERs is a leader that won but whose isolate kept resetting, and the 18 s gap is a follower's promise to a leader that reset outlasting the reset. Every gap past 10 s has a memory reset on the leader's isolate inside it. The same build's m3fr2 B0-31 and B0-32 logged no memory resets; m3fr1's L0-12 logged 2,695 on site a. This is the same symptom as gate 16's memory storm, on a build (`d438f437`, main `1d331994`) that has neither narrow-reads-3 nor its `/raft` send timestamps (`54a700a9` is not in it), so the `/raft` double decode cannot be its whole cause. What allocates is not known from these logs.
+
+The election rows (`leader-clock-check` `6a21d71a`, `GET /elections`) record pre-vote sends, vote answers with deny reasons, role changes, campaign ends and each term's first leader commit, so the rerun will time each phase from the members' own clocks.
 
 **Teardown leak after m3fr2.** With the stall's `/_bed/fault?site=255` still armed when the service stopped, every member call failed, `/_bed/kill` could not read the repository's record (`release: release#9#f1: 409`, 500 after 20 s), and five shards stayed running: `git#2#net:65555` (from 10:43Z), `git#2#net:65556` (from 11:06Z), and `git#{0,1,2}#net:65557` (from 11:07Z to 11:43Z), until 12:28Z. `rows.sh` printed "torn down" because `teardown.py` exited 0 on 500s. Fixed in `teardown.py`: `--sweep` clears the site fault first, and a teardown with any non-200 exits 1. `/_bed/fault?off=1`, then `--sweep`: 5 × 200, none running.
 
 **Built since (for the L0-12 rerun):**
 
-- Clock check, branch `leader-clock-check` off main `7200c96`: `/status?clock=1` adds `clockBefore` and `clockAfter` around one awaited macrotask and `leaseClock`; `Stats::lease_clock` records, per leader input that appended an entry, `at` → after the step and `at` → next macrotask (`/stats?summary=1` `leaseClock`). `a1.mjs` reads `?clock=1` and keeps the three readings in each raw clock sample.
+- Clock check and election rows, branch `leader-clock-check` (`7bbf68dc`, `6a21d71a`) off main `7200c96`, full checks pass (878 tests): `/status?clock=1` adds `clockBefore` and `clockAfter` around one awaited macrotask and `leaseClock`; `Stats::lease_clock` records, per leader input that appended an entry, `at` → after the step and `at` → next macrotask (`/stats?summary=1` `leaseClock`). `a1.mjs` reads `?clock=1` and keeps the three readings in each raw clock sample.
 - Feed driver `f3dd757e`: polls as the edge's `activity` routes them (learners first, then non-leader voters, up to 3; a lagging member's poll moves on; `lagging_ok` on the least lagged learner when all lag).
 
 ## Rows m3fr1 (2026-11-14, `tests/fanout/rows-m3f.sh`, TAG `m3fr1`)
@@ -277,4 +308,4 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 
 ## Cost
 
-Metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
+**$17.14** at 13:20Z on 2026-11-14 (after m3fr2 and its 5 leaked shards; none running since 12:28Z). Earlier: metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
