@@ -3345,6 +3345,18 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** An edge asking `outcome` for a ticket more than 15 s after it resolved, or `outcome_by_request` answering `unknown` for a committed command.
 
+### `memory-budgets` (2): a leader bounds the AppendEntries bytes alive on its calls, 2026-11-14
+
+**Decision.** A leader counts the entries' bytes on each AppendEntries call it sent, from the send until the call's answer, an error, or the host's new `call_ended(to, round)` input, which the host sends when it stops awaiting the call (answered, failed, or LATE_LIMIT past its deadline) and when a message held for a learner leaves in that learner's own response. It sends a call only while the peer stays within PEER_OUT_MAX (2 MB), the learners together within LEARNERS_OUT_MAX (4 MB), and every peer within OUT_MAX (8 MB). A voter with no call alive always gets one. An unreported call stops counting after OUT_KEEP (12 s). Rounds never repeat within a boot, so an earlier leadership's calls stay keyed apart. No wire enum changes.
+
+**Why.** Nothing bounded the sum. The host awaits a missed call for LATE_LIMIT (10 s) while the core resends it at once and on each tick and pipelines up to PIPELINE more. m3f's new leader sent each voter 10.7 to 11.2 MB in its first minute against an 8 MB log, and B0-33's new leaders held 58.3 MB of call bodies and 42.9 MB of messages for learners before their isolates reset [measured, LM-1 round 17 and m3fr3].
+
+**Beat.** A shorter LATE_LIMIT: late answers are what let a far voter catch up (F43). Fewer resends: a missed call must still be retried at once for commit latency.
+
+**Evidence.** `a_silent_follower_holds_at_most_peer_out_max_of_the_leaders_calls`: with 1 MB entries and one silent voter, at most 1.0 MB alive to it against 10.0 MB without the budget, while the other voter commits all 40. `a_new_leader_catching_up_silent_learners_stays_within_out_max`: a new leader catching up 8 learners that answer 3 s late keeps 3.0 MB alive to them against 24.0 MB without it. `a_silent_follower_costs_the_commit_rate_nothing`: 400 commands commit in the step they are admitted, with one voter silent as with none. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** A hosted run where a healthy voter or learner falls behind with its peer's bytes at PEER_OUT_MAX, or a leader that held a call back past OUT_MAX while a quorum was answering.
+
 ### `prsync-first-once`: a `PrSync` attempt ends at `FIRST_FOR`, and a test merge shed after waiting `TURN_WAIT_MS` in line, 2026-11-14
 
 #### An attempt ends at `FIRST_FOR` in the invocation that runs it, and the leader waits for its answer

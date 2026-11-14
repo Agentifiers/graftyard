@@ -75,6 +75,17 @@ pub const DONE_BYTES: usize = 8_000_000;
 /// The edge asks `outcome` within COMMIT_HOLD plus one call of a ticket's resolution, or after a missed 11 s
 /// `/outcome` call [guess, with margin].
 pub const OUTCOME_KEEP: Duration = Duration::from_secs(15);
+/// AppendEntries bytes (their entries' canonical encoding) a leader keeps alive on its calls to one peer, to all its
+/// learners together, and to every peer together, from the send until the call's answer, an error, or the host's
+/// `call_ended` (`Member::calls_out`). A voter with no call alive always gets one, so the budget never stops a commit
+/// [guess]. Before, nothing bounded the sum: the host awaits a missed call for LATE_LIMIT (10 s) while the core resends,
+/// and new leaders held 58.3 MB of call bodies and 42.9 MB of messages held for learners before their isolates reset
+/// (`tests/m0/results/memory-budgets.md`).
+pub const PEER_OUT_MAX: usize = 2_000_000;
+pub const LEARNERS_OUT_MAX: usize = 4_000_000;
+pub const OUT_MAX: usize = 8_000_000;
+/// A call the host never reports ended stops counting after this: past CALL_DEADLINE plus the host's 10 s LATE_LIMIT.
+pub const OUT_KEEP: Duration = Duration::from_secs(12);
 
 struct Queued<C> {
     seq: u64,
@@ -370,7 +381,8 @@ impl<C: Command> Member<C> {
             lease_end: Timestamp(0),
             sent: BTreeMap::new(),
             pipe: BTreeMap::new(),
-            round: 0,
+            // Rounds never repeat within a boot, so `calls_out` keys an earlier leadership's calls apart.
+            round: self.lead.as_ref().map_or(self.rounds, |l| l.round).max(self.rounds),
             admission: Admission::new(self.now),
             seq: 0,
             commit_floor: Index(0),
@@ -438,6 +450,7 @@ impl<C: Command> Member<C> {
     /// then answers the re-send from its `request` row.
     pub(super) fn end_leadership(&mut self) {
         let Some(lead) = self.lead.take() else { return };
+        self.rounds = lead.round;
         // A leadership that ends while its `STEP_DOWN` transfer runs ended by STEP_DOWN.
         if lead.transfer.as_ref().is_some_and(|t| t.step_down) {
             self.state.stepped_down_at = Some(self.now);
@@ -1378,12 +1391,31 @@ impl<C: Command> Member<C> {
         } else {
             None
         };
+        let prev = after.unwrap_or(Index(next.0 - 1));
+        let install = after.is_none() && self.install.as_ref().is_some_and(|s| prev < s.through);
+        // The entries this call carries and their bytes; a catch-up from storage carries at most APPEND_BYTES_MAX past
+        // its first entry, which `catchup` counts once the host read them.
+        let (window, bytes) = if install {
+            (0..0, 0)
+        } else if prev < base {
+            (0..0, APPEND_BYTES_MAX)
+        } else {
+            // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The
+            // differences are bounded by the in-memory window, so they fit.
+            let from = (prev.0 - base.0) as usize;
+            let to = ((last.0 - base.0) as usize).min(from + CATCHUP_MAX);
+            let n = append_batch(&self.log[from..to]);
+            (from..from + n, self.sizes[from..from + n].iter().sum())
+        };
+        if !self.out_allows(peer, bytes) {
+            return;
+        }
+        let lead = self.lead.as_mut().expect("leading");
         lead.matched.entry(peer).or_insert(Index(0));
         let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
         lead.round += 1;
         let round = lead.round;
         lead.sent.insert(peer, (round, now));
-        let prev = after.unwrap_or(Index(next.0 - 1));
         if after.is_none() {
             lead.pipe.remove(&peer);
             if self.send_install(peer, prev, round) {
@@ -1396,14 +1428,12 @@ impl<C: Command> Member<C> {
             self.out.catchup.push(super::Catchup { to: peer, round, from: prev, through });
             return;
         }
-        // Subtract the absolute indexes in u64 first: on wasm32 a cast to usize would truncate them. The differences
-        // are bounded by the in-memory window, so they fit.
-        let from = (prev.0 - self.base.index.0) as usize;
-        let to = ((last.0 - self.base.index.0) as usize).min(from + CATCHUP_MAX);
-        let window = &self.log[from..to];
-        let entries = window[..append_batch(window)].to_vec();
+        let entries = self.log[window].to_vec();
         let through = Index(prev.0 + entries.len() as u64);
         self.lead.as_mut().expect("leading").pipe.entry(peer).or_default().push((round, through));
+        if bytes > 0 {
+            self.calls_out.insert((peer, round), (now, bytes));
+        }
         let req = AppendReq {
             term,
             leader: me,
@@ -1419,6 +1449,29 @@ impl<C: Command> Member<C> {
             lead_seq: self.state.lead_seq,
         };
         self.send(peer, Message::Append(req));
+    }
+
+    /// Whether a call of `bytes` to `peer` fits PEER_OUT_MAX, LEARNERS_OUT_MAX, and OUT_MAX beside the calls alive,
+    /// dropping those older than OUT_KEEP first. A voter with none alive always gets one.
+    fn out_allows(&mut self, peer: SiteId, bytes: usize) -> bool {
+        let old = Timestamp(self.now.0.saturating_sub(OUT_KEEP.as_millis() as u64));
+        self.calls_out.retain(|_, (at, _)| *at >= old);
+        if bytes == 0 {
+            return true;
+        }
+        let learner = |s: SiteId| graftyard_types::learner_slot(s).is_some();
+        let (mut mine, mut learners, mut total) = (0, 0, 0);
+        for (&(s, _), &(_, b)) in &self.calls_out {
+            total += b;
+            mine += if s == peer { b } else { 0 };
+            learners += if learner(s) { b } else { 0 };
+        }
+        if !learner(peer) && mine == 0 {
+            return true;
+        }
+        mine + bytes <= PEER_OUT_MAX
+            && (!learner(peer) || learners + bytes <= LEARNERS_OUT_MAX)
+            && total + bytes <= OUT_MAX
     }
 
     /// The stored entries an `Out::catchup` asked for, `max(from, 1)..=through` in order: the entry at `from` gives the
@@ -1445,6 +1498,8 @@ impl<C: Command> Member<C> {
             let lead = self.lead.as_mut().expect("leading");
             let transfer = lead.transfer.as_ref().map(|t| (t.to, t.id));
             lead.sent.insert(c.to, (c.round, now));
+            let bytes = entries.iter().map(|e| crate::encode_entry(e).len()).sum();
+            self.calls_out.insert((c.to, c.round), (now, bytes));
             let req = AppendReq {
                 term,
                 leader: me,
@@ -1465,6 +1520,10 @@ impl<C: Command> Member<C> {
     }
 
     pub(super) fn on_append_res(&mut self, from: SiteId, res: AppendRes) {
+        // Any answer ends its call, in any role or term: its bytes stop counting (`out_allows`).
+        if res.boot == self.boot {
+            self.calls_out.remove(&(from, res.round));
+        }
         if res.term > self.state.term {
             self.step_down(res.term);
             return;

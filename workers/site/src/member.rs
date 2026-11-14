@@ -1070,6 +1070,16 @@ impl<F: Family> Routes<F> {
             Ok(mut back) => {
                 let mut out = self.host.callers.borrow_mut().take(from);
                 out.append(&mut back);
+                // AppendEntries held for this caller, or built for it while stepping its call, leave in this response,
+                // not as calls: their bytes stop counting now (`raft::Member::call_ended`).
+                let boot = self.host.core.borrow().as_ref().map(|c| c.m.boot());
+                for e in &out {
+                    if let raft::Message::Append(a) = &e.msg
+                        && Some(a.boot) == boot
+                    {
+                        let _ = self.host.input(|m, t| m.call_ended(t, from, a.round));
+                    }
+                }
                 for e in &out {
                     match &e.msg {
                         raft::Message::ReadIndexRes { batch, index } => {
@@ -1459,6 +1469,7 @@ impl<F: Family> Routes<F> {
             "held": held.iter().map(|h| h.2).sum::<usize>(),
             "inFlight": {
                 "calls": self.host.call_bytes.get(),
+                "callsOut": core.as_ref().map(|c| c.m.calls_out_bytes()),
                 "answers": self.host.answer_bytes.get(),
                 "stmts": stmts,
                 "stmtBytes": stmt_bytes,

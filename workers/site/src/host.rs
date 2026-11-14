@@ -824,6 +824,17 @@ impl Drop for Counted {
     }
 }
 
+/// Reports an AppendEntries call ended when the task that awaited it ends, by any path (`Member::call_ended`).
+struct Ended<F: Family>(Rc<Host<F>>, Option<(SiteId, u64)>);
+
+impl<F: Family> Drop for Ended<F> {
+    fn drop(&mut self) {
+        if let Some((to, round)) = self.1 {
+            let _ = self.0.input(|m, t| m.call_ended(t, to, round));
+        }
+    }
+}
+
 pub fn err(m: impl Into<String>) -> Error {
     Error::RustError(m.into())
 }
@@ -2289,6 +2300,14 @@ impl<F: Family> Host<F> {
             }
             // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
             let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
+            // However the call ends, its AppendEntries bytes stop counting in the core's budget (`call_ended`).
+            let _ended = Ended(
+                h.clone(),
+                match &e.msg {
+                    raft::Message::Append(a) if a.boot == h.boot() => Some((to, a.round)),
+                    _ => None,
+                },
+            );
             #[cfg(feature = "test-faults")]
             let drop_reply = matches!(e.msg, raft::Message::Append(_));
             drop(e);
@@ -2377,6 +2396,11 @@ impl<F: Family> Host<F> {
                 }
             }
         });
+    }
+
+    /// This boot's id, which its AppendEntries carry.
+    fn boot(&self) -> u64 {
+        self.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.m.boot())).unwrap_or(0)
     }
 
     fn call_failed(self: &Rc<Self>, f: Option<raft::CallFailure>) {
