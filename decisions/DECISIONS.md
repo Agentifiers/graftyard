@@ -3358,3 +3358,18 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** The same test: of the 30 merges in line, those that waited past 10 s were shed when their turn came, and no merge ran after waiting longer (`wait_max_ms` at most `TURN_WAIT_MS`). `tests/firstonce/plant.py` mutants 1 to 3 and 7. `TURN_WAIT_MS` is checked at compile time to stay under `FIRST_FOR_MS - COMMIT_RESERVE_MS` and `GET_COALESCE_MS`.
 
 **Flip.** A hosted B0-35 where `late` sheds most head-push merges while the budget is far from spent. That would make `TURN_WAIT_MS` too short for the shard's merge wall time, or show that merges should run more than one at a time.
+
+### `narrow-builds` (1): a list's selection pages from `issue_order`'s keys and reads only the page's items, 2026-11-14
+
+Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"; F65).
+
+**Decision.** `Repo::numbers` lists the numbers of a kind and state from `issue_order`'s keys alone. A GraphQL connection whose only filter is its states, when the states are ones the order's open flag tells apart, counts and pages from those numbers and loads only the page's items. A REST `issues` list with no `labels` sorts the `issue` rows alone, which hold `created`, `updated`, and `comments`, read in two scans of the `issue` table, and loads only the page's items. Every other filter (labels, assignee, author, mention, head, base, and CLOSED or MERGED apart) reads every item as before. Replies are unchanged byte for byte.
+
+**Why.** On B0-29's shape with the per-invocation counter, invocations with a narrow build carried 77% of the learners' heavy CPU, at about 2,605 storage reads a build and 0.043 ms each, REST and GraphQL alike [measured, `tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"]. `Repo::list` read `issue`, `pull`, and `pull_head` of every item of the kind and state, then sorted and paged: 1,556 to 1,655 storage reads for a 30-item page at 500 PRs.
+
+**What it beat.** For the REST sorts, a fold-maintained sort index (one table per sort key, written by every update and comment) would page from about 30 index rows, against about 500 `issue` rows here. It adds three metadata tables, a format and refold, and a write per comment and update, for a list that is half of journey 9's API reads; reading the `issue` rows alone needs no schema change, takes 154 statements against 1,655, and keeps this change independent of (2). The index is the flip.
+
+**Evidence.** `crates/api/tests/narrow.rs`: every REST sort, direction, state, and label filter over 8 page boundaries, the last partial page and empty pages included (768 cases), and GraphQL connections over 6 state sets, MERGED and CLOSED apart, at 8 page sizes and cursors, each byte-identical to the whole-tier reply against an independent oracle; `a_page_of_a_wide_repository_reads_its_page_not_every_item` (500 open PRs: at most 200 statements and 900 rows for a 30-item page; 54 to 154 statements and 592 to 799 rows here, 1,556 to 1,655 and 2,093 to 2,348 on main, where it fails). `tests/nr3/plant.py` 33 to 41 catch 9 of 9: numbers oldest first, one open flag, MERGED and CLOSED paged from the keys, `totalCount` of the page, an inclusive cursor, every item loaded, every state kept, the next link off by one, and labels paged before filtering.
+
+**Flip.** A REST list sorted by `updated` or `comments` on a repository whose `issue` rows alone cost more than 20% of a learner's CPU at journey 9's rate: then the sort index above.
+

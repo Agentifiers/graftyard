@@ -131,7 +131,8 @@ pub enum StateFilter {
 }
 
 impl StateFilter {
-    fn opens(self) -> &'static [bool] {
+    /// The `open` flags of `issue_order` keys this filter takes.
+    pub fn opens(self) -> &'static [bool] {
         match self {
             StateFilter::Open => &[true],
             StateFilter::Closed => &[false],
@@ -201,24 +202,31 @@ impl Repo<'_> {
         limit: usize,
         keep: &dyn Fn(&Item) -> bool,
     ) -> (Vec<Item>, bool) {
-        let mut all: Vec<Item> = Vec::new();
-        for open in state.opens() {
-            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();
-            for (k, _) in self.meta.prefix("issue_order", &prefix) {
-                let Some(Val::Int(rev)) = k.get(2) else { continue };
-                let n = IssueNumber((-rev) as u32);
-                if after.is_some_and(|a| n >= a) {
-                    continue;
-                }
-                if let Some(it) = self.item(n).filter(|i| keep(i)) {
-                    all.push(it);
-                }
-            }
-        }
-        all.sort_by_key(|i| std::cmp::Reverse(i.n));
+        let mut all: Vec<Item> = self
+            .numbers(kind, state)
+            .into_iter()
+            .filter(|n| after.is_none_or(|a| *n < a))
+            .filter_map(|n| self.item(n).filter(|i| keep(i)))
+            .collect();
         let more = all.len() > limit;
         all.truncate(limit);
         (all, more)
+    }
+
+    /// The numbers of the items of `kind` in `state`, newest first, from `issue_order`'s keys alone: a few scans, and
+    /// no item's rows. Every `issue_order` key has its item (`issue`, and for a pull request `pull` and `pull_head`,
+    /// all written by the entry that opened it), so these are the numbers `list` keeps when `keep` keeps every item.
+    pub fn numbers(&self, kind: IssueKind, state: StateFilter) -> Vec<IssueNumber> {
+        let mut all: Vec<IssueNumber> = Vec::new();
+        for open in state.opens() {
+            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();
+            all.extend(self.meta.prefix("issue_order", &prefix).into_iter().filter_map(|(k, _)| match k.get(2) {
+                Some(Val::Int(rev)) => Some(IssueNumber((-rev) as u32)),
+                _ => None,
+            }));
+        }
+        all.sort_unstable_by(|a, b| b.cmp(a));
+        all
     }
 
     pub fn labels_of(&self, n: IssueNumber) -> Vec<(DbId, LabelRow)> {

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), and the edge's herding guard (`crates/lookup`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, read-index batches in flight (`crates/raft`), the edge's herding guard (`crates/lookup`), and narrow-builds' selections from `issue_order` keys
+(`crates/api`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -25,6 +26,10 @@ FAM = 'workers/site/src/family.rs'
 HOST = 'workers/site/src/host.rs'
 LOOKUP = 'crates/lookup/src/lib.rs'
 ELECTION = 'crates/raft/src/member/election.rs'
+VIEW = 'crates/api/src/view.rs'
+GQL = 'crates/api/src/gql.rs'
+REST = 'crates/api/src/rest.rs'
+NARROW = ('graftyard-api', '--test', 'narrow')
 RAFT = ('graftyard-raft', '--test', 'leadership')
 LK = ('graftyard-lookup', '--lib', 'tests')
 SITE = ('graftyard-site', '--lib', 'tests')
@@ -124,6 +129,29 @@ MUTANTS = [
      '        let reads = std::mem::take(&mut r.queued);\n        match r.inflight.last_mut() {\n            Some(b) => b.2.extend(reads),\n            None => r.inflight.push((batch, self.now, reads)),\n        }', RAFT),
     ('pipeline: one batch in flight, as before', INSTALL,
      '        if r.inflight.len() >= READ_PIPELINE', '        if !r.inflight.is_empty()', RAFT),
+    # narrow-builds (1): selections paged from `issue_order`'s keys.
+    ('keys: issue_order numbers oldest first', VIEW,
+     '        all.sort_unstable_by(|a, b| b.cmp(a));\n        all\n', '        all.sort_unstable();\n        all\n', NARROW),
+    ('keys: one open flag only (State All lists the open items alone)', VIEW,
+     '        for open in state.opens() {\n            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();\n            all.extend(',
+     '        for open in &state.opens()[..1] {\n            let prefix = order_key(kind, *open, IssueNumber(0))[..2].to_vec();\n            all.extend(', NARROW),
+    ('keys: a connection pages from the keys whatever MERGED and CLOSED ask (filter after paging)', GQL,
+     '                && has("MERGED") == opens.contains(&false)));', '                || true));', NARROW),
+    ('keys: totalCount counts the page, not every match', GQL,
+     '        let total = all.len();\n        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)',
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        let total = page.len().min(n);\n        Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)', NARROW),
+    ('keys: the cursor is inclusive (page boundary off by one)', GQL,
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();\n        Pick::of_numbers(page',
+     '        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i <= a)).collect();\n        Pick::of_numbers(page', NARROW),
+    ('keys: a connection still loads every item before paging (main\'s cost)', GQL,
+     '        let all: Vec<IssueNumber> = if by_keys {', '        let all: Vec<IssueNumber> = if by_keys && false {', NARROW),
+    ('rest: no label filter keeps every state', REST,
+     '                if opens.contains(&row.open) {', '                if opens.contains(&row.open) || true {', NARROW),
+    ('rest: the next link looks one page past the end (more off by one)', REST,
+     '        let more = all.len() > page.end();\n        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n)',
+     '        let more = all.len() >= page.end();\n        Pick::of_numbers(all.iter().skip(page.skip()).take(page.per_page).map(|(n, _)| *n)', NARROW),
+    ('rest: labels page before filtering', REST,
+     '        if want.is_empty() {\n            let opens = state.opens();', '        if true {\n            let opens = state.opens();', NARROW),
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')

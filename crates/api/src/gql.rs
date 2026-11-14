@@ -305,10 +305,22 @@ fn list<'r>(r: &'r Repo<'r>, kind: IssueKind, a: &Args) -> Conn<'r> {
     let after = a.get("after").and_then(Value::as_str).and_then(parse_cursor).map(|n| IssueNumber(n as u32));
     let n = first_or_last(a);
     // Filter, then the page after the cursor, over every item: a selection (`crate::narrow`).
+    // With no filter but the state, and states that `issue_order`'s open flag tells apart (MERGED and CLOSED both or
+    // neither), every item is counted and paged from the order's keys, and only the page's items are read.
+    let opens = state.opens();
+    let by_keys = (assignee, author, mention, &head, &base) == (None, None, None, &None, &None)
+        && (kind == IssueKind::Issue
+            || (has("OPEN") == opens.contains(&true)
+                && has("CLOSED") == opens.contains(&false)
+                && has("MERGED") == opens.contains(&false)));
     let mut select = || {
-        let (all, _) = r.list(kind, state, None, usize::MAX, &keep);
+        let all: Vec<IssueNumber> = if by_keys {
+            r.numbers(kind, state)
+        } else {
+            r.list(kind, state, None, usize::MAX, &keep).0.into_iter().map(|i| i.n).collect()
+        };
         let total = all.len();
-        let page: Vec<IssueNumber> = all.into_iter().map(|i| i.n).filter(|i| after.is_none_or(|a| *i < a)).collect();
+        let page: Vec<IssueNumber> = all.into_iter().filter(|i| after.is_none_or(|a| *i < a)).collect();
         Pick::of_numbers(page.iter().copied().take(n), total, page.len() > n)
     };
     let pick = r.dir.pick(&format!("{kind:?}{}", serde_json::to_string(a).unwrap_or_default()), &mut select);
