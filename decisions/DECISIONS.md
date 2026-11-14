@@ -3073,6 +3073,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A run in which lanes do not shorten the healthy tail against the store's own POSTs, or a chain-order inversion that a run causes.
 
+### M4-WP3: the Actions shard's commands, and `RunOwner`'s writes, 2026-11-14
+
+**Decision.** The Actions family is new format family 0x15. Its first format, 0x15.1, carries DESIGN's five `ActionsEvent` variants and a sixth, `OwnerCursor { through }`, which is `RunOwner`'s cursor on the shard it reads. The commands are `ActionsCmd { actor, op }`, and `crates/git/tests/wire_tags.golden` pins their tags. A job's `needs` are released in the same entry as the completion that meets or fails them, by the shard's own `decide`, and a skip cascades in spec order. `RunOwner` writes the repository's check suite, check runs, and required checks through `RepoCmd::RunChecks`, format 32.21, which adds no `RepoEvent`. A check run's id is its job's id, a suite's id is its run's id, and the row's version follows the job's state (1 queued, 2 in progress, 3 completed), so `decide` drops a replayed or late update. A deleted repository answers `Gone`, and `RunOwner` then commits `CancelRun` for its unfinished runs. The Actions App is `AppId(DbId(2))`, in cell 0's block 0, which `Ids` never leases.
+
+**Why.** SHARED's Workflow-run operation needs `RunOwner`'s cursor to pass a `Completed` job only after the repository took its conclusion. That cursor is consumer state on the chain it reads, as `HookCursor` and `ConsumerCursor` are (SHARED, "Other consumers"). Releasing `needs` on the shard keeps dispatch independent of the repository, as SHARED's Isolation invariant asks: a repository that is down delays only its checks. Keying a check row by job id and versioning it by state makes every `RunOwner` write idempotent with no extra table. BF-56's in-memory half kills the repository's commit path before any check write and, separately, `RunOwner` between its repository writes and its cursor. In both cases every required check had its conclusion within 60 s of its job's `Completed`, and no check-run version committed twice (`crates/actions/tests/gates.rs`) [measured].
+
+**Beat.** Letting `RunOwner` release `needs` after the repository acknowledged, which stalls a run's next job on the repository. A new `RepoEvent` for Actions checks, when `CheckRun`, `CheckSuite`, and `RequiredCheck` already carry what is needed. Keeping the cursor in the consumer's own storage, which a site loss drops.
+
+**Evidence.** `crates/actions/tests/gates.rs` (BF-4, BF-56, one runner at a time, the abort path). `tests/m4/wp3/plant.py`: every planted bug is caught. The 0x15 and 32.21 choices were checked against `origin/main` and every open branch on 2026-11-14; 32.20 is `b030-split`'s.
+
+**Flip.** A run whose `RunChecksCmd` entries grow past one entry, which forces splitting a suite. Or GitHub semantics showing that a job whose need was cancelled runs anyway.
+
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
 Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/results/fresh-repo.md`).

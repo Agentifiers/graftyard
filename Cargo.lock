@@ -626,6 +626,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "graftyard-actions"
+version = "0.1.0"
+dependencies = [
+ "graftyard-fold",
+ "graftyard-git",
+ "graftyard-raft",
+ "graftyard-types",
+ "postcard",
+ "serde",
+ "sha2",
+ "smallvec",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "graftyard-api"
 version = "0.1.0"
 dependencies = [
@@ -697,6 +712,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
+ "graftyard-actions",
  "graftyard-fold",
  "graftyard-identity",
  "graftyard-raft",

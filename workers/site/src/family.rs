@@ -868,6 +868,7 @@ impl Family for Repo {
             git::repo::RepoOut::HookCursor(o) => json!({ "HookCursor": o }),
             git::repo::RepoOut::Lifecycle(o) => json!({ "Lifecycle": o }),
             git::repo::RepoOut::Counts(o) => json!({ "Counts": o }),
+            git::repo::RepoOut::RunChecks(o) => json!({ "RunChecks": o }),
             git::repo::RepoOut::Issue(o) => {
                 let reply = match serde_json::from_value::<graftyard_api::hosted::Render>(o.render.clone()) {
                     Ok(r) => graftyard_api::hosted::render_ok(&r, &a.map(|_| o.out.clone()), &fold.core, &fold.meta),
