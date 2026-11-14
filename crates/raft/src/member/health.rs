@@ -50,6 +50,9 @@ pub(super) struct LeaderHealth {
     /// Per follower, when each commit-path call to it ended in the window, and whether it was answered: every one,
     /// unlike `calls`, which counts no failure before the follower first answered and one miss per stall.
     links: VecDeque<(Timestamp, SiteId, bool)>,
+    /// Per answered AppendEntries in the window: when it was answered, by whom, and its round trip in ms. A follower
+    /// answers after its own storage confirms the entries, so its slow confirms show here.
+    rtts: VecDeque<(Timestamp, SiteId, u32)>,
     hold_until: Option<Timestamp>,
     probe: Option<LeaderProbe>,
     /// From each follower's AppendEntries replies: its `stepped_down_at` and `boots`.
@@ -157,6 +160,7 @@ impl<C: Command> Member<C> {
         let h = &mut lead.health;
         if ok {
             h.heard.insert(to);
+            h.rtts.push_back((now, to, now.0.saturating_sub(sent_at.0) as u32));
         }
         if !h.counted.contains(&(to, round)) {
             h.links.push_back((now, to, ok));
@@ -193,6 +197,9 @@ impl<C: Command> Member<C> {
         }
         while h.links.front().is_some_and(|c| c.0 < since) {
             h.links.pop_front();
+        }
+        while h.rtts.front().is_some_and(|c| c.0 < since) {
+            h.rtts.pop_front();
         }
         while h.confirms.front().is_some_and(|c| c.0 < since) {
             h.confirms.pop_front();
@@ -244,6 +251,33 @@ impl<C: Command> Member<C> {
         self.link_lossy(s) && self.peers().into_iter().any(|p| p != s && !self.link_lossy(p))
     }
 
+    /// This member's own storage would trip `STEP_DOWN`'s confirm rule: over the window, at least `confirm_slow_min`
+    /// confirms took over `confirm_p99_ms`, ended or still running, and so does the p99.
+    pub(super) fn storage_slow(&self) -> bool {
+        let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
+        let mut ms: Vec<u64> = self
+            .confirms
+            .values()
+            .filter(|(_, e)| e.is_none_or(|e| e >= since))
+            .map(|(b, e)| e.unwrap_or(self.now).0.saturating_sub(b.0))
+            .collect();
+        ms.sort_unstable();
+        let p99 = ms.get(ms.len() * 99 / 100).copied().unwrap_or(0);
+        let slow = ms.iter().filter(|m| **m > u64::from(STEP_DOWN.confirm_p99_ms)).count();
+        p99 > u64::from(STEP_DOWN.confirm_p99_ms) && slow >= usize::from(STEP_DOWN.confirm_slow_min)
+    }
+
+    /// `s`'s storage looks as slow as STEP_DOWN's confirm rule judges a leader's own: at least `confirm_slow_min` of
+    /// its answers in the window took over `confirm_p99_ms` longer than its fastest. A leader whose own confirms
+    /// tripped hands off to no such follower, which would trip the same way (LM-1's k-4 churn).
+    pub(super) fn peer_storage_slow(&self, s: SiteId) -> bool {
+        let Some(lead) = &self.lead else { return false };
+        let mine = || lead.health.rtts.iter().filter(|c| c.1 == s).map(|c| c.2);
+        let Some(fastest) = mine().min() else { return false };
+        let slow = mine().filter(|ms| *ms > fastest + STEP_DOWN.confirm_p99_ms).count();
+        slow >= usize::from(STEP_DOWN.commit_fail_min)
+    }
+
     pub(super) fn quarantined(&self, s: SiteId) -> bool {
         let inside = |t: Timestamp| t.0 != 0 && after(t, RESET_QUARANTINE) > self.now;
         let Some((stepped, boots)) = self.lead.as_ref().and_then(|l| l.health.peer_quarantine.get(&s)) else {
@@ -293,12 +327,12 @@ impl<C: Command> Member<C> {
         let Some(why) = self.tripped() else { return };
         let failing = |s: SiteId| self.link_failing(s);
         let errors_trip = matches!(why, StepDownWhy::CommitErrors { .. });
-        // A follower that may lead, outside RESET_QUARANTINE; on a confirm trip also one whose link from this leader
-        // is not failing.
+        // A follower that may lead, outside RESET_QUARANTINE; on a confirm or loop-lag trip also one whose link from
+        // this leader is not failing and whose own storage does not look as slow.
         let candidates: Vec<SiteId> = self
             .peers()
             .into_iter()
-            .filter(|s| self.may_lead_target(*s) && !self.quarantined(*s))
+            .filter(|s| self.may_lead_target(*s) && !self.quarantined(*s) && !self.peer_storage_slow(*s))
             .filter(|s| errors_trip || !failing(*s))
             .collect();
         if candidates.is_empty() {

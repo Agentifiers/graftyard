@@ -256,3 +256,116 @@ fn long_liveness() {
     }
     assert!(failed.is_empty(), "{failed:#?}");
 }
+
+/// Slow storage on more than the leader (LM-1's k-4 churn, B0-33): 30% of confirms at 1.05 s for a minute on every
+/// member, or on both followers of the leader after warm-up. Returns the term rise and the longest time no member
+/// served.
+fn slow_storage(seed: u64, followers_only: bool) -> (u64, u64) {
+    let mut sim = Sim::new(seed, Faults::WAN, CLIENTS, 3);
+    let warm = Timestamp(sim.now.0 + WARM_MS);
+    while sim.now < warm {
+        sim.step(true);
+    }
+    let leader = leader_now(&sim);
+    let term = |sim: &Sim| SITES.iter().filter_map(|s| sim.member(*s)).map(|m| m.term().0).max().unwrap_or(0);
+    let before = term(&sim);
+    let start = sim.now;
+    let until = Timestamp(start.0 + FAULT_MS);
+    for s in SITES.iter().filter(|s| !followers_only || Some(**s) != leader) {
+        sim.site_faults.push(SiteFault { site: *s, from: start, until, kind: FaultKind::SlowConfirm(300, 1_050) });
+    }
+    let (mut gap, mut since) = (0, None);
+    while sim.now < until {
+        sim.step(true);
+        match (sim.serving(&SITES), since) {
+            (None, None) => since = Some(sim.now),
+            (Some(_), Some(t)) => {
+                gap = gap.max(sim.now.0 - t.0);
+                since = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(t) = since {
+        gap = gap.max(sim.now.0 - t.0);
+    }
+    let rise = term(&sim) - before;
+    if std::env::var("RAFT_LIVE_TRACE").is_ok() {
+        let rel = |t: Timestamp| t.0 as i64 - start.0 as i64;
+        let terms: Vec<_> = sim.terms.iter().filter(|t| t.2 >= start).map(|t| (t.0.0, t.1.0, rel(t.2))).collect();
+        let alarms: Vec<_> = sim.alarms.iter().filter(|a| a.0 >= start).map(|a| (rel(a.0), a.1.0, &a.2)).collect();
+        eprintln!("seed {seed} leader {leader:?}\n  terms {terms:?}\n  alarms {alarms:?}");
+    }
+    sim.settle(4_000);
+    assert_eq!(common::history::check(&sim.history), common::history::Verdict::Ok, "seed {seed}: not linearizable");
+    (rise, gap)
+}
+
+/// No member is healthier than the leader, so slow storage must not turn into term churn. Over the seeds, the term
+/// rises by at most `mean_max` a minute on average and by at most 5 in any one seed, and no seed is without a serving member
+/// for longer than the 20 s gray target. Main (a21ecdf) averaged 4.3 everywhere and 3.8 on both followers over 60
+/// seeds, up to 7 in one; this rule set 1.3 and 0.3 over 200, up to 5 (`tests/m0/results/slow-storage.md`).
+fn check_slow_storage(name: &str, followers_only: bool, seeds: std::ops::Range<u64>, mean_max: f64) {
+    let only: Option<u64> = std::env::var("RAFT_LIVE_ONLY").ok().and_then(|v| v.parse().ok());
+    let n: u64 = std::env::var("RAFT_SLOW_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(seeds.end - seeds.start);
+    let runs: Vec<(u64, u64, u64)> = (seeds.start..seeds.start + n)
+        .filter(|s| only.is_none_or(|o| o == *s))
+        .map(|s| {
+            let (rise, gap) = slow_storage(s, followers_only);
+            (s, rise, gap)
+        })
+        .collect();
+    eprintln!("{name}: (seed, term rise, longest leaderless ms) {runs:?}");
+    let mean = runs.iter().map(|r| r.1).sum::<u64>() as f64 / runs.len().max(1) as f64;
+    assert!(mean <= mean_max, "{name}: the term rose by {mean:.2} a minute on average, over {mean_max}");
+    let failed: Vec<_> = runs.iter().filter(|(_, rise, gap)| *rise > 5 || *gap > TARGET_MS).collect();
+    assert!(failed.is_empty(), "{name}: over the bound (seed, term rise, leaderless ms): {failed:?}");
+}
+
+#[test]
+fn slow_storage_everywhere_keeps_one_leader() {
+    check_slow_storage("slow everywhere", false, 600..624, 2.0);
+}
+
+#[test]
+fn slow_storage_on_both_followers_keeps_the_leader() {
+    // The leader is the healthiest member here, so it should keep leading: a confirm-tripped leader that handed off to
+    // its slow followers averaged 1.2 over these seeds.
+    check_slow_storage("slow followers", true, 700..724, 1.0);
+}
+
+/// A half-hung leader (its appends arrive, every answer is lost) whose followers both have slow storage. The appends
+/// keep the slow followers' gate shut, so what bounds the hold is F67's check quorum: the leader stops leading once no
+/// quorum answered for ELECTION_AFTER, its appends stop, and CAMPAIGN_DEADLINE later the followers may campaign. The
+/// same 30 s bound as `a_read_only_group_elects_off_a_half_hung_leader`.
+#[test]
+fn a_half_hung_leader_with_slow_followers_is_replaced() {
+    let n: u64 = std::env::var("RAFT_SLOW_SEEDS").ok().and_then(|v| v.parse().ok()).unwrap_or(SEEDS);
+    let mut led_all = Vec::new();
+    for seed in 800..800 + n {
+        let mut sim = Sim::new(seed, Faults::WAN, CLIENTS, 3);
+        let warm = Timestamp(sim.now.0 + WARM_MS);
+        while sim.now < warm {
+            sim.step(true);
+        }
+        let sick = leader_now(&sim).expect("leader after warm-up");
+        let start = sim.now;
+        let until = Timestamp(start.0 + FAULT_MS);
+        sim.site_faults.push(SiteFault { site: sick, from: start, until, kind: FaultKind::HalfHung(1000) });
+        for s in SITES.iter().filter(|s| **s != sick) {
+            sim.site_faults.push(SiteFault { site: *s, from: start, until, kind: FaultKind::SlowConfirm(300, 1_050) });
+        }
+        while sim.now < until {
+            sim.step(true);
+        }
+        let led = sim.terms.iter().find(|t| t.2 >= start && t.1 != sick).map(|t| t.2.0 - start.0);
+        assert!(led.is_some_and(|ms| ms <= 30_000), "seed {seed}: no leader off the half-hung site ({led:?} ms)");
+        led_all.push(led.unwrap_or(0));
+    }
+    led_all.sort_unstable();
+    eprintln!(
+        "half-hung, slow followers: led off the site (ms) p50 {} max {}",
+        led_all[led_all.len() / 2],
+        led_all[led_all.len() - 1]
+    );
+}
