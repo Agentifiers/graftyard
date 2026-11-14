@@ -167,6 +167,10 @@ thread_local! {
     static HINTED: std::cell::RefCell<std::collections::HashMap<ChainId, u64>> = Default::default();
     /// The shards whose leader `/owner_fault` armed, once each: keyed by chain, since an isolate hosts other shards.
     static OWNER_KILL: std::cell::RefCell<std::collections::HashSet<ChainId>> = Default::default();
+    /// The ephemeral runners this leader matched a job to: an ephemeral runner takes one job, and one still finishing a
+    /// cancelled job polls again before it exits, so a second match would sit `Assigned` until its lease ended (BF-56
+    /// run 1). In memory: after a leader change or a reset the lease still ends such a match.
+    static MATCHED: std::cell::RefCell<std::collections::HashSet<(ChainId, RunnerId)>> = Default::default();
     /// The shards whose `RunOwner` `/owner_fault` holds, until when (epoch ms).
     static OWNER_HOLD: std::cell::RefCell<std::collections::HashMap<ChainId, u64>> = Default::default();
 }
@@ -510,7 +514,7 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
         // The broker's match: the oldest queued job this runner's labels take, committed against its version. A runner
         // holding an unfinished job gets that job's cancellation, once it was cancelled, or nothing.
         ("match", Some(Grant::Runner { runner })) => {
-            let (pick, held) = {
+            let (pick, held, ephemeral) = {
                 let core = h.core.borrow();
                 let Some(c) = core.as_ref() else { return Ok(json!({ "error": { "notLeader": {} } })) };
                 let f = &c.m.group_fold().fold;
@@ -521,15 +525,20 @@ async fn runsvc_route(h: &Rc<Host<Actions>>, b: Value) -> worker::Result<Value> 
                 };
                 let held = f.jobs.iter().find(|(_, j)| j.state.runner() == Some(runner)).map(|(id, _)| *id);
                 let pick = f.queued().into_iter().find(|(_, l, _, _)| l.fits(&rec.labels)).map(|(j, _, _, v)| (j, v));
-                (pick, held)
+                (pick, held, rec.ephemeral)
             };
-            if held.is_some() {
+            if held.is_some() || ephemeral && MATCHED.with(|m| m.borrow().contains(&(chain, runner))) {
                 return Ok(json!({ "status": 200, "body": null }));
             }
             let Some((job, version)) = pick else { return Ok(json!({ "status": 200, "body": null })) };
             let op = ActionsOp::Job { job, version, event: JobEvent::Matched(runner) };
             match commit(h, fresh_rid(), ActionsActor::Runner(runner), op).await {
-                Ok(Ok(_)) => json!({ "status": 200, "body": runsvc::job_request(&urls, now, job), "job": job }),
+                Ok(Ok(_)) => {
+                    if ephemeral {
+                        MATCHED.with(|m| m.borrow_mut().insert((chain, runner)));
+                    }
+                    json!({ "status": 200, "body": runsvc::job_request(&urls, now, job), "job": job })
+                }
                 Ok(Err(_)) => json!({ "status": 200, "body": null }),
                 Err(e) => refused(503, e),
             }

@@ -1,0 +1,30 @@
+on: workflow_dispatch
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - run: sleep 20 && echo built
+  test:
+    needs: build
+    runs-on: self-hosted
+    steps:
+      - run: sleep 10 && echo tested
+  lint:
+    runs-on: self-hosted
+    steps:
+      - run: sleep 25 && echo "lint failed" && exit 1
+  deploy:
+    needs: test
+    runs-on: self-hosted
+    steps:
+      - run: echo deployed
+  report:
+    needs: lint
+    runs-on: self-hosted
+    steps:
+      - run: echo reported
+  notify:
+    needs: report
+    runs-on: self-hosted
+    steps:
+      - run: echo notified
