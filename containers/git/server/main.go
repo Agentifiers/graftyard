@@ -54,7 +54,8 @@
 //	                                 works again once the bases are here
 //	GET  /idx?net=N&sha256=H         the .idx of the pack /validate kept aside under H, as bytes; 404 when there is
 //	                                 none. The archive's promotion stores it beside the promoted pack
-//	POST /connected?net=N[&objects=1]  git rev-list --quiet --all (--objects with objects=1) under the lock shared:
+//	POST /connected?net=N[&objects=1|tips]  git rev-list --quiet --all (--objects with objects=1; with objects=tips,
+//	                                 every commit and then each ref tip's whole tree) under the lock shared:
 //	                                 {"connected","ms","refs","error" (only when not connected)}, 200 either way.
 //	                                 A rehydrate's backstop after it loaded packs without index-pack
 //	PUT  /refs?net=N[&start=1][&done=1]  body: "<oid> <ref>" lines of the whole ref set, in pages: start=1 on the
@@ -1551,11 +1552,22 @@ func handleConnected(w http.ResponseWriter, r *http.Request) {
 		fail(w, 500, "%v", err)
 		return
 	}
-	args := []string{"rev-list", "--quiet", "--all"}
-	if r.URL.Query().Get("objects") == "1" {
-		args = append(args, "--objects")
+	// objects=1 walks every object of every ref's history: about 4 s for git/git's 424,499 objects here, so minutes
+	// for a network the size of linux. objects=tips walks every commit, then the whole tree at each ref's tip only.
+	var argsets [][]string
+	switch r.URL.Query().Get("objects") {
+	case "1":
+		argsets = [][]string{{"rev-list", "--quiet", "--all", "--objects"}}
+	case "tips":
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}, {"rev-list", "--quiet", "--objects", "--no-walk", "--all"}}
+	default:
+		argsets = [][]string{{"rev-list", "--quiet", "--all"}}
 	}
-	_, err = git(rp, []string{derivedEnv}, nil, args...)
+	for _, args := range argsets {
+		if _, err = git(rp, []string{derivedEnv}, nil, args...); err != nil {
+			break
+		}
+	}
 	out := map[string]any{"connected": err == nil, "refs": len(refs), "ms": time.Since(t0).Milliseconds()}
 	if err != nil {
 		out["error"] = err.Error()

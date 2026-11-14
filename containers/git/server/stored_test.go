@@ -185,7 +185,7 @@ func TestSpooledIngestUsesStoredIdx(t *testing.T) {
 		t.Fatalf("connected with no refs: %v", v)
 	}
 	putRefs(t, s.URL, tip)
-	for _, q := range []string{"", "&objects=1"} {
+	for _, q := range []string{"", "&objects=1", "&objects=tips"} {
 		if v := connected(t, s.URL, q); v["connected"] != true || v["refs"] != 1.0 || v["error"] != nil {
 			t.Fatalf("connected%s: %v", q, v)
 		}
@@ -363,11 +363,14 @@ func TestConnectedFalseWhenHistoryMissing(t *testing.T) {
 	if v := connected(t, s.URL, ""); v["connected"] != true {
 		t.Fatalf("whole: %v", v)
 	}
+	if v := connected(t, s.URL, "&objects=tips"); v["connected"] != true {
+		t.Fatalf("whole, tips: %v", v)
+	}
 	stem := strings.TrimSuffix(basePacks[0], ".pack")
 	for _, ext := range []string{".pack", ".idx", ".rev"} {
 		os.Remove(stem + ext)
 	}
-	for _, q := range []string{"", "&objects=1"} {
+	for _, q := range []string{"", "&objects=1", "&objects=tips"} {
 		v := connected(t, s.URL, q)
 		if v["connected"] != false || v["error"] == nil || v["refs"] != 1.0 {
 			t.Fatalf("connected%s with the base gone: %v", q, v)
