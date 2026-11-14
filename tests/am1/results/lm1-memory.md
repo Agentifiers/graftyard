@@ -1774,3 +1774,72 @@ sweep and Porcupine its own record shows passing, `tests/m0/results/split-vote.m
 workspace clippy, wasm32 clippy for site, edge and ops with and without `test-faults`, `cargo test --workspace`,
 `go test` and `check_design` pass; `check_names` and `check_links` fail only on `.worktrees/` and pass in a clean
 worktree (2,605 files; 3,235 citations).
+
+### Round 15: m26c on main 2456b8f, and what sets B0-33's admission capacity (2026-11-14)
+
+**Deploy m26c.** lm1-memory a3114e0a = main 2456b8f6 (liveness-slow-storage) plus the admission instruments of
+c5d38b11: sites a 75e5b130, b df53889e, c afe13337; edge 6bcce970; shards standard-4, image f6d2ef40; 06:50Z. Full
+checks pass on a3114e0a (checks29; `check_names` and `check_links` pass in a clean worktree, 2,608 files and 3,235
+citations). The raft tree's long sweep (sweep15) exits 0, longest healthy-quorum stall 15,735 / 25,169 / 24,655 ms;
+Porcupine is Ok on all three histories (156,325, 2,230,496 and 6,087,300 operations). Plants 92 (capacity sample) and
+93 (`admittedBytes` pricing) are caught.
+
+**Instruments.** `/stats?summary=1` admission reports `capacity`, `retryAfterS`, `cmdBytes` and `roundMs`
+(`AdmissionView`, no behaviour change); `admittedBytes` gives each class's count, p50, p99, max and sum of the bytes
+admission priced (encoded length less an Agent inline pack); `bigTx` keeps the verb and table mix of the newest 20
+transactions of 100 KB or more. `a1.mjs` samples the leader's admission every 10 s into the row's `admission`.
+
+**Run.** B0-33 smoke, repo 131330 (`fm26s33-b033`), run mwg1tdsf, 5,000 agents, 300 s from 06:57:54Z, k 4, learners
+enam 4,000, weur 2,000, apac 2,000 (0 of 8 caught up at the 120 s wait, as on m25; unexplained). Raw:
+`tests/am1/raw/a1-b0-33-mwg1tdsf.jsonl`, `tests/fanout/raw/terms-m26s33.jsonl`.
+
+| line | m26c |
+|---|---|
+| commit p50 / p99 | 30,012 / 30,975 ms (queue:slot p99 30,359; round p99 663; confirm p99 518) |
+| agent pushes | 897 ok of 12,480 (11,525 `full`) |
+| entries / commands | 504 / 3,843 (7.6 a entry) |
+| fast user | 479 of 497 200, 18 503, p99 5,454 ms |
+| side:human | 493 of 516 ok, 23 GraphQL 503, p99 6,280 ms |
+| merge:only | 16 of 18 200, 2 409, p99 7,560 ms |
+| `/suspect` on leader | 1,696; leader 280 req/s |
+| leader changes | 1 (term 2 → 4), leaderless about 17 s |
+
+**Admission samples [measured].** Capacity fell from 78/s at start to 30–47/s and stayed there; `retryAfterS` rose to
+41–66 s; `agentQueued` sat at about 1,000 (AGENT_QUEUE_MAX); `roundMs` 198–322; `cmdBytes` 8,000–10,900.
+
+**The parent's inference is not confirmed [measured].** It was that a moving mean pushed up by a few large commands
+prices every entry as byte-full. `admittedBytes`: agent n 19,490, p50 10,842, p99 11,495, max 11,507 bytes; human n
+757, p50 10,772, p99 20,464. The admitted commands are uniformly about 10.8 KB, so `cmdBytes` ≈ 10 KB is the mean of
+uniform commands, not of a skewed mix, and capacity = ENTRY_SOFT 100 KB / 10 KB × 1000 / round 200–320 ms ≈ 30–50/s is
+what the formula gives for them. The same pricing fills each entry: `cut` stops at ENTRY_SOFT of command bytes, about
+9 commands, and entries carried 7.6.
+
+**What binds: priced bytes are not stored bytes [measured, with the cause of the 10.8 KB a hypothesis].** The leader's
+505 confirm transactions (one an entry) carried p50 1,910 bytes and p99 56 KB, p50 one statement: an entry of 7.6
+commands priced at about 82 KB stored about 1.9 KB. Admission prices a command by `Record::encoded_len` of the command
+(`crates/raft/src/member/leader.rs`, `cmd_bytes` and `Queued::soft_bytes`), but the log row holds the entry's events
+(`EntryBody::Events`), and the confirm is what storage writes. So both the entry fill and the capacity estimate are
+priced about 5× above what the entry costs to store. The likely source of the 10.8 KB is `IssueCall.render`
+(`crates/git/src/issue_ops/call.rs`), the opaque `Render` the leader renders the reply from: its `HostedDir`
+(`crates/api/src/hosted.rs`) carries the owner's whole `AuthzFold` as hex plus `logins`, which `RepoCmd::encode`
+serialises with the command (`out.extend(serde_json::to_vec(c))`) and no event stores. Most of B0-33's agent-class
+commands are side commands (comments, labels, task edits, leases, about 3:1 against pushes), which are IssueCalls; that
+they sit within 10.4–11.5 KB fits a constant render. Not measured: the render's share of each command, and an agent
+push's priced size by itself [unverified]. The fix would be in `crates/raft` admission (price by the entry's events,
+or let the command exclude bytes it does not store) or in what the edge puts in `render`; that is the B0-02 thread's
+(raft) call. No fix here.
+
+**Leader change [measured].** 07:01:14Z, Workers Logs `member alarm` from site a's leader: `StepDown { why: LoopLag {
+clamped: 2 }, to: Some(SiteId(1)) }`. Term 3 never formed (site 1 stayed at term 2, its promise lapsed); site 2 led at
+term 4 from 07:01:21Z. Leaderless 07:01:04Z to about 07:01:21Z, about 17 s. So LOOP_LAG fired on this tree under
+B0-33's load, where round 12's m24c step-down was `Confirm` and m25 held; this run fails the zero-leader-change line.
+
+**The large confirms, round 14's question 2 [measured].** `bigTx` holds 3 transactions of 114–204 KB, 125–157
+statements: `INSERT request` 27–35 rows (36–45 KB), `INSERT m_path_set` 22–27 rows (32–40 KB), and one `INSERT log`
+row of 36–131 KB. So the large confirms are fold applies of many requests (their `request` rows and the metadata
+tier's `m_path_set` rows) together with one log row, not `Promoted`, `Archived`, an install, or a learner catch-up.
+
+**Verdict.** B0-33 fails on m26c: commit p99 30,975 ms, 897 of 12,480 agent pushes, one leader change with about 17 s
+leaderless. B0-33 stops here, as the parent ordered, until the admission pricing is settled.
+
+**Cost.** $112.17 at 07:25Z (containers $46.15).
