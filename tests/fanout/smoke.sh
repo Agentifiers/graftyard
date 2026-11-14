@@ -3,7 +3,7 @@
 # repository f<name>, k = 4, and one B0-29-shaped a1.mjs run of SECONDS (default 300). <api reads> "row" keeps the
 # row's own rate; a number overrides it (0 = API reads off). Ref reads and pollers stay at the row's rates, as in
 # lm1-rerun's diagnostic B0-29. The row's own shard containers are torn down after it.
-#   SMOKES="s250:250:0 s500:500:row:max" [ENTRY=max] TAG=x bash tests/fanout/smoke.sh   -> tests/fanout/raw/smoke-$TAG.status
+#   SMOKES="s250:250:0 s500:500:row:max p500:500:row::500" [ENTRY=max] [OPEN_PRS=500] TAG=x bash tests/fanout/smoke.sh   -> tests/fanout/raw/smoke-$TAG.status
 cd "$(dirname "$0")/../.."
 source tests/m3/rows/env.sh
 export BED_TOKEN_FILE=${BED_TOKEN_FILE:-$HOME/.graft-m2b/bed.token}
@@ -12,7 +12,7 @@ ST=tests/fanout/raw/smoke-$TAG.status
 touch tests/fanout/raw/.smoke-$TAG.started
 id() { awk -v n="$1" '$1==n{print $2}' "$M3_STATE/am1-runs-repos.txt"; }
 for s in $SMOKES; do
-  IFS=: read -r name agents reads entry <<< "$s"
+  IFS=: read -r name agents reads entry prs <<< "$s"
   ENTRY_=${entry:-${ENTRY:-}}
   repo="f$name"
   node tests/am1/runs/mkrepos.mjs "$repo" >> "$ST" 2>&1
@@ -28,6 +28,9 @@ for s in $SMOKES; do
       console.log(`entry ${process.argv[2]} on site ${s}: ${r.status} ${r.v?.entrySoft ?? ""}`); } })' "repo:$rid" "$ENTRY_" >> "$ST" 2>&1
   flags="--agents $agents --seconds ${SECONDS_:-300}"
   [ "$reads" = row ] || flags="$flags --api-reads $reads"
+  # A fifth field (or OPEN_PRS): open PRs seeded in the run, one per agent head (a1.mjs --open-prs).
+  PRS_=${prs:-${OPEN_PRS:-}}
+  [ -n "$PRS_" ] && flags="$flags --open-prs $PRS_"
   echo "$(date -u +%FT%TZ) $name $repo $rid start $flags" >> "$ST"
   bash tests/am1/runs/a1.sh b0-29 "$repo" "$rid" $flags
   # k back to 1 releases the network's pool leases (tests/fanout/rows.sh says why).

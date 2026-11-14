@@ -39,7 +39,7 @@ for row in $ROWS; do
     tail -1 "$ST" | grep -q ": k $K at " || { echo "$(date -u +%FT%TZ) $row: k $K not granted, row skipped" >> "$ST"; continue; }
   fi
   case $row in
-    b0-29) flags="--seconds 600" ;;
+    b0-29) flags="--seconds 600 --open-prs ${B029_PRS:-500}" ;;
     b0-31) flags="--seconds 600" ;;
     b0-32) flags="--seconds 180" ;;
     b0-33) flags="--seconds 300" ;;

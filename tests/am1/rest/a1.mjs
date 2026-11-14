@@ -64,7 +64,7 @@ const { values: opt, positionals } = parseArgs({ allowPositionals: true, strict:
   repo: { type: "string" }, chain: { type: "string" }, "kill-every": { type: "string" }, "kill-shard-at": { type: "string" },
   run: { type: "string" }, "api-reads": { type: "string" }, "ref-reads": { type: "string" }, pollers: { type: "string" },
   "push-every": { type: "string" }, "as-admin": { type: "boolean" }, "rest-polls": { type: "string" },
-  "first-for": { type: "string" }, b034: { type: "string" } } });
+  "first-for": { type: "string" }, b034: { type: "string" }, "open-prs": { type: "string" } } });
 
 // ---- the plan, from the rows ----
 
@@ -356,6 +356,10 @@ if (opt["kill-every"]) plan.killEvery = Number(opt["kill-every"]);
 const b034 = opt.b034 ? JSON.parse((await import("node:fs")).readFileSync(opt.b034, "utf8")) : null;
 if (b034) { plan.mergesPerMin = 0; plan.tipMovesPerMin = 10; }
 if (opt.pollers !== undefined) plan.pollers = Number(opt.pollers);
+// `--open-prs N`: N draft PRs opened in this run before its window, each on an agent's own head branch, so the first N
+// agents' pushes are head pushes with their PrSync and test-merge records, as B0-29's row text has them. B0-35's
+// mergeable pollers stay off. LM-1 round 12's agreed B0-29 shape is 500 (tests/am1/results/lm1-memory.md).
+if (opt["open-prs"] !== undefined) plan.openPrs = Number(opt["open-prs"]);
 if (opt["push-every"] !== undefined) plan.pushEvery = Number(opt["push-every"]);
 const restPolls = Math.min(1, Math.max(0, Number(opt["rest-polls"] ?? 0)));
 

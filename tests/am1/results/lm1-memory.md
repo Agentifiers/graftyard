@@ -1595,3 +1595,20 @@ it as `leader.confirmSplit`. Its tests fail on plants 89 to 91. Workers' clock a
 synchronous `transactionSync` itself reads as 0 ms and shows up in later inputs' `gate` and `turn`.
 
 Cost after round 12: $106.76 of $150 (containers $45.53); `teardown.py --sweep` reported "sweep ok".
+
+**B0-29's repository shape (proposed to narrow-reads-3, 2026-11-14; agreement pending).** B0-29 is one row, so both
+threads gate it on one shape. The fresh-repository arms above (575 and 614 ms) and narrow-reads-3's 500-PR runs on
+graft-m3e (1.9 to 2.9 s) ran different repositories, and the row text names PrSync, test-merge records and check runs,
+which need open PRs:
+
+- a fresh repository per run (`tests/am1/runs/mkrepos.mjs`), `main` at its first commit, gated about 10 to 15 minutes
+  after create, once its PRs are open and learners and k are placed;
+- 500 draft PRs opened inside the run (`a1.mjs b0-29 --open-prs 500`), one per agent head branch, so every agent push
+  in the window is a head push with its PrSync and test merge; B0-35's mergeable pollers stay off;
+- about 520 refs at the start (500 PR heads, `main`, 20 shared human refs), plus about 10 a minute from merges;
+- journey 9's plan at 500 agents for 600 s, learners enam 4,000, weur 2,000, apac 2,000, k 4, standard-4 shards, no
+  test-faults override. `tests/fanout/rows.sh` runs B0-29 with `--open-prs 500`.
+
+narrow-reads-3's m3e runs opened their 500 PRs in a separate 1 s `b0-35` run, and the B0-29 agents then pushed their
+own `claude/a1-<run>-i` refs, not those heads, so the PRs were idle fold rows and no head-push PrSync or test merge
+ran; those runs also held k 1.
