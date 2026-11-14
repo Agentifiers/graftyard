@@ -3259,7 +3259,7 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Open, for a second change.** The render still crosses every AppendEntries: each issue command sends its owner's whole Authz fold, about 10 KB, to every follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build the render's `HostedDir.authz` itself and the edge could send none. That would also cut the far follower's per-call bytes, a candidate in the far-leg question [inference].
 
-#### A single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22)
+### `m4-web-3`: a single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22), 2026-11-14
 
 **Decision.** A REST review comment outside a review commits its single-comment review as `ReviewEvent::SingleComment` (tag 3) in repository format 32.22 (`REPO_FORMAT_REVIEWS`). Its fold writes the reviewer's core `review_verdict` only over none or a COMMENTED one, so every such commenter gets a review and an APPROVED or CHANGES_REQUESTED verdict stays. The edge marks the comment 32.22 once `FormatsEnable` enabled it; before that, decide writes a `Submitted` and gives a commenter who holds such a verdict no review. 32.20 and 32.21 are other branches' (`b030-split`, `m4-actions`).
 
