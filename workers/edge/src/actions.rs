@@ -135,11 +135,23 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
         (Method::Post, "broker/acknowledge", Some(_)) => json_reply(200, &json!({})),
         (Method::Get, "broker/message", Some((chain, g @ Grant::Runner { .. }))) => poll(c, chain, g).await,
         (Method::Post, "run/acquirejob", Some((chain, g @ Grant::Runner { .. }))) => {
-            let repository = repository_of(c, chain, &b).await.unwrap_or_default();
+            let (repository, secrets, variables) = match repository_of(c, chain, &b).await {
+                Some((name, run, job, repo, authz)) => match job_config(c, &run, &job, &repo, &authz).await {
+                    Ok((s, v)) => (name, s, v),
+                    Err(e) => {
+                        // A job that would run without the secrets it names is not started: the runner retries the
+                        // acquire, and the job stays `Assigned` until its lease returns it to the queue.
+                        console_error!("acquirejob {chain}: secrets: {e}");
+                        return service_error(503);
+                    }
+                },
+                None => (String::new(), Vec::new(), Vec::new()),
+            };
             // Until `GITHUB_TOKEN` minting lands the job's token is empty: the runner masks and passes it, and the
             // gates' workflows call no API with it.
             let body = json!({ "op": "acquire", "grant": g, "jobMessageId": b["jobMessageId"],
-                               "repository": repository, "github_token": "" });
+                               "repository": repository, "github_token": "",
+                               "secrets": secrets, "variables": variables });
             answer(c, chain, body).await
         }
         (Method::Post, "run/renewjob", Some((chain, g @ Grant::Job { .. }))) => {
@@ -160,15 +172,102 @@ pub async fn serve(c: &Ctx<'_>, mut req: Request, rest: &str) -> Result<Response
     }
 }
 
-/// The job's repository as `o/r`, for `github.repository`, read before `acquirejob` commits.
-async fn repository_of(c: &Ctx<'_>, chain: ChainId, b: &Value) -> Option<String> {
+/// The job's repository as `o/r`, for `github.repository`, with its run, row, repository, and owner `Authz`, read
+/// before `acquirejob` commits.
+async fn repository_of(
+    c: &Ctx<'_>,
+    chain: ChainId,
+    b: &Value,
+) -> Option<(String, WorkflowRun, JobRow, crate::Repo, graftyard_identity::AuthzFold)> {
     let job = b["jobMessageId"].as_str().and_then(runsvc::job_of_guid)?;
     let row = job_row(c, chain, job).await?;
     let v = shard_read(c, chain, json!({ "run": row.run.0.0 })).await.ok()?;
     let run: WorkflowRun = serde_json::from_value(v["run"]["run"].clone()).ok()?;
     let repo = crate::repo_by_id(c, run.repo).await.ok()?;
-    let (owner, name, _, _) = crate::api::repo_named(c, repo).await?;
-    Some(format!("{owner}/{name}"))
+    let (owner, name, repo, authz) = crate::api::repo_named(c, repo).await?;
+    Some((format!("{owner}/{name}"), run, row, repo, authz))
+}
+
+type Pairs = Vec<(String, String)>;
+
+/// The secrets and variables `job` reads (`design/SHARED.md`, "Actions", Who decrypts): its repository's, its
+/// environment's, and the org rows whose visibility reaches its repository, the repository's winning a name over the
+/// org's and the environment's over both, as on GitHub [doc: "Using secrets in GitHub Actions", precedence]. A
+/// fork-PR run reads no secret; it still reads variables, which GitHub passes to forks [doc]. Secrets are opened by
+/// `graft-ops` (`POST /actions/open`), so only the job message ever holds a plaintext, and nothing here logs one.
+/// Nothing is read before 32.23 and 0x12.12 are enabled.
+async fn job_config(
+    c: &Ctx<'_>,
+    run: &WorkflowRun,
+    job: &JobRow,
+    repo: &crate::Repo,
+    authz: &graftyard_identity::AuthzFold,
+) -> std::result::Result<(Pairs, Pairs), String> {
+    use graftyard_identity::sealed::{EnvName, SecretScope};
+    if !c.cfg.enabled.contains(&graftyard_git::secrets::REPO_FORMAT_SECRETS)
+        || !c.cfg.enabled.contains(&graftyard_identity::AUTHZ_FORMAT_V12)
+    {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let v = match crate::api::tier_rows(c, repo, None).await.map_err(|e| e.to_string())? {
+        Ok(v) => v,
+        Err(_) => return Err("the repository's rows did not answer".into()),
+    };
+    let rows = graftyard_api::hosted::TierRows::from_value(&v["value"]).map_err(|e| e.to_string())?;
+    let core = graftyard_api::hosted::TierRows::store(&rows.core);
+    let private = graftyard_git::tiers::get_rec::<graftyard_git::issues::RepoSettings>(&core, "settings", &[])
+        .is_none_or(|s| s.visibility != graftyard_identity::Visibility::Public);
+    let env = job.spec.environment.as_deref().map(|e| EnvName(e.into()));
+    let a = authz.actions();
+    // Lowest precedence first, so a later insert replaces an earlier one of the same name.
+    let mut sealed = std::collections::BTreeMap::new();
+    let mut vars = std::collections::BTreeMap::new();
+    for (n, (scope, r)) in &a.secrets {
+        if scope.reaches(None, run.repo, private, env.as_ref()) {
+            sealed.insert(n.as_str().to_owned(), (r.sealed.clone(), r.key_id.clone()));
+        }
+    }
+    for (n, (scope, r)) in &a.variables {
+        if scope.reaches(None, run.repo, private, env.as_ref()) {
+            vars.insert(n.as_str().to_owned(), r.value.to_string());
+        }
+    }
+    let mut scopes = vec![SecretScope::Repo];
+    scopes.extend(env.clone().map(SecretScope::Env));
+    for s in &scopes {
+        for (n, r) in graftyard_git::secrets::secrets(&core, s) {
+            sealed.insert(n.as_str().to_owned(), (r.sealed, r.key_id));
+        }
+        for (n, r) in graftyard_git::secrets::variables(&core, s) {
+            vars.insert(n.as_str().to_owned(), r.value.into());
+        }
+    }
+    let vars: Pairs = vars.into_iter().collect();
+    if run.fork || sealed.is_empty() {
+        return Ok((Vec::new(), vars));
+    }
+    let req = json!({
+        "keys": a.seal_keys.values().collect::<Vec<_>>(),
+        "secrets": sealed.into_iter().map(|(n, (s, k))| (n, s, k)).collect::<Vec<_>>(),
+    });
+    let ops = c.env.service("OPS").map_err(|_| "no graft-ops binding")?;
+    let mut init = RequestInit::new();
+    init.with_method(Method::Post).with_body(Some(req.to_string().into()));
+    let mut res = ops.fetch("https://graft-ops/actions/open", Some(init)).await.map_err(|e| e.to_string())?;
+    if res.status_code() != 200 {
+        return Err(format!("graft-ops answered {}", res.status_code()));
+    }
+    #[derive(serde::Deserialize)]
+    struct Opened {
+        secrets: Pairs,
+        failed: Vec<String>,
+    }
+    let o: Opened = res.json().await.map_err(|e| e.to_string())?;
+    if !o.failed.is_empty() {
+        // Names only: which secrets did not open under any of the owner's keys.
+        console_error!("acquirejob: secrets that did not open: {:?}", o.failed);
+    }
+    Ok((o.secrets, vars))
 }
 
 /// `GET broker/message`, held by the shard's broker on the leader's site.
@@ -311,8 +410,8 @@ pub async fn viewer(c: &Ctx<'_>, req: Request, rest: &str) -> Result<Response> {
 }
 
 /// The job's log from the owner's home bucket for `GET /repos/{o}/{r}/actions/jobs/{id}/logs`: 200 with the plain log
-/// (GHES answers 302 to a blob URL, which fetch follows to the same body), or 404 for a job of another repository or
-/// one with no log yet.
+/// (GHES answers 302 to a blob URL, which fetch follows to the same body), the step logs so far for a job still
+/// running, or 404 for a job of another repository or one with no log yet.
 pub async fn job_log(c: &Ctx<'_>, rd: &Read, id: &str) -> Result<Reply> {
     let Ok(j) = id.parse::<i64>() else { return Ok(Reply::not_found()) };
     let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
@@ -322,12 +421,44 @@ pub async fn job_log(c: &Ctx<'_>, rd: &Read, id: &str) -> Result<Reply> {
         return Ok(Reply::not_found());
     }
     let bucket = c.env.bucket(&format!("BUCKET_{}", rd.repo.record.home.0))?;
-    let Some(o) = bucket.get(format!("actions/{j}/logs-job")).execute().await? else { return Ok(Reply::not_found()) };
-    let bytes = match o.body() {
-        Some(b) => b.bytes().await?,
-        None => Vec::new(),
+    let read = async |key: String| -> Result<Option<Vec<u8>>> {
+        Ok(match bucket.get(key).execute().await? {
+            Some(o) => Some(match o.body() {
+                Some(b) => b.bytes().await?,
+                None => Vec::new(),
+            }),
+            None => None,
+        })
     };
-    Ok(Reply::bytes(200, "text/plain; charset=utf-8", bytes))
+    if let Some(bytes) = read(format!("actions/{j}/logs-job")).await? {
+        return Ok(Reply::bytes(200, "text/plain; charset=utf-8", bytes));
+    }
+    // A job without its whole log yet: GHES serves the log so far, so here it is the step logs uploaded so far, in
+    // upload order, which is step order [inference: the runner uploads each step's log as the step ends], so a step
+    // still running has no lines here yet.
+    let mut steps: Vec<(i64, String)> = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut q = bucket.list().prefix(format!("actions/{j}/logs-"));
+        if let Some(cur) = cursor.take() {
+            q = q.cursor(cur);
+        }
+        let page = q.execute().await?;
+        steps.extend(page.objects().iter().map(|o| (o.uploaded().as_millis() as i64, o.key())));
+        match page.cursor().filter(|_| page.truncated()) {
+            Some(cur) => cursor = Some(cur),
+            None => break,
+        }
+    }
+    if steps.is_empty() {
+        return Ok(Reply::not_found());
+    }
+    steps.sort();
+    let mut out = Vec::new();
+    for (_, key) in steps {
+        out.extend(read(key).await?.unwrap_or_default());
+    }
+    Ok(Reply::bytes(200, "text/plain; charset=utf-8", out))
 }
 
 // ---- Graftyard's own Actions routes
@@ -439,7 +570,9 @@ async fn dispatch(c: &Ctx<'_>, rd: &Read, chain: ChainId, b: &Value) -> Result<R
         trigger: (ChainId::Repo(rd.repo.id), Index(rd.index)),
         attempt: 1,
         concurrency: None,
-        fork: false,
+        // A run marked as a fork pull request's, whose jobs read no secret (BF-59): no fork route exists yet, so the
+        // admin's dispatch marks it [inference: the refusal is `acquirejob`'s, which reads only `run.fork`].
+        fork: b["fork"].as_bool().unwrap_or(false),
     };
     Ok(match runsvc_call(c, chain, &json!({ "op": "create_run", "run": run, "jobs": jobs })).await {
         Ok((s, v)) => {
@@ -540,6 +673,40 @@ pub async fn rest_read(c: &Ctx<'_>, rd: &Read, view: &graftyard_api::view::Repo<
             None => Reply::not_found(),
         },
         _ => Reply::not_found(),
+    })
+}
+
+/// `POST /repos/{o}/{r}/actions/runs/{run_id}/cancel`: 202 `{}` once `CancelRun` committed on the shard, for a caller
+/// with write access, as on GHES [doc: GHES 3.22 REST, "Cancel a workflow run"]; a run of another repository is 404.
+/// A run already completed answers 409, GitHub's "Cannot cancel a workflow run that is completed."
+pub async fn cancel_run(c: &Ctx<'_>, rd: &Read, who: &Principal, run: &str) -> Result<Reply> {
+    let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+    let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+        rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+    let Actor::User(me) = who.actor else {
+        return Ok(Reply::error(403, "Resource not accessible by integration", "rest"));
+    };
+    if graftyard_identity::permission(who, &folds, &access) < Some(RepoPermission::Write) {
+        return Ok(Reply::not_found());
+    }
+    let Ok(run) = run.parse::<i64>() else { return Ok(Reply::not_found()) };
+    let chain = ChainId::Actions(rd.repo.owner, actions_shard(rd.repo.id));
+    let v = match shard_read(c, chain, json!({ "run": run })).await {
+        Ok(v) => v,
+        Err(e) => return Ok(unavailable(&e)),
+    };
+    let Ok(row) = serde_json::from_value::<graftyard_actions::shard::RunRow>(v["run"].clone()) else {
+        return Ok(Reply::not_found());
+    };
+    if row.run.repo != rd.repo.id {
+        return Ok(Reply::not_found());
+    }
+    if matches!(row.status, graftyard_actions::RunStatus::Completed(_)) {
+        return Ok(Reply::error(409, "Cannot cancel a workflow run that is completed.", "rest/actions/workflow-runs"));
+    }
+    Ok(match runsvc_call(c, chain, &json!({ "op": "cancel", "run": run, "admin": me.0 })).await {
+        Ok((s, v)) => Reply::json(s, v["body"].clone()),
+        Err(e) => unavailable(&e),
     })
 }
 

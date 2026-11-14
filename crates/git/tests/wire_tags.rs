@@ -347,6 +347,8 @@ fn current() -> (Vec<String>, Vec<String>) {
         actions::shard::ActionsEvent, actions::shard::ActionsOp, actions::shard::ActionsActor, actions::shard::ActionsOut,
         actions::shard::ActionsErr, actions::shard::RunnerScope, actions::Conclusion, actions::JobState,
         actions::JobEvent, actions::RunStatus, git::run_checks::RunChecksOut,
+        // M4-WP3: inside `RepoEvent::ActionsSecret` and `ActionsVariable`.
+        id::sealed::SecretScope, id::sealed::SecretVisibility,
     }
 }
 

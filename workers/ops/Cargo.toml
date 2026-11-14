@@ -11,6 +11,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Unwraps the installation-token signing key with the `MintWrapKey` wrap key: AES-256-GCM, pure Rust, for wasm32.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+# Actions secrets (`design/SHARED.md`, "Actions", Secrets and variables): opens and seals libsodium's `crypto_box_seal`
+# with each owner's X25519 `SealKey`. No default features, so it builds for wasm32; the Worker supplies randomness.
+crypto_box = { version = "0.9", default-features = false, features = ["alloc", "rand_core", "salsa20", "seal"] }
 graftyard-identity = { path = "../../crates/identity" }
 graftyard-types.workspace = true
 serde.workspace = true

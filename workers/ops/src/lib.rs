@@ -117,6 +117,108 @@ impl HookSecrets for WrapKeySource {
     }
 }
 
+// ---- Actions secrets (`design/SHARED.md`, "Actions", Secrets and variables; BF-59)
+
+/// What `/actions/open` opens for one job: each secret's name, its `crypto_box_seal` bytes, and the `key_id` it was
+/// sealed to, with the owner's keys the records name. Only `graft-ops` holds `SecretsWrapKey`, so only it opens a
+/// `SealKey`'s private half, and the plaintexts leave only in the answer to the job's own `acquirejob`.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OpenRequest {
+    pub keys: Vec<graftyard_identity::sealed::SealKey>,
+    pub secrets: Vec<(String, Box<[u8]>, Box<str>)>,
+}
+
+/// A secret's name and its `crypto_box_seal` bytes.
+pub type Sealed = (String, Box<[u8]>);
+
+/// One owner's private key, unwrapped. Never printed.
+struct OpenKey(crypto_box::SecretKey);
+
+fn open_key(src: &WrapKeySource, k: &graftyard_identity::sealed::SealKey) -> Result<OpenKey, KeyError> {
+    let raw = src.unwrap(&k.private)?;
+    let raw: [u8; 32] = raw.0.as_ref().try_into().map_err(|_| bad("seal key length"))?;
+    let sk = crypto_box::SecretKey::from_bytes(raw);
+    if sk.public_key().as_bytes() != &k.public {
+        return Err(bad("the seal key's private half does not match its public half"));
+    }
+    Ok(OpenKey(sk))
+}
+
+/// A new `SealKey` for an owner from 32 random bytes: its private half wrapped under `SecretsWrapKey`'s current slot,
+/// and a decimal `key_id` from the public half, as GitHub's are decimal [inference from `gh secret set`'s `key_id`].
+pub fn mint_seal_key(
+    src: &WrapKeySource,
+    seed: [u8; 32],
+    nonce: [u8; 12],
+    now: graftyard_types::Timestamp,
+) -> Result<graftyard_identity::sealed::SealKey, KeyError> {
+    let sk = crypto_box::SecretKey::from_bytes(seed);
+    let public = *sk.public_key().as_bytes();
+    let private = src.wrap(&sk.to_bytes(), nonce)?;
+    let id = u64::from_be_bytes(public[..8].try_into().expect("8 bytes")) >> 1;
+    Ok(graftyard_identity::sealed::SealKey {
+        key_id: id.to_string().into(),
+        public,
+        private,
+        created: now,
+        retired: None,
+    })
+}
+
+/// The plaintexts of `r.secrets`, by name. A record whose key is missing or does not open it is left out and named in
+/// the second list, so a job runs without it rather than with a wrong value.
+pub fn open_secrets(src: &WrapKeySource, r: &OpenRequest) -> (Vec<(String, String)>, Vec<String>) {
+    let keys: Vec<_> = r.keys.iter().map(|k| (k.key_id.clone(), open_key(src, k))).collect();
+    let (mut out, mut failed) = (Vec::new(), Vec::new());
+    for (name, sealed, key_id) in &r.secrets {
+        let opened = keys
+            .iter()
+            .find(|(id, _)| id == key_id)
+            .and_then(|(_, k)| k.as_ref().ok())
+            .and_then(|k| k.0.unseal(sealed).ok())
+            .and_then(|p| String::from_utf8(p).ok());
+        match opened {
+            Some(p) => out.push((name.clone(), p)),
+            None => failed.push(name.clone()),
+        }
+    }
+    (out, failed)
+}
+
+/// The rotation's reseal: each record opened with its old key and sealed to `to`, inside this crate, so no plaintext
+/// leaves. `rng` draws each seal's ephemeral key. A record that does not open is returned unchanged and named.
+pub fn reseal(
+    src: &WrapKeySource,
+    r: &OpenRequest,
+    to: &graftyard_identity::sealed::SealKey,
+    rng: &mut impl crypto_box::aead::rand_core::CryptoRngCore,
+) -> (Vec<Sealed>, Vec<String>) {
+    let target = crypto_box::PublicKey::from(to.public);
+    let keys: Vec<_> = r.keys.iter().map(|k| (k.key_id.clone(), open_key(src, k))).collect();
+    let (mut out, mut failed) = (Vec::new(), Vec::new());
+    for (name, sealed, key_id) in &r.secrets {
+        let plain = keys
+            .iter()
+            .find(|(id, _)| id == key_id)
+            .and_then(|(_, k)| k.as_ref().ok())
+            .and_then(|k| k.0.unseal(sealed).ok());
+        match plain.and_then(|p| target.seal(rng, &p).ok()) {
+            Some(s) => out.push((name.clone(), s.into())),
+            None => failed.push(name.clone()),
+        }
+    }
+    (out, failed)
+}
+
+/// A `Wrapped` value under the current slot, for the wrapping key's rotation: opened and wrapped again inside this
+/// crate, so its plaintext never leaves. A value already under the current slot is returned as it is.
+pub fn rewrap(src: &WrapKeySource, w: &Wrapped, nonce: [u8; 12]) -> Result<Wrapped, KeyError> {
+    if w.slot == src.current {
+        return Ok(w.clone());
+    }
+    src.wrap(&src.unwrap(w)?.0, nonce)
+}
+
 #[cfg(target_arch = "wasm32")]
 mod worker_main;
 
@@ -138,6 +240,60 @@ mod tests {
         let tampered = MintWrapKey { wrapped: format!("{flipped:02x}{}", &m.wrapped[2..]), ..m };
         assert!(unwrap(&serde_json::to_string(&tampered).unwrap()).is_err());
         assert!(unwrap("{}").is_err());
+    }
+
+    /// A `crypto_box_seal` from PyNaCl (libsodium), as `gh secret set` seals with Go's `box.SealAnonymous`, opens
+    /// under the minted key; it does not open under another owner's key or a tampered one; a rotation reseals it to a
+    /// new key that opens it and the old one no longer does. The PyNaCl ciphertext was printed by
+    /// `uv run --with pynacl` with `SealedBox(PrivateKey(bytes(range(1, 33))).public_key).encrypt(b"s3cr3t value")`.
+    #[test]
+    fn a_libsodium_sealed_box_opens_only_under_its_key_and_reseals_to_a_new_one() {
+        let slot = serde_json::to_string(&WrapKeySlot { slot: 0, key: hex(&[4; 32]) }).unwrap();
+        let src = WrapKeySource::parse(0, &[&slot]).unwrap();
+        let seed: [u8; 32] = core::array::from_fn(|i| i as u8 + 1);
+        let k = mint_seal_key(&src, seed, [3; 12], graftyard_types::Timestamp(1)).unwrap();
+        assert_eq!(hex(&k.public), "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c");
+        assert!(!k.private.ciphertext.windows(32).any(|w| w == seed), "the private half is stored only wrapped");
+        let sealed: Box<[u8]> = unhex(
+            "c9b9da4b5b6e9c59f3b4fe3a4f75509ff8f1b49743d4746b56f60021a464b51bc93fdc6b0d39023bd733da36e7c049b39d512eabbfa795f9bd58c22e",
+        )
+        .unwrap()
+        .into();
+        let req = |keys: Vec<graftyard_identity::sealed::SealKey>, sealed: Box<[u8]>, id: &str| OpenRequest {
+            keys,
+            secrets: vec![("TOKEN".into(), sealed, id.into())],
+        };
+        let (open, failed) = open_secrets(&src, &req(vec![k.clone()], sealed.clone(), &k.key_id));
+        assert_eq!((open, failed), (vec![("TOKEN".into(), "s3cr3t value".into())], Vec::<String>::new()));
+        let other = mint_seal_key(&src, [9; 32], [3; 12], graftyard_types::Timestamp(1)).unwrap();
+        let wrong = OpenRequest { keys: vec![other.clone()], ..req(vec![], sealed.clone(), &other.key_id) };
+        assert_eq!(open_secrets(&src, &wrong), (vec![], vec!["TOKEN".to_owned()]));
+        let mut t = sealed.to_vec();
+        t[40] ^= 1;
+        assert_eq!(open_secrets(&src, &req(vec![k.clone()], t.into(), &k.key_id)).1, vec!["TOKEN".to_owned()]);
+        // Rotation: resealed to `other`, the record opens under it and not under the old key.
+        struct Fixed(u8);
+        impl crypto_box::aead::rand_core::RngCore for Fixed {
+            fn next_u32(&mut self) -> u32 {
+                0
+            }
+            fn next_u64(&mut self) -> u64 {
+                0
+            }
+            fn fill_bytes(&mut self, d: &mut [u8]) {
+                d.fill(self.0);
+            }
+            fn try_fill_bytes(&mut self, d: &mut [u8]) -> Result<(), crypto_box::aead::rand_core::Error> {
+                d.fill(self.0);
+                Ok(())
+            }
+        }
+        impl crypto_box::aead::rand_core::CryptoRng for Fixed {}
+        let (re, failed) = reseal(&src, &req(vec![k.clone()], sealed, &k.key_id), &other, &mut Fixed(5));
+        assert!(failed.is_empty());
+        let both = vec![k.clone(), other.clone()];
+        assert_eq!(open_secrets(&src, &req(both.clone(), re[0].1.clone(), &other.key_id)).0[0].1, "s3cr3t value");
+        assert_eq!(open_secrets(&src, &req(both, re[0].1.clone(), &k.key_id)).1, vec!["TOKEN".to_owned()]);
     }
 
     #[test]

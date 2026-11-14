@@ -79,6 +79,9 @@ pub struct Place<'a> {
     pub index: &'a PackIndex,
     /// The shard's `.idx`, put beside the pack in each bucket that holds it. Derived: a failure is not an error.
     pub idx: Option<&'a [u8]>,
+    /// A promotion's range, written as the `.idx`'s `from` and `to` custom metadata beside the pack's chain: a cache
+    /// of its `Promoted`, which a rehydrate checks against the record (`crate::catchup::skippable`).
+    pub idx_range: Option<(Index, Index)>,
     /// `INLINE_MAX`, or `INLINE_MAX_HOT` for an agent push on a hot group.
     pub inline_max: usize,
 }
@@ -125,8 +128,12 @@ impl<B: Bucket> PackStore<'_, B> {
         if let Some(idx) = p.idx {
             let idx_key = R2Key::Idx { network: p.network, id: p.id }.to_string();
             let idx_sum = Digest(Sha256::digest(idx).into());
+            let mut idx_meta = meta.clone();
+            if let Some((from, to)) = p.idx_range {
+                idx_meta.extend([("from".to_owned(), from.0.to_string()), ("to".to_owned(), to.0.to_string())]);
+            }
             for (site, bucket) in self.buckets.iter().filter(|(s, _)| sites.contains(*s)) {
-                let _ = (site, bucket.put_new(&idx_key, idx, idx_sum, &meta).await);
+                let _ = (site, bucket.put_new(&idx_key, idx, idx_sum, &idx_meta).await);
             }
         }
         Ok(DurablePack::seal(PackRef::Stored { id: p.id, checksum, bytes: p.bytes.len() as u64, sites }))
@@ -771,6 +778,7 @@ mod tests {
             bytes,
             index,
             idx: Some(b"idx"),
+            idx_range: None,
             inline_max: INLINE_MAX,
         }
     }

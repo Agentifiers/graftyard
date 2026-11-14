@@ -483,6 +483,7 @@ async fn push(env: &Env, url: &Url, body: Vec<u8>) -> Result<Response> {
         bytes: &body,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: INLINE_MAX,
     };
     let durable = store.place(place).await.map_err(|e| Error::RustError(e.to_string()))?;
@@ -533,6 +534,7 @@ async fn archive(env: &Env, from: u64, to: u64) -> Result<Response> {
         bytes: &promoted,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: 0,
     };
     let pack = store.place(place).await.map_err(|e| Error::RustError(e.to_string()))?.into_pack();

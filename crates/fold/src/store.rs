@@ -52,6 +52,12 @@ pub trait Store {
     fn put(&mut self, table: &str, key: Key, row: Stored);
     fn delete(&mut self, table: &str, key: &[Val]);
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)>;
+    /// Told of each row `apply` (`crate::tier::Writer`) or `seed` changes, with its old and new value, before the
+    /// change: a host keeps a derived index of the tier this way without reading the row again.
+    fn wrote(&mut self, _table: &str, _key: &[Val], _old: Option<&Stored>, _new: Option<&Stored>) {}
+    /// Told that `apply` finished entry `index`, after its rows and meta row: a derived index kept by `wrote` now
+    /// stands at `index` if it stood at `index - 1`.
+    fn applied(&mut self, _index: Index) {}
     /// Deletes every row of `table`.
     fn clear(&mut self, table: &str) {
         loop {
@@ -92,6 +98,12 @@ impl Store for Box<dyn TierStore> {
     }
     fn scan(&self, table: &str, from: &[Val], limit: usize) -> Vec<(Key, Stored)> {
         (**self).scan(table, from, limit)
+    }
+    fn wrote(&mut self, table: &str, key: &[Val], old: Option<&Stored>, new: Option<&Stored>) {
+        (**self).wrote(table, key, old, new)
+    }
+    fn applied(&mut self, index: Index) {
+        (**self).applied(index)
     }
     fn clear(&mut self, table: &str) {
         (**self).clear(table)

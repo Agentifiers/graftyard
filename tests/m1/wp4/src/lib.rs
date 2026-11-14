@@ -270,6 +270,7 @@ impl Bed {
                 bytes: &body,
                 index: &ix,
                 idx: None,
+                idx_range: None,
                 inline_max: INLINE_MAX,
             };
             match store.place(place).await {
@@ -305,6 +306,7 @@ impl Bed {
                 bytes: &body,
                 index: &ix,
                 idx: None,
+                idx_range: None,
                 inline_max: INLINE_MAX,
             };
             match store.place(place).await {

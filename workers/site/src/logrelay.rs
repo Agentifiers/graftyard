@@ -92,6 +92,12 @@ impl DurableObject for LogRelay {
             }
             return Response::from_json(&json!({"ended": job.0.0}));
         }
+        // `/abort`: the relay resets (`ctx.abort()`), as a lost isolate does, so every socket drops without `end`.
+        // BF-61's kill; only an operator's binding sends it, since the edge forwards only the socket routes.
+        if path == "/abort" {
+            crate::host::abort(&self.state, "graftyard logrelay abort");
+            return Response::from_json(&json!({"aborted": true}));
+        }
         // `/runner/<job>` and `/viewer/<job>`: a WebSocket upgrade the edge checked the credential of.
         let role = if path.starts_with("/runner/") {
             "runner"

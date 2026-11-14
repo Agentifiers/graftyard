@@ -1,0 +1,13 @@
+{
+ "job": 1179653,
+ "conclusion": "Success",
+ "match": {
+  "repo": true,
+  "env": true,
+  "org": true,
+  "var": true,
+  "plain": false
+ },
+ "ok": true,
+ "note": "checked from a re-read of /logs; the driver read it before the job log was joined"
+}

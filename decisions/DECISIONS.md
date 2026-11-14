@@ -3285,6 +3285,30 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A registration shard whose `Repo`-scope runners from many repositories crowd one broker past `BROKER_HELD_MAX`: then brokers split by scope as DESIGN keys them. Or a second verifier of job tokens outside the edge, which would need the public key elsewhere.
 
+### M4-WP3: where Actions secrets, variables, and `SealKey`s are stored, 2026-11-14
+
+**Decision.** As SHARED places them. A repository's and its environments' secrets and variables are `RepoEvent::ActionsSecret` (tag 44) and `ActionsVariable` (tag 45), core tier, in repository format 32.23, keyed by scope (`""` or `env:<name>`) and name. The owner's `SealKey`s and its org secrets and variables are `AuthzEvent` tags 17 to 19 on the owner's `Authz` chain in Authz format 0x12.12, stored in a trailing part of the fold, so a fold with none keeps its bytes. One `SealKey` per owner serves the repository, environment, and org public-key routes. A row holds only the `crypto_box_seal` bytes the client sent and the owner's `key_id`. `RepoEvent` tag 43 is held as `Reserved43` for `b030-split`'s `Split`, so the tags after it match on every branch. An `Agent` may not write any of them.
+
+**Why.** SHARED names the events and the chains. Keying a row by scope and name gives the GHES routes their reads with no index, and a job's reads at `acquirejob` are one scope each. A per-owner key needs no key per repository and is what SHARED says; `gh secret set` reads `key_id` and `key` and sends `key_id` back, so it cannot tell [measured: `cli/cli` `pkg/cmd/secret/set`]. Holding tag 43 keeps the tag table append-only on both branches when they merge.
+
+**Beat.** A key per repository, as GitHub keeps [unverified], which multiplies the rotation job's work for no client-visible gain. Secrets in their own store outside the chains, which would need an outbox for their events. Taking tag 43 on this branch, which would make the two branches' tables disagree.
+
+**Evidence.** `crates/git/tests/issues.rs` (scopes kept apart, sealed bytes stored as sent, variables' 409 rule), `crates/identity/tests/sealed.rs` (key rotation and drop rules, org rows, bytes unchanged with no Actions row). Tags and formats checked against every origin branch's `wire_tags.golden` and format constants on 2026-11-14.
+
+**Flip.** A GHES client that compares `key_id` across repositories of one owner and expects them to differ. Or an owner whose org rows grow past what one `Authz` fold should carry, which would move them to their own chain.
+
+### M4-WP3: who opens Actions secrets, and how both rotations run, 2026-11-14
+
+**Decision.** `graft-ops` alone opens a `SealKey`'s private half. At `acquirejob` the edge reads the job's repository and environment rows (repository chain) and the org rows whose `SecretScope::reaches` the repository (owner's `Authz`), and sends the sealed records with the owner's wrapped keys to `graft-ops` `POST /actions/open`, which answers the plaintexts for that job message alone. The edge passes them to the shard leader in the `acquire` call, which puts them in the message's `variables` and `mask`; nothing stores or logs them. A run marked `fork` reads no secret, and still reads variables. A record whose key does not open it is left out by name. The `SealKey` rotation is an owner admin's `POST /api/graftyard/v1/{orgs,users}/{login}/actions/rotate-seal-key` on the edge: mint a key (`/actions/sealkey`), reseal every org, repository, and environment secret to it inside `graft-ops` (`/actions/reseal`, sealed bytes in and out), retire the older keys, then drop each one a fresh read shows no record names. The wrapping key's rotation is `.../rewrap-secrets` after `graft-ops` is redeployed with slot B bound and current: each `SealKey`'s private half and each hook secret is wrapped again under it (`/actions/rewrap`, `PutSealKey` with only `private` changed), and then `graft-ops` is redeployed with slot A cleared. Until `ActionsTrigger` builds fork pull request runs, the admin dispatch route's `fork` field marks a run as one.
+
+**Why.** SHARED puts decryption behind `graft-ops` and gives job-message assembly and rotation as the only openers ("Who decrypts", "Rotation"). Opening on the edge keeps every plaintext out of the site script, its storage, and its logs; the leader only copies strings into the answer. Running both rotations as an edge route is the simplest place that already reads every chain the rotation writes, through the same commit paths a client's write takes, so each step is an ordinary acknowledged command and a stopped rotation is safe to run again.
+
+**Beat.** Opening on the shard leader, which would put plaintexts inside a Durable Object's isolate next to its SQLite. A rotation job as a site-script consumer, which would need its own cursor over every repository of the owner for an action an admin runs rarely. A fork route built for BF-59 alone, which is M4's `ActionsTrigger` work.
+
+**Evidence.** `workers/ops/src/lib.rs` (a PyNaCl `SealedBox` opens under the minted key and not under another or a tampered one; a reseal opens under the new key only), `crates/identity/tests/sealed.rs` (a rewrapped key replaces only `private`), `crates/actions/src/specs.rs` (a job's environment in both forms), and BF-59 on graft-m4a (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** An owner with more repositories than one edge request can reseal in its time limit, which would move the rotation into a consumer. Or `ActionsTrigger` building fork runs, which retires the `fork` field.
+
 ### M4-WP3: the workflow parser reads the runner's schema as data, 2026-11-14
 
 **Decision.** `crates/actions/src/workflow` validates a workflow against `workflow-v1.0.json`, the schema `@actions/workflow-parser` 0.3.61 ships (MIT), with descriptions removed, through a port of its schema-driven `TemplateReader`. It does not hand-code the subset of keys the gates use. The converter, expression parser, and step ids port the npm package, and the matrix ports the runner's C# `MatrixBuilder`, which the npm package does not have. The differential test compares the port's output with the oracle's JSON for every workflow in `tests/m4/wp3/workflows/`, errors included. A multi-line string's embedded expressions are read from its value, as the C# reader does. The npm reader reads them from the raw YAML source, indentation included, to keep editor ranges, so the oracle script turns that off. YAML is `yaml-rust2` 0.10 with default features off.
@@ -3296,6 +3320,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 **Evidence.** `crates/actions/tests/workflows.rs`: 59 of 59 workflows match. `tests/m4/wp3/plant.py` 18 to 40: 23 of 23 planted parser, matrix, and filter bugs are caught (`tests/m4/results/m4-wp3.md`).
 
 **Flip.** A workflow on which the runner and the npm oracle disagree in a way the gates see, which would make the C# parser the oracle. Or a schema version the runner ships that the npm package does not.
+
+### M4-WP3: how BF-56 gets a required check, a cancel, and its two kills on a product install, 2026-11-14
+
+**Decision.** BF-56 runs on graft-m4a through product routes and three operator-only fault routes. The rule is GHES's `PUT /repos/{o}/{r}/branches/{branch}/protection` (`crates/api/src/protection.rs`), which commits `IssueOp::SetRule` (format 32.5) on the repository chain for a repository admin, with `GET` and `DELETE` beside it; a branch's rule is the one whose pattern is the branch's name, and a `restrictions` other than `null` is refused 422. The cancel is GHES's `POST /repos/{o}/{r}/actions/runs/{run_id}/cancel`, which commits `CancelRun` on the shard for a caller with write access and answers 202 `{}`, or 409 for a completed run. The kills: a member's `/abort` resets one member (`ctx.abort()`), so killing a repository's leader leaves its group leaderless until an election; an Actions member's `/owner_fault` either holds `RunOwner` rounds for `hold_ms`, which places the commit-path kill between `RunCreated` and the round that writes the checks, or, with `kill`, resets the member after the next round's repository writes and before its shard half. The edge forwards none of the three; only a scratch Worker bound to the `Member` classes reaches them, as BF-61's relay kill did. A `RunOwner` read cut at its byte cap that touched no run commits `OwnerCursor` alone, so runner traffic cannot hold a later run's checks.
+
+**Why.** No product route wrote `SetRule`: M2-WP3 seeded rules through the test-faults `/bench_seed`, and graft-m4a's sites are product builds. The branch protection route is `rest:branches`' T0 surface anyway, so it serves clients as well as the gate, and cancel is `rest:actions`'. A reset is the kill the in-memory gate models (a crashed leader, and a `RunOwner` that died between its two halves), and `ctx.abort()` is what a lost isolate does, so it needs no other fault machinery in the product build. Routes reached only through a binding keep clients away from them, the same line `LogRelay`'s `/abort` drew on site day 30.
+
+**Beat.** A test-faults site day for the run, which would reset every member twice and leave the product build untested. A `Rule` seeded with `/record`, which is test-faults and skips `decide`'s admin check. Killing the repository leader with `/sever`, which is test-faults only. A sleep inside the round for the `RunOwner` kill, which an alarm's time limit could end at an unplanned place.
+
+**Evidence.** `crates/api/tests/surfaces.rs`, `branch_protection_put_edits_the_branch_s_rule_and_delete_removes_it` (a `PUT` edits the branch's rule instead of adding a second, both `contexts` and `checks` become required, `DELETE` leaves it unprotected, a writer is refused). `crates/actions/tests/gates.rs`, both BF-56 tests, for the shape the hosted kills reproduce. BF-56 on graft-m4a (`tests/m4/results/m4-wp3.md`).
+
+**Flip.** A ruleset route (`rest:repos` rules) that clients use instead of branch protection, which would compile to the same `Rule` rows. Or a fault the gate needs that a reset cannot make, such as a member that answers but never commits.
 
 ### `fresh-repo`: a new group's near placement runs after its create returns, 2026-11-13
 
@@ -3484,3 +3520,80 @@ LM-1's B0-34 on `graft-m2b` m29 held k 1 on all five networks for 900 s: no pool
 **Evidence.** `the_step_up_is_reserved_ahead_and_never_commits_to_a_cold_slot` and `a_lapsed_lease_tears_its_slots_down_once` in `crates/git/tests/agent_load.rs`; `only_a_clients_call_starts_a_shard_or_keeps_it_warm` in `crates/git/tests/shard.rs`; plants 86 to 90 in `tests/lm1mem/plant.py`.
 
 **Flip.** A hosted B0-34 whose pool warms keep k from stepping because rehydrate outlasts the load's high line, or pool shards that bill outside the hot hours `cost.py` prices.
+
+### `stored-fetch`: a promotion stores its `.idx`, and a rehydrate loads it and skips the pushes it covers, 2026-11-14
+
+LM-1's B0-34 warm on m29 (main 04f8b3a6) rehydrated repo:131296, the 5 GB linux seed, cold in 1,884 to 2,595 s a shard against DESIGN's 120 s line (fail over 600 s), and every `/catchup` before it timed out at its 120 s client limit [measured, `tests/fanout/raw/rehydrate-131296-m29.json`].
+
+#### A promotion stores its pack's `.idx`, and a rehydrate loads it in place of `index-pack`
+
+**Decision.** The archive's promotion reads the `.idx` that its own `/validate` wrote for the promoted pack (`GET /idx` on the same shard) and puts it under `R2Key::Idx` in every bucket the pack's placement held, create-only, before `Promoted` commits. Its custom metadata names the pack's chain and its range, `from` and `to`. The third-bucket filler copies the `.idx` with the pack. A rehydrate's marked phase streams each promoted pack to the container (`/spool`, no lock) with its `.idx` (`/spool-idx`). The container checks the `.idx` against the pack (version 2, its own SHA-1, the pack's trailer, the object count) and moves both into the repository under the network lock, with no `index-pack`; a missing or rejected `.idx` falls back to `index-pack --strict --fix-thin`. Pushed packs stay thin and as the client sent them.
+
+**Why.** The m29 rehydrate's 257 stored packs were pushes, 2.62 GB, never promoted: `View::unpromoted` counted row bytes, and a stored pack's row is a pointer, so promote-ahead never fired (fixed in this branch's first commit). Each shard's time was 90 to 96% `index-pack --fix-thin`, 1,694 to 2,496 s at 1.0 to 1.55 MB/s, and 53 to 94 s the spool from R2. A fetch that runs in parallel alone saves at most the spool. Locally, on 4 CPUs, a 5.5 MB pack loaded through its `.idx` held the lock 1 ms against 123 ms for `index-pack` (`TestSpooledIdxHoldsLockShorter`).
+
+**Beat.** Storing pushes fixed (G5's first question): the edge tees the pushed bytes to R2 while the shard validates, so fixed packs would mean a second upload of the shard's output per push. A parallel fetch alone: it removes only the spool's share. Running `index-pack` across 4 vCPU: about 470 s at m29's rates, still over the line.
+
+**Evidence.** `a_rehydrate_of_promoted_packs_loads_their_stored_idx_and_skips_the_pushes_they_cover` and `a_corrupt_stored_idx_falls_back_to_index_pack` (`crates/git/tests/catchup.rs`), and `containers/git/server/stored_test.go`. Both catch-up tests fail with main's behaviour.
+
+**Flip.** Shard-streamed promotion, where the shard puts the pack and its `.idx` itself, if hosted promotion cannot keep up with B0-31's agent push rate, or if a network's unpromoted pack bytes stay above 512 MiB for more than an hour. A hosted B0-34 cold warm whose `idx_rejected` is above zero on packs this branch promoted means the check or the copy is wrong.
+
+#### Coverage comes from the committed `Promoted` record; the `.idx` metadata only caches it
+
+**Decision.** A rehydrate does not load a pushed pack whose entry lies in a range that both a committed `Promoted` record (the chain's last one, or one whose entry the marked phase reads) and its pack's `.idx` metadata cover, and only when the rehydrate loads that promoted pack. After the marked phase, the tail, and the refs, the container must answer `/connected?objects=tips`: every ref's history, and the whole tree at each ref's tip, present. If it does not, the skipped packs load in index order, the check runs again, and the miss is reported as `fault`. A disk that still fails drops its cursor and place and never serves, so the next call rehydrates from nothing. This is the read side of `Compacted.consumed`; nothing writes `Compacted` yet.
+
+**Why.** An object's custom metadata is not committed state: a wrong or stale range there would skip packs the shard needs, and objects would be missing with nothing to flag them. Without the skip, a promoted network still loads every pushed pack the promotion holds, which costs the same `index-pack` time as before.
+
+**Beat.** Trusting the metadata alone. Writing `Compacted` now: it touches the fold and the sweeper's deletes, and the skip needs only the read.
+
+**Evidence.** `idx_metadata_wider_than_its_promoted_record_skips_nothing_outside_the_record` and `a_planted_missing_object_in_a_covered_pack_falls_back_to_the_skipped_packs_and_passes` (`crates/git/tests/catchup.rs`), both failing with main's behaviour.
+
+**Flip.** A hosted rehydrate that reports a `fault`: the promotion's pack missed an object of its range, which is a promotion bug to fix there.
+
+#### Stored packs are fetched four at a time and ingested in log order
+
+**Decision.** A catch-up or rehydrate fetches up to `FETCH_AT_ONCE` (4) stored packs at once onto the container's disk, at most `AHEAD_PACKS` (8) and `AHEAD_BYTES` (64 MiB) ahead of the ingest, and ingests them strictly in log order. A catch-up does not fetch a `Promoted` entry's own pack: it applies the range's entries first, so the disk already holds every object of it.
+
+**Why.** On B0-31 m3fr4 the apac shard's catch-up spent about 500 ms a pack in per-pack round trips outside spool and `index-pack`. A Workers invocation has at most six connections waiting for response headers [doc, Workers limits], and a `/spool` call waits for its headers until the container has the whole body, so four leave one for the in-order ingest and one for the next log page. The bounds are counted on the container's disk, where the fetched bodies wait.
+
+**Evidence.** `a_catch_up_fetches_stored_packs_at_once_and_ingests_them_in_log_order`: 60 packs with the first one slow, 11.5 s against 34.5 s one at a time, ingested in order. `a_cold_rehydrate_of_5_gb_projects_under_120_s_and_the_serial_fetch_does_not`, at m29's site c rates (up 34.2 s, 27.9 MB/s one stream, 375 ms a pack, the `.idx` 3.5% of its pack): the seed's 257 packs in 83 s against 227 s one at a time, and 5 GB as 100 promotions of 48 MiB in 90 s against 258 s. All of these fail with main's behaviour [inference: the multi-stream R2 rate into one container is unmeasured and assumed equal to the one-stream rate].
+
+**Flip.** B0-34's hosted cold warm on this branch over 120 s with a summed spool rate near the one-stream rate: the container's link or R2 caps the sum, and the 5 GB line needs a design change, not more fetches.
+
+#### Promotion's measured rate is under B0-31's push rate
+
+**Decision.** `PROMOTE_MAX` stays 48 MiB on the site's path. The unpromoted tail of a network pushed faster than promotion runs is open question G9.
+
+**Why.** On git/git's first-parent history, 30 thin pushes of 100 commits (29.2 MB) promoted as one: `pack-objects` 4.65 s (57.9 MB out), and the validate's `index-pack` 6.50 s with its default threads (11.97 s with one), 0.0 s connectivity. So 2.62 MB/s of pushed bytes, CPU-bound, against about 4 MB/s from B0-31's agents. `pack-objects` writing files gives a pack that differs from its `--stdout` output, so the stored `.idx` is the validate's, from the bytes that are placed. A promoted pack is 1.6 to 4.3 times its thin pushes' bytes, more for shorter ranges (2.3x at 30 pushes per promotion, 4.3x at one). The push-rate sweep at 2.62 MB/s over 600 s ends 3, 0, 754, and 1,957 MB above the last promotion at 1, 2, 4, and 6 MB/s, each step at most 19.2 s [measured locally, `tests/am1/results/lm1-rows-m3f.md`, "Promotion rate"; `promotion_keeps_up_below_its_rate_and_stays_bounded_above_it`]. A growing tail costs slower rehydrates, not correctness. Shard-streamed promotion lifts the site's memory bound, not this CPU one.
+
+**Flip.** The same as the first decision's: hosted promotion MB/s under B0-31's push rate, measured in B0-34's drain of repo:131296.
+
+### `narrow-builds` (1): a list's selection pages from `issue_order`'s keys and reads only the page's items, 2026-11-14
+
+Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"; F65).
+
+**Decision.** `Repo::numbers` lists the numbers of a kind and state from `issue_order`'s keys alone. A GraphQL connection whose only filter is its states, when the states are ones the order's open flag tells apart, counts and pages from those numbers and loads only the page's items. A REST `issues` list with no `labels` sorts the `issue` rows alone, which hold `created`, `updated`, and `comments`, read in two scans of the `issue` table, and loads only the page's items. Every other filter (labels, assignee, author, mention, head, base, and CLOSED or MERGED apart) reads every item as before. Replies are unchanged byte for byte.
+
+**Why.** On B0-29's shape with the per-invocation counter, invocations with a narrow build carried 77% of the learners' heavy CPU, at about 2,605 storage reads a build and 0.043 ms each, REST and GraphQL alike [measured, `tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"]. `Repo::list` read `issue`, `pull`, and `pull_head` of every item of the kind and state, then sorted and paged: 1,556 to 1,655 storage reads for a 30-item page at 500 PRs.
+
+**What it beat.** For the REST sorts, a fold-maintained sort index (one table per sort key, written by every update and comment) would page from about 30 index rows, against about 500 `issue` rows here. It adds three metadata tables, a format and refold, and a write per comment and update, for a list that is half of journey 9's API reads; reading the `issue` rows alone needs no schema change, takes 154 statements against 1,655, and keeps this change independent of (2). The index is the flip.
+
+**Evidence.** `crates/api/tests/narrow.rs`: every REST sort, direction, state, and label filter over 8 page boundaries, the last partial page and empty pages included (768 cases), and GraphQL connections over 6 state sets, MERGED and CLOSED apart, at 8 page sizes and cursors, each byte-identical to the whole-tier reply against an independent oracle; `a_page_of_a_wide_repository_reads_its_page_not_every_item` (500 open PRs: at most 200 statements and 900 rows for a 30-item page; 54 to 154 statements and 592 to 799 rows here, 1,556 to 1,655 and 2,093 to 2,348 on main, where it fails). `tests/nr3/plant.py` 33 to 41 catch 9 of 9: numbers oldest first, one open flag, MERGED and CLOSED paged from the keys, `totalCount` of the page, an inclusive cursor, every item loaded, every state kept, the next link off by one, and labels paged before filtering.
+
+**Flip.** A REST list sorted by `updated` or `comments` on a repository whose `issue` rows alone cost more than 20% of a learner's CPU at journey 9's rate: then the sort index above.
+
+### `narrow-builds` (2): the accounts a tier names are a derived index `apply` keeps in memory, never stored, 2026-11-14
+
+Branch `narrow-builds` (`tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"; F65).
+
+**Decision.** Each member keeps, per tier, a count of the rows naming each account (`hosted::NamedIndex`): issue authors, assignees, comment authors, reviewers, status creators, release authors, asset uploaders, lock owners, and mergers, the rows `hosted::accounts` scans. `apply` moves it through `Store::wrote` (each row's old and new value, before the write) and `Store::applied` (the entry finished), and it counts as current only when it followed every entry to the tier's `applied`. Otherwise it is built from the rows at the next narrow read: after a start, an install, a metadata load from another index, or a lost write. A narrow answer's `named` is the union of the two tiers' indexes. It is never stored. The scan stays for the edge's whole-tier read and the hook sequencer.
+
+**How existing members get it.** Derived and never persisted, the third of the operator's options. A member built on this release builds the index from the rows it already holds on its first narrow read, whatever release wrote them, and a member restored from a snapshot taken before this change does the same. The other two options were refused by the fold rules. A stored table is a fold schema change: it enters `fold_digest` and snapshots, so it ships as a lazy refold under the two-release rule ("Schema change is a refold, never a migration"), and members on the previous release would digest differently until every site rolled. A table rebuilt from the log at boot or restore is a stored table with a refold. Nothing a reply depends on is outside the rows, so SHARED's new rule on derived indexes applies.
+
+**Why.** A narrow build's `named` re-ran `hosted::accounts` whenever the tiers' state changed, which at B0-29's write rate was nearly every build: about 1,500 of a build's 2,605 storage reads at 500 PRs [measured, `tests/am1/results/narrow-reads-3.md`, "Instrument run (b)"].
+
+**What it beat.** The fold table the operator named, which needs the format and refold above for an answer the rows already hold. A per-state cache of the scan, which is what `NAMED` was, misses on nearly every entry.
+
+**Evidence.** `crates/api/tests/narrow.rs`: the index kept through every entry of `big()` equals the scan of the tiers at each entry; an account leaves with its last naming row and stays while another names it; an index that skipped an entry is not current; a member restored from snapshot frames that hold no index answers the same `named` and the same narrow answers as one that applied the log; `pulls/250` at 500 PRs reads at most 40 storage statements with the kept index, where the scan read over 1,500 rows. `tests/nr3/plant.py` 42 to 47 catch 6 of 6 (see the results file). The index costs about 40 bytes per named account per member.
+
+**Flip.** A narrow read that needs the index before its tier is loaded, or a first-read build measured over 50 ms of a member's CPU: then store it as a fold table under the two-release rule.
+

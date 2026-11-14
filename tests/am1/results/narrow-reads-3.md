@@ -668,6 +668,141 @@ covers only 12:07 to 12:09, after the storm.
 Rows: `tests/nr3/rows/a1-b0-29-gate16.jsonl`, `run-gate16.status`, `lmem-gate16.jsonl`, `mem-gate16.json`,
 `egress-gate16.txt`, `fresh-gate16.jsonl`, `trace-gate16.json.gz`.
 
+### Instrument run (b) on 55a9b58: heavy learner CPU is fold point reads inside narrow builds
+
+One 300 s run in the arm "with" shape, from f6a99fc1, whose product code is 55a9b58's: main 8f76a54e plus the
+per-invocation counter (`workers/site/src/inv.rs`, test-faults). 8 learners, 500 open PRs, 500 agents. The B0-29
+window ran 19:18:14Z to 19:23:14Z on repository 65564. Site day 15 and the edge day both exited 0. No stop rule fired:
+the watcher checked the voters' analytics peak every 30 s against 120 MiB, and spend against $48.
+
+| | Arm "with" (600 s, a5a85d9) | inv1 (300 s, 55a9b58) |
+| --- | --- | --- |
+| read:api n | 116,666 | 58,479 |
+| p50 / p99 | 525 / 2,304 ms | 540 / 2,687 ms |
+| 503 | 89 | 174 (0.30%) |
+| served | 99.92% | 99.70% |
+| Leader changes | 0 | 0 |
+| Voter analytics peak f0 / f1 / f2 | — | 77 / 57 / 55 MiB |
+| Learner peak | — | 59 to 64 MiB |
+
+The run is an instrument, not a gate: its p99 of 2,687 ms is over 2 s, as arm "with" was.
+
+**Join [measured].** `tests/nr3/inv.py` joined 41,026 voter and 94,176 learner invocations with Workers Logs CPU by
+request id. Learners used 1,198 CPU s, of which `/read` is 93.9%, `/feed` 2.8%, the ticker 3.0%, and `/raft` 0.4%.
+Invocations of 50 ms or more (6,775) carry 1,097 s, 92%.
+
+**Heavy learner CPU by cause [measured, counts per invocation].** Each heavy invocation goes to the first cause it
+holds, in this order:
+
+| Cause | Share of heavy learner CPU |
+| --- | --- |
+| A narrow answer build (REST or GraphQL) | 76.7% |
+| No counted cause: CPU from tasks the counter did not tag | 13.2% |
+| Cached answer only | 3.9% |
+| A whole-tier dump build | 3.4% |
+| Apply only (entries applied, no build) | 2.8% |
+
+Per learner, invocations with a build carry 71 to 82% of heavy CPU. The least-squares fit of CPU on the counts gives
+the fold SQL reads (`TierSql::query`) 52 to 68% of heavy CPU on every learner, with 12 to 25% unexplained. Entries
+applied take 0 to 8%, decoded bytes 1 to 5%, rows and row KB written 0 to 8%, and confirm wait none.
+- Confirm wait is wall time, not CPU: 192 s of confirm wall in 1,921 heavy invocations, with pendStart p50 0.
+- The premise holds that CPU follows the invocation that started the work: a REST or GraphQL build costs 0.043 ms
+  of CPU per fold read, both kinds alike, over 7,188 builds.
+
+**Why a build reads so much [measured locally, `cargo test` scratch counter over `narrow::answer`, 500 open PRs
+with one comment each].** A build issues 2,605 fold reads on average in the run. Locally:
+
+| Route | Reads for the reply | Reads for `named_accounts` |
+| --- | --- | --- |
+| `issues?per_page=30` | 1,655 (530 each of `issue`, `pull`, `pull_head` gets) | 1,512 |
+| GraphQL `pullRequests(first: 20, states: [OPEN])` | 1,565 (520 each of the same) | 1,512 |
+| `pulls/250` | 17 | 1,512 |
+
+Both causes are in the code:
+- `view::Repo::list` loads every item of the kind and state (`item`: `issue`, `pull`, and `pull_head` gets) before
+  the selection sorts and pages it (`rest.rs` issues, `gql.rs` connections). A 30-item page reads all 500.
+- `named_accounts` (`workers/site/src/family.rs`) re-runs `hosted::accounts` over every issue, comment, and
+  `pull_head` whenever the tiers' state changes. Its cache is keyed by `dump_key`, which changes with nearly every
+  entry at B0-29's write rate.
+
+**The fix it points to [proposal, not built].** Make a narrow build's fold reads scale with the page, not the
+repository:
+1. **Page from the order index first.** When the order is `issue_order`'s (GraphQL connections, newest number first)
+   and the filter needs only kind and state, scan `issue_order` keys alone, which is a few batched scans. Count from
+   the keys and load only the page's items. For REST `sort=created|updated|comments`, keep sort keys in an index the
+   fold maintains (`created` already exists as a table), or load only the `issue` row for sorting, not `pull` and
+   `pull_head`. Filters that need more (labels, assignee, head, base) keep today's path.
+2. **Maintain `named` in the fold.** A metadata table counting references per account, keyed by name shard, written
+   at apply. Then `named` is a prefix read of the lowest LOGIN_SHARDS_MAX shards plus point gets for the asked
+   accounts, in place of a scan of every row.
+
+Together these cut a build from about 2,600 reads to tens. At 0.043 ms a read, that is about 750 of the learners'
+1,198 CPU s in this window, from about 0.5 to about 0.2 cores per learner [inference]. Whether that closes the p99
+gap (687 ms here) is not shown. A busy learner answers late, but the round-trip split of arm "with" put the tail on
+the leg back. Item 2 adds a fold table, so it needs a DESIGN edit first ("Follower read", the narrow-read rows), and
+replies must stay byte-identical: the `narrow.rs` oracle tests cover both items.
+
+Rows, on branch `narrow-reads-3` (02cd4932): `tests/nr3/rows/a1-b0-29-inv1.jsonl`, `run-inv1.status`,
+`watch-inv1.jsonl`, `inv-inv1.jsonl.gz` (one line per invocation: CPU, wall, path, counts).
+
+### narrow-builds: both fixes from instrument run (b)
+
+Branch `narrow-builds` off main ea1565de, two commits so (1) can be judged and kept alone (`decisions/DECISIONS.md`,
+"`narrow-builds` (1)" and "(2)").
+
+**(1) Page from `issue_order`'s keys** (351c90ba). A GraphQL connection whose only filter is its states counts and
+pages from the order's keys and loads only the page's items, when the states are ones the order's open flag tells
+apart (OPEN alone, CLOSED and MERGED together, or all). CLOSED or MERGED alone, and labels, assignee, author, head and
+base, keep today's path. A REST `issues` list with no `labels` sorts the `issue` rows alone, which hold `created`,
+`updated` and `comments`, so it reads no `pull` or `pull_head` row.
+
+For the REST sorts I chose that over a fold-maintained sort index. The index would page from about 30 rows instead of
+about 500 `issue` rows, but it adds three metadata tables with a format and a refold, plus a write on every comment and
+update. Reading the `issue` rows alone needs no schema change and keeps (1) independent of (2). The index is the flip.
+
+**(2) The accounts a tier names** (f69ac467). Each member keeps a per-tier count of the rows naming each account
+(`hosted::NamedIndex`). `apply` moves it through `Store::wrote` and `Store::applied`, and it counts as current only
+if it followed every entry. Otherwise it is built from the rows at the next narrow read: after a start, an install, a
+metadata load from another index, or a lost write. Existing members get it by the third route the operator named:
+derived and never persisted. SHARED "Folds" now says a derived index that is not in `fold_digest` or a snapshot, and
+that every member builds from its rows, is not a stored format. A stored table would be a fold schema change under
+the two-release rule, with a lazy refold.
+
+**Reads per build at 500 open PRs, one comment each [measured, `cargo test`]:**
+
+| Route | Storage statements, main | (1) | (1)+(2) |
+| --- | --- | --- | --- |
+| `issues?per_page=30` | 1,655 + 1,512 for `named` | 154 + 1,512 | 154 |
+| `issues?sort=updated&direction=asc&page=9` | 1,655 + 1,512 | 154 + 1,512 | 154 |
+| GraphQL `pullRequests(first: 30, states: [OPEN])` | 1,595 + 1,512 | 95 + 1,512 | 95 |
+| GraphQL `pullRequests(last: 10)` (B0-29's read) | 1,556 + 1,512 | 56 + 1,512 | 56 |
+| `pulls/250` | 17 + 1,512 | 17 + 1,512 | 17 |
+
+Rows read for the reply fall from 2,093 to 2,348 to 592 to 799 (the REST list reads the `issue` table in two scans).
+
+**Tests** (`crates/api/tests/narrow.rs`):
+- Byte identity against an independent oracle. REST covers every sort, direction, state and label filter over 8 page
+  boundaries, including last partial pages and empty pages: 768 cases. GraphQL covers 6 state sets (MERGED alone and
+  CLOSED alone included, with two merged PRs in the fixture) at 8 page sizes and cursors.
+- `a_page_of_a_wide_repository_reads_its_page_not_every_item`: at most 200 statements and 900 rows for a 30-item page.
+  It fails on main at 1,655.
+- `named_is_every_account_the_tiers_name_and_the_kept_index_follows_apply`: the kept index equals the scan after every
+  entry, and an index that skipped an entry is not current.
+- `an_account_leaves_named_when_its_last_row_goes`.
+- `a_member_restored_from_an_older_snapshot_answers_the_same_named`: snapshot frames hold no index, and the restored
+  member's `named` and narrow answers equal those of a member that applied the log.
+- `named_from_the_kept_index_reads_no_row`: `pulls/250` reads at most 40 statements, where the scan read over 1,500
+  rows.
+- `validate.py` against the pinned GHES 3.22 description (b5723858…, fe9c21b8…): 168 GraphQL and 783 REST narrow
+  replies, 0 failed.
+
+**Plants** (`tests/nr3/plant.py`, 33 to 47): 15 of 15 caught.
+- (1): numbers oldest first; one open flag; MERGED or CLOSED paged from the keys (a filter after paging); `totalCount`
+  of the page; an inclusive cursor (page boundary); every item loaded (main's cost); every state kept; the next link
+  off by one; labels paged before filtering.
+- (2): an index that skipped entries counted current (stale after an install); a delete that does not uncount; zero
+  counts kept; the merger in the wrong tier; `apply` not telling the store; comments naming no one.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.

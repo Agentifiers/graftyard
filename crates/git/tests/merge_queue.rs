@@ -165,6 +165,7 @@ fn pack(bytes: &[u8]) -> DurablePack {
         bytes,
         index: &index,
         idx: None,
+        idx_range: None,
         inline_max: graftyard_git::INLINE_MAX,
     };
     futures_executor::block_on(store.place(place)).unwrap()

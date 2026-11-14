@@ -61,6 +61,7 @@ mod precreate;
 mod rcache;
 mod release;
 mod repos;
+mod secrets;
 mod transfer;
 mod ui;
 mod usertok;
@@ -1901,6 +1902,7 @@ async fn bed_archive(c: &Ctx<'_>, repo: &Repo, from: u64, to: u64) -> Result<ser
         bytes: &promoted,
         index: &ix,
         idx: None,
+        idx_range: None,
         inline_max: 0,
     };
     let pack = store.place(place).await.map_err(|e| fail(e.to_string()))?.into_pack();
@@ -2543,6 +2545,11 @@ async fn serve(
         && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
     {
         return Ok(r);
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = secrets::graftyard_route(&c, &mut req, rest).await?
+    {
+        return agents::respond(&c, r);
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()
