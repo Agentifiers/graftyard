@@ -39,8 +39,12 @@ MUTANTS = [
      '                lead.sent.insert(from, (p[i - 1].0, now));\n                return;\n',
      '                lead.sent.insert(from, (p[i - 1].0, now));\n                self.send_append(from, false);\n                return;\n'),
     ('a voter behind gets one call per answer', LEADER,
-     '        if self.send_one(peer, force) {\n            while self.send_one(peer, false) {}\n        }',
-     '        self.send_one(peer, force);'),
+     '        if self.send_one(peer, force, false) {\n            while self.send_one(peer, false, false) {}\n        }',
+     '        self.send_one(peer, force, false);'),
+    ('a learner is not pipelined for a read', LEADER, 'let voter = read || quorum::is_voter(', 'let voter = quorum::is_voter('),
+    ('a refusal of a call no longer in the pipe keeps it', LEADER,
+     '        } else if !res.ok {\n            // A refusal of a call no longer in the pipe',
+     '        } else if false {\n            // A refusal of a call no longer in the pipe'),
 ]
 
 
