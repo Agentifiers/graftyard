@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """The far-leg check (`tests/m0/results/farleg.md`): the leader's AppendEntries to its far voter, split by call size,
-by calls to that voter out at issue, and by why a call was a re-send, from the leader's trace in each run's
+by calls to that voter out at issue, and by why a call was a re-send; and its near voter's calls by size, by near
+calls out, and by far calls out, from the leader's trace in each run's
 `.stats.json(.gz)`.
 
 Trace rows are [t, kind, peer, round, index, ms]:
@@ -34,6 +35,14 @@ def pct(v, p):
     return v[min(len(v) - 1, int(len(v) * p / 100))] if v else None
 
 
+BINS = ['<20 KB', '20-40 KB', '40-60 KB', '60-80 KB', '80+ KB']
+
+
+def size_bin(b):
+    kb = b / 1000
+    return BINS[0] if kb < 20 else BINS[1] if kb < 40 else BINS[2] if kb < 60 else BINS[3] if kb < 80 else BINS[4]
+
+
 def calls_of(r):
     C = {}
     for (t, kind, peer, rnd, index, ms) in r['trace']:
@@ -61,6 +70,7 @@ def report(raw, pre):
     by_kind = {'first': [], 'resend': []}
     answers = collections.Counter()
     near_ms, n_far = [], 0
+    near_in, near_size, near_by_far = (collections.defaultdict(list) for _ in range(3))
     for f in files:
         d = load(f)
         L = [m for m in d if m.get('r') and m['r'].get('role') is True]
@@ -72,7 +82,17 @@ def report(raw, pre):
         near = int(min(a, key=lambda k: pct(a[k], 50)))
         C = calls_of(r)
         farc = sorted((c for c in C.values() if c['peer'] == far and c['iss'] is not None), key=lambda c: c['q'])
-        near_ms += [c['end'] - c['iss'] for c in C.values() if c['peer'] == near and c['end'] is not None and c['ok']]
+        nearc = sorted((c for c in C.values() if c['peer'] == near and c['iss'] is not None), key=lambda c: c['q'])
+        for i, c in enumerate(nearc):
+            if c['end'] is None or not c['ok']:
+                continue
+            ms = c['end'] - c['iss']
+            near_ms.append(ms)
+            out = sum(1 for x in nearc[max(0, i - 16):i] if (x['end'] or 1e18) > c['iss'])
+            near_in[min(out, 4)].append(ms)
+            near_size[size_bin(c['b'])].append(ms)
+            farout = sum(1 for x in farc if x['iss'] <= c['iss'] and (x['end'] or 1e18) > c['iss'])
+            near_by_far[min(farout, 4)].append(ms)
         top = 0
         for i, c in enumerate(farc):
             n_far += 1
@@ -82,9 +102,7 @@ def report(raw, pre):
             ms = c['end'] - c['iss'] if done else None
             out = sum(1 for x in farc[max(0, i - 16):i] if (x['end'] or 1e18) > c['iss'])
             if done:
-                kb = c['b'] / 1000
-                bin_ = '<20 KB' if kb < 20 else '20-40 KB' if kb < 40 else '40-60 KB' if kb < 60 else '60-80 KB' if kb < 80 else '80+ KB'
-                size[bin_].append(ms)
+                size[size_bin(c['b'])].append(ms)
                 inflight[min(out, 4)].append(ms)
             if c['last'] > top:
                 top = c['last']
@@ -119,13 +137,22 @@ def report(raw, pre):
         print(f'   far call ms, {k}: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
     allc = by_kind['first'] + by_kind['resend']
     print(f'   far call ms, all: n {len(allc)} p50 {pct(allc, 50)} p99 {pct(allc, 99)}')
-    for k in ['<20 KB', '20-40 KB', '40-60 KB', '60-80 KB', '80+ KB']:
+    for k in BINS:
         v = size.get(k, [])
         print(f'   far call ms by size {k}: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
     for k in sorted(inflight):
         v = inflight[k]
         print(f'   far call ms with {k} far calls already out: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
     print(f'   near call ms: n {len(near_ms)} p50 {pct(near_ms, 50)} p99 {pct(near_ms, 99)}')
+    for k in BINS:
+        v = near_size.get(k, [])
+        print(f'   near call ms by size {k}: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
+    for k in sorted(near_in):
+        v = near_in[k]
+        print(f'   near call ms with {k} near calls already out: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
+    for k in sorted(near_by_far):
+        v = near_by_far[k]
+        print(f'   near call ms with {k} far calls out: n {len(v)} p50 {pct(v, 50)} p99 {pct(v, 99)}')
 
 
 if __name__ == '__main__':
