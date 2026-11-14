@@ -777,6 +777,7 @@ dependencies = [
  "arrayvec",
  "base64",
  "ed25519-dalek",
+ "graftyard-fold",
  "graftyard-raft",
  "graftyard-types",
  "postcard",

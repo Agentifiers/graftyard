@@ -1600,8 +1600,16 @@ impl Family for Authz {
         // 0x12.3 is AM1-WP2's `AgentApp` and `OrgAgents` ops, which the edge sends only once `FormatsEnable` enabled it;
         // 0x12.4 the `Audit` cursor's, written only by this release's own consumer once `GRAFTYARD_AUDIT` is set;
         // 0x12.11 F59's create with its settings, which the edge sends only once `FormatsEnable` enabled it, and the
-        // consumer's abort.
-        vec![id::AUTHZ_FORMAT, id::AUTHZ_FORMAT_V2, id::AUTHZ_FORMAT_V3, id::AUTHZ_FORMAT_V4, id::AUTHZ_FORMAT_V11]
+        // consumer's abort; 0x12.12 M4-WP3's `SealKey` and org secret and variable ops, which the edge sends only once
+        // `FormatsEnable` enabled it.
+        vec![
+            id::AUTHZ_FORMAT,
+            id::AUTHZ_FORMAT_V2,
+            id::AUTHZ_FORMAT_V3,
+            id::AUTHZ_FORMAT_V4,
+            id::AUTHZ_FORMAT_V11,
+            id::AUTHZ_FORMAT_V12,
+        ]
     }
     /// A leader's alarm a minute after it applies entries runs the `Audit` consumer (`crate::audit`): a transfer's
     /// `Reserved` name and an enterprise change commit on this chain.

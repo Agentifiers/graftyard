@@ -3211,6 +3211,18 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** A registration shard whose `Repo`-scope runners from many repositories crowd one broker past `BROKER_HELD_MAX`: then brokers split by scope as DESIGN keys them. Or a second verifier of job tokens outside the edge, which would need the public key elsewhere.
 
+### M4-WP3: where Actions secrets, variables, and `SealKey`s are stored, 2026-11-14
+
+**Decision.** As SHARED places them. A repository's and its environments' secrets and variables are `RepoEvent::ActionsSecret` (tag 44) and `ActionsVariable` (tag 45), core tier, in repository format 32.23, keyed by scope (`""` or `env:<name>`) and name. The owner's `SealKey`s and its org secrets and variables are `AuthzEvent` tags 17 to 19 on the owner's `Authz` chain in Authz format 0x12.12, stored in a trailing part of the fold, so a fold with none keeps its bytes. One `SealKey` per owner serves the repository, environment, and org public-key routes. A row holds only the `crypto_box_seal` bytes the client sent and the owner's `key_id`. `RepoEvent` tag 43 is held as `Reserved43` for `b030-split`'s `Split`, so the tags after it match on every branch. An `Agent` may not write any of them.
+
+**Why.** SHARED names the events and the chains. Keying a row by scope and name gives the GHES routes their reads with no index, and a job's reads at `acquirejob` are one scope each. A per-owner key needs no key per repository and is what SHARED says; `gh secret set` reads `key_id` and `key` and sends `key_id` back, so it cannot tell [measured: `cli/cli` `pkg/cmd/secret/set`]. Holding tag 43 keeps the tag table append-only on both branches when they merge.
+
+**Beat.** A key per repository, as GitHub keeps [unverified], which multiplies the rotation job's work for no client-visible gain. Secrets in their own store outside the chains, which would need an outbox for their events. Taking tag 43 on this branch, which would make the two branches' tables disagree.
+
+**Evidence.** `crates/git/tests/issues.rs` (scopes kept apart, sealed bytes stored as sent, variables' 409 rule), `crates/identity/tests/sealed.rs` (key rotation and drop rules, org rows, bytes unchanged with no Actions row). Tags and formats checked against every origin branch's `wire_tags.golden` and format constants on 2026-11-14.
+
+**Flip.** A GHES client that compares `key_id` across repositories of one owner and expects them to differ. Or an owner whose org rows grow past what one `Authz` fold should carry, which would move them to their own chain.
+
 ### M4-WP3: the workflow parser reads the runner's schema as data, 2026-11-14
 
 **Decision.** `crates/actions/src/workflow` validates a workflow against `workflow-v1.0.json`, the schema `@actions/workflow-parser` 0.3.61 ships (MIT), with descriptions removed, through a port of its schema-driven `TemplateReader`. It does not hand-code the subset of keys the gates use. The converter, expression parser, and step ids port the npm package, and the matrix ports the runner's C# `MatrixBuilder`, which the npm package does not have. The differential test compares the port's output with the oracle's JSON for every workflow in `tests/m4/wp3/workflows/`, errors included. A multi-line string's embedded expressions are read from its value, as the C# reader does. The npm reader reads them from the raw YAML source, indentation included, to keep editor ranges, so the oracle script turns that off. YAML is `yaml-rust2` 0.10 with default features off.
