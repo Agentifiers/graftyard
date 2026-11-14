@@ -7,6 +7,8 @@ from this worktree. Run from the worktree root:
 
     python3 tests/am1/b030split/plant.py          # every mutant
     python3 tests/am1/b030split/plant.py 0 3      # by number
+    python3 tests/am1/b030split/plant.py --residue  # before every commit (the pre-commit hook): no run in flight, every
+                                                    # anchor once in the worktree and the index
 """
 import os, subprocess, sys
 
@@ -136,13 +138,24 @@ def run(tests):
     return r, out, failed
 
 
+# Held while a run has a file mutated. 3117f62 was committed while this script had mutant 18 planted in host.rs (the
+# full checks ran the plants in a service at the same time), and that site day shipped the mutant. `--residue`, which
+# the branch's pre-commit hook runs, fails while the lock is held.
+LOCK = os.path.join(ROOT, '.git', 'b030split-plant.lock')
+
+
+def tracked_diff():
+    """The worktree's diff of tracked files against HEAD, which a plant run must leave as it found it."""
+    return subprocess.run(['git', 'diff', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout
+
+
 def plant(n, name, path, old, new, tests):
     f = os.path.join(ROOT, path)
     orig = open(f, 'rb').read()
     src = orig.decode()
     assert src.count(old) == 1, (name, 'anchor not unique', src.count(old))
-    open(f, 'w').write(src.replace(old, new, 1))
     try:
+        open(f, 'w').write(src.replace(old, new, 1))
         r, out, failed = run(tests)
         compile_err = 'error[' in out or '\nerror: could not compile' in out
         if compile_err and not failed:
@@ -152,10 +165,41 @@ def plant(n, name, path, old, new, tests):
         print(f'{n:2} {verdict:8} {name}: {", ".join(failed)}', flush=True)
     finally:
         open(f, 'wb').write(orig)
-    assert open(f, 'rb').read() == orig
+    assert open(f, 'rb').read() == orig, (name, 'not restored')
+
+
+def residue(rev='HEAD'):
+    """Mutants whose text is in `rev`'s file where their anchor is not: a planted mutation that reached a commit
+    (3117f62 carried mutant 18 into a site day). Run before every commit on this branch:
+    `python3 tests/am1/b030split/plant.py --residue`."""
+    found = []
+    for n, (name, path, old, new, _) in enumerate(MUTANTS):
+        if rev == 'WORKTREE':
+            src = open(os.path.join(ROOT, path)).read()
+        else:
+            spec = f':{path}' if rev == 'INDEX' else f'{rev}:{path}'
+            src = subprocess.run(['git', 'show', spec], cwd=ROOT, capture_output=True, text=True).stdout
+        if src.count(old) != 1:
+            found.append(f'{n:2} {name} ({path}): anchor found {src.count(old)} times')
+    return found
 
 
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--residue']:
+        bad = residue('WORKTREE') + residue('INDEX')
+        if os.path.exists(LOCK):
+            bad.insert(0, f'a plant run holds {LOCK}: a file may be mutated right now')
+        print('\n'.join(bad) or f'no plant residue: {len(MUTANTS)} anchors each found once in the worktree and index')
+        sys.exit(1 if bad else 0)
+    before = tracked_diff()
     pick = [int(a) for a in sys.argv[1:]] or range(len(MUTANTS))
-    for n in pick:
-        plant(n, *MUTANTS[n])
+    open(LOCK, 'w').write(str(os.getpid()))
+    try:
+        for n in pick:
+            plant(n, *MUTANTS[n])
+    finally:
+        os.remove(LOCK)
+        after = tracked_diff()
+        if after != before:
+            print('PLANT RESIDUE: the tracked diff changed during this run', file=sys.stderr)
+            sys.exit(2)
