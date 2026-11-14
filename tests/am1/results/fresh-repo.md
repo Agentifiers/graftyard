@@ -90,9 +90,40 @@ A 3-create smoke before the run (`fresh-repo-data/after-smoke.jsonl`) passed eve
 
 ## What is left
 
-- **The create still takes about 30 s** [measured]: two bootstrap creates whose joins each measure 20 round trips to each peer (5 to 12 s per join set, `member/join` walls in the logs), plus `push_init` and `InitRepo`. Cutting it further means fewer join measurements, which is not this change.
-- **A `GET /repos/{o}/{r}` sent while its create runs answers 503 "0 of 3 joined"** in the window before `RepoOwner` commits: 35 of 129 such reads [measured]. No read after a 201 did. The repository does not exist yet in that window, so GitHub would answer 404. Answering 404 when every member refuses for a missing `RepoOwner` row is a possible follow-up, recorded under "Beat" in `decisions/DECISIONS.md`, "`fresh-repo`".
+- **The create still takes about 30 s** [measured]: two bootstrap creates whose joins each measure 20 round trips to each peer (5 to 12 s per join set, `member/join` walls in the logs), plus `push_init` and `InitRepo`. Cutting it further means fewer join measurements, which is not this change. It is `decisions/OPEN-QUESTIONS.md`, F69.
+- **A `GET /repos/{o}/{r}` sent while its create ran answered 503 "0 of 3 joined"** in the window before `RepoOwner` commits: 35 of 129 such reads [measured]. No read after a 201 did. The follow-up below now answers these reads 404.
 - **LM-1's `a1.mjs` stopgap**, which waits up to 120 s for `main`, is not needed once mkrepos sends a create once, but it does no harm. It is on `lm1-memory` and was not changed here.
+
+## Follow-up: 404 before `RepoOwner` (2026-11-13)
+
+The operator asked for a read in the create window to answer as GitHub does for a repository the caller cannot see yet, 404, while a real outage stays 503.
+
+**Change.**
+- A bootstrap repository member reads `RepoOwner` through `Names`. When the `Names` leader answers with no row, the member refuses `{"refused": {"noRepoOwner": id}}`. A `Names` read that failed stays `{"source": ..}` (`workers/site/src/member.rs`, `check_source`, `repo_owner_row`).
+- `graftyard_lookup::create` names `NOT_CREATED` in its error only when a majority of the bootstrap members refused with `noRepoOwner` (`crates/lookup/src/lib.rs`, `refused`).
+- The edge's reads that create a repository's group on first use answer that error 404. These are `tier_rows` and `api_rows` (`first_use`), and the read gate's `core_rows`, which gives `Hidden` without caching it. REST answers 404, GraphQL `NOT_FOUND`, and git "Repository not found." Every other error is unchanged.
+
+**What stays 503.** A member that holds the row but has not joined yet cannot make the 404: only a refusal that saw no row counts, and a member with the row joins or refuses for another reason. The same goes for:
+- a member that does not answer;
+- a `Names` read that fails, or an overloaded `Names` leader;
+- a member of an older release, whose refusal still reads "has no RepoOwner row" as `source`;
+- fewer than a majority of `noRepoOwner` refusals.
+
+**Kept test.** `only_a_majority_with_no_repo_owner_row_is_not_created` (`crates/lookup/src/lib.rs`) runs nine answer sets: three of three, two plus a miss, two plus a failed `Names` read, one plus a join, one alone, one plus two failures, three failures, three misses, and three old-release refusals. Two planted wrong rules each fail it:
+- any single `noRepoOwner` refusal makes the 404;
+- the 404 matches the old text "RepoOwner".
+
+It cannot fail on main, because main has no 404 path to test.
+
+**Hosted, `graft-m3c`.** Site day 23:29 to 23:39Z: sites `41cd80ad` / `722b4bc3` / `050633c6`, edge `a3fc5083`, from `8843399` (rebased as `8014ebb`), logged in `install-m3c.md`. `fresh.mjs` now fails any read during a create that is not 200 or 404. `fresh.mjs frd 10`, 23:41 to 23:50Z (`fresh-repo-data/after-404.jsonl`):
+
+```
+{"creates":10,"fails":{"create":0,"slow":0,"during":0,"readAfter":0,"mainAfterCreate":0,"push":0,"mainAfterPush":0,"voters":0},
+ "readsDuringCreate":{"200":20,"404":7},"createP50":31903,"createP90":36599,"createMax":36599}
+groups with 3 voters: 10 of 10; re-placed: 5
+```
+
+The run before this change had 35 503s of 129 reads during creates. This run had 0 of 27, and 7 answered 404. The 404s took 3.2 to 12.2 s on the edge. For frd-0's 12.2 s read, the members' `/join` refusals took 7.2 to 7.8 s each, and a refusal comes before any measuring, so that time is `check_source`'s `RepoOwner` read through the `Names` shard while that shard's own group was being created [inference from the order in `join`; the split inside `check_source` was not measured]. The cost was $0.15 (23:25 to 23:53Z), and the shards of 65646 to 65655 were torn down.
 
 ## Files
 
@@ -104,3 +135,4 @@ A 3-create smoke before the run (`fresh-repo-data/after-smoke.jsonl`) passed eve
 - `tests/am1/fresh/fresh.mjs`: the hosted check.
 - `tests/am1/fresh/siteday.sh`: this branch's site and edge day on `graft-m3c`.
 - `tests/am1/results/fresh-repo-data/`: the rows above.
+- Follow-up: `workers/site/src/member.rs` (`noRepoOwner`), `crates/lookup/src/lib.rs` (`NOT_CREATED`, `refused`), `workers/edge/src/api.rs` (`first_use`, `core_rows`), `workers/edge/src/lib.rs` (`read_gate`), `decisions/OPEN-QUESTIONS.md` F69.

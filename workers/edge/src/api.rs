@@ -465,7 +465,9 @@ async fn api_rows(
     let q = json!({ "q": { "rows": { "api": spec } } });
     let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     if let Ok(None) = v {
-        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        if let Err(r) = first_use(c, repo).await? {
+            return Ok(Err(r));
+        }
         v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await.map(|o| o.map(|(v, _, _)| v));
     }
     Ok(match v {
@@ -522,7 +524,9 @@ pub(crate) async fn tier_rows(
     };
     let mut v = read().await;
     if let Ok(None) = v {
-        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        if let Err(r) = first_use(c, repo).await? {
+            return Ok(Err(r));
+        }
         v = read().await;
     }
     Ok(match v {
@@ -530,6 +534,17 @@ pub(crate) async fn tier_rows(
         Ok(None) => Err(unavailable("the repository's group has no leader; retry")),
         Err(e) => Err(read_failed("the repository's tier rows did not answer; retry", &e)),
     })
+}
+
+/// A repository read's group, created on first use (`crate::ensure_group`). A repository whose create has not
+/// committed its `RepoOwner` row yet is 404, as GitHub answers a repository no one can see yet: its members refuse to
+/// join for that reason alone (`graftyard_lookup::NOT_CREATED`). Any other failure stays an error, a 503.
+async fn first_use(c: &Ctx<'_>, repo: &Repo) -> Result<std::result::Result<(), Reply>> {
+    match ensure_group(c, repo).await {
+        Ok(()) => Ok(Ok(())),
+        Err(e) if graftyard_lookup::is_not_created(&e) => Ok(Err(Reply::not_found())),
+        Err(e) => Err(Error::RustError(e)),
+    }
 }
 
 /// A spread or leader read that failed (`graftyard_lookup::read_spread`): 503 with `Retry-After`, 1 s when the
@@ -555,7 +570,10 @@ pub(crate) async fn core_rows(c: &Ctx<'_>, repo: &Repo, which: &str) -> Result<s
     let q = json!({ "q": { "rows": { which: true }, "ranges": true } });
     let mut v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
     if let Ok(None) = v {
-        ensure_group(c, repo).await.map_err(Error::RustError)?;
+        if let Err(e) = ensure_group(c, repo).await {
+            // `crate::read_gate` reads "not created yet" as a repository the caller cannot see.
+            return if graftyard_lookup::is_not_created(&e) { Ok(Err(e)) } else { Err(Error::RustError(e)) };
+        }
         v = graftyard_lookup::read_spread(&b, chain, &repo.record, &q).await;
     }
     Ok(match v {
