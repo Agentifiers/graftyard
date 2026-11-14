@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrow-reads-3: planted bugs in the follower-read floor (`crates/raft`: `ReadGrant::floor`, `Member::fresh_after`),
 the member's narrow answer cache keyed by it (`workers/site/src/family.rs`, `host.rs`), the edge's genesis binding
-(`crates/lookup`), a learner's entries ahead of its read-index answer, and F67 rule 12 (`crates/raft`). Plants one mutant at a time,
+(`crates/lookup`), a learner's entries ahead of its read-index answer, F67 rule 12, and read-index batches in flight (`crates/raft`). Plants one mutant at a time,
 runs the tests that gate it, and restores the file byte for byte. Each line prints CAUGHT, MISSED, or DID NOT COMPILE.
 The host's wiring of a waited read (`Host::answer_after` passing the grant's floor) runs only in a Durable Object; it
 is covered hosted by `tests/nr3/fresh.mjs`. Run from the worktree root:
@@ -88,7 +88,19 @@ MUTANTS = [
      '        for _ in 0..1 {\n            let Some(lead) = self.lead.as_ref() else { return };\n            let next = lead.next', SCEN),
     # Liveness (F67 rule 12).
     ('raft: an emptied read-index batch stays in flight', INSTALL,
-     '            if reads.is_empty() {\n                r.inflight = None;\n            }', '', RAFT),
+     '        r.inflight.retain(|(_, _, reads)| !reads.is_empty());', '', RAFT),
+    # Read-index batches in flight (`READ_PIPELINE`).
+    ('pipeline: an answer grants every batch in flight, not its own', INSTALL,
+     '        let (_, _, reads) = self.remote.inflight.remove(at);',
+     '        let reads: Arrived = self.remote.inflight.drain(at..).flat_map(|b| b.2).collect();', RAFT),
+    ('pipeline: an answer grants the oldest batch, whichever it answers', INSTALL,
+     '        let Some(at) = self.remote.inflight.iter().position(|b| b.0 == batch) else { return };',
+     '        let Some(at) = self.remote.inflight.iter().position(|b| b.0 <= batch) else { return };', RAFT),
+    ('pipeline: reads queued since a batch left join it in flight', INSTALL,
+     '        let reads = std::mem::take(&mut r.queued);\n        r.inflight.push((batch, self.now, reads));',
+     '        let reads = std::mem::take(&mut r.queued);\n        match r.inflight.last_mut() {\n            Some(b) => b.2.extend(reads),\n            None => r.inflight.push((batch, self.now, reads)),\n        }', RAFT),
+    ('pipeline: one batch in flight, as before', INSTALL,
+     '        if r.inflight.len() >= READ_PIPELINE', '        if !r.inflight.is_empty()', RAFT),
 ]
 
 ENV = dict(os.environ, CARGO_INCREMENTAL='0')

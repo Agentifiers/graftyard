@@ -44,6 +44,16 @@ for (const [site, name, tag] of learners) {
         if (!index) continue;
         rtt.push(at - t0);
         lastRes = at;
+        // Already applied through R when its answer arrives: no hold and no apply, granted at once. Left open, such a
+        // read waited for the next Applied row and counted the gap to it as apply (gate 12's "own apply p99 1.3 to
+        // 1.6 s" on the near learners, which is 0 to 6 ms counted this way).
+        if (applied >= index) {
+          hold.push(0);
+          apply.push(0);
+          total.push(at - t0);
+          via.before++;
+          continue;
+        }
         const o = { R: index, t0, t1: at, t2: null, via: null };
         // Holding entry R, the answer commits through it by its digest (`on_read_index_res`).
         if (last >= index) [o.t2, o.via] = [at, "before"];

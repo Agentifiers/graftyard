@@ -1374,11 +1374,84 @@ fn a_read_index_answer_from_a_previous_boot_grants_nothing() {
     assert!(!stale, "B granted its new read below the write A acknowledged before it");
 }
 
+/// A follower keeps several read-index batches in flight, and each answer grants only its own batch's reads. B's
+/// first batch is answered at index i1 but the answer is held back; a write then commits through A and C, and a second
+/// read on B goes out in its own batch at once rather than waiting behind the first. When the first answer arrives
+/// it grants the first read only: granted the second too, that read would be served below a write acknowledged before
+/// it arrived. The second read is granted by its own answer, at or above that write (`design/DESIGN.md`, "Follower
+/// read"; narrow-reads-3, gate 12's learner wait).
+#[test]
+fn each_read_index_answer_grants_only_its_own_batch() {
+    for reversed in [false, true] {
+        let mut c = Cluster::new(73);
+        c.elect(A);
+        c.sync(A);
+        let ask = |c: &mut Cluster| {
+            let is_ask = |e: &Envelope<KvEvent>| e.from == B && matches!(e.msg, Message::ReadIndex { .. });
+            let asks: Vec<_> = c.inbox.iter().filter(|e| is_ask(e)).cloned().collect();
+            c.inbox.retain(|e| !is_ask(e));
+            for e in &asks {
+                let graftyard_raft::Envelope { from, to, msg } = e.clone();
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+            let is_res = |e: &Envelope<KvEvent>| e.to == B && matches!(e.msg, Message::ReadIndexRes { .. });
+            let held: Vec<_> = c.inbox.iter().filter(|e| is_res(e)).cloned().collect();
+            c.inbox.retain(|e| !is_res(e));
+            (asks.len(), held)
+        };
+        let granted = |c: &Cluster, id| {
+            c.resolutions.iter().find_map(|(s, r)| match r {
+                Resolution::Read { id: i, result: Ok(g) } if *s == B && *i == id => Some(g.floor()),
+                _ => None,
+            })
+        };
+        let step_all = |c: &mut Cluster, es: Vec<Envelope<KvEvent>>| {
+            for graftyard_raft::Envelope { from, to, msg } in es {
+                c.on(to, |m, now| m.step(now, from, msg));
+            }
+        };
+        c.resolutions.clear();
+        let first = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+        let (n, held1) = ask(&mut c);
+        assert_eq!((n, held1.len()), (1, 1), "A answered B's first batch at once, inside its lease");
+        // A write commits through A and C while B hears nothing.
+        c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(7_300)), put("k", "new"))).expect("admitted");
+        c.deliver(|e| e.to != B && e.from != B);
+        let acked = c.m(A).state().commit;
+        assert!(c.m(B).group_fold().applied() < acked, "B has not applied the write");
+        c.advance(graftyard_raft::LEARNER_READ_EVERY.as_millis() as u64);
+        c.inbox.retain(|e| e.to != B || matches!(e.msg, Message::ReadIndexRes { .. }));
+        let second = c.on(B, |m, now| m.read_index(now)).expect("queued for A");
+        let (n, held2) = ask(&mut c);
+        assert_eq!(n, 1, "the second read left in its own batch while the first was in flight");
+        assert_eq!(held2.len(), 1);
+        // The answers arrive in order, or the second first (a far link answers calls in any order).
+        if reversed {
+            step_all(&mut c, held2);
+            step_all(&mut c, held1);
+        } else {
+            step_all(&mut c, held1);
+            assert_eq!(granted(&c, second), None, "the second read waits for its own answer");
+            step_all(&mut c, held2);
+        }
+        assert!(granted(&c, first).is_some(), "reversed {reversed}: the first answer grants the first read");
+        let below = granted(&c, second).filter(|f| *f < acked);
+        assert_eq!(
+            below, None,
+            "reversed {reversed}: the second read was granted below the write acknowledged before it"
+        );
+        // A's appends to B were lost above; its next one brings B the write.
+        c.sync(A);
+        let f = granted(&c, second).expect("the second answer grants the second read once B applied it");
+        assert!(f >= acked, "reversed {reversed}: the second read's floor {f:?} is below the write ({acked:?})");
+    }
+}
+
 /// A leader whose read-index answers to B are lost, while its appends still arrive (a half-hung leader for reads).
 /// B's first unanswered batch is a failed call: B forgets A and fails the read naming no leader. A's next append
 /// teaches B the leader again, and a later read's unanswered batch must count as a failed call too. Before the fix the
 /// emptied batch stayed in flight and was resent forever, the later read failed as queued behind it, naming A, and B
-/// never forgot A again, so a read-only group behind a half-hung leader never elected (F67 rule 12, liveness seed 9
+/// never forgot A again (with `READ_PIPELINE` batches in flight, once that many emptied ones filled it), so a read-only group behind a half-hung leader never elected (F67 rule 12, liveness seed 9
 /// once 30% of follower reads are answered later).
 #[test]
 fn every_unanswered_read_index_batch_is_a_failed_call() {
@@ -1392,7 +1465,8 @@ fn every_unanswered_read_index_batch_is_a_failed_call() {
             _ => None,
         })
     };
-    for round in 0..2 {
+    // More rounds than batches B keeps in flight: kept, the emptied batches fill the pipeline and block the next.
+    for round in 0..graftyard_raft::READ_PIPELINE as u128 + 2 {
         // A write makes A append, which teaches B its leader again after the first round forgot it.
         c.on(A, |m, now| m.commit(now, RequestId(graftyard_raft::Ulid(round + 1)), put("k", "v"))).expect("A leads");
         c.run(1_000, 100, lost);

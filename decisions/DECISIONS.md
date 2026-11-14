@@ -2555,6 +2555,20 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). The operat
 
 **Flip.** One learner taking so much of the reads that it sheds or runs hot (CPU or memory near its limits), or the far learners' answers falling within `ROUTE_MARGIN` of the near ones, which makes the ordering moot.
 
+### `narrow-reads-3`: a follower or learner keeps several read-index batches in flight, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Gate 12 on fdf363f3"; F65). The operator's decision 3 after gate 12: find what makes a busy learner's read slow and fix it before the next gates.
+
+**Decision.** A follower or learner keeps up to `READ_PIPELINE` (8 [guess]) read-index batches in flight (`crates/raft/src/member/install.rs`), still sending at most one per `FOLLOWER_READ_EVERY` or `LEARNER_READ_EVERY`. Each `ReadIndexRes` grants only the reads of the batch it names, in whatever order answers arrive. A batch unanswered for CALL_DEADLINE is resent on its own, and F67 rule 12 holds per batch: one whose every read failed past CAMPAIGN_DEADLINE leaves flight, and failing reads that were sent still count as a failed call. Batches stay numbered from the boot, so an earlier boot's answer grants nothing.
+
+**Why.** Gate 12's "own apply p99 1.3 to 1.6 s" on the near learners was an artifact of the split script, which counted a read already applied when its answer came (40 to 44% of them) as waiting for the next apply. Counted right, their apply is p99 0 to 6 ms and their storage confirms p99 84 to 158 ms, so neither storage, apply CPU, nor the read share set their reads. The read-index batch did: with one in flight, a read waited out the batch ahead and then its own round trip, a grant wait of p99 0.9 to 1.6 s against round trips of p99 0.6 to 0.9 s [measured, gate 12 traces]. A replay of those round trips puts the near learners' wait at p99 0.63 to 0.77 s with 8 in flight, and the edge's API p99 at about 1.2 s against 1.8 s with 1 [inference].
+
+**Beat.** More learners or a lower `LEARNER_READ_EVERY`, which add leader calls without removing the wait behind a slow batch. Granting every batch in flight on any answer, which grants a read below a write acknowledged after an older batch's index (the kept test fails on it). Routing on a learner's answer variance as well as its mean, a smaller lever in the same replay, left for after the gates.
+
+**Evidence.** `each_read_index_answer_grants_only_its_own_batch` (`crates/raft/tests/leadership.rs`), with answers in order and reversed; `every_unanswered_read_index_batch_is_a_failed_call` now runs more rounds than `READ_PIPELINE`. `tests/nr3/plant.py` plants four mutants (every batch granted by one answer, the oldest batch granted by any answer, later reads joining a batch in flight, one batch in flight) and rule 12's again; all are caught. The long sweep and Porcupine, and the hosted gates on the adopted B0-29 shape, are in the results file.
+
+**Flip.** A near learner whose grant wait stays near two round trips with batches in flight, or a leader whose `ReadIndex` load or memory rises with them: then the wait is elsewhere, in the learner's isolate or the leader's input queue.
+
 ### Not adopted: the edge hedging a slow learner read, 2026-11-13
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The final tree's gate runs"; F65).

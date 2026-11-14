@@ -396,17 +396,78 @@ per `NARROW_EVERY_MS` and shared), peaks stayed at 57 to 62 MiB, and no learner 
 | l6 | enam | 48,923 | 274.7 | 62 | 521 |
 | l7 | enam | 8,937 | 349.7 | 57 | 840 |
 
-**What sets the API p99 now.** Per read on each learner (`tests/nr3/split.mjs`), p99 in ms:
+**What sets the API p99 now: corrected.** The first split here (`tests/nr3/split.mjs` as of f5463e75) left a read
+whose index was already applied when its answer arrived open until the next `Applied` row, and counted that gap as
+apply. That is 40 to 44% of reads on the near learners. Counted as 0 (the script is fixed), per read on each learner,
+p99 in ms, from `trace-gate12.json` [measured]:
 
-| Learner | Read-index round trip | Wait for entries | Own apply | Total |
+| Learner | Read-index round trip | Wait for entries | Own apply | Total | Total over 1 s |
+| --- | --- | --- | --- | --- | --- |
+| l3, l6 (enam, 71% of reads) | 578 to 615 | 263 to 296 | 0 to 2 | 634 to 667 | 0.1% |
+| l7 (enam) | 830 | 310 | 6 | 873 | 0.3% |
+| l0 (enam) | 899 | 389 | 329 | 1,003 | 1.1% |
+| l1, l4 (weur) | 726 to 789 | 443 to 533 | 266 to 870 | 919 to 1,501 | 0.5 to 2.6% |
+| l2, l5 (apac) | 1,005 to 1,007 | 2,516 to 5,101 | 1,518 to 1,695 | 3,199 to 5,588 | 23 to 43% |
+
+So the busy learners' apply is not slow: their storage confirms are p99 84 to 158 ms (l0 and l7 reach 1.0 to 1.2 s),
+and their apply is p99 0 to 6 ms. Neither storage confirm, apply CPU, nor the read share sets their read. What does is
+the read-index batch: one in flight, at most one every `LEARNER_READ_EVERY` (50 ms). A read that arrives while a batch
+is out waits for that batch's answer and then for its own round trip. Sampling the traced batches at a random arrival
+time, the grant wait is p99 889 ms on l6, 1,141 on l3, 1,640 on l7, 1,446 on l1 and 2,675 on l0, against round trips of
+p99 0.6 to 0.9 s (`readStages` on the members agree: grant p99 894 to 971 ms, capped by `FOLLOWER_WAIT`). The near
+learners' round trip is itself p99 0.6 to 0.9 s under load against about 40 ms idle, and the leader takes and answers
+each `ReadIndex` in the same millisecond, so that time is outside the leader's step: the network, the learner's isolate
+or the leader's input queue [measured; where inside, not measured].
+
+A replay of the traced round trips at 80 reads/s puts the near learners' wait at p99 874 ms (l6) and 884 ms (l3)
+with 1 batch in flight, 715 and 747 with 4, and 630 and 709 with 8; l0 goes from 1,239 to 997 at 8 [inference, a model
+over measured round trips]. Replaying the edge over the same traces (each read's isolate routing by answer time as
+built, three learners at most, a late answer at 1 s, 230 ms of edge stages outside the tier read), API p99 is 1,804 ms
+with 1 batch in flight and 1,216 ms with 8; the same replay with gate 12's measured read shares gives 1,963 ms, against
+2,011 measured, so it runs about 50 to 200 ms optimistic. Scoring a learner by its mean plus 4 deviations instead of its
+mean gives 1,665 and 1,086 ms: a second, smaller lever, not built [inference, same replay, `/tmp`-only scripts
+summarized here]. The edge side: tier p99 1,935 ms against member totals under 1 s on the busy learners comes from reads that
+went late (`followerLate` 463 to 840 per near learner) and were retried on a second learner (`SPREAD_TRIES`).
+
+**Where a near learner's read-index round trip goes.** The operator asked what the round trip's rise from about 40
+ms idle to p99 0.6 to 0.9 s under load is spent on, from one gate's traces (gate 12, `trace-gate12.json`, the 500 s
+the leader's 60,000-row trace covers). Batch numbers above 2^53 lost precision in the JSON, so a learner's `IndexSent`
+is matched to the leader's `IndexTaken` by number and time (`tests/nr3/legs.py`). Leader and
+learner clocks are different isolates', so the legs carry their skew; the learner-side and leader-side rows do not.
+p50 / p90 / p99 in ms [measured]:
+
+| Learner | Out: sent to the leader's step | Back: the leader's step to answer stepped | Call on the learner (issue to answer) | Learner turn after the answer |
 | --- | --- | --- | --- | --- |
-| l3, l6, l7 (enam, 71% and 7% of reads) | 578 to 830 | 263 to 310 | 1,302 to 1,372 | 1,403 to 1,467 |
-| l0 (enam) | 899 | 389 | 1,576 | 1,733 |
-| l1, l4 (weur) | 726 to 789 | 443 to 533 | 852 to 987 | 1,227 to 1,531 |
-| l2, l5 (apac) | 1,005 to 1,007 | 2,516 to 5,101 | 1,578 to 1,772 | 3,226 to 5,588 |
+| l3 | 72 / 212 / 326 | 140 / 353 / 716 | 218 / 421 / 1,000 | 0 / 0 / 0 |
+| l6 | 69 / 212 / 310 | 135 / 344 / 574 | 209 / 399 / 657 | 0 / 0 / 0 |
+| l1 | 83 / 225 / 335 | 156 / 345 / 666 | 250 / 424 / 789 | 0 / 0 / 0 |
+| l4 | 93 / 239 / 337 | 163 / 345 / 743 | 270 / 436 / 888 | 0 / 0 / 0 |
+| l0, l7 | 66 to 85 / 219 to 287 / 338 to 542 | 129 to 132 / 508 to 605 / 1,377 to 1,800 | 161 to 177 / 601 to 874 / 1,417 to 1,700 | 0 / 34 to 183 / 183 to 859 |
 
-The learners that serve most reads now spend most of their p99 on their own apply, behind storage confirms, which F65
-already named as the next limit after the far learners' wait [measured; that confirms set the apply is an inference].
+- **Not the learner's own turn queue.** On the near learners the call leaves as soon as the batch does (sent to
+  issued p99 0 ms) and the answer is stepped in the same turn it arrives (p99 0 ms). l0 and l7 are the exception, with
+  turns up to 0.2 s at p99 behind their own storage confirms (p99 1.0 to 1.2 s).
+- **Not the leader's step.** The leader takes each `ReadIndex` and answers it in the same ms, and its ticker never ran
+  20 ms late in the window (0 `Lag` rows).
+- **Some of it is the leader's output gate.** The answer leaves the leader only once the writes before it are durable.
+  For 53 to 65% of batches a leader storage confirm was running when the `ReadIndex` was taken; the wait for that
+  confirm to end is p50 21 to 28 ms and p99 243 to 265 ms, and about 20% of the back leg's time in its ≥ 400 ms tail.
+- **Most of it is on the wire and in the leader's input queue, both ways.** Out p99 is 310 to 337 ms, the back leg
+  minus that gate is p99 470 to 635 ms, and entries riding the answer (`append_for_read`) do not lengthen it (with
+  entries p99 663 to 761, without 544 to 686). The trace cannot separate the network from the leader isolate holding
+  a request before its handler runs, because the leader's clock moves only across I/O: its `/raft` handler at about
+  80 req/s is the same isolate that answers 11 learners and voters, and Cloudflare's per-object analytics give the
+  leader's wall p50 63 ms and p99 2.05 s per request in the window [measured; which of the two it is, not measured].
+
+So the round trip is not learner-side, and pipelining the batches (below) takes the queueing on it out of the read's
+path without needing to know which. Separating wire from leader input queue needs a timestamp the caller sends with
+each call; that is not built.
+
+**The change (narrow-reads-3, after gate 12).** A follower or learner keeps up to `READ_PIPELINE` (8 [guess])
+read-index batches in flight, still sent at most once per 50 ms, and each answer grants only its own batch's reads,
+whichever order answers arrive in (`crates/raft/src/member/install.rs`). F67 rule 12 holds per batch: a batch whose
+every read failed past CAMPAIGN_DEADLINE leaves flight, and a batch unanswered for CALL_DEADLINE is resent. The leader's
+load is unchanged: the 50 ms floor still bounds a learner at 20 calls/s.
 
 Rows: `tests/nr3/rows/a1-b0-29-gate12.jsonl`, `run-gate12.status`, `lmem-gate12.jsonl`, `mem-gate12.json`,
 `egress-gate12.txt`, `fresh-gate12.jsonl`, `trace-gate12.json.gz`.
