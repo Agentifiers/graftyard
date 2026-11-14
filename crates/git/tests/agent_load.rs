@@ -903,6 +903,58 @@ fn the_step_up_is_reserved_ahead_and_never_commits_to_a_cold_slot() {
     assert!(ks.iter().all(|k| *k == 1), "{ks:?}");
 }
 
+/// A step waiting on cold slots keeps them leased, so the warm that follows each ask reaches them and the step commits
+/// once they answer caught up. On `graft-m2b` m30 a forced k 4 on a fresh network (want 3) found every slot cold, kept
+/// k 1, trimmed its grants to k - 1 = 0, and so never warmed a slot or stepped. A slot here is warm once it was held,
+/// and so warmed, through an earlier call, as the leader's `WARM` map keeps only slots the network still holds.
+#[test]
+fn a_waiting_step_keeps_its_cold_slots_until_they_warm() {
+    use graftyard_git::{PoolLedger, granted_k, pool_keep, warm_step};
+    use std::collections::HashMap;
+    let (n, share) = (net(1), |_| 6);
+    for (want, target) in [(3, 4), (2, 3)] {
+        let mut ledgers = [PoolLedger::default(), PoolLedger::default()];
+        let mut warmed: HashMap<(usize, u16), u64> = HashMap::new();
+        let mut ks = Vec::new();
+        let mut k = 1u8;
+        for call in 0..4u64 {
+            let now = Timestamp(call * 1_000);
+            let slots = ledgers.each_mut().map(|l| l.ask(n, 1, want, now, share));
+            let granted = granted_k(k, target, slots.each_ref().map(|s| Some(s.len() as u8)));
+            let w = [0, 1].map(|s| slots[s].iter().map(|x| warmed.get(&(s, *x)).is_some_and(|c| *c < call)).collect());
+            let w: [Vec<bool>; 2] = w;
+            let next = warm_step(k, granted, [&slots[0], &slots[1]], [&w[0], &w[1]]);
+            let keep = pool_keep(want, granted, next, false);
+            let held = [0, 1].map(|s| {
+                if slots[s].len() > usize::from(keep) {
+                    ledgers[s].ask(n, 1, keep, now, share)
+                } else {
+                    slots[s].clone()
+                }
+            });
+            warmed.retain(|(s, x), _| held[*s].contains(x));
+            for (s, h) in held.iter().enumerate() {
+                for x in h {
+                    warmed.entry((s, *x)).or_insert(call);
+                }
+            }
+            k = next;
+            ks.push(k);
+        }
+        assert_eq!(
+            ks,
+            [1, target, target, target],
+            "want {want}: the step commits at the first call its slots are warm"
+        );
+    }
+    // Nothing waits: a granted step keeps k - 1, a reservation one more, and a lone site's extra grant is given back.
+    assert_eq!(pool_keep(3, 4, 4, false), 3);
+    assert_eq!(pool_keep(1, 2, 2, true), 1);
+    assert_eq!(pool_keep(6, 1, 1, false), 0);
+    // A step that waits while one site granted 3 and the other 1 (granted_k 2) keeps only what both granted.
+    assert_eq!(pool_keep(3, 2, 1, false), 1, "the larger site's extra slots are given back");
+}
+
 /// A pool slot runs only while a lease holds it: a slot whose lease lapsed, or that its network gave back, is handed
 /// to the ledger object's heartbeat (`beat`) to tear down once, and a slot another lease took again is not torn down.
 /// Without it a slot started by a pool warm ran until its container's inactivity timeout, past the priced "warm only

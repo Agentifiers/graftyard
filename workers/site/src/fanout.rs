@@ -163,8 +163,8 @@ impl Grant {
         }
         // A ledger that granted more than the k both granted gives the rest back, so no site holds pool shards the
         // network does not serve from (hosted smoke r3: one site granted 6 and the other 0, and the 6 stayed leased).
-        // A reservation keeps one slot past the k served.
-        let keep = if reserve { want.min(next) } else { next - 1 };
+        // A reservation keeps one slot past the k served, and a step waiting on cold slots keeps them all.
+        let keep = git::pool_keep(want, granted, next, reserve);
         let trim = json!({ "network": self.net.0.0, "owner": self.owner, "want": keep });
         let (mut a, mut b) = (a, b);
         for (s, g) in [(self.warm[0], &mut a), (self.warm[1], &mut b)] {

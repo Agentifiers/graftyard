@@ -66,7 +66,7 @@ pub use shard::{
     LoadReports, NetworkLoad, POOL_COLD_SKIP_MS, PROMOTE_WAIT_S, PoolLease, PoolLedger, REGION_RETRIES, RENEW_EVERY,
     RegionCheck, Renewal, SHARDS, Serve, WARM_FOR, clone_cache_buckets, combine, container_regions, evict_plan, fanout,
     granted_k, image_for, keep_warm_due, may_start, object_name, owner_share, pool_ask, pool_forward, pool_grants,
-    pool_reserve, promote_moves_on, promote_sites, push_validator, region_check, renewal, serve, shards_for,
+    pool_keep, pool_reserve, promote_moves_on, promote_sites, push_validator, region_check, renewal, serve, shards_for,
     validate_status, validator, warm_sites, warm_step, warming_now,
 };
 pub use store::{
