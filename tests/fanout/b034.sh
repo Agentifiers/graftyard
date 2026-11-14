@@ -37,6 +37,13 @@ fut = [l for l in open(f"{D}/plan.txt") if l.startswith("# future ")][0].split()
 print(json.dumps({"bare": f"{D}/linux.git", "future": fut, "second": d["second"], "secondAt": 420,
                   "hostile": d["hostile"], "hostileAt": 600, "hotPushPerS": 1, "hotClonePerS": 3}))
 PY
+# The warm step (round 18): every site's shard of the monorepo caught up and ls-refs listing main before the window,
+# at most WARM_MIN minutes (default 45); its time is not the row's. Past the limit the row is not run. It runs before
+# learners.mjs and k.mjs, whose leader reads found an idle group with no leader (round 17b); the catch-ups wake it.
+s "b0-34 warm start"
+node tests/fanout/b034warm.mjs "${chain#repo:}" "$(q "d['mono']['repo']")" "${WARM_MIN:-45}" > tests/fanout/raw/b034warm-$TAG.jsonl 2>&1
+w=$?; s "b0-34 warm exit $w $(tail -1 tests/fanout/raw/b034warm-$TAG.jsonl)"
+[ $w -eq 0 ] || { echo DONE >> "$ST"; exec sleep infinity; }
 [ -n "${LEARNERS:-}" ] && node tests/fanout/learners.mjs "$chain" "$LEARNERS" >> "$ST" 2>&1
 node tests/fanout/k.mjs "$chain" >> "$ST" 2>&1
 s "b0-34 $mono $chain start"
