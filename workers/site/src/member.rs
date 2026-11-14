@@ -518,11 +518,10 @@ impl<F: Family> Routes<F> {
                 let t1 = now_ms();
                 #[cfg(feature = "test-faults")]
                 if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
-                    let from = raft::codec::from_bytes::<Vec<raft::Envelope<F::Ev>>>(&body)
-                        .ok()
-                        .and_then(|e| e.first().map(|e| e.from.0))
-                        .unwrap_or(0);
-                    self.host.trace_at(t0, Trace::CallArrived, from, 0, sent, t1 - t0);
+                    // From a header: decoding the body here as well held a second decoded copy of every append
+                    // while `raft` decoded it again (gate 16's storm, `tests/am1/results/narrow-reads-3.md`).
+                    let from = req.headers().get("x-graft-from").ok().flatten().and_then(|v| v.parse().ok());
+                    self.host.trace_at(t0, Trace::CallArrived, from.unwrap_or(0), 0, sent, t1 - t0);
                 }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);

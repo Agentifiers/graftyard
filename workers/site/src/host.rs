@@ -2360,6 +2360,10 @@ impl<F: Family> Host<F> {
             let h = Headers::new();
             let _ = h.set("x-graft-hop", &hop.to_string());
             let _ = h.set("x-graft-sent", &now_ms().to_string());
+            // The sender's address, so the callee traces `CallArrived` without decoding the body a second time.
+            if let Some(me) = self.core.borrow().as_ref().map(|c| c.m.me()) {
+                let _ = h.set("x-graft-from", &me.0.to_string());
+            }
             init.with_headers(h);
         }
         #[cfg(not(feature = "test-faults"))]
