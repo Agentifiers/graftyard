@@ -747,7 +747,7 @@ fn the_authz_audit_cursor_is_operator_only_monotone_and_format_4() {
     assert_eq!(f.audit_cursor(), Index(5));
     // The cursor is a trailing part: without it the blob is the previous release's; with it, it round-trips.
     let mut no_cursor = f.clone();
-    no_cursor.more.more.more = Index(0);
+    no_cursor.more.more.more.cursor = Index(0);
     assert_eq!(graftyard_raft::codec::to_bytes(&no_cursor), graftyard_raft::codec::to_bytes(&before));
     assert_eq!(graftyard_raft::codec::from_bytes::<AuthzFold>(&graftyard_raft::codec::to_bytes(&f)).unwrap(), f);
     let mut old: common::Group<AuthzCmd> = common::Group::reading(

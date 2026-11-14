@@ -1,0 +1,7 @@
+on: workflow_dispatch
+jobs:
+  long:
+    name: Killed mid-job
+    runs-on: self-hosted
+    steps:
+      - run: sleep 1200

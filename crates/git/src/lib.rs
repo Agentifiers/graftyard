@@ -37,6 +37,7 @@ pub mod refs;
 pub mod repo;
 pub mod run_checks;
 pub mod search;
+pub mod secrets;
 pub mod sequencer;
 pub mod shard;
 pub mod smart;

@@ -370,6 +370,24 @@ pub enum RepoEvent {
     // M4-WP2, format 32.19 (`crate::watch::REPO_FORMAT_WATCH`): tag 42.
     /// Metadata. The `Counts` consumer's watcher rows (`crate::watch`), each newer than the row it replaces.
     Watchers(Vec<crate::watch::WatcherUpdate>),
+    /// Tag 43, held for `b030-split`'s `Split(crate::split::SplitEntry)` (format 32.20), so the tags after it match
+    /// on every branch. Never written or decided: a release that has `Split` replaces this variant with it.
+    Reserved43,
+    // M4-WP3, format 32.23 (`crate::secrets::REPO_FORMAT_SECRETS`): tags 44 and 45.
+    /// Core. SHARED's repository or environment secret: the sealed bytes the client sent. `record: None` deletes it.
+    ActionsSecret {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        record: Option<graftyard_identity::sealed::SecretRecord>,
+        actor: Option<AccountId>,
+    },
+    /// Core. SHARED's repository or environment variable. `record: None` deletes it.
+    ActionsVariable {
+        scope: graftyard_identity::sealed::SecretScope,
+        name: graftyard_identity::sealed::ActionsName,
+        record: Option<graftyard_identity::sealed::VariableRecord>,
+        actor: Option<AccountId>,
+    },
 }
 
 impl RepoEvent {
@@ -835,7 +853,9 @@ impl Fold for RepoFold {
             | RepoEvent::LfsObject { actor, .. }
             | RepoEvent::Created { actor }
             | RepoEvent::Deleted { actor, .. }
-            | RepoEvent::Hook { actor, .. } => by(actor),
+            | RepoEvent::Hook { actor, .. }
+            | RepoEvent::ActionsSecret { actor, .. }
+            | RepoEvent::ActionsVariable { actor, .. } => by(actor),
             RepoEvent::Comment(
                 C::Created { author: a, .. } | C::Edited { actor: a, .. } | C::Deleted { actor: a, .. },
             )
@@ -1796,6 +1816,14 @@ impl Record for RepoEvent {
             RepoEvent::HookCursor(c) => return tagged(out, 41, c),
             // M4-WP2, 32.19: tag 42.
             RepoEvent::Watchers(u) => return tagged(out, 42, u),
+            RepoEvent::Reserved43 => return tagged(out, 43, &()),
+            // M4-WP3, 32.23: tags 44 and 45.
+            RepoEvent::ActionsSecret { scope, name, record, actor } => {
+                return tagged(out, 44, &(scope, name, record, actor));
+            }
+            RepoEvent::ActionsVariable { scope, name, record, actor } => {
+                return tagged(out, 45, &(scope, name, record, actor));
+            }
         };
         e.u8(0);
         e.u128(push.0.0);

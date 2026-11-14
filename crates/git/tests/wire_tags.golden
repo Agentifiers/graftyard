@@ -44,6 +44,9 @@ git::repo::RepoEvent 39 Fanout 2701
 git::repo::RepoEvent 40 Hook 2802000000
 git::repo::RepoEvent 41 HookCursor 290101
 git::repo::RepoEvent 42 Watchers 2a00
+git::repo::RepoEvent 43 Reserved43 2b
+git::repo::RepoEvent 44 ActionsSecret 2c0001610000
+git::repo::RepoEvent 45 ActionsVariable 2d0001610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 0 OpenIssue 00016101610000
 git::issue_ops::IssueOp<git::blob::BlobRef> 1 OpenPr 01020000016101610001010101010101010101010101010101010101010101010101010101010101010101010101010101
 git::issue_ops::IssueOp<git::blob::BlobRef> 2 Close 0201
@@ -85,6 +88,10 @@ git::issue_ops::IssueOp<git::blob::BlobRef> 37 ReleaseLease 251a3030303030303030
 git::issue_ops::IssueOp<git::blob::BlobRef> 38 PutHook 26000161000000000000
 git::issue_ops::IssueOp<git::blob::BlobRef> 39 DeleteHook 2702
 git::issue_ops::IssueOp<git::blob::BlobRef> 40 CreateCheck 28020202010101010101010101010101010101010101010101610100000000000000
+git::issue_ops::IssueOp<git::blob::BlobRef> 41 PutActionsSecret 29000161000161
+git::issue_ops::IssueOp<git::blob::BlobRef> 42 DeleteActionsSecret 2a000161
+git::issue_ops::IssueOp<git::blob::BlobRef> 43 PutActionsVariable 2b000161016100
+git::issue_ops::IssueOp<git::blob::BlobRef> 44 DeleteActionsVariable 2c000161
 id::AuthzEvent 0 Opened 000000
 id::AuthzEvent 1 Member 010200
 id::AuthzEvent 2 Grant 02020200
@@ -102,6 +109,10 @@ id::AuthzEvent 13 AgentApp 0d0200
 id::AuthzEvent 14 OrgAgents 0e0000
 id::AuthzEvent 15 AuditCursor 0f01
 id::AuthzEvent 16 RepoCreate 100161020161
+# M4-WP3: an owner's SealKeys and org Actions secrets and variables (0x12.12).
+id::AuthzEvent 17 SealKey 11016100
+id::AuthzEvent 18 OrgSecret 12016100
+id::AuthzEvent 19 OrgVariable 13016100
 id::AuthzOp 0 Open 000000
 id::AuthzOp 1 SetMember 010200
 id::AuthzOp 2 SetGrant 02020200
@@ -134,6 +145,12 @@ id::AuthzOp 28 SetOrgAgents 1c0000
 id::AuthzOp 29 AuditCursor 1d01
 id::AuthzOp 30 CreateRepoWith 1e01610161
 id::AuthzOp 31 AbortCreate 1f016102
+id::AuthzOp 32 PutSealKey 200161010101010101010101010101010101010101010101010101010101010101010101010101010101010101010101000100
+id::AuthzOp 33 RetireSealKey 21016100
+id::AuthzOp 34 PutOrgSecret 22016100000161
+id::AuthzOp 35 DeleteOrgSecret 230161
+id::AuthzOp 36 PutOrgVariable 24016100016100
+id::AuthzOp 37 DeleteOrgVariable 250161
 id::IdentityEvent 0 Created 0001610001
 id::IdentityEvent 1 Credential 0100000101010101010101010101010101010101010101010101010101010101010101000161
 id::IdentityEvent 2 Sso 0200020101010101010101010101010101010101010101010101010101010101010101
@@ -337,6 +354,7 @@ id::AuthzErr 16 NoInvitation 10
 id::AuthzErr 17 NotInstall 11
 id::AuthzErr 18 NoInstallation 12
 id::AuthzErr 19 NotOwnApp 13
+id::AuthzErr 20 NoRecord 14
 id::IdentityDep 0 Names 00000000000000010100000000000000000101
 id::IdentityDep 1 Tokens 01000001000000000000000101
 id::IdentityDep 2 Authz 020000000000010001010000000000000000000000010000000101
@@ -766,3 +784,10 @@ actions::RunStatus 2 Completed 0200
 git::run_checks::RunChecksOut 0 Applied 0001
 git::run_checks::RunChecksOut 1 Gone 01
 git::run_checks::RunChecksOut 2 Unavailable 02
+# M4-WP3: inside RepoEvent::ActionsSecret and ActionsVariable (32.23). RepoEvent 43 holds b030-split's Split.
+id::sealed::SecretScope 0 Repo 00
+id::sealed::SecretScope 1 Env 010161
+id::sealed::SecretScope 2 Org 020000
+id::sealed::SecretVisibility 0 All 00
+id::sealed::SecretVisibility 1 Private 01
+id::sealed::SecretVisibility 2 Selected 02

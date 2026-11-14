@@ -6,12 +6,12 @@ Branch `m4-actions`, from main 2b42214e. The shapes are in `tests/m4/results/m4-
 
 | Row | In memory | Hosted (graft-m4a) |
 | --- | --- | --- |
-| BF-4 | Pass, also with the real runner killed | Not run |
+| BF-4 | Pass, also with the real runner killed | Pass (run 1179649): failed at its lease end, 10 min after the renew answered, 10 min 4 s after it was sent |
 | BF-37 | Parser and filter built (`merge_group`, `pull_request` `enqueued`/`dequeued`); trigger not wired | Not run |
 | BF-54 | Not built | Waits for the step-3 estimate's approval (lead, 2026-11-14) |
 | BF-55 | Not built | Not run |
-| BF-56 | Pass (both kills) | Not run |
-| BF-59 | Not built | Not run |
+| BF-56 | Pass (both kills) | **Pass**, both kills (23:18Z to 23:24Z, site day 34): every required check concluded, matching its job, at most 10.4 s after the job's `Completed` |
+| BF-59 | `graft-ops` open, reseal, and rewrap (PyNaCl oracle); key rules (`crates/identity/tests/sealed.rs`) | **Pass** (19:07Z to 19:31Z): repository, environment, and org secrets read right before and after both rotations; a fork-PR job sees none; no plaintext in 1,296 committed entries, 34 run files, runner diagnostics, or Workers Logs |
 
 A row passes only hosted, with an unmodified `actions/runner`. The in-memory halves below check the engine's rules on real members first.
 
@@ -75,7 +75,43 @@ Site day 28 (14:15Z) put the `Actions` family, `/runsvc`, `RunnerBroker`, `LogRe
 - **Found on day 28:** a new Actions shard's first command answered 422 `NeedIdBlock`. `/runsvc` waited on its ticket without handing over the command, so the host's lease loop had nothing to re-send after leasing a block. The command now goes with the ticket, as `/commit`'s does (`f0282e80`).
 - **Live log, 14:47Z** (`tests/m4/wp3/hosted/live.yml`, one line a second for 10 minutes): the runner took job 1114114 of run 1114113 on `m3org/wp3-live` (shard `actions:7100001.8`) 4 s after dispatch. A viewer on `/_t/logrelay/repos/m3org/wp3-live/jobs/1114114` got `hello` with the tail, then `line` messages p50 339 ms and at most 375 ms after the runner printed them, over 23 lines [measured]. The relay's `line.at` is to the second.
 - **GHES reads** on the same run: `actions/runs/{id}`, `runs/{id}/jobs`, and `jobs/{id}` answer 200, with the runner's step report as `steps` (1 and 2 `completed`/`success`, 3 `in_progress`, 4 `queued`) [measured].
+- **BF-4 hosted** (`tests/m4/wp3/hosted/bf4.yml`, one long step): the runner took job 1179650 of run 1179649 on `m3org/wp3-bf4` (shard `actions:7100001.11`). Its last `renewjob` was at 14:52:47Z and answered `lockedUntil` 15:02:50Z. The runner tree was killed at 14:53:22Z. The job read `Completed Failure` at 15:02:50.958Z, the lease end: 10 min 4 s after the renew was sent, 10 min after its answer set the lease. The row's fail line, still running at 11 minutes, did not happen [measured]. The driver process exited at about 15:01:49Z for a reason not found, so the job's state was read directly with the GHES `jobs/{id}` read.
+- **Found by BF-4:** the GHES `job.completed_at` showed the last step report (14:52:47Z), because a runner killed mid-step reports no end. It is now the job's own completion time (`crates/actions/src/rest.rs`).
+- **A running job's `/logs`** now answers the step logs uploaded so far, in upload order, instead of 404, as GHES serves a log so far (`workers/edge/src/actions.rs`). A step still running has no lines there until it ends.
+- **BF-61's relay kill** (M4 web runs the row; this is the relay side). Site day 30 (15:40Z) added `LogRelay` `/abort`, `ctx.abort()` reached only through a binding. Job 1114120 of run 1114119 on `m3org/wp3-live` streamed through `logrelay:1114120` on site 0 with two viewers attached, and a scratch Worker bound to the `LogRelay` classes (`graft-m4a-relaykill`, deleted after) aborted it at 15:47:05.05Z. The runner noticed on its next send, about 27 s later, retried twice at once (two harmless `ResultServer` exceptions as the attempts raced), and reconnected within 1 s to a fresh relay with no tail. Its lease kept renewing and the job completed `Success` at 15:52:15Z. Its `/logs` then held all 600 counter lines with none missing (37,382 B) [measured]. M4 web's spec stalled on a page action after saving the log, so the lead asked for one clean printed rerun with no new site day: job 1114123 of run 1114122, relay on site 0, aborted at 16:20:00.113Z, behaved the same (the runner reconnected about 29 s later on its next send; `Success` at 16:25:37Z; all 600 lines in `/logs`) [measured]. The spec then printed a clean pass (`1 passed`, M4 web's `tests/m4/results/m4-wp5.md` on `m4-web-7` `f12a64e3`): 220 live lines with none over 2 s, the socket closed with no `end`, the page on saved logs 2.2 s later, and the final log holding every line the page saw live.
+- **The `line.at` skew is the orb's clock.** The orb's clock runs about 5 s behind Cloudflare's: the kill Worker's `Date.now()` read 5.03 s after the orb's send, and the edge's `Date` 5 s after the orb's. The runner ran on the orb, so its timestamps, not the relay's, were behind [measured on two readings].
 - **Not yet checked:** a viewer's close arrives about 10 s after `no-stream` (M4 web, edge day 10), or not within 12 s (edge day 11). The web viewer falls back on `no-stream` itself; BF-61's kill path falls back on the close, so it is checked there.
+
+## BF-59 hosted: secrets across both rotations
+
+Driver `tests/m4/wp3/bf59.mjs`, workflow `tests/m4/wp3/hosted/bf59.yml` (one job with `environment: bf59env`; each step prints a secret only as the first 16 hex of its SHA-256 and its length, and the variable as text). Repository `m3org/wp3-bf59` (65554), unmodified runner 2.338.2. Site day 32 (`17dff43c` / `57066014` / `30444906`), edge day 15 (`1524eb37`), then edge day 16 (`b9a67f48`) for the rotation fix below. Three random 29-character values were kept only in the run directory (mode 600).
+
+| Step | Result |
+| --- | --- |
+| `gh secret set` 2.102.1: `BF59_REPO` (`-R`), `BF59_ENV` (`--env bf59env`), `BF59_ORG` (`--org m3org --visibility selected --repos wp3-bf59`); `gh variable set BF59_VAR` | each exit 0; the three list routes show the names and no value; one owner key `1478349346864660411` |
+| Job 1179653 | Success; repo, env, and org each print the right hash and length 29; `var bf59-plain-variable` |
+| Fork-PR job 1179656 (run marked `fork` through the dispatch route) | Success; all three print the empty value's hash `e3b0c44298fc1c14` and length 0; the variable still reads |
+| `rotate-seal-key` (run 2) | 200: new key `3052770262353804737`; 4 records resealed (3 repository and environment, 1 org); keys `1478349346864660411` and `6243795946503046962` retired and dropped; afterwards no repository row or the org's fold names either |
+| Job 1179659 after it | Success, all three right |
+| Wrapping key: slot B created (`graft-m4a-secrets-wrap-key-b`); `graft-m4a-ops` `cb75d656` with A and B, B current; `rewrap-secrets` | 200: 1 `SealKey` and 65 hook secrets rewrapped under slot 1 across 16 repositories; a second run rewraps nothing |
+| Slot A cleared: `graft-m4a-ops` `459c7362` with B alone | job 1179662 Success, all three right; a ping to hook 229398 arrived signed (`x-hub-signature-256`), 200 |
+| Scan (`bf59.mjs scan`) | 0 hits for any value, its base64, or its hex in every committed entry of `repo:65554` and `authz:7100001` on all three members (1,296 entries) and in 34 run files including runner logs and diagnostics |
+| Workers Logs (`tests/m4/wp3/bf59-logs.mjs`, 18:40Z to 19:31Z) | 0 hits in messages or request URLs of the edge, ops, and three site scripts (423, 148, 17,511, 7,211, 3,289 events); a control query for strings that are logged matched 6 and 18 events |
+
+Found on the way, both fixed and redeployed before the run that counts:
+
+- **An empty 201 broke `gh secret set`.** go-gh decodes every non-204 body, so a new secret answered 201 with no body made `gh` report "unexpected end of JSON input" although the write committed. A new secret or variable now answers 201 `{}` (`What::ActionsConfig`, kept test in `crates/api/tests/surfaces.rs`). Site day 32 and edge day 15.
+- **Rotation reseals shared one request id.** The first `rotate-seal-key` resealed the org secret and one repository secret of three, and kept the old key: every repository command it committed carried the edge request's id, so the leader answered the second and third as replays of the first. Each command a rotation commits now has its own id (`commit_issue_as`). Edge day 16; the rotation run again finished the reseal and dropped both older keys.
+- The driver's first job read `/logs` before the job's log was joined and through a JSON helper that cut a text body to 300 characters; it now reads raw and waits for the joined log. Jobs 1179653 and 1179656 were checked from a raw re-read of the same `/logs`.
+
+## BF-56 hosted: required checks after both kills
+
+Driver `tests/m4/wp3/bf56.mjs`, workflow `tests/m4/wp3/hosted/bf56.yml` (build, then test, then deploy; lint, which fails, then report, then notify), repository `m3org/wp3-bf56` (`repo:65555`, shard `actions:7100001.12`), unmodified runner 2.338.2 on two runner directories. Results in `tests/m4/raw/bf56/`. Each phase pushes fresh heads to branches `a` and `b`, whose open pull requests (#1, #2) target `main`, whose rule (GHES `PUT .../branches/main/protection`, new on edge day 17) requires all six job names. Run B is cancelled with GHES `POST .../actions/runs/{id}/cancel` (202) while its `build` runs. The kills go through `graft-m4a-memberkill`, a scratch Worker bound to the `Member` classes (`tests/m4/wp3/bf56-kill`), to a member's `/abort` and an Actions member's `/owner_fault`, which the edge does not forward (site day 33). Conclusion times are Cloudflare's, from the members' `/status` clock (the orb ran 5.9 s behind), polled every 2 s from the repository leader's `required_check` rows, so each lag is up to 2 s high.
+
+- **Commit path** (runs 1376296 and 1376303). `RunOwner` held on the shard leader, both runs created, no check run or required row on either head; then the repository's leader member (site 0, term 2) was reset, the group read leaderless 0.4 s later, and the hold was lifted, so `RunOwner`'s first round met a dead commit path and retried until a leader answered. All 12 required checks concluded and match their jobs: A's build, test, and deploy `success`, lint `failure`, report and notify `skipped`; every B job `cancelled`. Largest lag 10.4 s [measured].
+- **`RunOwner`** (runs 1376317 and 1376324). `/owner_fault {kill}` armed on the shard leader before the runs; its first round committed the repository's checks, then reset the leader before its shard half (site 0's member booted again at 23:21:53Z and was re-elected), and the next round replayed under the same request ids. The same 12 conclusions; largest lag 7.7 s [measured].
+- **Found by run 1** (day 33, commit path, `tests/m4/raw/bf56/commit-run1.json`, which also passed, largest lag 9.3 s): an ephemeral runner finishing a cancelled job polled once more before it exited, was matched to run A's `test`, and exited, so `test` sat `Assigned` until its 10-minute lease requeued it. The leader now matches an ephemeral runner at most once (`workers/site/src/actions.rs`, site day 34). The first `RunOwner` run on day 33 was cut by an orb executor restart after its kill fired and was not counted.
+- **Not BF-56's:** shard `actions:7100001.12`'s site 1 voter (`#2#f1`, a replacement) read commit 1 under its first-generation name while the leader was at 156; under its own name it was at the leader's index throughout. The driver's polls use each voter's own name.
 
 ## The parser: `crates/actions/src/workflow`
 
@@ -95,4 +131,4 @@ Site day 28 (14:15Z) put the `Actions` family, `/runsvc`, `RunnerBroker`, `LogRe
 
 ## Cost
 
-`INSTALL=graft-m4a python3 tests/fanout/m2bcost.py`, 2026-11-14 14:10Z to 14:50Z (site days 28 and 29, the edge days, and the live run): $0.53, of which containers $0.51 (git shards started by the resets). The whole install 00:00Z to 14:50Z: $8.47, containers $7.66.
+`INSTALL=graft-m4a python3 tests/fanout/m2bcost.py`, 2026-11-14 14:10Z to 14:50Z (site days 28 and 29, the edge days, and the live run): $0.53, of which containers $0.51 (git shards started by the resets). The whole install 00:00Z to 14:50Z: $8.47, containers $7.66. 13:00Z to 23:30Z (BF-61's reruns, BF-4, BF-59, BF-56, site days 30 to 34, edge days 14 to 17): $12.17, containers $11.78.

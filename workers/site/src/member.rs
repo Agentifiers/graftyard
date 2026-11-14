@@ -800,6 +800,14 @@ impl<F: Family> Routes<F> {
                 })
                 .await
             }
+            // BF-56's kill of a repository's commit path on a product install: the member resets (`ctx.abort()`), as a
+            // lost isolate does, and restores as a follower, so its group has no leader until an election. Only an
+            // operator's binding sends it: the edge forwards no path a client names to a member.
+            (Method::Post, "/abort") => {
+                self.host.dying.set(true);
+                host::abort(&self.host.state, "graftyard member abort");
+                Response::from_json(&json!({ "aborted": true, "at": now_ms() }))
+            }
             #[cfg(feature = "test-faults")]
             _ => self.test_route(req, url).await,
             #[cfg(not(feature = "test-faults"))]

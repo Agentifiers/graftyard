@@ -57,6 +57,14 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
             .map(|s| s.configurations)
             .unwrap_or_default();
         let name = j.name.str().map_or_else(|| j.id.clone(), String::from);
+        // `environment: prod` or `environment: {name: prod, url: ...}`; an expression is not resolved here, so such a
+        // job reads no environment's rows [inference: no gate names an expression environment].
+        let environment: Option<Box<str>> = j
+            .environment
+            .as_ref()
+            .and_then(|e| e.str().or_else(|| e.get("name")?.str()))
+            .filter(|n| !n.contains("${{"))
+            .map(Into::into);
         let mut one = |name: String, m: SmallVec<[(Box<str>, Box<str>); 4]>| {
             at[i].push(out.len());
             out.push(JobSpec {
@@ -65,7 +73,7 @@ pub fn job_specs(w: &Workflow) -> Result<Vec<JobSpec>, String> {
                 labels: labels.clone(),
                 needs: needs.clone(),
                 matrix: m,
-                environment: None,
+                environment: environment.clone(),
                 steps: steps.clone(),
             });
         };
@@ -98,6 +106,17 @@ mod tests {
         assert_eq!(&specs[2].needs[..], &[JobId(DbId(0)), JobId(DbId(1))]);
         assert!(specs[0].needs.is_empty());
         assert_eq!(&*specs[0].matrix[0].1, "\"one\"");
+        assert_eq!(specs[0].environment, None);
         assert!(specs[2].labels.fits(&LabelSet::parse(["self-hosted", "linux", "x64"]).unwrap()));
+    }
+
+    /// The environment a job's secrets come from, in both of GitHub's forms; an expression names none.
+    #[test]
+    fn a_jobs_environment_is_its_name_in_either_form() {
+        let src = "on: push\njobs:\n  a:\n    runs-on: x\n    environment: prod\n    steps: [{run: a}]\n  b:\n    runs-on: x\n    environment:\n      name: staging\n      url: https://x\n    steps: [{run: b}]\n  c:\n    runs-on: x\n    environment: ${{ inputs.env }}\n    steps: [{run: c}]\n";
+        let p = crate::workflow::parse("ci.yml", src);
+        assert!(p.ok(), "{:?}", p.errors);
+        let envs: Vec<_> = job_specs(&p.workflow).unwrap().into_iter().map(|s| s.environment).collect();
+        assert_eq!(envs, [Some("prod".into()), Some("staging".into()), None]);
     }
 }

@@ -45,9 +45,9 @@ pub use apps::{
     PermissionSet, RsaPublic, SecretHash, Slug, Url,
 };
 pub use authz::{
-    AccountKind, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut, AuthzRead,
-    AuthzScratch, CREATE_INIT_MAX, InstallationRow, InstallationState, NameEpoch, OrgRole, OrgRows, RepoEntry,
-    RepoPermission,
+    AccountKind, ActionsRows, AgentRows, AuthzCmd, AuthzErr, AuthzEvent, AuthzFold, AuthzMore, AuthzOp, AuthzOut,
+    AuthzRead, AuthzScratch, CREATE_INIT_MAX, CursorRows, InstallationRow, InstallationState, NameEpoch, OrgRole,
+    OrgRows, RepoEntry, RepoPermission,
 };
 pub use cache::{IDENTITY_BUDGET_PER_ISOLATE, IdentityCache, Lookup, READ_CACHE, RequestClass};
 pub use credential::{
@@ -102,6 +102,10 @@ pub const AUTHZ_FORMAT_V4: Format = Format { family: 0x12, version: 4 };
 /// finish or abort the create, and `AuthzOp::AbortCreate`, the abort's release of the name. Read and enabled on the
 /// same terms as version 2. Versions 5 to 10 are other work's.
 pub const AUTHZ_FORMAT_V11: Format = Format { family: 0x12, version: 11 };
+/// M4-WP3: the owner's `SealKey`s and its org Actions secrets and variables (`AuthzOp::PutSealKey` to
+/// `DeleteOrgVariable`, `AuthzEvent::SealKey`, `OrgSecret`, `OrgVariable`). Read and enabled on the same terms as
+/// version 2.
+pub const AUTHZ_FORMAT_V12: Format = Format { family: 0x12, version: 12 };
 /// The `Audit` consumer's cursor on `Names` and `Tokens` shards (`crate::audit`), M3's close. Read and enabled on the
 /// same terms as version 2.
 pub const NAMES_FORMAT_V3: Format = Format { family: 0x10, version: 3 };

@@ -850,7 +850,12 @@ fn after_a_split_each_tier_assigns_ids_from_its_own_cursor_with_no_collision() {
     let mut ids = BTreeSet::new();
     let mut take = |out: Result<IssueOut, IssueErr>| match out.unwrap() {
         IssueOut::Id(id) => assert!(ids.insert(id), "id {id:?} assigned twice"),
-        IssueOut::Number(_) | IssueOut::Done | IssueOut::Task(_) | IssueOut::TaskFinal(..) | IssueOut::Lease(_) => {}
+        IssueOut::Number(_)
+        | IssueOut::Done
+        | IssueOut::Task(_)
+        | IssueOut::TaskFinal(..)
+        | IssueOut::Lease(_)
+        | IssueOut::Created => {}
     };
     // The parent: core-tier commands decided on a view whose metadata tier is empty and never written, as a parent
     // after `MetaDropped` holds none.
@@ -1378,6 +1383,64 @@ fn delete_repo_tombstones_the_chain_and_refuses_every_later_write() {
     assert_eq!(c.commit(OWNER, IssueOp::InitRepo(settings(30))), Err(IssueErr::NotFound));
     // The refs stay, so GC keeps the objects until `retain_until`.
     assert_eq!(c.ref_of(&name("refs/heads/main")), Some(oid(1)));
+    c.agree();
+}
+
+/// M4-WP3's secret and variable commands (BF-59): admin only; a repository's and an environment's rows are kept
+/// apart, so a job of one environment never reads another's; the stored row is the sealed bytes as sent, so no entry
+/// holds a plaintext; a variable's create refuses an existing name (GHES's 409, which `gh variable set` turns into its
+/// PATCH) and its update a missing one; an org scope is refused on a repository chain.
+#[test]
+fn secret_and_variable_commands_keep_scopes_apart_and_store_only_the_sealed_bytes() {
+    use graftyard_git::secrets::{all_secrets, secret, secrets, variable, variables};
+    use graftyard_identity::sealed::{ActionsName, EnvName, SecretScope, SecretVisibility};
+    let n = |s: &str| ActionsName::parse(s).unwrap();
+    let prod = SecretScope::Env(EnvName("production".into()));
+    let mut sealed = vec![9u8; 48];
+    sealed.extend_from_slice(b"ciphertext");
+    let put = |scope: &SecretScope, name: &str, sealed: &[u8]| IssueOp::PutActionsSecret {
+        scope: scope.clone(),
+        name: n(name),
+        sealed: sealed.into(),
+        key_id: "568250167242549743".into(),
+    };
+    let mut c = Chain::new(3);
+    assert_eq!(c.commit(WRITER, put(&SecretScope::Repo, "TOKEN", &sealed)), Err(IssueErr::Forbidden));
+    assert_eq!(c.commit(OWNER, put(&SecretScope::Repo, "token", &sealed)), Ok(IssueOut::Created));
+    assert_eq!(c.commit(OWNER, put(&SecretScope::Repo, "TOKEN", &sealed)), Ok(IssueOut::Done), "an update is 204");
+    assert_eq!(
+        c.commit(OWNER, put(&prod, "TOKEN", b"short")),
+        Err(IssueErr::Invalid("a secret is a sealed box of at most 48 KB under the owner's key"))
+    );
+    let mut other = sealed.clone();
+    other[0] = 1;
+    assert_eq!(c.commit(OWNER, put(&prod, "TOKEN", &other)), Ok(IssueOut::Created));
+    let org = SecretScope::Org { visibility: SecretVisibility::All, repos: SmallVec::new() };
+    assert!(matches!(c.commit(OWNER, put(&org, "TOKEN", &sealed)), Err(IssueErr::Invalid(_))));
+    let core = &c.members[2].core;
+    assert_eq!(secret(core, &SecretScope::Repo, &n("TOKEN")).unwrap().sealed.as_ref(), sealed.as_slice());
+    assert_eq!(secret(core, &prod, &n("TOKEN")).unwrap().sealed.as_ref(), other.as_slice());
+    assert_eq!(secret(core, &SecretScope::Env(EnvName("staging".into())), &n("TOKEN")), None);
+    assert_eq!((secrets(core, &SecretScope::Repo).len(), all_secrets(core).len()), (1, 2));
+    assert!(!format!("{:?}", secret(core, &SecretScope::Repo, &n("TOKEN"))).contains("ciphertext"));
+    let var = |scope: &SecretScope, value: &str, create: bool| IssueOp::PutActionsVariable {
+        scope: scope.clone(),
+        name: n("REGION"),
+        value: value.into(),
+        create,
+    };
+    assert_eq!(c.commit(OWNER, var(&SecretScope::Repo, "enam", false)), Err(IssueErr::NotFound));
+    assert_eq!(c.commit(OWNER, var(&SecretScope::Repo, "enam", true)), Ok(IssueOut::Created));
+    assert_eq!(c.commit(OWNER, var(&SecretScope::Repo, "weur", true)), Err(IssueErr::Exists));
+    assert_eq!(c.commit(OWNER, var(&SecretScope::Repo, "weur", false)), Ok(IssueOut::Done));
+    assert_eq!(c.commit(OWNER, var(&prod, "apac", true)), Ok(IssueOut::Created));
+    assert_eq!(variable(&c.members[1].core, &SecretScope::Repo, &n("REGION")).unwrap().value.as_ref(), "weur");
+    assert_eq!(variables(&c.members[1].core, &prod)[0].1.value.as_ref(), "apac");
+    let del = IssueOp::DeleteActionsSecret { scope: SecretScope::Repo, name: n("TOKEN") };
+    assert_eq!(c.commit(READER, del.clone()), Err(IssueErr::Forbidden));
+    assert_eq!(c.commit(OWNER, del.clone()), Ok(IssueOut::Done));
+    assert_eq!(c.commit(OWNER, del), Err(IssueErr::NotFound));
+    assert_eq!(secret(&c.members[0].core, &prod, &n("TOKEN")).map(|r| r.sealed.len()), Some(other.len()));
     c.agree();
 }
 

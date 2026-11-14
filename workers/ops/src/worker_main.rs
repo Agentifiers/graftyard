@@ -78,8 +78,89 @@ async fn unwrap(mut req: Request, env: &Env) -> Result<Response> {
     }
 }
 
+struct WebRng;
+
+impl crypto_box::aead::rand_core::RngCore for WebRng {
+    fn next_u32(&mut self) -> u32 {
+        let mut b = [0u8; 4];
+        self.fill_bytes(&mut b);
+        u32::from_le_bytes(b)
+    }
+    fn next_u64(&mut self) -> u64 {
+        let mut b = [0u8; 8];
+        self.fill_bytes(&mut b);
+        u64::from_le_bytes(b)
+    }
+    fn fill_bytes(&mut self, d: &mut [u8]) {
+        let crypto: web_sys::Crypto = js_sys::Reflect::get(&js_sys::global(), &"crypto".into()).unwrap().into();
+        crypto.get_random_values_with_u8_array(d).unwrap();
+    }
+    fn try_fill_bytes(&mut self, d: &mut [u8]) -> std::result::Result<(), crypto_box::aead::rand_core::Error> {
+        self.fill_bytes(d);
+        Ok(())
+    }
+}
+
+impl crypto_box::aead::rand_core::CryptoRng for WebRng {}
+
+/// M4-WP3 (BF-59), from a site's `OPS` binding or the edge's: `POST /actions/sealkey` mints an owner's `SealKey`;
+/// `POST /actions/open` answers one job's secret plaintexts (`crate::OpenRequest`), to `acquirejob` only; `POST
+/// /actions/reseal` reseals records to a new key for rotation and answers no plaintext; `POST /actions/rewrap` wraps
+/// a hook secret again under the current slot. Nothing here logs a body or an answer.
+async fn actions(mut req: Request, env: &Env, path: &str) -> Result<Response> {
+    use crypto_box::aead::rand_core::RngCore as _;
+    let src = match wrap_keys(env).await {
+        Ok(s) => s,
+        Err(e) => return Response::error(e, 503),
+    };
+    match path {
+        "/actions/sealkey" => {
+            let (mut seed, mut nonce) = ([0u8; 32], [0u8; 12]);
+            WebRng.fill_bytes(&mut seed);
+            WebRng.fill_bytes(&mut nonce);
+            match crate::mint_seal_key(&src, seed, nonce, graftyard_types::Timestamp(Date::now().as_millis())) {
+                Ok(k) => Response::from_json(&k),
+                Err(e) => Response::error(e.to_string(), 503),
+            }
+        }
+        "/actions/open" => {
+            let Ok(r) = req.json::<crate::OpenRequest>().await else {
+                return Response::error("not an open request", 400);
+            };
+            let (secrets, failed) = crate::open_secrets(&src, &r);
+            Response::from_json(&json!({ "secrets": secrets, "failed": failed }))
+        }
+        "/actions/reseal" => {
+            #[derive(serde::Deserialize)]
+            struct Body {
+                to: graftyard_identity::sealed::SealKey,
+                records: crate::OpenRequest,
+            }
+            let Ok(b) = req.json::<Body>().await else { return Response::error("not a reseal request", 400) };
+            let (sealed, failed) = crate::reseal(&src, &b.records, &b.to, &mut WebRng);
+            Response::from_json(&json!({ "sealed": sealed, "failed": failed }))
+        }
+        "/actions/rewrap" => {
+            let Ok(w) = req.json::<graftyard_identity::sealed::Wrapped>().await else {
+                return Response::error("not a wrapped value", 400);
+            };
+            let mut nonce = [0u8; 12];
+            WebRng.fill_bytes(&mut nonce);
+            match crate::rewrap(&src, &w, nonce) {
+                Ok(w) => Response::from_json(&w),
+                Err(e) => Response::error(e.to_string(), 422),
+            }
+        }
+        _ => Response::error("Not Found", 404),
+    }
+}
+
 #[event(fetch)]
 async fn fetch(mut req: Request, env: Env, _ctx: Context) -> Result<Response> {
+    if req.method() == Method::Post && req.path().starts_with("/actions/") {
+        let path = req.path();
+        return actions(req, &env, &path).await;
+    }
     if req.method() == Method::Post && req.path() == "/wrap" {
         return wrap(req, &env).await;
     }

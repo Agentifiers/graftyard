@@ -401,12 +401,15 @@ impl Repo<'_> {
             .collect()
     }
 
+    /// Every branch rule, by id.
+    pub fn rules(&self) -> Vec<BranchRule> {
+        self.core.prefix("rule", &[]).into_iter().filter_map(|(k, _)| get_rec(self.core, "rule", &k)).collect()
+    }
+
     /// The protections of every rule over `base`.
     pub fn protections(&self, base: &RefName) -> Vec<Protection> {
-        self.core
-            .prefix("rule", &[])
+        self.rules()
             .into_iter()
-            .filter_map(|(k, _)| get_rec::<BranchRule>(self.core, "rule", &k))
             .filter(|r| graftyard_git::issue_ops::branch_matches(&r.pattern, base))
             .filter_map(|r| r.protection)
             .collect()

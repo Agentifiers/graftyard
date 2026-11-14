@@ -668,6 +668,13 @@ async fn route(c: &Ctx<'_>, req: &mut Request, host: &Host, e: Endpoint<'_>, m: 
             (_, ["orgs", _, "teams", ..] | ["user", "memberships", "orgs", _]) => {
                 crate::collab::org_route(c, req, p).await
             }
+            (_, ["orgs", _, "actions", "secrets" | "variables", ..]) => {
+                let segs: Vec<&str> = p.trim_end_matches('/').split('/').skip(1).collect();
+                match crate::secrets::org_route(c, req, &segs).await? {
+                    Some(r) => Ok(r),
+                    None => Ok(Reply::not_found()),
+                }
+            }
             (Method::Post, ["orgs", org, "repos"]) => {
                 let body = req.json().await.unwrap_or(Value::Null);
                 crate::repos::create(c, req, crate::repos::Via::Org((*org).to_owned()), body).await
@@ -713,6 +720,20 @@ pub(crate) async fn commit_issue(
     commit_issue_in(c, rd, who, op, what, None).await
 }
 
+/// `commit_issue` under its own request id, for an edge route that commits several commands in one request (the
+/// Actions rotations): under the request's own id the leader would take the second as a replay of the first and
+/// answer the first's outcome without committing it (BF-59 run 1, `tests/m4/results/m4-wp3.md`).
+pub(crate) async fn commit_issue_as(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+    rid: graftyard_types::RequestId,
+) -> Result<Reply> {
+    commit_issue_rid(c, rd, who, op, what, None, rid).await
+}
+
 /// `commit_issue` with the session a pull request's creator named in `X-Graftyard-Agent-Session` (AM1-WP3), which
 /// `decide` records in `AgentMeta` only for a task of the creating App. Carried only on `OpenPr` by an App's token or
 /// a user-to-server token, and only once 32.12 is enabled; otherwise the header changes nothing.
@@ -724,6 +745,18 @@ async fn commit_issue_in(
     what: What,
     session: Option<graftyard_identity::SessionId>,
 ) -> Result<Reply> {
+    commit_issue_rid(c, rd, who, op, what, session, c.rid).await
+}
+
+async fn commit_issue_rid(
+    c: &Ctx<'_>,
+    rd: &Read,
+    who: &Principal,
+    op: IssueOp<BlobRef>,
+    what: What,
+    session: Option<graftyard_identity::SessionId>,
+    rid: graftyard_types::RequestId,
+) -> Result<Reply> {
     if !c.cfg.enabled.contains(&REPO_FORMAT_ISSUES) {
         return Ok(unavailable(&format!(
             "issue writes need record format {}.{}, which FormatsEnable has not enabled on this install",
@@ -731,7 +764,7 @@ async fn commit_issue_in(
         )));
     }
     let render = Render { host: c.cfg.host.clone(), isolation: false, dir: rd.dir.clone(), what };
-    let mut call = IssueCall::new(op, who.clone(), c.rid, serde_json::to_value(&render)?);
+    let mut call = IssueCall::new(op, who.clone(), rid, serde_json::to_value(&render)?);
     // Format 32.8, once `FormatsEnable` enabled it, only for a command that can write an agent event: a pull request
     // opened by an App or with a user-to-server token (`AgentMeta` when its App is an `AgentApp`), and a review of a
     // pull request that has `AgentMeta` (`AgentGate`). Every other command keeps its format and its bytes; under a
@@ -762,7 +795,7 @@ async fn commit_issue_in(
             f.family, f.version
         )));
     }
-    let mut body = json!({ "rid": c.rid.to_string(), "cmd": { "issue": call } });
+    let mut body = json!({ "rid": rid.to_string(), "cmd": { "issue": call } });
     if let Some(a) = crate::admission(c, who, &[], false, 0).await {
         body["admit"] = serde_json::to_value(a)?;
     }
@@ -781,7 +814,7 @@ async fn commit_issue_in(
         Ok(done) => {
             // The refusal's cause (`IssueErr`) is not in the client's reply, so it is logged.
             if let Some(e) = done.pointer("/refused/err") {
-                worker::console_log!("issue command {} refused: {e}", c.rid);
+                worker::console_log!("issue command {} refused: {e}", rid);
             }
             let wire = done
                 .pointer("/ok/out/issue/reply")
@@ -1562,6 +1595,9 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
     if let Some(r) = crate::hooks::repo_route(c, req, &rd, who.as_ref(), tail, host).await? {
         return Ok(r);
     }
+    if let Some(r) = crate::secrets::repo_route(c, req, &rd, who.as_ref(), tail).await? {
+        return Ok(r);
+    }
     if let Some(r) = crate::activity::repo_route(c, req, &rd, who.as_ref(), tail, query, host).await? {
         return Ok(r);
     }
@@ -1748,6 +1784,40 @@ async fn rest_repo(c: &Ctx<'_>, req: &mut Request, host: &Host, p: &str, query: 
                     let what = What::StatusCreated { sha: st.sha, id: id.0 };
                     commit_issue(c, &rd, &who, to_wire(op), what).await?
                 }
+                Err(x) => x,
+            }
+        }
+        (Method::Post, ["actions", "runs", run, "cancel"]) => {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            crate::actions::cancel_run(c, &rd, &who, run).await?
+        }
+        // `rest:branches` (BF-56's rule): admin only, as on GHES; the leader checks again in `SetRule`'s `decide`.
+        (method @ (Method::Get | Method::Put | Method::Delete), ["branches", branch @ .., "protection"])
+            if !branch.is_empty() =>
+        {
+            let who = match need(&who) {
+                Ok(w) => w,
+                Err(x) => return Ok(x),
+            };
+            let access = graftyard_git::issue_ops::Access { repo: rd.repo.id, owner: rd.repo.owner, core: &rd.core };
+            let folds: Vec<&dyn graftyard_identity::AuthzRead> =
+                rd.dir.authz.iter().map(|a| a as &dyn graftyard_identity::AuthzRead).collect();
+            if graftyard_identity::permission(&who, &folds, &access) != Some(graftyard_identity::RepoPermission::Admin)
+            {
+                return Ok(Reply::error(404, "Not Found", graftyard_api::protection::DOC));
+            }
+            let branch = branch.join("/");
+            let what = What::Protection { branch: branch.clone() };
+            let plan = match method {
+                Method::Get => Err(graftyard_api::protection::get(&r, &branch)),
+                Method::Put => graftyard_api::protection::plan_put(&r, &branch, &body(req.bytes().await?)),
+                _ => graftyard_api::protection::plan_delete(&r, &branch),
+            };
+            match plan {
+                Ok(op) => commit_issue(c, &rd, &who, to_wire(op), what).await?,
                 Err(x) => x,
             }
         }

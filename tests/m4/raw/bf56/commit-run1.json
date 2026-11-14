@@ -1,0 +1,270 @@
+{
+  "phase": "commit",
+  "repo": "m3org/wp3-bf56",
+  "repoChain": "repo:65555",
+  "shardChain": "actions:7100001.12",
+  "heads": {
+    "a": "b1b36278c9d3df9739803fd4cb19b8ac945f396d",
+    "b": "ed883f9bf713db418f7329dc8d4b261c8ecc53f6"
+  },
+  "prs": {
+    "a": 1,
+    "b": 2
+  },
+  "offsetMs": 5808,
+  "events": [
+    {
+      "at": 1794696008897,
+      "what": "RunOwner held",
+      "shardLeader": {
+        "site": 0,
+        "do_name": "actions:7100001.12#1#f0",
+        "term": 2,
+        "commit": 2
+      }
+    },
+    {
+      "at": 1794696015517,
+      "what": "RunCreated",
+      "runA": 1376256,
+      "runB": 1376263
+    },
+    {
+      "at": 1794696016038,
+      "what": "before the kill",
+      "requiredRowsForHeads": 0,
+      "checkRunsOnA": 0
+    },
+    {
+      "at": 1794696016510,
+      "what": "repository leader aborted",
+      "leader": {
+        "site": 0,
+        "do_name": "repo:65555#1#f0",
+        "term": 2,
+        "commit": 68
+      }
+    },
+    {
+      "at": 1794696016866,
+      "what": "repository group leaderless",
+      "seen": null
+    },
+    {
+      "at": 1794696016991,
+      "what": "RunOwner hold lifted"
+    },
+    {
+      "at": 1794696068002,
+      "what": "cancel run B",
+      "status": 202,
+      "body": {},
+      "running": [
+        "build"
+      ]
+    }
+  ],
+  "runA": 1376256,
+  "runB": 1376263,
+  "cancelled": {
+    "at": 1794696068002,
+    "status": 202,
+    "body": {},
+    "running": [
+      "build"
+    ]
+  },
+  "jobs": [
+    {
+      "run": "A",
+      "name": "build",
+      "job": 1376257,
+      "conclusion": "success",
+      "completedAt": 1794696053984,
+      "required": {
+        "conclusion": "success",
+        "version": 3,
+        "run": 1376257
+      },
+      "seenAt": 1794696057577,
+      "lagS": 3.6,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "A",
+      "name": "test",
+      "job": 1376258,
+      "conclusion": "success",
+      "completedAt": 1794696690032,
+      "required": {
+        "conclusion": "success",
+        "version": 3,
+        "run": 1376258
+      },
+      "seenAt": 1794696699282,
+      "lagS": 9.3,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "A",
+      "name": "lint",
+      "job": 1376259,
+      "conclusion": "failure",
+      "completedAt": 1794696061505,
+      "required": {
+        "conclusion": "failure",
+        "version": 3,
+        "run": 1376259
+      },
+      "seenAt": 1794696066131,
+      "lagS": 4.6,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "A",
+      "name": "deploy",
+      "job": 1376260,
+      "conclusion": "success",
+      "completedAt": 1794696700768,
+      "required": {
+        "conclusion": "success",
+        "version": 3,
+        "run": 1376260
+      },
+      "seenAt": 1794696709290,
+      "lagS": 8.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "A",
+      "name": "report",
+      "job": 1376261,
+      "conclusion": "skipped",
+      "completedAt": 1794696061505,
+      "required": {
+        "conclusion": "skipped",
+        "version": 3,
+        "run": 1376261
+      },
+      "seenAt": 1794696066131,
+      "lagS": 4.6,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "A",
+      "name": "notify",
+      "job": 1376262,
+      "conclusion": "skipped",
+      "completedAt": 1794696061505,
+      "required": {
+        "conclusion": "skipped",
+        "version": 3,
+        "run": 1376262
+      },
+      "seenAt": 1794696066131,
+      "lagS": 4.6,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "build",
+      "job": 1376264,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376264
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "test",
+      "job": 1376265,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376265
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "lint",
+      "job": 1376266,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376266
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "deploy",
+      "job": 1376267,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376267
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "report",
+      "job": 1376268,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376268
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    },
+    {
+      "run": "B",
+      "name": "notify",
+      "job": 1376269,
+      "conclusion": "cancelled",
+      "completedAt": 1794696067831,
+      "required": {
+        "conclusion": "cancelled",
+        "version": 3,
+        "run": 1376269
+      },
+      "seenAt": 1794696074345,
+      "lagS": 6.5,
+      "firstPendingAt": 1794696020000
+    }
+  ],
+  "checks": {
+    "everyJobCompleted": true,
+    "runA": true,
+    "runBCancelledRest": true,
+    "everyRequiredConcluded": true,
+    "requiredMatchesJob": true,
+    "within60s": true,
+    "noPendingOnHeads": true
+  },
+  "maxLagS": 9.3,
+  "pass": true
+}
