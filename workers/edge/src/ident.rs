@@ -258,10 +258,9 @@ pub async fn access_tokens(c: &Ctx<'_>, req: &mut Request, id: &str) -> Result<R
 
 /// Asks `graft-ops` to sign `grant`, and renders GitHub's `installation-token`.
 async fn mint(c: &Ctx<'_>, grant: &Grant) -> Result<Reply> {
-    let ops = c.env.service("OPS")?;
     let mut init = RequestInit::new();
     init.with_method(Method::Post).with_body(Some(serde_json::to_string(grant)?.into()));
-    let mut res = ops.fetch("https://graft-ops/mint", Some(init)).await?;
+    let mut res = c.ops("https://graft-ops/mint", init).await?;
     if res.status_code() != 200 {
         return Ok(crate::api::unavailable(&format!("graft-ops did not mint ({})", res.status_code())));
     }

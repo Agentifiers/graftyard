@@ -1,0 +1,162 @@
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+╭ Deploy Worker Versions by splitting traffic between multiple versions
+│
+├ Fetching latest deployment
+│
+├ Your current deployment has 2 version(s):
+│
+│ (99%) 52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│       Created:  2026-11-14T20:38:43.276095Z
+│           Tag:  -
+│       Message:  -
+│
+│ (1%) a02b9c73-7d7a-4bd7-9091-bb9abe7fba03
+│       Created:  2026-11-14T20:39:34.879272Z
+│           Tag:  -
+│       Message:  -
+│
+├ Fetching versions
+│
+├ Which version(s) do you want to deploy?
+├ 1 Worker Version(s) selected
+│
+├     Worker Version 1:  52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│              Created:  2026-11-14T20:38:43.276095Z
+│                  Tag:  -
+│              Message:  -
+│
+├ What percentage of traffic should Worker Version 1 receive?
+├ 100% of traffic
+├
+├ Add a deployment message (skipped)
+│
+├ Deploying 1 version(s)
+│
+│ No non-versioned settings to sync. Skipping...
+│
+╰  SUCCESS  Deployed graft-m3c-m5-edge version 52f05950-b49c-42b9-a4d2-7d0aafb6c894 at 100% (0.68 sec)
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+╭ Deploy Worker Versions by splitting traffic between multiple versions
+│
+├ Fetching latest deployment
+│
+├ Your current deployment has 1 version(s):
+│
+│ (100%) 52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│       Created:  2026-11-14T20:38:43.276095Z
+│           Tag:  -
+│       Message:  -
+│
+├ Fetching versions
+│
+├ Which version(s) do you want to deploy?
+├ 2 Worker Version(s) selected
+│
+├     Worker Version 1:  52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│              Created:  2026-11-14T20:38:43.276095Z
+│                  Tag:  -
+│              Message:  -
+│
+├     Worker Version 2:  5cfcecc3-da40-43d7-9150-8500323e1a0c
+│              Created:  2026-11-14T20:39:08.444707Z
+│                  Tag:  -
+│              Message:  -
+│
+├ What percentage of traffic should Worker Version 1 receive?
+├ 99% of traffic
+├
+├ What percentage of traffic should Worker Version 2 receive?
+├ 1% of traffic
+├
+├ Add a deployment message (skipped)
+│
+├ Deploying 2 version(s)
+│
+│ No non-versioned settings to sync. Skipping...
+│
+╰  SUCCESS  Deployed graft-m3c-m5-edge version 52f05950-b49c-42b9-a4d2-7d0aafb6c894 at 99% and version 5cfcecc3-da40-43d7-9150-8500323e1a0c at 1% (1.95 sec)
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+╭ Deploy Worker Versions by splitting traffic between multiple versions
+│
+├ Fetching latest deployment
+│
+├ Your current deployment has 2 version(s):
+│
+│ (99%) 52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│       Created:  2026-11-14T20:38:43.276095Z
+│           Tag:  -
+│       Message:  -
+│
+│ (1%) 5cfcecc3-da40-43d7-9150-8500323e1a0c
+│       Created:  2026-11-14T20:39:08.444707Z
+│           Tag:  -
+│       Message:  -
+│
+├ Fetching versions
+│
+├ Which version(s) do you want to deploy?
+├ 1 Worker Version(s) selected
+│
+├     Worker Version 1:  5cfcecc3-da40-43d7-9150-8500323e1a0c
+│              Created:  2026-11-14T20:39:08.444707Z
+│                  Tag:  -
+│              Message:  -
+│
+├ What percentage of traffic should Worker Version 1 receive?
+├ 100% of traffic
+├
+├ Add a deployment message (skipped)
+│
+├ Deploying 1 version(s)
+│
+│ No non-versioned settings to sync. Skipping...
+│
+╰  SUCCESS  Deployed graft-m3c-m5-edge version 5cfcecc3-da40-43d7-9150-8500323e1a0c at 100% (0.67 sec)
+
+
+
+ ⛅️ wrangler 4.153.0 (update available 4.162.0)
+───────────────────────────────────────────────
+╭ Deploy Worker Versions by splitting traffic between multiple versions
+│
+├ Fetching latest deployment
+│
+├ Your current deployment has 1 version(s):
+│
+│ (100%) 5cfcecc3-da40-43d7-9150-8500323e1a0c
+│       Created:  2026-11-14T20:39:08.444707Z
+│           Tag:  -
+│       Message:  -
+│
+├ Fetching versions
+│
+├ Which version(s) do you want to deploy?
+├ 1 Worker Version(s) selected
+│
+├     Worker Version 1:  52f05950-b49c-42b9-a4d2-7d0aafb6c894
+│              Created:  2026-11-14T20:38:43.276095Z
+│                  Tag:  -
+│              Message:  -
+│
+├ What percentage of traffic should Worker Version 1 receive?
+├ 100% of traffic
+├
+├ Add a deployment message (skipped)
+│
+├ Deploying 1 version(s)
+│
+│ No non-versioned settings to sync. Skipping...
+│
+╰  SUCCESS  Deployed graft-m3c-m5-edge version 52f05950-b49c-42b9-a4d2-7d0aafb6c894 at 100% (0.95 sec)

@@ -1,0 +1,24 @@
+17:31:46.368 bf8-pin-n -> {"digest":"d3b9232c69ce1c99b6cb4e1aa1f94d5e53ad588246db6c4ee4b604fd92d3aea2","index":1238,"status":201}
+17:31:46.520 event pin 
+17:32:32.516 event blackhole 
+17:42:33.144 event blackhole-off 
+17:43:06.725 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794678183149
+17:43:07.667 bf8-i2-done -> {"digest":"aff00b49f4cada4c06ad8439a09179c1f1ed7d1f3ff3efc802a5b40d1524ad95","index":1239,"status":201}
+17:43:08.186 bf8-roll-drops-undo -> {"message":"an EdgeRoll that drops version 034ef100302b53f9dd005d505dfa3bff2c76b37435c73da5bb3f3bf6c2f91481 an undo still names","refusal":"DropsUndoVersion","status":422}
+17:43:08.241 event refused-roll 
+17:43:08.912 bf8-roll-n1 -> {"digest":"46ddaff1e8a84ddcf27527ff6e0e59d1ff46f203c2b7b016fbf5c5b36455ad48","index":1241,"status":201}
+17:43:08.986 event roll3 
+17:43:12.411 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 d42016e1-e03c-4c35-8b4f-837f23791310@1", "t0": 1794678188987
+17:43:13.794 bf8-i3-step0 -> {"digest":"db31e605f721b32d9f85458a648158e7817deef2d9e42f36a26ef1ae8ba0b336","index":1242,"status":201}
+17:43:46.860 event deployed "split": "d42016e1-e03c-4c35-8b4f-837f23791310@100", "t0": 1794678223870
+17:43:46.863 event dropped-n 
+17:43:48.659 deployments dropped-n: ff0c7a02-c1a4-406f-82e1-f090ef671322 2026-11-14T17:43:48.501194Z [('d42016e1', 100)]
+17:44:09.468 bf8-pin-outside -> {"digest":"fa7417ff0c33b91f82dc2eb82a799da7b8e4f9deb90639748efb631c0de60164","index":1243,"status":201}
+17:44:09.555 event pin-outside 
+17:45:13.745 event deployed "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794678309558
+17:45:13.748 event restored-n 
+17:45:44.793 bf8-i3-done -> {"digest":"c237b01a8ab1e3114a675d9831a92add525f5230f59818b6246fc086d1b80135","index":1244,"status":201}
+17:45:45.329 bf8-roll-clear -> {"digest":"90a0ced53d9aa237ac9dfd15cd95aa10de75624f56a355b0d1f585d12b399a7d","index":1245,"status":201}
+17:45:45.784 bf8-i4-done -> {"digest":"a757ff7b23098f1d7008977fd84837d4ab5a317755cb101b230498dc57c06bab","index":1246,"status":201}
+17:46:00.867 event bf8-end 
+exit 0

@@ -60,12 +60,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: wasm32 clippy, site and edge, with and without test-faults
+      - name: wasm32 clippy, site and edge, with and without test-faults, and graft-front
         run: |
           for crate in workers/site workers/edge; do
             (cd "$crate" && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
             (cd "$crate" && cargo clippy --target wasm32-unknown-unknown --features test-faults -- -D warnings)
           done
+          (cd workers/front && cargo clippy --target wasm32-unknown-unknown -- -D warnings)
       - run: cargo test --workspace
 
   go:

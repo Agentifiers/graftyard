@@ -42,6 +42,9 @@ pub const REPORT_EVERY_MS: u64 = 60_000;
 thread_local! {
     /// Per leading member (object name): the warm sites' latest reports and the hysteresis.
     static REPORTS: RefCell<HashMap<String, LoadReports>> = RefCell::new(HashMap::new());
+    /// Per (network, site, pool slot): whether the slot's last `PoolWarm` catch-up answered 200, which gates a step
+    /// up (`graftyard_git::warm_step`). A new leader starts with none, so its first step waits one more report.
+    static WARM: RefCell<HashMap<(i64, u8, u16), bool>> = RefCell::new(HashMap::new());
 }
 
 /// The leader's `/fanout`: `{"site": n, "load": NetworkLoad}`. Answers the committed k, `stepped` when this report
@@ -61,9 +64,25 @@ pub async fn report(h: &Rc<Host<Repo>>, body: Value) -> Result<Value> {
         (c.join.me.do_name.to_string(), Grant::of(c)?)
     };
     let now = Timestamp(now_ms());
-    let step = REPORTS.with(|r| r.borrow_mut().entry(key).or_default().report(g.warm, site, load, g.k, now));
-    let Some(want) = git::pool_ask(g.k, step) else { return Ok(json!({ "k": g.k })) };
-    g.ask(h, want).await
+    let (step, high, prior, reserved) = REPORTS.with(|r| {
+        let mut r = r.borrow_mut();
+        let e = r.entry(key.clone()).or_default();
+        let prior = e.f;
+        let step = e.report(g.warm, site, load, g.k, now);
+        (step, e.high(), prior, e.reserved)
+    });
+    // While the load is above the up line, one slot past the k - 1 served is reserved and warmed ahead of the step;
+    // once it is not, a held reservation is given back.
+    let Some(want) = git::pool_reserve(g.k, step, high, reserved) else { return Ok(json!({ "k": g.k })) };
+    let v = g.ask(h, want, step.unwrap_or(g.k), high).await?;
+    let k = v["k"].as_u64().unwrap_or(u64::from(g.k));
+    REPORTS.with(|r| r.borrow_mut().entry(key.clone()).or_default().reserved = high && u64::from(want) >= k);
+    // A step `fanout` answered that waited on a cold slot: the high line keeps its start, so the step commits at the
+    // first report after the slot answers caught up.
+    if step.is_some_and(|s| s > g.k) && v["k"].as_u64() == Some(u64::from(g.k)) {
+        REPORTS.with(|r| r.borrow_mut().entry(key).or_default().step_waited(prior));
+    }
+    Ok(v)
 }
 
 /// Test installs: ask the ledgers for `k` now, with no load behind it, and commit what both granted. With
@@ -85,7 +104,8 @@ pub async fn force(h: &Rc<Host<Repo>>, k: u8, pool_down: Option<u64>) -> Result<
             pool_call(&h.env, &site.sites, s, "/pool/down", &json!({ "ms": ms })).await;
         }
     }
-    g.ask(h, k.clamp(1, git::FANOUT_MAX) - 1).await
+    let k = k.clamp(1, git::FANOUT_MAX);
+    g.ask(h, k - 1, k, false).await
 }
 
 /// What the leader asks both warm sites' pool ledgers with: the network, its owner, its two warm sites, and the
@@ -112,9 +132,11 @@ impl Grant {
     }
 
     /// Asks both warm sites' ledgers for `want` pool shards at once and commits the k `graftyard_git::granted_k`
-    /// answers: up to 1 plus the fewer either granted, down only as `fanout` asked, and unchanged when a ledger does
-    /// not answer.
-    async fn ask(&self, h: &Rc<Host<Repo>>, want: u8) -> Result<Value> {
+    /// answers toward `target`: up to 1 plus the fewer either granted, down only as `fanout` asked, and unchanged when
+    /// a ledger does not answer. A step up commits only once every slot it would serve from on both warm sites
+    /// answered its last `PoolWarm` catch-up 200 (`graftyard_git::warm_step`). With `reserve`, the ledgers keep one
+    /// slot past the k served; every held slot is warmed after the answer, so it starts, then stays caught up.
+    async fn ask(&self, h: &Rc<Host<Repo>>, want: u8, target: u8, reserve: bool) -> Result<Value> {
         let site = crate::SiteEnv::read(&h.env)?;
         let body = json!({ "network": self.net.0.0, "owner": self.owner, "want": want });
         let ask = |s| pool_call(&h.env, &site.sites, s, "/pool/grant", &body);
@@ -125,23 +147,86 @@ impl Grant {
             futures_util::future::join(ask(self.warm[0]), ask(self.warm[1])).await
         };
         let n = |g: &Option<Vec<u16>>| g.as_ref().map(|s| s.len() as u8);
-        let next = git::granted_k(self.k, want + 1, [n(&a), n(&b)]);
+        let granted = git::granted_k(self.k, target, [n(&a), n(&b)]);
+        let held = |g: &Option<Vec<u16>>| g.clone().unwrap_or_default();
+        let (ha, hb) = (held(&a), held(&b));
+        let warmth = |site: SiteId, slots: &[u16]| -> Vec<bool> {
+            WARM.with(|w| {
+                let w = w.borrow();
+                slots.iter().map(|s| w.get(&(self.net.0.0, site.0, *s)).copied().unwrap_or(false)).collect()
+            })
+        };
+        let (wa, wb) = (warmth(self.warm[0], &ha), warmth(self.warm[1], &hb));
+        let next = git::warm_step(self.k, granted, [&ha, &hb], [&wa, &wb]);
         if next != self.k {
             commit(h, next).await?;
         }
         // A ledger that granted more than the k both granted gives the rest back, so no site holds pool shards the
         // network does not serve from (hosted smoke r3: one site granted 6 and the other 0, and the 6 stayed leased).
-        let trim = json!({ "network": self.net.0.0, "owner": self.owner, "want": next - 1 });
+        // A reservation keeps one slot past the k served.
+        let keep = if reserve { want.min(next) } else { next - 1 };
+        let trim = json!({ "network": self.net.0.0, "owner": self.owner, "want": keep });
         let (mut a, mut b) = (a, b);
         for (s, g) in [(self.warm[0], &mut a), (self.warm[1], &mut b)] {
-            if g.as_ref().is_some_and(|x| x.len() > usize::from(next - 1)) {
+            if g.as_ref().is_some_and(|x| x.len() > usize::from(keep)) {
                 *g = pool_call(&h.env, &site.sites, s, "/pool/grant", &trim).await.or(g.take());
+            }
+        }
+        // A slot the network no longer holds was torn down or went to another network: its old answer is forgotten,
+        // so a later grant of it counts as cold until it answers again.
+        WARM.with(|w| {
+            w.borrow_mut().retain(|(n, s, slot), _| {
+                *n != self.net.0.0
+                    || [(self.warm[0], &a), (self.warm[1], &b)]
+                        .iter()
+                        .any(|(site, g)| site.0 == *s && g.iter().flatten().any(|x| x == slot))
+            })
+        });
+        for (s, g) in [(self.warm[0], &a), (self.warm[1], &b)] {
+            for slot in g.iter().flatten() {
+                warm_slot(h, self.net, s, *slot);
             }
         }
         Ok(json!({ "k": next, "stepped": next != self.k, "want": want,
                    "grants": [[self.warm[0].0, a], [self.warm[1].0, b]] }))
     }
 }
+
+/// Warms one held pool slot in the background: `POST /catchup?warm=pool` on `git#<site>#pool:<1 + slot>`, which
+/// starts a stopped container (`graftyard_git::Caller::PoolWarm`) and catches it up; a shard still rehydrating answers
+/// `warming` at once (`next=1`) and goes on in the background. The answer is kept in `WARM` for the next step.
+fn warm_slot(h: &Rc<Host<Repo>>, net: NetworkId, site: SiteId, slot: u16) {
+    let record = {
+        let core = h.core.borrow();
+        match core.as_ref().and_then(|c| serde_json::to_string(&c.join.record).ok()) {
+            Some(r) => r,
+            None => return,
+        }
+    };
+    let env = h.env.clone();
+    worker::wasm_bindgen_futures::spawn_local(async move {
+        let call = async {
+            let sites = crate::SiteEnv::read(&env).ok()?.sites;
+            let s = git::shards_for(net, site, 1, &[slot]).get(1).copied()?;
+            let st = stub(&env, &sites, site, &git::object_name(net, s, 1)).ok()?;
+            let url = format!(
+                "https://shard/catchup?warm=pool&repo={}&record={}&wait=2&next=1",
+                net.0.0,
+                worker::js_sys::encode_uri_component(&record)
+            );
+            let mut init = RequestInit::new();
+            init.with_method(Method::Post);
+            let r = st.fetch_with_request(Request::new_with_init(&url, &init).ok()?).await.ok()?;
+            Some(r.status_code() == 200)
+        };
+        let ok = crate::host::within(WARM_CALL, call).await.flatten().unwrap_or(false);
+        WARM.with(|w| w.borrow_mut().insert((net.0.0, site.0, slot), ok));
+    });
+}
+
+/// How long a pool warm's answer is waited for: a caught-up shard answers in about a second; past this the slot counts
+/// as cold for the next step, and its catch-up goes on.
+const WARM_CALL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The object that keeps a site's `PoolLedger`: the site's first pool shard. Each network's first shard here is
 /// index 0 of a one-shard `count` (`crate::shard`), so the pool is `1..1 + HOT_POOL` and the ledger is shard 1.

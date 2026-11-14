@@ -11,16 +11,16 @@
 //! `{"Halt": {"intent": "<ulid>"}}`, `{"Intent": {"id": "<ulid>", "ttl_s": 3600, "intent": {"EdgeRoll": {"release":
 //! "<hex>"}}, "undo": [{"EdgePointer": {"pin": "<hex>"}}], "undo_key": "<private key path>"}}`, and
 //! `{"Undo": {"intent": "<ulid>", "entry": {"EdgePointer": {"pin": "<hex>"}}}}`, which binds a pre-signed undo to its
-//! parent for the `sign` that pre-signed it.
+//! parent for the `sign` that pre-signed it, and `{"StaleMode": {"scope": {"Repo": 7}, "until_s": 600}}`.
 
 use std::fs;
 use std::path::Path;
 
 use graftyard_release::{
-    Bound, DayTarget, Format, FormatSet, ImageRef, Intent, IntentId, KeyId, Mode, ReleaseEntry, ReleaseUploaded,
+    Bound, DayTarget, Format, FormatSet, ImageRef, Intent, IntentId, KeyId, Mode, ReleaseEntry, ReleaseUploaded, Scope,
     Script, Signature, SignedEntry, SignedIntent, SiteMode, presign_undo,
 };
-use graftyard_types::{ChainId, Digest, ReleaseId, SiteId, Timestamp, Ulid};
+use graftyard_types::{AccountId, ChainId, DbId, Digest, ReleaseId, RepoId, SiteId, Timestamp, Ulid};
 use serde_json::Value;
 
 use crate::config::{InstallToml, Res, now, parse_public_key, random, read_private_key, unhex};
@@ -200,6 +200,29 @@ fn body(v: &Value, t: &InstallToml, keys: &Value) -> Res<ReleaseEntry> {
         "OpsPointer" => ReleaseEntry::OpsPointer { pin: release_id(b, "pin")? },
         "McpPointer" => ReleaseEntry::McpPointer { pin: release_id(b, "pin")? },
         "SiteLost" => ReleaseEntry::SiteLost { site: site(b, "site")? },
+        // `{"StaleMode": {"scope": "Install" | {"Owner": id} | {"Repo": id}, "until_s": seconds from now}}`, or an
+        // absolute `"until"` in epoch ms.
+        "StaleMode" => {
+            let sc = field(b, "scope")?;
+            let scope = match sc.as_str() {
+                Some("Install") => Scope::Install,
+                _ => {
+                    let (k, id) = one(sc)?;
+                    let id = DbId(id.as_i64().ok_or("a scope names an id")?);
+                    match k {
+                        "Owner" => Scope::Owner(AccountId(id)),
+                        "Repo" => Scope::Repo(RepoId(id)),
+                        _ => return Err(format!("scope {k:?}")),
+                    }
+                }
+            };
+            let until = match (b.get("until").and_then(Value::as_u64), b.get("until_s").and_then(Value::as_u64)) {
+                (Some(ms), _) => Timestamp(ms),
+                (None, Some(s)) => Timestamp(now().0 + s * 1000),
+                (None, None) => return Err("a StaleMode needs until (epoch ms) or until_s".into()),
+            };
+            ReleaseEntry::StaleMode { scope, until }
+        }
         "Halt" => ReleaseEntry::Halt { intent: intent_id(b, "intent")? },
         "Abort" => ReleaseEntry::Abort { intent: intent_id(b, "intent")?, target: release_id(b, "target")? },
         "Intent" => {

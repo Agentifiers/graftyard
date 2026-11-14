@@ -1,0 +1,9 @@
+BF-43: 95454 requests, 95454 200
+  before the undo: 40964 requests, 252 on N+1 (0.62%)
+  undo 201 at +0; first request carrying the pin at +113 ms
+  requests off N after the undo: 31; last one started at +57908 ms
+  requests from +5 s to the next roll: 25513, off N or unpinned: 2272
+  with the API blocked (62 s): 19073 requests, 19042 on N
+  after the next EdgeRoll's 201: 27404 requests; last pinned one at +916 ms; pinned after +5 s: 0
+  under the second 1% split: 17073 requests, 162 on N+2
+  alarms: 0

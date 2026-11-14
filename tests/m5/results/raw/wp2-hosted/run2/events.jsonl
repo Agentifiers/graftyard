@@ -1,0 +1,26 @@
+{"t": 1794677126313, "event": "roll1"}
+{"t": 1794677131165, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 d42016e1-e03c-4c35-8b4f-837f23791310@1", "t0": 1794677126318}
+{"t": 1794677225615, "event": "api-blocked"}
+{"t": 1794677230001, "event": "undo"}
+{"t": 1794677290017, "event": "api-unblocked"}
+{"t": 1794677295537, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794677292445}
+{"t": 1794677317504, "event": "roll2"}
+{"t": 1794677322569, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 0ea53421-a914-4a36-a736-2d6fe048089a@1", "t0": 1794677317511}
+{"t": 1794677413721, "event": "bf43-end"}
+{"t": 1794677506513, "event": "pin"}
+{"t": 1794677552513, "event": "blackhole"}
+{"t": 1794678153141, "event": "blackhole-off"}
+{"t": 1794678186724, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794678183149}
+{"t": 1794678188239, "event": "refused-roll"}
+{"t": 1794678188985, "event": "roll3"}
+{"t": 1794678192410, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@99 d42016e1-e03c-4c35-8b4f-837f23791310@1", "t0": 1794678188987}
+{"t": 1794678226859, "event": "deployed", "split": "d42016e1-e03c-4c35-8b4f-837f23791310@100", "t0": 1794678223870}
+{"t": 1794678226861, "event": "dropped-n"}
+{"t": 1794678249553, "event": "pin-outside"}
+{"t": 1794678313743, "event": "deployed", "split": "3ba676ce-5cc0-41d8-b7fe-db03e3febfa7@100", "t0": 1794678309558}
+{"t": 1794678313746, "event": "restored-n"}
+{"t": 1794678360865, "event": "bf8-end"}
+{"t": 1794678482665, "event": "blackhole"}
+{"t": 1794678524353, "event": "stale-a"}
+{"t": 1794678677098, "event": "stale-b"}
+{"t": 1794678769802, "event": "blackhole-off", "note": "cleared by hand after the executor was replaced at 17:52Z"}

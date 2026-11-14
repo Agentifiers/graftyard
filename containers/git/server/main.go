@@ -1826,8 +1826,12 @@ func upload(w http.ResponseWriter, r *http.Request, advertise bool) {
 		// An ls-refs reply: small, so buffered and cut.
 		b, _ := io.ReadAll(stdout)
 		w.Write(lsRefsOnly(b, sessions))
-	} else {
-		io.CopyBuffer(w, stdout, make([]byte, 64<<10))
+	} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil {
+		// The caller went away mid-pack (B0-34's time-to-first-byte probe cancels after one byte). Nothing reads the
+		// pipe again, so upload-pack blocked on it, `Wait` never returned, and the shared lock stalled the next /ingest
+		// and every validate queued behind that writer, on all three shards of the network (LM-1 round 18c,
+		// `TestCancelledCloneReleasesTheLock`).
+		cmd.Process.Kill()
 	}
 	if err := cmd.Wait(); err != nil {
 		fmt.Fprintf(os.Stderr, "upload-pack: %v: %s\n", err, errb.String())

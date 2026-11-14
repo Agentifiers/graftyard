@@ -10,16 +10,24 @@
 //! `Org`. A failure there is retried by the next `install` (the 409 path), so every step is idempotent: joins are, and a
 //! second `Open` is refused `AlreadyOpened`.
 //!
-//! Every other entry must decode, then goes to the group, whose `decide` runs every signer and state rule
-//! (`graftyard_release::ReleaseFold::decide`). The design's edge-side check against its cached `Keys` waits for the
-//! cached `Release` view (M5-WP2); until then the group is the only judge, which refuses the same entries.
+//! Every other entry must decode, and is checked against this isolate's cached `Release` view before `commit`
+//! (`graftyard_release::view::Replica::precheck`): bound to this install and group, every signer a key of the cached
+//! `Keys` (or the new customer key of a `Keys`, or a lifeboat's key for its `LifeboatDecoder`), and every signature
+//! valid. A signer the view does not hold gets one more look, after a refresh, since a `Keys` committed after the last
+//! refresh may name it. The group's `decide` then runs every signer and state rule
+//! (`graftyard_release::ReleaseFold::decide`), so a view older than the group's newest `Keys` can pass an entry the
+//! group then refuses, never commit one it would not.
 //!
-//! Answers: 201 `{"index", "digest"}` after `Acked`; 409 `{"message": "stale prev", "prev", "index"}` when `prev` is
-//! not the group's last digest (for a genesis, when the group holds one); 422 `{"message", "refusal"}` when the edge
-//! or `decide` refuses.
+//! A `StaleMode` that the group did not commit (no outcome within the commit's bound, or a 503) is verified against
+//! the cached `Keys` and written to every reachable `Release` member's `pending` row, outside the log, and answered
+//! 202 `{"pending": n, "of": m}` once at least one member kept it (`design/DESIGN.md`, Shape, `STALE_MAX`).
+//!
+//! Answers: 201 `{"index", "digest"}` after `Acked`; 202 for an uncommitted `StaleMode`; 409 `{"message": "stale
+//! prev", "prev", "index"}` when `prev` is not the group's last digest (for a genesis, when the group holds one); 422
+//! `{"message", "refusal"}` when the edge or `decide` refuses.
 
 use graftyard_identity::{AccountKind, account_shard};
-use graftyard_lookup::{create, system_of};
+use graftyard_lookup::{create, system_of, view};
 use graftyard_release::{ReleaseEntry, SignedEntry, accept_genesis};
 use graftyard_types::{ChainId, PlacementRecord, SystemChain, TokenShard};
 use serde_json::{Value, json};
@@ -55,12 +63,30 @@ pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
         Err(e) => return refused("Malformed", format!("malformed entry: {e}")),
     };
     if !matches!(entry.body, ReleaseEntry::Genesis(_)) {
-        let record = match c.system_record(ChainId::Release).await {
-            Ok(r) => r,
-            Err(e) => return answer(503, json!({ "message": format!("no Release view: {e}") })),
+        let b = c.bindings();
+        view::ensure(&b, &anchor, Some(c.ctx)).await;
+        // A signer the view does not hold may be one a `Keys` committed since the last refresh added: look again.
+        if let Err(graftyard_release::Refusal::UnknownKey(_)) = view::with(|v| v.precheck(&entry)) {
+            view::refresh_now(&b, &anchor).await;
+        }
+        if let Err(e) = view::with(|v| v.precheck(&entry)) {
+            return refused(e.variant(), e.to_string());
+        }
+        let record = match view::release_record() {
+            Some(r) => r,
+            None => match c.system_record(ChainId::Release).await {
+                Ok(r) => r,
+                Err(e) => return answer(503, json!({ "message": format!("no Release view: {e}") })),
+            },
         };
-        return match submit(c, &record, &bytes).await {
+        let stale = matches!(entry.body, ReleaseEntry::StaleMode { .. });
+        // A StaleMode is the entry that must land when groups cannot commit, the Release group among them: its
+        // commit is bounded so the pending path below runs while the client still waits.
+        let for_ms = if stale { STALE_COMMIT_MS } else { 60_000 };
+        return match submit(c, &record, &bytes, for_ms).await {
             Ok((status, out)) => answer(status, out),
+            // Only a group that did not commit; one whose `decide` refused the flag answers 422 as usual.
+            Err(Ok(r)) if stale && r.status_code() == 503 => pending(c, &record, &bytes).await,
             Err(r) => r,
         };
     }
@@ -77,7 +103,7 @@ pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
         return answer(503, json!({ "message": format!("the Release group did not start: {e}") }));
     }
     let digest = entry.digest().hex();
-    let (status, out) = match submit(c, &record, &bytes).await {
+    let (status, out) = match submit(c, &record, &bytes, 60_000).await {
         Ok(a) => a,
         Err(r) => return r,
     };
@@ -91,18 +117,67 @@ pub async fn entries(c: &Ctx<'_>, req: &mut Request) -> Result<Response> {
     answer(status, out)
 }
 
-/// Commits one entry's bytes on the `Release` group: 201 or 409 with the body to send, or the 422 or 503 reply.
+/// How long a `StaleMode` waits for the group's commit before it goes to the members' `pending` rows [guess].
+const STALE_COMMIT_MS: u64 = 10_000;
+
+/// Writes an uncommitted `StaleMode` to every `Release` member's `pending` row it reaches, each of which verifies it
+/// against its own applied `Keys`: 202 when at least one kept it, else 503.
+async fn pending(c: &Ctx<'_>, record: &PlacementRecord, bytes: &[u8]) -> Result<Response> {
+    if view::with(|v| v.fold.keys.is_none()) {
+        return answer(
+            503,
+            json!({ "message": "the StaleMode did not commit, and this edge holds no Release view to verify it against" }),
+        );
+    }
+    if let Err(e) = view::with(|v| {
+        graftyard_release::view::verify_stale(&v.fold, bytes, graftyard_types::Timestamp(graftyard_lookup::now_ms()))
+    }) {
+        return refused(e.variant(), e.to_string());
+    }
+    let b = c.bindings();
+    let mut members: Vec<(graftyard_types::SiteId, String)> =
+        graftyard_lookup::known_voters(ChainId::Release).into_iter().map(|t| (t.site, t.do_name)).collect();
+    if members.is_empty() {
+        members =
+            record.bootstrap_members(ChainId::Release).into_iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    }
+    let body = json!({ "entry": graftyard_lookup::hex(bytes) }).to_string();
+    let calls = members.iter().map(|(site, name)| {
+        graftyard_lookup::post_within(&b, *site, name, "/pending", body.as_bytes(), std::time::Duration::from_secs(2))
+    });
+    let answers = futures_util::future::join_all(calls).await;
+    let kept: Vec<Value> = answers
+        .iter()
+        .flatten()
+        .filter_map(|(s, v)| (*s == 200).then(|| v.get("pending")).flatten().cloned())
+        .collect();
+    let refusal = answers
+        .iter()
+        .flatten()
+        .find_map(|(_, v)| v.pointer("/refused/err").and_then(Value::as_str).map(str::to_owned));
+    match (kept.len(), refusal) {
+        (0, Some(r)) => refused(&r, "every member that answered refused the StaleMode".into()),
+        (0, None) => {
+            answer(503, json!({ "message": "the StaleMode did not commit, and no Release member kept it pending" }))
+        }
+        (n, _) => answer(202, json!({ "pending": n, "of": members.len(), "rows": kept })),
+    }
+}
+
+/// Commits one entry's bytes on the `Release` group within `for_ms`: 201 or 409 with the body to send, or the 422 or
+/// 503 reply.
 async fn submit(
     c: &Ctx<'_>,
     record: &PlacementRecord,
     bytes: &[u8],
+    for_ms: u64,
 ) -> std::result::Result<(u16, Value), Result<Response>> {
     let b = c.bindings();
     let body =
         json!({ "rid": graftyard_lookup::request_id().to_string(), "cmd": graftyard_lookup::hex(bytes) }).to_string();
     let hooks = graftyard_lookup::Hooks::default();
     let done =
-        match graftyard_lookup::commit_hedged(&b, ChainId::Release, record, body.as_bytes(), c.colo, 60_000, hooks)
+        match graftyard_lookup::commit_hedged(&b, ChainId::Release, record, body.as_bytes(), c.colo, for_ms, hooks)
             .await
         {
             Ok(d) => d,

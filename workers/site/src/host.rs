@@ -225,6 +225,8 @@ pub struct Stats {
     pub follower_reads: u32,
     pub follower_refused: u32,
     pub follower_late: u32,
+    /// Reads served by `stale()` under a `StaleMode` flag (`crate::member`, `read_stale`).
+    pub stale_reads: u32,
     /// Stored entries sent to a follower behind the in-memory window (`Out::catchup`).
     pub catchups: u32,
     pub leases: u32,
@@ -741,7 +743,9 @@ pub struct Host<F: Family> {
     /// Bytes of the bodies of member calls this member has sent and not yet seen end, and of read answers still
     /// streaming, each counted once per call or read though a shared answer is one copy (`/stats` `memSplit`).
     pub call_bytes: Rc<Cell<usize>>,
-    pub answer_bytes: Rc<Cell<usize>>,
+    /// Distinct bytes of read answers still streaming: a shared answer once, however many reads stream it
+    /// (`crate::member::ANSWER_BYTES_MAX`).
+    pub answers: Rc<RefCell<Answers>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -821,6 +825,58 @@ impl Counted {
 impl Drop for Counted {
     fn drop(&mut self) {
         self.0.set(self.0.get().saturating_sub(self.1));
+    }
+}
+
+/// Reports an AppendEntries call ended when the task that awaited it ends, by any path (`Member::call_ended`).
+struct Ended<F: Family>(Rc<Host<F>>, Option<(SiteId, u64)>);
+
+impl<F: Family> Drop for Ended<F> {
+    fn drop(&mut self) {
+        if let Some((to, round)) = self.1 {
+            let _ = self.0.input(|m, t| m.call_ended(t, to, round));
+        }
+    }
+}
+
+/// The read answers streaming out of this member, by the address of their shared bytes, with how many reads stream
+/// each, and their distinct bytes. An answer's address is unique while a hold keeps it alive.
+#[derive(Default)]
+pub struct Answers {
+    by: HashMap<usize, u32>,
+    bytes: usize,
+}
+
+impl Answers {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    /// Counts `v` while the returned hold lives: its bytes once, however many reads hold it.
+    pub fn hold(this: &Rc<RefCell<Answers>>, v: &Rc<[u8]>) -> AnswerHeld {
+        let key = v.as_ptr() as usize;
+        let mut a = this.borrow_mut();
+        let n = a.by.entry(key).or_insert(0);
+        *n += 1;
+        if *n == 1 {
+            a.bytes += v.len();
+        }
+        AnswerHeld(this.clone(), key, v.len())
+    }
+}
+
+pub struct AnswerHeld(Rc<RefCell<Answers>>, usize, usize);
+
+impl Drop for AnswerHeld {
+    fn drop(&mut self) {
+        let mut a = self.0.borrow_mut();
+        if let Some(n) = a.by.get_mut(&self.1) {
+            *n -= 1;
+            if *n == 0 {
+                a.by.remove(&self.1);
+                a.bytes -= self.2;
+            }
+        }
     }
 }
 
@@ -1377,7 +1433,7 @@ impl<F: Family> Host<F> {
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
             call_bytes: Rc::new(Cell::new(0)),
-            answer_bytes: Rc::new(Cell::new(0)),
+            answers: Rc::new(RefCell::new(Answers::default())),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1575,6 +1631,12 @@ impl<F: Family> Host<F> {
 
     pub fn joined(&self) -> bool {
         self.core.borrow().is_some()
+    }
+
+    /// The chain this member was joined to, if it is joined.
+    #[cfg(feature = "test-faults")]
+    pub fn chain(&self) -> Option<graftyard_types::ChainId> {
+        self.core.try_borrow().ok()?.as_ref().map(|c| c.join.chain)
     }
 
     fn note(&self, core: &Core<F>, writes: &[Write<F::Ev>], t: u64) {
@@ -2289,11 +2351,19 @@ impl<F: Family> Host<F> {
             }
             // What `call_failed` needs, so the envelope and its entries are not held while a late answer is awaited.
             let (to, on_miss, on_error) = (e.to, e.failure(true), e.failure(false));
+            // However the call ends, its AppendEntries bytes stop counting in the core's budget (`call_ended`).
+            let _ended = Ended(
+                h.clone(),
+                match &e.msg {
+                    raft::Message::Append(a) if a.boot == h.boot() => Some((to, a.round)),
+                    _ => None,
+                },
+            );
             #[cfg(feature = "test-faults")]
             let drop_reply = matches!(e.msg, raft::Message::Append(_));
             drop(e);
             #[cfg(feature = "test-faults")]
-            if let Some(hang) = crate::faults::site_fault(&h.env).await {
+            if let Some(hang) = crate::faults::site_fault(&h.env, h.chain(), true).await {
                 crate::faults::count(&format!("site_fault:out>{}", to.0));
                 // A hang past CALL_DEADLINE is a missed deadline, as a blackholed call is (B0-07's gray site).
                 if hang >= raft::CALL_DEADLINE.as_millis() as u64 {
@@ -2377,6 +2447,11 @@ impl<F: Family> Host<F> {
                 }
             }
         });
+    }
+
+    /// This boot's id, which its AppendEntries carry.
+    fn boot(&self) -> u64 {
+        self.core.try_borrow().ok().and_then(|c| c.as_ref().map(|c| c.m.boot())).unwrap_or(0)
     }
 
     fn call_failed(self: &Rc<Self>, f: Option<raft::CallFailure>) {

@@ -2150,7 +2150,7 @@ Round 5 of `lm1-memory` timed each repository commit on the leader. On a 500-age
 
 LM-1's B0-34 seed on `graft-m2b` failed every 60 MB push with `exceededMemory` or a hung exception on the edge: `receive_pack` read the whole body into one `Vec` before it parsed the commands, then copied it into the validate body and each bucket's put. B0-20 (`design/DESIGN.md`, Milestone 0) fails a push that needs buffering, so this is a code gap and the row stays as written.
 
-**Decision.** The edge holds a push body only while it may still be inline: until its commands parse and more than `INLINE_MAX` of pack follows them (`graftyard_git::smart::BodyReader`). Such a body, and a gzip body, which git sends only below `postBuffer`, is handled as before, from the whole body. The rest of a longer body streams through `PackStore::place_streamed`: the tee hashes it, hands it on to validate through a one-chunk pipe, and fills two part buffers in JavaScript memory (`JsPart`), each put to every bucket still taking the pack before it is filled again. The cap counts every byte, and a body past it is answered the same `cap_refusal`. A streamed validate goes to the first shard of `shard_order` only, with a 60 s wait and no trailer, and a non-422, non-429 answer is a 503 `Retry-After`. The `DurablePack` still needs validate's index to name the SHA-256 and length the tee read.
+**Decision.** The edge holds a push body only while it may still be inline: until its commands parse and more than `INLINE_MAX` of pack follows them (`graftyard_git::smart::BodyReader`). Such a body, and a gzip body, which git sends only below `postBuffer`, is handled as before, from the whole body. The rest of a longer body streams through `PackStore::place_streamed`: the tee hashes it, hands it on to validate through a one-chunk pipe, and fills two part buffers in JavaScript memory (`JsPart`), each put to every bucket still taking the pack before it is filled again. The cap counts every byte, and a body past it is answered the same `cap_refusal`. A streamed validate goes to one shard, with a 60 s wait and no trailer, and a non-422, non-429 answer is a 503 `Retry-After`. That shard is the first of `shard_order` whose bodiless `/catchup` probe answers caught up, else the last, so a streamed push fails over before its first byte and never after (amended 2026-11-14, LM-1 round 18c: sent to the first shard only, a big push through B0-34's home-shard stall would answer 503 with the other sites' shards never asked). The `DurablePack` still needs validate's index to name the SHA-256 and length the tee read.
 
 **Why.** Two parts bound the isolate's pack bytes at 32 MiB at `PART_SIZE` whatever the push's size, and a part in a `Uint8Array` is passed to R2 as a view, so neither the wasm heap nor a copy per bucket holds it. The validate body cannot be read twice, and the trailer is the pack's last 20 bytes.
 
@@ -3107,6 +3107,80 @@ Branch `merge-p99` (`tests/am1/results/merge-p99.md`), toward B0-29's merge line
 
 **Flip.** Edge deployments that keep more than two versions (M5-WP2's gradual deploy), which would widen the set.
 
+### M5-WP2: the cached `Release` view, pin-only pointers, and `graft-front`, as built (2026-11-14)
+
+#### The view is a replica of the group's fold, not a copy of a member's answer
+
+**Decision.** Each `graft-front`, edge, and site isolate holds its own `ReleaseFold`, built by replaying the group's committed entries, read by position from a member's `/view` (`{"from": n}`, entries with their entry times, plus `pending` rows), through the same `check` and `apply` a follower runs, against the isolate's own trust anchor (`crates/release/src/view.rs`, `Replica`; `crates/lookup/src/view.rs`). A page that starts past the replica's count is a gap and refused, and a member behind it adds nothing, so the view never moves backward. A refresh reads members, the last-named leader first, until one that names itself leader answers; a follower's page is applied on the way.
+
+**Why.** "Refreshed from any member's applied state and never moved backward" (`build/BUILD-PLAN.md`, M5-WP2). A member's answer trusted as a summary would let one bad member set a pointer; replayed entries verify by their signatures and bound `prev`, so a member can only withhold. A follower applies a commit only when a later round carries it, and an idle `Release` group sends none, so a view read from a follower can lag a commit until the group's next entry.
+
+**Beat.** A signed snapshot of the fold, which needs a signer that is not the group. Stopping at the first member that answers, leader first when one is known: BF-43's first run had isolates whose hint was empty read a follower, and requests ran unpinned for up to 59 s after the undo's 201, until the next entry. A follower `/view` that waits for a read-index round, which costs the leader a round per isolate refresh.
+
+**Evidence.** `a_replica_replays_the_group_from_any_member_and_never_moves_backward` and `a_replica_refuses_another_installs_or_a_tampered_history` (`crates/release/src/tests/group.rs`, "The cached view (M5-WP2)"); plants 0 to 2 in `tests/m5/plant_wp2.py`; BF-43 runs 1 and 2 (`tests/m5/results/m5-wp2.md`).
+
+**Flip.** A `Release` log too long to replay on a cold isolate inside VIEW_CALL_MS, which would need a snapshot the anchor can check.
+
+#### When a request waits on the view
+
+**Decision.** `Freshness::need`: a busy isolate refreshes beside its requests at POINTER_TTL - RETRY_MS (4 s); a request waits, at most VIEW_CALL_MS (1 s) from its arrival, only when the view is missing or POINTER_TTL old and the last refresh did not fail; once a refresh has failed, or while one beside requests has hung for under ABANDON_MS (4 s), no request waits, and the refresh is retried every RETRY_MS beside them.
+
+**Why.** BF-43 needs every request pinned within POINTER_TTL of the undo, and BF-8 needs no request blocked on a blackholed group. A refresh at the TTL itself would leave requests between TTL and the refresh's answer on an old view.
+
+**Beat.** Waiting on every refresh (BF-8's blackhole would hold every request 1 s). Never waiting (a cold isolate's first requests would carry no pin for up to a round trip after a pin, BF-43's tail).
+
+**Evidence.** BF-43 run 2 (every request pinned by +3.2 s) and BF-8 (168,705 requests through a 601 s blackhole, p99 73 ms, none blocked), `tests/m5/results/m5-wp2.md`; `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group`; plants 9 to 11. It gives a cold isolate nothing to keep: BF-8's isolates started during the blackhole served unpinned (`decisions/OPEN-QUESTIONS.md`, R20).
+
+**Flip.** A hosted run where an isolate's first request after an idle period waits its full second on a group that answers slowly but does answer, or an operator decision on R20 that cold isolates wait for the pins. R20 was decided for a copy outside the group instead ("A copy of the `Release` group's entries outside the group", below).
+
+#### A pointer undo moves the script's deployed release
+
+**Decision.** A committed `EdgePointer` (or other pointer) undo sets `deployed[script]` to (the rolled release, the pin), so the next roll of that script keeps the pin beside its new release, and `DropsUndoVersion` judges against the pin. `roll_steps` bounds an `EdgeRoll` to 4 `IntentStep`s and the 1%-then-100% rolls to 2 (`Refusal::PastLastStep`), and a `FrontRoll` with an undo is refused.
+
+**Why.** After an undo, `graft-ops` deploys the pin at 100% (Shape, `Rollback`), so the release the next roll keeps is the pin, not the one the undo left. A step past `ROLL_STEPS` would record progress no deployment made. `graft-front` is the swap mechanism and has no pin of its own ("Downtime", `graft-front` and `graft-ops`).
+
+**Beat.** Leaving `deployed` at the rolled release, under which BF-8's refused roll would have been accepted.
+
+**Evidence.** BF-8's refused `EdgeRoll` hosted; `the_next_roll_of_the_pinned_script_clears_the_pin_and_keeps_the_pinned_release` and `rolls_take_only_their_roll_steps_and_a_front_roll_carries_no_undo`; plants 3 to 6. `graft_front_alarms_only_when_a_pinned_call_ran_another_version` and plants 7 and 8 cover the alarm and the override header.
+
+**Flip.** Edge deployments that keep more than two versions.
+
+#### An uncommitted `StaleMode`, and how members serve it
+
+**Decision.** The edge commits a `StaleMode` for at most 10 s; on a 503 it verifies the flag against its view (`verify_stale`: the customer key alone, this install, no parent, `until` ahead) and writes it to every member's `release_pending` row, each member verifying against its own applied `Keys`, and answers 202 `{pending, of, rows}`. Isolates read the rows with the view, verify them again, and honor a flag until min(`until`, earliest arrival + STALE_MAX). A covered non-`Release` member answers `/read` from `stale()` with `"stale": {"until"}` and `/commit*` with `{"error": {"stale": {"until"}}}`. `GRAFTYARD_STALE_MAX_MS` (test-faults only) lowers STALE_MAX so a hosted run sees the bound end a flag.
+
+**Why.** "A `StaleMode` that cannot commit is written to every reachable member's `pending` row and verified against the cached `Keys`" (`build/BUILD-PLAN.md`, M5-WP2). The earliest arrival bounds a flag replayed later to a second member. A write answered as an error, not a missed call, returns at once instead of being resent for a minute.
+
+**Beat.** Committing the flag through another group (it is the `Release` group's own outage). Honoring from the latest arrival, which lets a replay extend it.
+
+**Evidence.** BF-48 hosted; `an_uncommitted_stale_mode_takes_only_the_customer_key_and_a_future_until`, `an_uncommitted_flag_is_honored_until_until_and_never_past_stale_max_after_its_arrival`, `a_committed_stale_mode_is_honored_until_its_until`, `a_flag_covers_only_its_scope`; plants 12 to 20. The edge's signer precheck: `the_edge_prechecks_signers_against_its_cached_keys`, plants 21 and 22.
+
+**Flip.** A pending flag that a member could not verify because its `Keys` lagged the edge's, which would need the edge to send the `Keys` entry with it.
+
+#### A copy of the `Release` group's entries outside the group
+
+**Decision.** Every `Release` member, on the alarm right after it applies entries and on restore, writes the signed entries it applied, with their entry times and positions, to a copy in the `Release` chain's own `MemberRegistry` object on its site (`registry#36`, route `/release_copy`; `workers/site/src/release.rs`, `copy`; `workers/site/src/registry.rs`). The copy only grows: a write adds positions it lacks and changes nothing past a gap. A refresh that requests wait for, on an isolate that holds no view or one idle past POINTER_TTL, also reads every site's copy, for at most `COPY_MS` (500 ms), and takes one only through `Replica::adopt`: every entry it lacks passes `check` against the isolate's own anchor or none is taken, and a copy no longer than what the isolate holds adds nothing. The waiting requests go out when the group answers or when every copy has answered, so they carry the longest copy; a cold request waits at most `COPY_MS` from arrival and an idle one at most VIEW_CALL_MS, then goes out with what is held, unpinned if nothing came. The refresh goes on beside later requests, so the group's view replaces the copy once a member answers (operator decision on R20, option 1, 2026-11-14).
+
+**Why.** BF-8 run 2 failed "requests keep the last pointers" only on isolates that started during the blackhole: the 18 started before held the pin on 15,451 of 15,451 requests, and of the 126 started during it, 123 held no view and served 122,791 of 153,254 requests unpinned, 1,214 of them on N+2 (`tests/m5/results/m5-wp2.md`). The registry is an existing per-site class that every script with the group's bindings already reaches, and the site fault and a blackholed group do not take it down, so it is not a new failure domain. The row is the committed entries themselves rather than a summary of the pins, because pins derive from many entries (a later intent clears one), and only the signed history lets an isolate check the copy against its anchor as it checks a member's page.
+
+**Beat.** Releasing the requests on the first copy taken, and reading copies only on an isolate that holds no view (BF-8 run 3: a follower site's copy of the idle group lagged the leader's by one entry, so 159 requests on isolates started during the blackhole went out unpinned in their first 1.4 s, and six isolates idle from BF-43 to BF-8 kept a view without the pin through the whole blackhole, 4,059 requests). Cold requests waiting for the group (option 2): breaks "no request waits on the group". Narrowing BF-8's row to isolates started before the blackhole (option 3): a substitution. A new Durable Object class or store for the copy: a new failure domain. A binding or variable carrying the last pin: a new script version per pin, which a site day must ship.
+
+**Evidence.** `a_cold_isolate_takes_a_sites_copy_whole_and_an_older_copy_never_rolls_its_view_back` and the cold case of `a_view_is_refreshed_before_pointer_ttl_and_no_request_waits_on_a_failing_group` (`crates/release/src/tests/group.rs`); plants 2 and 3 in `tests/m5/plant_wp2.py`. BF-8 run 4, 601 s blackhole, as written (`tests/m5/results/m5-wp2.md`): 200,416 of 200,416 requests answered 200 and carried the pin, all on N, p99 56 ms, max 1,060 ms. The 37 isolates started before the blackhole pinned 33,642 of 33,642; the 240 started during it pinned 166,774 of 166,774, each minute of starts from 0 to 9 at 100%. Every one of the 277 took a site's copy (sites 0 and 2), read in 81 ms at p50 and 139 ms at most. Cold-start requests (an isolate's first 600 ms) were 28 ms at p50, 508 ms at p99, 674 ms at most, under `COPY_MS` plus the request. BF-8 run 2 for comparison: 15,451 of 15,451 pinned on isolates started before, 30,463 of 153,254 on the 126 started during. Run 3, with the first copy releasing the wait and idle isolates reading none: 159 of 151,717 unpinned on cold isolates and 4,059 on six idle ones.
+
+**Flip.** Copy reads that miss `COPY_MS` on more than 1% of cold isolates while a registry answers (run 4's slowest was 139 ms of 500), which would raise the bound; a `Release` log too long for one registry read, which would need a signed snapshot; or a fault class that takes every site's registry with the members, which leaves the gap R20 named.
+
+#### The run stands in for `graft-ops`'s executor
+
+**Decision.** M5-WP3 builds `graft-ops` executing intents. Until then BF-43 and BF-8 deploy each split with `wrangler versions deploy` from the orb (the ops path) and commit the executor-signed `IntentStep` and `IntentDone` with a key the run holds. The edge versions N, N+1, and N+2 are three uploads of the same build with a distinguishing variable.
+
+**Why.** The rows test the request path: a pointer read by `graft-front` with no API call. Who deploys the split does not change what a request sees.
+
+**Beat.** Waiting for M5-WP3, which would leave the pointer path untested hosted until then.
+
+**Evidence.** `tests/m5/wp2-hosted.sh`; `tests/m5/results/m5-wp2.md`.
+
+**Flip.** M5-WP3's gate, which reruns BF-43 with `graft-ops` executing.
+
 ### M4-WP2's hosted half, as built (2026-11-13)
 
 #### M4-WP2's consumers run in band on the leader alarm
@@ -3333,6 +3407,42 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.
 
+### `memory-budgets` (1): a leader keeps resolved tickets by bytes and age, 2026-11-14
+
+**Decision.** `Lead::done`, the resolved tickets a leader keeps for a late `outcome`, holds at most DONE_KEEP (4,096) of them, DONE_BYTES (8 MB) of the bytes their commands carry that no event stores (`encoded_len` less `stored_len`), and none older than OUTCOME_KEEP (15 s). `outcome` for a ticket pruned from there answers `NotLeader` naming the same leader; the edge then asks `outcome_by_request`, which answers a committed command from its `request` row through `outcome::replay`, so `Acked` is still built only inside `outcome`.
+
+**Why.** An issue or merge command's outcome keeps a copy of its reply render, about 10 KB of the owner's Authz fold as hex plus logins, and nothing counted it. With a render shaped like m3org's, 8,192 issue commands left 60.6 MB more of a leader's live heap than the same commands without renders, flat from 4,096 on [measured, native allocator]. On B0-33 run 2 site 0's wasm heap climbed from 9.7 to 95.9 MiB in about 90 s and stayed there to its reset, while memSplit's counted buffers stayed under 10 MB [measured, LM-1 round 17, memguard]. That the renders are that heap is an inference: wasm32 values are smaller than native ones.
+
+**Beat.** Dropping the render from the outcome: the edge renders the reply from it, so the reply bytes would change. A lower DONE_KEEP: a burst of small commands would lose outcomes an edge still asks for, while big ones would still fill the heap.
+
+**Evidence.** `thousands_of_rendered_issue_outcomes_hold_about_done_bytes_of_the_leaders_heap` (`crates/git/tests/done_memory.rs`): 11.3 MB held by the renders here against 60.6 MB on main (its bound is DONE_BYTES times a `Value`'s 1.5 overhead). `a_late_outcome_after_its_ticket_was_pruned_is_answered_from_the_request_row` (`crates/raft/tests/scenarios.rs`) asks once past OUTCOME_KEEP and once past DONE_BYTES, and gets `NotLeader` naming the leader, then the committed index from the row; it fails with the age and byte rules removed. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** An edge asking `outcome` for a ticket more than 15 s after it resolved, or `outcome_by_request` answering `unknown` for a committed command.
+
+### `memory-budgets` (2): a leader bounds the AppendEntries bytes alive on its calls, 2026-11-14
+
+**Decision.** A leader counts the entries' bytes on each AppendEntries call it sent, from the send until the call's answer, an error, or the host's new `call_ended(to, round)` input, which the host sends when it stops awaiting the call (answered, failed, or LATE_LIMIT past its deadline) and when a message held for a learner leaves in that learner's own response. It sends a call only while the peer stays within PEER_OUT_MAX (2 MB), the learners together within LEARNERS_OUT_MAX (4 MB), and every peer within OUT_MAX (8 MB). A voter with no call alive always gets one. An unreported call stops counting after OUT_KEEP (12 s). Rounds never repeat within a boot, so an earlier leadership's calls stay keyed apart. No wire enum changes.
+
+**Why.** Nothing bounded the sum. The host awaits a missed call for LATE_LIMIT (10 s) while the core resends it at once and on each tick and pipelines up to PIPELINE more. m3f's new leader sent each voter 10.7 to 11.2 MB in its first minute against an 8 MB log, and B0-33's new leaders held 58.3 MB of call bodies and 42.9 MB of messages for learners before their isolates reset [measured, LM-1 round 17 and m3fr3].
+
+**Beat.** A shorter LATE_LIMIT: late answers are what let a far voter catch up (F43). Fewer resends: a missed call must still be retried at once for commit latency.
+
+**Evidence.** `a_silent_follower_holds_at_most_peer_out_max_of_the_leaders_calls`: with 1 MB entries and one silent voter, at most 1.0 MB alive to it against 10.0 MB without the budget, while the other voter commits all 40. `a_new_leader_catching_up_silent_learners_stays_within_out_max`: a new leader catching up 8 learners that answer 3 s late keeps 3.0 MB alive to them against 24.0 MB without it. `a_silent_follower_costs_the_commit_rate_nothing`: 400 commands commit in the step they are admitted, with one voter silent as with none. `tests/m0/results/memory-budgets.md`.
+
+**Flip.** A hosted run where a healthy voter or learner falls behind with its peer's bytes at PEER_OUT_MAX, or a leader that held a call back past OUT_MAX while a quorum was answering.
+
+### `memory-budgets` (3): a member sheds reads past ANSWER_BYTES_MAX of distinct answer bytes in flight, 2026-11-14
+
+**Decision.** Every member, leader, follower, or learner, counts the distinct bytes of read answers still streaming out of it, an answer that many reads share (`family::dump_bytes`, `shared_answer`) counted once by the address of its shared bytes. While they reach ANSWER_BYTES_MAX (16 MB), any new read is shed `overloaded`, which the edge takes to the next member without `suspect`.
+
+**Why.** READS_MAX (256) and HEAVY_READS (16) cap reads by count, not by bytes. A new leader had 22.9 MB of answers in flight one second after it won and reset 18 s later, and B0-33's leaders 26 to 30.5 MB [measured, m3fr3 and LM-1 round 17]. Counting a shared answer per read would shed a learner streaming one 1 MB dump to 16 readers, which `learner-dumps` showed costs 74% of reads.
+
+**Beat.** A lower READS_MAX: narrow reads of a few KB would shed long before any memory mattered. Counting per read: see above.
+
+**Evidence.** `distinct_answer_bytes_past_the_cap_shed_and_a_shared_answer_counts_once` (`workers/site/src/member.rs`): 40 reads of one 1 MB dump count 1 MB and serve; 15 more distinct answers reach 16 MB and shed a learner's read and the leader's; the cap lifts as they finish.
+
+**Flip.** A hosted run whose reads shed at ANSWER_BYTES_MAX with the isolate's memory well under the limit, or an isolate reset with answers under it.
+
 ### `prsync-first-once`: a `PrSync` attempt ends at `FIRST_FOR`, and a test merge shed after waiting `TURN_WAIT_MS` in line, 2026-11-14
 
 #### An attempt ends at `FIRST_FOR` in the invocation that runs it, and the leader waits for its answer
@@ -3358,6 +3468,22 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** The same test: of the 30 merges in line, those that waited past 10 s were shed when their turn came, and no merge ran after waiting longer (`wait_max_ms` at most `TURN_WAIT_MS`). `tests/firstonce/plant.py` mutants 1 to 3 and 7. `TURN_WAIT_MS` is checked at compile time to stay under `FIRST_FOR_MS - COMMIT_RESERVE_MS` and `GET_COALESCE_MS`.
 
 **Flip.** A hosted B0-35 where `late` sheds most head-push merges while the budget is far from spent. That would make `TURN_WAIT_MS` too short for the shard's merge wall time, or show that merges should run more than one at a time.
+
+### `pool-warm`: the step up in k is reserved and warmed ahead, commits only to caught-up slots, and a lapsed slot is torn down, 2026-11-14
+
+LM-1's B0-34 on `graft-m2b` m29 held k 1 on all five networks for 900 s: no pool shard of the 13 that exist ran a container, both warm sites' ledgers held no lease, and nothing warmed a pool shard before a grant (`tests/am1/results/lm1-memory.md`, round 18c). DESIGN, Shape, `HOT_POOL`, and Costs say idle pool shards keep hot networks warm so a step up in k needs no rehydrate, so this is building to the design, not a new cost.
+
+**Decision.** From the first `NetworkLoad` report above `FANOUT_UP`, the network's leader asks both warm sites' ledgers for one pool slot past the k - 1 it serves (`graftyard_git::pool_reserve`) and, after every ask, sends each slot it holds a pool warm (`POST /catchup?warm=pool`), which starts a stopped pool shard and catches it up but is not a request (`Caller::PoolWarm`, `touch: false`). A step commits only when every slot it would serve from on both warm sites answered its last pool warm 200 (`graftyard_git::warm_step`); a step still cold at `FANOUT_UP_FOR` restores the hysteresis to before that report (`LoadReports::step_waited`), so the high line keeps its start and the step commits at the first report after the slot is caught up. Below the line a held reservation is given back. A slot a lease gives up, by lapsing past `LOAD_STALE` or by an ask for fewer, is handed once to the ledger object's heartbeat (`PoolLedger::beat`), which calls `/teardown` on it unless another lease took it. First shards keep their rule: a warm catch-up reaches only a running container.
+
+**Why.** Granted slots alone would still pay one cold rehydrate at each step, and a step committed to a cold slot sends pushes to a shard that answers `warming` for the whole rehydrate, 32 minutes for B0-34's monorepo before stored-pack indexes (round 18b). A pool shard nobody starts never becomes warm, so its warm must start it; tearing it down when its lease goes keeps an idle group from billing it, which is why first-shard warms start nothing.
+
+**Cost check.** DESIGN, Costs: "The tables price that as the pool of 7 per site running on both warm sites for a 9-hour working day, warm only for networks hot in the last hour ... The line adds $433 a month to the default at 2,000 developers and $217 to `Solo`." This runs at most the slots both ledgers grant, at most 7 per warm site and `owner_share` (6) per owner, only while the network's load is above the up line or k is above 1, plus `LOAD_STALE` (3 min) until the lease lapses and one `LEDGER_BEAT` (45 s) until the teardown. A reservation adds one slot per hot network for at most `FANOUT_UP_FOR` plus the wait for it to catch up. That stays inside the priced envelope, so `scripts/cost.py` is unchanged.
+
+**Beat.** Warming only granted slots: the first step still waits on a rehydrate. Committing the step at `FANOUT_UP_FOR` whatever the slot's state: a cold slot answers `warming` to every push forwarded to it. Letting a pool warm `touch` its shard: `WARM_FOR` would hold it a day after its lease lapsed. Starting first shards on warm too: it would bill idle groups (`tests/am1/results/idle-shards.md`); B0-32's never-started first shard is G8.
+
+**Evidence.** `the_step_up_is_reserved_ahead_and_never_commits_to_a_cold_slot` and `a_lapsed_lease_tears_its_slots_down_once` in `crates/git/tests/agent_load.rs`; `only_a_clients_call_starts_a_shard_or_keeps_it_warm` in `crates/git/tests/shard.rs`; plants 86 to 90 in `tests/lm1mem/plant.py`.
+
+**Flip.** A hosted B0-34 whose pool warms keep k from stepping because rehydrate outlasts the load's high line, or pool shards that bill outside the hot hours `cost.py` prices.
 
 ### `narrow-builds` (1): a list's selection pages from `issue_order`'s keys and reads only the page's items, 2026-11-14
 
