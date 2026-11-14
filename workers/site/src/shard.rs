@@ -103,7 +103,7 @@ const ALARM_HOLDS: std::time::Duration = std::time::Duration::from_secs(600);
 /// Storage key: a catch-up is running or was cut off, with the record it reads the group through.
 const WARMING_KEY: &str = "warming";
 /// The container's read-only routes for the web app (`containers/git/server/ui.go`), forwarded as `/ui/<route>`.
-const UI_ROUTES: [&str; 7] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits"];
+const UI_ROUTES: [&str; 8] = ["resolve", "tree", "blame", "diff", "compare", "readme", "commits", "blob"];
 
 /// The shard container's instance type when the site sets no `SHARD_INSTANCE`: the 50-developer tier's
 /// (`design/DESIGN.md`, Shape, `HOT_POOL`). A site day sets the tier's size, `standard-4` at 2,000 developers, which

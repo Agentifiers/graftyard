@@ -105,6 +105,8 @@
 //	                                 .txt, README, then the first other README.* by name, all case-insensitive):
 //	                                 {"name","path","sha","size","text"}. 404 when there is none, 422 over 1 MiB or
 //	                                 binary
+//	GET  /ui/blob?net=N&commit=C&path=P  regular file P (not "", a symlink, or a directory): {"path","sha","size",
+//	                                 "text"}. 404 when it is not a regular file, 422 over 1 MiB or binary
 package main
 
 import (
@@ -2161,6 +2163,7 @@ func mux() *http.ServeMux {
 	m.HandleFunc("GET /ui/compare", handleUICompare)
 	m.HandleFunc("GET /ui/commits", handleUICommits)
 	m.HandleFunc("GET /ui/readme", handleUIReadme)
+	m.HandleFunc("GET /ui/blob", handleUIBlob)
 	return m
 }
 

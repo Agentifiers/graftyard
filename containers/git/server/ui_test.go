@@ -430,6 +430,29 @@ func TestUIReadme(t *testing.T) {
 	}
 }
 
+func TestUIBlob(t *testing.T) {
+	s, wt, push := uiRepo(t)
+	c := commitMsg(t, wt, map[string]string{".github/workflows/ci.yml": "on: push\njobs: {}\n",
+		"src/main.rs": "fn main() {}\n", "logo.bin": "\x89PNG\x00\x01"}, "one")
+	push()
+	var o struct {
+		Path, Sha, Text string
+		Size            int64
+	}
+	if code, body := uiGet(t, s, "/ui/blob?net=7&commit="+c+"&path=.github/workflows/ci.yml", &o); code != 200 {
+		t.Fatalf("ci.yml: %d %s", code, body)
+	}
+	if o.Path != ".github/workflows/ci.yml" || o.Text != "on: push\njobs: {}\n" || o.Size != 18 ||
+		o.Sha != run(t, wt, "", "rev-parse", c+":.github/workflows/ci.yml") {
+		t.Fatalf("ci.yml: %+v", o)
+	}
+	for path, code := range map[string]int{"src": 404, "nope": 404, "logo.bin": 422, "-x": 400, "": 400} {
+		if got, body := uiGet(t, s, "/ui/blob?net=7&commit="+c+"&path="+path, nil); got != code {
+			t.Fatalf("blob %q: %d %s, want %d", path, got, body, code)
+		}
+	}
+}
+
 func TestUICommits(t *testing.T) {
 	s, wt, push := uiRepo(t)
 	commitMsg(t, wt, map[string]string{"f": "0\n"}, "fork")

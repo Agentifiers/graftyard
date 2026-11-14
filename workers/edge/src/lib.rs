@@ -46,6 +46,7 @@ use serde::Deserialize;
 use serde_json::json;
 use worker::*;
 
+mod actions;
 mod activity;
 mod agents;
 mod api;
@@ -2418,6 +2419,18 @@ async fn fetch(mut req: Request, env: Env, ctx: Context) -> Result<Response> {
     #[cfg(feature = "test-faults")]
     if path.starts_with(bed_rows::PREFIX) {
         return bed_rows::serve(&c, &mut req, &path).await;
+    }
+    // The Actions run service and the live-log viewer (`actions`).
+    if let Some(rest) = path.strip_prefix(actions::SERVICES) {
+        return actions::serve(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(actions::VIEWER) {
+        return actions::viewer(&c, req, rest).await;
+    }
+    if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX)
+        && let Some(r) = actions::graftyard_route(&c, &mut req, rest).await?
+    {
+        return Ok(r);
     }
     if let Some(rest) = path.strip_prefix(graftyard_api::agents::PREFIX).filter(|r| r.starts_with('/'))
         && graftyard_api::agents::route(rest).is_some()

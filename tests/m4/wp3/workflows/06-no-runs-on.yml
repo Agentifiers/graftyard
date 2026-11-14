@@ -1,0 +1,5 @@
+on: push
+jobs:
+  a:
+    steps:
+      - run: x

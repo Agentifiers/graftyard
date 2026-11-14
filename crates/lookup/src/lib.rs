@@ -106,11 +106,14 @@ fn learn(chain: ChainId, nl: &Value) {
     let Some(c) = nl.get("config").filter(|c| !c.is_null()) else { return };
     let index = c.get("index").and_then(Value::as_u64).unwrap_or(0);
     let Ok(cfg) = serde_json::from_value::<GroupConfig>(c["config"].clone()) else { return };
-    let p = match &cfg {
-        GroupConfig::Normal(p) | GroupConfig::Degraded { placement: p, .. } => p,
-        GroupConfig::Joint { new, .. } => new,
+    let (p, lost) = match &cfg {
+        GroupConfig::Normal(p) => (p, None),
+        GroupConfig::Degraded { placement, lost } => (placement, Some(*lost)),
+        GroupConfig::Joint { new, .. } => (new, None),
     };
-    let voters = p.voters().iter().map(|m| (m.site, m.do_name.to_string())).collect();
+    // A `Degraded` config's lost site has no voter (`graftyard_raft::quorums::voters`): its old member is not asked
+    // or reported to.
+    let voters = p.voters().iter().filter(|m| Some(m.site) != lost).map(|m| (m.site, m.do_name.to_string())).collect();
     let learners = p.learners().iter().map(|m| (m.site, m.do_name.to_string())).collect();
     KNOWN.with(|k| {
         let mut k = k.borrow_mut();
@@ -121,6 +124,19 @@ fn learn(chain: ChainId, nl: &Value) {
             e.config_index = index;
         }
     });
+}
+
+/// Whether a member's `NotLeader` naming no leader says nothing about the group: the member says it was removed
+/// (`meta.removed`, its committed config no longer names it), or its config is older than the one this isolate holds,
+/// so it has not heard the group since. Such an answer is followed by its config, never reported with `suspect` as a
+/// leaderless group (B0-32 m3fr2: a replaced voter at config index 3, against the group's 9, drew 72 reports at a
+/// leader in term 2).
+fn stale_answer(chain: ChainId, v: &Value, nl: &Value) -> bool {
+    if v.pointer("/meta/removed").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
+    let index = nl.pointer("/config/index").and_then(Value::as_u64).unwrap_or(0);
+    KNOWN.with(|k| k.borrow().get(&chain).is_some_and(|e| index < e.config_index))
 }
 
 fn learn_leader(chain: ChainId, v: &Value) {
@@ -348,13 +364,16 @@ pub async fn call_opt(
                 }
             };
             if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
-                term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
+                let stale = stale_answer(chain, &v, nl);
+                if !stale {
+                    term = term.max(nl.get("term").and_then(Value::as_u64).unwrap_or(0));
+                }
                 learn(chain, nl);
                 if nl.get("config").is_none_or(Value::is_null) {
                     last = format!("{name}: no config");
                     continue;
                 }
-                if nl.get("leader").is_none_or(Value::is_null) {
+                if nl.get("leader").is_none_or(Value::is_null) && !stale {
                     leaderless.get_or_insert(Target { site: s, do_name: name.clone() });
                 }
                 // Follow a named leader first, then the config's voters.
@@ -955,13 +974,19 @@ pub async fn commit_hedged(
             }
             continue;
         };
-        term = term.max(v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0));
-        if let Some(nl) = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader")) {
+        let nl = v.pointer("/error/notLeader").or_else(|| v.pointer("/done/notLeader"));
+        let stale = nl.is_some_and(|nl| stale_answer(chain, &v, nl));
+        if !stale {
+            term = term.max(v.pointer("/meta/term").and_then(Value::as_u64).unwrap_or(0));
+        }
+        if let Some(nl) = nl {
             learn(chain, nl);
             forget_leader(chain);
             let named = nl.get("leader").and_then(Value::as_u64);
+            // A removed or stale member's answer is a lookup again, not a leaderless group.
             target = match named {
                 Some(_) => None,
+                None if stale => None,
                 None => leaderless(b, chain, &t, term, colo, &mut tries).await,
             };
             note(json!({ "notLeader": t.site.0, "leader": named, "next": target.as_ref().map(|t| t.site.0) }));
@@ -1762,6 +1787,39 @@ mod tests {
         assert!(k.learners[0].1.contains("#l0"), "{:?}", k.learners);
         learn(chain, &nl(4, p(1, &[])));
         assert_eq!(KNOWN.with(|k| k.borrow().get(&chain).unwrap().learners.len()), 2, "an older config is ignored");
+    }
+
+    /// B0-32 m3fr2's retired voter: a `NotLeader` naming no leader from a member that says it was removed, or whose
+    /// config is older than the one this isolate holds, is no evidence the group is leaderless; one from a member at
+    /// the current config is. A `Degraded` config's lost site is no voter to ask.
+    #[test]
+    fn a_removed_or_stale_members_answer_is_not_a_leaderless_group() {
+        let chain = ChainId::Repo(graftyard_types::RepoId(graftyard_types::DbId(14)));
+        let m = |s: u8, g: u32| graftyard_types::Member::new(chain, SiteId(s), graftyard_types::MemberKind::Full, s, g);
+        let place = |gen1: u32| json!({ "voters": [m(0, 1), m(1, gen1), m(2, 1)], "learners": [], "home": 0, "generation": gen1 });
+        let nl = |index: u64, config: Value| json!({ "term": 2, "leader": null, "config": { "index": index, "config": config } });
+        let answer = |nl: &Value, removed: bool| {
+            let mut v = json!({ "error": { "notLeader": nl } });
+            v["meta"] = if removed { json!({ "term": 2, "removed": true }) } else { json!({ "term": 2 }) };
+            v
+        };
+        let current = nl(9, json!({ "normal": place(2) }));
+        let old = nl(3, json!({ "degraded": { "placement": place(1), "lost": 1 } }));
+        // Nothing learned yet: an old member's answer counts as stale only by its own `removed`.
+        assert!(!stale_answer(chain, &answer(&old, false), &old));
+        assert!(stale_answer(chain, &answer(&old, true), &old));
+        learn(chain, &old);
+        let k = KNOWN.with(|k| k.borrow().get(&chain).cloned()).unwrap();
+        assert_eq!(k.voters.iter().map(|(s, _)| s.0).collect::<Vec<_>>(), [0, 2], "the lost site is no voter");
+        learn(chain, &current);
+        assert!(KNOWN.with(|k| k.borrow().get(&chain).unwrap().voters.iter().any(|(_, n)| n == "repo:14#2#f1")));
+        assert!(stale_answer(chain, &answer(&old, false), &old), "index 3 against the 9 held");
+        assert!(!stale_answer(chain, &answer(&current, false), &current), "the current config's answer counts");
+        assert!(!stale_answer(
+            chain,
+            &answer(&nl(10, json!({ "normal": place(2) })), false),
+            &nl(10, json!({ "normal": place(2) }))
+        ));
     }
 
     /// Only a value from a follower is used. A follower that names the leader, sheds or is behind (`overloaded`), is

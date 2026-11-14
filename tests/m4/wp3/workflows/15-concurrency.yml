@@ -1,0 +1,13 @@
+on: push
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  A_1-x:
+    runs-on: {group: org/big, labels: [a, b]}
+    environment: ${{ github.ref_name }}
+    steps:
+      - run: x
+  2bad:
+    runs-on: x
+    steps: [{run: x}]

@@ -945,3 +945,48 @@ func handleUIReadme(w http.ResponseWriter, r *http.Request) {
 	jsonOut(w, map[string]any{"name": baseName(best.path), "path": best.path, "sha": best.oid, "size": best.size,
 		"text": string(content)})
 }
+
+// handleUIBlob is the text of regular file P at commit C, for the Actions trigger's workflow reads.
+func handleUIBlob(w http.ResponseWriter, r *http.Request) {
+	net, rp, ok := netParam(w, r, true)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	c, p := q.Get("commit"), q.Get("path")
+	if !hexRe.MatchString(c) || p == "" || !uiPath(p) {
+		fail(w, 400, "bad commit or path")
+		return
+	}
+	l := lock(net)
+	l.RLock()
+	defer l.RUnlock()
+	if commitOf(rp, c) == "" {
+		fail(w, 404, "no commit %s", c)
+		return
+	}
+	e, ok, err := entryAt(rp, c, p)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	// A symlink is a blob too, but its content is its target, not a file's text.
+	if !ok || e.typ != "blob" || e.mode == "120000" {
+		fail(w, 404, "%s is not a regular file at %s", p, c)
+		return
+	}
+	if e.size > blobMaxBytes {
+		fail(w, 422, "%s is over %d bytes", p, blobMaxBytes)
+		return
+	}
+	content, err := git(rp, nil, nil, "cat-file", "blob", e.oid)
+	if err != nil {
+		fail(w, 500, "%v", err)
+		return
+	}
+	if isBinary(rp, c, p, content) {
+		fail(w, 422, "%s is binary", p)
+		return
+	}
+	jsonOut(w, map[string]any{"path": p, "sha": e.oid, "size": e.size, "text": string(content)})
+}
