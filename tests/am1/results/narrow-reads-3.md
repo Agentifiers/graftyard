@@ -469,6 +469,11 @@ whichever order answers arrive in (`crates/raft/src/member/install.rs`). F67 rul
 every read failed past CAMPAIGN_DEADLINE leaves flight, and a batch unanswered for CALL_DEADLINE is resent. The leader's
 load is unchanged: the 50 ms floor still bounds a learner at 20 calls/s.
 
+Checks on the change (0b2b51cc, then merged with main 5c0f06f as 75bb312f): the full checks pass, `tests/nr3/plant.py`
+catches 27 of 27, the long sweep passes 2,000 seeds of 10,000 steps (longest healthy-quorum stretch with no request
+completing: 15.7 s, seed 11431), and Porcupine finds every history linearizable: plain 156,325 operations, gray
+2,230,496, live 5,927,243 [measured].
+
 Rows: `tests/nr3/rows/a1-b0-29-gate12.jsonl`, `run-gate12.status`, `lmem-gate12.jsonl`, `mem-gate12.json`,
 `egress-gate12.txt`, `fresh-gate12.jsonl`, `trace-gate12.json.gz`.
 
