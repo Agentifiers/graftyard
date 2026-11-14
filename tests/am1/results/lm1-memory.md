@@ -1945,3 +1945,81 @@ it is the queue's slot wait (1,151) behind a round of 746 ms, whose far leg read
 round's follower legs. B0-29 runs as the gate row (600 s) next, as the operator ordered.
 
 Cost $114.62 at 10:41Z (containers $46.80); the smokes' sweep "sweep ok" (6 torn down).
+
+### Round 16b: B0-29 gate row on m27 (repo 131334, run mwga2kd3, 2026-11-14)
+
+**Run.** `rows.sh m27r`, `ROWS="b0-29"`: fresh repo `fm27r-b029`, learners enam 4,000 / weur 2,000 / apac 2,000
+(8 of 8 caught up at commit 874 in 2.5 s), k 4 granted, 500 PRs opened before the window, 600 s from 10:50:43Z,
+standard-4, no redeploy mid-row. Raw: `tests/am1/raw/a1-b0-29-mwga2kd3.jsonl`, `tests/fanout/raw/terms-m27r29.jsonl`,
+`tests/fanout/raw/m27r29-legs.tar.xz` (`tests/fanout/legs.mjs`: every voter's and learner's raw `/stats` once a minute, the
+leader's every third minute).
+
+| B0-29 line (`build/BUILD-PLAN.md`) | m27 | verdict |
+|---|---|---|
+| Commit p99 at most 600 ms (fail over 1 s) | p50 360, **p99 774 ms** (n 10,825) | **miss** (between pass and fail) |
+| Merge p99 at most 2 s (fail: a queue merge over 10 s) | merge:only p99 1,608 ms (72 × 200, 8 × 409 base moved) | pass |
+| Zero `Stale` on distinct refs | 2,500 / 2,500 agent pushes ok (distinct refs), 0 `stale`; humans (20 shared refs) 38 `stale:race`, 1 `stale` | pass |
+| Leader under 600 req/s with zero feed polls | 120.8 req/s, 0 feed polls on the leader | pass |
+| API read p99 at most 2 s (fail over 5 s) | **p99 1,922 ms** (p50 471) | pass |
+| API reads at least 99% served | 115,772 of 115,834 = **99.95%** (62 × 503) | pass |
+| Leader changes | 0: term 2 on site 0 throughout; 0 `/suspect` | — |
+
+So B0-29 does not pass on m27: one line, commit p99, is 174 ms over; it does not fail (under 1 s). Every other line
+passes, including the API line on fixed main (round 16's s500 4.0 s was 180 s with no learner warm-up of reads;
+here 1.9 s over 600 s).
+
+**Commit split.** queue p99 484 (slot 462, post 208), round 336, confirm 58, apply 336. Near append (site 1) p99
+361, far (site 2) 457. 2,895 entries carried 10,005 commands, **3.46 per entry**. Entry bytes (the leader's
+confirm transactions): under 100 KB n 2,476, p50 5.8 KB, p99 96 KB; 100 KB to 1 MB n 419 (14%), p50 132 KB, p99 198
+KB; storage p99 60 and 52 ms, `gate` and `turn` 0. So the commit p99 is the slot wait (a command waits for the entry
+ahead, about one round) plus its own round, with the confirm small.
+
+**Admission over 600 s [measured, 60 samples].** Capacity 255 to 1,082/s (start 1,082, 377 at 596 s, as `cmdBytes`
+rose from 770 to 1,751 with human packs counting), `retryAfterS` 1 to 2 throughout, `agentQueued` at most 6, no
+`pressure`. `admittedBytes`: agent n 9,227, p50 509, p99 905 (no command over 10 KB); human n 1,598, p50 301, p99
+20,466 (packs). So admission does not drift into a bind over 600 s: narrow-reads-3's gate-12 queue p99 4,798 ms on
+82a0bf9 is gone on this shape (here 484). Leader wasm grew 28 → 92 MiB.
+
+**The near follower's AppendEntries leg, split [measured, `tests/fanout/legs.py`].** 1,601 matched calls to site 1
+and 1,774 to site 2 from the leader trace (AppendQueued, AppendIssued, AppendEnded) against each follower's `raftIn`
+rows (handler start, body ms, work ms) and trace (Stepped, Confirm):
+
+| leg (p50 / p99 ms) | near, site 1 | far, site 2 |
+|---|---|---|
+| whole call (issue → end, leader clock) | 166 / 406 | 223 / 483 |
+| in: issue → follower handler start (wire out + input queue; crosses clocks) | 58 / 293 | 87 / 339 |
+| body read | 11 / 112 | 19 / 199 |
+| step (decode, step, persist) | 0 / 0 | 0 / 0 |
+| output gate (work less step) | 0 / 0 | 0 / 0 |
+| follower storage confirm (`sync()`) | 0 / 0 | 0 / 0 |
+| back: reply wire (crosses clocks) | 95 / 282 | 114 / 326 |
+| in + back (skew cancels) | 151 / 374 | 200 / 457 |
+| bytes | 28.7 KB / 176 KB | 28.3 KB / 176 KB |
+| slowest 1% (mean): call, in, body, back | 489, 228, 23, 237 | 621, 226, 131, 264 |
+
+So the near leg is the wire, not the follower. The follower's step, output gate and storage confirm read 0 ms at p99
+(Workers' clock advances only across I/O, so a synchronous step reads 0: it is not long enough to delay the next I/O
+[inference from the clock rule]); body read is 112 ms at p99; the two wire legs are 374 ms together at p99. Which
+side of `in` is the follower's input queue is not separable without send timestamps on the follower's clock
+(narrow-reads-3's `x-graft-sent` / `x-graft-left`, trace kinds 20 and 21, branch 54a700a9) [unverified split]. Round
+16's s500 near p99 687 ms was 180 s with 4.6 commands an entry; here 361 ms (the whole-row `append:1`) over 600 s.
+
+**Reads by member [measured, `inbound /read` deltas over the window].** 102,440 member reads: learners 95.5%, voters
+4.5% (leader site 0 4.4%, followers 0.9% each).
+
+| member | site | reads | share |
+|---|---|---|---|
+| l7 | 0 (enam) | 42,309 | 41.3% |
+| l3 | 0 | 14,126 | 13.8% |
+| l0 | 0 | 12,720 | 12.4% |
+| l6 | 0 | 11,083 | 10.8% |
+| l5 | 2 (apac) | 7,346 | 7.2% |
+| f0 (leader) | 0 | 4,464 | 4.4% |
+| l4 | 1 (weur) | 3,485 | 3.4% |
+| l2 | 2 | 2,681 | 2.6% |
+| l1 | 1 | 2,410 | 2.4% |
+| f1 / f2 | 1 / 2 | 918 / 898 | 0.9% each |
+
+The four enam learners serve 78% (one of them 41%), so the spread is uneven inside a site; the API p99 held anyway.
+
+**Cost** $116.92 at 11:14Z (containers $47.04); the row cost about $2.29. Sweep "sweep ok" (5 torn down).
