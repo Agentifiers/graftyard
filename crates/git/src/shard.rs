@@ -388,6 +388,16 @@ pub fn warm_step(k: u8, next: u8, slots: [&[u16]; 2], warm: [&[bool]; 2]) -> u8 
     if ready(0) && ready(1) { next } else { k }
 }
 
+/// The pool shards a network keeps on each warm site after its leader asked for `want`, both ledgers granted up to
+/// `granted` (`granted_k`), and it committed `next` (`warm_step`): the k - 1 it serves, or with `reserve` one past
+/// it up to `want`; and while a step waits on cold slots (`next` < `granted`), every slot that step would serve from,
+/// so they stay leased and warm until it commits. Trimming a waiting step to `next` - 1 gave its slots back before
+/// they were warmed, so it never stepped (LM-1 m30: a forced k 4 on a fresh network kept k 1).
+pub fn pool_keep(want: u8, granted: u8, next: u8, reserve: bool) -> u8 {
+    let served = if reserve { want.min(next) } else { next.saturating_sub(1) };
+    if next < granted { served.max(granted - 1) } else { served }
+}
+
 /// The k a network's leader commits after asking both warm sites' ledgers for `want` - 1 pool shards. A step up goes
 /// to 1 plus the fewer pool shards either granted, so it never passes what both granted, and never below `k`. A step
 /// down is `fanout`'s alone: a grant short of `k` - 1 (a new warm site's ledger whose pool other networks already
