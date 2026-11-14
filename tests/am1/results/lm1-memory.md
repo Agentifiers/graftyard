@@ -2468,3 +2468,68 @@ finished in.
 **For the owner.** The fix is likely in `handleUploadPack`: kill the child, or drain its stdout, once the response write
 fails, and release the lock before `cmd.Wait`. It needs a test where a client cancels mid-stream and a later
 ingest-then-validate still completes. The pool-warming gap and `validate_streamed`'s single try are separate departures.
+
+### Round 19: B0-33 on m30b (main e8d69e4c, memory-budgets), stopped at 189 s by the 120 MiB guard (2026-11-14)
+
+**Deploy m30, then m30b.** lm1-memory 0f77352b = main e8d69e4c (memory-budgets: DONE_BYTES 8 MB, OUTCOME_KEEP 15 s,
+AppendEntries budgets 2 MB per peer, 4 MB learners, 8 MB total, ANSWER_BYTES_MAX 16 MB; M5-WP2; shard-cancel;
+pool-warm) plus this branch's instruments. New shard image `sha256:198f296c` (main's `containers/`), standard-4,
+NOROLL, test-faults. m30: sites a 5a970d51, b 6b2037c5, c a4d4c67d, edge 2e025e18. Full checks on the merge: 941
+tests, 0 failed (check_names and check_links only on `.worktrees/`).
+
+**The first try was skipped, a pool-warm bug.** Repo 131339's forced k 4 answered `stepped: false` with empty grants:
+`warm_step` correctly refused the cold step, then `Grant::ask` trimmed the grants to next − 1 = 0, so no slot stayed
+held, none was warmed, and the step could never commit (`fanout`'s own step up shared the path). Fix `pool_keep`
+(980daa4a here; branch `pool-keep` e017fbde, merged as main dc269249): a waiting step keeps the granted − 1 slots it
+would serve from. Test `a_waiting_step_keeps_its_cold_slots_until_they_warm` fails on main (k stays 1); three plants
+caught. m30b with it: sites a ba3f8469, b 3b78cae8, c 0953ce1d, edge 1ca30793, same image. Hosted, repo 131340's
+forced k 4 held grants [5,2,0] on sites 0 and 2, answered cold twice and stepped 1 → 4 at the third ask, 21 s after
+the first.
+
+**Run** `tests/fanout/b033.sh m30r33b`: repo `fm30r33b-b033` (131340), run `mwh1akmb`, 5,000 agents, 300 s from
+23:29:02Z, learners 8/8 caught up in 11.4 s, k 4. memguard (2 s, every voter) stopped the window at 23:32:11Z, 189 s
+in: site 1, leading, at 122.7 MiB.
+
+| B0-33 line (`build/BUILD-PLAN.md`) | m30b (189 s) | verdict |
+|---|---|---|
+| Human and merge-queue commit p99 ≤ 1 s | leader commit p99 4,126 ms (n 409, p50 3,179); `merge:only` p99 25.1 s (6 of 6 ok); `push:human` 14 ok of 121 (102 skipped at the cap), p99 172.6 s | fail |
+| ≥ 140 agent commands/s admitted (fail < 100) | 416 commands at the end leader (term 7 only); 2,560 agent pushes ok in 189 s = 13.5/s at the client | fail |
+| Zero leader changes | term 2 → 7: site 0 to 23:30:19, site 1 23:30:23 to 23:32:11, then sites 2, 0, 1, 2 within a minute | fail |
+| Zero `suspect` reports | 13,625 at the end leader | fail |
+| Every refusal `ng` or 429 `retry-after` | 503s: read gate `overloaded` 757 and `not leader` 58; git cache `no shard could check the pack` 589; 271 client timeouts | fail |
+
+**What memSplit showed.** The counted buffers stayed small while the wasm heap rose. At the stop, site 1's memSplit
+summed about 14 MB (log 7.9 MB, dump cache 2.06 MB, read answers 4.1 MB, member calls 0, held 0, statements 0) against
+122.7 MiB of heap; in the minute before, answers peaked at 4.1 MB and outgoing calls at 0.8 MB, so the memory-budgets
+caps were never near binding. What tracked the heap was the leader's count of admitted tickets not yet resolved
+(`inFlight.admitted`, a count, not bytes):
+
+| leader | heap MiB | admitted (max so far) |
+|---|---|---|
+| site 0, 23:29:05 → 23:30:17 | 6.3 → 73.6 | 26 → 969 |
+| site 1, 23:30:23 → 23:30:36 | 25.3 → 69.4 | 153 → 1,071 |
+| site 1, 23:31:58 → 23:32:06 | 82 → 122.7 | 1,071 → 1,225 |
+| site 2, 23:32:16 → 23:32:30 | 33.1 → 71.5 | 52 → 627 |
+
+Each admitted ticket keeps its whole command in `Core::admitted` until it resolves (`workers/site/src/host.rs`,
+`admitted: HashMap<Ticket, (RequestId, u64, Option<F::C>)>`, cloned at `member.rs` `let cmd = c.cmd.clone()`), so an
+agent push's inline pack (up to `INLINE_MAX_HOT`, 64 KB; offered mean pack 90 KB) is held there as well as in the log.
+1,225 tickets at up to 64 KB each is up to 78 MB, which with the counted 14 MB is the order of the heap. [inference:
+the admitted map's commands are the uncounted bytes; memSplit counts tickets, not their bytes, so this is not
+measured.] Commit p99 of 3 to 4 s at about 250 group commands/s offered keeps about 1,000 tickets open. This is not
+F71's admission lane (agent queue at most 493 commands, 3.97 MB, `admission` samples), and not the memory-budgets
+buffers. The wasm heap never shrinks: site 1 still read 124.7 MiB as a follower at 23:43Z.
+
+Site 0's instance reset at 23:30:19 to 23:30:30 (heap 73.6 → 12.4 MiB, status unanswered for 10 s) with no
+`exceeded its memory limit` event in Workers Logs (only canceled `/read`s and `/commit`s, and one `exception` each on
+`/raft` and `/commit` at 23:30:38); that reset is what started the leader churn.
+
+**Verdict.** B0-33 fails on m30b on every line. memory-budgets kept its own buffers small (answers at most 4.1 MB,
+calls at most 3.4 MB), but the leader's heap still climbs with open tickets, about 60 to 80 KB per admitted ticket by
+the table above. The next instrument is `inFlight.admittedBytes`, the sum of `stored_len` over `Core::admitted`;
+the fix candidates are dropping the command once the ticket is appended (keeping only what the id-block re-send
+needs) or capping admitted bytes with a fast `Full`.
+
+**Raw.** `tests/am1/raw/a1-b0-33-mwh1akmb.jsonl`; `tests/fanout/raw/memguard-m30r33b.{jsonl,err}`,
+`terms-m30r33b.jsonl`, `tsave-m30r33b.jsonl.xz`, `rows-m30r33b.status`; skipped try `rows-m30r33.status`. **Cost**
+$129.82 at 23:45Z (containers $49.63). Sweep "no shard container running".
