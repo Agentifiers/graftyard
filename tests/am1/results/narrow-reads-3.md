@@ -548,6 +548,39 @@ are shorter here, so part of gate 12's round trip was the queue that one batch i
 Rows: `tests/nr3/rows/a1-b0-29-gate14.jsonl`, `run-gate14.status`, `lmem-gate14.jsonl`, `mem-gate14.json`,
 `egress-gate14.txt`, `fresh-gate14.jsonl`, `trace-gate14.json.gz`.
 
+### Gate 15 on main 31d19c9: a miss by 19 ms, and the streak on this tree ends at 2
+
+Same tree and site day as gates 13 and 14. Repo 65560, window 10:44:51 to 10:54:51Z, torn down [measured]:
+
+| Line | Gate 15 | Gate 14 | Gate 13 |
+| --- | --- | --- | --- |
+| API p50 / p99, served | 365 / 2,019 ms, 99.89% (115,647 reads, 127 answered 503) | 314 / 1,477 ms, 99.99% | 499 / 1,575 ms, 99.96% |
+| Tier read at the edge, p50 / p99 | 337 / 1,896 ms (grant p99 900, build wait p99 100) | 286 / 1,402 ms | 466 / 1,438 ms |
+| Commit p50 / p99 | 409 / 2,249 ms (queue p99 2,058, round 349, confirm 89) | 539 / 2,168 ms | 411 / 1,638 ms |
+| merge:only p99 | 3,328 ms | 2,853 ms | 2,169 ms |
+| Leader | site 0, term 2 throughout | same | same |
+| Read-your-write | 150 of 150, 0 stale | same | same |
+
+A miss on the API line by 19 ms, so the streak on this tree is gates 13 and 14. The operator had already moved the line
+to a confirming streak on current main, which carries the admission pricing fix: before it, admission held agents to
+about 30 commands/s, which also lightened read load on these three gates.
+
+**Leader memory.** 84 MiB by the analytics peak, under the 100 MiB stop line; 46.3 MiB by `/stats`, with `memSplit` at
+that peak: log 8.0 MB, read caches 1.56 MB, held 0, call bodies 45 KB (at most 317 KB, held at most 149 KB). The
+leader answered every `ReadIndex` in the same ms, its ticker never ran late, and its confirms were p99 119 ms.
+
+**Where the tail came from.** Routing put half of all reads on one learner: l7 50.2%, l6 23.3%, l3 12.6%, l0 7.5%, and
+1.1 to 1.8% on each weur and apac learner. l7's grant p99 was 747 ms, but it shed 54 reads and answered 720 late. The
+far learners' grant p99 was 949 to 1,000 ms (`FOLLOWER_WAIT`) with 425 to 1,567 late each, so a read sent to one
+mostly comes back late and is retried. Per learner round trip (`tests/nr3/legs.py`, p50 / p90 / p99 ms): enam out
+19 to 44 / 110 to 210 / 220 to 388 and back 56 to 119 / 505 to 1,034 / 1,348 to 1,905; weur and apac back p99 1,395 to
+2,005. The back leg's tail is longer than on gate 14 (p99 309 to 518 on enam), on the same tree, so it varies from run
+to run with the leader's load rather than with the tree [measured; the cause of the variation is not measured, and
+this tree has no send timestamps to split wire from input queue].
+
+Rows: `tests/nr3/rows/a1-b0-29-gate15.jsonl`, `run-gate15.status`, `lmem-gate15.jsonl`, `mem-gate15.json`,
+`egress-gate15.txt`, `fresh-gate15.jsonl`, `trace-gate15.json.gz`.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
