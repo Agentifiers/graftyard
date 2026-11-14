@@ -252,6 +252,13 @@ MUTANTS = [
      '\t} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil {\n',
      '\t} else if _, err := io.CopyBuffer(w, stdout, make([]byte, 64<<10)); err != nil && false {\n',
      ['go', 'TestCancelledCloneReleasesTheLock']),
+    ('round 18c: a streamed pack goes to the home whatever its probe answers', EDGE_LIB,
+     '            (200, _) => return (site, tries),\n', '            (200, _) | (_, _) => return (site, tries),\n',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_streamed_pack_goes']),
+    ('round 18c: the last site is probed too, so a streamed pack can find no shard', EDGE_LIB,
+     '    let (last, rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in rest.iter()',
+     '    let (last, _rest) = sites.split_last().expect("validate_sites always holds the home site");\n    for (i, site) in sites.iter()',
+     ['cargo', '-p', 'graftyard-edge', '--lib', 'a_streamed_pack_goes']),
 ]
 
 ENV = dict(os.environ, PATH=os.path.expanduser('~/.cargo/bin') + ':' + os.environ['PATH'], CARGO_INCREMENTAL='0',
