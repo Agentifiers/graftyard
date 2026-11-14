@@ -943,7 +943,9 @@ impl<F: Family> Routes<F> {
             format!(r#","index":{index},"stages":[{},{}],"meta":{}}}"#, stages[0], stages[1], self.meta()).into_bytes();
         let headers = Headers::new();
         headers.set("content-type", "application/json")?;
-        Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, held))?.with_headers(headers))
+        let counted = host::Counted::new(&self.host.answer_bytes, value.len());
+        Ok(Response::from_stream(held_body(br#"{"value":"#.to_vec(), value, tail, (held, counted)))?
+            .with_headers(headers))
     }
 
     fn reply(&self, mut v: Value) -> Result<Response> {
@@ -1356,6 +1358,29 @@ impl<F: Family> Routes<F> {
         Response::from_json(&rows)
     }
 
+    /// The leader memory split the operator asked for on every gate run (narrow-reads-3, gate 13 on), in bytes: the
+    /// fold's rows buffered until their transaction runs and the isolate's read caches; the log entries in memory;
+    /// the messages held for learners' next calls; and in-flight bodies, the member calls sent and not yet ended,
+    /// the read answers still streaming, and the statements queued for the next transaction.
+    fn mem_split(&self) -> Value {
+        let core = self.host.core.borrow();
+        let (rows, row_bytes) = core.as_ref().map_or((0, 0), |c| F::buffered(&c.m.group_fold().fold));
+        let held = self.host.callers.borrow_mut().held_stats(false);
+        let (stmts, stmt_bytes) = self.host.queued();
+        json!({
+            "fold": { "rows": rows, "rowBytes": row_bytes, "caches": crate::family::cache_bytes() },
+            "log": core.as_ref().map(|c| c.m.log_bytes()),
+            "held": held.iter().map(|h| h.2).sum::<usize>(),
+            "inFlight": {
+                "calls": self.host.call_bytes.get(),
+                "answers": self.host.answer_bytes.get(),
+                "stmts": stmts,
+                "stmtBytes": stmt_bytes,
+                "admitted": core.as_ref().map(|c| c.admitted.len()),
+            },
+        })
+    }
+
     fn stats(&self, reset: bool, summary: bool) -> Result<Response> {
         let mut s = self.host.stats.borrow_mut();
         // `?summary=1`: percentiles in place of the sample arrays, and no trace, calls, or peers. A loaded leader's raw
@@ -1399,6 +1424,7 @@ impl<F: Family> Routes<F> {
                 "logBytes": self.host.core.borrow().as_ref().map(|c| c.m.log_bytes()),
                 "held": self.host.callers.borrow_mut().held_stats(reset).into_iter()
                     .map(|(s, n, b, peak, open)| json!([s.0, n, b, peak, open])).collect::<Vec<_>>(),
+                "memSplit": self.mem_split(),
             });
             let mut v = v;
             v["busyPages"] = json!(s.busy_pages);

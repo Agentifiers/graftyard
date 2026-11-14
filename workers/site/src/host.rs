@@ -619,6 +619,10 @@ pub struct Host<F: Family> {
     pub heavy_reads: Rc<Cell<u32>>,
     /// Reads of any kind in flight on this member, until their answer is sent (`crate::member::READS_MAX`).
     pub reads_in_flight: Rc<Cell<u32>>,
+    /// Bytes of the bodies of member calls this member has sent and not yet seen end, and of read answers still
+    /// streaming, each counted once per call or read though a shared answer is one copy (`/stats` `memSplit`).
+    pub call_bytes: Rc<Cell<usize>>,
+    pub answer_bytes: Rc<Cell<usize>>,
     #[cfg(feature = "test-faults")]
     down_until: Cell<u64>,
     /// Statements of inputs whose transaction has not run yet, in input order. Every flush runs all of them, so
@@ -680,6 +684,22 @@ pub struct Host<F: Family> {
     /// `set_drained` only when they change.
     #[cfg(feature = "test-faults")]
     drained: RefCell<Option<(String, BTreeSet<u8>)>>,
+}
+
+/// `n` bytes counted in a gauge for as long as this lives.
+pub struct Counted(Rc<Cell<usize>>, usize);
+
+impl Counted {
+    pub fn new(gauge: &Rc<Cell<usize>>, n: usize) -> Counted {
+        gauge.set(gauge.get() + n);
+        Counted(gauge.clone(), n)
+    }
+}
+
+impl Drop for Counted {
+    fn drop(&mut self) {
+        self.0.set(self.0.get().saturating_sub(self.1));
+    }
 }
 
 pub fn err(m: impl Into<String>) -> Error {
@@ -1234,6 +1254,8 @@ impl<F: Family> Host<F> {
             served_at: Cell::new(0),
             heavy_reads: Rc::new(Cell::new(0)),
             reads_in_flight: Rc::new(Cell::new(0)),
+            call_bytes: Rc::new(Cell::new(0)),
+            answer_bytes: Rc::new(Cell::new(0)),
             #[cfg(feature = "test-faults")]
             down_until: Cell::new(0),
             queue: RefCell::new(Vec::new()),
@@ -1717,6 +1739,17 @@ impl<F: Family> Host<F> {
         let _ = rx.await;
     }
 
+    /// The statements queued for the next transaction, and roughly their bytes (`/stats` `memSplit`).
+    pub fn queued(&self) -> (usize, usize) {
+        let q = self.queue.borrow();
+        let val = |v: &SqlStorageValue| match v {
+            SqlStorageValue::String(t) => t.len(),
+            SqlStorageValue::Blob(b) => b.len(),
+            _ => 8,
+        };
+        (q.len(), q.iter().map(|(sql, args)| sql.len() + args.iter().map(val).sum::<usize>()).sum())
+    }
+
     /// Runs every queued statement in one transaction, releases the outputs that waited for it, and reports the
     /// storage confirm, and each `SelfAck`, once `sync()` says the writes are durable. The Durable Object confirms
     /// writes in order, so one `sync()` covers every input queued so far.
@@ -2068,6 +2101,7 @@ impl<F: Family> Host<F> {
         let queued = now_ms();
         spawn_local(async move {
             let body = codec::to_bytes(std::slice::from_ref(&e));
+            let _counted = Counted::new(&h.call_bytes, body.len());
             let call = Call::of(&e, body.len());
             let traced = call.append.filter(|_| call.entries > 0);
             if let Some((round, _, last)) = traced {

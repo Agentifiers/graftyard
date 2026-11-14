@@ -72,6 +72,10 @@ pub trait Family: 'static {
     fn lost(_fold: &Self::Fold) -> Option<String> {
         None
     }
+    /// The fold's rows held in memory until their transaction runs, and their bytes (`crate::tier::TierSql::buffered`).
+    fn buffered(_fold: &Self::Fold) -> (usize, usize) {
+        (0, 0)
+    }
     /// The fold keeps its own tables beside the log (`crate::tier`): restore does not replay the log into a second
     /// fold to compare, which would write those tables; a tier refuses an entry out of order instead.
     fn tiered() -> bool {
@@ -292,6 +296,16 @@ thread_local! {
 /// Packed dumps this isolate has built.
 pub fn dump_builds() -> u64 {
     BUILDS.with(std::cell::Cell::get)
+}
+
+/// The bytes this isolate's read caches hold, shared by every repository in it: packed dumps, narrow answers, and
+/// named accounts at 8 bytes each (`/stats` `memSplit`).
+pub fn cache_bytes() -> serde_json::Value {
+    let dumps = DUMPS.with(|d| d.borrow().values().map(|(_, b)| b.len()).sum::<usize>());
+    let narrow = NARROW
+        .with(|n| n.borrow().values().flat_map(|v| v.iter()).map(|(t, _, _, b)| t.len() + b.len()).sum::<usize>());
+    let named = NAMED.with(|n| n.borrow().values().map(|(_, v)| 8 * v.len()).sum::<usize>());
+    json!({ "dumps": dumps, "narrow": narrow, "named": named })
 }
 
 /// The answer to a packed whole-tier read of `fold` (`{"rows": true, "packed": true}`), as serialized JSON bytes: the
@@ -592,6 +606,10 @@ impl Family for Repo {
     }
     fn lost(fold: &git::repo::RepoFold) -> Option<String> {
         crate::tier::handle(&*fold.core).lost().or_else(|| crate::tier::handle(&*fold.meta).lost())
+    }
+    fn buffered(fold: &git::repo::RepoFold) -> (usize, usize) {
+        let (c, m) = (crate::tier::handle(&*fold.core).buffered(), crate::tier::handle(&*fold.meta).buffered());
+        (c.0 + m.0, c.1 + m.1)
     }
     /// Feeds the activity feed's ring each applied entry (`crate::feed`), and marks a gap or an install, which stop
     /// the member following until it catches up. The ring waits for the owner's `Authz` (`crate::feed::Feed::owner`,
