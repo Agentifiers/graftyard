@@ -251,8 +251,12 @@ impl<C: Command> Member<C> {
         self.link_lossy(s) && self.peers().into_iter().any(|p| p != s && !self.link_lossy(p))
     }
 
-    /// This member's own storage would trip `STEP_DOWN`'s confirm rule: over the window, at least `confirm_slow_min`
-    /// confirms took over `confirm_p99_ms`, ended or still running, and so does the p99.
+    /// This member's own storage would trip `STEP_DOWN`'s confirm rule once it led: over the window, at least
+    /// `commit_fail_min` confirms took over `confirm_p99_ms`, ended or still running, and so does the p99. A follower
+    /// confirms about once per append it accepts, fewer than a leader, so it needs fewer than the leader's
+    /// `confirm_slow_min`: at six, one with 4 of 11 confirms at 1.05 s read healthy, campaigned against the leader a
+    /// LoopLag hand-off had just made, deposed it on the higher term and was refused LogBehind, and nobody led for
+    /// 12.5 s (`tests/m0/results/looplag-handoff.md`, seed 910).
     pub(super) fn storage_slow(&self) -> bool {
         let since = Timestamp(self.now.0.saturating_sub(window().as_millis() as u64));
         let mut ms: Vec<u64> = self
@@ -264,7 +268,7 @@ impl<C: Command> Member<C> {
         ms.sort_unstable();
         let p99 = ms.get(ms.len() * 99 / 100).copied().unwrap_or(0);
         let slow = ms.iter().filter(|m| **m > u64::from(STEP_DOWN.confirm_p99_ms)).count();
-        p99 > u64::from(STEP_DOWN.confirm_p99_ms) && slow >= usize::from(STEP_DOWN.confirm_slow_min)
+        p99 > u64::from(STEP_DOWN.confirm_p99_ms) && slow >= usize::from(STEP_DOWN.commit_fail_min)
     }
 
     /// `s`'s storage looks as slow as STEP_DOWN's confirm rule judges a leader's own: at least `confirm_slow_min` of

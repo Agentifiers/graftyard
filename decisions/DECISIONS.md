@@ -2555,6 +2555,20 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). The operat
 
 **Flip.** One learner taking so much of the reads that it sheds or runs hot (CPU or memory near its limits), or the far learners' answers falling within `ROUTE_MARGIN` of the near ones, which makes the ordering moot.
 
+### `narrow-reads-3`: the edge spreads a learner read over at least three learners, by a score that counts variance, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The herding guard"; F65). The operator's decision after gate 15: a herding guard before site day 13, not after another miss.
+
+**Decision.** `timed_spread_order` (`crates/lookup`) scores each learner by its moving average plus `ROUTE_DEV` (4 [guess]) moving mean deviations, both at `ROUTE_WEIGHT` (0.2). The eligible learners are the untimed ones, those within `ROUTE_MARGIN` (200 ms) of the best timed score, and, while there are fewer than `ROUTE_SPREAD` (3 [guess]), the next best scored under `ROUTE_LATE` (1 s, a member's `FOLLOWER_WAIT`). A read goes to one of them at random, and the rest follow by score. A learner this isolate has not timed for `ROUTE_STALE` (10 s [guess]) counts as untimed: eligible, and not setting the best. That replaces the one read in `ROUTE_EXPLORE` that went to any learner at random. It is still one request per read, and every learner still does its read-index.
+
+**Why.** Gate 15 missed by 19 ms with one learner taking 50.2% of the reads, shedding 54 and answering 720 late: ordered by the average alone, the fastest learner drew the reads that then slowed it. The far learners answered at `FOLLOWER_WAIT` 425 to 1,567 times each, mostly from the random one-in-20 reads [measured, gate 15]. Replayed over gates 13 to 15's traces, the guard cut the busiest learner's share on gate 15 from 36% to 24%, late answers from 2.6% to 1.7% of reads, and the projected API p99 from 1.44 to 1.25 s; on gate 13 from 1.50 to 1.29 s; on gate 14 it was flat at 0.76 s [inference, `tests/nr3/route.py`].
+
+**Beat.** The mean-plus-deviation score alone, which in the replay left the busiest learner at 33% on gate 15 with explore kept. A random choice between the two best-scored learners ("top two"), which in the replay put 36% on one learner on gate 14 and gave a higher p99 on gates 13 and 15 (1.64 and 1.58 s). A spread of 4, no better than 3 in the replay. Keeping `ROUTE_EXPLORE`, which sends one read in 20 to a far learner that then answers late; the stale rule times a recovered learner without it.
+
+**Evidence.** `crates/lookup/src/lib.rs` tests: the fastest learner gets at most one in `ROUTE_SPREAD` of the first places and a learner scored at `ROUTE_LATE` is never asked while others answer in time; an untimed or stale learner is eligible and does not set the best; the score is the average plus the deviation, and a swinging learner scores worse than a steady one; the margin is inclusive at its edge. `tests/nr3/plant.py` plants six mutants of the guard (no spread, padding past `ROUTE_LATE`, no deviation, no staleness, an untimed learner as the best, spread off by one); all are caught. The replay is `tests/nr3/route.py`; the hosted read share comes from gates 16 on.
+
+**Flip.** A gate where a learner padded in by the spread sheds or answers late often enough to raise the API p99 above what routing to the best alone gave, or where the deviation keeps a learner that recovered out for long after `ROUTE_STALE`.
+
 ### `narrow-reads-3`: a follower or learner keeps several read-index batches in flight, 2026-11-14
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Gate 12 on fdf363f3"; F65). The operator's decision 3 after gate 12: find what makes a busy learner's read slow and fix it before the next gates.
@@ -3257,4 +3271,28 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A hosted B0-33 run whose entries store more than ENTRY_SOFT past their first command, or whose confirm p99 rises with the entries this admits.
 
-**Open, for a second change.** The render still crosses every AppendEntries: each issue command sends its owner's whole Authz fold, about 10 KB, to every follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build the render's `HostedDir.authz` itself and the edge could send none. That would also cut the far follower's per-call bytes, a candidate in the far-leg question [inference].
+**Open, for a second change: dropped, 2026-11-14.** An earlier version of this paragraph said the render crosses every AppendEntries, about 80 KB of renders per B0-33 entry against 1.9 KB stored, and so bears on the far-leg p99. That is false: the leader builds each entry from the events `decide` returns (`LogEntry { body: EntryBody::Events(events) }`, `crates/raft/src/member/leader.rs`), no `RepoEvent` holds the render, and a follower receives events, not commands [code-read]. The render travels only in the edge's command to the leader, about 10 KB per issue command. Having the leader build `HostedDir.authz` from its own `Authz` dependency would save that request body but cost a 10 KB fold clone per command out of `decide`, and the reply would render from the leader's read of the fold, not the edge's, so a grant that changed between the two reads changes the reply. The operator declined it (option (a)). `ENTRY_MAX` still counts the render on the leader's cut: `decisions/OPEN-QUESTIONS.md`, F70.
+
+### `m4-web-3`: a single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22), 2026-11-14
+
+**Decision.** A REST review comment outside a review commits its single-comment review as `ReviewEvent::SingleComment` (tag 3) in repository format 32.22 (`REPO_FORMAT_REVIEWS`). Its fold writes the reviewer's core `review_verdict` only over none or a COMMENTED one, so every such commenter gets a review and an APPROVED or CHANGES_REQUESTED verdict stays. The edge marks the comment 32.22 once `FormatsEnable` enabled it; before that, decide writes a `Submitted` and gives a commenter who holds such a verdict no review. 32.20 and 32.21 are other branches' (`b030-split`, `m4-actions`).
+
+**Why.** GHES gives every review comment made outside a review a COMMENTED review and keeps the reviewer's approval: `reviewDecision` and merge protection read the approval, not the comment. A `Submitted` COMMENTED replaces the verdict in the fold, so the pull request lost its approval, or kept the commenter's comment without a review (`m4-web-2`).
+
+**Beat.** Changing how `Submitted` COMMENTED applies, which would change what every earlier entry folds to and so every chain's digest at the next refold. Skipping the review for such commenters, which leaves `pull_request_review_id: null` where GHES sets it.
+
+**Evidence.** `an_approvers_review_comment_gets_its_review_and_keeps_the_approval` (`crates/git/tests/agent_gates.rs`) through real members, which fails when the fold replaces the verdict; hosted single-comment reviews on `m3org/web38-a` PR #3 (`tests/m4/results/m4-wp5.md`).
+
+**Flip.** GHES 3.22 replacing an approval with a later single-comment review, or a reviews UI that needs a COMMENTED verdict beside an approval.
+
+### `liveness-looplag-handoff`: a follower judges its own storage slow at `commit_fail_min` slow confirms, 2026-11-14
+
+**Decision.** `storage_slow`, the campaign gate `liveness-slow-storage` added, counts a follower's own storage as slow at `commit_fail_min` (3) confirms over `confirm_p99_ms` in the window, with the p99 over it, in place of the leader's `confirm_slow_min` (6). The gate itself, `peer_storage_slow` and F67's `suspect` counting are unchanged.
+
+**Why.** LM-1's round 15c on m26c: a fresh leader, the target of a LoopLag hand-off, lost its term about 13 s in with no StepDown logged. The simulator reproduced it with LoopLag on the leader and slow confirms on both followers: over seeds 900 to 1099, 18 went over 5 s with no member serving, worst 12.7 s. In seed 910 the hand-off worked (term 3). Then a follower with 4 of 11 confirms at 1.05 s in the window read healthy, passed pre-vote, sent its real vote after its own slow confirm, and deposed the leader on the higher term. It was refused LogBehind, and nobody led for 12.5 s. A follower confirms about once per append it accepts, so it rarely reaches the six a leader's confirm rule counts [measured, simulator, `tests/m0/results/looplag-handoff.md`].
+
+**Beat.** Ignoring a higher-term vote while a leader is live: the operator rejected it, since it blocks the healthy follower F67 relies on. Lowering `confirm_slow_min` for leaders too: that moves STEP_DOWN's own measured line (B0-06).
+
+**Evidence.** `a_looplag_leader_with_slow_followers_hands_off_and_holds` (`crates/raft/tests/liveness.rs`) fails on main `1f51c6f` (seeds 904 at 8.5 s and 910 at 12.5 s unserved) and passes here, worst 4.9 s. Over 200 seeds, seeds unserved for more than 5 s went from 18 to 4, and the worst from 12.7 s to 5.6 s. The slow-storage term rise over 200 seeds is 0.94 a minute with every member slow and 0.20 with both followers slow, against 1.33 and 0.30. `long_liveness` at 60 seeds moved all 60 by STEP_DOWN for calls, slow and lag. `tests/m0carried/plant11.py` gains a mutant that restores six.
+
+**Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.

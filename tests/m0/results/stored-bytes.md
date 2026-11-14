@@ -70,10 +70,17 @@ render out of `encode`.
 - **Plants** (`python3 tests/m0carried/plant12.py`): 4 of 4 caught. A first sweep and checks run were discarded
   because they compiled while mutant 0 was planted in the same worktree; both reran on the clean tree.
 
-## Open, a second change
+## Correction: the render does not reach the followers
 
-The render still crosses every AppendEntries: each issue command sends its owner's whole fold, about 10 KB, to every
-follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same
-fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build `HostedDir.authz` itself
-and the edge could send none. That would also cut the far follower's per-call bytes, a candidate for the far-leg p99
-[inference].
+An earlier version of this section said each issue command's render, about 10 KB, crosses every AppendEntries, so
+B0-33's 7.6-command entries carried about 80 KB of renders against 1.9 KB stored, and that cutting it would bear on
+the far-leg p99. That is false. The leader builds each log entry from the events `decide` returns
+(`LogEntry { body: EntryBody::Events(events) }`, `crates/raft/src/member/leader.rs`), no `RepoEvent` holds the render
+or `HostedDir`, and a follower receives events, not commands [code-read]. The render travels only in the edge's
+command to the leader, so the far-leg question does not depend on it.
+
+Having the leader build `HostedDir.authz` from its own `Authz` dependency would save that 10 KB request body per issue
+command. It would cost a 10 KB fold clone per command out of `decide`, and the reply would render from the leader's
+read of the fold rather than the edge's, so a grant that changed between the two reads would change the reply. The
+operator declined it. `ENTRY_MAX` still counts the render on the leader's cut, though no follower receives it:
+`decisions/OPEN-QUESTIONS.md`, F70.

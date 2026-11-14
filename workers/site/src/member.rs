@@ -515,8 +515,21 @@ impl<F: Family> Routes<F> {
                 let t0 = now_ms();
                 let body = req.bytes().await?;
                 let t1 = now_ms();
+                #[cfg(feature = "test-faults")]
+                if let Some(sent) = req.headers().get("x-graft-sent").ok().flatten().and_then(|v| v.parse().ok()) {
+                    let from = raft::codec::from_bytes::<Vec<raft::Envelope<F::Ev>>>(&body)
+                        .ok()
+                        .and_then(|e| e.first().map(|e| e.from.0))
+                        .unwrap_or(0);
+                    self.host.trace_at(t0, Trace::CallArrived, from, 0, sent, t1 - t0);
+                }
                 let r = self.raft(&body).await;
                 self.host.stats.borrow_mut().raft_in(t0, body.len(), t1 - t0, now_ms() - t1);
+                #[cfg(feature = "test-faults")]
+                let r = r.and_then(|mut res| {
+                    res.headers_mut().set("x-graft-left", &now_ms().to_string())?;
+                    Ok(res)
+                });
                 r
             }
             (Method::Post, "/commit") => {

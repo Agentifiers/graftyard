@@ -841,7 +841,10 @@ impl Fold for RepoFold {
             )
             | RepoEvent::Comment(C::Resolved { actor: a, .. })
             | RepoEvent::Review(
-                R::Submitted { reviewer: a, .. } | R::Dismissed { actor: a, .. } | R::Requested { actor: a, .. },
+                R::Submitted { reviewer: a, .. }
+                | R::Dismissed { actor: a, .. }
+                | R::Requested { actor: a, .. }
+                | R::SingleComment { reviewer: a, .. },
             )
             | RepoEvent::Labels(LabelEvent::Applied { actor: a, .. })
             | RepoEvent::LfsLock(LfsLockEvent::Deleted { actor: a, .. })
