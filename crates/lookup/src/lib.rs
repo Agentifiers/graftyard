@@ -85,6 +85,8 @@ struct Known {
 thread_local! {
     static KNOWN: RefCell<HashMap<ChainId, Known>> = RefCell::new(HashMap::new());
     static COLO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Per isolate: each learner's moving average of its answer time to `read_spread`, in ms, as this isolate saw it.
+    static ANSWER_MS: RefCell<HashMap<(SiteId, String), f64>> = RefCell::new(HashMap::new());
 }
 
 /// The colo this isolate's `suspect` reports from `call_opt` carry; an edge sets it per request.
@@ -394,27 +396,74 @@ pub const FOLLOWER_CALL: Duration = Duration::from_millis(2_000);
 /// sheds waits at most about three FOLLOWER_WAITs before its 503.
 const SPREAD_TRIES: usize = 3;
 
-/// The members a read-index read goes to, in order: the cached config's learners, rotated by `pick`, then its
-/// followers (the voters, else the record's bootstrap members, without the cached leader), rotated by `pick` too, at
-/// most SPREAD_TRIES. With no leader cached every voter is a candidate: a member that leads serves the read itself.
+/// How far behind the fastest learner's moving average a learner may be and still share its reads [guess]: the near
+/// learners answered at p99 0.8 to 1.2 s and the far ones (apac from an enam leader) at 2.2 to 3.0 s
+/// (`design/DESIGN.md`, "Follower read"), so a margin well under that gap keeps the far ones out and the near ones
+/// sharing the load.
+pub const ROUTE_MARGIN: Duration = Duration::from_millis(200);
+/// One read in this many goes to a learner at random, not by measured time [guess], so a learner that recovers is
+/// timed again.
+pub const ROUTE_EXPLORE: usize = 20;
+/// The weight of a new answer time in a learner's moving average [guess]: one slow answer moves it a fifth of the way.
+const ROUTE_WEIGHT: f64 = 0.2;
+
+/// `timed_spread_order` with no learner timed and no exploring: the learners rotated by `pick`, then the followers.
+#[cfg(test)]
 fn spread_order(
     learners: Vec<(SiteId, String)>,
     voters: Vec<(SiteId, String)>,
     leader: Option<SiteId>,
     pick: usize,
 ) -> Vec<Target> {
-    let rotated = |v: Vec<(SiteId, String)>| {
-        let mut out: Vec<Target> = v.into_iter().map(|(site, do_name)| Target { site, do_name }).collect();
-        if !out.is_empty() {
-            let n = pick % out.len();
-            out.rotate_left(n);
+    timed_spread_order(learners.into_iter().map(|(s, n)| (s, n, None)).collect(), voters, leader, pick, false)
+}
+
+/// The members a read-index read goes to, in order: the cached config's learners, then its followers (the voters,
+/// else the record's bootstrap members, without the cached leader), rotated by `pick`, at most SPREAD_TRIES. With no
+/// leader cached every voter is a candidate: a member that leads serves the read itself. Each learner carries this
+/// isolate's moving average of its answer time in ms, `None` if untimed, which counts as 0 ms. The learners within
+/// ROUTE_MARGIN of the fastest come first, in config order rotated by `pick`, then the rest by ascending average.
+/// When `explore`, the learners are only rotated by `pick`, so any of them may come first.
+fn timed_spread_order(
+    learners: Vec<(SiteId, String, Option<f64>)>,
+    voters: Vec<(SiteId, String)>,
+    leader: Option<SiteId>,
+    pick: usize,
+    explore: bool,
+) -> Vec<Target> {
+    fn rotated<T>(mut v: Vec<T>, pick: usize) -> Vec<T> {
+        if !v.is_empty() {
+            let n = pick % v.len();
+            v.rotate_left(n);
         }
-        out
-    };
-    let mut out = rotated(learners);
-    out.extend(rotated(voters.into_iter().filter(|(s, _)| Some(*s) != leader).collect()));
+        v
+    }
+    let ms = |a: Option<f64>| a.unwrap_or(0.0);
+    let fastest = learners.iter().map(|l| ms(l.2)).fold(f64::INFINITY, f64::min);
+    let margin = ROUTE_MARGIN.as_millis() as f64;
+    let (near, mut far): (Vec<_>, Vec<_>) = learners.into_iter().partition(|l| explore || ms(l.2) <= fastest + margin);
+    far.sort_by(|a, b| ms(a.2).total_cmp(&ms(b.2)));
+    let mut out: Vec<Target> =
+        rotated(near, pick).into_iter().chain(far).map(|(site, do_name, _)| Target { site, do_name }).collect();
+    let followers =
+        voters.into_iter().filter(|(s, _)| Some(*s) != leader).map(|(site, do_name)| Target { site, do_name });
+    out.extend(rotated(followers.collect(), pick));
     out.truncate(SPREAD_TRIES);
     out
+}
+
+/// The answer time a learner's answer to `read_spread` records, in ms: its elapsed time if its value is used, else
+/// FOLLOWER_CALL (shed, overloaded, `busy`, `notLeader`, a 4xx or 5xx, or no answer).
+fn answer_sample(r: Option<(u16, &Value)>, elapsed_ms: f64) -> f64 {
+    if follower_answer_usable(r) { elapsed_ms } else { FOLLOWER_CALL.as_millis() as f64 }
+}
+
+/// A learner's moving average after one more answer time: the first sample alone, then ROUTE_WEIGHT of each new one.
+fn averaged(prev: Option<f64>, sample_ms: f64) -> f64 {
+    match prev {
+        None => sample_ms,
+        Some(a) => a + ROUTE_WEIGHT * (sample_ms - a),
+    }
 }
 
 /// What `read_spread` does with the answers it got, in order.
@@ -456,11 +505,13 @@ fn follower_answer_usable(r: Option<(u16, &Value)>) -> bool {
 }
 
 /// A read off the leader (`design/DESIGN.md`, "Follower read"): `body` (`{"q": ..}`) goes with `"index": true` to
-/// the members `spread_order` names, learners first, until one answers with a value. If none did and one shed it,
+/// the members `timed_spread_order` names, learners first, until one answers with a value. If none did and one shed it,
 /// the read fails with an error naming OVERLOADED, which the caller answers 503 with `Retry-After`, and the leader is
 /// never asked; only if none shed it does it go to the leader by `call_opt` (`spread_verdict`). A member's answer
 /// holds every entry acknowledged before the read arrived: it waited for the leader's confirmed commit index.
-/// Learners and followers never raise `suspect` and never count as missed.
+/// Learners and followers never raise `suspect` and never count as missed. Each learner asked records its answer
+/// time in this isolate's moving average (`answer_sample`), which orders the learners of the next read; one read in
+/// ROUTE_EXPLORE ignores the averages.
 pub async fn read_spread(
     b: &Bindings<'_>,
     chain: ChainId,
@@ -474,16 +525,34 @@ pub async fn read_spread(
         known.voters
     };
     let pick = (js_sys::Math::random() * 1024.0) as usize;
+    let explore = js_sys::Math::random() < 1.0 / ROUTE_EXPLORE as f64;
+    let learners: Vec<(SiteId, String, Option<f64>)> = ANSWER_MS.with(|m| {
+        let m = m.borrow();
+        known.learners.into_iter().map(|(s, n)| (s, n.clone(), m.get(&(s, n)).copied())).collect()
+    });
+    let n_learners = learners.len();
     let mut indexed = body.clone();
     indexed["index"] = json!(true);
     let bytes = indexed.to_string();
     let mut answers = Vec::new();
-    for t in spread_order(known.learners, voters, known.leader, pick) {
+    // The learners come first in the order, so the first `n_learners` asked are learners, and only they are timed.
+    for (i, t) in timed_spread_order(learners, voters, known.leader, pick, explore).into_iter().enumerate() {
+        let start = now_ms();
         let r = post_within(b, t.site, &t.do_name, "/read", bytes.as_bytes(), FOLLOWER_CALL).await;
+        let seen = r.as_ref().map(|(s, v)| (*s, v));
+        if i < n_learners {
+            let sample = answer_sample(seen, now_ms().saturating_sub(start) as f64);
+            ANSWER_MS.with(|m| {
+                let mut m = m.borrow_mut();
+                let key = (t.site, t.do_name.clone());
+                let a = averaged(m.get(&key).copied(), sample);
+                m.insert(key, a);
+            });
+        }
+        let usable = follower_answer_usable(seen);
         if let Some((_, v)) = &r {
             learn_config(chain, v);
         }
-        let usable = follower_answer_usable(r.as_ref().map(|(s, v)| (*s, v)));
         answers.push(r);
         if usable {
             let v = answers.pop().flatten().map(|(_, v)| v).unwrap_or_default();
@@ -1390,6 +1459,121 @@ mod tests {
         // Four learners: three asked, no follower.
         let four = v(&[(0, "l0"), (1, "l1"), (2, "l2"), (0, "l3")]);
         assert_eq!(names(spread_order(four, all, Some(SiteId(0)), 3)), ["l3", "l0", "l1"]);
+    }
+
+    /// Learners in config order, on sites 1 and 2 by turns, each with this isolate's average in ms.
+    fn timed(ls: &[(&str, Option<f64>)]) -> Vec<(SiteId, String, Option<f64>)> {
+        ls.iter().enumerate().map(|(i, (n, a))| (SiteId(1 + (i % 2) as u8), n.to_string(), *a)).collect()
+    }
+
+    fn voters() -> Vec<(SiteId, String)> {
+        [(0, "a"), (1, "b"), (2, "c")].iter().map(|(i, n)| (SiteId(*i), n.to_string())).collect()
+    }
+
+    fn first(t: &[Target]) -> &str {
+        &t[0].do_name
+    }
+
+    /// Near learners at 300 and 350 ms and far ones at 1,800 and 2,400 ms, interleaved so config order is not
+    /// ascending order.
+    fn mixed() -> Vec<(SiteId, String, Option<f64>)> {
+        timed(&[
+            ("far2400", Some(2_400.0)),
+            ("near300", Some(300.0)),
+            ("far1800", Some(1_800.0)),
+            ("near350", Some(350.0)),
+        ])
+    }
+
+    /// (a, b) With two near learners within ROUTE_MARGIN and two far ones, no `pick` puts a far learner first, and
+    /// each near learner comes first for some `pick`: the near set shares the reads, not only the single fastest.
+    #[test]
+    fn a_read_goes_to_a_near_learner_and_both_near_ones_share_it() {
+        let mut firsts = std::collections::BTreeSet::new();
+        for pick in 0..16 {
+            let o = timed_spread_order(mixed(), voters(), Some(SiteId(0)), pick, false);
+            assert!(first(&o).starts_with("near"), "pick {pick}: {o:?}");
+            assert!(!o[1].do_name.starts_with("far"), "pick {pick}: the second is the other near learner: {o:?}");
+            firsts.insert(first(&o).to_string());
+        }
+        assert_eq!(firsts.into_iter().collect::<Vec<_>>(), ["near300", "near350"]);
+    }
+
+    /// (c) A learner exactly ROUTE_MARGIN behind the fastest is in the near set and comes first for some `pick`; one a
+    /// millisecond past it never does.
+    #[test]
+    fn the_margin_is_inclusive_at_its_edge() {
+        let m = ROUTE_MARGIN.as_millis() as f64;
+        let at = timed(&[("fast", Some(500.0)), ("edge", Some(500.0 + m))]);
+        let past = timed(&[("fast", Some(500.0)), ("edge", Some(500.0 + m + 1.0))]);
+        let firsts = |ls: &Vec<(SiteId, String, Option<f64>)>| {
+            (0..16)
+                .map(|p| first(&timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), p, false)).to_string())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert!(firsts(&at).contains("edge"), "{:?}", firsts(&at));
+        assert_eq!(firsts(&past).into_iter().collect::<Vec<_>>(), ["fast"]);
+    }
+
+    /// (d) A learner this isolate has not timed counts as 0 ms: it comes first, before learners timed at 300 ms.
+    #[test]
+    fn an_untimed_learner_comes_first() {
+        let ls =
+            timed(&[("near300", Some(300.0)), ("new", None), ("near350", Some(350.0)), ("far1800", Some(1_800.0))]);
+        for pick in 0..16 {
+            let o = timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), pick, false);
+            assert_eq!(first(&o), "new", "pick {pick}: {o:?}");
+        }
+    }
+
+    /// (e) An exploring read takes the plain rotation of the learners in config order, as `spread_order` does with no
+    /// averages, so a far learner comes first for some `pick`.
+    #[test]
+    fn an_exploring_read_may_go_to_a_far_learner() {
+        let mut firsts = std::collections::BTreeSet::new();
+        for pick in 0..16 {
+            let o = timed_spread_order(mixed(), voters(), Some(SiteId(0)), pick, true);
+            let plain =
+                spread_order(mixed().into_iter().map(|(s, n, _)| (s, n)).collect(), voters(), Some(SiteId(0)), pick);
+            assert_eq!(o, plain, "pick {pick}");
+            firsts.insert(first(&o).to_string());
+        }
+        assert!(firsts.contains("far2400") && firsts.contains("far1800"), "{firsts:?}");
+    }
+
+    /// (f) A shed, overloaded, `notLeader`, 5xx, or missing answer records FOLLOWER_CALL, a value its elapsed time; a
+    /// learner's first sample is its average, and one slow sample moves an average by ROUTE_WEIGHT of the gap.
+    #[test]
+    fn a_learners_average_moves_by_the_weight_and_a_shed_counts_as_the_deadline() {
+        let call = FOLLOWER_CALL.as_millis() as f64;
+        assert_eq!(answer_sample(Some((200, &json!({ "value": 1, "index": 3 }))), 312.0), 312.0);
+        let nl = json!({ "error": { "notLeader": { "term": 3 } } });
+        for (status, v) in [(200, overloaded_reply(250)), (200, json!({ "busy": true })), (200, nl), (503, Value::Null)]
+        {
+            assert_eq!(answer_sample(Some((status, &v)), 40.0), call, "{status} {v}");
+        }
+        assert_eq!(answer_sample(None, 2_000.0), call);
+        assert_eq!(averaged(None, 300.0), 300.0);
+        // 300 ms, then one 2,300 ms answer: 300 + 0.2 * 2,000 = 700 ms, not 2,300.
+        assert!((averaged(Some(300.0), 2_300.0) - 700.0).abs() < 1e-9);
+        assert!((averaged(Some(300.0), call) - (300.0 + ROUTE_WEIGHT * (call - 300.0))).abs() < 1e-9);
+    }
+
+    /// (g) After the near set the far learners come in ascending average, whatever their config order, then the
+    /// followers rotated by `pick` with the cached leader skipped; SPREAD_TRIES still truncates.
+    #[test]
+    fn far_learners_follow_in_ascending_order_then_followers() {
+        let ls = timed(&[("far2400", Some(2_400.0)), ("near300", Some(300.0)), ("far1800", Some(1_800.0))]);
+        for pick in 0..16 {
+            let o = timed_spread_order(ls.clone(), voters(), Some(SiteId(0)), pick, false);
+            let n: Vec<&str> = o.iter().map(|t| t.do_name.as_str()).collect();
+            assert_eq!(n, ["near300", "far1800", "far2400"], "pick {pick}");
+        }
+        let one_far = timed(&[("far1800", Some(1_800.0)), ("near300", Some(300.0))]);
+        let o = timed_spread_order(one_far.clone(), voters(), Some(SiteId(0)), 0, false);
+        assert_eq!(o.iter().map(|t| t.do_name.as_str()).collect::<Vec<_>>(), ["near300", "far1800", "b"]);
+        let o = timed_spread_order(one_far, voters(), Some(SiteId(0)), 1, false);
+        assert_eq!(o.iter().map(|t| t.do_name.as_str()).collect::<Vec<_>>(), ["near300", "far1800", "c"]);
     }
 
     /// When no member asked answers a value: if any shed it (`overloaded`, `busy`, a 5xx, no answer), the read is

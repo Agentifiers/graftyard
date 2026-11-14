@@ -2527,6 +2527,20 @@ Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "Learners pipeli
 
 **Flip.** A learner that receives AppendEntries as calls (not in responses), with apply wait set by appends one call late.
 
+### `narrow-reads-3`: the edge routes a learner read by measured answer time, 2026-11-14
+
+Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`; F65). The operator's routing decision after gate 11.
+
+**Decision.** `read_spread` (`crates/lookup`) still sends one request per read, learners first, at most `SPREAD_TRIES` members. Each edge isolate keeps a moving average of each learner's answer time as it saw it (`ROUTE_WEIGHT` 0.2 [guess]; a shed, refused or unanswered read counts as `FOLLOWER_CALL`), and orders learners by it: those within `ROUTE_MARGIN` (200 ms [guess]) of the fastest come first, rotated at random among themselves, then the rest by ascending average, then the followers. A learner it has not timed counts as fastest. One read in `ROUTE_EXPLORE` (20 [guess]) ignores the averages, so a learner that recovers is timed again. Every learner still does its read-index, so the choice changes latency and never what a read sees.
+
+**Why.** Picked at random, the far learners (apac from an enam leader) answered about a quarter of reads at p99 2.2 to 3.0 s against p99 0.8 to 1.2 s on the near ones, which set the API p99 at 2.6 s on gate 11 [measured, `tests/nr3/rows/run-gate11.status`]. A far edge pays one far round trip to a near-leader learner instead.
+
+**Beat.** A per-region gate (operator: a substitution). The hedge, which doubled learner load and served fewer reads ("Not adopted: the edge hedging a slow learner read"). Always the single fastest learner, which would put an edge's whole load on one learner.
+
+**Evidence.** `crates/lookup/src/lib.rs` tests: near learners share reads, the margin is inclusive at its edge, an untimed learner comes first, an exploring read may go far, the average moves by the weight with a shed counted as `FOLLOWER_CALL`, far learners follow in ascending order. Each fails on one of four mutants: always the fastest, no margin, untimed as slowest, a strict margin. The hosted per-learner read share, CPU and memory come from the gate runs on the adopted B0-29 shape.
+
+**Flip.** One learner taking so much of the reads that it sheds or runs hot (CPU or memory near its limits), or the far learners' answers falling within `ROUTE_MARGIN` of the near ones, which makes the ordering moot.
+
 ### Not adopted: the edge hedging a slow learner read, 2026-11-13
 
 Branch `narrow-reads-3` (`tests/am1/results/narrow-reads-3.md`, "The final tree's gate runs"; F65).
