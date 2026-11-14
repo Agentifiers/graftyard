@@ -27,6 +27,67 @@ Shard image `sha256:de39c828…`, built from main's `containers/git` (`b4a7510`:
 
 **Driver clock offset** (`tests/am1/rest/clock.mjs`, `dateBounds` and `driverOffset`). Each HEAD to the edge, sent at orb time s and answered at e, carries Cloudflare's `Date`, the second D in which the edge answered. Cloudflare's clock minus the orb's then lies in [D − e, D + 1000 − s]. Forty probes at random gaps (37 to 137 ms), over many phases of the second, are intersected to bound the offset to about one round trip (40 probes at 15:13Z: [1,787, 1,829] ms, offset 1,808 ms). `a1.mjs` measures it before the window and after it. L0-12's `maxAbsOffsetMs` is now each member's offset less the mean of the two, that is each member against Cloudflare's clock. `maxAbsOffsetRawMs` keeps the old reading against the orb, and `driver` both bounds. `clockSpread` (the members against each other) is unchanged.
 
+## Rows m3fr4 (2026-11-14, TAG `m3fr4`, `ROWS="b0-31 b0-32"`)
+
+On the 15:45Z site day from `lm1-rows-m3f` `31636ec1` (main `04f8b3a6`: `retired-voter`, `prsync-first-once`, `m4-web-5`, `bucket-own-first`, `decode-once`, `leader-clock-check`, plus m3fr4's instruments). Shard image `sha256:746aee8e…`, standard-4. Sites `fff2002a` / `8e4c2001` / `278cfa22`, edge `464357d5`. Each row on a fresh repository with learners enam 4,000, weur 2,000, apac 2,000, k 4 granted, and its shards torn down after it. `vmem.mjs` read `memHigh` every 2 s and `admit.mjs` read admission every second. The 120 MiB stop rule never fired: the highest counted high-water on any voter was 9.1 MiB. No isolate on any site ended `exceededMemory` from 16:04Z to 16:31Z (Workers Logs outcomes: `ok`, `canceled`, `aborted` only). Sweep after: `sweep: no shard container running`. Raw files: `tests/am1/raw/a1-b0-31-mwglf3oa.jsonl`, `a1-b0-32-mwgm2dkk.jsonl`, `tests/fanout/raw/{vmem,admit,terms,tsave}-m3fr4-<row>.jsonl` (git-ignored).
+
+### B0-31: fail
+
+Repository 65559, run `mwglf3oa`, 16:06:00Z to 16:16:00Z, 500 agents, every agent push 1 MiB, placement failing from 300 s. The group was rehomed on apac, and the apac leader (site 2) held all 600 s at term 3. The leader logged 1 failed call (a `deadline` to site 1) and 0 inbound `/suspect`.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Commit p99 at most 1 s with buckets up | **1,333 ms** (p50 982, n 5,370). Split: queue p99 1,060, round p99 377, confirm p99 69 ms | **Fail** (between 1 s and the 3 s fail line) |
+| While placement fails: Human and MergeQueue commit p99 at most 3 s, 0 of them refused | Leader commit p99 1,322 ms (p50 974, n 4,248, all classes). Human pushes: 143 ok, 15 `stale:race`, 1 `stale`, 0 refused. **MergeQueue: 0 of 29 merges committed**; all 29 answered 503, and `merge:only` gave 31 × 503 `the git cache: {"warming":true}` | **Fail** (MergeQueue refused) |
+| Agent pushes over `INLINE_MAX_HOT` refused at once in the `ng` shape | 1,251 `full` (`ng … agent admission full`), push p50 1,970 ms; 22 ok (started before 300 s) | Pass on the refused shape |
+| Fail line | MergeQueue merges refused while placement fails | **Fail** |
+
+Buckets up: 1,227 of 1,227 agent pushes ok (p50 6.6 s, p99 12.6 s). Merges: 1 × 200, 1 × 409 and 21 × 503 `warming`. Feed p99 1,789 ms.
+
+**Why the merges were refused: the apac shard's catch-up still falls behind, even reading its own bucket.** Bucket-own-first works: every stored pack the apac shard `git#2#net:65559` (`229b7170`) read came from site 2's bucket (`from_site {"2": 388}`). Its catch-ups still grew, though (`shard catch-up stored` reports, ms):
+
+| Ended | Entries | Packs | Bytes | `total_ms` | Spool | Index |
+|---|---|---|---|---|---|---|
+| 16:06:29Z | 9 | 27 | 28 MB | 13,975 | 1,257 | 888 |
+| 16:07:10Z | 28 | 65 | 68 MB | 40,060 | 4,241 | 2,146 |
+| 16:08:42Z | 81 | 159 | 167 MB | 91,680 | 6,678 | 4,906 |
+| 16:12:41Z | 186 | 388 | 407 MB | 237,252 | 31,256 | 11,987 |
+
+The next catch-up ran from 16:12:41Z until teardown (16:16:36Z, "The container has not been started"). Every queue `/merge` on that shard waited it out to `MERGE_WAIT` (15 s) and answered `warming`. **The per-step timing settles it: the cost is per pack, outside the body read and index-pack.** In the 388-pack catch-up, spool (the container reading the body from R2) took 13% and index took 5%. The other 194 s, about 500 ms a pack, is outside both: by inference, each R2 GET's time to its first byte and the shard's call into the container, one pack at a time (`ingest_stored`, `crates/git/src/host.rs`, times the whole `first_copy`). The log brings about 4 staged packs a second, so a serial catch-up at about 610 ms a pack can never catch up. This is the branch the parent's scope named for this case: fetch still dominates with own-first, so fetch stored packs a few at a time, bounded and applied in order. Not built yet.
+
+### B0-32: fail
+
+Repository 65560, run `mwgm2dkk`. The load started 16:24:44Z. The warm-up saw `hot` and warm at 113 s; the last 30 agent pushes before the burst acked in 2.8 to 4.6 s. The burst fired at 16:26:37Z. Term 2 throughout, with site 0 leading; the leader logged 1 failed call (a `deadline` to site 2) and **0 inbound `/suspect`**.
+
+| Gate line | Measured | Verdict |
+|---|---|---|
+| Every push acked within 5 s or answered HTTP 200 `ng <ref> agent admission full, retry after <n>s` | **0 of 500 within 5 s.** 385 ok (p50 21.0 s), 10 `full` in the `ng` shape, **104 × 503 `no shard could check the pack (… {"warming":true}); retry`** (answered after 160 to 170 s), and 1 client `fetch failed` (`ERR_HTTP2_STREAM_ERROR`, 4.7 s) | **Fail** (another refusal shape) |
+| Queued agent bytes under `AGENT_QUEUE_MAX` | Peak 335 KB and 129 agent commands, against (1,000, 64 MiB) | Pass |
+| Every merge in one of the next 2 entries, none over 2 s | `merge:only` 20: 15 × 200, 5 × 409, client p50 1,057 ms, p99 2,412 ms. Edge `total` p99 2,163 ms (commit stage p99 725, shard merge p99 517, no catch-up wait) | **Fail** on the slowest merge (over 2 s end to end) |
+| Zero leader changes, zero `suspect` | 0 leader changes, 0 `/suspect` at the leader | Pass |
+| No object reset from memory | 0 `exceededMemory`; `memHigh` max 9.1 MiB | Pass |
+
+**Where the burst went: validate on site a.** Site a's shards answered validates during the burst at p50 4.5 to 9.8 s, p90 15 to 20 s and max 41.6 s. The network shard `0e7e1f40` took 1,204 of them, and the pool shards `cc2e0173`, `b09f271a` and `d442dd98` took 199 to 240 each. `d442dd98` was still rehydrating until 16:25:42Z (container `up` 32 s, rehydrate 48 s). From 16:27:06Z the edge logged `fanout: git#0#pool:4 is warming; pushes validate on the first shard for a while`. The catch-ups on site a's shards are small (1 to 40 entries, under 4 s), so they are not what is slow. The 104 pushes refused `warming` were the ones whose validate found no shard to check them: the network shard was saturated and a pool shard was warming. Admission did not hold them back: `pressure` was never true and capacity stayed at 277 or more.
+
+**Retired-voter's first hosted check:** 0 `/suspect` at the leader, against 72 on m3fr2, and 1 failed call, against 1,032.
+
+### Admission, memory and PrSync, both rows
+
+| Row | Capacity min / p50 / max | `cmdBytes` min / p50 / max | `retryAfterS` | `hot` samples | `pressure` | Agent queued max |
+|---|---|---|---|---|---|---|
+| B0-31 (1,031 samples) | 189 / 442 / 885 | 459 / 931 / 2,025 | 1 to 2 | 230 | never | 19 |
+| B0-32 (693) | 277 / 1,269 / 1,732 | 440 / 643 / 2,081 | 1 to 2 | 186 | never | 129 (335 KB) |
+
+`memHigh` peak per voter (MiB; wasm memory peak in brackets): B0-31 site 0 8.1 (26.7), site 1 6.6 (19.1), site 2 leader 7.7 (62.0). B0-32 site 0 leader 9.1 (52.6), site 1 8.0 (33.3), site 2 8.8 (30.1). The log is most of each peak (3.8 to 8.0 MB); the largest in-flight call bodies were 1.5 MB.
+
+`prsync-first-once`, first hosted check:
+
+- **"first handled":** site c's voter (B0-31's apac leader) 39, 16:06Z to 16:16Z, p50 15,972 ms, max 16,609 ms. Each one spent about 14.96 s in the merge step (`ms[2]`) waiting on the warming apac shard, then shed (438 shed, 38 asked). Site a's voter (B0-32) 58, p50 1,500 ms, max 15,372 ms (the slow ones at 16:27Z, while site a's pool shards warmed). Every attempt ended under `FIRST_FOR_MS` (25 s), and none timed out.
+- **`/prsync/first` `exceededMemory`:** none (no `exceededMemory` outcome on any site).
+- **`testMerges.late`:** not recorded. `a1.mjs` writes `testMerges` only for plans with `openPrs`, and B0-31 and B0-32 have none. The `first handled` reports carry `asked`, `unasked`, `shed` and `budget` (null on these rows), not `late`.
+
+**Next:** B0-31's MergeQueue line needs the apac shard to apply stored packs faster than 4 a second: a bounded parallel fetch in `ingest_stored`'s caller, applied in log order. B0-32's line is validate capacity on the leader's site during the burst: the 503 `warming` shape comes from a pool shard that is still warming while the network shard is saturated. Neither row stormed.
+
 ## Rows m3fr3 (2026-11-14, TAG `m3fr3`, `ROWS="l0-12"`, `L012_REPLAY_ONLY=1`)
 
 On the 13:33Z site day from `lm1-rows-m3f` `1fc80ec1` (main `44385391`: `bucket-own-first`, `narrow-reads-3`'s herding guard, `decode-once`, `leader-clock-check`), image `sha256:c7650ed2…`. The `retired-voter` fix (main `fef67dee`) was **not deployed** on this site day; m3fr4's site day carries it. L0-12's replay ran alone as the parent's memory-storm reproducer, a diagnostic run, not a gate run. Beside it: every voter's `/stats?summary=1` every 2 s (`vmem.mjs`, wasm high-water and `memSplit`), its `/elections` rows every 20 s, each voter's `/trace` every minute (`tsave.mjs`), `terms.mjs` and `admit.mjs`. Memory resets, `/snapshot_commit` calls and installs per member and minute come from Workers Logs (`tests/fanout/wlnames.py`). Raw: `tests/am1/raw/a1-l0-12-mwggu4r3.jsonl`, `tests/fanout/raw/{vmem,tsave,terms,admit}-m3fr3-l0-12.jsonl`.
@@ -356,4 +417,4 @@ All 10 kill pushes answered ok. The trace went to LM-1. This build is before mai
 
 ## Cost
 
-**$17.14** at 13:07Z on 2026-11-14 (after m3fr2 and its 5 leaked shards; none running since 12:28Z). Earlier: metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
+**$22.45** at 16:33Z on 2026-11-14, after the 15:45Z site day and rows m3fr4, with no shard container running. Earlier: **$17.14** at 13:07Z on 2026-11-14 (after m3fr2 and its 5 leaked shards; none running since 12:28Z). Earlier: metered with `tests/fanout/cost.sh` from `tests/am1/raw/m3f-t0.t0` (graft-m3f only): **$10.39** at 09:59Z on 2026-11-14, covering the 05:02Z site day, rows m3fr1 (B0-31, B0-32, L0-12 with its stall and refusals), the lone `Graftyard MCP` runs, and the image `sha256:4ab9de37…` push. Cap $40.
