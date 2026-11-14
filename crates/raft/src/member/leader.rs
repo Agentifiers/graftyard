@@ -74,7 +74,7 @@ struct Queued<C> {
     /// Its encoded length, and the Agent-class inline pack bytes it carries (0 for every other class).
     bytes: usize,
     agent_inline: usize,
-    /// Its encoded length without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
+    /// Its `stored_len` without its Agent inline pack bytes, which AGENT_INLINE_ENTRY bounds: what ENTRY_SOFT counts.
     soft_bytes: usize,
     at: Timestamp,
 }
@@ -88,8 +88,8 @@ struct Admission<C> {
     agent_inline: usize,
     tokens: f32,
     tokens_at: Timestamp,
-    /// The commit round of an `Events` entry, and the encoded bytes of an admitted command without its Agent inline pack,
-    /// as moving averages.
+    /// The commit round of an `Events` entry, and an admitted command's `stored_len` without its Agent inline pack, as
+    /// moving averages.
     round_ms: f32,
     cmd_bytes: f32,
     /// When the last `Events` entry was cut.
@@ -758,7 +758,7 @@ impl<C: Command> Member<C> {
                 lead.by_request.insert(id, seq);
                 let ad = &mut lead.admission;
                 let agent_inline = if class == AdmitClass::Agent { a.inline } else { 0 };
-                let soft_bytes = len.saturating_sub(agent_inline);
+                let soft_bytes = cmd.stored_len().saturating_sub(agent_inline);
                 ad.cmd_bytes = 0.98 * ad.cmd_bytes + 0.02 * soft_bytes as f32;
                 if class == AdmitClass::Agent {
                     ad.agent_bytes += len;
