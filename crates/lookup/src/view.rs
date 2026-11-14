@@ -48,62 +48,34 @@ pub fn set_stale_max(ms: u64) {
     VIEW.with(|v| v.borrow_mut().replica.stale_max = ms);
 }
 
-/// Brings the view up to `Freshness::need` before a request is served: waits for a refresh only when the view is due
-/// for a wait, and then at most VIEW_CALL_MS from this request's arrival (COPY_MS for an isolate that holds no view,
-/// `cold`); otherwise starts one beside the request.
+/// Brings the view up to `Freshness::need` before a request is served (`design/DESIGN.md`, Shape, `POINTER_TTL`).
+/// When the view is due for a wait (a cold isolate, or one idle past POINTER_TTL), the refresh runs beside the request
+/// and also reads every site's copy of the group's entries (`copies`). The request waits until the group answers, or
+/// until every copy has answered and one moved the view, and at most VIEW_CALL_MS from arrival (COPY_MS for an isolate
+/// that holds no view); then it goes out with what is held, unpinned if nothing came, as before the copy existed. The
+/// refresh goes on beside later requests, so the group's view replaces a copy. Otherwise a refresh starts beside the
+/// request when one is due.
 pub async fn ensure(b: &Bindings<'_>, anchor: &Anchor, ctx: Option<&Context>) {
     let arrived = now_ms();
-    if with(|r| r.count()) == 0 {
-        return cold(b, anchor, ctx, arrived).await;
-    }
-    loop {
-        let now = now_ms();
-        match VIEW.with(|v| v.borrow().fresh.need(now)) {
-            Need::Use => return,
-            Need::Refresh => return refresh_beside(b.env, b.sites, anchor, ctx, false),
-            Need::Wait if now >= arrived + VIEW_CALL_MS => return,
-            // Another request of this isolate is waiting for a refresh: wait for the same one.
-            Need::Wait if VIEW.with(|v| v.borrow().fresh.running.is_some()) => {
-                Delay::from(Duration::from_millis(20)).await;
-            }
-            Need::Wait => {
-                VIEW.with(|v| v.borrow_mut().fresh.start(now, true));
-                let left = Duration::from_millis(arrived + VIEW_CALL_MS - now);
-                // A refresh that does not finish in time counts as failed, so later requests serve what is held
-                // and none waits again until a refresh reaches a member.
-                if crate::within(left, refresh(b, anchor, now)).await.is_none() {
-                    failed(format!("no member answered within {VIEW_CALL_MS} ms"));
-                }
-                return;
-            }
-        }
-    }
-}
-
-/// The first requests of an isolate that holds no view (`design/DESIGN.md`, Shape, `POINTER_TTL`). The refresh runs
-/// beside them and also reads every site's copy of the group's entries (`copies`). They wait until the group answers or
-/// a copy is taken, and at most COPY_MS from arrival, then go out with what is held: unpinned if neither came, as
-/// before the copy existed. The refresh goes on beside later requests, so the group's view replaces the copy.
-async fn cold(b: &Bindings<'_>, anchor: &Anchor, ctx: Option<&Context>, arrived: u64) {
-    let now = now_ms();
-    match VIEW.with(|v| v.borrow().fresh.need(now)) {
-        Need::Wait if VIEW.with(|v| v.borrow().fresh.running.is_none()) => {
-            VIEW.with(|v| v.borrow_mut().fresh.start(now, true));
-            beside(b.env, b.sites, anchor, ctx, now);
-        }
-        Need::Wait => {}
-        // A cold isolate whose refresh failed, or one beside requests: no request waits for it.
-        Need::Refresh => return refresh_beside(b.env, b.sites, anchor, ctx, false),
+    let bound = if with(|r| r.count()) == 0 { COPY_MS } else { VIEW_CALL_MS };
+    match VIEW.with(|v| v.borrow().fresh.need(arrived)) {
         Need::Use => return,
+        Need::Refresh => return refresh_beside(b.env, b.sites, anchor, ctx, false),
+        // Another request of this isolate is waiting for a refresh: wait for the same one.
+        Need::Wait if VIEW.with(|v| v.borrow().fresh.running.is_some()) => {}
+        Need::Wait => {
+            VIEW.with(|v| v.borrow_mut().fresh.start(arrived, true));
+            beside(b.env, b.sites, anchor, ctx, arrived, true);
+        }
     }
-    while now_ms() < arrived + COPY_MS {
-        // The waited refresh is still running and no copy was taken, or it failed while the copies are still read.
+    while now_ms() < arrived + bound {
+        // The waited refresh is still running, or it failed while the copies are still read.
         let waiting = VIEW.with(|v| {
             let v = v.borrow();
-            matches!(v.fresh.running, Some((_, true))) || (v.replica.count() == 0 && v.copying)
+            matches!(v.fresh.running, Some((_, true))) || (v.copying && v.fresh.failing)
         });
         if !waiting {
-            break;
+            return;
         }
         Delay::from(Duration::from_millis(10)).await;
     }
@@ -131,14 +103,15 @@ pub fn refresh_beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option
         _ => return,
     }
     VIEW.with(|v| v.borrow_mut().fresh.start(now, false));
-    beside(env, sites, anchor, ctx, now);
+    beside(env, sites, anchor, ctx, now, false);
 }
 
-/// Runs the refresh that started at `now` as a task, for at most ABANDON_MS.
-fn beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option<&Context>, now: u64) {
+/// Runs the refresh that started at `now` as a task, for at most ABANDON_MS. A refresh requests wait for (`waited`),
+/// or one on an isolate that holds no view, also reads the sites' copies.
+fn beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option<&Context>, now: u64, waited: bool) {
     let (env, sites, anchor) = (env.clone(), sites.clone(), *anchor);
-    let cold = with(|r| r.count()) == 0;
-    if cold {
+    let copy = waited || with(|r| r.count()) == 0;
+    if copy {
         VIEW.with(|v| v.borrow_mut().copying = true);
     }
     let task = async move {
@@ -148,7 +121,7 @@ fn beside(env: &Env, sites: &SiteTable, anchor: &Anchor, ctx: Option<&Context>, 
                 failed(format!("no member answered within {ABANDON_MS} ms"));
             }
         };
-        if cold {
+        if copy {
             futures_util::future::join(group, copies(&b, &anchor, now)).await;
         } else {
             group.await;
@@ -237,7 +210,9 @@ pub fn status() -> Value {
 
 /// Reads every site's copy of the group's entries at once, for COPY_MS at most, and offers each to the replica as it
 /// answers (`Replica::adopt`: all of a copy's entries checked against this isolate's anchor or none of them, and only
-/// a copy longer than what is held). The first copy taken releases the requests waiting on the cold refresh.
+/// a copy longer than what is held). Once every copy has answered or COPY_MS has passed, an isolate that holds a view
+/// releases the requests waiting on its refresh: they go out with the longest copy, never the first, because a site
+/// whose members are followers of an idle group can hold one entry fewer (BF-8 run 3, `tests/m5/results/m5-wp2.md`).
 async fn copies(b: &Bindings<'_>, anchor: &Anchor, start: u64) {
     let reads = b.sites.0.iter().map(|s| async move {
         let name = graftyard_types::MemberRegistry::for_chain(s.id, ChainId::Release).do_name();
@@ -260,14 +235,17 @@ async fn copies(b: &Bindings<'_>, anchor: &Anchor, start: u64) {
                 }
             };
             w.copies.push((s.id.0, ms, copy.len() as u64, took));
-            if took > 0 {
-                w.fresh.detach();
-            }
         });
         Some(())
     });
     let _ = crate::within(Duration::from_millis(COPY_MS), futures_util::future::join_all(reads)).await;
-    VIEW.with(|v| v.borrow_mut().copying = false);
+    VIEW.with(|v| {
+        let mut v = v.borrow_mut();
+        v.copying = false;
+        if v.replica.count() > 0 {
+            v.fresh.detach();
+        }
+    });
 }
 
 /// One refresh that started at `start`: the members to ask, one at a time with VIEW_CALL_MS each, until one answers.

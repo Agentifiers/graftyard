@@ -18,9 +18,9 @@ FRONT=${FRONT:-https://graft-m3c-front.<workers-subdomain>.workers.dev}
 EDGE_URL=${EDGE_URL:-https://graft-m3c-m5-edge.<workers-subdomain>.workers.dev}
 SCRIPT=graft-m3c-m5-edge
 export RUN
-V_N=${V_N:-3ba676ce-5cc0-41d8-b7fe-db03e3febfa7}
-V_N1=${V_N1:-d42016e1-e03c-4c35-8b4f-837f23791310}
-V_N2=${V_N2:-0ea53421-a914-4a36-a736-2d6fe048089a}
+V_N=${V_N:-52f05950-b49c-42b9-a4d2-7d0aafb6c894}
+V_N1=${V_N1:-5cfcecc3-da40-43d7-9150-8500323e1a0c}
+V_N2=${V_N2:-a02b9c73-7d7a-4bd7-9091-bb9abe7fba03}
 REPO=65537 CONTROL=65538
 # RUN numbers a run's intent ids and release records, so a rerun on the same group uses fresh ones.
 RUN=${RUN:-0}
@@ -65,7 +65,15 @@ deploy() {
   event deployed "\"split\": \"$*\", \"t0\": $t0"
 }
 deployments() { WR deployments list --name $SCRIPT --json > "$OUT/deployments-$1.json"; log "deployments $1: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); x=d[-1] if isinstance(d,list) else d; print(x.get("id"), x.get("created_on"), [(v["version_id"][:8], v["percentage"]) for v in x["versions"]])' "$OUT/deployments-$1.json")"; }
-fault() { curl -s -X POST -H "x-bed-token: $(cat "$W/bed.token")" "$EDGE_URL/_bed/fault?$1" | head -c 400 >> "$OUT/faults.log"; echo >> "$OUT/faults.log"; }
+# fault <query>: the bed's fault plan, tried up to 5 times (BF-8 run 3's driver exited on one failed call to clear it).
+fault() {
+  local i a
+  for i in 1 2 3 4 5; do
+    a=$(curl -sf -m 20 -X POST -H "x-bed-token: $(cat "$W/bed.token")" "$EDGE_URL/_bed/fault?$1") && break
+    log "fault $1: try $i failed"; sleep 2
+  done
+  echo "${a:0:400}" >> "$OUT/faults.log"
+}
 sampler() { # <name> <args...>: starts tests/m5/wp2-sample.mjs until $OUT/stop-<name> exists
   rm -f "$OUT/stop-$1"
   (cd "$ROOT/tests/am1/hosted" && source ../lf13/env-m3c.sh && node "$ROOT/tests/m5/wp2-sample.mjs" "${@:2}" "$OUT/$1.jsonl" "$OUT/stop-$1" >> "$OUT/sampler.log" 2>&1 &)
@@ -172,6 +180,11 @@ bf8() {
   fault "off=1"
   event blackhole-off
   sleep 30
+  bf8b
+}
+
+# BF-8 (B), after the blackhole: also run alone after a (A) whose driver stopped there.
+bf8b() {
   deploy "$V_N@100"
   must "$(signed "{\"IntentDone\": {\"intent\": \"$I2\"}}" i2-done "$K/executor.seed" bf8-i2-done)" 201
   local a; a=$(signed "$(roll $I3BAD "$(rid N1)" "$(rid N2)")" i3bad "$W/customer.key" bf8-roll-drops-undo)

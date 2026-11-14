@@ -1,0 +1,21 @@
+BF-43: 99067 requests, 99067 200
+  before the undo: 41697 requests, 282 on N+1 (0.68%)
+  undo 201 at +0; first request carrying the pin at +2283 ms
+  requests off N after the undo: 2; last one started at +2012 ms
+  requests from +5 s to the next roll: 25708, off N or unpinned: 0
+  with the API blocked (62 s): 18631 requests, 18629 on N
+  after the next EdgeRoll's 201: 30178 requests; last pinned one at +756 ms; pinned after +5 s: 0
+  under the second 1% split: 19051 requests, 169 on N+2
+  alarms: 0
+BF-8: 230726 requests
+  (A) blackhole 602 s: 192141 requests, 191749 200, 187531 carried the pin, 191701 ran N, p50 22 ms p99 57 ms max 4058 ms
+  not answered (the sampler's fetch failed, no front answer): 392, from +161.6 s to +175.5 s, ['TypeError: fetch failed']
+  views failing during it: 175861 of 191749
+  repository reads during it: 1094, 1094 200, p50 463 ms max 6268 ms
+  isolates started before the blackhole: 15, 40032 requests, pinned 35973, ran N 39985, p99 62 ms
+    took a site's copy: 13 isolates, sites ['0', '2'], read ms p50 79 max 147
+    unpinned: 4059 requests on 6 isolates, the last 879213 ms after its isolate's first request
+  isolates started during the blackhole: 224, 151717 requests, pinned 151558, ran N 151716, p99 55 ms
+    took a site's copy: 224 isolates, sites ['0', '2'], read ms p50 79 max 138
+    unpinned: 159 requests on 38 isolates, the last 1377 ms after its isolate's first request
+    by isolate start (min after blackhole: requests, pinned): 0: 27622/27590, 1: 25546/25532, 2: 9364/9364, 3: 23304/23301, 4: 5115/5105, 5: 16385/16377, 6: 9247/9239, 7: 13378/13356, 8: 20000/19949, 9: 1600/1589, 10: 156/156

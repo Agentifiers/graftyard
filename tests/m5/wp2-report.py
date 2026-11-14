@@ -85,6 +85,11 @@ def bf8():
     print(f"  (A) blackhole {(b1 - b0) / 1000:.0f} s: {len(inb)} requests, {sum(x['s'] == 200 for x in inb)} 200,"
           f" {sum(x['pin'] == N for x in inb if x['s'] == 200)} carried the pin, {sum(x.get('ran') == N for x in inb)} ran N,"
           f" p50 {pct(lat, .5)} ms p99 {pct(lat, .99)} ms max {max(lat) if lat else None} ms")
+    sent = [x for x in inb if x["s"] == 0]
+    if sent:
+        print(f"  not answered (the sampler's fetch failed, no front answer): {len(sent)}, from"
+              f" +{(min(x['t0'] for x in sent) - b0) / 1000:.1f} s to +{(max(x['t0'] for x in sent) - b0) / 1000:.1f} s,"
+              f" {sorted({x.get('err', '')[:40] for x in sent})}")
     views = [x["view"] for x in inb if x.get("view")]
     print(f"  views failing during it: {sum('failing=true' in v for v in views)} of {len(views)}")
     rr = [x for x in rows("bf8-repo.jsonl") if b0 <= x["t0"] < b1]
@@ -148,20 +153,47 @@ def bf48():
 def bf8_isolates():
     """BF-8 (A) by graft-front isolate: those that started before the blackhole (and so held a view) and those that
     started during it, which hold none until a member answers (decisions/OPEN-QUESTIONS.md, R20)."""
-    r = rows("bf8.jsonl")
+    # Rows the sampler could not send (status 0, no front answer) carry no view.
+    r = [q for q in rows("bf8.jsonl") if q.get("view")]
     if not r:
         return
     b0, b1 = ev("blackhole"), ev("blackhole-off")
     iso = lambda q: dict(kv.split("=") for kv in q["view"].split(";"))["isolate"]
+    # An isolate starts at its first request in any of the run's samplers: BF-43's ran before BF-8 on the same front.
     first = {}
-    for q in r:
+    for q in sorted([q for q in rows("bf43.jsonl") if q.get("view")] + r, key=lambda q: q["t0"]):
         first.setdefault(iso(q), q["t0"])
     x = [q for q in r if b0 <= q["t0"] < b1]
+    view = lambda q: dict(kv.split("=") for kv in q["view"].split(";"))
     for name, s in [("started before", [q for q in x if first[iso(q)] < b0]),
                     ("started during", [q for q in x if first[iso(q)] >= b0])]:
         lat = sorted(q["t1"] - q["t0"] for q in s)
         print(f"  isolates {name} the blackhole: {len({iso(q) for q in s})}, {len(s)} requests, pinned"
               f" {sum(q['pin'] != 'none' for q in s)}, ran N {sum(q.get('ran') == N for q in s)}, p99 {pct(lat, .99)} ms")
+        # The site copy each isolate took (`copy=<site>@<ms>`, run 3 on), and its isolates' unpinned requests.
+        took = {}
+        for q in s:
+            c = view(q).get("copy", "none")
+            if c != "none":
+                took.setdefault(iso(q), c)
+        if took:
+            ms = sorted(int(c.split("@")[1]) for c in took.values())
+            sites = sorted({c.split("@")[0] for c in took.values()})
+            print(f"    took a site's copy: {len(took)} isolates, sites {sites}, read ms p50 {pct(ms, .5)} max {max(ms)}")
+        bad = [q for q in s if q["pin"] == "none"]
+        if bad:
+            print(f"    unpinned: {len(bad)} requests on {len({iso(q) for q in bad})} isolates, the last"
+                  f" {max(q['t0'] - first[iso(q)] for q in bad)} ms after its isolate's first request")
+        # By isolate start, in minutes from the blackhole.
+        by = {}
+        for q in s:
+            m = (first[iso(q)] - b0) // 60000
+            n = by.setdefault(m, [0, 0])
+            n[0] += 1
+            n[1] += q["pin"] != "none"
+        if name == "started during":
+            print("    by isolate start (min after blackhole: requests, pinned): "
+                  + ", ".join(f"{m}: {n[0]}/{n[1]}" for m, n in sorted(by.items())))
     po = answers.get("bf8-pin-outside")
     if po:
         t, end = po["t1"], ev("restored-n", po["t1"])

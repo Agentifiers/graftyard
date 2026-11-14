@@ -57,8 +57,9 @@ Site and edge days `m5-wp2`, 2026-11-14 (`tests/m5/results/m5-wp2.md`; `tests/m5
 | 1 | 15:01Z to 15:12Z | `9d6ee802` / `9d43afc6` / `b9829950` (via phase 1 `0dc0b1ef` / `7247a80d` / `7075c3bf`) | `m5-wp2` `194ca041` (before the rebase) |
 | 2 | 16:23Z to 16:35Z | `cce69c4b` / `dd8d29b1` / `be7ac60c` (via `7c8ef8e4` / `41779273` / `1537937b`) | `94abc7dc`..`38b21451`, rebased on main `a8cca2cf` |
 | 3 | 16:48Z to 17:00Z | `64d8afcf` / `9933fafc` / `9379827a` (via `664baa29` / `83b1c0f7` / `d2fc0fe9`) | `b52fdd78` (a view refresh reads on to the leader) |
+| 4 | 20:24Z to 20:34Z | `779d2b47` / `b8998062` / `2f04e1af` (via `54cb6897` / `9f541415` / `cf5dac16`) | `4417ceaa` (each member writes the `Release` copy to its site's registry, R20) |
 
-`graft-m3c-edge` was not changed. The rows ran through two scratch scripts, deleted after: `graft-m3c-m5-edge` (a product-shaped test-faults edge with `HOST` set to the front's host and `BED_TOKEN`; after day 3, N `3ba676ce`, with N+1 `d42016e1` and N+2 `0ea53421` uploaded with `--upload-only`) and `graft-m3c-front` (`71c00065`, `FRONT_TOKEN` set). The `Release` group took `Keys` generation 1 (executor and drain keys held in `~/.graft-m3c/m5wp2`, mode 0700) and the runs' uploads and intents, and was left with nothing current.
+`graft-m3c-edge` was not changed. The rows ran through two scratch scripts, deleted after: `graft-m3c-m5-edge` (a product-shaped test-faults edge with `HOST` set to the front's host and `BED_TOKEN`; after day 3, N `3ba676ce`, with N+1 `d42016e1` and N+2 `0ea53421` uploaded with `--upload-only`) and `graft-m3c-front` (`71c00065`, `FRONT_TOKEN` set). Both were deleted after day 3 and made again after day 4 (20:35Z to 20:40Z): edge N `52f05950` (with `BED_TOKEN`), N+1 `5cfcecc3`, N+2 `a02b9c73`, and front `362f703b`. The `Release` group took `Keys` generation 1 (executor and drain keys held in `~/.graft-m3c/m5wp2`, mode 0700) and the runs' uploads and intents, and was left with nothing current.
 
 ## Point the drivers at it
 
