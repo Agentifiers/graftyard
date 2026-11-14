@@ -668,6 +668,44 @@ covers only 12:07 to 12:09, after the storm.
 Rows: `tests/nr3/rows/a1-b0-29-gate16.jsonl`, `run-gate16.status`, `lmem-gate16.jsonl`, `mem-gate16.json`,
 `egress-gate16.txt`, `fresh-gate16.jsonl`, `trace-gate16.json.gz`.
 
+### The gate 16 A/B, arm "without": main a858bfb again, the storm reproduces
+
+The operator's A/B after gate 16: gate 16's tree (main a858bfb, site day 13, the double decode in) against main a5a85d9
+(decode-once: `x-graft-from`, no second decode). Same shape, run.sh with `memSplit` every 2 s. Locally, one decode of
+an append carrying a 1 MB inline pack peaks at 2.33 MB of heap and holds 1.0 MB, natively, and the throwaway decode
+was dropped before `raft`'s, so the per-call peak was the same either way [measured, native allocation].
+
+Arm "without", repo 65562, window 12:50:16 to 13:00:16Z, torn down [measured]:
+
+| Line | Arm "without" | Gate 16 |
+| --- | --- | --- |
+| API p50 / p99, served | 266 / 22,977 ms, 41.03% (14,904 answered 503, 54,188 skipped at the cap) | 348 / 21,789 ms, 65.96% |
+| Commit p50 / p99 | 24,534 / 30,609 ms (497 commits) | 18,002 / 22,760 ms |
+| Leader | site 0, term 2 to 21 | term 2 to 15 |
+| Analytics peak: f0 / f1 (gen 2) / f2 | 285 / 310 / 341 MiB | 258 / 278 / 298 MiB |
+| exceededMemory a / b / c | 2,342 / 4,235 / 3,572 | 1,930 / 3,431 / 3,923 |
+| Read-your-write | 150 of 150, 0 stale | same |
+
+Per minute (max MiB; f0 the leader, f1 gen 2 and f2 the followers): 12:50 to 12:51 at 64 / 26 to 30 / 53 to 60;
+**12:52 at 70 / 264 / 260**; 12:53 at 227 / 310 / 341; to the end 119 to 285 on every voter. So the **followers**
+jumped first, a minute before the leader. The leader's `memSplit` at 2 s up to 12:52:38 is flat: wasm 33.3 MiB, log
+8.0 MB, held under 84 KB, call bodies under 0.34 MB. It then stopped answering `/stats`. The first sample after
+(12:54:00) shows 118.8 MiB, held 9.9 MB for two learners, and `inFlight.calls` 30.6 MB. The first exceededMemory
+outcomes are f1 (gen 2) at 12:53:52 on `/commit` and f2 at 12:54:41.
+
+**A lead, not a cause.** Both followers took a `/snapshot_commit` call at 12:52:40 to 12:52:50, in the minute they
+jumped. The leader's `/snapshot_commit` calls in the window number 56 (30 on gate 16, 8 on gates 14 and 15, 0 on gate
+13), first at 12:50:26. On gate 16 the first came at 12:03:23, four seconds after the leader's first reset. A member
+writes a tier snapshot (`crate::snap`, `PART_BYTES` 8 MiB part buffers and a frame batch, uploaded to two buckets)
+when `snapshot_due` holds, which on a fresh repo is from its first applied entry, so every fresh gate repo writes a
+first snapshot in its first minutes. The repeated calls are likely the writer asking again until the snapshot's row
+applies. This fold is about 1.6 MB, so the snapshot's own buffers should be small. Whether the snapshot path is what
+fills the followers is not measured, and the follower side has no `memSplit` [inference]. The m3f thread's L0-12 replay, on main without narrow-reads-3 or the timestamps, logged
+8,465 and 4,722 resets on two voters, which also rules the double decode out as the whole cause.
+
+Rows: `tests/nr3/rows/a1-b0-29-abwithout.jsonl`, `run-abwithout.status`, `lmem-abwithout.jsonl`,
+`mem-abwithout.json`, `egress-abwithout.txt`, `fresh-abwithout.jsonl`, `trace-abwithout.json.gz`.
+
 ## The bug the simulator found
 
 With deferred answers in the simulator (30% of granted follower reads answered later through `fresh_after`), the live sweep found a non-linearizable history on seed 11435. A `ReadIndexRes` the leader sent a follower's previous boot, either late on the network or held for a learner's next call, carried batch number 1, the same as the new boot's first batch. The restarted follower took it, and granted a read below a write acknowledged before the read arrived. Batches are now numbered from the boot's high bits, so an old boot's answer names a batch the new boot never sends. The regression test `a_read_index_answer_from_a_previous_boot_grants_nothing` (`crates/raft/tests/leadership.rs`) **fails on main 20147db**, so this is a live bug on `main`, independent of this change. A learner whose isolate resets mid-load, which runs 1 and 3 showed is common, is exactly this path.
