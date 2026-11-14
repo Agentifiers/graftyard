@@ -3257,7 +3257,7 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 
 **Flip.** A hosted B0-33 run whose entries store more than ENTRY_SOFT past their first command, or whose confirm p99 rises with the entries this admits.
 
-**Open, for a second change.** The render still crosses every AppendEntries: each issue command sends its owner's whole Authz fold, about 10 KB, to every follower, so B0-33's 7.6-command entries carry about 80 KB of renders against 1.9 KB stored. The leader holds the same fold as a dependency (`IssueCall::deps` names the owner's `Authz` chain), so it could build the render's `HostedDir.authz` itself and the edge could send none. That would also cut the far follower's per-call bytes, a candidate in the far-leg question [inference].
+**Open, for a second change: dropped, 2026-11-14.** An earlier version of this paragraph said the render crosses every AppendEntries, about 80 KB of renders per B0-33 entry against 1.9 KB stored, and so bears on the far-leg p99. That is false: the leader builds each entry from the events `decide` returns (`LogEntry { body: EntryBody::Events(events) }`, `crates/raft/src/member/leader.rs`), no `RepoEvent` holds the render, and a follower receives events, not commands [code-read]. The render travels only in the edge's command to the leader, about 10 KB per issue command. Having the leader build `HostedDir.authz` from its own `Authz` dependency would save that request body but cost a 10 KB fold clone per command out of `decide`, and the reply would render from the leader's read of the fold, not the edge's, so a grant that changed between the two reads changes the reply. The operator declined it (option (a)). `ENTRY_MAX` still counts the render on the leader's cut: `decisions/OPEN-QUESTIONS.md`, F70.
 
 ### `m4-web-3`: a single-comment review leaves an APPROVED or CHANGES_REQUESTED verdict as it is (format 32.22), 2026-11-14
 
@@ -3270,3 +3270,15 @@ Branch `fresh-repo` traced LM-1's two fresh-repository gaps on m23 (`tests/am1/r
 **Evidence.** `an_approvers_review_comment_gets_its_review_and_keeps_the_approval` (`crates/git/tests/agent_gates.rs`) through real members, which fails when the fold replaces the verdict; hosted single-comment reviews on `m3org/web38-a` PR #3 (`tests/m4/results/m4-wp5.md`).
 
 **Flip.** GHES 3.22 replacing an approval with a later single-comment review, or a reviews UI that needs a COMMENTED verdict beside an approval.
+
+### `liveness-looplag-handoff`: a follower judges its own storage slow at `commit_fail_min` slow confirms, 2026-11-14
+
+**Decision.** `storage_slow`, the campaign gate `liveness-slow-storage` added, counts a follower's own storage as slow at `commit_fail_min` (3) confirms over `confirm_p99_ms` in the window, with the p99 over it, in place of the leader's `confirm_slow_min` (6). The gate itself, `peer_storage_slow` and F67's `suspect` counting are unchanged.
+
+**Why.** LM-1's round 15c on m26c: a fresh leader, the target of a LoopLag hand-off, lost its term about 13 s in with no StepDown logged. The simulator reproduced it with LoopLag on the leader and slow confirms on both followers: over seeds 900 to 1099, 18 went over 5 s with no member serving, worst 12.7 s. In seed 910 the hand-off worked (term 3). Then a follower with 4 of 11 confirms at 1.05 s in the window read healthy, passed pre-vote, sent its real vote after its own slow confirm, and deposed the leader on the higher term. It was refused LogBehind, and nobody led for 12.5 s. A follower confirms about once per append it accepts, so it rarely reaches the six a leader's confirm rule counts [measured, simulator, `tests/m0/results/looplag-handoff.md`].
+
+**Beat.** Ignoring a higher-term vote while a leader is live: the operator rejected it, since it blocks the healthy follower F67 relies on. Lowering `confirm_slow_min` for leaders too: that moves STEP_DOWN's own measured line (B0-06).
+
+**Evidence.** `a_looplag_leader_with_slow_followers_hands_off_and_holds` (`crates/raft/tests/liveness.rs`) fails on main `1f51c6f` (seeds 904 at 8.5 s and 910 at 12.5 s unserved) and passes here, worst 4.9 s. Over 200 seeds, seeds unserved for more than 5 s went from 18 to 4, and the worst from 12.7 s to 5.6 s. The slow-storage term rise over 200 seeds is 0.94 a minute with every member slow and 0.20 with both followers slow, against 1.33 and 0.30. `long_liveness` at 60 seeds moved all 60 by STEP_DOWN for calls, slow and lag. `tests/m0carried/plant11.py` gains a mutant that restores six.
+
+**Flip.** A follower that the lower count holds back while no leader commits, or a gray leader F67 moved that this keeps leading past 20 s.
