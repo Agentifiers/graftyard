@@ -17,7 +17,10 @@ for (;;) {
     const names = await voterNames(chain).catch(() => ({}));
     for (const site of [0, 1, 2]) {
       try {
-        const rows = (await member(chain, site, `/trace?since=${since[site]}`, undefined, 30_000, names[site])).v ?? [];
+        const r = await member(chain, site, `/trace?since=${since[site]}`, undefined, 30_000, names[site]);
+        // A tree without the route (before fc8ecce4) answers 404: logged, nothing kept.
+        if (!Array.isArray(r.v)) throw new Error(`status ${r.status}: ${JSON.stringify(r.v).slice(0, 80)}`);
+        const rows = r.v;
         // A reset member's clock moves on, so `since` stays valid; its new rows are all later.
         if (rows.length) since[site] = rows[rows.length - 1][0];
         console.log(JSON.stringify({ at: new Date().toISOString(), site, leader, rows }));
